@@ -5,6 +5,7 @@
         develop release \
         check fmt fmt-check clippy test \
         dmg dmg-x86 dmg-arm64 dmg-universal \
+        win-debug win-release \
         clean clean-all \
         deps-update lock-refresh
 
@@ -21,11 +22,15 @@ help:
 	@printf "    make fmt-check      cargo fmt --all -- --check（CI 用）\n"
 	@printf "    make clippy         cargo clippy --all-targets -- -D warnings\n"
 	@printf "    make test           cargo test --all\n"
-	@printf "\n  \033[36m打包\033[0m\n"
+	@printf "\n  \033[36m打包（macOS）\033[0m\n"
 	@printf "    make dmg            当前架构：svg → icns → cargo build → Ramag.app → Ramag.dmg\n"
 	@printf "    make dmg-x86        交叉编译 Intel mac\n"
 	@printf "    make dmg-arm64      交叉编译 Apple Silicon\n"
 	@printf "    make dmg-universal  Intel + Apple Silicon 通用二进制（约 2 倍编译时间）\n"
+	@printf "\n  \033[36m跨编 Windows（在 macOS 上直接编出 ramag.exe，无需 Windows 机器）\033[0m\n"
+	@printf "    make win-debug      x64 debug（快，体积大）\n"
+	@printf "    make win-release    x64 release（优化 + 无控制台窗）\n"
+	@printf "    （MSI 安装包：见 .github/workflows/release-windows.yml 走 CI）\n"
 	@printf "\n  \033[36m清理\033[0m\n"
 	@printf "    make clean          cargo clean\n"
 	@printf "    make clean-all      clean + 删 Ramag.app / dmg / icns\n"
@@ -56,7 +61,7 @@ clippy:
 test:
 	cargo test --all
 
-# === 打包 ============================================================
+# === 打包（macOS）====================================================
 # build-dmg.sh 内部：svg→icns、cargo build、组装 .app、打 dmg 全流程。
 # 交叉编译目标若未安装 rustup target，脚本会自动 rustup target add。
 dmg:
@@ -70,6 +75,16 @@ dmg-arm64:
 
 dmg-universal:
 	./scripts/build-dmg.sh --target=universal
+
+# === 跨编（macOS → Windows）==========================================
+# 在 macOS 上直接编出 ramag.exe（x64），无需 Windows 机器。脚本内含前置依赖检查
+# （cargo-xwin / brew llvm / rust target）与 GPUI 清单资源、lld-link 的修复。
+# 只出 x64：Windows on ARM 靠内置 x64 模拟即可运行，一个包覆盖几乎所有用户。
+win-debug:
+	./scripts/build-windows-local.sh
+
+win-release:
+	./scripts/build-windows-local.sh --release
 
 # === 清理 ============================================================
 clean:

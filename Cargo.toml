@@ -161,7 +161,7 @@ rand = "0.9"
 hex = "0.4"
 
 # macOS 钥匙串
-keyring = { version = "3", features = ["apple-native"] }
+keyring = { version = "3" }
 
 # SQL 补全：必须与 gpui-component 内部版本一致，否则 InputState 的 LSP 接口类型不兼容
 lsp-types = { version = "0.97.0", features = ["proposed"] }

@@ -11,7 +11,7 @@ use gpui::{
 use gpui_component::Root;
 use ramag_app::{ClipboardService, ConnectionService, MongoService, RedisService, ToolRegistry};
 use ramag_domain::traits::{ClipboardDriver, DocDriver, Driver, GitDriver, KvDriver, Storage};
-use ramag_infra_clipboard::{HotkeyListener, MacClipboardDriver};
+use ramag_infra_clipboard::{HotkeyListener, PlatformClipboardDriver};
 use ramag_infra_git::GitDriverImpl;
 use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
@@ -108,6 +108,15 @@ fn main() {
 
         // 必须先 bind_keys 把 cmd-q 绑到 Quit，NSMenuItem 才会显示快捷键
         cx.on_action(|_: &Quit, cx| cx.quit());
+
+        // Windows 无 dock/托盘：关掉最后一个窗口后应退出，避免后台无形进程（无处唤回、无法退出）。
+        // macOS 保留「关窗不退出」+ on_reopen，故用 cfg! 运行时判定（两平台均可编译）。
+        cx.on_window_closed(|cx, _window_id| {
+            if cfg!(target_os = "windows") && cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
 
         // cmd-w 全局 fallback：视图层先消费（关 tab），没消费就关窗。
         // 关窗须 defer：此刻正处在该窗口的按键分发栈内（window 已被 take 出），
@@ -350,7 +359,11 @@ fn open_drawer_window(
         },
         move |window, cx| {
             let drawer = create_clipboard_drawer(service, target_bundle, window, cx);
-            cx.new(|cx| Root::new(drawer, window, cx))
+            let root = cx.new(|cx| Root::new(drawer, window, cx));
+            // Windows：cx.activate(true) 是 no-op，须窗口级 activate_window（内部 SetForegroundWindow）
+            // 抽屉才能抢到前台，搜索框中文输入法 / 粘贴才正常；macOS 同样受益
+            window.activate_window();
+            root
         },
     );
     cx.activate(true);
@@ -495,7 +508,7 @@ fn build_mongo_service(storage: Arc<dyn Storage>) -> Arc<MongoService> {
 }
 
 fn build_clipboard_service(storage: Arc<dyn Storage>) -> Arc<ClipboardService> {
-    let driver: Arc<dyn ClipboardDriver> = Arc::new(MacClipboardDriver::new());
+    let driver: Arc<dyn ClipboardDriver> = Arc::new(PlatformClipboardDriver::new());
     Arc::new(ClipboardService::new(driver, storage))
 }
 

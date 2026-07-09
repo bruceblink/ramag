@@ -38,9 +38,13 @@ aes-gcm = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 
-# macOS 钥匙串
-keyring = { workspace = true }
-
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# 钥匙串主密钥：按 target 选原生后端（macOS Keychain / Windows 凭据管理器）
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }

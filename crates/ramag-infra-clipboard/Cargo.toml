@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Ramag 剪贴板驱动（实现 Domain 的 ClipboardDriver trait，封装 NSPasteboard / NSWorkspace / CGEvent）"
+description = "Ramag 剪贴板驱动（实现 Domain 的 ClipboardDriver trait；macOS = NSPasteboard/NSWorkspace/CGEvent，Windows = Win32）"
 
 [lints]
 workspace = true
@@ -12,17 +12,35 @@ workspace = true
 [dependencies]
 ramag-domain = { workspace = true }
 
-# macOS FFI：与 gpui_macos 同款绑定，依赖树内已有
+# 图标缓存锁（macOS 驱动用；跨平台）
+parking_lot = { workspace = true }
+
+# 媒体缓存目录定位（跨平台，media.rs 共用）
+directories = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+
+# macOS FFI：NSPasteboard / NSWorkspace / CGEvent / Carbon 全局热键，仅 macOS 编译
+[target.'cfg(target_os = "macos")'.dependencies]
 objc = { workspace = true }
 cocoa = { workspace = true }
 core-graphics = { workspace = true }
 core-foundation = { workspace = true }
 
-# 图标缓存锁
-parking_lot = { workspace = true }
+# Windows FFI：Win32 剪贴板 / 全局热键 / 模拟粘贴 / 前台应用。
+# 版本钉 0.57 与 gpui_windows 依赖树一致，避免两份 windows crate 类型不通
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.57", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+] }
 
-# 媒体缓存目录定位
-directories = { workspace = true }
-
-# 日志
-tracing = { workspace = true }
+# 图片：CF_DIB（截图）补 BMP 文件头 → 解码 → 转 PNG（采集）；PNG → BMP 去头 → CF_DIB（写回）
+image = { workspace = true, features = ["bmp"] }
