@@ -1,6 +1,6 @@
-//! 剪贴板驱动 trait：macOS 实现在 ramag-infra-clipboard。
+//! 跨平台剪贴板驱动 trait。
 //! 与 Driver / KvDriver 等不同：方法全部为同步快调用（无网络 IO），
-//! 且按 AppKit 约定须在主线程调用（GPUI 前台 executor 即主线程）
+//! 涉及系统 UI 的方法应在 GPUI 前台 executor 调用。
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use crate::entities::{CapturedClip, ClipSource};
 use crate::error::Result;
 
 pub trait ClipboardDriver: Send + Sync {
-    /// 系统剪贴板修改计数（NSPasteboard.changeCount），轮询比对用
+    /// 系统剪贴板修改计数，轮询比对用
     fn change_count(&self) -> i64;
 
     /// 最近一次由本应用写回产生的 changeCount，自写回抑制用
@@ -29,6 +29,11 @@ pub trait ClipboardDriver: Send + Sync {
     /// 当前前台应用（采集来源标注）
     fn frontmost_app(&self) -> Option<ClipSource>;
 
+    /// 当前前台应用的短期激活标识。默认复用应用 id；平台可覆盖为更精确的窗口标识。
+    fn activation_target(&self) -> Option<String> {
+        self.frontmost_app().map(|source| source.bundle_id)
+    }
+
     /// 应用图标 PNG（实现内部按 bundle_id 缓存）；取不到返回 None
     fn app_icon_png(&self, bundle_id: &str) -> Option<Arc<Vec<u8>>>;
 
@@ -45,17 +50,17 @@ pub trait ClipboardDriver: Send + Sync {
     /// 删除落盘媒体文件（容忍文件不存在）
     fn remove_media(&self, path: &str) -> Result<()>;
 
-    /// 辅助功能权限是否已授予；prompt=true 时弹系统授权引导
+    /// 自动粘贴所需的系统权限是否已授予；prompt=true 时弹系统授权引导
     fn accessibility_trusted(&self, prompt: bool) -> bool;
 
-    /// 激活指定应用（None 跳过激活）并模拟 cmd-V 粘贴。需辅助功能权限
-    fn paste_to_app(&self, bundle_id: Option<&str>) -> Result<()>;
+    /// 激活指定目标（None 跳过激活）并模拟平台粘贴快捷键
+    fn paste_to_app(&self, activation_target: Option<&str>) -> Result<()>;
 
     /// 用默认浏览器打开链接
     fn open_url(&self, url: &str) -> Result<()>;
 
-    /// 在 Finder 中显示文件（多文件高亮选中）
-    fn reveal_in_finder(&self, paths: &[String]) -> Result<()>;
+    /// 在系统文件管理器中显示文件
+    fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()>;
 
     /// 文件路径是否仍存在（粘贴前失效校验）
     fn paths_exist(&self, paths: &[String]) -> bool;

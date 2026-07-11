@@ -51,6 +51,26 @@ impl ClipboardView {
         cx.notify();
     }
 
+    /// 将来源加入黑名单，只影响后续采集；当前历史仍由用户自行决定是否删除。
+    pub(super) fn blacklist_source(&mut self, source_id: String, cx: &mut Context<Self>) {
+        if self.settings.blacklist.iter().any(|id| id == &source_id) {
+            return;
+        }
+        let mut settings = self.settings.clone();
+        settings.blacklist.push(source_id);
+        self.save_settings(settings, cx);
+        self.pending_notification = Some(Notification::info("已停止记录该应用的新内容"));
+        cx.notify();
+    }
+
+    pub(super) fn unblacklist_source(&mut self, source_id: &str, cx: &mut Context<Self>) {
+        let mut settings = self.settings.clone();
+        settings.blacklist.retain(|id| id != source_id);
+        self.save_settings(settings, cx);
+        self.pending_notification = Some(Notification::info("已恢复记录该应用"));
+        cx.notify();
+    }
+
     /// 当前过滤+排序后的可见条目（clone 出 owned 列表供渲染与键盘导航共用）
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<ClipItem> {
         let query = self.search.read(cx).value().to_string();
@@ -154,10 +174,10 @@ impl ClipboardView {
         }
     }
 
-    /// Finder 中显示文件
+    /// 在系统文件管理器中显示文件
     pub(super) fn reveal_files(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
-        if let Err(e) = self.service.reveal_in_finder(&paths) {
-            error!(error = %e, "reveal in finder failed");
+        if let Err(e) = self.service.reveal_in_file_manager(&paths) {
+            error!(error = %e, "reveal in file manager failed");
             self.pending_notification = Some(Notification::error(e.to_string()));
             cx.notify();
         }

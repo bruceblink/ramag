@@ -23,6 +23,7 @@ use gpui_component::{
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoCollection, MongoDatabase};
+use ramag_ui::platform::primary_shortcut;
 use row::TreeRow;
 use tracing::{error, info};
 
@@ -374,9 +375,9 @@ impl Render for CollectionTreePanel {
             "显示系统库（admin / config / local）"
         };
         let toggle_editor_tip = if editor_visible {
-            "隐藏命令编辑器 (⌘E)"
+            format!("隐藏命令编辑器 ({})", primary_shortcut("E"))
         } else {
-            "显示命令编辑器 (⌘E)"
+            format!("显示命令编辑器 ({})", primary_shortcut("E"))
         };
 
         let search_row = h_flex()

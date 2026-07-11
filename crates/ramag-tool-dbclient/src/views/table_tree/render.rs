@@ -16,6 +16,7 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::{DriverKind, Schema};
+use ramag_ui::platform::primary_shortcut;
 
 use super::row::TreeRow;
 use super::{TableTreePanel, TreeEvent};
@@ -138,9 +139,9 @@ impl Render for TableTreePanel {
         };
         let qp_visible = self.editor_visible;
         let qp_tip = if qp_visible {
-            "隐藏 SQL 编辑器 (⌘E)"
+            format!("隐藏 SQL 编辑器 ({})", primary_shortcut("E"))
         } else {
-            "显示 SQL 编辑器 (⌘E)"
+            format!("显示 SQL 编辑器 ({})", primary_shortcut("E"))
         };
         // 顶部第 1 行：schema picker（与 Redis 的 DB picker 对齐布局）
         // PG：picker 显示 `database / schema`

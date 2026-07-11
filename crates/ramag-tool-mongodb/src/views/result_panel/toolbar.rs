@@ -9,6 +9,7 @@ use gpui_component::{
     input::Input,
     menu::{DropdownMenu as _, PopupMenuItem},
 };
+use ramag_ui::platform::primary_shortcut;
 
 use super::{ResultEvent, ResultPanel};
 
@@ -134,7 +135,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .primary()
                 .small()
                 .icon(IconName::Play)
-                .tooltip("⌘↵ 运行")
+                .tooltip(format!("{} 运行", primary_shortcut("Enter")))
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Refresh))),
         )
 }

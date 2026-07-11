@@ -5,7 +5,7 @@
         develop release \
         check fmt fmt-check clippy test \
         dmg dmg-x86 dmg-arm64 dmg-universal \
-        win-debug win-release \
+        win-debug \
         clean clean-all \
         deps-update lock-refresh
 
@@ -27,10 +27,10 @@ help:
 	@printf "    make dmg-x86        交叉编译 Intel mac\n"
 	@printf "    make dmg-arm64      交叉编译 Apple Silicon\n"
 	@printf "    make dmg-universal  Intel + Apple Silicon 通用二进制（约 2 倍编译时间）\n"
-	@printf "\n  \033[36m跨编 Windows（在 macOS 上直接编出 ramag.exe，无需 Windows 机器）\033[0m\n"
-	@printf "    make win-debug      x64 debug（快，体积大）\n"
-	@printf "    make win-release    x64 release（优化 + 无控制台窗）\n"
-	@printf "    （MSI 安装包：见 .github/workflows/release-windows.yml 走 CI）\n"
+	@printf "\n  \033[36mWindows x64\033[0m\n"
+	@printf "    make win-debug      macOS 交叉构建 debug（用于编译验证）\n"
+	@printf "    build-windows.ps1   Windows 原生构建 debug / release（-Release）\n"
+	@printf "    （当前输出便携 exe；安装包与签名属于发布流程）\n"
 	@printf "\n  \033[36m清理\033[0m\n"
 	@printf "    make clean          cargo clean\n"
 	@printf "    make clean-all      clean + 删 Ramag.app / dmg / icns\n"
@@ -77,14 +77,11 @@ dmg-universal:
 	./scripts/build-dmg.sh --target=universal
 
 # === 跨编（macOS → Windows）==========================================
-# 在 macOS 上直接编出 ramag.exe（x64），无需 Windows 机器。脚本内含前置依赖检查
+# 在 macOS 上直接编出 debug ramag.exe（x64），无需 Windows 机器。脚本内含前置依赖检查
 # （cargo-xwin / brew llvm / rust target）与 GPUI 清单资源、lld-link 的修复。
 # 只出 x64：Windows on ARM 靠内置 x64 模拟即可运行，一个包覆盖几乎所有用户。
 win-debug:
 	./scripts/build-windows-local.sh
-
-win-release:
-	./scripts/build-windows-local.sh --release
 
 # === 清理 ============================================================
 clean:

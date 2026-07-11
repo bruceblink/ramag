@@ -275,12 +275,11 @@ impl VcsView {
                             return;
                         };
                         // 目标路径 = 所选父目录 / 从 URL 推导的仓库名
-                        let repo_name = url
-                            .split('/')
-                            .next_back()
-                            .unwrap_or("repo")
-                            .trim_end_matches(".git")
-                            .to_string();
+                        let Some(repo_name) = clone_repo_name(&url) else {
+                            this.error = Some("无法从 Clone 地址推导仓库名".into());
+                            cx.notify();
+                            return;
+                        };
                         let dest_full = dest.join(repo_name);
                         this.clone_repo_async(url, dest_full, cx);
                     })),
@@ -297,6 +296,20 @@ impl VcsView {
             )
             .into_any_element()
     }
+}
+
+/// 同时兼容 URL、scp 风格地址和 Windows 本地路径，并拒绝空目录名。
+fn clone_repo_name(source: &str) -> Option<String> {
+    let source = source.trim().trim_end_matches(['/', '\\']);
+    if let Some((_, remainder)) = source.split_once("://")
+        && !remainder.contains(['/', '\\'])
+    {
+        return None;
+    }
+    let tail = source.rsplit(['/', '\\']).next()?;
+    let tail = tail.rsplit(':').next().unwrap_or(tail);
+    let name = tail.strip_suffix(".git").unwrap_or(tail);
+    (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
 }
 
 /// 单条仓库行（整行点击 = 打开；行内删除按钮独立 emit）
@@ -454,4 +467,24 @@ fn empty_state(
         .border_color(border)
         .rounded_lg()
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clone_repo_name;
+
+    #[test]
+    fn clone_name_supports_urls_and_windows_paths() {
+        assert_eq!(
+            clone_repo_name("https://example.com/team/ramag.git"),
+            Some("ramag".into())
+        );
+        assert_eq!(clone_repo_name(r"C:\work\ramag.git"), Some("ramag".into()));
+        assert_eq!(
+            clone_repo_name("git@example.com:ramag.git"),
+            Some("ramag".into())
+        );
+        assert_eq!(clone_repo_name("https://example.com/"), None);
+        assert_eq!(clone_repo_name("/"), None);
+    }
 }

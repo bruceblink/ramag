@@ -86,7 +86,7 @@ pub struct HotkeyListener {
 
 impl HotkeyListener {
     /// 注册 cmd-shift-V。须在主线程、NSApplication 事件循环就绪后调用
-    pub fn register_cmd_shift_v() -> Option<Self> {
+    pub fn register_clipboard_hotkey() -> Option<Self> {
         let (tx, rx) = channel::<()>();
         // Sender 转裸指针交给 Carbon 回调；句柄存活期间常驻，注销时由 Drop 回收
         let tx_ptr = Box::into_raw(Box::new(tx)) as *mut c_void;

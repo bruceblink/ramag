@@ -61,8 +61,9 @@ tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 schemars = { workspace = true }
 
-# 日志文件路径（macOS：~/Library/Application Support/com.ramag.ramag/logs/）
+# 日志文件路径（由 ProjectDirs 按平台定位）
 directories = { workspace = true }
+rfd = { workspace = true }
 
 # Windows exe 图标嵌入（build.rs 用；winresource 跨平台可编，仅 target=windows 时真正嵌入）
 [build-dependencies]

@@ -30,8 +30,8 @@ pub struct ClipboardDrawer {
     /// 过滤后可见列表上的选中下标
     selected: usize,
     search: Entity<InputState>,
-    /// 唤起时记录的前台应用 bundle id，粘贴时激活回去
-    target_bundle: Option<String>,
+    /// 唤起时记录的平台激活标识，粘贴时恢复原窗口
+    activation_target: Option<String>,
     auto_paste: bool,
     scroll: ScrollHandle,
     focus_handle: FocusHandle,
@@ -48,7 +48,7 @@ impl Focusable for ClipboardDrawer {
 impl ClipboardDrawer {
     pub fn new(
         service: Arc<ClipboardService>,
-        target_bundle: Option<String>,
+        activation_target: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -78,7 +78,7 @@ impl ClipboardDrawer {
             items,
             selected: 0,
             search,
-            target_bundle,
+            activation_target,
             auto_paste: true,
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -146,13 +146,13 @@ impl ClipboardDrawer {
             .collect()
     }
 
-    /// 粘贴可见列表第 idx 条：写回剪贴板 +（auto_paste 时）激活原应用并模拟 cmd-V，随后关窗
+    /// 粘贴可见列表第 idx 条：写回剪贴板，并按平台恢复原窗口后模拟粘贴，随后关窗
     pub(super) fn paste(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = self.visible_items(cx).get(idx).cloned() else {
             return;
         };
         let svc = self.service.clone();
-        let target = self.target_bundle.clone();
+        let target = self.activation_target.clone();
         let auto = self.auto_paste;
         cx.spawn(async move |_, _| {
             let result = if auto {
@@ -183,7 +183,7 @@ impl ClipboardDrawer {
         }
     }
 
-    /// 键盘：Esc 关闭；↑/↓ 选卡片；cmd-1..9 直贴第 N 张（回车由搜索框 PressEnter 处理）。
+    /// 键盘：Esc 关闭；↑/↓ 选卡片；主修饰键+1..9 直贴第 N 张。
     /// ←/→ 被搜索框占作光标移动——GPUI 中 action 派发先于按键监听器、拦不住，故选择用上下
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
@@ -204,7 +204,8 @@ impl ClipboardDrawer {
                 _ => {}
             }
         }
-        if ev.keystroke.modifiers.platform
+        if ev.keystroke.modifiers.secondary()
+            && ev.keystroke.modifiers.number_of_modifiers() == 1
             && key.len() == 1
             && key.chars().all(|c| ('1'..='9').contains(&c))
         {

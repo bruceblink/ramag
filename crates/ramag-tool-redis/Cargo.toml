@@ -26,7 +26,7 @@ serde_json = { workspace = true }
 base64 = "0.22"
 flate2 = "1"
 
-# GPUI Action 派生（cmd-e 切换命令行控制台，仅 derive 用）
+# GPUI Action 派生（主修饰键+E 切换命令行控制台，仅 derive 用）
 serde = { workspace = true }
 schemars = { workspace = true }
 

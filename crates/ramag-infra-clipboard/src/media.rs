@@ -1,5 +1,5 @@
 //! 剪贴图片媒体缓存：按 key 落盘（原始字节，加密由 service 负责）。
-//! 路径（macOS）：`~/Library/Application Support/com.ramag.ramag/clips/`
+//! 缓存目录由 `directories::ProjectDirs` 按当前平台定位。
 
 use std::fs;
 use std::path::PathBuf;
@@ -21,7 +21,9 @@ impl MediaStore {
 
     /// 按 key 写字节（同名去重，不覆盖）；key 由 service 用内容指纹生成
     pub(crate) fn persist(&self, key: &str, bytes: &[u8]) -> Result<String> {
-        let path = self.dir.join(sanitize(key));
+        let file_name = sanitize(key)
+            .ok_or_else(|| DomainError::Storage("剪贴媒体缓存键不是有效文件名".into()))?;
+        let path = self.dir.join(file_name);
         if !path.exists() {
             fs::create_dir_all(&self.dir)
                 .map_err(|e| DomainError::Storage(format!("创建媒体缓存目录失败：{e}")))?;
@@ -33,10 +35,9 @@ impl MediaStore {
 
     /// 读字节（密文，由 service 解密）；仅允许缓存目录内
     pub(crate) fn read(&self, path: &str) -> Result<Vec<u8>> {
-        let p = PathBuf::from(path);
-        if !p.starts_with(&self.dir) {
-            return Err(DomainError::Storage("拒绝读取媒体目录外文件".into()));
-        }
+        let p = self
+            .managed_path(path)
+            .ok_or_else(|| DomainError::Storage("拒绝读取媒体目录外文件".into()))?;
         fs::read(&p).map_err(|e| DomainError::Storage(format!("读取剪贴媒体失败：{e}")))
     }
 
@@ -48,9 +49,13 @@ impl MediaStore {
             Err(e) => return Err(DomainError::Storage(format!("读取媒体目录失败：{e}"))),
         };
         let mut out = Vec::new();
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                out.push(entry.path().to_string_lossy().into_owned());
+        for entry in entries {
+            match entry {
+                Ok(entry) if entry.path().is_file() => {
+                    out.push(entry.path().to_string_lossy().into_owned());
+                }
+                Ok(_) => {}
+                Err(error) => warn!(error = %error, "read media cache entry failed"),
             }
         }
         Ok(out)
@@ -58,20 +63,40 @@ impl MediaStore {
 
     /// 删除约束在媒体缓存目录内（防御任意路径删除）；文件不存在视为成功
     pub(crate) fn remove(&self, path: &str) -> Result<()> {
-        let p = PathBuf::from(path);
-        if !p.starts_with(&self.dir) {
+        let Some(p) = self.managed_path(path) else {
             warn!(path, "refuse to remove file outside media dir");
             return Ok(());
-        }
+        };
         match fs::remove_file(&p) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(DomainError::Storage(format!("删除剪贴媒体失败：{e}"))),
         }
     }
+
+    fn managed_path(&self, path: &str) -> Option<PathBuf> {
+        let path = PathBuf::from(path);
+        (path.parent() == Some(self.dir.as_path()) && path.file_name().is_some()).then_some(path)
+    }
 }
 
 /// 防目录穿越：只保留文件名部分
-fn sanitize(key: &str) -> String {
-    key.rsplit(['/', '\\']).next().unwrap_or(key).to_string()
+fn sanitize(key: &str) -> Option<String> {
+    let name = key.rsplit(['/', '\\']).next().unwrap_or(key);
+    (!name.is_empty() && name != "." && name != ".." && !name.contains('\0'))
+        .then(|| name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize;
+
+    #[test]
+    fn cache_key_keeps_only_safe_file_name() {
+        assert_eq!(sanitize("abc.img"), Some("abc.img".into()));
+        assert_eq!(sanitize(r"folder\abc.img"), Some("abc.img".into()));
+        assert_eq!(sanitize("../"), None);
+        assert_eq!(sanitize(".."), None);
+        assert_eq!(sanitize("a\0b"), None);
+    }
 }

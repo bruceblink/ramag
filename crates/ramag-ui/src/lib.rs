@@ -6,6 +6,7 @@ pub mod assets;
 pub mod confirm_dialog;
 pub mod home_view;
 pub mod icons;
+pub mod platform;
 pub mod prompt_dialog;
 pub mod shell;
 pub mod theme;

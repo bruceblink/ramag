@@ -11,6 +11,7 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
+use ramag_ui::platform::primary_shortcut;
 
 use super::ResultPanel;
 use super::ResultState;
@@ -45,7 +46,11 @@ impl Render for ResultPanel {
                 .text_color(muted_fg)
                 .text_xs()
                 .child("点左侧表名查看数据")
-                .child("或按 ⌘E 唤出 SQL 编辑器，再按 ⌘↵ 运行")
+                .child(format!(
+                    "或按 {} 唤出 SQL 编辑器，再按 {} 运行",
+                    primary_shortcut("E"),
+                    primary_shortcut("Enter")
+                ))
                 .into_any_element(),
 
             ResultState::Running => v_flex()

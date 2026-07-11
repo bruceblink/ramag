@@ -4,7 +4,7 @@ use gpui::Action;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// 切换底部命令行控制台显隐（默认 cmd-e；scoped 到 RedisSession 上下文）
+/// 切换底部命令行控制台显隐（默认主修饰键+E）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_redis)]
 pub struct ToggleRedisConsole;

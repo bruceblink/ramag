@@ -45,6 +45,17 @@ fn decode(hex: &str, cipher: &Cipher) -> Result<ClipItem> {
         .map_err(|e| DomainError::Storage(format!("反序列化剪贴条目失败：{e}")))
 }
 
+/// 启动时解密一条主记录，尽早发现系统凭据与数据库不匹配。
+pub(crate) fn validate_key(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<()> {
+    let read_txn = db.begin_read().map_err(store_err)?;
+    let table = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
+    if let Some(entry) = table.iter().map_err(store_err)?.next() {
+        let (_, value) = entry.map_err(store_err)?;
+        let _ = decode(value.value(), &cipher.read())?;
+    }
+    Ok(())
+}
+
 /// 最近优先的有序 key：`{inverted_millis:016x}:{uuid}`。
 /// inverted = u64::MAX - last_used_millis → 越新越小 → 升序遍历即最近优先；
 /// 拼 uuid 保证同毫秒多条不冲突。定长 16 位 hex 让字典序 == 数值序。

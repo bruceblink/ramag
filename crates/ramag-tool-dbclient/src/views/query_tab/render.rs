@@ -13,6 +13,7 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
+use ramag_ui::platform::primary_shortcut;
 
 use super::QueryTab;
 use super::sql_utils::{AUTO_LIMIT, format_elapsed};
@@ -411,7 +412,7 @@ impl Render for QueryTab {
                                 .small()
                                 .icon(IconName::Play)
                                 .disabled(!has_connection)
-                                .tooltip("⌘↵ 运行 SQL")
+                                .tooltip(format!("{} 运行 SQL", primary_shortcut("Enter")))
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.handle_run(cx);
                                 })),

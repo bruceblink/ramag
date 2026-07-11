@@ -27,6 +27,10 @@ const MAX_AGE_DAYS: u32 = 360;
 /// 内存缓存窗口：常驻最近 N 条（已解密），视图唤起 / 刷新同步读；内存与历史总量解耦
 const CACHE_WINDOW: usize = 10_000;
 
+/// 防止高压缩图片在解码/渲染时膨胀为超大内存。
+const MAX_IMAGE_DIMENSION: u32 = 16_384;
+const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+
 /// 采集判定结果（纯逻辑产物，不触 IO）
 #[derive(Debug, PartialEq)]
 pub enum CaptureDecision {
@@ -193,36 +197,36 @@ impl ClipboardService {
             return Ok(true);
         }
 
-        // 图片：原图 + 缩略图均加密落盘（密文）。缩略图生成失败降级为无缩略图
+        // 图片先完成受限解码，拒绝只有伪造 PNG 头的损坏输入；再把原图与缩略图加密落盘。
         let (image_path, thumb_path) = match (&captured.image_png, settings.capture_images) {
             (Some(png), true) => {
+                let thumb = match make_thumbnail(png, THUMB_MAX_W) {
+                    Ok(thumb) => thumb,
+                    Err(error) => {
+                        warn!(error = %error, "invalid clipboard image ignored");
+                        return Ok(false);
+                    }
+                };
                 let enc_full = self.storage.seal(png).await?;
                 let full = self
                     .driver
                     .persist_media(&format!("{hash}.img"), &enc_full)?;
-                let thumb = match make_thumbnail(png, THUMB_MAX_W) {
-                    Ok(t) => {
-                        let enc_t = self.storage.seal(&t).await?;
-                        Some(
-                            self.driver
-                                .persist_media(&format!("{hash}.thumb"), &enc_t)?,
-                        )
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "thumbnail generate failed");
-                        None
-                    }
-                };
-                (Some(full), thumb)
+                let enc_thumb = self.storage.seal(&thumb).await?;
+                let thumb_path = self
+                    .driver
+                    .persist_media(&format!("{hash}.thumb"), &enc_thumb)?;
+                (Some(full), Some(thumb_path))
             }
             _ => (None, None),
         };
-        let byte_size = captured
-            .image_png
-            .as_ref()
-            .map(|p| p.len() as u64)
-            .or_else(|| captured.text.as_ref().map(|t| t.len() as u64))
-            .unwrap_or(0);
+        let byte_size = if let Some(png) = &captured.image_png {
+            png.len() as u64
+        } else if let Some(text) = &captured.text {
+            text.len()
+                .saturating_add(captured.rtf.as_ref().map_or(0, Vec::len)) as u64
+        } else {
+            captured.files.iter().map(String::len).sum::<usize>() as u64
+        };
         let preview = make_preview(
             kind,
             captured.text.as_deref(),
@@ -291,9 +295,13 @@ impl ClipboardService {
     }
 
     /// 复制并粘贴到目标应用（需辅助功能权限；无权限降级为仅复制并返回 Err）
-    pub async fn paste_to_app(&self, item: &ClipItem, bundle_id: Option<&str>) -> Result<()> {
+    pub async fn paste_to_app(
+        &self,
+        item: &ClipItem,
+        activation_target: Option<&str>,
+    ) -> Result<()> {
         self.copy_to_clipboard(item).await?;
-        self.driver.paste_to_app(bundle_id)
+        self.driver.paste_to_app(activation_target)
     }
 
     /// 仅复制纯文本（剥离 RTF 富文本格式）；非文本类型回退普通复制
@@ -374,9 +382,9 @@ impl ClipboardService {
         self.driver.open_url(url)
     }
 
-    /// 在 Finder 中显示文件
-    pub fn reveal_in_finder(&self, paths: &[String]) -> Result<()> {
-        self.driver.reveal_in_finder(paths)
+    /// 在系统文件管理器中显示文件
+    pub fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()> {
+        self.driver.reveal_in_file_manager(paths)
     }
 
     pub async fn delete(&self, item: &ClipItem) -> Result<()> {
@@ -423,7 +431,10 @@ pub fn decide_capture(
         return CaptureDecision::Skip("concealed");
     }
     if let Some(src) = source
-        && settings.blacklist.iter().any(|b| b == &src.bundle_id)
+        && settings
+            .blacklist
+            .iter()
+            .any(|blocked| source_id_matches(blocked, &src.bundle_id))
     {
         return CaptureDecision::Skip("blacklisted");
     }
@@ -431,6 +442,9 @@ pub fn decide_capture(
     // 文件优先，其次图片，最后文本（与驱动读取优先级一致）
     if !captured.files.is_empty() {
         let joined = captured.files.join("\n");
+        if (joined.len() as u64) > settings.max_item_bytes {
+            return CaptureDecision::Skip("files too large");
+        }
         return CaptureDecision::Record {
             hash: hash_hex(joined.as_bytes()),
             kind: ClipKind::Files,
@@ -439,6 +453,18 @@ pub fn decide_capture(
     if let Some(png) = &captured.image_png {
         if (png.len() as u64) > settings.max_item_bytes {
             return CaptureDecision::Skip("image too large");
+        }
+        let Some((width, height)) = captured.image_dims else {
+            return CaptureDecision::Skip("invalid image");
+        };
+        let pixels = u64::from(width).saturating_mul(u64::from(height));
+        if width == 0
+            || height == 0
+            || width > MAX_IMAGE_DIMENSION
+            || height > MAX_IMAGE_DIMENSION
+            || pixels > MAX_IMAGE_PIXELS
+        {
+            return CaptureDecision::Skip("image dimensions too large");
         }
         if !settings.capture_images {
             return CaptureDecision::Skip("image capture disabled");
@@ -452,7 +478,10 @@ pub fn decide_capture(
         if text.trim().is_empty() {
             return CaptureDecision::Skip("empty text");
         }
-        if (text.len() as u64) > settings.max_item_bytes {
+        let total_bytes = text
+            .len()
+            .saturating_add(captured.rtf.as_ref().map_or(0, Vec::len));
+        if (total_bytes as u64) > settings.max_item_bytes {
             return CaptureDecision::Skip("text too large");
         }
         return CaptureDecision::Record {
@@ -467,118 +496,16 @@ fn hash_hex(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a_hash(bytes))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn settings() -> ClipboardSettings {
-        ClipboardSettings::default()
+fn source_id_matches(left: &str, right: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        left.eq_ignore_ascii_case(right)
     }
-
-    fn text_clip(s: &str) -> CapturedClip {
-        CapturedClip {
-            text: Some(s.to_string()),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn concealed_is_skipped() {
-        let c = CapturedClip {
-            concealed: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            decide_capture(&c, &settings(), None),
-            CaptureDecision::Skip("concealed")
-        );
-    }
-
-    #[test]
-    fn blacklist_skips_by_bundle() {
-        let mut s = settings();
-        s.blacklist.push("com.1password.1password".into());
-        let src = ClipSource {
-            bundle_id: "com.1password.1password".into(),
-            name: "1Password".into(),
-        };
-        assert_eq!(
-            decide_capture(&text_clip("secret"), &s, Some(&src)),
-            CaptureDecision::Skip("blacklisted")
-        );
-    }
-
-    #[test]
-    fn empty_and_oversize_text_skipped() {
-        assert_eq!(
-            decide_capture(&text_clip("   "), &settings(), None),
-            CaptureDecision::Skip("empty text")
-        );
-        let mut s = settings();
-        s.max_item_bytes = 4;
-        assert_eq!(
-            decide_capture(&text_clip("toolong"), &s, None),
-            CaptureDecision::Skip("text too large")
-        );
-    }
-
-    #[test]
-    fn text_classified_and_hashed() {
-        let d = decide_capture(&text_clip("https://example.com/x"), &settings(), None);
-        match d {
-            CaptureDecision::Record { kind, hash } => {
-                assert_eq!(kind, ClipKind::Link);
-                assert_eq!(hash.len(), 16);
-            }
-            _ => panic!("应记录"),
-        }
-    }
-
-    #[test]
-    fn files_take_priority_over_text() {
-        let c = CapturedClip {
-            text: Some("/path/as/text".into()),
-            files: vec!["/path/a".into(), "/path/b".into()],
-            ..Default::default()
-        };
-        assert!(matches!(
-            decide_capture(&c, &settings(), None),
-            CaptureDecision::Record {
-                kind: ClipKind::Files,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn image_respects_size_and_toggle() {
-        let big = CapturedClip {
-            image_png: Some(vec![0u8; 100]),
-            ..Default::default()
-        };
-        let mut s = settings();
-        s.max_item_bytes = 50;
-        assert_eq!(
-            decide_capture(&big, &s, None),
-            CaptureDecision::Skip("image too large")
-        );
-
-        let small = CapturedClip {
-            image_png: Some(vec![0u8; 10]),
-            ..Default::default()
-        };
-        let mut s2 = settings();
-        s2.capture_images = false;
-        assert_eq!(
-            decide_capture(&small, &s2, None),
-            CaptureDecision::Skip("image capture disabled")
-        );
-        assert!(matches!(
-            decide_capture(&small, &settings(), None),
-            CaptureDecision::Record {
-                kind: ClipKind::Image,
-                ..
-            }
-        ));
+    #[cfg(not(target_os = "windows"))]
+    {
+        left == right
     }
 }
+
+#[cfg(test)]
+mod tests;

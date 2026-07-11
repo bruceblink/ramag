@@ -4,32 +4,32 @@ use gpui::Action;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// 切到 Changes 视图并聚焦 commit message 输入框（默认 cmd-k，仿 IDEA Commit）
+/// 切到 Changes 并聚焦提交输入框（默认主修饰键+K）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct FocusCommitMessage;
 
-/// 提交暂存区（默认 cmd-enter；仅 commit 输入框聚焦时生效，避免误触）
+/// 提交暂存区（默认主修饰键+Enter；仅提交输入框聚焦时生效）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct CommitNow;
 
-/// Push 当前分支（默认 cmd-shift-k，仿 IDEA）
+/// Push 当前分支（默认主修饰键+Shift+K）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct PushNow;
 
-/// Pull 当前分支（默认 cmd-t，仿 IDEA Update Project）
+/// Pull 当前分支（默认主修饰键+T）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct PullNow;
 
-/// 手动刷新工作区状态（默认 cmd-r）
+/// 手动刷新工作区状态（默认主修饰键+R）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct RefreshWorkspace;
 
-/// 显示 / 隐藏底部历史面板（默认 cmd-shift-h）
+/// 显示 / 隐藏底部历史面板（默认主修饰键+Shift+H）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct ToggleHistoryPane;

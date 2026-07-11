@@ -128,7 +128,7 @@ impl ClipboardDriver for MacClipboardDriver {
         workspace_app::open_url(url)
     }
 
-    fn reveal_in_finder(&self, paths: &[String]) -> Result<()> {
+    fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()> {
         workspace_app::reveal_in_finder(paths)
     }
 

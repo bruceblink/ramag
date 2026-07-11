@@ -23,6 +23,7 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+dunce = { workspace = true }
 
 [dev-dependencies]
 # 集成测试建临时 git 仓库（storage 已用同款）

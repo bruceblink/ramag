@@ -1,0 +1,3 @@
+# Windows 便携版静态链接 MSVC CRT，避免目标机器必须预装 VC++ Redistributable。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

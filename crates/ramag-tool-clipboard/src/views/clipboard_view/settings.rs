@@ -8,7 +8,10 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
-use ramag_ui::open_confirm;
+use ramag_ui::{
+    open_confirm,
+    platform::{auto_paste_description, clipboard_hotkey},
+};
 
 use super::ClipboardView;
 
@@ -35,7 +38,10 @@ impl ClipboardView {
             .child(self.toggle_row(
                 "clip-enabled",
                 "启用采集",
-                "关闭后停止记录新内容，并释放全局快捷键 ⌘⇧V",
+                &format!(
+                    "关闭后停止记录新内容，并释放全局快捷键 {}",
+                    clipboard_hotkey()
+                ),
                 s.enabled,
                 false,
                 muted,
@@ -61,7 +67,7 @@ impl ClipboardView {
             .child(self.toggle_row(
                 "clip-autopaste",
                 "自动粘贴",
-                "抽屉选中后自动粘贴到当前应用（需辅助功能权限）",
+                auto_paste_description(),
                 s.auto_paste,
                 !s.enabled,
                 muted,
@@ -71,6 +77,41 @@ impl ClipboardView {
                     this.save_settings(next, cx);
                 }),
             ))
+            .child(div().h(px(1.0)).bg(border))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("不记录的应用"),
+            )
+            .when(s.blacklist.is_empty(), |view| {
+                view.child(div().text_xs().text_color(muted).child("尚未排除任何应用"))
+            })
+            .children(s.blacklist.iter().enumerate().map(|(index, source_id)| {
+                let source_id_for_click = source_id.clone();
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(source_display_name(source_id)),
+                    )
+                    .child(
+                        Button::new(("clip-unblock-source", index))
+                            .ghost()
+                            .small()
+                            .label("恢复记录")
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.unblacklist_source(&source_id_for_click, cx);
+                            })),
+                    )
+            }))
             .child(div().h(px(1.0)).bg(border))
             // 清空历史（移入设置，避免顶栏误触）
             .child(
@@ -142,4 +183,11 @@ impl ClipboardView {
             cx,
         );
     }
+}
+
+fn source_display_name(source_id: &str) -> String {
+    std::path::Path::new(source_id)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source_id.to_string())
 }

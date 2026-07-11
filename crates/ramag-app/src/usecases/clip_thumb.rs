@@ -3,15 +3,24 @@
 
 use std::io::Cursor;
 
-use image::ImageFormat;
+use image::{ImageFormat, ImageReader, Limits};
 use ramag_domain::error::{DomainError, Result};
 
 /// 缩略图最大宽度（高度等比，已小于此宽则不放大）
 pub const THUMB_MAX_W: u32 = 320;
+const MAX_IMAGE_DIMENSION: u32 = 16_384;
+const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// 生成缩略图 PNG。解码失败（非图片 / 损坏）返回 Err，由调用方降级为无缩略图
 pub fn make_thumbnail(png: &[u8], max_w: u32) -> Result<Vec<u8>> {
-    let img = image::load_from_memory(png)
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
+    reader.limits(limits);
+    let img = reader
+        .decode()
         .map_err(|e| DomainError::Other(format!("缩略图解码失败：{e}")))?;
     let (w, h) = (img.width(), img.height());
     let scaled = if w > max_w {

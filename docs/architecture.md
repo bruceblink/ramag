@@ -26,7 +26,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
   ├── ramag-infra-redis       impl KvDriver
   ├── ramag-infra-mongodb     impl DocDriver
   ├── ramag-infra-git         impl GitDriver
-  ├── ramag-infra-storage     impl Storage（redb + aes-gcm + 钥匙串）
+  ├── ramag-infra-storage     impl Storage（redb + aes-gcm + 系统凭据库）
   └── ramag-app                            ← Use Cases + ToolRegistry
         └── ramag-domain                   ← 实体 + traits（无 GPUI / sqlx / redb / redis / mongodb 依赖）
 ```
@@ -108,9 +108,9 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 实现 `Storage` trait：连接 CRUD / 查询历史 / 偏好 KV / Git 仓库列表。
 
 **安全**：
-- 主密钥由 `keyring` crate 存 macOS 钥匙串（`com.ramag.ramag` / `master_key`），首次启动自动生成
+- 主密钥由 `keyring` crate 以 `ramag` / `master-key` 存入 macOS Keychain / Windows Credential Manager，首次启动自动生成
 - 密码字段用 `aes-gcm` 加密成 hex 后才落 redb（`EncryptedConnection`）
-- 测试通过 `open_with_key(&path, &key)` 入口注入固定密钥，不污染真实钥匙串
+- 测试通过 `open_with_key(&path, &key)` 注入固定密钥，不污染真实系统凭据库
 
 **所有数据源共用同一个 Storage 实例**——连接列表统一管理（各 service 的 `list()` 按 `DriverKind` 过滤互不污染）。
 
@@ -139,12 +139,12 @@ Git 客户端，IDEA 风格三栏布局：仓库管理页 / 工作区（Changes 
 ### `ramag-bin`（主入口）
 
 依赖注入中心：
-1. `init_tracing`：默认 `info,ramag=debug`，stderr + 文件双路输出
+1. `logging::init`：默认 `info`（可用 `RUST_LOG` 覆盖），stderr + 文件双路输出；日志超过 10 MiB 时保留一份滚动备份
 2. `build_connection_service`：装配 `MysqlDriver` + `PostgresDriver` 进 `HashMap<DriverKind, Arc<dyn Driver>>` + `RedbStorage`
 3. `build_redis_service` / `build_mongo_service`：分别装配 `RedisDriver` / `MongoDriver`，复用同一 Storage
-4. `build_tool_registry`：注册 `DbClientTool` + `VcsTool`
-5. `app.on_reopen`：dock 图标点击/红 X 关窗后重激活时重开主窗口（macOS 习惯）
-6. `cx.bind_keys`：注册 `cmd-q` / `cmd-w` / `cmd-enter` 等全局快捷键
+4. `build_tool_registry`：注册 `DbClientTool` + `VcsTool` + `ClipboardTool`
+5. `app.on_reopen`：macOS 无窗口时从 Dock 重开；Windows 关闭最后窗口后退出
+6. `cx.bind_keys`：使用 GPUI `secondary-*` 注册跨平台主修饰键（macOS Command / Windows Ctrl）
 
 ## 关键技术决策
 

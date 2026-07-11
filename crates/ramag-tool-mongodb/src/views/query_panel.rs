@@ -19,7 +19,10 @@ use gpui_component::{
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::ConnectionConfig;
-use ramag_ui::{CloseTab, icons};
+use ramag_ui::{
+    CloseTab, icons,
+    platform::{primary_shift_shortcut, primary_shortcut},
+};
 
 use crate::actions::{NewMongoQueryTab, ToggleMongoEditor};
 use crate::views::query_tab::MongoQueryTab;
@@ -349,7 +352,7 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
-                                        .tooltip("新建查询 (⌘T)")
+                                        .tooltip(format!("新建查询 ({})", primary_shortcut("T")))
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 this.add_tab(window, cx);
@@ -398,7 +401,10 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(icons::wand_sparkles())
-                                        .tooltip("格式化 (⌘⇧F)")
+                                        .tooltip(format!(
+                                            "格式化 ({})",
+                                            primary_shift_shortcut("F")
+                                        ))
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 if let Some(tab) =

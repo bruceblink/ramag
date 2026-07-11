@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# 在 macOS 上交叉编译出 Windows x64 可执行文件（ramag.exe），无需 Windows 机器。
+# 在 macOS 上交叉编译出 Windows x64 debug 可执行文件（ramag.exe），无需 Windows 机器。
 #
 # 用法：
 #   ./scripts/build-windows-local.sh            # x64 debug（快，体积大）
-#   ./scripts/build-windows-local.sh --release  # x64 release（优化 + 无控制台窗）
 #
 # 前置依赖（缺失时脚本会提示如何装）：
 #   - cargo-xwin：cargo install cargo-xwin（自动下载 Windows SDK/CRT）
@@ -17,23 +16,45 @@ set -euo pipefail
 
 TARGET=x86_64-pc-windows-msvc
 PROFILE=debug
-BUILD_FLAG=""
-if [ "${1:-}" = "--release" ]; then
-    PROFILE=release
-    BUILD_FLAG="--release"
+
+if [ "$#" -ne 0 ]; then
+    if [ "${1:-}" = "--release" ]; then
+        echo "无法在 macOS 交叉构建 Windows Release：GPUI 需要 Windows SDK 的 fxc.exe 预编译着色器。" >&2
+        echo "请在 Windows 上运行：powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Release" >&2
+    else
+        echo "用法：./scripts/build-windows-local.sh" >&2
+    fi
+    exit 2
 fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 # 1) 前置检查
+command -v cargo >/dev/null 2>&1 || {
+    echo "缺 cargo，请先通过 rustup 安装 Rust" >&2
+    exit 1
+}
+command -v rustup >/dev/null 2>&1 || {
+    echo "缺 rustup，请先安装：https://rustup.rs" >&2
+    exit 1
+}
 command -v cargo-xwin >/dev/null 2>&1 || {
     echo "缺 cargo-xwin，请先：cargo install cargo-xwin" >&2
     exit 1
 }
-LLVM_BIN="$(brew --prefix llvm 2>/dev/null)/bin"
-[ -x "$LLVM_BIN/clang-cl" ] || {
-    echo "缺 Homebrew llvm（需 clang-cl/llvm-lib/llvm-rc），请先：brew install llvm" >&2
+command -v brew >/dev/null 2>&1 || {
+    echo "缺 Homebrew，请先安装后执行：brew install llvm" >&2
+    exit 1
+}
+LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || true)"
+LLVM_BIN="$LLVM_PREFIX/bin"
+LLVM_READY=true
+for TOOL in clang-cl llvm-lib llvm-rc llvm-readobj; do
+    [ -x "$LLVM_BIN/$TOOL" ] || LLVM_READY=false
+done
+[ "$LLVM_READY" = true ] || {
+    echo "缺 Homebrew llvm（需 clang-cl/llvm-lib/llvm-rc/llvm-readobj），请先：brew install llvm" >&2
     exit 1
 }
 rustup target list --installed | grep -q "^$TARGET$" || rustup target add "$TARGET"
@@ -53,20 +74,28 @@ export PATH="$XBIN:$LLVM_BIN:$PATH"
 # 3) 修 GPUI 的 windows 清单资源相对路径：embed_resource 跑 llvm-rc 时把 cwd 设为 .rc
 #    的父目录（resources/windows/），而 gpui.rc 里写的是相对 crate 根的
 #    "resources/windows/gpui.manifest.xml"，双重拼路径找不到。造嵌套软链让它解析。
-MANIFEST="$(find "$HOME/.cargo/git/checkouts"/zed-*/*/crates/gpui/resources/windows/gpui.manifest.xml 2>/dev/null | head -1)"
-if [ -n "$MANIFEST" ]; then
-    RES_DIR="$(dirname "$MANIFEST")"
-    mkdir -p "$RES_DIR/resources/windows"
-    ln -sf ../../gpui.manifest.xml "$RES_DIR/resources/windows/gpui.manifest.xml"
+shopt -s nullglob
+MANIFESTS=("$HOME"/.cargo/git/checkouts/zed-*/*/crates/gpui/resources/windows/gpui.manifest.xml)
+if [ "${#MANIFESTS[@]}" -gt 0 ]; then
+    for MANIFEST in "${MANIFESTS[@]}"; do
+        RES_DIR="$(dirname "$MANIFEST")"
+        mkdir -p "$RES_DIR/resources/windows"
+        ln -sf ../../gpui.manifest.xml "$RES_DIR/resources/windows/gpui.manifest.xml"
+    done
 else
     echo "警告：未找到 gpui 清单文件，若编译在 gpui build.rs 处失败，请检查 gpui 依赖是否已拉取" >&2
 fi
 
 # 4) 跨编
 echo "开始跨编 x64（profile=${PROFILE}）——首次含 GPUI 较慢，之后走缓存……"
-cargo xwin build --target "$TARGET" -p ramag-bin $BUILD_FLAG
+cargo xwin build --locked --target "$TARGET" -p ramag-bin
 
 EXE="target/$TARGET/$PROFILE/ramag.exe"
+IMPORTS="$($LLVM_BIN/llvm-readobj --coff-imports "$EXE")"
+if grep -Eiq 'Name: (VCRUNTIME|MSVCP|api-ms-win-crt-)' <<<"$IMPORTS"; then
+    echo "Windows 可执行文件仍依赖动态 MSVC/CRT，便携构建校验失败" >&2
+    exit 1
+fi
 echo ""
 echo "完成：$REPO_DIR/$EXE"
 file "$EXE" 2>/dev/null || true

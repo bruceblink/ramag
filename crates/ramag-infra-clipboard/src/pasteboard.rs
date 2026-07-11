@@ -84,12 +84,16 @@ unsafe fn has_type(pb: id, type_name: &str) -> bool {
 
 /// PNG IHDR 固定偏移取宽高
 fn png_dims(png: &[u8]) -> Option<(u32, u32)> {
-    if png.len() < 24 || png.get(1..4)? != b"PNG" {
+    if png.len() < 24
+        || png.get(..8)? != b"\x89PNG\r\n\x1a\n"
+        || png.get(8..12)? != 13u32.to_be_bytes()
+        || png.get(12..16)? != b"IHDR"
+    {
         return None;
     }
     let w = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
     let h = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
-    Some((w, h))
+    (w != 0 && h != 0).then_some((w, h))
 }
 
 /// TIFF NSData → (PNG bytes, 尺寸)。NSBitmapImageFileTypePNG = 4

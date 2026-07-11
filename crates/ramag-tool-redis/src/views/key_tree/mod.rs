@@ -24,6 +24,7 @@ use gpui_component::{
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
+use ramag_ui::platform::primary_shortcut;
 use tracing::{error, info};
 
 use tree::{TreeNode, VisibleRow, build_tree, collect_namespace_paths, has_match_descendant};
@@ -429,7 +430,7 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(IconName::SquareTerminal)
-                    .tooltip("命令行（cmd-e）")
+                    .tooltip(format!("命令行（{}）", primary_shortcut("E")))
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(KeyTreeEvent::RequestOpenConsole);
                     })),

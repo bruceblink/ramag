@@ -4,7 +4,7 @@ use gpui::Action;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// 聚焦搜索框（默认 cmd-f）
+/// 聚焦搜索框（默认主修饰键+F）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_clipboard)]
 pub struct FocusClipSearch;

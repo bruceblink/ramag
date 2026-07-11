@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Ramag 本地存储实现（实现 Domain 的 Storage trait，封装 redb + aes-gcm + macOS 钥匙串）"
+description = "Ramag 本地存储实现（redb + aes-gcm + 系统凭据库）"
 
 [lints]
 workspace = true

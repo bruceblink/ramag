@@ -29,8 +29,9 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn open_repo(&self, path: &Path) -> Result<RepoConfig> {
-        let canonical = path
-            .canonicalize()
+        // Windows 的 std::fs::canonicalize 常返回 `\\?\` 路径，Git for Windows 和 UI
+        // 未必都能识别；dunce 仅在可无歧义转换时还原为常规路径。
+        let canonical = dunce::canonicalize(path)
             .map_err(|e| DomainError::InvalidConfig(format!("路径无法访问: {e}")))?;
 
         // 同 path 复用已打开句柄

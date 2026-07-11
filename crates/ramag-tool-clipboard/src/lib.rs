@@ -25,14 +25,14 @@ pub fn create_clipboard_view(
 }
 
 /// 创建底部悬浮抽屉视图（由 ramag-bin 在 PopUp 窗口内装载）。
-/// target_bundle 为唤起时的前台应用 bundle id，用于粘贴后激活回去
+/// activation_target 为唤起时的平台激活标识，用于粘贴后恢复原窗口
 pub fn create_clipboard_drawer(
     service: Arc<ClipboardService>,
-    target_bundle: Option<String>,
+    activation_target: Option<String>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ClipboardDrawer> {
-    cx.new(|cx| ClipboardDrawer::new(service, target_bundle, window, cx))
+    cx.new(|cx| ClipboardDrawer::new(service, activation_target, window, cx))
 }
 
 pub struct ClipboardTool {

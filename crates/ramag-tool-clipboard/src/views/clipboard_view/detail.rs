@@ -2,8 +2,13 @@
 
 use chrono::Utc;
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, img, prelude::*, px};
-use gpui_component::{ActiveTheme, Sizable as _, button::Button, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex, v_flex,
+};
 use ramag_domain::entities::{ClipItem, ClipKind};
+use ramag_ui::platform::file_manager_reveal_label;
 
 use super::ClipboardView;
 use crate::views::helpers::relative_time;
@@ -62,10 +67,11 @@ impl ClipboardView {
             })
     }
 
-    /// 详情底部只保留卡片行没有的上下文动作（浏览器打开 / Finder 显示 / 纯文本复制）。
+    /// 详情底部只保留卡片行没有的上下文动作（浏览器打开 / 文件管理器显示 / 纯文本复制）。
     /// 复制 / 删除已由卡片行图标按钮覆盖，不在详情重复。无适用动作时返回 None
     fn detail_actions(&self, item: &ClipItem, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let btn = match item.kind {
+        let mut buttons = Vec::new();
+        let contextual = match item.kind {
             ClipKind::Link => item.text.clone().map(|url| {
                 Button::new("detail-open")
                     .small()
@@ -80,7 +86,7 @@ impl ClipboardView {
                 Some(
                     Button::new("detail-reveal")
                         .small()
-                        .label("在 Finder 显示")
+                        .label(file_manager_reveal_label())
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.reveal_files(files.clone(), cx);
                         }))
@@ -100,12 +106,39 @@ impl ClipboardView {
                 )
             }
             _ => None,
-        }?;
+        };
+        if let Some(button) = contextual {
+            buttons.push(button);
+        }
+
+        if let Some(source) = &item.source
+            && !self
+                .settings
+                .blacklist
+                .iter()
+                .any(|id| id == &source.bundle_id)
+        {
+            let source_id = source.bundle_id.clone();
+            buttons.push(
+                Button::new("detail-blacklist-source")
+                    .danger()
+                    .small()
+                    .label("不再记录此应用")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.blacklist_source(source_id.clone(), cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+
+        if buttons.is_empty() {
+            return None;
+        }
         Some(
             h_flex()
                 .items_center()
                 .gap(px(8.0))
-                .child(btn)
+                .children(buttons)
                 .into_any_element(),
         )
     }

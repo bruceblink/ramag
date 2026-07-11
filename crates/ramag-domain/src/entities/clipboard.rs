@@ -116,9 +116,9 @@ pub struct ClipboardSettings {
     pub capture_images: bool,
     /// 单条内容字节上限，超出跳过不记录
     pub max_item_bytes: u64,
-    /// 来源应用黑名单（bundle id）
+    /// 来源应用黑名单（macOS bundle id / Windows exe 路径）
     pub blacklist: Vec<String>,
-    /// 抽屉选中后自动粘贴（需辅助功能权限；false 仅复制）
+    /// 抽屉选中后自动粘贴（平台可能需要系统权限；false 仅复制）
     pub auto_paste: bool,
 }
 
@@ -142,7 +142,7 @@ pub struct CapturedClip {
     pub image_png: Option<Vec<u8>>,
     pub image_dims: Option<(u32, u32)>,
     pub files: Vec<String>,
-    /// 带 org.nspasteboard Concealed/Transient 标记（密码管理器等），不应记录
+    /// 带平台敏感/临时内容标记（密码管理器等），不应记录
     pub concealed: bool,
 }
 
@@ -171,7 +171,7 @@ pub fn classify_text(s: &str) -> ClipKind {
 }
 
 fn is_url(t: &str) -> bool {
-    if t.contains(char::is_whitespace) {
+    if t.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
         return false;
     }
     let lower = t.to_ascii_lowercase();
@@ -275,6 +275,7 @@ mod tests {
         assert_eq!(classify_text("https://example.com/page"), ClipKind::Link);
         assert_eq!(classify_text("  http://a.cn/x  "), ClipKind::Link);
         assert_eq!(classify_text("https:// broken url"), ClipKind::Text);
+        assert_eq!(classify_text("https://example.com\0hidden"), ClipKind::Text);
         assert_eq!(classify_text("#ff8800"), ClipKind::Color);
         assert_eq!(classify_text("#F80"), ClipKind::Color);
         assert_eq!(classify_text("#ff880042"), ClipKind::Color);

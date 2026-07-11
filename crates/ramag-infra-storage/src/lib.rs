@@ -1,8 +1,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-//! 本地存储：redb 嵌入式 DB；密码 AES-GCM 加密，主密钥存 macOS 钥匙串。
+//! 本地存储：redb 嵌入式 DB；密码 AES-GCM 加密，主密钥存系统凭据库。
 //! 业务按表拆到 `repos` 子模块（同步），lib 用 `run_blocking` 异步化。
-//! 文件路径（macOS）：`~/Library/Application Support/com.ramag.ramag/ramag.redb`
+//! 数据目录由 `directories::ProjectDirs` 按当前平台定位。
 
 pub mod encryption;
 pub mod keyring;
@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use directories::ProjectDirs;
 use futures::channel::oneshot;
 use parking_lot::RwLock;
-use redb::Database;
+use redb::{Database, ReadableDatabase as _, ReadableTableMetadata as _, TableError};
 use tracing::info;
 
 use ramag_domain::entities::{
@@ -34,28 +34,28 @@ pub struct RedbStorage {
 }
 
 impl RedbStorage {
-    /// 默认路径，首次会创建文件 + 钥匙串生成主密钥
+    /// 默认路径，首次会创建文件并在系统凭据库生成主密钥
     pub fn open_default() -> Result<Self> {
         let path = default_db_path()?;
         Self::open(&path)
     }
 
-    /// 生产入口：从系统钥匙串读主密钥
+    /// 生产入口：从系统凭据库读取主密钥
     pub fn open(path: &Path) -> Result<Self> {
-        let master_key = keyring::get_or_create_master_key()?;
-        Self::open_with_key(path, &master_key)
+        // 先获取 redb 的进程级文件锁，防止两个首次启动进程竞争生成并覆盖主密钥。
+        let db = open_database(path)?;
+        let allow_create = !database_has_encrypted_records(&db)?;
+        let master_key = keyring::get_or_create_master_key(allow_create)?;
+        Self::initialize(db, path, &master_key)
     }
 
-    /// 测试入口：注入固定密钥避免污染真实钥匙串
+    /// 测试入口：注入固定密钥，避免污染真实系统凭据库
     pub fn open_with_key(path: &Path, master_key: &[u8; 32]) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| DomainError::Storage(format!("创建数据目录失败：{e}")))?;
-        }
+        let db = open_database(path)?;
+        Self::initialize(db, path, master_key)
+    }
 
-        let db = Database::create(path)
-            .map_err(|e| DomainError::Storage(format!("打开 redb 数据库失败：{e}")))?;
-
+    fn initialize(db: Database, path: &Path, master_key: &[u8; 32]) -> Result<Self> {
         // 首次打开建表
         let write_txn = db
             .begin_write()
@@ -73,6 +73,8 @@ impl RedbStorage {
 
         // 首启迁移：为存量历史构建时间 / 去重索引（空库或已建则瞬时返回）
         repos::clip_repo::migrate_indexes(db.clone(), cipher.clone())?;
+        let _ = repos::connection_repo::list(db.clone(), cipher.clone())?;
+        repos::clip_repo::validate_key(db.clone(), cipher.clone())?;
 
         info!(path = %path.display(), "redb storage opened");
 
@@ -92,6 +94,40 @@ fn default_db_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("com", "ramag", "ramag")
         .ok_or_else(|| DomainError::Storage("无法定位用户目录".into()))?;
     Ok(dirs.data_dir().join("ramag.redb"))
+}
+
+fn open_database(path: &Path) -> Result<Database> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| DomainError::Storage(format!("创建数据目录失败：{e}")))?;
+    }
+    Database::create(path).map_err(|e| DomainError::Storage(format!("打开 redb 数据库失败：{e}")))
+}
+
+/// 连接密码和剪贴历史使用主密钥；只有这两张表存在记录时才禁止重建密钥。
+fn database_has_encrypted_records(db: &Database) -> Result<bool> {
+    let read_txn = db
+        .begin_read()
+        .map_err(|e| DomainError::Storage(format!("检查加密数据失败：{e}")))?;
+    for definition in [
+        repos::connection_repo::CONNECTIONS_TABLE,
+        repos::clip_repo::CLIPS_TABLE,
+    ] {
+        match read_txn.open_table(definition) {
+            Ok(table)
+                if !table
+                    .is_empty()
+                    .map_err(|e| DomainError::Storage(format!("检查加密数据表失败：{e}")))? =>
+            {
+                return Ok(true);
+            }
+            Ok(_) | Err(TableError::TableDoesNotExist(_)) => {}
+            Err(error) => {
+                return Err(DomainError::Storage(format!("打开加密数据表失败：{error}")));
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// std::thread + oneshot 桥接同步代码，调用方任意 runtime 通用
@@ -265,13 +301,29 @@ mod tests {
     use ramag_domain::entities::DriverKind;
     use tempfile::TempDir;
 
-    /// 临时目录 + 固定密钥，不污染真实钥匙串
+    /// 临时目录 + 固定密钥，不污染真实系统凭据库
     fn make_test_storage() -> (RedbStorage, TempDir) {
         let tmp = TempDir::new().expect("创建临时目录失败");
         let path = tmp.path().join("test.redb");
         let key = [0x42u8; 32];
         let storage = RedbStorage::open_with_key(&path, &key).expect("打开测试 storage 失败");
         (storage, tmp)
+    }
+
+    #[tokio::test]
+    async fn only_encrypted_records_require_existing_master_key() {
+        let (storage, _tmp) = make_test_storage();
+        assert!(!database_has_encrypted_records(&storage.db).unwrap());
+        storage.set_preference("theme", "dark").await.unwrap();
+        assert!(!database_has_encrypted_records(&storage.db).unwrap());
+        storage
+            .save_connection(&sample_config("encrypted"))
+            .await
+            .unwrap();
+        assert!(database_has_encrypted_records(&storage.db).unwrap());
+        let path = storage.path().to_path_buf();
+        drop(storage);
+        assert!(RedbStorage::open_with_key(&path, &[0x24; 32]).is_err());
     }
 
     fn sample_config(name: &str) -> ConnectionConfig {

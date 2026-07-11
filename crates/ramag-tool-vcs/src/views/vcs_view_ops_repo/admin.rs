@@ -72,7 +72,7 @@ impl VcsView {
         cx.spawn(
             async move |this, cx| match driver.clone_repo(&url, &dest).await {
                 Ok(rc) => {
-                    tracing::info!(url = %url, dest = ?dest, "vcs: clone done");
+                    tracing::info!("vcs clone done");
                     open_repo_async(&this, driver, std::path::PathBuf::from(&rc.path), cx).await;
                 }
                 Err(e) => {

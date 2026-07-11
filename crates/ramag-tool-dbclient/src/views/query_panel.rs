@@ -18,7 +18,10 @@ use gpui_component::{
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::ConnectionConfig;
-use ramag_ui::CloseTab;
+use ramag_ui::{
+    CloseTab,
+    platform::{primary_shift_shortcut, primary_shortcut},
+};
 
 use crate::sql_completion::SchemaCache;
 use crate::views::query_tab::QueryTab;
@@ -363,7 +366,7 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
-                                        .tooltip("新建查询 (⌘T)")
+                                        .tooltip(format!("新建查询 ({})", primary_shortcut("T")))
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 this.add_tab(window, cx);
@@ -425,7 +428,10 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::wand_sparkles())
-                                        .tooltip("美化 SQL (⌘⇧F)")
+                                        .tooltip(format!(
+                                            "美化 SQL ({})",
+                                            primary_shift_shortcut("F")
+                                        ))
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 if let Some(tab) =
@@ -443,7 +449,10 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::gauge())
-                                        .tooltip("执行计划 EXPLAIN (⌘⇧E)")
+                                        .tooltip(format!(
+                                            "执行计划 EXPLAIN ({})",
+                                            primary_shift_shortcut("E")
+                                        ))
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                             if let Some(tab) = this.tabs.get(this.active).cloned() {
                                                 tab.update(cx, |t, cx| t.handle_explain(cx));

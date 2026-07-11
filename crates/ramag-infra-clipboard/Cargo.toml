@@ -33,14 +33,21 @@ core-foundation = { workspace = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.57", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_DataExchange",
+    "Win32_System_Com",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
 ] }
 
 # 图片：CF_DIB（截图）补 BMP 文件头 → 解码 → 转 PNG（采集）；PNG → BMP 去头 → CF_DIB（写回）
+image = { workspace = true, features = ["bmp"] }
+
+[dev-dependencies]
+# DIB 纯逻辑测试在 macOS 主机也编译，避免只能生成 Windows 测试程序却无法执行。
 image = { workspace = true, features = ["bmp"] }

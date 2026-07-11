@@ -17,8 +17,9 @@ pub fn map_branch_error(e: impl std::fmt::Display) -> DomainError {
 /// 翻译 git subprocess stderr 为中文 + 操作建议；未命中模式时返回原文，不吞错
 pub fn friendly_git_error(args: &[&str], stderr: &str) -> String {
     let raw = stderr.trim();
-    let cmd = args.join(" ");
+    let operation = args.first().copied().unwrap_or("unknown");
     let lower = raw.to_lowercase();
+    let safe_raw = redact_url_credentials(raw);
 
     // 顺序敏感：先匹配长且具体的模式
     let hint: Option<&str> = if lower.contains("does not appear to be a git repository")
@@ -99,9 +100,83 @@ pub fn friendly_git_error(args: &[&str], stderr: &str) -> String {
     };
 
     match hint {
-        Some(h) => format!("{h}\n\n[原始错误] git {cmd}: {raw}"),
-        None => format!("git {cmd} 失败: {raw}"),
+        Some(h) => format!("{h}\n\n[原始错误] git {operation}: {safe_raw}"),
+        None => format!("git {operation} 失败: {safe_raw}"),
     }
+}
+
+/// Git 可能在 stderr 回显带 userinfo 的 HTTPS URL；日志和 UI 均不得暴露凭据。
+fn redact_url_credentials(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    while let Some(relative) = input[cursor..].find("://") {
+        let authority_start = cursor + relative + 3;
+        output.push_str(&input[cursor..authority_start]);
+        let authority_end = input[authority_start..]
+            .find(|ch: char| {
+                ch.is_whitespace() || matches!(ch, '/' | '\\' | '?' | '#' | '\'' | '"' | ')' | ']')
+            })
+            .map_or(input.len(), |end| authority_start + end);
+        let authority = &input[authority_start..authority_end];
+        if let Some(at) = authority.rfind('@') {
+            output.push_str("***@");
+            output.push_str(&authority[at + 1..]);
+        } else {
+            output.push_str(authority);
+        }
+        cursor = authority_end;
+    }
+    output.push_str(&input[cursor..]);
+    redact_query_credentials(&output)
+}
+
+fn redact_query_credentials(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    while let Some(relative) = input[cursor..].find(['?', '&']) {
+        let marker = cursor + relative;
+        let key_start = marker + 1;
+        let Some(eq_relative) = input[key_start..].find('=') else {
+            break;
+        };
+        let equals = key_start + eq_relative;
+        let key = &input[key_start..equals];
+        let valid_key = !key.is_empty()
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+        let lower = key.to_ascii_lowercase();
+        let sensitive = matches!(
+            lower.as_str(),
+            "access_token"
+                | "auth"
+                | "authorization"
+                | "client_secret"
+                | "code"
+                | "password"
+                | "passwd"
+                | "secret"
+                | "sig"
+                | "signature"
+                | "token"
+                | "x-amz-signature"
+        ) || lower.ends_with("_token")
+            || lower.ends_with("-token");
+        if !valid_key || !sensitive {
+            output.push_str(&input[cursor..key_start]);
+            cursor = key_start;
+            continue;
+        }
+
+        output.push_str(&input[cursor..=equals]);
+        output.push_str("***");
+        let value_start = equals + 1;
+        cursor = input[value_start..]
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, '&' | '#' | '\'' | '"' | ')' | ']'))
+            .map_or(input.len(), |end| value_start + end);
+    }
+    output.push_str(&input[cursor..]);
+    output
 }
 
 #[cfg(test)]
@@ -152,5 +227,17 @@ mod tests {
             "error: Your local changes to the following files would be overwritten by merge",
         );
         assert!(msg.contains("Stash"));
+    }
+
+    #[test]
+    fn credentials_are_redacted_from_command_and_stderr() {
+        let msg = friendly_git_error(
+            &["clone", "https://user:secret@example.com/repo.git"],
+            "fatal: repository 'https://user:secret@example.com/repo.git?access_token=query-secret&ref=main' not found",
+        );
+        assert!(!msg.contains("secret"));
+        assert!(!msg.contains("user:"));
+        assert!(msg.contains("https://***@example.com/repo.git?access_token=***&ref=main"));
+        assert!(msg.contains("git clone"));
     }
 }

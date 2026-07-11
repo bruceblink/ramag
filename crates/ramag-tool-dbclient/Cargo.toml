@@ -46,7 +46,7 @@ ropey = { workspace = true }
 # schema cache 用 RwLock（parking_lot 比 std 更轻 / 无毒）
 parking_lot = { workspace = true }
 
-# SQL 格式化（⌘⇧F）：纯 Rust，~MIT
+# SQL 格式化：纯 Rust，~MIT
 sqlformat = "0.3"
 
 # 日志

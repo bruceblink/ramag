@@ -19,6 +19,7 @@ use parking_lot::RwLock;
 
 use ramag_app::ConnectionService;
 use ramag_domain::entities::ConnectionConfig;
+use ramag_ui::platform::primary_shortcut;
 
 use crate::sql_completion::SchemaCache;
 use crate::views::result_panel::ResultPanel;
@@ -77,7 +78,10 @@ impl QueryTab {
                 .code_editor("sql")
                 .multi_line(true)
                 .line_number(true)
-                .placeholder("-- 输入 SQL，按 ⌘↵ 运行\nSELECT 1;")
+                .placeholder(format!(
+                    "-- 输入 SQL，按 {} 运行\nSELECT 1;",
+                    primary_shortcut("Enter")
+                ))
                 .rows(8);
             // SQL 补全：关键字 + 表名 + 列名（cache 共享）
             state.lsp.completion_provider = Some(

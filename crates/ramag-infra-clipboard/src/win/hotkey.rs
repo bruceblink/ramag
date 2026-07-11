@@ -11,8 +11,9 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_V,
 };
-use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
-use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY, WM_QUIT};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_HOTKEY, WM_QUIT, WM_USER,
+};
 
 const HOTKEY_ID: i32 = 1;
 
@@ -25,12 +26,21 @@ pub struct HotkeyListener {
 
 impl HotkeyListener {
     /// 注册 Ctrl-Shift-V。启一条线程注册热键并跑消息泵；注册失败返回 None（不影响其余功能）
-    pub fn register_cmd_shift_v() -> Option<Self> {
+    pub fn register_clipboard_hotkey() -> Option<Self> {
         let (tx, rx) = channel::<()>();
         // 用于把线程 id / 注册结果回传主线程
         let (ready_tx, ready_rx) = channel::<Option<u32>>();
 
-        let handle = std::thread::spawn(move || hotkey_thread(tx, ready_tx));
+        let handle = match std::thread::Builder::new()
+            .name("ramag-hotkey".into())
+            .spawn(move || hotkey_thread(tx, ready_tx))
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                warn!(error = %error, "start hotkey thread failed");
+                return None;
+            }
+        };
 
         match ready_rx.recv() {
             Ok(Some(thread_id)) => {
@@ -41,9 +51,13 @@ impl HotkeyListener {
                     handle: Some(handle),
                 })
             }
-            _ => {
-                warn!("RegisterHotKey failed");
-                let _ = handle.join();
+            Ok(None) => {
+                join_thread(handle);
+                None
+            }
+            Err(error) => {
+                warn!(error = %error, "hotkey initialization channel closed");
+                join_thread(handle);
                 None
             }
         }
@@ -63,33 +77,74 @@ impl HotkeyListener {
 fn hotkey_thread(tx: Sender<()>, ready_tx: Sender<Option<u32>>) {
     unsafe {
         let thread_id = GetCurrentThreadId();
+        // 显式创建消息队列，确保主线程收到 ready 后可可靠投递 WM_QUIT。
+        let mut queue_probe = MSG::default();
+        let _ = PeekMessageW(&mut queue_probe, None, WM_USER, WM_USER, PM_NOREMOVE);
         let modifiers = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
-        if RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32).is_err() {
+        if let Err(error) = RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32) {
+            warn!(error = %error, "RegisterHotKey failed");
             let _ = ready_tx.send(None);
             return;
         }
-        let _ = ready_tx.send(Some(thread_id));
+        if ready_tx.send(Some(thread_id)).is_err() {
+            warn!("hotkey initialization receiver dropped");
+            if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
+                warn!(error = %error, "UnregisterHotKey failed after initialization cancellation");
+            }
+            return;
+        }
 
         let mut msg = MSG::default();
         // GetMessageW 返回 >0 正常、0 收到 WM_QUIT、-1 出错，后两者均退出循环
-        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+        loop {
+            let status = GetMessageW(&mut msg, None, 0, 0).0;
+            if status <= 0 {
+                if status < 0 {
+                    let error = windows::core::Error::from_win32();
+                    warn!(error = %error, "GetMessageW failed");
+                }
+                break;
+            }
             if msg.message == WM_HOTKEY {
                 let _ = tx.send(());
             }
         }
-        let _ = UnregisterHotKey(None, HOTKEY_ID);
+        if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
+            warn!(error = %error, "UnregisterHotKey failed");
+        }
+    }
+}
+
+fn join_thread(handle: JoinHandle<()>) {
+    if handle.join().is_err() {
+        warn!("hotkey thread panicked");
     }
 }
 
 impl Drop for HotkeyListener {
     /// 向消息线程投 WM_QUIT 令其跳出消息泵并注销热键，再 join 回收
     fn drop(&mut self) {
-        unsafe {
-            let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
-        }
+        let posted = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        let mut stopped = false;
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            match posted {
+                Ok(()) => {
+                    join_thread(handle);
+                    stopped = true;
+                }
+                Err(error) if handle.is_finished() => {
+                    warn!(error = %error, "post hotkey shutdown message failed after thread exit");
+                    join_thread(handle);
+                    stopped = true;
+                }
+                Err(error) => {
+                    // 无法唤醒时不能阻塞 join；进程退出会回收已分离的线程。
+                    warn!(error = %error, "post hotkey shutdown message failed; detaching thread");
+                }
+            }
         }
-        info!("global hotkey ctrl-shift-v unregistered");
+        if stopped {
+            info!("global hotkey ctrl-shift-v unregistered");
+        }
     }
 }
