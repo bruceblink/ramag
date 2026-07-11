@@ -144,7 +144,7 @@ impl VcsView {
                 .py(px(8.0))
                 .text_sm()
                 .text_color(muted_fg)
-                .child("加载中...")
+                .child("加载中…")
                 .into_any_element();
         }
 

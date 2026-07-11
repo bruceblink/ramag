@@ -13,8 +13,16 @@ pub(crate) fn preferred_display(
     preferred_index: Option<usize>,
 ) -> Option<Rc<dyn PlatformDisplay>> {
     let displays = cx.displays();
+    // 按 DisplayId 匹配而非 Vec 位置：GPUI 会跳过信息获取失败的显示器，
+    // 位置下标可能与系统枚举序号错位；DisplayId 恒等于枚举序号
     preferred_index
-        .and_then(|index| displays.get(index).cloned())
+        .and_then(|index| u32::try_from(index).ok())
+        .and_then(|id| {
+            displays
+                .iter()
+                .find(|display| u32::from(display.id()) == id)
+                .cloned()
+        })
         .or_else(|| cx.primary_display())
         .or_else(|| displays.into_iter().next())
 }

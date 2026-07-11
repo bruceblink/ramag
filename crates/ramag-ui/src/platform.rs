@@ -18,8 +18,22 @@ pub fn primary_shift_shortcut(key: &str) -> String {
     }
 }
 
-pub fn clipboard_hotkey() -> String {
-    primary_shift_shortcut("V")
+/// 主修饰键 + Option/Alt 快捷键。
+pub fn primary_alt_shortcut(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘⌥{key}")
+    } else {
+        format!("Ctrl+Alt+{key}")
+    }
+}
+
+/// 剪贴板抽屉全局热键文案（alternate 对应设置里的备用组合）
+pub fn clipboard_hotkey(alternate: bool) -> String {
+    if alternate {
+        primary_alt_shortcut("V")
+    } else {
+        primary_shift_shortcut("V")
+    }
 }
 
 pub fn file_manager_reveal_label() -> &'static str {
@@ -47,9 +61,13 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(primary_shortcut("Enter"), "⌘Enter");
             assert_eq!(primary_shift_shortcut("F"), "⌘⇧F");
+            assert_eq!(clipboard_hotkey(false), "⌘⇧V");
+            assert_eq!(clipboard_hotkey(true), "⌘⌥V");
         } else {
             assert_eq!(primary_shortcut("Enter"), "Ctrl+Enter");
             assert_eq!(primary_shift_shortcut("F"), "Ctrl+Shift+F");
+            assert_eq!(clipboard_hotkey(false), "Ctrl+Shift+V");
+            assert_eq!(clipboard_hotkey(true), "Ctrl+Alt+V");
         }
     }
 }

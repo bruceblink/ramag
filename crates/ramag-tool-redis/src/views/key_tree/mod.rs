@@ -94,8 +94,7 @@ impl EventEmitter<KeyTreeEvent> for KeyTreePanel {}
 
 impl KeyTreePanel {
     pub fn new(service: Arc<RedisService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("过滤 key（前缀 / 子串）"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("过滤 key"));
 
         let subs = vec![cx.subscribe_in(
             &search,
@@ -316,7 +315,7 @@ impl Render for KeyTreePanel {
         let count_label = if self.config.is_none() {
             "尚未连接".to_string()
         } else if self.loading {
-            "加载中...".to_string()
+            "加载中…".to_string()
         } else if let Some(ref e) = self.error {
             e.clone()
         } else if !in_search {
@@ -434,7 +433,20 @@ impl Render for KeyTreePanel {
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(KeyTreeEvent::RequestOpenConsole);
                     })),
-            );
+            )
+            .child({
+                // DB 级毁灭性操作独立入口（清空当前 DB），不与 key 右键菜单混排
+                let entity_for_menu = cx.entity().clone();
+                let current_db = self.db;
+                Button::new("redis-key-more")
+                    .ghost()
+                    .xsmall()
+                    .icon(ramag_ui::icons::ellipsis())
+                    .tooltip("更多操作")
+                    .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
+                        ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
+                    })
+            });
 
         let theme_bg = theme.background;
         let theme_muted = theme.muted;

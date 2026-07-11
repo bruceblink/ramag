@@ -11,8 +11,8 @@ pub mod redis_value;
 pub mod schema;
 
 pub use clipboard::{
-    CapturedClip, ClipId, ClipItem, ClipKind, ClipSource, ClipboardSettings, classify_text,
-    fnv1a_hash, make_preview, parse_hex_color,
+    CapturedClip, ClipId, ClipItem, ClipKind, ClipSource, ClipboardSettings, blacklist_matches,
+    classify_text, fnv1a_hash, make_preview, normalize_blacklist_source, parse_hex_color,
 };
 pub use connection::{ConnectionConfig, ConnectionId, DriverKind};
 pub use git::{

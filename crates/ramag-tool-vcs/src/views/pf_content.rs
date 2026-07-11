@@ -35,7 +35,7 @@ impl VcsView {
         let fg = theme.foreground;
 
         if self.loading_file_content {
-            return placeholder("加载中...", muted_fg);
+            return placeholder("加载中…", muted_fg);
         }
 
         let snapshot = match self.current_file_content.as_ref() {

@@ -3,6 +3,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod logging;
+#[cfg(target_os = "windows")]
+mod single_instance;
+#[cfg(target_os = "windows")]
+mod tray;
 mod window_layout;
 
 use std::sync::Arc;
@@ -49,9 +53,50 @@ use crate::window_layout::{drawer_bounds, preferred_display};
 #[action(namespace = ramag)]
 struct Quit;
 
+/// 全部工具服务与存储的共享句柄；主窗口重建（on_reopen / 托盘 / 单实例激活）复用
+#[derive(Clone)]
+struct AppDeps {
+    registry: Arc<ToolRegistry>,
+    conn_service: Arc<ConnectionService>,
+    redis_service: Arc<RedisService>,
+    mongo_service: Arc<MongoService>,
+    clipboard_service: Arc<ClipboardService>,
+    storage: Arc<dyn Storage>,
+}
+
+/// 最近一次打开的主窗口句柄；托盘 / 单实例激活时优先前台化它而非重开
+struct MainWindowGlobal(gpui::AnyWindowHandle);
+
+impl gpui::Global for MainWindowGlobal {}
+
+/// 唤起主窗口：已有则前台激活（含最小化恢复），已关闭则重开
+fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
+    if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|g| g.0)
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        return;
+    }
+    // 重开时再读主题，期间用户可能改过偏好
+    let pref = read_theme_preference(&deps.storage);
+    open_main_window(deps.clone(), pref, cx);
+}
+
 fn main() {
     let log_path = logging::init();
     info!(version = env!("CARGO_PKG_VERSION"), "ramag launching");
+
+    // 单实例：已有实例在跑则通知其唤起主窗口后静默退出（避免 redb 文件锁报错）；
+    // macOS 由系统 LaunchServices 保证 .app 单实例，无需自建
+    #[cfg(target_os = "windows")]
+    let instance_guard = match single_instance::acquire() {
+        single_instance::InstanceRole::Secondary => {
+            info!("another instance is running; asked it to reveal and exiting");
+            return;
+        }
+        single_instance::InstanceRole::Primary(guard) => guard,
+    };
 
     let (conn_service, storage) = match build_connection_service() {
         Ok(pair) => pair,
@@ -83,29 +128,22 @@ fn main() {
     let registry = build_tool_registry();
     info!(tool_count = registry.count(), "tools registered");
 
+    let deps = AppDeps {
+        registry,
+        conn_service,
+        redis_service,
+        mongo_service,
+        clipboard_service,
+        storage,
+    };
+
     let app = gpui_platform::application().with_assets(RamagAssets);
 
     // on_reopen 必须在 app.run 之前注册（属 Application）。仅当无活窗口时重开主窗口，避免 dock 叠加
-    let registry_for_reopen = registry.clone();
-    let conn_service_for_reopen = conn_service.clone();
-    let redis_service_for_reopen = redis_service.clone();
-    let mongo_service_for_reopen = mongo_service.clone();
-    let clipboard_service_for_reopen = clipboard_service.clone();
-    let storage_for_reopen = storage.clone();
+    let deps_for_reopen = deps.clone();
     app.on_reopen(move |cx: &mut App| {
         if cx.windows().is_empty() {
-            // 重开时再读，期间用户可能改过偏好
-            let pref = read_theme_preference(&storage_for_reopen);
-            open_main_window(
-                registry_for_reopen.clone(),
-                conn_service_for_reopen.clone(),
-                redis_service_for_reopen.clone(),
-                mongo_service_for_reopen.clone(),
-                clipboard_service_for_reopen.clone(),
-                storage_for_reopen.clone(),
-                pref,
-                cx,
-            );
+            reveal_main_window(&deps_for_reopen, cx);
         }
     });
 
@@ -114,20 +152,41 @@ fn main() {
         // 先 apply 占位主题避免窗口空白闪烁；正式主题在 open_main_window 拿 appearance 后定
         apply_theme(Mode::Dark, cx);
         // storage 注入 cx 全局，ActivityBar 切主题用它持久化
-        cx.set_global(StorageGlobal(storage.clone()));
+        cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
 
         // 必须先 bind_keys 把退出快捷键绑到 Quit，原生菜单项才会显示快捷键
         cx.on_action(|_: &Quit, cx| cx.quit());
 
-        // Windows 无 dock/托盘：关掉最后一个窗口后应退出，避免后台无形进程（无处唤回、无法退出）。
-        // macOS 保留「关窗不退出」+ on_reopen，故用 cfg! 运行时判定（两平台均可编译）。
-        cx.on_window_closed(|cx, _window_id| {
-            if cfg!(target_os = "windows") && cx.windows().is_empty() {
-                cx.quit();
+        // Windows：托盘常驻——关窗后采集继续，托盘可唤回/退出；
+        // 托盘安装失败则回退「关最后窗口即退出」，避免无处唤回的无形后台进程。
+        // macOS 保留「关窗不退出」+ dock on_reopen，无需此回调
+        #[cfg(target_os = "windows")]
+        {
+            let tray = std::rc::Rc::new(std::cell::RefCell::new(tray::TrayIcon::install()));
+            let tray_resident = tray.borrow().is_some();
+            if tray_resident {
+                spawn_tray_loop(tray.clone(), deps.clone(), cx);
+            } else {
+                warn!("tray unavailable; app quits when the last window closes");
             }
-        })
-        .detach();
+            // 任何退出路径（cmd-Q / 托盘退出）先删托盘图标，避免任务栏残影
+            cx.on_app_quit(move |_| {
+                let tray = tray.borrow_mut().take();
+                async move {
+                    drop(tray);
+                }
+            })
+            .detach();
+            cx.on_window_closed(move |cx, _window_id| {
+                if !tray_resident && cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            // 双开的后启实例经命名事件请求唤起
+            spawn_instance_activation(instance_guard, deps.clone(), cx);
+        }
 
         // 主修饰键+W 全局 fallback：视图层先消费（关 tab），没消费就关窗。
         // 关窗须 defer：此刻正处在该窗口的按键分发栈内（window 已被 take 出），
@@ -180,7 +239,7 @@ fn main() {
 
         // 启动时清理孤儿媒体文件（崩溃 / 库磁盘不一致残留）
         {
-            let svc = clipboard_service.clone();
+            let svc = deps.clipboard_service.clone();
             cx.spawn(async move |_| {
                 if let Err(e) = svc.cleanup_orphans().await {
                     tracing::warn!(error = %e, "clipboard orphan cleanup failed");
@@ -190,13 +249,13 @@ fn main() {
         }
         // 预热窗口缓存：解密最近 N 条入内存，让首次唤起抽屉即同步带满内容
         {
-            let svc = clipboard_service.clone();
+            let svc = deps.clipboard_service.clone();
             cx.spawn(async move |_| svc.preload().await).detach();
         }
-        // App 级剪贴板采集循环：独立于剪贴板视图和抽屉；Windows 关最后窗口时随应用退出。
-        spawn_clipboard_capture(clipboard_service.clone(), cx);
+        // App 级剪贴板采集循环：独立于窗口生死（Windows 托盘常驻期间同样持续记录）
+        spawn_clipboard_capture(deps.clipboard_service.clone(), cx);
         // 平台全局热键（macOS Command+Shift+V / Windows Ctrl+Shift+V）唤起抽屉
-        spawn_clipboard_hotkey(clipboard_service.clone(), cx);
+        spawn_clipboard_hotkey(deps.clipboard_service.clone(), cx);
 
         cx.set_menus(vec![Menu {
             name: "Ramag".into(),
@@ -204,16 +263,7 @@ fn main() {
             disabled: false,
         }]);
 
-        open_main_window(
-            registry.clone(),
-            conn_service.clone(),
-            redis_service.clone(),
-            mongo_service.clone(),
-            clipboard_service.clone(),
-            storage.clone(),
-            initial_pref.clone(),
-            cx,
-        );
+        open_main_window(deps.clone(), initial_pref.clone(), cx);
     });
 }
 
@@ -252,10 +302,11 @@ const HOTKEY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_mill
 /// 注册失败（缺权限等）仅记日志，不影响其余功能
 fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
     cx.spawn(async move |cx| {
-        // 启动读持久化采集开关：关闭则不注册，避免抢占平台全局热键
+        // 启动读持久化设置：采集关闭则不注册，避免抢占平台全局热键
         let mut enabled = service.prime_capture_enabled().await;
+        let mut alternate = service.alternate_hotkey();
         let mut listener = if enabled {
-            let l = HotkeyListener::register_clipboard_hotkey();
+            let l = HotkeyListener::register_clipboard_hotkey(alternate);
             if l.is_none() {
                 error!("global hotkey register failed; clipboard drawer disabled");
             }
@@ -270,18 +321,20 @@ fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
         loop {
             cx.background_executor().timer(HOTKEY_POLL_INTERVAL).await;
 
-            // 采集开关变化 → 动态注册/注销热键
+            // 采集开关或热键组合变化 → 动态注册/注销热键
             let now_enabled = service.capture_enabled();
-            if now_enabled != enabled {
+            let now_alternate = service.alternate_hotkey();
+            if now_enabled != enabled || (now_enabled && now_alternate != alternate) {
                 enabled = now_enabled;
+                alternate = now_alternate;
+                // 先置 None 触发 Drop 注销旧热键（切换组合时避免新旧并存）
+                listener = None;
                 if enabled {
-                    listener = HotkeyListener::register_clipboard_hotkey();
+                    listener = HotkeyListener::register_clipboard_hotkey(alternate);
                     if listener.is_none() {
                         error!("global hotkey re-register failed");
                     }
                 } else {
-                    // 置 None 触发 Drop 注销热键并移除 handler
-                    listener = None;
                     // 关闭残留抽屉：热键已注销，否则无法再 toggle 关闭
                     if let Some(handle) = drawer.take() {
                         let _ = cx
@@ -374,18 +427,16 @@ fn open_drawer_window(
     }
 }
 
-/// init / on_reopen 共用
-#[allow(clippy::too_many_arguments)]
-fn open_main_window(
-    registry: Arc<ToolRegistry>,
-    conn_service: Arc<ConnectionService>,
-    redis_service: Arc<RedisService>,
-    mongo_service: Arc<MongoService>,
-    clipboard_service: Arc<ClipboardService>,
-    storage: Arc<dyn Storage>,
-    theme_pref: Option<String>,
-    cx: &mut App,
-) {
+/// init / on_reopen / 托盘唤起共用；成功后把窗口句柄记入 MainWindowGlobal
+fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
+    let AppDeps {
+        registry,
+        conn_service,
+        redis_service,
+        mongo_service,
+        clipboard_service,
+        storage,
+    } = deps;
     // Maximized 需 fallback Bounds 给取消最大化复位
     let bounds = Bounds::centered(None, size(px(1200.0), px(780.0)), cx);
 
@@ -458,8 +509,54 @@ fn open_main_window(
                 cx.new(|cx| Root::new(shell, window, cx))
             },
         );
-        if let Err(err) = result {
-            error!(error = %err, "open window failed");
+        match result {
+            Ok(handle) => {
+                cx.update(|cx| cx.set_global(MainWindowGlobal(handle.into())));
+            }
+            Err(err) => error!(error = %err, "open window failed"),
+        }
+    })
+    .detach();
+}
+
+/// 托盘事件轮询：Open 唤起主窗口；Quit 先删图标（防任务栏残影）再退出
+#[cfg(target_os = "windows")]
+fn spawn_tray_loop(
+    tray: std::rc::Rc<std::cell::RefCell<Option<tray::TrayIcon>>>,
+    deps: AppDeps,
+    cx: &mut App,
+) {
+    const TRAY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(TRAY_POLL_INTERVAL).await;
+            let event = tray.borrow().as_ref().and_then(|t| t.poll());
+            match event {
+                Some(tray::TrayEvent::Open) => {
+                    cx.update(|cx| reveal_main_window(&deps, cx));
+                }
+                Some(tray::TrayEvent::Quit) => {
+                    drop(tray.borrow_mut().take());
+                    cx.update(|cx| cx.quit());
+                    break;
+                }
+                None => {}
+            }
+        }
+    })
+    .detach();
+}
+
+/// 单实例激活轮询：后启进程置位命名事件 → 唤起主窗口
+#[cfg(target_os = "windows")]
+fn spawn_instance_activation(guard: single_instance::PrimaryGuard, deps: AppDeps, cx: &mut App) {
+    const ACTIVATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(ACTIVATE_POLL_INTERVAL).await;
+            if guard.poll_activate() {
+                cx.update(|cx| reveal_main_window(&deps, cx));
+            }
         }
     })
     .detach();

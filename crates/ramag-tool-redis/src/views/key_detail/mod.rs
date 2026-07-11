@@ -441,7 +441,7 @@ impl Render for KeyDetailPanel {
                     .text_center()
                     .text_sm()
                     .text_color(muted_fg)
-                    .child("加载中...")
+                    .child("加载中…")
                     .into_any_element(),
                 false,
             )

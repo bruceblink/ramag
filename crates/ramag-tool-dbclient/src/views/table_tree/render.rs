@@ -50,7 +50,7 @@ impl Render for TableTreePanel {
                 .justify_center()
                 .text_color(muted_fg)
                 .text_xs()
-                .child("加载 schemas...")
+                .child("加载 schemas…")
                 .into_any_element();
         }
 
@@ -276,7 +276,7 @@ impl Render for TableTreePanel {
             if let Some((loading, tables, error)) = exp {
                 if *loading {
                     tree_rows.push(TreeRow::SchemaPlaceholder {
-                        text: "加载 tables...".into(),
+                        text: "加载 tables…".into(),
                         is_error: false,
                     });
                 } else if let Some(e) = error.clone() {
@@ -326,7 +326,7 @@ impl Render for TableTreePanel {
                         if let Some(cs) = cols_state {
                             if cs.loading {
                                 tree_rows.push(TreeRow::TablePlaceholder {
-                                    text: "加载列结构...".into(),
+                                    text: "加载列结构…".into(),
                                     is_error: false,
                                 });
                             } else if let Some(err) = cs.error.as_ref() {

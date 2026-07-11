@@ -34,7 +34,7 @@ impl SubmitState {
 
 /// 渲染表单底部一行：左错误文字 + 右「取消 / 主操作」按钮条。
 /// 调用方负责在其上方保留分隔线；`id_prefix` 用于按钮 ElementId 去重，
-/// `save_label` 是主操作基础文案（提交中自动加「中...」后缀），
+/// `save_label` 是主操作基础文案（提交中自动加「中…」后缀），
 /// 两个回调由调用方按各自 handle 方法构造。
 pub fn form_footer<V: 'static>(
     id_prefix: &str,
@@ -45,7 +45,7 @@ pub fn form_footer<V: 'static>(
     cx: &mut Context<V>,
 ) -> impl IntoElement {
     let save_text = if state.is_submitting() {
-        format!("{save_label}中...")
+        format!("{save_label}中…")
     } else {
         save_label.to_string()
     };

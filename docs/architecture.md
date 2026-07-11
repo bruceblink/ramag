@@ -143,7 +143,7 @@ Git 客户端，IDEA 风格三栏布局：仓库管理页 / 工作区（Changes 
 2. `build_connection_service`：装配 `MysqlDriver` + `PostgresDriver` 进 `HashMap<DriverKind, Arc<dyn Driver>>` + `RedbStorage`
 3. `build_redis_service` / `build_mongo_service`：分别装配 `RedisDriver` / `MongoDriver`，复用同一 Storage
 4. `build_tool_registry`：注册 `DbClientTool` + `VcsTool` + `ClipboardTool`
-5. `app.on_reopen`：macOS 无窗口时从 Dock 重开；Windows 关闭最后窗口后退出
+5. `app.on_reopen`：macOS 无窗口时从 Dock 重开；Windows 走系统托盘常驻（关窗采集不停，托盘唤回/退出；托盘安装失败回退关窗即退）+ 单实例（双开唤起已有实例）
 6. `cx.bind_keys`：使用 GPUI `secondary-*` 注册跨平台主修饰键（macOS Command / Windows Ctrl）
 
 ## 关键技术决策

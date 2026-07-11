@@ -6,7 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $Target = "x86_64-pc-windows-msvc"
-$Profile = if ($Release) { "release" } else { "debug" }
+$BuildProfile = if ($Release) { "release" } else { "debug" }
 $RepoDir = Split-Path -Parent $PSScriptRoot
 
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
@@ -149,10 +149,10 @@ if ($Release) {
 
 & cargo @CargoArgs
 if ($LASTEXITCODE -ne 0) {
-    throw "Windows $Profile build failed. Install Visual Studio C++ Build Tools and the Windows 10/11 SDK, then retry."
+    throw "Windows $BuildProfile build failed. Install Visual Studio C++ Build Tools and the Windows 10/11 SDK, then retry."
 }
 
-$Exe = Join-Path $RepoDir "target\$Target\$Profile\ramag.exe"
+$Exe = Join-Path $RepoDir "target\$Target\$BuildProfile\ramag.exe"
 if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
     throw "Build finished without the expected executable: $Exe"
 }
@@ -176,4 +176,4 @@ if ($Dependencies -match '(?im)^\s*(VCRUNTIME|MSVCP|api-ms-win-crt-)[^\s]*\.dll\
 }
 
 $Size = (Get-Item -LiteralPath $Exe).Length
-Write-Host "Windows $Profile build completed: $Exe ($Size bytes)"
+Write-Host "Windows $BuildProfile build completed: $Exe ($Size bytes)"

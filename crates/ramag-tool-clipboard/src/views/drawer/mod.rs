@@ -11,8 +11,9 @@ use gpui::{
     ScrollHandle, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, h_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
+    notification::Notification,
     v_flex,
 };
 use ramag_app::ClipboardService;
@@ -33,6 +34,10 @@ pub struct ClipboardDrawer {
     /// 唤起时记录的平台激活标识，粘贴时恢复原窗口
     activation_target: Option<String>,
     auto_paste: bool,
+    /// 粘贴失败提示：渲染时经窗口通知层弹出（此时抽屉保持打开）
+    pending_notification: Option<Notification>,
+    /// 粘贴进行中：关窗改为异步后防止重复回车触发二次粘贴
+    pasting: bool,
     scroll: ScrollHandle,
     focus_handle: FocusHandle,
     pub(super) img_cache: crate::views::image_cache::ImageCache,
@@ -80,6 +85,8 @@ impl ClipboardDrawer {
             search,
             activation_target,
             auto_paste: true,
+            pending_notification: None,
+            pasting: false,
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             img_cache: crate::views::image_cache::ImageCache::new(),
@@ -146,26 +153,42 @@ impl ClipboardDrawer {
             .collect()
     }
 
-    /// 粘贴可见列表第 idx 条：写回剪贴板，并按平台恢复原窗口后模拟粘贴，随后关窗
+    /// 粘贴可见列表第 idx 条：写回剪贴板，并按平台恢复原窗口后模拟粘贴。
+    /// 成功才关窗——恢复原窗口须在抽屉仍持有前台时执行（Windows 的
+    /// SetForegroundWindow 仅对前台进程放行）；失败保持打开并弹提示，不静默
     pub(super) fn paste(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pasting {
+            return;
+        }
         let Some(item) = self.visible_items(cx).get(idx).cloned() else {
             return;
         };
+        self.pasting = true;
         let svc = self.service.clone();
         let target = self.activation_target.clone();
         let auto = self.auto_paste;
-        cx.spawn(async move |_, _| {
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
             let result = if auto {
                 svc.paste_to_app(&item, target.as_deref()).await
             } else {
                 svc.copy_to_clipboard(&item).await
             };
-            if let Err(e) = result {
-                tracing::warn!(error = %e, "drawer paste failed");
+            match result {
+                Ok(()) => {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "drawer paste failed");
+                    let _ = this.update(cx, |this, cx| {
+                        this.pasting = false;
+                        this.pending_notification = Some(Notification::warning(e.to_string()));
+                        cx.notify();
+                    });
+                }
             }
         })
         .detach();
-        window.remove_window();
     }
 
     /// 方向键移动选中：过滤后可见列表内边界 clamp，并滚动到可见
@@ -233,7 +256,11 @@ impl ClipboardDrawer {
 }
 
 impl Render for ClipboardDrawer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(n) = self.pending_notification.take() {
+            window.push_notification(n, cx);
+        }
+
         // 先取 owned 颜色释放 theme 借用，否则与下方 render_card 的 &mut cx 冲突
         let bg = cx.theme().background;
         let border = cx.theme().border;

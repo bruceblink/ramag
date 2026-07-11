@@ -334,7 +334,7 @@ impl VcsView {
                 .size_full()
                 .px(px(8.0))
                 .child(search_row)
-                .child(center_msg("加载中...", muted_fg))
+                .child(center_msg("加载中…", muted_fg))
                 .into_any_element();
         }
         if self.history_commits.is_empty() {
@@ -386,7 +386,7 @@ impl VcsView {
                                     .text_xs()
                                     .text_color(muted_fg)
                                     .child(if is_loading {
-                                        "加载中..."
+                                        "加载中…"
                                     } else {
                                         "加载更多..."
                                     })

@@ -195,13 +195,13 @@ fn render_size_chip(
         div()
             .id("size-result")
             .text_color(muted_fg)
-            .child(format!("📊 {label}"))
+            .child(label)
             .into_any_element()
     } else if estimating {
         div()
             .id("size-loading")
             .text_color(muted_fg)
-            .child("📊 估算中...")
+            .child("估算中…")
             .into_any_element()
     } else {
         div()
@@ -209,7 +209,7 @@ fn render_size_chip(
             .text_color(accent)
             .cursor_pointer()
             .hover(|this| this.opacity(0.75))
-            .child("📊 估算大小")
+            .child("估算大小")
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.estimate_size(cx)))
             .into_any_element()
     }

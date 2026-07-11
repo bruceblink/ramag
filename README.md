@@ -27,9 +27,9 @@ Rust + [GPUI](https://github.com/zed-industries/zed) 编写的 macOS / Windows �
 
 ### 剪贴板
 
-- 采集循环独立于剪贴板视图和抽屉；应用运行期间持续记录，历史全本地 AES-GCM 加密存储
+- 采集循环独立于剪贴板视图和抽屉；应用运行期间持续记录，历史全本地 AES-GCM 加密存储（Windows 关窗后经系统托盘常驻，采集不中断）
 - 搜索、按类型筛选、来源应用黑名单、条数 / 天数自动清理
-- 全局热键：macOS `⌘⇧V`、Windows `Ctrl+Shift+V`，唤起抽屉后可粘贴回原窗口
+- 全局热键：macOS `⌘⇧V`、Windows `Ctrl+Shift+V`（可在设置切换备用组合 `⌘⌥V` / `Ctrl+Alt+V`），唤起抽屉后可粘贴回原窗口
 
 ## 快速开始
 

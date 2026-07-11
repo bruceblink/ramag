@@ -49,7 +49,7 @@ pub(super) fn table_context_menu(
     };
     let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
     let menu = menu.item(
-        PopupMenuItem::new("重命名…").on_click(move |_, window, app| {
+        PopupMenuItem::new("重命名").on_click(move |_, window, app| {
             let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
             open_prompt(
                 rename_title,
@@ -72,7 +72,7 @@ pub(super) fn table_context_menu(
     } else {
         let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("清空表…").on_click(move |_, window, app| {
+            PopupMenuItem::new("清空表").on_click(move |_, window, app| {
                 let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
                 open_confirm(
                     "清空表",
@@ -91,13 +91,13 @@ pub(super) fn table_context_menu(
 
     let (label, title, desc) = if is_view {
         (
-            "删除视图…",
+            "删除视图",
             "删除视图",
             format!("将删除视图 {schema}.{table}（仅删除视图定义，不影响底层表数据）。"),
         )
     } else {
         (
-            "删除表…",
+            "删除表",
             "删除表",
             format!("将永久删除表 {schema}.{table}（表结构与数据一并删除），此操作不可恢复。"),
         )
@@ -129,7 +129,7 @@ pub(super) fn schema_context_menu(
     let menu = if matches!(driver, DriverKind::Postgres) {
         let (s, ent) = (schema.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("重命名 Schema…").on_click(move |_, window, app| {
+            PopupMenuItem::new("重命名 Schema").on_click(move |_, window, app| {
                 let (s, ent) = (s.clone(), ent.clone());
                 open_prompt(
                     "重命名 Schema",
@@ -150,14 +150,14 @@ pub(super) fn schema_context_menu(
 
     let (label, title, desc) = match driver {
         DriverKind::Postgres => (
-            "删除 Schema…",
+            "删除 Schema",
             "删除 Schema",
             format!(
                 "将永久删除 schema {schema} 及其中全部对象（DROP SCHEMA … CASCADE），此操作不可恢复。"
             ),
         ),
         _ => (
-            "删除数据库…",
+            "删除数据库",
             "删除数据库",
             format!("将永久删除数据库 {schema} 及其中全部表与数据，此操作不可恢复。"),
         ),

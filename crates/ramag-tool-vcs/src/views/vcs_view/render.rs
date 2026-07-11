@@ -40,7 +40,7 @@ impl Render for VcsView {
                 .justify_center()
                 .text_sm()
                 .text_color(muted_fg)
-                .child("加载中...")
+                .child("加载中…")
                 .into_any_element()
         } else {
             match self.active_view {

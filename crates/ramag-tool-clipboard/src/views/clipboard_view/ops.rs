@@ -2,7 +2,9 @@
 
 use gpui::{Context, ScrollStrategy, Window};
 use gpui_component::notification::Notification;
-use ramag_domain::entities::{ClipId, ClipItem, ClipboardSettings};
+use ramag_domain::entities::{
+    ClipId, ClipItem, ClipboardSettings, blacklist_matches, normalize_blacklist_source,
+};
 use tracing::error;
 
 use super::ClipboardView;
@@ -52,12 +54,19 @@ impl ClipboardView {
     }
 
     /// 将来源加入黑名单，只影响后续采集；当前历史仍由用户自行决定是否删除。
+    /// 条目按平台归一化存储（Windows 存文件名，升级换目录不失效）
     pub(super) fn blacklist_source(&mut self, source_id: String, cx: &mut Context<Self>) {
-        if self.settings.blacklist.iter().any(|id| id == &source_id) {
+        let entry = normalize_blacklist_source(&source_id);
+        if self
+            .settings
+            .blacklist
+            .iter()
+            .any(|id| blacklist_matches(id, &entry))
+        {
             return;
         }
         let mut settings = self.settings.clone();
-        settings.blacklist.push(source_id);
+        settings.blacklist.push(entry);
         self.save_settings(settings, cx);
         self.pending_notification = Some(Notification::info("已停止记录该应用的新内容"));
         cx.notify();

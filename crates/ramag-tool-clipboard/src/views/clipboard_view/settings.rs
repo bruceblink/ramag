@@ -34,13 +34,13 @@ impl ClipboardView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("剪贴板设置"),
             )
-            // 启用采集为总开关，关闭后下面两项均失效（变灰不可点）
+            // 启用采集为总开关，关闭后下面几项均失效（变灰不可点）
             .child(self.toggle_row(
                 "clip-enabled",
                 "启用采集",
                 &format!(
                     "关闭后停止记录新内容，并释放全局快捷键 {}",
-                    clipboard_hotkey()
+                    clipboard_hotkey(s.alternate_hotkey)
                 ),
                 s.enabled,
                 false,
@@ -48,6 +48,23 @@ impl ClipboardView {
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
                     next.enabled = !next.enabled;
+                    this.save_settings(next, cx);
+                }),
+            ))
+            .child(self.toggle_row(
+                "clip-hotkey-alt",
+                "备用全局热键",
+                &format!(
+                    "抽屉热键改用 {}，避免与其它应用的「粘贴为纯文本」（{}）冲突",
+                    clipboard_hotkey(true),
+                    clipboard_hotkey(false)
+                ),
+                s.alternate_hotkey,
+                !s.enabled,
+                muted,
+                cx.listener(|this, _: &bool, _, cx| {
+                    let mut next = this.settings.clone();
+                    next.alternate_hotkey = !next.alternate_hotkey;
                     this.save_settings(next, cx);
                 }),
             ))

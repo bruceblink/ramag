@@ -92,6 +92,11 @@ pub fn copy() -> Icon {
     Icon::default().path("icons/copy.svg")
 }
 
+#[inline]
+pub fn ellipsis() -> Icon {
+    Icon::default().path("icons/ellipsis.svg")
+}
+
 /// 数据库官方品牌彩色 logo 的内嵌资源路径。
 ///
 /// 与上面单色 `Icon` 工厂不同：品牌 logo 是多色 SVG，必须经 `gpui::img()` 光栅化渲染以

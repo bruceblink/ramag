@@ -19,7 +19,7 @@ impl VcsView {
                 .pl(px(4.0))
                 .text_xs()
                 .text_color(muted_fg)
-                .child("加载中...")
+                .child("加载中…")
                 .into_any_element();
         }
         if self.stashes.is_empty() {

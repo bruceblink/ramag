@@ -1,5 +1,6 @@
 //! 树节点破坏性操作：删除 key / 删除前缀下全部 key / 清空当前 DB。
-//! 右键菜单 → open_confirm 二次确认 → 异步执行 → 刷新 + toast；
+//! 右键菜单（清空 DB 在工具栏「更多操作」，与普通节点操作隔离防误触）→
+//! open_confirm 二次确认 → 异步执行 → 刷新 + toast；
 //! 删除完成 emit KeysDeleted，上层据此清理详情面板
 
 use gpui::{Context, Entity};
@@ -26,13 +27,12 @@ pub(super) fn node_context_menu(
     full_path: String,
     is_leaf: bool,
     is_namespace: bool,
-    db: u8,
 ) -> PopupMenu {
     let mut menu = menu;
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            PopupMenuItem::new("重命名 key…").on_click(move |_, window, app| {
+            PopupMenuItem::new("重命名 key").on_click(move |_, window, app| {
                 let (key, ent) = (key.clone(), ent.clone());
                 open_prompt(
                     "重命名 Key",
@@ -49,7 +49,7 @@ pub(super) fn node_context_menu(
         );
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            PopupMenuItem::new("删除 key…").on_click(move |_, window, app| {
+            PopupMenuItem::new("删除 key").on_click(move |_, window, app| {
                 let (key, ent) = (key.clone(), ent.clone());
                 open_confirm(
                     "删除 Key",
@@ -71,7 +71,7 @@ pub(super) fn node_context_menu(
     if is_namespace {
         let (prefix, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            PopupMenuItem::new("删除该前缀下全部 key…").on_click(move |_, window, app| {
+            PopupMenuItem::new("删除该前缀下全部 key").on_click(move |_, window, app| {
                 let (prefix, ent) = (prefix.clone(), ent.clone());
                 open_confirm(
                     "删除前缀下全部 Key",
@@ -90,24 +90,32 @@ pub(super) fn node_context_menu(
             }),
         );
     }
-    let ent = entity;
-    menu.separator()
-        .item(
-            PopupMenuItem::new(format!("清空当前 DB {db}…")).on_click(move |_, window, app| {
-                let ent = ent.clone();
-                open_confirm(
-                    "清空当前 DB",
-                    format!("将删除 DB {db} 的全部 key（FLUSHDB），此操作不可恢复。"),
-                    "清空",
-                    true,
-                    move |_, app| {
-                        ent.update(app, |this, cx| this.flush_db_op(cx));
-                    },
-                    window,
-                    app,
-                );
-            }),
-        )
+    menu
+}
+
+/// 工具栏「更多操作」下拉菜单：只放 DB 级毁灭性操作，
+/// 与 key 节点右键菜单隔离，避免误触
+pub(super) fn toolbar_more_menu(
+    menu: PopupMenu,
+    entity: Entity<KeyTreePanel>,
+    db: u8,
+) -> PopupMenu {
+    menu.item(
+        PopupMenuItem::new(format!("清空当前 DB {db}")).on_click(move |_, window, app| {
+            let ent = entity.clone();
+            open_confirm(
+                "清空当前 DB",
+                format!("将删除 DB {db} 的全部 key（FLUSHDB），此操作不可恢复。"),
+                "清空",
+                true,
+                move |_, app| {
+                    ent.update(app, |this, cx| this.flush_db_op(cx));
+                },
+                window,
+                app,
+            );
+        }),
+    )
 }
 
 // ===== 删除 / 重命名执行 =====

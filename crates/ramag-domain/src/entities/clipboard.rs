@@ -120,6 +120,10 @@ pub struct ClipboardSettings {
     pub blacklist: Vec<String>,
     /// 抽屉选中后自动粘贴（平台可能需要系统权限；false 仅复制）
     pub auto_paste: bool,
+    /// 全局热键改用主修饰键+Alt+V（默认 Shift 组合与部分应用「粘贴为纯文本」冲突时切换）。
+    /// serde 默认：旧版持久化 JSON 缺此字段时不整体回退默认设置
+    #[serde(default)]
+    pub alternate_hotkey: bool,
 }
 
 impl Default for ClipboardSettings {
@@ -130,6 +134,7 @@ impl Default for ClipboardSettings {
             max_item_bytes: 10 * 1024 * 1024,
             blacklist: Vec::new(),
             auto_paste: true,
+            alternate_hotkey: false,
         }
     }
 }
@@ -144,6 +149,32 @@ pub struct CapturedClip {
     pub files: Vec<String>,
     /// 带平台敏感/临时内容标记（密码管理器等），不应记录
     pub concealed: bool,
+}
+
+/// 来源标识的可执行文件名部分（按 / 与 \ 取末段；无分隔符则原样返回）
+fn source_basename(id: &str) -> &str {
+    id.rsplit(['/', '\\']).next().unwrap_or(id)
+}
+
+/// 黑名单条目与来源应用标识是否匹配。
+/// Windows 按可执行文件名大小写不敏感比较——安装目录常含版本号（如 Discord 的
+/// app-1.0.x），升级后全路径变化不应使黑名单失效；macOS bundle id 稳定，精确比较
+pub fn blacklist_matches(entry: &str, source_id: &str) -> bool {
+    if cfg!(target_os = "windows") {
+        source_basename(entry).eq_ignore_ascii_case(source_basename(source_id))
+    } else {
+        entry == source_id
+    }
+}
+
+/// 新增黑名单条目的存储形态：Windows 只存文件名（同一应用不同版本路径不重复入表），
+/// macOS 存 bundle id 原样
+pub fn normalize_blacklist_source(source_id: &str) -> String {
+    if cfg!(target_os = "windows") {
+        source_basename(source_id).to_string()
+    } else {
+        source_id.to_string()
+    }
 }
 
 /// fnv1a-64 内容指纹。std Hasher 不保证跨编译器版本稳定，落盘指纹必须自实现
@@ -260,6 +291,57 @@ fn file_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blacklist_matching_survives_versioned_install_dirs() {
+        assert_eq!(
+            source_basename(r"C:\Users\a\app-1.0.9016\Discord.exe"),
+            "Discord.exe"
+        );
+        assert_eq!(source_basename("com.apple.dt.Xcode"), "com.apple.dt.Xcode");
+        if cfg!(target_os = "windows") {
+            // 升级换目录 / 大小写差异均应命中；仅存文件名的新条目同样命中
+            assert!(blacklist_matches(
+                r"C:\Users\a\app-1.0.9016\Discord.exe",
+                r"c:\users\a\app-1.0.9017\discord.exe"
+            ));
+            assert!(blacklist_matches(
+                "Discord.exe",
+                r"C:\x\app-2.0\discord.exe"
+            ));
+            assert!(!blacklist_matches("Discord.exe", r"C:\x\Slack.exe"));
+            assert_eq!(
+                normalize_blacklist_source(r"C:\x\app-2.0\Discord.exe"),
+                "Discord.exe"
+            );
+        } else {
+            // macOS bundle id 精确匹配，路径式标识不做归一化
+            assert!(blacklist_matches(
+                "com.tencent.xinWeChat",
+                "com.tencent.xinWeChat"
+            ));
+            assert!(!blacklist_matches(
+                "Discord.exe",
+                r"C:\x\app-2.0\Discord.exe"
+            ));
+            assert_eq!(
+                normalize_blacklist_source("com.apple.dt.Xcode"),
+                "com.apple.dt.Xcode"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_json_without_new_fields_still_deserializes() {
+        // 旧版持久化 JSON（无 alternate_hotkey）必须能解析，否则用户设置会被整体重置
+        let old = r#"{"enabled":false,"capture_images":true,"max_item_bytes":1024,
+            "blacklist":["com.example.app"],"auto_paste":false}"#;
+        #[allow(clippy::unwrap_used)]
+        let parsed: ClipboardSettings = serde_json::from_str::<ClipboardSettings>(old).unwrap();
+        assert!(!parsed.enabled);
+        assert_eq!(parsed.blacklist, vec!["com.example.app".to_string()]);
+        assert!(!parsed.alternate_hotkey);
+    }
 
     #[test]
     fn fnv_hash_stable_known_values() {

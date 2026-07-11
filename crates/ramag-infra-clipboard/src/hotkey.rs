@@ -1,4 +1,4 @@
-//! 全局热键：Carbon `RegisterEventHotKey` 注册系统级快捷键（cmd-shift-V）。
+//! 全局热键：Carbon `RegisterEventHotKey` 注册系统级快捷键（cmd-shift-V / 备用 cmd-alt-V）。
 //! 事件回调在主线程触发，经 mpsc channel 转出，由 main.rs 的计时器轮询消费——
 //! 与采集循环同款模式，不引入第三方 global-hotkey 依赖
 
@@ -58,6 +58,7 @@ const EVENT_HOTKEY_PRESSED: u32 = 5;
 // Carbon 修饰键掩码
 const CMD_KEY: u32 = 0x0100;
 const SHIFT_KEY: u32 = 0x0200;
+const OPTION_KEY: u32 = 0x0800;
 // kVK_ANSI_V = 9
 const KEY_V: u32 = 9;
 
@@ -82,11 +83,19 @@ pub struct HotkeyListener {
     handler_ref: usize,
     hotkey_ref: usize,
     tx_ptr: usize,
+    /// 已注册组合名，注销日志用
+    combo: &'static str,
 }
 
 impl HotkeyListener {
-    /// 注册 cmd-shift-V。须在主线程、NSApplication 事件循环就绪后调用
-    pub fn register_clipboard_hotkey() -> Option<Self> {
+    /// 注册剪贴板热键（默认 cmd-shift-V，alternate 为 cmd-alt-V）。
+    /// 须在主线程、NSApplication 事件循环就绪后调用
+    pub fn register_clipboard_hotkey(alternate: bool) -> Option<Self> {
+        let (modifiers, combo) = if alternate {
+            (CMD_KEY | OPTION_KEY, "cmd-alt-v")
+        } else {
+            (CMD_KEY | SHIFT_KEY, "cmd-shift-v")
+        };
         let (tx, rx) = channel::<()>();
         // Sender 转裸指针交给 Carbon 回调；句柄存活期间常驻，注销时由 Drop 回收
         let tx_ptr = Box::into_raw(Box::new(tx)) as *mut c_void;
@@ -111,27 +120,21 @@ impl HotkeyListener {
                 id: 1,
             };
             let mut hotkey_ref: EventHotKeyRef = std::ptr::null_mut();
-            let status = RegisterEventHotKey(
-                KEY_V,
-                CMD_KEY | SHIFT_KEY,
-                hot_id,
-                target,
-                0,
-                &mut hotkey_ref,
-            );
+            let status = RegisterEventHotKey(KEY_V, modifiers, hot_id, target, 0, &mut hotkey_ref);
             if status != 0 {
-                warn!(status, "RegisterEventHotKey failed");
+                warn!(status, combo, "RegisterEventHotKey failed");
                 // 注册失败：回收已装的 handler 与 Sender，避免悬挂 handler 与内存泄漏
                 RemoveEventHandler(handler_ref);
                 drop(Box::from_raw(tx_ptr as *mut Sender<()>));
                 return None;
             }
-            info!("global hotkey cmd-shift-v registered");
+            info!(combo, "global clipboard hotkey registered");
             Some(Self {
                 rx,
                 handler_ref: handler_ref as usize,
                 hotkey_ref: hotkey_ref as usize,
                 tx_ptr: tx_ptr as usize,
+                combo,
             })
         }
     }
@@ -155,6 +158,6 @@ impl Drop for HotkeyListener {
             RemoveEventHandler(self.handler_ref as EventHandlerRef);
             drop(Box::from_raw(self.tx_ptr as *mut Sender<()>));
         }
-        info!("global hotkey cmd-shift-v unregistered");
+        info!(combo = self.combo, "global clipboard hotkey unregistered");
     }
 }

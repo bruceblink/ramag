@@ -74,7 +74,7 @@ impl Render for ConnectionListPanel {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .child(div().text_sm().text_color(muted_fg).child("加载中..."))
+                .child(div().text_sm().text_color(muted_fg).child("加载中…"))
                 .into_any_element()
         } else if total == 0 {
             empty_state(border, muted_fg, fg, accent, cx).into_any_element()

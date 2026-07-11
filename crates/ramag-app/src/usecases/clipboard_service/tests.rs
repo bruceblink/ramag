@@ -60,6 +60,29 @@ fn blacklist_uses_platform_path_case_rules() {
 }
 
 #[test]
+fn blacklist_survives_versioned_install_dir_upgrade() {
+    // Discord 式安装目录带版本号，升级后全路径变化但文件名不变
+    let mut s = settings();
+    s.blacklist
+        .push(r"C:\Users\a\AppData\Local\Discord\app-1.0.9016\Discord.exe".into());
+    let upgraded = ClipSource {
+        bundle_id: r"C:\Users\a\AppData\Local\Discord\app-1.0.9017\Discord.exe".into(),
+        name: "Discord".into(),
+    };
+    if cfg!(target_os = "windows") {
+        assert_eq!(
+            decide_capture(&text_clip("secret"), &s, Some(&upgraded)),
+            CaptureDecision::Skip("blacklisted")
+        );
+    } else {
+        assert!(matches!(
+            decide_capture(&text_clip("secret"), &s, Some(&upgraded)),
+            CaptureDecision::Record { .. }
+        ));
+    }
+}
+
+#[test]
 fn empty_and_oversize_text_skipped() {
     assert_eq!(
         decide_capture(&text_clip("   "), &settings(), None),

@@ -74,7 +74,7 @@ impl Render for ConnectionFormPanel {
 
         let test_msg = match &self.test_state {
             TestState::Idle => None,
-            TestState::Testing => Some(("测试中...".to_string(), muted_fg)),
+            TestState::Testing => Some(("测试中…".to_string(), muted_fg)),
             TestState::Success => Some(("✓ 连接成功".to_string(), gpui::green())),
             TestState::Failed(msg) => Some((msg.clone(), gpui::red())),
         };
@@ -198,7 +198,7 @@ impl Render for ConnectionFormPanel {
                                     .primary()
                                     .small()
                                     .label(if self.saving {
-                                        "保存中..."
+                                        "保存中…"
                                     } else {
                                         "保存"
                                     })

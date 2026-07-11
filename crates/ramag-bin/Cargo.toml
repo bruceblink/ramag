@@ -65,6 +65,17 @@ schemars = { workspace = true }
 directories = { workspace = true }
 rfd = { workspace = true }
 
+# Windows 平台集成：系统托盘（Shell_NotifyIcon）+ 单实例（命名互斥体/事件）
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.57", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 # Windows exe 图标嵌入（build.rs 用；winresource 跨平台可编，仅 target=windows 时真正嵌入）
 [build-dependencies]
 winresource = "0.1"

@@ -310,7 +310,7 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.loading_diff {
-            return placeholder("拉取中...", muted_fg);
+            return placeholder("拉取中…", muted_fg);
         }
         // Untracked 不再短路：读盘伪 diff 已写入 current_diff，走正常渲染
         if matches!(kind, GroupKind::Conflict) {

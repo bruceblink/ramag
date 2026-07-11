@@ -25,7 +25,7 @@ pub(super) fn collection_context_menu(
     } else {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("重命名…").on_click(move |_, window, app| {
+            PopupMenuItem::new("重命名").on_click(move |_, window, app| {
                 let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
                 open_prompt(
                     "重命名集合",
@@ -47,7 +47,7 @@ pub(super) fn collection_context_menu(
     } else {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("清空集合…").on_click(move |_, window, app| {
+            PopupMenuItem::new("清空集合").on_click(move |_, window, app| {
                 let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
                 open_confirm(
                     "清空集合",
@@ -66,13 +66,13 @@ pub(super) fn collection_context_menu(
 
     let (label, title, desc) = if is_view {
         (
-            "删除视图…",
+            "删除视图",
             "删除视图",
             format!("将删除视图 {db}.{coll}（仅删除视图定义，不影响源集合数据）。"),
         )
     } else {
         (
-            "删除集合…",
+            "删除集合",
             "删除集合",
             format!("将永久删除集合 {db}.{coll}（文档与索引一并删除），此操作不可恢复。"),
         )
@@ -100,7 +100,7 @@ pub(super) fn database_context_menu(
     db: String,
 ) -> PopupMenu {
     menu.item(
-        PopupMenuItem::new("删除数据库…").on_click(move |_, window, app| {
+        PopupMenuItem::new("删除数据库").on_click(move |_, window, app| {
             let (db, ent) = (db.clone(), entity.clone());
             open_confirm(
                 "删除数据库",

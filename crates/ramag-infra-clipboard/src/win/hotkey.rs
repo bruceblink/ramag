@@ -1,4 +1,4 @@
-//! 全局热键：Win32 RegisterHotKey 注册 Ctrl-Shift-V（对应 macOS 的 cmd-shift-V）。
+//! 全局热键：Win32 RegisterHotKey 注册 Ctrl-Shift-V（备用 Ctrl-Alt-V，对应 macOS 侧组合）。
 //! RegisterHotKey 的 WM_HOTKEY 投递到注册线程的消息队列，故需一条专属线程跑消息泵，
 //! 事件经 mpsc channel 转出，由 main.rs 计时器轮询消费（与 macOS 侧同款模式）。
 
@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_V,
+    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_HOTKEY, WM_QUIT, WM_USER,
@@ -22,18 +22,26 @@ pub struct HotkeyListener {
     rx: Receiver<()>,
     thread_id: u32,
     handle: Option<JoinHandle<()>>,
+    /// 已注册组合名，注销日志用
+    combo: &'static str,
 }
 
 impl HotkeyListener {
-    /// 注册 Ctrl-Shift-V。启一条线程注册热键并跑消息泵；注册失败返回 None（不影响其余功能）
-    pub fn register_clipboard_hotkey() -> Option<Self> {
+    /// 注册剪贴板热键（默认 Ctrl-Shift-V，alternate 为 Ctrl-Alt-V）。
+    /// 启一条线程注册热键并跑消息泵；注册失败返回 None（不影响其余功能）
+    pub fn register_clipboard_hotkey(alternate: bool) -> Option<Self> {
+        let combo = if alternate {
+            "ctrl-alt-v"
+        } else {
+            "ctrl-shift-v"
+        };
         let (tx, rx) = channel::<()>();
         // 用于把线程 id / 注册结果回传主线程
         let (ready_tx, ready_rx) = channel::<Option<u32>>();
 
         let handle = match std::thread::Builder::new()
             .name("ramag-hotkey".into())
-            .spawn(move || hotkey_thread(tx, ready_tx))
+            .spawn(move || hotkey_thread(alternate, tx, ready_tx))
         {
             Ok(handle) => handle,
             Err(error) => {
@@ -44,11 +52,12 @@ impl HotkeyListener {
 
         match ready_rx.recv() {
             Ok(Some(thread_id)) => {
-                info!("global hotkey ctrl-shift-v registered");
+                info!(combo, "global clipboard hotkey registered");
                 Some(Self {
                     rx,
                     thread_id,
                     handle: Some(handle),
+                    combo,
                 })
             }
             Ok(None) => {
@@ -74,13 +83,14 @@ impl HotkeyListener {
 }
 
 /// 热键线程：注册 → 回传结果 → 消息泵；收到 WM_HOTKEY 转发信号，收到 WM_QUIT 退出并注销
-fn hotkey_thread(tx: Sender<()>, ready_tx: Sender<Option<u32>>) {
+fn hotkey_thread(alternate: bool, tx: Sender<()>, ready_tx: Sender<Option<u32>>) {
     unsafe {
         let thread_id = GetCurrentThreadId();
         // 显式创建消息队列，确保主线程收到 ready 后可可靠投递 WM_QUIT。
         let mut queue_probe = MSG::default();
         let _ = PeekMessageW(&mut queue_probe, None, WM_USER, WM_USER, PM_NOREMOVE);
-        let modifiers = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+        let second = if alternate { MOD_ALT } else { MOD_SHIFT };
+        let modifiers = MOD_CONTROL | second | MOD_NOREPEAT;
         if let Err(error) = RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32) {
             warn!(error = %error, "RegisterHotKey failed");
             let _ = ready_tx.send(None);
@@ -144,7 +154,7 @@ impl Drop for HotkeyListener {
             }
         }
         if stopped {
-            info!("global hotkey ctrl-shift-v unregistered");
+            info!(combo = self.combo, "global clipboard hotkey unregistered");
         }
     }
 }

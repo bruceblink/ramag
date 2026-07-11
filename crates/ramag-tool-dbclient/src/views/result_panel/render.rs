@@ -59,7 +59,7 @@ impl Render for ResultPanel {
                 .justify_center()
                 .text_color(muted_fg)
                 .text_xs()
-                .child("执行中...")
+                .child("执行中…")
                 .into_any_element(),
 
             ResultState::Error(msg) => {

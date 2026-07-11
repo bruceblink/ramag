@@ -169,7 +169,7 @@ impl Render for ValueEditForm {
                                 Button::new("ve-save")
                                     .primary()
                                     .small()
-                                    .label(if submitting { "保存中..." } else { "保存" })
+                                    .label(if submitting { "保存中…" } else { "保存" })
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         if !matches!(this.state, SubmitState::Submitting) {
                                             this.handle_save(cx);

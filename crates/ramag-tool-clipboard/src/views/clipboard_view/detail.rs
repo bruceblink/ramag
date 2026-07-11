@@ -7,7 +7,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
-use ramag_domain::entities::{ClipItem, ClipKind};
+use ramag_domain::entities::{ClipItem, ClipKind, blacklist_matches};
 use ramag_ui::platform::file_manager_reveal_label;
 
 use super::ClipboardView;
@@ -116,7 +116,7 @@ impl ClipboardView {
                 .settings
                 .blacklist
                 .iter()
-                .any(|id| id == &source.bundle_id)
+                .any(|id| blacklist_matches(id, &source.bundle_id))
         {
             let source_id = source.bundle_id.clone();
             buttons.push(

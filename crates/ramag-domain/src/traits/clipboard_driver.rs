@@ -26,7 +26,8 @@ pub trait ClipboardDriver: Send + Sync {
     /// 写文件路径列表回剪贴板
     fn write_files(&self, paths: &[String]) -> Result<()>;
 
-    /// 当前前台应用（采集来源标注）
+    /// 采集来源应用标注。实现可返回比「当前前台应用」更精确的来源
+    /// （如 Windows 返回最近一次 read 时的剪贴板 owner 进程）
     fn frontmost_app(&self) -> Option<ClipSource>;
 
     /// 当前前台应用的短期激活标识。默认复用应用 id；平台可覆盖为更精确的窗口标识。

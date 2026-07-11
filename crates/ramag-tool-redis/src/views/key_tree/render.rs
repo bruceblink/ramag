@@ -119,10 +119,9 @@ impl KeyTreePanel {
             row_el = row_el.hover(move |this| this.bg(row_hover));
         }
 
-        // 右键菜单：删除 key / 删除前缀 / 清空当前 DB（按节点身份组合菜单项）
+        // 右键菜单：删除 key / 删除前缀（按节点身份组合；清空 DB 在工具栏「更多操作」）
         let entity_for_menu = cx.entity().clone();
         let path_for_menu = row.full_path.clone();
-        let db = self.db;
         row_el.context_menu(move |menu: PopupMenu, _, _| {
             super::ops::node_context_menu(
                 menu,
@@ -130,7 +129,6 @@ impl KeyTreePanel {
                 path_for_menu.clone(),
                 is_leaf,
                 is_namespace,
-                db,
             )
         })
     }
