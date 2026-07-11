@@ -6192,6 +6192,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures",
  "hex",
  "image",
  "parking_lot",

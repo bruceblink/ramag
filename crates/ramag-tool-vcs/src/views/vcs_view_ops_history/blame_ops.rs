@@ -25,10 +25,10 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        if self.inline_blame_text.as_deref() == Some("加载行作者信息...") {
+        if self.inline_blame_text.as_deref() == Some("加载行作者信息…") {
             return;
         }
-        self.inline_blame_text = Some("加载行作者信息...".into());
+        self.inline_blame_text = Some("加载行作者信息…".into());
         cx.notify();
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
@@ -89,7 +89,7 @@ impl VcsView {
                 self.showing_blame = false;
             }
         } else {
-            self.blame_lines.clear();
+            self.blame_lines = std::rc::Rc::new(Vec::new());
         }
         cx.notify();
     }
@@ -101,7 +101,7 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         self.loading_blame = true;
-        self.blame_lines = Vec::new();
+        self.blame_lines = std::rc::Rc::new(Vec::new());
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.blame(&repo, &path).await;
@@ -112,7 +112,7 @@ impl VcsView {
                     return;
                 }
                 match result {
-                    Ok(lines) => this.blame_lines = lines,
+                    Ok(lines) => this.blame_lines = std::rc::Rc::new(lines),
                     Err(e) => {
                         error!(error = %e, %path, "vcs: blame failed");
                         this.error = Some(format!("Blame 失败：{e}"));

@@ -19,16 +19,16 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some(match &op {
+        let label = match &op {
             BranchOp::Checkout(_) => "切换分支中…",
             BranchOp::Create(_, _) => "创建分支中…",
             BranchOp::Delete(_, _) => "删除分支中…",
             BranchOp::Merge(_) => "合并中…",
             BranchOp::Rebase(_) => "Rebase 中…",
-        });
-        self.error = None;
-        cx.notify();
+        };
+        if !self.begin_op(label, cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = match &op {
@@ -106,7 +106,7 @@ impl VcsView {
         self.current_diff = None;
         self.current_file_content = None;
         self.commit_file_diff = None;
-        self.blame_lines.clear();
+        self.blame_lines = std::rc::Rc::new(Vec::new());
 
         self.refresh_current_files_view(cx);
         // Changes tabs 对齐新 status（关已无变更的 / 重定向组别），active 是 Changes 时由它重拉
@@ -234,9 +234,12 @@ impl VcsView {
                     Ok(commits) => {
                         let got = commits.len();
                         if skip == 0 {
-                            this.history_commits = commits;
+                            this.set_history_commits(commits);
                         } else {
-                            this.history_commits.extend(commits);
+                            // 分页追加低频，重建 Vec 换取 Rc 共享 + lane 缓存一致性
+                            let mut all = (*this.history_commits).clone();
+                            all.extend(commits);
+                            this.set_history_commits(all);
                         }
                         this.history_has_more = got >= HISTORY_PAGE_SIZE;
                     }
@@ -264,10 +267,9 @@ impl VcsView {
         let amend = self.commit_amend;
         let sign = self.commit_sign;
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("提交中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("提交中…", cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = driver.commit(&repo, &message, amend, sign).await;
@@ -325,8 +327,14 @@ impl VcsView {
             return;
         }
         let driver = self.driver.clone();
-        self.busy = true;
-        cx.notify();
+        let label = match op {
+            FileOp::Stage => "暂存中…",
+            FileOp::Unstage => "取消暂存中…",
+            FileOp::Discard => "丢弃改动中…",
+        };
+        if !self.begin_op(label, cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = match op {
@@ -364,7 +372,12 @@ impl VcsView {
                     }
                     Err(e) => {
                         error!(error = %e, ?op, ?paths, "vcs: file op failed");
-                        this.error = Some(format!("操作失败：{e}"));
+                        let action = match op {
+                            FileOp::Stage => "暂存",
+                            FileOp::Unstage => "取消暂存",
+                            FileOp::Discard => "丢弃改动",
+                        };
+                        this.error = Some(format!("{action}失败：{e}"));
                     }
                 }
                 cx.notify();

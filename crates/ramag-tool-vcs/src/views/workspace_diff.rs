@@ -231,12 +231,14 @@ impl VcsView {
             .ghost()
             .xsmall()
             .icon(IconName::Eye)
-            .tooltip(if self.showing_blame {
+            .tooltip(if self.loading_blame {
+                "加载 blame 中…"
+            } else if self.showing_blame {
                 "关闭 blame（不再点行号查看作者）"
             } else {
                 "启用 blame（点行号查看该行最后改人）"
             })
-            .disabled(!blame_supported)
+            .disabled(!blame_supported || self.loading_blame)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_blame(cx);
             }));
@@ -291,6 +293,9 @@ impl VcsView {
                     .text_ellipsis()
                     .child(path.to_string()),
             )
+            .when(self.loading_blame, |row| {
+                row.child(div().text_xs().text_color(accent).child("blame 加载中…"))
+            })
             .child(blame_btn)
             .child(view_mode_btn)
             .into_any_element()

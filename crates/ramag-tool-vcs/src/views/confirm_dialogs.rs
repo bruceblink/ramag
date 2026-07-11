@@ -120,6 +120,61 @@ impl VcsView {
         );
     }
 
+    /// hunk 回滚：Staged→unstage 可逆直接执行；Unstaged→discard 不可恢复，先确认
+    pub(super) fn confirm_discard_hunk(
+        &mut self,
+        hunk_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_changes_kind_is_staged() {
+            self.discard_hunk(hunk_idx, cx);
+            return;
+        }
+        let view = cx.entity();
+        open_confirm_dialog(
+            view,
+            "丢弃此 hunk？",
+            "将丢弃这一段（hunk）在工作区的未暂存改动，且无法恢复。\n确认继续吗？".into(),
+            "丢弃",
+            true,
+            move |this, cx| this.discard_hunk(hunk_idx, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// 交互式 rebase 执行前确认：改写历史 + Drop 不可恢复 + 已推送需强推
+    pub(super) fn confirm_execute_rebase(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use ramag_domain::entities::RebaseAction;
+        let total = self.rebase_todos.len();
+        let dropped = self
+            .rebase_todos
+            .iter()
+            .filter(|todo| todo.action == RebaseAction::Drop)
+            .count();
+        let drop_part = if dropped > 0 {
+            format!("，其中 {dropped} 个将被丢弃（不可恢复）")
+        } else {
+            String::new()
+        };
+        let view = cx.entity();
+        open_confirm_dialog(
+            view,
+            "执行交互式 Rebase？",
+            format!(
+                "将按计划改写 {total} 个 commit 的历史{drop_part}。\n\
+                 改写后的 commit 会获得新的 hash；若这些 commit 已推送到远程，完成后需要强推。\n\
+                 确认执行吗？"
+            ),
+            "执行 Rebase",
+            true,
+            move |this, cx| this.execute_interactive_rebase(cx),
+            window,
+            cx,
+        );
+    }
+
     /// 分支操作；Delete / Merge / Rebase 弹确认（Checkout / Create 不弹）
     /// reflog checkout 到 commit（detached HEAD）：脏工作区先走 stash/discard 引导（同分支 checkout），
     /// 干净则直接 checkout_reflog_entry（保留切回 commit 历史的行为）

@@ -11,7 +11,7 @@ use gpui::{
     ScrollHandle, SharedString, Styled, UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _,
+    ActiveTheme, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -78,7 +78,7 @@ fn is_one_sided(diff: &FileDiff) -> bool {
 /// 渲染整个文件的 diff（Split 模式，IDEA 风格双栏独立横滚 + sticky gutter + 中间列）
 #[allow(clippy::too_many_arguments)]
 pub fn render_file_diff_split(
-    diff: &FileDiff,
+    diff: &Rc<FileDiff>,
     enable_discard: bool,
     changes_only: bool,
     // false=不折叠长 Context（FullFile 模式展示所有内容）
@@ -96,10 +96,10 @@ pub fn render_file_diff_split(
     expanded_spacers: &HashSet<(usize, usize)>,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    if let Some(empty) = render_diff_empty(diff, muted_fg) {
+    if let Some(empty) = render_diff_empty(diff.as_ref(), muted_fg) {
         return empty;
     }
-    if is_one_sided(diff) {
+    if is_one_sided(diff.as_ref()) {
         return render_file_diff(
             diff,
             changes_only,
@@ -114,7 +114,8 @@ pub fn render_file_diff_split(
         );
     }
 
-    let diff_rc: Rc<FileDiff> = Rc::new(diff.clone());
+    // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
+    let diff_rc: Rc<FileDiff> = diff.clone();
     let keys: Rc<Vec<SplitKey>> = Rc::new(build_split_keys(
         &diff_rc,
         changes_only,
@@ -409,15 +410,17 @@ fn build_middle_list(
             // blame 仅在开启 blame 且已加载时取数据，按 new_lineno 匹配
             let blame_rc: Option<Rc<Vec<ramag_domain::entities::BlameLine>>> =
                 if has_blame && this.showing_blame && !this.blame_lines.is_empty() {
-                    Some(Rc::new(this.blame_lines.clone()))
+                    Some(this.blame_lines.clone())
                 } else {
                     None
                 };
+            let staged_diff = this.active_changes_kind_is_staged();
+            let busy = this.busy;
             range
                 .map(|i| {
                     // hunk 中点行 + 可回滚：渲染居中回滚按钮（替换该行 blame，仿 VSCode）
                     if enable_discard && let Some(&hunk_idx) = button_rows.get(&i) {
-                        return render_middle_revert(hunk_idx, cx);
+                        return render_middle_revert(hunk_idx, staged_diff, busy, cx);
                     }
                     match keys[i] {
                         SplitKey::Header { .. } => div()
@@ -459,8 +462,19 @@ fn build_middle_list(
     .min_h_0()
 }
 
-/// 中间列回滚按钮：放在 hunk 中点行、水平居中（仿 VSCode；仅 enable_discard 时渲染到此）
-fn render_middle_revert(hunk_idx: usize, cx: &mut Context<VcsView>) -> AnyElement {
+/// 中间列回滚按钮：放在 hunk 中点行、水平居中（仿 VSCode；仅 enable_discard 时渲染到此）。
+/// 未暂存 hunk 的回滚是不可恢复的丢弃，tooltip 明示后果，点击后经确认框执行
+fn render_middle_revert(
+    hunk_idx: usize,
+    staged: bool,
+    busy: bool,
+    cx: &mut Context<VcsView>,
+) -> AnyElement {
+    let tip = if staged {
+        "将此 hunk 移出暂存区（可再次暂存）"
+    } else {
+        "丢弃此 hunk 的工作区改动（不可恢复）"
+    };
     h_flex()
         .w_full()
         .h(px(DIFF_ROW_H))
@@ -471,9 +485,10 @@ fn render_middle_revert(hunk_idx: usize, cx: &mut Context<VcsView>) -> AnyElemen
                 .ghost()
                 .xsmall()
                 .icon(gpui_component::IconName::Undo)
-                .tooltip("回滚此 hunk（Staged→unstage / Unstaged→discard）")
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.discard_hunk(hunk_idx, cx);
+                .tooltip(tip)
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.confirm_discard_hunk(hunk_idx, window, cx);
                 })),
         )
         .into_any_element()

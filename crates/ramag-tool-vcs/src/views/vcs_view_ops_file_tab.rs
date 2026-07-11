@@ -14,11 +14,19 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        // 切换文件 → 清 spacer 展开态（hunk_idx 随 diff 变化，跨文件保留无意义）
-        self.expanded_diff_spacers.clear();
-        // 横滚归位，否则新文件停在上个文件的横滚位置、看不到行首
-        self.diff_h_scroll
-            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+        // 视觉复位仅在真正换文件时执行：外部改动触发的静默刷新会对同一文件重走
+        // select_file，若无条件归零会打断用户正在进行的 diff 阅读（滚动/展开态丢失）
+        let same_file = self.selected_file.as_ref() == Some(&(path.clone(), kind));
+        if !same_file {
+            // 清 spacer 展开态（hunk_idx 随 diff 变化，跨文件保留无意义）
+            self.expanded_diff_spacers.clear();
+            // 横滚归位，否则新文件停在上个文件的横滚位置、看不到行首
+            self.diff_h_scroll
+                .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+            // 纵向同样回顶：从长文件底部切到短文件时避免停在越界位置
+            self.diff_scroll
+                .scroll_to_item(0, gpui::ScrollStrategy::Top);
+        }
         // 点击 Changes 文件 → 关掉 commit detail，避免主区残留 commit diff
         if self.viewing_commit.is_some() {
             self.viewing_commit = None;
@@ -97,6 +105,7 @@ impl VcsView {
                 }
                 match result {
                     Ok(d) => {
+                        let d = std::rc::Rc::new(d);
                         this.current_diff = Some(d.clone());
                         // 缓存到对应 tab
                         if let Some(idx) = active_idx
@@ -171,7 +180,7 @@ impl VcsView {
                 }
                 match raw {
                     Some(raw) if raw.error.is_none() => {
-                        let d = build_untracked_diff(raw);
+                        let d = std::rc::Rc::new(build_untracked_diff(raw));
                         if let Some(tab) = this.file_tabs.iter_mut().find(|t| {
                             t.path == path
                                 && t.source == FileTabSource::Changes(GroupKind::Untracked)

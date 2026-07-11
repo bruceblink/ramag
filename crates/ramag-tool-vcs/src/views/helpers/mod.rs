@@ -13,9 +13,6 @@ use ramag_domain::entities::{FileChangeKind, FileDiff};
 
 use super::vcs_view::VcsView;
 
-// 重导出，让外部 import 不感知 graph 文件位置
-pub(super) use super::commit_graph::build_commit_lanes;
-
 /// 主视图当前展示模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ViewMode {
@@ -151,7 +148,7 @@ pub(super) struct FileTab {
     pub path: String,
     pub source: FileTabSource,
     /// Changes 来源拉到的 diff（ProjectFiles 始终 None）
-    pub cached_diff: Option<FileDiff>,
+    pub cached_diff: Option<std::rc::Rc<FileDiff>>,
     /// ProjectFiles 来源读到的文件内容快照（Changes 始终 None）
     pub cached_content: Option<FileContentSnapshot>,
 }
@@ -200,6 +197,35 @@ pub(super) enum OperationStep {
     Continue,
     Abort,
     Skip,
+}
+
+/// 进行中操作与步骤的用户可见名称（错误横幅用，避免暴露 Debug 枚举名）
+pub(super) fn operation_label(op: ramag_domain::entities::RepoOperation) -> &'static str {
+    use ramag_domain::entities::RepoOperation;
+    match op {
+        RepoOperation::Merge => "合并",
+        RepoOperation::Rebase => "Rebase",
+        RepoOperation::CherryPick => "Cherry-pick",
+        RepoOperation::Revert => "Revert",
+    }
+}
+
+pub(super) fn step_label(step: OperationStep) -> &'static str {
+    match step {
+        OperationStep::Continue => "继续",
+        OperationStep::Abort => "中止",
+        OperationStep::Skip => "跳过",
+    }
+}
+
+/// Reset 模式的用户可见名（与右键菜单里的 --soft/--mixed/--hard 写法一致）
+pub(super) fn reset_kind_label(kind: ramag_domain::entities::ResetKind) -> &'static str {
+    use ramag_domain::entities::ResetKind;
+    match kind {
+        ResetKind::Soft => "--soft",
+        ResetKind::Mixed => "--mixed",
+        ResetKind::Hard => "--hard",
+    }
 }
 
 /// Tag 操作（创建 / 删除 / 推送）

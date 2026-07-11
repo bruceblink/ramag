@@ -40,21 +40,24 @@ impl VcsView {
             return;
         }
         let driver = self.driver.clone();
+        // 操作前的 ahead/behind：完成后据此区分「真的推/拉了 N 个」与「本来就是最新」
+        let pre_ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
+        let pre_behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
         let op_label = match op {
             RemoteOp::Fetch => "Fetch",
             RemoteOp::Pull => "Pull",
             RemoteOp::Push => "Push",
             RemoteOp::PushForce => "强推",
         };
-        self.busy = true;
-        self.busy_label = Some(match op {
+        let label = match op {
             RemoteOp::Fetch => "Fetch 中…",
             RemoteOp::Pull => "Pull 中…",
             RemoteOp::Push => "Push 中…",
             RemoteOp::PushForce => "强推中…",
-        });
-        self.error = None;
-        cx.notify();
+        };
+        if !self.begin_op(label, cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = match op {
@@ -105,13 +108,29 @@ impl VcsView {
                     }
                     Ok(_) => {
                         info!(?op, "vcs: remote op done");
+                        // fetch 后 behind 增加 = 远端有新 commit 被发现
+                        let post_behind =
+                            this.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
                         let msg = match op {
-                            RemoteOp::Fetch => "Fetch 完成".to_string(),
-                            RemoteOp::Pull => format!("Pull 完成（{remote_name}/{remote_branch}）"),
+                            RemoteOp::Fetch if post_behind > pre_behind => {
+                                format!("Fetch 完成：发现 {} 个新 commit", post_behind - pre_behind)
+                            }
+                            RemoteOp::Fetch => "Fetch 完成：已是最新".to_string(),
+                            RemoteOp::Pull if pre_behind == 0 => {
+                                format!("已是最新（{remote_name}/{remote_branch} 无新 commit）")
+                            }
+                            RemoteOp::Pull => format!(
+                                "Pull 完成：合入 {pre_behind} 个 commit（{remote_name}/{remote_branch}）"
+                            ),
                             RemoteOp::Push if need_set_upstream => {
                                 format!("Push 成功，已设置 upstream {remote_name}/{local_branch}")
                             }
-                            RemoteOp::Push => format!("Push 成功（{remote_name}/{local_branch}）"),
+                            RemoteOp::Push if pre_ahead == 0 => {
+                                format!("已是最新（{remote_name}/{local_branch} 无待推送 commit）")
+                            }
+                            RemoteOp::Push => format!(
+                                "Push 成功：已推送 {pre_ahead} 个 commit（{remote_name}/{local_branch}）"
+                            ),
                             RemoteOp::PushForce => {
                                 format!("强推成功（{remote_name}/{local_branch}）")
                             }

@@ -215,7 +215,10 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
-                    .tooltip("刷新工作区状态（切回窗口时也会自动刷新）")
+                    .tooltip(format!(
+                        "刷新工作区状态（{}；切回窗口时也会自动刷新）",
+                        ramag_ui::platform::primary_shortcut("R")
+                    ))
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_workspace_silent(cx);
@@ -235,11 +238,11 @@ impl VcsView {
                     } else {
                         IconName::PanelBottomOpen
                     })
-                    .tooltip(if history_visible {
-                        "隐藏历史 / Reflog 面板"
-                    } else {
-                        "显示历史 / Reflog 面板"
-                    })
+                    .tooltip(format!(
+                        "{}历史 / Reflog 面板（{}）",
+                        if history_visible { "隐藏" } else { "显示" },
+                        ramag_ui::platform::primary_shift_shortcut("H")
+                    ))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.toggle_history_pane(cx);
                     })),
@@ -319,7 +322,7 @@ impl VcsView {
                         .find(|(_, is_head, _)| *is_head)
                         .map(|(n, _, _)| n.clone())
                         .unwrap_or_else(|| "(HEAD)".into());
-                    m = m.item(PopupMenuItem::new("✦ 新建分支...").on_click({
+                    m = m.item(PopupMenuItem::new("新建分支").on_click({
                         let ent = ent_new.clone();
                         let hdlg = head_for_dlg.clone();
                         let local_for_dlg = local

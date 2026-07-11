@@ -71,7 +71,7 @@ fn render_left_sidebar(
         .child(close_btn)
         .child(
             div()
-                .font_family(mono)
+                .font_family(mono.clone())
                 .text_xs()
                 .text_color(accent)
                 .child(commit.id.short().to_string()),
@@ -85,8 +85,22 @@ fn render_left_sidebar(
                 .overflow_hidden()
                 .text_ellipsis()
                 .child(format!("{} 个文件", view.commit_files.len())),
-        );
+        )
+        .child({
+            let full_sha = commit.id.0.clone();
+            Button::new("vcs-commit-copy-sha")
+                .ghost()
+                .xsmall()
+                .icon(ramag_ui::icons::copy())
+                .tooltip("复制完整 SHA")
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(full_sha.clone()));
+                    this.notify_success("已复制完整 SHA", cx);
+                }))
+        });
 
+    // commit 元信息：完整 subject / body / 作者 / 时间——列表行里被截断的内容在此完整可读
+    let meta = render_commit_meta(commit, fg, muted_fg, border, mono);
     let body = render_files_tree(view, fg, muted_fg, cx);
 
     v_flex()
@@ -94,8 +108,56 @@ fn render_left_sidebar(
         .border_l_1()
         .border_color(border)
         .child(head)
+        .child(meta)
         .child(body)
         .into_any_element()
+}
+
+/// commit 元信息块：subject 完整换行展示，body 限高滚动，作者 + 邮箱 + 绝对时间
+fn render_commit_meta(
+    commit: &Commit,
+    fg: gpui::Hsla,
+    muted_fg: gpui::Hsla,
+    border: gpui::Hsla,
+    mono: SharedString,
+) -> AnyElement {
+    let author = &commit.author;
+    let when = author.timestamp.format("%Y-%m-%d %H:%M").to_string();
+    let mut meta = v_flex()
+        .flex_none()
+        .gap(px(4.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .border_b_1()
+        .border_color(border)
+        .child(
+            div()
+                .text_sm()
+                .text_color(fg)
+                .whitespace_normal()
+                .child(commit.subject.clone()),
+        );
+    let body_text = commit.body.trim().to_string();
+    if !body_text.is_empty() {
+        meta = meta.child(
+            div()
+                .id("vcs-commit-detail-body")
+                .max_h(px(140.0))
+                .overflow_y_scroll()
+                .text_xs()
+                .text_color(muted_fg)
+                .font_family(mono)
+                .whitespace_normal()
+                .child(body_text),
+        );
+    }
+    meta.child(
+        div()
+            .text_xs()
+            .text_color(muted_fg)
+            .child(format!("{} <{}> · {when}", author.name, author.email)),
+    )
+    .into_any_element()
 }
 
 /// 树状文件列表：build_tree → flatten → uniform_list 行级虚拟化渲染
@@ -112,7 +174,7 @@ fn render_files_tree(
             .justify_center()
             .text_xs()
             .text_color(muted_fg)
-            .child("加载文件列表...")
+            .child("加载文件列表…")
             .into_any_element();
     }
     if view.commit_files.is_empty() {

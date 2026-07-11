@@ -34,6 +34,7 @@ pub(in crate::views) fn render_commit_row(
 
     let entity = cx.entity().clone();
     let cid = c.id.0.clone();
+    let message_full = c.message_full();
 
     // refs chips（紧贴 subject 后）
     let mut refs_row = h_flex().gap(px(4.0)).flex_none();
@@ -121,16 +122,32 @@ pub(in crate::views) fn render_commit_row(
         row = row.bg(sel_bg);
     }
 
-    // 右键菜单：cherry-pick / revert / reset
+    // 右键菜单：复制 / cherry-pick / revert / reset
     row.context_menu({
         let entity = entity.clone();
         let cid = cid.clone();
+        let message_full = message_full.clone();
         move |menu: PopupMenu, _, _| {
             let (e1, c1) = (entity.clone(), cid.clone());
             let (e2, c2) = (entity.clone(), cid.clone());
             let (e3, c3) = (entity.clone(), cid.clone());
-            menu.item(PopupMenuItem::new("Cherry-pick 到当前 HEAD").on_click(
-                move |_, window, app| {
+            let (e_sha, c_sha) = (entity.clone(), cid.clone());
+            let (e_msg, msg) = (entity.clone(), message_full.clone());
+            menu.item(
+                PopupMenuItem::new("复制完整 SHA").on_click(move |_, _, app| {
+                    app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
+                    e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
+                }),
+            )
+            .item(
+                PopupMenuItem::new("复制提交信息").on_click(move |_, _, app| {
+                    app.write_to_clipboard(gpui::ClipboardItem::new_string(msg.clone()));
+                    e_msg.update(app, |this, cx| this.notify_success("已复制提交信息", cx));
+                }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("Cherry-pick 到当前 HEAD").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c1.chars().take(7).collect();
                     let c = c1.clone();
@@ -147,8 +164,8 @@ pub(in crate::views) fn render_commit_row(
                         window,
                         app,
                     );
-                },
-            ))
+                }),
+            )
             .item(PopupMenuItem::new("Revert（生成反向 commit）").on_click(
                 move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
@@ -178,8 +195,9 @@ pub(in crate::views) fn render_commit_row(
                         e3.clone(),
                         "Reset --mixed？",
                         format!(
-                            "将 HEAD 移到「{short}」并重置暂存区（工作区保留）。\n\
-                             未提交的暂存内容会回到未暂存状态。"
+                            "将 HEAD 移到「{short}」：该 commit 之后的提交会离开当前分支\
+                             （可在 reflog 找回），它们的改动与未提交的暂存内容一起回到\
+                             未暂存状态（工作区文件保留）。"
                         ),
                         "Reset",
                         false,

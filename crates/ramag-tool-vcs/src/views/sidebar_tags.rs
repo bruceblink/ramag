@@ -126,7 +126,7 @@ pub(super) fn tag_row(
         )
         .child(
             h_flex()
-                .gap(px(2.0))
+                .gap(px(6.0))
                 .flex_none()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();

@@ -77,14 +77,17 @@ pub struct VcsView {
     pub(super) pending_commit_text: Option<SharedString>,
     /// 当前选中查看 diff 的文件（path + 来源分组）
     pub(super) selected_file: Option<(String, GroupKind)>,
-    /// 当前文件的 diff 快照
-    pub(super) current_diff: Option<FileDiff>,
+    /// 当前文件的 diff 快照（Rc：渲染层多列表零拷贝共享，不每帧 clone 全量 diff）
+    pub(super) current_diff: Option<std::rc::Rc<FileDiff>>,
     /// diff 是否正在拉取中
     pub(super) loading_diff: bool,
     /// 视图模式：工作区 / 历史
     pub(super) view_mode: ViewMode,
-    /// History 累积的 commit 列表（按页 append）
-    pub(super) history_commits: Vec<Commit>,
+    /// History 累积的 commit 列表（按页 append）。Rc 供 uniform_list 闭包零拷贝共享，
+    /// 一律经 set_history_commits 写入（同步维护 lane 预计算）
+    pub(super) history_commits: std::rc::Rc<Vec<Commit>>,
+    /// history_commits 的 lane 图预计算（render 直接用，不每帧重算）
+    pub(super) history_graph_rows: std::rc::Rc<Vec<super::commit_graph::CommitGraphRow>>,
     /// History 是否还可能有下一页（上次拉满 PAGE_SIZE 即认为有）
     pub(super) history_has_more: bool,
     /// History 是否正在拉取中
@@ -123,8 +126,8 @@ pub struct VcsView {
     pub(super) commit_files: Vec<FileStatus>,
     /// 详情视图当前选中查看 diff 的文件
     pub(super) selected_commit_file: Option<String>,
-    /// 详情视图当前文件的 diff 快照
-    pub(super) commit_file_diff: Option<FileDiff>,
+    /// 详情视图当前文件的 diff 快照（Rc 同 current_diff）
+    pub(super) commit_file_diff: Option<std::rc::Rc<FileDiff>>,
     /// 详情视图文件列表是否正在拉取
     pub(super) loading_commit_files: bool,
     /// commit 详情 / Changes 文件树折叠目录（分开维护：commit 切换时只清前者）
@@ -135,7 +138,8 @@ pub struct VcsView {
     /// commit 搜索关键词（按 message grep / author / since 解析）
     pub(super) history_search_input: Entity<InputState>,
     /// blame 行列表（当前 selected_file 的）
-    pub(super) blame_lines: Vec<ramag_domain::entities::BlameLine>,
+    /// blame 数据。Rc 供 diff 中间列 processor 零拷贝共享（大文件 blame 不每帧全量 clone）
+    pub(super) blame_lines: std::rc::Rc<Vec<ramag_domain::entities::BlameLine>>,
     pub(super) loading_blame: bool,
     /// diff header 切换：false=显示 diff（默认）/ true=显示 blame
     pub(super) showing_blame: bool,
@@ -316,7 +320,7 @@ impl VcsView {
         self.rebase_todos.clear();
         self.conflict_editor_path = None;
         self.conflict_content = None;
-        self.history_commits.clear();
+        self.set_history_commits(Vec::new());
         self.history_has_more = false;
         self.project_files.clear();
         self.file_tabs.clear();
@@ -345,6 +349,26 @@ impl VcsView {
     }
 
     /// 挂起一条成功 toast，待 Render 持有 Window 时推送（异步回调里拿不到 Window）
+    /// history 列表统一写入口：同步重算 lane 图缓存，render 零重算零全量拷贝
+    pub(super) fn set_history_commits(&mut self, commits: Vec<Commit>) {
+        self.history_graph_rows =
+            std::rc::Rc::new(super::commit_graph::build_commit_lanes(&commits));
+        self.history_commits = std::rc::Rc::new(commits);
+    }
+
+    /// 写操作统一入口闸：已有操作进行中直接拒绝（防止并发 git 写争抢 index.lock），
+    /// 否则置忙碌态 + 进度文案并清上次错误。调用方拿到 false 应立即 return
+    pub(super) fn begin_op(&mut self, label: &'static str, cx: &mut Context<Self>) -> bool {
+        if self.busy {
+            return false;
+        }
+        self.busy = true;
+        self.busy_label = Some(label);
+        self.error = None;
+        cx.notify();
+        true
+    }
+
     pub(super) fn notify_success(
         &mut self,
         message: impl Into<SharedString>,

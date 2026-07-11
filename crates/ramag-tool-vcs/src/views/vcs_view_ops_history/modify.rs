@@ -4,7 +4,7 @@ use gpui::Context;
 use ramag_domain::entities::{BranchKind, ResetKind};
 use tracing::{error, info};
 
-use super::super::helpers::BranchOp;
+use super::super::helpers::{BranchOp, reset_kind_label};
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
@@ -14,10 +14,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("Revert 中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Revert 中…", cx) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let result = driver.revert(&repo, &commit_id).await;
             let new_status = driver.status(&repo).await.ok();
@@ -54,10 +53,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("Reset 中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Reset 中…", cx) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let result = driver.reset(&repo, &target, kind).await;
             let new_status = driver.status(&repo).await.ok();
@@ -78,14 +76,17 @@ impl VcsView {
                 this.local_branches = new_local;
                 if let Err(e) = result {
                     error!(error = %e, %target, ?kind, "vcs: reset failed");
-                    this.error = Some(format!("Reset {kind:?} 失败：{e}"));
+                    this.error = Some(format!("Reset {} 失败：{e}", reset_kind_label(kind)));
                 } else {
                     info!(%target, ?kind, "vcs: reset done");
                     // HEAD 移动了：history、暂存区、已打开 tabs 的 diff 缓存全部重拉
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
                     let short: String = target.chars().take(7).collect();
-                    this.notify_success(format!("已 Reset（{kind:?}）到 {short}"), cx);
+                    this.notify_success(
+                        format!("已 Reset {} 到 {short}", reset_kind_label(kind)),
+                        cx,
+                    );
                 }
                 cx.notify();
             });
@@ -99,10 +100,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("Stash 并切换中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Stash 并切换中…", cx) {
+            return;
+        }
         let target_for_log = target.clone();
         cx.spawn(async move |this, cx| {
             let msg = format!("auto-stash before checkout to {target_for_log}");
@@ -168,10 +168,9 @@ impl VcsView {
             return;
         }
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("切换分支中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("切换分支中…", cx) {
+            return;
+        }
         let target_for_log = target.clone();
         cx.spawn(async move |this, cx| {
             let discard_result = driver.discard(&repo, &paths).await;

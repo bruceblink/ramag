@@ -122,6 +122,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("关闭该仓库标签（不影响仓库本身）")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_open_repo(path_close.clone(), cx);
                         })),

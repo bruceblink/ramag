@@ -194,7 +194,14 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = match driver.status(&repo).await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    // 静默刷新失败保留旧状态（仓库可能被外部删除/损坏），留日志可排查
+                    tracing::warn!(error = %e, "vcs: silent status reload failed");
+                    None
+                }
+            };
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) {
                     return;
@@ -229,7 +236,7 @@ impl VcsView {
         self.status = None;
         self.local_branches.clear();
         self.remote_branches.clear();
-        self.history_commits.clear();
+        self.set_history_commits(Vec::new());
         self.viewing_commit = None;
         self.commit_files.clear();
         self.selected_commit_file = None;
@@ -344,7 +351,15 @@ pub(super) async fn open_repo_async(
         if is_new {
             this.open_repos.push(repo_config.clone());
         }
-        this.status = status.ok();
+        // 仓库打开成功但状态查询失败：不静默显示成空工作区，给出可见错误
+        match status {
+            Ok(s) => this.status = Some(s),
+            Err(e) => {
+                tracing::error!(error = %e, "vcs: open repo status failed");
+                this.status = None;
+                this.error = Some(format!("读取工作区状态失败：{e}"));
+            }
+        }
         this.local_branches = local.unwrap_or_default();
         this.remote_branches = remote.unwrap_or_default();
         this.active_view = ActiveView::Session;

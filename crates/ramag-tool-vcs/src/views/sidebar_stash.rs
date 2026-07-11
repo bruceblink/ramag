@@ -27,7 +27,7 @@ impl VcsView {
                 .pl(px(4.0))
                 .text_xs()
                 .text_color(muted_fg)
-                .child("(无 stash)")
+                .child("暂无 stash（工具栏「Stash 工作区改动」创建）")
                 .into_any_element();
         }
         let rows: Vec<AnyElement> = self
@@ -77,7 +77,7 @@ fn stash_row(s: &Stash, busy: bool, cx: &mut Context<VcsView>) -> impl IntoEleme
         )
         .child(
             h_flex()
-                .gap(px(4.0))
+                .gap(px(6.0))
                 .items_center()
                 .child(side_op_button(
                     format!("vcs-side-stash-apply-{idx}"),

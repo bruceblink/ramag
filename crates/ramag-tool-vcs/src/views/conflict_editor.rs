@@ -38,12 +38,7 @@ impl VcsView {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(muted_fg)
-                        .child("加载冲突内容..."),
-                )
+                .child(div().text_sm().text_color(muted_fg).child("加载冲突内容…"))
                 .into_any_element();
         }
 

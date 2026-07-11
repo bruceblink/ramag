@@ -32,11 +32,14 @@ impl VcsView {
             && (has_message || self.commit_amend);
 
         // 主按钮：普通模式提交暂存区；Amend 模式改写上一次 commit
+        let committing = self.busy_label == Some("提交中…");
         let commit_btn = Button::new("vcs-commit")
             .primary()
             .small()
             .icon(ramag_ui::icons::git_commit())
-            .label(if self.commit_amend {
+            .label(if committing {
+                "提交中…".to_string()
+            } else if self.commit_amend {
                 "Amend 提交".to_string()
             } else if staged_count > 0 {
                 format!("提交 ({staged_count})")
@@ -44,9 +47,15 @@ impl VcsView {
                 "提交".to_string()
             })
             .tooltip(if self.commit_amend {
-                "改写上一次 commit（message 留空则保留原文）"
+                format!(
+                    "改写上一次 commit，message 留空则保留原文（{}）",
+                    ramag_ui::platform::primary_shortcut("Enter")
+                )
             } else {
-                "把暂存区的改动写入仓库"
+                format!(
+                    "把暂存区的改动写入仓库（{}）",
+                    ramag_ui::platform::primary_shortcut("Enter")
+                )
             })
             .disabled(!can_commit)
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -96,16 +105,15 @@ impl VcsView {
                             .text_color(accent)
                             .child("Commit"),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted_fg)
-                            .child(if staged_count > 0 {
-                                format!("· 已暂存 {staged_count} 个文件")
-                            } else {
-                                "· 暂存区为空（先 Stage 文件）".to_string()
-                            }),
-                    ),
+                    .child(div().text_xs().text_color(muted_fg).child(
+                        if staged_count == 0 && !self.commit_amend {
+                            "· 暂存区为空（先暂存文件）".to_string()
+                        } else if !has_message && !self.commit_amend {
+                            format!("· 已暂存 {staged_count} 个文件，填写提交信息后可提交")
+                        } else {
+                            format!("· 已暂存 {staged_count} 个文件")
+                        },
+                    )),
             )
             .child(
                 Input::new(&self.commit_input)

@@ -29,12 +29,10 @@ impl VcsView {
         let create_branch_input = cx.new(|cx_inner| {
             InputState::new(window, cx_inner).placeholder("新分支名（基于当前 HEAD）")
         });
-        let create_tag_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("新 tag 名（基于当前 HEAD）")
-        });
-        let create_tag_message_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("message（可选，填了就是 annotated tag）")
-        });
+        let create_tag_input =
+            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("tag 名"));
+        let create_tag_message_input =
+            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("备注（可选）"));
         let history_search_input = cx.new(|cx_inner| {
             InputState::new(window, cx_inner).placeholder("搜索：关键词 / @作者 / 7d/1m 时间下限")
         });
@@ -91,7 +89,8 @@ impl VcsView {
             current_diff: None,
             loading_diff: false,
             view_mode: ViewMode::Workspace,
-            history_commits: Vec::new(),
+            history_commits: std::rc::Rc::new(Vec::new()),
+            history_graph_rows: std::rc::Rc::new(Vec::new()),
             history_has_more: false,
             loading_history: false,
             stashes: Vec::new(),
@@ -117,7 +116,7 @@ impl VcsView {
             changes_collapsed_dirs: std::collections::HashSet::new(),
             history_path_filter: None,
             history_search_input,
-            blame_lines: Vec::new(),
+            blame_lines: std::rc::Rc::new(Vec::new()),
             loading_blame: false,
             showing_blame: false,
             inline_blame_text: None,

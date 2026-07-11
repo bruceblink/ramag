@@ -27,7 +27,7 @@ impl VcsView {
                     Ok(list) => this.tags = list,
                     Err(e) => {
                         error!(error = %e, "vcs: list tags failed");
-                        this.error = Some("加载 Tag 列表失败".into());
+                        this.error = Some(format!("加载 Tag 列表失败：{e}"));
                     }
                 }
                 cx.notify();
@@ -42,9 +42,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Tag 操作中…", cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = match &op {
@@ -71,6 +71,12 @@ impl VcsView {
                     this.error = Some(format!("Tag 操作失败：{e}"));
                 } else {
                     info!(?op, "vcs: tag op done");
+                    // 建/删 tag 会改变 commit 行的 ref 标签，历史列表同步刷新
+                    if matches!(op, TagOp::Create { .. } | TagOp::Delete(_))
+                        && (this.history_pane_visible || !this.history_commits.is_empty())
+                    {
+                        this.load_history_page(0, cx);
+                    }
                     let msg = match &op {
                         TagOp::Create { name, .. } => format!("已创建 tag {name}"),
                         TagOp::Delete(name) => format!("已删除 tag {name}"),

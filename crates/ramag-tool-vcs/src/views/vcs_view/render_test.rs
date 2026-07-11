@@ -150,12 +150,12 @@ fn inject_diff_session(v: &mut VcsView) {
     v.repo = Some(repo);
     v.active_view = ActiveView::Session;
     v.status = Some(mock_status());
-    v.current_diff = Some(test_diff());
+    v.current_diff = Some(std::rc::Rc::new(test_diff()));
     v.selected_file = Some(("a.rs".into(), GroupKind::Unstaged));
     v.file_tabs = vec![FileTab {
         path: "a.rs".into(),
         source: FileTabSource::Changes(GroupKind::Unstaged),
-        cached_diff: Some(test_diff()),
+        cached_diff: Some(std::rc::Rc::new(test_diff())),
         cached_content: None,
     }];
     v.active_file_tab_idx = Some(0);

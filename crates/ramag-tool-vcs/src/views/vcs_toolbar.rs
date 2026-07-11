@@ -21,15 +21,17 @@ impl VcsView {
         let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
         let entity = cx.entity();
 
+        let pull_shortcut = ramag_ui::platform::primary_shortcut("T");
+        let push_shortcut = ramag_ui::platform::primary_shift_shortcut("K");
         let pull_label = if behind > 0 {
-            format!("Pull ↓{behind}")
+            format!("Pull ↓{behind}（{pull_shortcut}）")
         } else {
-            "Pull".into()
+            format!("Pull（{pull_shortcut}）")
         };
         let push_label = if ahead > 0 {
-            format!("Push ↑{ahead}")
+            format!("Push ↑{ahead}（{push_shortcut}）")
         } else {
-            "Push".into()
+            format!("Push（{push_shortcut}）")
         };
 
         Button::new("vcs-ops-menu")
@@ -63,6 +65,7 @@ impl VcsView {
                             });
                         }),
                     )
+                    .separator()
                     .item(PopupMenuItem::new("⚠ 强推").on_click(move |_, w, app| {
                         entity4.update(app, |this, cx| {
                             this.confirm_remote_op(RemoteOp::PushForce, w, cx);

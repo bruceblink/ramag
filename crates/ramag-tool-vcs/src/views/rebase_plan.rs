@@ -36,7 +36,7 @@ impl VcsView {
                     div()
                         .text_sm()
                         .text_color(muted_fg)
-                        .child("加载 rebase 计划..."),
+                        .child("加载 rebase 计划…"),
                 )
                 .into_any_element();
         }
@@ -184,8 +184,8 @@ impl VcsView {
                     .icon(IconName::Play)
                     .label("执行 Rebase")
                     .disabled(busy || self.rebase_todos.is_empty())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.execute_interactive_rebase(cx);
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.confirm_execute_rebase(window, cx);
                     })),
             );
 

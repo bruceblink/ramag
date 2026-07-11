@@ -51,12 +51,17 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("切换到历史版本中…", cx) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let result = driver.checkout(&repo, &commit).await;
             let new_status = driver.status(&repo).await.ok();
+            // detached HEAD 后分支的 is_head 标记会变，同步刷新
+            let new_local = driver
+                .list_branches(&repo, ramag_domain::entities::BranchKind::Local)
+                .await
+                .unwrap_or_default();
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -67,6 +72,7 @@ impl VcsView {
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
+                this.local_branches = new_local;
                 if let Err(e) = result {
                     error!(error = %e, %commit, "vcs: reflog checkout failed");
                     this.error = Some(format!("Checkout 到 {commit} 失败：{e}"));

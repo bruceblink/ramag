@@ -40,7 +40,7 @@ impl VcsView {
     }
 }
 
-use super::helpers::{ConflictOp, OperationStep};
+use super::helpers::{ConflictOp, OperationStep, operation_label, step_label};
 use super::vcs_view::VcsView;
 
 impl VcsView {
@@ -50,10 +50,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("Cherry-pick 中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Cherry-pick 中…", cx) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let result = driver.cherry_pick(&repo, &commit_id).await;
             let new_status = driver.status(&repo).await.ok();
@@ -90,9 +89,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("处理冲突中…", cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let paths = vec![path.clone()];
@@ -148,10 +147,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("处理中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("处理中…", cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = match (operation, step) {
@@ -172,7 +170,9 @@ impl VcsView {
                 (RepoOperation::Rebase, OperationStep::Abort) => driver.rebase_abort(&repo).await,
                 // Merge / CherryPick 不支持 Skip；Revert 暂不暴露
                 _ => Err(ramag_domain::error::DomainError::NotImplemented(format!(
-                    "{operation:?} {step:?}"
+                    "{}·{}",
+                    operation_label(operation),
+                    step_label(step)
                 ))),
             };
             // 操作后刷新 status + branches（merge 完会切回干净状态，分支 ahead/behind 也变了）
@@ -194,18 +194,22 @@ impl VcsView {
                 this.local_branches = new_local;
                 if let Err(e) = result {
                     error!(error = %e, ?operation, ?step, "vcs: op step failed");
-                    this.error = Some(format!("{operation:?} {step:?} 失败：{e}"));
+                    this.error = Some(format!(
+                        "{}·{}失败：{e}",
+                        operation_label(operation),
+                        step_label(step)
+                    ));
                 } else {
                     info!(?operation, ?step, "vcs: op step done");
                     // 继续 = 产生新 commit / 推进 rebase；中止 = 回滚工作区。HEAD 内容都变了
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
-                    let step_label = match step {
+                    let done = match step {
                         OperationStep::Continue => "已继续",
                         OperationStep::Skip => "已跳过当前 commit",
                         OperationStep::Abort => "已中止",
                     };
-                    this.notify_success(format!("{operation:?}：{step_label}"), cx);
+                    this.notify_success(format!("{}{done}", operation_label(operation)), cx);
                 }
                 cx.notify();
             });
@@ -255,10 +259,9 @@ impl VcsView {
         let driver = self.driver.clone();
         let onto = self.rebase_plan_onto.clone();
         let todos: Vec<ramag_domain::entities::RebaseTodo> = self.rebase_todos.clone();
-        self.busy = true;
-        self.busy_label = Some("Rebase 中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Rebase 中…", cx) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let result = driver
                 .interactive_rebase_execute(&repo, &onto, &todos)

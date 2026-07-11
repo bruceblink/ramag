@@ -2,15 +2,15 @@
 //! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
 
 use gpui::{
-    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, px,
+    AnyElement, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    SharedString, Styled, div, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
 };
 use ramag_domain::entities::Branch;
 
@@ -88,7 +88,7 @@ pub(super) fn branch_row(
             .into_any_element()
     };
 
-    let row = h_flex()
+    let mut row = h_flex()
         .id(row_id)
         .h(px(LEFT_ROW_H))
         .flex_none()
@@ -121,87 +121,119 @@ pub(super) fn branch_row(
                 .child(sync_str.unwrap_or_default()),
         );
 
+    // 当前 HEAD 分支没有可用操作：不挂菜单，避免右键弹出空菜单
+    if is_head {
+        return row.into_any_element();
+    }
+
+    // 行尾「⋯」：与右键菜单同一份操作，给不习惯右键的用户一个可见入口
+    let more_btn = {
+        let ent = entity.clone();
+        let n = name.clone();
+        Button::new(SharedString::from(format!(
+            "vcs-side-br-more-{idx}-{is_remote}"
+        )))
+        .ghost()
+        .xsmall()
+        .icon(ramag_ui::icons::ellipsis())
+        .tooltip("分支操作（切换 / 合并 / Rebase…）")
+        .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
+            branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
+        })
+    };
+    row = row.child(div().flex_none().child(more_btn));
+
     // 右键菜单：checkout / merge / rebase / interactive-rebase / delete
     row.context_menu({
         let ent = entity.clone();
         let n = name.clone();
         move |menu: PopupMenu, _, _| {
-            if !is_head {
-                let (e1, n1) = (ent.clone(), n.clone());
-                let (e2, n2) = (ent.clone(), n.clone());
-                let (e3, n3) = (ent.clone(), n.clone());
-                let n4 = n.clone();
-                let mut m = menu;
-                if !is_remote {
-                    // 切换
-                    m = m.item(PopupMenuItem::new("切换到此分支").on_click(move |_, w, app| {
-                        e1.update(app, |this, cx| {
-                            this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
-                        });
-                    }));
-                } else {
-                    m = m.item(PopupMenuItem::new("切到此远程分支（创建本地副本）").on_click(
-                        move |_, w, app| {
-                            e1.update(app, |this, cx| {
-                                this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
-                            });
-                        },
-                    ));
-                }
-                // 合并
-                m = m.item(PopupMenuItem::new("合并到当前 HEAD（--no-ff）").on_click(
-                    move |_, w, app| {
-                        e2.update(app, |this, cx| {
-                            this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);
-                        });
-                    },
-                ));
-                // Rebase
-                m = m.item(PopupMenuItem::new("Rebase 当前 HEAD 到此分支").on_click(
-                    move |_, w, app| {
-                        e3.update(app, |this, cx| {
-                            this.confirm_branch_op(BranchOp::Rebase(n3.clone()), w, cx);
-                        });
-                    },
-                ));
-                if !is_remote {
-                    // 交互式 Rebase（仅本地分支）
-                    let (ei, ni) = (ent.clone(), n.clone());
-                    m = m.item(
-                        PopupMenuItem::new("交互式 Rebase（编辑 commit 序列）").on_click(
-                            move |_, _, app| {
-                                if !busy {
-                                    ei.update(app, |this, cx| {
-                                        this.start_interactive_rebase(ni.clone(), cx);
-                                    });
-                                }
-                            },
-                        ),
-                    );
-                    m = m.separator();
-                    // 删除分支
-                    let ed = ent.clone();
-                    m = m.item(PopupMenuItem::new("删除分支").on_click(move |_, w, app| {
-                        let view = ed.clone();
-                        let branch_name = n4.clone();
-                        open_confirm_dialog(
-                            view,
-                            "删除分支？",
-                            format!("将删除本地分支「{branch_name}」（仅当已合并；未合并会报错）。\n确认继续吗？"),
-                            "删除",
-                            true,
-                            move |this, cx| {
-                                this.run_branch_op(BranchOp::Delete(branch_name.clone(), false), cx)
-                            },
-                            w,
-                            app,
-                        );
-                    }));
-                }
-                m
-            } else {
-                menu
-            }
+            branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
         }
     })
+    .into_any_element()
+}
+
+/// 分支操作菜单（右键与行尾「⋯」共用）：checkout / merge / rebase / 交互式 rebase / 删除
+fn branch_actions_menu(
+    menu: PopupMenu,
+    ent: Entity<VcsView>,
+    n: String,
+    is_remote: bool,
+    busy: bool,
+) -> PopupMenu {
+    let (e1, n1) = (ent.clone(), n.clone());
+    let (e2, n2) = (ent.clone(), n.clone());
+    let (e3, n3) = (ent.clone(), n.clone());
+    let n4 = n.clone();
+    let mut m = menu;
+    if !is_remote {
+        // 切换
+        m = m.item(
+            PopupMenuItem::new("切换到此分支").on_click(move |_, w, app| {
+                e1.update(app, |this, cx| {
+                    this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
+                });
+            }),
+        );
+    } else {
+        m = m.item(
+            PopupMenuItem::new("切到此远程分支（创建本地副本）").on_click(move |_, w, app| {
+                e1.update(app, |this, cx| {
+                    this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
+                });
+            }),
+        );
+    }
+    // 合并
+    m = m.item(
+        PopupMenuItem::new("合并到当前 HEAD（--no-ff）").on_click(move |_, w, app| {
+            e2.update(app, |this, cx| {
+                this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);
+            });
+        }),
+    );
+    // Rebase
+    m = m.item(
+        PopupMenuItem::new("Rebase 当前 HEAD 到此分支").on_click(move |_, w, app| {
+            e3.update(app, |this, cx| {
+                this.confirm_branch_op(BranchOp::Rebase(n3.clone()), w, cx);
+            });
+        }),
+    );
+    if !is_remote {
+        // 交互式 Rebase（仅本地分支）
+        let (ei, ni) = (ent.clone(), n.clone());
+        m = m.item(
+            PopupMenuItem::new("交互式 Rebase（编辑 commit 序列）").on_click(move |_, _, app| {
+                if !busy {
+                    ei.update(app, |this, cx| {
+                        this.start_interactive_rebase(ni.clone(), cx);
+                    });
+                }
+            }),
+        );
+        m = m.separator();
+        // 删除分支
+        let ed = ent.clone();
+        m = m.item(PopupMenuItem::new("删除分支").on_click(move |_, w, app| {
+            let view = ed.clone();
+            let branch_name = n4.clone();
+            open_confirm_dialog(
+                view,
+                "删除分支？",
+                format!(
+                    "将删除本地分支「{branch_name}」（仅当已合并；未合并会报错）。\n确认继续吗？"
+                ),
+                "删除",
+                true,
+                move |this, cx| {
+                    this.run_branch_op(BranchOp::Delete(branch_name.clone(), false), cx)
+                },
+                w,
+                app,
+            );
+        }));
+    }
+    m
 }

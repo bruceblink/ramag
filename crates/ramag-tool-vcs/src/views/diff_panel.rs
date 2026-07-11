@@ -53,7 +53,7 @@ pub(super) fn max_line_chars(diff: &FileDiff) -> usize {
 /// Unified diff。固定 list w + 外层 overflow_x_scroll 共享 ScrollHandle，restrict_scroll_to_axis 防 wheel 错位
 #[allow(clippy::too_many_arguments)]
 pub fn render_file_diff(
-    diff: &FileDiff,
+    diff: &Rc<FileDiff>,
     changes_only: bool,
     // 语法高亮语言（None=纯文本）
     lang: Option<SharedString>,
@@ -65,10 +65,11 @@ pub fn render_file_diff(
     h_scroll: &ScrollHandle,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    if let Some(empty) = render_diff_empty(diff, muted_fg) {
+    if let Some(empty) = render_diff_empty(diff.as_ref(), muted_fg) {
         return empty;
     }
-    let diff_rc: Rc<FileDiff> = Rc::new(diff.clone());
+    // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
+    let diff_rc: Rc<FileDiff> = diff.clone();
     let keys: Rc<Vec<UnifiedKey>> = Rc::new(build_unified_keys(&diff_rc, changes_only));
     let total = keys.len();
     let scroll = scroll.clone();

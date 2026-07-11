@@ -24,7 +24,10 @@ impl VcsView {
                 }
                 match result {
                     Ok(list) => this.remotes = list,
-                    Err(e) => error!(error = %e, "vcs: list_remotes failed"),
+                    Err(e) => {
+                        error!(error = %e, "vcs: list_remotes failed");
+                        this.error = Some(format!("加载远程列表失败：{e}"));
+                    }
                 }
                 cx.notify();
             });

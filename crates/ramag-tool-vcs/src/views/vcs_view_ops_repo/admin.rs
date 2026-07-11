@@ -19,12 +19,17 @@ impl VcsView {
         .detach();
     }
 
-    /// 从 storage 删除单条 RepoConfig（失败仅 warn）
+    /// 从 storage 删除单条 RepoConfig。失败要提示：内存列表已移除，
+    /// 持久化没删掉会在下次启动"复活"，静默会让用户以为删除生效了
     pub(crate) fn delete_repo_async(&self, id: RepoId, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
-        cx.background_spawn(async move {
+        cx.spawn(async move |this, cx| {
             if let Err(e) = storage.delete_repo(&id).await {
                 tracing::warn!(error = %e, repo_id = %id, "vcs: delete_repo failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.error = Some(format!("移除记录未能持久化（重启后可能重新出现）：{e}"));
+                    cx.notify();
+                });
             }
         })
         .detach();

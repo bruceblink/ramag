@@ -75,7 +75,8 @@ impl VcsView {
         let border = theme.border;
         let row_hover = theme.muted;
         let bg = theme.background;
-        let busy = self.busy;
+        // clone/init/add 走 self.loading（见 admin.rs），工作区操作走 self.busy——都要挡
+        let busy = self.busy || self.loading;
 
         // 当前搜索关键字（小写）；空 = 不过滤
         let query = self

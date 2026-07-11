@@ -211,9 +211,10 @@ impl ClipboardService {
         }
 
         // 图片先完成受限解码，拒绝只有伪造 PNG 头的损坏输入；再把原图与缩略图加密落盘。
+        // 缩略图生成（解码 + 缩放 + 编码）是 CPU 大头，挪工作线程避免采集时 UI 卡顿
         let (image_path, thumb_path) = match (&captured.image_png, settings.capture_images) {
             (Some(png), true) => {
-                let thumb = match make_thumbnail(png, THUMB_MAX_W) {
+                let thumb = match make_thumbnail_off_thread(png.clone()).await {
                     Ok(thumb) => thumb,
                     Err(error) => {
                         warn!(error = %error, "invalid clipboard image ignored");
@@ -507,6 +508,20 @@ pub fn decide_capture(
 
 fn hash_hex(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a_hash(bytes))
+}
+
+/// 工作线程生成缩略图（std::thread + oneshot，与 Storage 桥接同款；不引入 runtime）。
+/// 采集循环跑在 GPUI 前台 executor，图片编解码留在主线程会造成可感知卡顿
+async fn make_thumbnail_off_thread(png: Vec<u8>) -> Result<Vec<u8>> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name("ramag-clip-thumb".into())
+        .spawn(move || {
+            let _ = tx.send(make_thumbnail(&png, THUMB_MAX_W));
+        })
+        .map_err(|e| DomainError::Other(format!("启动缩略图线程失败：{e}")))?;
+    rx.await
+        .map_err(|_| DomainError::Other("缩略图线程中断".into()))?
 }
 
 #[cfg(test)]

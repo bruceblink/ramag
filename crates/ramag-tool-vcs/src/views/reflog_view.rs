@@ -28,7 +28,7 @@ impl VcsView {
         let count = self.reflog_entries.len();
 
         if self.loading_reflog {
-            return center("加载 reflog...", muted_fg);
+            return center("加载 reflog…", muted_fg);
         }
         if self.reflog_entries.is_empty() {
             return center("(reflog 为空)", muted_fg);

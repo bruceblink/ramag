@@ -251,7 +251,7 @@ impl VcsView {
                 Some(bulk_op_button(
                     "stage-all",
                     title,
-                    "全部 Stage",
+                    "全部暂存",
                     FileOp::Stage,
                     IconName::Plus,
                     paths.to_vec(),
@@ -262,7 +262,7 @@ impl VcsView {
             GroupKind::Staged if !paths.is_empty() => Some(bulk_op_button(
                 "unstage-all",
                 title,
-                "全部 Unstage",
+                "全部取消暂存",
                 FileOp::Unstage,
                 IconName::Minus,
                 paths.to_vec(),
@@ -414,7 +414,7 @@ impl VcsView {
         let buttons: Vec<AnyElement> = match kind {
             GroupKind::Staged => vec![file_op_button(
                 ("unstage", idx, &f.path),
-                "Unstage",
+                "取消暂存",
                 FileOp::Unstage,
                 path_for_buttons.clone(),
                 busy,
@@ -423,7 +423,7 @@ impl VcsView {
             GroupKind::Unstaged => vec![
                 file_op_button(
                     ("stage", idx, &f.path),
-                    "Stage",
+                    "暂存",
                     FileOp::Stage,
                     path_for_buttons.clone(),
                     busy,
@@ -440,7 +440,7 @@ impl VcsView {
             ],
             GroupKind::Untracked => vec![file_op_button(
                 ("stage-u", idx, &f.path),
-                "Stage",
+                "暂存",
                 FileOp::Stage,
                 path_for_buttons.clone(),
                 busy,

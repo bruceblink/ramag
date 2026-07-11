@@ -19,7 +19,7 @@ use gpui_component::{
 use ramag_domain::entities::Commit;
 
 use super::commit_graph::CommitGraphRow;
-use super::helpers::{build_commit_lanes, render_commit_row};
+use super::helpers::render_commit_row;
 use super::sidebar::{LeftRow, SidebarSection};
 use super::vcs_view::VcsView;
 
@@ -255,7 +255,7 @@ impl VcsView {
         });
         if !self.collapsed_remote {
             if self.remote_branches.is_empty() {
-                rows.push(LeftRow::Empty("(无远程分支)"));
+                rows.push(LeftRow::Empty("暂无远程分支（Fetch 后显示）"));
             } else {
                 for (idx, b) in self.remote_branches.iter().enumerate() {
                     rows.push(LeftRow::Branch {
@@ -276,7 +276,7 @@ impl VcsView {
         });
         if !self.collapsed_tag {
             if self.tags.is_empty() {
-                rows.push(LeftRow::Empty("(无 tag)"));
+                rows.push(LeftRow::Empty("暂无 tag（下方输入框创建）"));
             } else {
                 for (idx, t) in self.tags.iter().enumerate() {
                     rows.push(LeftRow::Tag {
@@ -338,11 +338,19 @@ impl VcsView {
                 .into_any_element();
         }
         if self.history_commits.is_empty() {
+            // 区分「过滤后无结果」与「仓库无提交」，避免误以为仓库是空的
+            let filtered = !self.history_search_input.read(cx).value().trim().is_empty()
+                || self.history_path_filter.is_some();
+            let hint = if filtered {
+                "没有匹配的提交（调整搜索词或清除过滤）"
+            } else {
+                "（暂无提交记录）"
+            };
             return v_flex()
                 .size_full()
                 .px(px(8.0))
                 .child(search_row)
-                .child(center_msg("（暂无提交记录）", muted_fg))
+                .child(center_msg(hint, muted_fg))
                 .into_any_element();
         }
 
@@ -352,8 +360,8 @@ impl VcsView {
         // 有更多时加一行哨兵行：滚到底自动触发下一页加载
         let total_rows = count + usize::from(has_more);
         // Rc 共享：commits + graph_rows 喂给 uniform_list 闭包（不每帧 clone 整个 Vec）
-        let commits_rc: Rc<Vec<Commit>> = Rc::new(self.history_commits.clone());
-        let graph_rc: Rc<Vec<CommitGraphRow>> = Rc::new(build_commit_lanes(&self.history_commits));
+        let commits_rc: Rc<Vec<Commit>> = self.history_commits.clone();
+        let graph_rc: Rc<Vec<CommitGraphRow>> = self.history_graph_rows.clone();
 
         let body = uniform_list(
             "vcs-history-commits",
@@ -388,7 +396,7 @@ impl VcsView {
                                     .child(if is_loading {
                                         "加载中…"
                                     } else {
-                                        "加载更多..."
+                                        "加载更多…"
                                     })
                                     .into_any_element();
                             }

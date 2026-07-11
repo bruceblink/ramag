@@ -3,7 +3,7 @@
 use gpui::Context;
 use tracing::error;
 
-use super::super::helpers::StashOp;
+use super::super::helpers::{FilesViewMode, StashOp};
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
@@ -27,7 +27,7 @@ impl VcsView {
                     Ok(list) => this.stashes = list,
                     Err(e) => {
                         error!(error = %e, "vcs: list stashes failed");
-                        this.error = Some("加载 Stash 列表失败".into());
+                        this.error = Some(format!("加载 Stash 列表失败：{e}"));
                     }
                 }
                 cx.notify();
@@ -42,10 +42,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.busy_label = Some("Stash 中…");
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Stash 中…", cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let msg = message.trim().to_string();
@@ -72,6 +71,10 @@ impl VcsView {
                     Ok(_) => {
                         // 工作区被清空 → 已开的 Changes tabs 全部失效
                         this.sync_changes_tabs_with_status(cx);
+                        // stash 会带走 untracked 文件，Project Files 视图同步刷新
+                        if matches!(this.files_view_mode, FilesViewMode::Project) {
+                            this.reload_project_files(cx);
+                        }
                         this.notify_success("已 stash 工作区改动（含未跟踪文件）", cx);
                     }
                 }
@@ -87,9 +90,9 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.error = None;
-        cx.notify();
+        if !self.begin_op("Stash 操作中…", cx) {
+            return;
+        }
 
         cx.spawn(async move |this, cx| {
             let result = match op {
@@ -119,6 +122,10 @@ impl VcsView {
                     Ok(_) => {
                         // apply / pop 会改工作区文件 → tabs 对齐
                         this.sync_changes_tabs_with_status(cx);
+                        // apply / pop 可能还原 untracked 文件，Project Files 视图同步刷新
+                        if matches!(this.files_view_mode, FilesViewMode::Project) {
+                            this.reload_project_files(cx);
+                        }
                         let msg = match op {
                             StashOp::Apply(_) => "已应用 stash（保留堆栈条目）",
                             StashOp::Pop(_) => "已弹出 stash 到工作区",

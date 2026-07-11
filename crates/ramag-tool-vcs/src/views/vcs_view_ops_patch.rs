@@ -8,6 +8,21 @@ use super::helpers::{FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
 
 impl VcsView {
+    /// 当前 active Changes tab 的分组；非 Changes diff 返回 None
+    pub(super) fn active_changes_kind(&self) -> Option<GroupKind> {
+        self.active_file_tab_idx
+            .and_then(|i| self.file_tabs.get(i))
+            .and_then(|t| match &t.source {
+                FileTabSource::Changes(k) => Some(*k),
+                _ => None,
+            })
+    }
+
+    /// 当前 diff 是否 Staged 组（hunk 回滚按钮的 tooltip / 确认分流用）
+    pub(super) fn active_changes_kind_is_staged(&self) -> bool {
+        matches!(self.active_changes_kind(), Some(GroupKind::Staged))
+    }
+
     /// 回滚 hunk：Unstaged 走 discard_patch（reverse 到 index）/ Staged 走 unstage_patch（reverse 撤回工作区）。
     /// 失败常因 diff 拉取后工作区或 index 又改过，patch 上下文不匹配
     pub(super) fn discard_hunk(&mut self, hunk_idx: usize, cx: &mut Context<Self>) {
@@ -18,14 +33,7 @@ impl VcsView {
             return;
         };
         // 仅 Changes 文件的 hunk 可回滚；其他来源（Commit detail / ProjectFiles）UI 不应渲染该按钮
-        let kind = self
-            .active_file_tab_idx
-            .and_then(|i| self.file_tabs.get(i))
-            .and_then(|t| match &t.source {
-                FileTabSource::Changes(k) => Some(*k),
-                _ => None,
-            });
-        let Some(kind) = kind else {
+        let Some(kind) = self.active_changes_kind() else {
             self.error = Some("当前不是 Changes diff，无法回滚".into());
             cx.notify();
             return;
@@ -43,9 +51,13 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
-        self.busy = true;
-        self.error = None;
-        cx.notify();
+        let label = match kind {
+            GroupKind::Staged => "移出暂存区中…",
+            _ => "丢弃 hunk 中…",
+        };
+        if !self.begin_op(label, cx) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let result = match kind {
                 GroupKind::Staged => driver.unstage_patch(&repo, &patch).await,

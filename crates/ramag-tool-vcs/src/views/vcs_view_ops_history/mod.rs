@@ -19,20 +19,20 @@ impl VcsView {
         self.history_path_filter = Some(path);
         self.view_mode = ViewMode::History;
         self.history_pane_visible = true;
-        self.history_commits.clear();
+        self.set_history_commits(Vec::new());
         self.load_history_page(0, cx);
     }
 
     /// 清除单文件历史过滤，回到全仓库 history
     pub(crate) fn clear_history_path_filter(&mut self, cx: &mut Context<Self>) {
         self.history_path_filter = None;
-        self.history_commits.clear();
+        self.set_history_commits(Vec::new());
         self.load_history_page(0, cx);
     }
 
     /// 触发 commit 搜索：解析 search_input + 重新拉首页
     pub(crate) fn apply_history_search(&mut self, cx: &mut Context<Self>) {
-        self.history_commits.clear();
+        self.set_history_commits(Vec::new());
         self.load_history_page(0, cx);
     }
 
@@ -154,6 +154,7 @@ impl VcsView {
                 }
                 match result {
                     Ok(d) => {
+                        let d = std::rc::Rc::new(d);
                         this.current_diff = Some(d.clone());
                         this.commit_file_diff = Some(d.clone());
                         if let Some(idx) = this.active_file_tab_idx
