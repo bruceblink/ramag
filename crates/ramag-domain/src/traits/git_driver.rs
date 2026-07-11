@@ -234,6 +234,16 @@ pub trait GitDriver: Send + Sync {
         not_impl("cherry_pick_continue")
     }
 
+    /// revert 冲突后中止（`git revert --abort`）
+    async fn revert_abort(&self, _repo: &RepoId) -> Result<()> {
+        not_impl("revert_abort")
+    }
+
+    /// revert 冲突解决后继续（`git revert --continue`）
+    async fn revert_continue(&self, _repo: &RepoId) -> Result<()> {
+        not_impl("revert_continue")
+    }
+
     /// 采纳 HEAD 侧（`git checkout --ours` + `git add`）
     async fn use_ours(&self, _repo: &RepoId, _paths: &[String]) -> Result<()> {
         not_impl("use_ours")

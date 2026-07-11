@@ -153,7 +153,8 @@ pub fn render_file_diff_split(
     // 左右共用同一内容宽度（取较长侧）：共享横滚 handle 时两栏滚动范围才一致，都能滚到行尾
     let content_w = (max_old.max(max_new) as f32) * MONO_CHAR_W + CONTENT_PAD;
     // 中间列：仅回滚按钮时窄（28），需展示 blame author 时宽（96）
-    let middle_w = if has_blame { 140.0 } else { 28.0 };
+    // 中间列宽：blame 展示 140 / 未暂存两个按钮（暂存+丢弃）56 / 已暂存单按钮 28
+    let middle_w = if has_blame { 140.0 } else { 56.0 };
 
     let left_gutter_list = build_gutter_list(
         "L",
@@ -462,36 +463,50 @@ fn build_middle_list(
     .min_h_0()
 }
 
-/// 中间列回滚按钮：放在 hunk 中点行、水平居中（仿 VSCode；仅 enable_discard 时渲染到此）。
-/// 未暂存 hunk 的回滚是不可恢复的丢弃，tooltip 明示后果，点击后经确认框执行
+/// 中间列 hunk 操作按钮：放在 hunk 中点行、水平居中（仿 VSCode；仅 enable_discard 时渲染到此）。
+/// 未暂存：暂存此 hunk（部分暂存核心操作）+ 丢弃（不可恢复，经确认）；已暂存：移出暂存区
 fn render_middle_revert(
     hunk_idx: usize,
     staged: bool,
     busy: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
+    let mut row = h_flex()
+        .w_full()
+        .h(px(DIFF_ROW_H))
+        .items_center()
+        .justify_center()
+        .gap(px(2.0));
+    if !staged {
+        row = row.child(
+            Button::new(SharedString::from(format!("vcs-hunk-stage-{hunk_idx}")))
+                .ghost()
+                .xsmall()
+                .icon(gpui_component::IconName::Plus)
+                .tooltip("暂存此 hunk（部分暂存）")
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.stage_hunk(hunk_idx, cx);
+                })),
+        );
+    }
     let tip = if staged {
         "将此 hunk 移出暂存区（可再次暂存）"
     } else {
         "丢弃此 hunk 的工作区改动（不可恢复）"
     };
-    h_flex()
-        .w_full()
-        .h(px(DIFF_ROW_H))
-        .items_center()
-        .justify_center()
-        .child(
-            Button::new(SharedString::from(format!("vcs-hunk-discard-{hunk_idx}")))
-                .ghost()
-                .xsmall()
-                .icon(gpui_component::IconName::Undo)
-                .tooltip(tip)
-                .disabled(busy)
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.confirm_discard_hunk(hunk_idx, window, cx);
-                })),
-        )
-        .into_any_element()
+    row.child(
+        Button::new(SharedString::from(format!("vcs-hunk-discard-{hunk_idx}")))
+            .ghost()
+            .xsmall()
+            .icon(gpui_component::IconName::Undo)
+            .tooltip(tip)
+            .disabled(busy)
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.confirm_discard_hunk(hunk_idx, window, cx);
+            })),
+    )
+    .into_any_element()
 }
 
 /// 中间列配对行：左列=旧侧作者、右列=新侧作者（删除行的旧作者需历史 blame，暂空）

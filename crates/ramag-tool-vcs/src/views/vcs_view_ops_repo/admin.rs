@@ -71,6 +71,16 @@ impl VcsView {
     ) {
         let driver = self.driver.clone();
         self.loading = true;
+        let repo_hint = url
+            .trim_end_matches('/')
+            .rsplit(['/', ':'])
+            .next()
+            .unwrap_or("仓库")
+            .trim_end_matches(".git");
+        self.loading_label = Some(format!(
+            "正在 Clone {repo_hint} 到 {}…（大仓库可能需要几分钟）",
+            dest.display()
+        ));
         self.error = None;
         self.show_clone_panel = false;
         cx.notify();
@@ -84,6 +94,7 @@ impl VcsView {
                     tracing::error!(error = %e, "vcs: clone failed");
                     let _ = this.update(cx, |this, cx| {
                         this.loading = false;
+                        this.loading_label = None;
                         this.error = Some(format!("Clone 失败: {e}"));
                         cx.notify();
                     });
@@ -93,13 +104,25 @@ impl VcsView {
         .detach();
     }
 
-    /// 异步初始化空仓库，完成后打开 session
+    /// 异步初始化空仓库（真正执行 git init），完成后打开 session。
+    /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
     pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         let driver = self.driver.clone();
         self.loading = true;
+        self.loading_label = Some(format!("正在初始化仓库 {}…", path.display()));
         self.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
+            if let Err(e) = driver.init_repo(&path).await {
+                tracing::error!(error = %e, path = %path.display(), "vcs: git init failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.loading = false;
+                    this.loading_label = None;
+                    this.error = Some(format!("初始化仓库失败：{e}"));
+                    cx.notify();
+                });
+                return;
+            }
             open_repo_async(&this, driver, path, cx).await;
         })
         .detach();

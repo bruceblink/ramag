@@ -26,11 +26,22 @@ impl VcsView {
         bg.a = 0.15;
         let busy = self.busy;
 
-        let title = match op {
+        // 剩余冲突数：>0 时「继续」必然失败，直接禁用并在标题给出下一步指引
+        let conflicts = self
+            .status
+            .as_ref()
+            .map(|s| s.files.iter().filter(|f| f.is_conflicted()).count())
+            .unwrap_or(0);
+        let base_title = match op {
             RepoOperation::Merge => "合并进行中",
             RepoOperation::Rebase => "Rebase 进行中",
             RepoOperation::CherryPick => "Cherry-pick 进行中",
             RepoOperation::Revert => "Revert 进行中",
+        };
+        let title = if conflicts > 0 {
+            format!("{base_title}：剩余 {conflicts} 个冲突文件待解决")
+        } else {
+            format!("{base_title}：冲突已解决，可点「继续」完成")
         };
         let supports_skip = matches!(op, RepoOperation::Rebase);
 
@@ -63,8 +74,12 @@ impl VcsView {
                     .small()
                     .icon(IconName::Check)
                     .label("继续")
-                    .tooltip("提交解决后的合并 / cherry-pick / rebase")
-                    .disabled(busy)
+                    .tooltip(if conflicts > 0 {
+                        "还有冲突未解决，解决全部冲突后才能继续"
+                    } else {
+                        "提交解决后的合并 / cherry-pick / rebase"
+                    })
+                    .disabled(busy || conflicts > 0)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.confirm_op_step(OperationStep::Continue, window, cx);
                     })),

@@ -366,6 +366,16 @@ impl GitDriver for GitDriverImpl {
         run_write_blocking(handle, move |p| history_ops::revert(p, &commit)).await
     }
 
+    async fn revert_abort(&self, repo: &RepoId) -> Result<()> {
+        let handle = self.get_repo(repo)?;
+        run_write_blocking(handle, history_ops::revert_abort).await
+    }
+
+    async fn revert_continue(&self, repo: &RepoId) -> Result<()> {
+        let handle = self.get_repo(repo)?;
+        run_write_blocking(handle, history_ops::revert_continue).await
+    }
+
     async fn rebase(&self, repo: &RepoId, onto: &str) -> Result<()> {
         let handle = self.get_repo(repo)?;
         let onto = onto.to_string();

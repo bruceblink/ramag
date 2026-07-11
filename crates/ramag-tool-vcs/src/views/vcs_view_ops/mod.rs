@@ -34,12 +34,16 @@ impl VcsView {
             let result = match &op {
                 BranchOp::Checkout(name) => driver.checkout(&repo, name).await,
                 BranchOp::Create(name, base) => {
-                    // 等价 `git checkout -b`：创建后立即 checkout
-                    let r = driver.create_branch(&repo, name, base.as_deref()).await;
-                    if r.is_ok() {
-                        let _ = driver.checkout(&repo, name).await;
+                    // 等价 `git checkout -b`：创建后立即 checkout；
+                    // checkout 失败必须如实上报，否则界面谎称"已切换"
+                    match driver.create_branch(&repo, name, base.as_deref()).await {
+                        Ok(()) => driver.checkout(&repo, name).await.map_err(|e| {
+                            ramag_domain::error::DomainError::Other(format!(
+                                "分支「{name}」已创建，但切换失败：{e}"
+                            ))
+                        }),
+                        Err(e) => Err(e),
                     }
-                    r
                 }
                 BranchOp::Delete(name, force) => driver.delete_branch(&repo, name, *force).await,
                 // --no-ff 强制建 merge commit；冲突时仓库进入 Merge 状态
@@ -202,6 +206,9 @@ impl VcsView {
             return;
         }
         self.loading_history = true;
+        // 请求代际：换搜索词/刷新后才返回的旧回包据此丢弃，避免乱序覆盖新结果
+        self.history_request_seq += 1;
+        let request_seq = self.history_request_seq;
         cx.notify();
 
         let driver = self.driver.clone();
@@ -225,11 +232,11 @@ impl VcsView {
         cx.spawn(async move |this, cx| {
             let result = driver.log(&repo, opts).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_history = false;
-                if !this.is_current_repo(&repo) {
+                if !this.is_current_repo(&repo) || this.history_request_seq != request_seq {
                     cx.notify();
                     return;
                 }
+                this.loading_history = false;
                 match result {
                     Ok(commits) => {
                         let got = commits.len();

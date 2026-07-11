@@ -228,6 +228,34 @@ fn reset_and_revert() {
 }
 
 #[test]
+fn revert_conflict_then_abort() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "v1\n", "c1");
+    commit_file(&driver, &id, tmp.path(), "a.txt", "v2\n", "c2");
+    // c3 再改同一行：revert c2 时与 c3 的内容冲突
+    commit_file(&driver, &id, tmp.path(), "a.txt", "v3\n", "c3");
+
+    let log = block_on(driver.log(&id, LogOptions::default())).unwrap();
+    let c2 = log[1].id.0.clone();
+    assert!(
+        block_on(driver.revert(&id, &c2)).is_err(),
+        "revert 应因冲突失败"
+    );
+    let status = block_on(driver.status(&id)).unwrap();
+    assert_eq!(
+        status.operation,
+        Some(ramag_domain::entities::RepoOperation::Revert),
+        "冲突后应处于 revert 进行中"
+    );
+
+    block_on(driver.revert_abort(&id)).unwrap();
+    let status = block_on(driver.status(&id)).unwrap();
+    assert_eq!(status.operation, None, "abort 后应回到干净状态");
+    let log = block_on(driver.log(&id, LogOptions::default())).unwrap();
+    assert_eq!(log.len(), 3, "abort 不应产生新 commit");
+}
+
+#[test]
 fn cherry_pick_commit() {
     let (driver, id, tmp) = setup();
     commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");

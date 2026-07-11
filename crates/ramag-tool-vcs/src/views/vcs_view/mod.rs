@@ -59,6 +59,8 @@ pub struct VcsView {
     pub(super) error: Option<String>,
     /// 是否正在加载（点选目录后 → 各 RPC 完成前）
     pub(super) loading: bool,
+    /// 整屏加载时显示的任务说明（如「正在 Clone xxx…」）；None 用通用「加载中…」
+    pub(super) loading_label: Option<String>,
     /// 写操作正在进行中（stage / unstage / discard / commit）：避免重复点击
     pub(super) busy: bool,
     /// busy 时工具栏 spinner 旁的操作名（"Pull 中…"等）；None = 不显示指示器
@@ -75,6 +77,8 @@ pub struct VcsView {
     pub(super) commit_sign: bool,
     /// 切仓库后待恢复的 commit 草稿；Render 内 cx.defer_in 调 set_value 写回 InputState
     pub(super) pending_commit_text: Option<SharedString>,
+    /// 切仓库后待清空的搜索框（文件搜索 / 历史搜索）；同 pending_commit_text 的 defer 模式
+    pub(super) pending_clear_search_inputs: bool,
     /// 当前选中查看 diff 的文件（path + 来源分组）
     pub(super) selected_file: Option<(String, GroupKind)>,
     /// 当前文件的 diff 快照（Rc：渲染层多列表零拷贝共享，不每帧 clone 全量 diff）
@@ -90,6 +94,8 @@ pub struct VcsView {
     pub(super) history_graph_rows: std::rc::Rc<Vec<super::commit_graph::CommitGraphRow>>,
     /// History 是否还可能有下一页（上次拉满 PAGE_SIZE 即认为有）
     pub(super) history_has_more: bool,
+    /// history 请求代际号：换搜索/切仓/刷新自增，旧回包据此丢弃（防乱序覆盖）
+    pub(super) history_request_seq: u64,
     /// History 是否正在拉取中
     pub(super) loading_history: bool,
     /// Stash 列表
@@ -313,6 +319,7 @@ impl VcsView {
         self.viewing_commit = None;
         self.commit_files.clear();
         self.commit_files_collapsed.clear();
+        self.changes_collapsed_dirs.clear();
         self.selected_commit_file = None;
         self.commit_file_diff = None;
         self.loading_commit_files = false;
@@ -322,9 +329,32 @@ impl VcsView {
         self.conflict_content = None;
         self.set_history_commits(Vec::new());
         self.history_has_more = false;
+        // 代际推进：上一个仓库在途的 history 回包全部失效
+        self.history_request_seq += 1;
         self.project_files.clear();
+        self.project_expanded_dirs.clear();
         self.file_tabs.clear();
         self.active_file_tab_idx = None;
+        // 以下均为仓库级状态，跨仓残留会"串味"：
+        // 单文件历史过滤 / reflog / blame / 展开的 diff spacer / 上一仓的错误横幅
+        self.history_path_filter = None;
+        self.reflog_entries.clear();
+        self.showing_reflog = false;
+        self.loading_reflog = false;
+        self.blame_lines = std::rc::Rc::new(Vec::new());
+        self.showing_blame = false;
+        self.loading_blame = false;
+        self.inline_blame_text = None;
+        self.expanded_diff_spacers.clear();
+        self.error = None;
+        // 列表清空：切仓后 open_repo_async 会重拉，避免拉取期间短暂显示旧仓数据
+        self.stashes.clear();
+        self.tags.clear();
+        self.remotes.clear();
+        // 搜索框内容属仓库上下文，经 Render 的 defer 写回清空（异步处拿不到 Window）
+        self.pending_clear_search_inputs = true;
+        // 注：busy 不清——它是全局写操作闸，进行中的 op 结束时自会复位；
+        // diff_ignore_whitespace / diff_view_mode 是用户偏好，跨仓保留
     }
 
     /// 首次打开 lazy load 首页 commits，避免仓库打开就预拉 git log

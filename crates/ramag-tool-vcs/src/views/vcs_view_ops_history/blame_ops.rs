@@ -106,11 +106,21 @@ impl VcsView {
         cx.spawn(async move |this, cx| {
             let result = driver.blame(&repo, &path).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_blame = false;
                 if !this.is_current_repo(&repo) {
+                    this.loading_blame = false;
                     cx.notify();
                     return;
                 }
+                // 请求身份校验：blame 目标文件已切换时，旧回包不写入（防串文件）
+                let target = this
+                    .selected_commit_file
+                    .clone()
+                    .or_else(|| this.selected_file.as_ref().map(|(p, _)| p.clone()));
+                if target.as_deref() != Some(path.as_str()) {
+                    cx.notify();
+                    return;
+                }
+                this.loading_blame = false;
                 match result {
                     Ok(lines) => this.blame_lines = std::rc::Rc::new(lines),
                     Err(e) => {

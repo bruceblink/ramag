@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement, Styled,
-    div, px, uniform_list,
+    div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
@@ -128,17 +128,21 @@ impl VcsView {
                         .into_any_element(),
                 ),
             )
-            .child(
-                Button::new("vcs-history-search")
-                    .ghost()
-                    .small()
-                    .icon(IconName::ArrowRight)
-                    .tooltip("应用搜索条件")
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.apply_history_search(cx);
-                    })),
-            )
+            .when(!self.showing_reflog, |row| {
+                // commit 模式：搜索走 git（grep/author/since），需显式应用；
+                // reflog 模式为客户端即时过滤，无需应用按钮
+                row.child(
+                    Button::new("vcs-history-search")
+                        .ghost()
+                        .small()
+                        .icon(IconName::ArrowRight)
+                        .tooltip("应用搜索条件")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.apply_history_search(cx);
+                        })),
+                )
+            })
             .into_any_element()
     }
 

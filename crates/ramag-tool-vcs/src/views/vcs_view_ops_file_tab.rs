@@ -98,16 +98,25 @@ impl VcsView {
                 .diff_file_full_opts(&repo, &path_for_diff, diff_kind, ignore_ws, context_lines)
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_diff = false;
                 if !this.is_current_repo(&repo) {
+                    this.loading_diff = false;
                     cx.notify();
                     return;
+                }
+                // 请求身份校验：用户可能已切到别的文件，旧回包只写自己 tab 的缓存，
+                // 不覆盖当前展示区、不熄灭新请求的 loading（否则快速切换会显示错 diff）
+                let still_current =
+                    this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind));
+                if still_current {
+                    this.loading_diff = false;
                 }
                 match result {
                     Ok(d) => {
                         let d = std::rc::Rc::new(d);
-                        this.current_diff = Some(d.clone());
-                        // 缓存到对应 tab
+                        if still_current {
+                            this.current_diff = Some(d.clone());
+                        }
+                        // 缓存到对应 tab（按 path 校验，索引可能已因关 tab 位移）
                         if let Some(idx) = active_idx
                             && let Some(tab) = this.file_tabs.get_mut(idx)
                             && tab.path == path_for_diff
@@ -117,7 +126,9 @@ impl VcsView {
                     }
                     Err(e) => {
                         error!(error = %e, path = %path_for_diff, "vcs: diff failed");
-                        this.error = Some(format!("拉取 diff 失败：{e}"));
+                        if still_current {
+                            this.error = Some(format!("拉取 diff 失败：{e}"));
+                        }
                     }
                 }
                 cx.notify();

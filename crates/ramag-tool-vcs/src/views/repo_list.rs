@@ -86,7 +86,7 @@ impl VcsView {
             .trim()
             .to_lowercase();
         let total = self.recent_repos.len();
-        let filtered: Vec<&RepoConfig> = if query.is_empty() {
+        let mut filtered: Vec<&RepoConfig> = if query.is_empty() {
             self.recent_repos.iter().collect()
         } else {
             self.recent_repos
@@ -96,6 +96,13 @@ impl VcsView {
                 })
                 .collect()
         };
+        // 收藏优先，其余按最近打开时间倒序（未打开过的按名字排在最后）
+        filtered.sort_by(|a, b| {
+            b.favorite
+                .cmp(&a.favorite)
+                .then_with(|| b.last_opened_at.cmp(&a.last_opened_at))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         let visible_count = filtered.len();
 
         let header_inner = h_flex()

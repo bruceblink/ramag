@@ -32,6 +32,7 @@ impl VcsView {
             let Some(path) = dialog.pick_folder() else {
                 let _ = this.update(cx, |this, cx| {
                     this.loading = false;
+                    this.loading_label = None;
                     cx.notify();
                 });
                 return;
@@ -319,6 +320,7 @@ pub(super) async fn open_repo_async(
             error!(error = %e, "vcs: open repo failed");
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
+                this.loading_label = None;
                 this.error = Some(format!("打开仓库失败: {e}"));
                 cx.notify();
             });
@@ -334,6 +336,7 @@ pub(super) async fn open_repo_async(
 
     let _ = this.update(cx, |this, cx| {
         this.loading = false;
+        this.loading_label = None;
         let mut repo_config = repo_config;
         repo_config.last_opened_at = Some(chrono::Utc::now());
         // 是否首次打开（区分「新开仓库」和「tab 切换」）

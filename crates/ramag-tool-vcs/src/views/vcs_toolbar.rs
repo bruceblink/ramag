@@ -1,6 +1,6 @@
 //! Files toolbar 远端操作：dropdown（Fetch / Pull / Push / 强推）
 
-use gpui::{AnyElement, Context, IntoElement, div};
+use gpui::{AnyElement, ClickEvent, Context, IntoElement, div};
 use gpui_component::{
     Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -11,6 +11,49 @@ use super::helpers::RemoteOp;
 use super::vcs_view::VcsView;
 
 impl VcsView {
+    /// 同步快捷主按钮：待拉取时显示「Pull ↓N」、待推送时显示「Push ↑N」，一键可达；
+    /// 其余情形返回空（完整操作仍在聚合菜单里）
+    pub(super) fn render_sync_quick_action(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.repo.is_none() {
+            return div().into_any_element();
+        }
+        let ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
+        let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
+        let (id, label, tip, op): (&'static str, String, String, RemoteOp) = if behind > 0 {
+            (
+                "vcs-quick-pull",
+                format!("Pull ↓{behind}"),
+                format!(
+                    "拉取远程的 {behind} 个新 commit（{}）",
+                    ramag_ui::platform::primary_shortcut("T")
+                ),
+                RemoteOp::Pull,
+            )
+        } else if ahead > 0 {
+            (
+                "vcs-quick-push",
+                format!("Push ↑{ahead}"),
+                format!(
+                    "推送本地的 {ahead} 个 commit（{}）",
+                    ramag_ui::platform::primary_shift_shortcut("K")
+                ),
+                RemoteOp::Push,
+            )
+        } else {
+            return div().into_any_element();
+        };
+        Button::new(id)
+            .primary()
+            .xsmall()
+            .label(label)
+            .tooltip(tip)
+            .disabled(self.busy)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.run_remote_op(op, cx);
+            }))
+            .into_any_element()
+    }
+
     /// Git 操作聚合：dropdown（Fetch / Pull / Push / 强推）。Pull / Push 按 ahead/behind 显示数字
     pub(super) fn render_remote_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.repo.is_none() {

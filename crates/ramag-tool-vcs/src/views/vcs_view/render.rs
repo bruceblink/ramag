@@ -25,6 +25,20 @@ impl Render for VcsView {
                 });
             });
         }
+        // 切仓后清空搜索框：文件搜索与历史搜索是仓库上下文，不跨仓残留
+        if self.pending_clear_search_inputs {
+            self.pending_clear_search_inputs = false;
+            let files_input = self.files_search_input.clone();
+            let history_input = self.history_search_input.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                files_input.update(cx, |state, ctx| {
+                    state.set_value("", window, ctx);
+                });
+                history_input.update(cx, |state, ctx| {
+                    state.set_value("", window, ctx);
+                });
+            });
+        }
         let theme = cx.theme();
         let bg = theme.background;
         let muted_fg = theme.muted_foreground;
@@ -40,7 +54,11 @@ impl Render for VcsView {
                 .justify_center()
                 .text_sm()
                 .text_color(muted_fg)
-                .child("加载中…")
+                .child(
+                    self.loading_label
+                        .clone()
+                        .unwrap_or_else(|| "加载中…".to_string()),
+                )
                 .into_any_element()
         } else {
             match self.active_view {

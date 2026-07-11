@@ -34,8 +34,32 @@ impl VcsView {
             return center("(reflog 为空)", muted_fg);
         }
 
+        // 搜索框在 reflog 模式做客户端即时过滤（commit 模式才是 git 侧搜索）
+        let query = self
+            .history_search_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let filtered: Vec<ReflogEntry> = self
+            .reflog_entries
+            .iter()
+            .filter(|e| {
+                query.is_empty()
+                    || e.subject.to_lowercase().contains(&query)
+                    || e.action.to_lowercase().contains(&query)
+                    || e.selector.to_lowercase().contains(&query)
+                    || e.commit.0.starts_with(&query)
+            })
+            .cloned()
+            .collect();
+        if filtered.is_empty() {
+            return center("没有匹配的 reflog 记录", muted_fg);
+        }
         // Rc 共享 reflog 数据给闭包，避免每帧 clone 整个 Vec
-        let entries_rc: Rc<Vec<ReflogEntry>> = Rc::new(self.reflog_entries.clone());
+        let entries_rc: Rc<Vec<ReflogEntry>> = Rc::new(filtered);
+        // 行数按过滤后取；底部统计仍显示总数
+        let visible_count = entries_rc.len();
         let busy = self.busy;
         let mono = theme.mono_font_family.clone();
         let fg = theme.foreground;
@@ -43,7 +67,7 @@ impl VcsView {
 
         let body = uniform_list(
             "vcs-reflog-rows",
-            count,
+            visible_count,
             cx.processor({
                 let entries_rc = entries_rc.clone();
                 let mono = mono.clone();

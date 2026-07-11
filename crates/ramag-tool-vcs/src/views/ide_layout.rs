@@ -249,6 +249,7 @@ impl VcsView {
             );
         }
         // 末尾：Git 操作聚合菜单（Fetch / Pull / Push / 强推）
+        search_row = search_row.child(self.render_sync_quick_action(cx));
         search_row = search_row.child(self.render_remote_actions(cx));
 
         v_flex()

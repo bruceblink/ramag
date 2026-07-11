@@ -96,6 +96,57 @@ impl VcsView {
         })
         .detach();
     }
+
+    /// 暂存单个 hunk（`git apply --cached`）：部分暂存的核心操作，仅未暂存 diff 可用
+    pub(super) fn stage_hunk(&mut self, hunk_idx: usize, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
+            return;
+        };
+        let Some(diff) = self.current_diff.clone() else {
+            return;
+        };
+        if !matches!(self.active_changes_kind(), Some(GroupKind::Unstaged)) {
+            self.error = Some("仅未暂存改动支持按 hunk 暂存".into());
+            cx.notify();
+            return;
+        }
+        let Some(patch) = build_patch_for_hunk(&diff, hunk_idx) else {
+            self.error = Some("hunk 索引越界".into());
+            cx.notify();
+            return;
+        };
+        let driver = self.driver.clone();
+        if !self.begin_op("暂存 hunk 中…", cx) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = driver.stage_patch(&repo, &patch).await;
+            let new_status = driver.status(&repo).await.ok();
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                this.busy_label = None;
+                if !this.is_current_repo(&repo) {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        info!(hunk_idx, "vcs: hunk stage done");
+                        if let Some(s) = new_status {
+                            this.status = Some(s);
+                        }
+                        this.sync_changes_tabs_with_status(cx);
+                    }
+                    Err(e) => {
+                        error!(error = %e, hunk_idx, "vcs: hunk stage failed");
+                        this.error = Some(format!("暂存 hunk 失败：{e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 /// 整个 hunk（含 context + `+/-` 全部行）→ unified diff patch，给 hunk 回滚用

@@ -149,21 +149,20 @@ impl VcsView {
         .detach();
     }
 
-    /// 工作区 dirty 时切换分支：discard 所有 dirty 路径 → checkout（不可逆，调用前已确认）
+    /// 工作区 dirty 时切换分支：丢弃改动 → checkout（不可逆，调用前已确认）。
+    /// 用 `reset --hard HEAD` 同时清空暂存区与工作区的 tracked 改动——
+    /// 之前的 `git checkout -- paths` 清不掉 index，已暂存内容会被带进新分支或阻塞切换。
+    /// 未跟踪的新文件保留（不阻塞 checkout；与目标分支冲突的罕见情形按错误如实上报）
     pub(crate) fn run_checkout_with_discard(&mut self, target: String, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        let Some(status) = self.status.as_ref() else {
-            return;
-        };
-        let paths: Vec<String> = status
-            .files
-            .iter()
-            .filter(|f| f.staged.is_some() || f.unstaged.is_some())
-            .map(|f| f.path.clone())
-            .collect();
-        if paths.is_empty() {
+        let has_dirty = self.status.as_ref().is_some_and(|s| {
+            s.files
+                .iter()
+                .any(|f| f.staged.is_some() || f.unstaged.is_some())
+        });
+        if !has_dirty {
             self.run_branch_op(BranchOp::Checkout(target), cx);
             return;
         }
@@ -173,7 +172,7 @@ impl VcsView {
         }
         let target_for_log = target.clone();
         cx.spawn(async move |this, cx| {
-            let discard_result = driver.discard(&repo, &paths).await;
+            let discard_result = driver.reset(&repo, "HEAD", ResetKind::Hard).await;
             let final_result = match discard_result {
                 Ok(()) => driver.checkout(&repo, &target).await,
                 Err(e) => Err(e),

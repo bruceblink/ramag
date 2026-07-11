@@ -369,8 +369,9 @@ pub(super) fn open_checkout_dirty_dialog(
     let title = SharedString::from("工作区有未提交改动");
     let desc = format!(
         "切换到「{target}」会与当前未提交的改动冲突，git 会拒绝切换。\n\n\
-         - 「Stash 后切换」：把当前改动暂存到 stash 列表，切换后可在 Stash 面板恢复\n\
-         - 「丢弃后切换」：直接丢弃所有未暂存 / 已暂存改动（不可恢复）"
+         - 「Stash 后切换」：把当前改动暂存到 stash 列表，切换后可在 Stash 面板恢复（推荐）\n\
+         - 「丢弃后切换」：丢弃全部已暂存与未暂存改动（reset --hard，不可恢复；\
+         未跟踪的新文件保留）"
     );
     window.open_dialog(cx, move |dialog, _, _| {
         let view_cancel = view.clone();

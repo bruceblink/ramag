@@ -57,6 +57,27 @@ impl VcsView {
             },
         )
         .detach();
+        // 仓库搜索同样即时过滤（此前缺订阅，输入不触发重渲染）
+        cx.subscribe(
+            &repo_search_input,
+            |_this: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        // 历史搜索框：reflog 模式为客户端即时过滤，需要输入即重渲染
+        // （commit 模式输入只重渲染无副作用，git 侧搜索仍靠显式应用）
+        cx.subscribe(
+            &history_search_input,
+            |_this: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
         // 用户在外部（编辑器 / 终端）改动文件后切回窗口 → 自动刷新工作区，
         // 不必手动点刷新。仅在「未激活 → 激活」边缘且已打开仓库时触发
         cx.observe_window_activation(window, |this: &mut Self, window, cx| {
@@ -77,6 +98,7 @@ impl VcsView {
             remote_branches: Vec::new(),
             error: None,
             loading: false,
+            loading_label: None,
             busy: false,
             busy_label: None,
             pending_notification: None,
@@ -85,6 +107,7 @@ impl VcsView {
             commit_amend: false,
             commit_sign: false,
             pending_commit_text: None,
+            pending_clear_search_inputs: false,
             selected_file: None,
             current_diff: None,
             loading_diff: false,
@@ -92,6 +115,7 @@ impl VcsView {
             history_commits: std::rc::Rc::new(Vec::new()),
             history_graph_rows: std::rc::Rc::new(Vec::new()),
             history_has_more: false,
+            history_request_seq: 0,
             loading_history: false,
             stashes: Vec::new(),
             loading_stashes: false,
@@ -131,7 +155,8 @@ impl VcsView {
             active_view: ActiveView::RepoList,
             recent_repos: Vec::new(),
             repo_search_input,
-            files_view_mode: FilesViewMode::Project,
+            // 默认进 Changes：打开仓库最常见的任务是看改动与提交（Project 树按需切换）
+            files_view_mode: FilesViewMode::Changes,
             files_search_input,
             project_files: Vec::new(),
             loading_project_files: false,

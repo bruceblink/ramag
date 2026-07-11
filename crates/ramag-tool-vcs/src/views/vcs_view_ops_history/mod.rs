@@ -147,16 +147,24 @@ impl VcsView {
                 )
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_diff = false;
                 if !this.is_current_repo(&repo) {
+                    this.loading_diff = false;
                     cx.notify();
                     return;
+                }
+                // 请求身份校验：用户可能已切到别的 commit 文件，旧回包不覆盖展示区
+                let still_current =
+                    this.selected_commit_file.as_deref() == Some(path_for_diff.as_str());
+                if still_current {
+                    this.loading_diff = false;
                 }
                 match result {
                     Ok(d) => {
                         let d = std::rc::Rc::new(d);
-                        this.current_diff = Some(d.clone());
-                        this.commit_file_diff = Some(d.clone());
+                        if still_current {
+                            this.current_diff = Some(d.clone());
+                            this.commit_file_diff = Some(d.clone());
+                        }
                         if let Some(idx) = this.active_file_tab_idx
                             && let Some(tab) = this.file_tabs.get_mut(idx)
                             && tab.path == path_for_diff
@@ -166,7 +174,9 @@ impl VcsView {
                     }
                     Err(e) => {
                         error!(error = %e, path = %path_for_diff, "vcs: commit diff failed");
-                        this.error = Some(format!("拉取 commit diff 失败：{e}"));
+                        if still_current {
+                            this.error = Some(format!("拉取 commit diff 失败：{e}"));
+                        }
                     }
                 }
                 cx.notify();

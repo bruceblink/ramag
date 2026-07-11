@@ -30,11 +30,27 @@ impl VcsView {
                 .child("暂无 stash（工具栏「Stash 工作区改动」创建）")
                 .into_any_element();
         }
+        // Files panel 搜索框在 Stash 模式按描述过滤（与 Changes/Project 的路径过滤语义对齐）
+        let query = self
+            .files_search_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
         let rows: Vec<AnyElement> = self
             .stashes
             .iter()
+            .filter(|s| query.is_empty() || s.message.to_lowercase().contains(&query))
             .map(|s| stash_row(s, busy, cx).into_any_element())
             .collect();
+        if rows.is_empty() {
+            return div()
+                .pl(px(4.0))
+                .text_xs()
+                .text_color(muted_fg)
+                .child("没有匹配的 stash")
+                .into_any_element();
+        }
         v_flex().gap(px(2.0)).children(rows).into_any_element()
     }
 }

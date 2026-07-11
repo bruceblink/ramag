@@ -168,7 +168,11 @@ impl VcsView {
                 }
                 (RepoOperation::Rebase, OperationStep::Skip) => driver.rebase_skip(&repo).await,
                 (RepoOperation::Rebase, OperationStep::Abort) => driver.rebase_abort(&repo).await,
-                // Merge / CherryPick 不支持 Skip；Revert 暂不暴露
+                (RepoOperation::Revert, OperationStep::Continue) => {
+                    driver.revert_continue(&repo).await
+                }
+                (RepoOperation::Revert, OperationStep::Abort) => driver.revert_abort(&repo).await,
+                // Merge / CherryPick / Revert 不支持 Skip（横幅按钮已按 operation 置灰）
                 _ => Err(ramag_domain::error::DomainError::NotImplemented(format!(
                     "{}·{}",
                     operation_label(operation),
@@ -287,6 +291,18 @@ impl VcsView {
                 if let Err(e) = result {
                     error!(error = %e, %onto, "vcs: interactive rebase failed");
                     this.error = Some(format!("交互式 Rebase 失败：{e}（如有冲突请在工作区处理）"));
+                } else if matches!(
+                    this.status.as_ref().and_then(|s| s.operation),
+                    Some(ramag_domain::entities::RepoOperation::Rebase)
+                ) {
+                    // driver 对进入冲突态返回 Ok（推进成功）；此时绝不能报"完成"——
+                    // 仓库仍处于 rebase 进行中，引导用户去工作区解决
+                    info!(%onto, "vcs: interactive rebase paused on conflict");
+                    this.view_mode = super::helpers::ViewMode::Workspace;
+                    this.error = Some(
+                        "Rebase 遇到冲突：请在工作区解决冲突后点「继续」，或「中止」回滚".into(),
+                    );
+                    this.refresh_after_head_change(cx);
                 } else {
                     info!(%onto, "vcs: interactive rebase done");
                     // 历史被改写：history 与所有 diff 缓存都要重建

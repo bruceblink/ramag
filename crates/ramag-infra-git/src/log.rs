@@ -1,5 +1,5 @@
 //! `git log --pretty=format:...`：`\x1f` 分字段、`\x1e` 分记录。
-//! 字段：%H %an %ae %at %cn %ce %ct %P %s %b
+//! 字段：%H %an %ae %at %cn %ce %ct %P %D %s %b
 
 use std::path::Path;
 
@@ -8,7 +8,7 @@ use ramag_domain::error::Result;
 
 use crate::git_cmd::run_git_text;
 
-const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%P%x1f%s%x1f%b%x1e";
+const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%P%x1f%D%x1f%s%x1f%b%x1e";
 
 pub fn run_log(repo_path: &Path, opts: &LogOptions) -> Result<Vec<Commit>> {
     let mut args: Vec<String> = vec!["log".into(), format!("--pretty=format:{LOG_FORMAT}")];
@@ -55,7 +55,7 @@ fn parse_log_output(text: &str) -> Vec<Commit> {
 }
 
 fn parse_record(record: &str) -> Option<Commit> {
-    let mut fields = record.splitn(10, '\x1f');
+    let mut fields = record.splitn(11, '\x1f');
     let hash = fields.next()?.trim();
     let author_name = fields.next()?;
     let author_email = fields.next()?;
@@ -64,6 +64,14 @@ fn parse_record(record: &str) -> Option<Commit> {
     let committer_email = fields.next()?;
     let committer_ts = fields.next()?.parse::<i64>().ok()?;
     let parents_str = fields.next()?;
+    // %D：decorate refs（"HEAD -> main, origin/main, tag: v1.0"），逗号分隔
+    let refs: Vec<String> = fields
+        .next()?
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
     let subject = fields.next()?.to_string();
     let body = fields
         .next()
@@ -92,7 +100,7 @@ fn parse_record(record: &str) -> Option<Commit> {
         },
         subject,
         body,
-        refs: Vec::new(),
+        refs,
     })
 }
 
@@ -102,15 +110,17 @@ mod tests {
 
     #[test]
     fn parses_two_records() {
-        let raw = "abc123\x1fAlice\x1falice@x.com\x1f1700000000\x1fAlice\x1falice@x.com\x1f1700000000\x1f\x1ffirst commit\x1f\x1edef456\x1fBob\x1fbob@x.com\x1f1700001000\x1fBob\x1fbob@x.com\x1f1700001000\x1fabc123\x1ffix bug\x1ffull body\x1e";
+        let raw = "abc123\x1fAlice\x1falice@x.com\x1f1700000000\x1fAlice\x1falice@x.com\x1f1700000000\x1f\x1fHEAD -> main, tag: v1.0\x1ffirst commit\x1f\x1edef456\x1fBob\x1fbob@x.com\x1f1700001000\x1fBob\x1fbob@x.com\x1f1700001000\x1fabc123\x1f\x1ffix bug\x1ffull body\x1e";
         let commits = parse_log_output(raw);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id.0, "abc123");
         assert_eq!(commits[0].subject, "first commit");
         assert_eq!(commits[0].author.name, "Alice");
+        assert_eq!(commits[0].refs, vec!["HEAD -> main", "tag: v1.0"]);
         assert_eq!(commits[1].parents.len(), 1);
         assert_eq!(commits[1].parents[0].0, "abc123");
         assert_eq!(commits[1].body, "full body");
+        assert!(commits[1].refs.is_empty());
     }
 
     #[test]
