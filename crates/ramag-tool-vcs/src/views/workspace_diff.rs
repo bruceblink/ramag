@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -44,6 +44,29 @@ impl VcsView {
                 .child("选中左侧文件查看变更")
                 .into_any_element();
         };
+        let blame_supported = match &tab.source {
+            FileTabSource::Changes(GroupKind::Unstaged) => true,
+            // HEAD blame 读取工作区；若同文件还有 unstaged 内容，它与 index 新侧行号已不一致。
+            FileTabSource::Changes(GroupKind::Staged) => {
+                self.status.as_ref().is_some_and(|status| {
+                    status
+                        .files
+                        .iter()
+                        .find(|file| file.path == tab.path)
+                        .is_some_and(|file| file.unstaged.is_none())
+                })
+            }
+            _ => false,
+        };
+        let enable_hunk_ops = matches!(
+            &tab.source,
+            FileTabSource::Changes(GroupKind::Staged | GroupKind::Unstaged)
+        );
+        let diff_options_supported = matches!(
+            &tab.source,
+            FileTabSource::Changes(GroupKind::Staged | GroupKind::Unstaged)
+                | FileTabSource::Commit { .. }
+        );
         // Commit tab 走只读 diff 路径（不开 stage/unstage）；Changes 走 GroupKind 原逻辑
         let (path, kind, kind_tag): (String, GroupKind, String) = match &tab.source {
             FileTabSource::Changes(k) => {
@@ -73,6 +96,8 @@ impl VcsView {
             &kind_tag,
             &path,
             kind_copy,
+            blame_supported,
+            diff_options_supported,
             fg,
             accent,
             mono.clone(),
@@ -83,6 +108,8 @@ impl VcsView {
         let lang = super::syntax::lang_for_path(&path).map(SharedString::from);
         let body = self.render_diff_body(
             kind_copy,
+            blame_supported,
+            enable_hunk_ops,
             lang,
             mono.clone(),
             fg,
@@ -217,21 +244,23 @@ impl VcsView {
         &self,
         kind_tag: &str,
         path: &str,
-        kind: GroupKind,
+        _kind: GroupKind,
+        blame_supported: bool,
+        diff_options_supported: bool,
         fg: gpui::Hsla,
         accent: gpui::Hsla,
         mono: SharedString,
         border: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Blame toggle：Changes 与 Commit tab 都支持（toggle_blame 内部按 selected_file/commit_file 取 path）
-        let blame_supported = matches!(kind, GroupKind::Staged | GroupKind::Unstaged)
-            || self.viewing_commit.is_some();
+        // 当前 driver 只支持 HEAD blame；commit 历史 diff 禁用，避免把当前作者冒充历史作者。
         let blame_btn = Button::new("vcs-diff-blame-toggle")
             .ghost()
             .xsmall()
             .icon(IconName::Eye)
-            .tooltip(if self.loading_blame {
+            .tooltip(if !blame_supported {
+                "当前 diff 与工作区行号不一致，无法提供可靠 blame"
+            } else if self.loading_blame {
                 "加载 blame 中…"
             } else if self.showing_blame {
                 "关闭 blame（不再点行号查看作者）"
@@ -259,6 +288,20 @@ impl VcsView {
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.set_diff_view_mode(this.diff_view_mode.toggled(), cx);
+            }));
+        let ignore_whitespace_btn = Button::new("vcs-diff-ignore-whitespace")
+            .ghost()
+            .xsmall()
+            .label("−ws")
+            .selected(self.diff_ignore_whitespace)
+            .tooltip(if self.diff_ignore_whitespace {
+                "当前已忽略空白差异；点击恢复"
+            } else {
+                "忽略空格、缩进等空白差异（git diff -w）"
+            })
+            .disabled(!diff_options_supported)
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.toggle_diff_ignore_whitespace(cx);
             }));
         h_flex()
             .gap(px(6.0))
@@ -297,6 +340,7 @@ impl VcsView {
                 row.child(div().text_xs().text_color(accent).child("blame 加载中…"))
             })
             .child(blame_btn)
+            .child(ignore_whitespace_btn)
             .child(view_mode_btn)
             .into_any_element()
     }
@@ -306,6 +350,8 @@ impl VcsView {
     fn render_diff_body(
         &self,
         kind: GroupKind,
+        blame_supported: bool,
+        enable_hunk_ops: bool,
         lang: Option<SharedString>,
         mono: SharedString,
         fg: gpui::Hsla,
@@ -325,7 +371,7 @@ impl VcsView {
             return placeholder("（无差异）", muted_fg);
         };
         // Changes（Staged/Unstaged）允许 hunk 回滚（中间列按钮）；commit 等只读源关闭
-        let enable_discard = matches!(kind, GroupKind::Unstaged | GroupKind::Staged);
+        let enable_discard = enable_hunk_ops;
         // render 期间 entity 已被 mut 借用，状态必须从 &self 读出后传给纯函数渲染器
         let has_blame = self.showing_blame && !self.blame_lines.is_empty();
         let expanded_spacers = self.expanded_diff_spacers.clone();
@@ -344,6 +390,7 @@ impl VcsView {
             &self.diff_scroll, // 两栏共享垂直 handle 保证行级同步
             &self.diff_h_scroll,
             has_blame,
+            blame_supported,
             &expanded_spacers,
             cx,
         )

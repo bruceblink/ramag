@@ -71,10 +71,12 @@ impl VcsView {
         // （commit 模式输入只重渲染无副作用，git 侧搜索仍靠显式应用）
         cx.subscribe(
             &history_search_input,
-            |_this: &mut Self, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } if !this.showing_reflog => {
+                    this.apply_history_search(cx);
                 }
+                _ => {}
             },
         )
         .detach();
@@ -94,6 +96,7 @@ impl VcsView {
             storage,
             repo: None,
             status: None,
+            status_request_seq: 0,
             local_branches: Vec::new(),
             remote_branches: Vec::new(),
             error: None,
@@ -108,9 +111,11 @@ impl VcsView {
             commit_sign: false,
             pending_commit_text: None,
             pending_clear_search_inputs: false,
+            pending_clear_creation_inputs: false,
             selected_file: None,
             current_diff: None,
             loading_diff: false,
+            diff_request_seq: 0,
             view_mode: ViewMode::Workspace,
             history_commits: std::rc::Rc::new(Vec::new()),
             history_graph_rows: std::rc::Rc::new(Vec::new()),
@@ -119,10 +124,12 @@ impl VcsView {
             loading_history: false,
             stashes: Vec::new(),
             loading_stashes: false,
+            stash_request_seq: 0,
             create_branch_input,
             create_branch_base: None,
             tags: Vec::new(),
             loading_tags: false,
+            tag_request_seq: 0,
             create_tag_input,
             create_tag_message_input,
             collapsed_local: false,
@@ -131,23 +138,28 @@ impl VcsView {
             expanded_diff_spacers: std::collections::HashSet::new(),
             remotes: Vec::new(),
             loading_remotes: false,
+            remotes_request_seq: 0,
             viewing_commit: None,
             commit_files: Vec::new(),
             selected_commit_file: None,
             commit_file_diff: None,
             loading_commit_files: false,
+            commit_detail_request_seq: 0,
             commit_files_collapsed: std::collections::HashSet::new(),
             changes_collapsed_dirs: std::collections::HashSet::new(),
             history_path_filter: None,
             history_search_input,
             blame_lines: std::rc::Rc::new(Vec::new()),
             loading_blame: false,
+            blame_request_seq: 0,
+            inline_blame_request_seq: 0,
             showing_blame: false,
             inline_blame_text: None,
             diff_ignore_whitespace: false,
             diff_view_mode: DiffViewMode::Standard,
             reflog_entries: Vec::new(),
             loading_reflog: false,
+            reflog_request_seq: 0,
             showing_reflog: false,
             ide_left_resize,
             ide_files_resize,
@@ -160,6 +172,7 @@ impl VcsView {
             files_search_input,
             project_files: Vec::new(),
             loading_project_files: false,
+            project_files_request_seq: 0,
             project_expanded_dirs: std::collections::HashSet::new(),
             project_files_version: 0,
             project_expanded_dirs_version: 0,
@@ -168,6 +181,7 @@ impl VcsView {
             selected_pf_path: None,
             current_file_content: None,
             loading_file_content: false,
+            file_content_request_seq: 0,
             pf_content_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
             commit_files_scroll: UniformListScrollHandle::new(),
@@ -191,9 +205,11 @@ impl VcsView {
             rebase_plan_onto: String::new(),
             rebase_todos: Vec::new(),
             loading_rebase_plan: false,
+            rebase_request_seq: 0,
             conflict_editor_path: None,
             conflict_content: None,
             loading_conflict: false,
+            conflict_request_seq: 0,
             fs_watcher: None,
             focus_handle: cx.focus_handle(),
         };

@@ -14,15 +14,16 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         self.loading_stashes = true;
+        self.stash_request_seq = self.stash_request_seq.wrapping_add(1);
+        let request_seq = self.stash_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_stashes(&repo).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_stashes = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.stash_request_seq != request_seq {
                     return;
                 }
+                this.loading_stashes = false;
                 match result {
                     Ok(list) => this.stashes = list,
                     Err(e) => {
@@ -38,6 +39,9 @@ impl VcsView {
 
     /// 主动 stash 当前工作区改动（含 untracked）；message 为空用 git 默认描述
     pub(in crate::views) fn run_stash_save(&mut self, message: String, cx: &mut Context<Self>) {
+        if !self.ensure_no_operation("保存 Stash", cx) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
@@ -45,13 +49,15 @@ impl VcsView {
         if !self.begin_op("Stash 中…", cx) {
             return;
         }
+        self.stash_request_seq = self.stash_request_seq.wrapping_add(1);
+        self.loading_stashes = false;
 
         cx.spawn(async move |this, cx| {
             let msg = message.trim().to_string();
             let msg_opt = (!msg.is_empty()).then_some(msg.as_str());
             let result = driver.stash_save(&repo, msg_opt, true).await;
-            let new_stashes = driver.list_stashes(&repo).await.unwrap_or_default();
-            let new_status = driver.status(&repo).await.ok();
+            let new_stashes = driver.list_stashes(&repo).await;
+            let new_status = driver.status(&repo).await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -59,9 +65,11 @@ impl VcsView {
                     cx.notify();
                     return;
                 }
-                this.stashes = new_stashes;
-                if let Some(s) = new_status {
-                    this.status = Some(s);
+                if let Ok(list) = &new_stashes {
+                    this.stashes = list.clone();
+                }
+                if let Ok(status) = &new_status {
+                    this.status = Some(status.clone());
                 }
                 match result {
                     Err(e) => {
@@ -76,6 +84,11 @@ impl VcsView {
                             this.reload_project_files(cx);
                         }
                         this.notify_success("已 stash 工作区改动（含未跟踪文件）", cx);
+                        if let Err(e) = &new_stashes {
+                            this.error = Some(format!("Stash 已完成，但刷新列表失败：{e}"));
+                        } else if let Err(e) = &new_status {
+                            this.error = Some(format!("Stash 已完成，但刷新工作区状态失败：{e}"));
+                        }
                     }
                 }
                 cx.notify();
@@ -86,6 +99,9 @@ impl VcsView {
 
     /// Stash 操作：保存 / 应用 / 弹出 / 删除
     pub(in crate::views) fn run_stash_op(&mut self, op: StashOp, cx: &mut Context<Self>) {
+        if !self.ensure_no_operation("操作 Stash", cx) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
@@ -93,6 +109,8 @@ impl VcsView {
         if !self.begin_op("Stash 操作中…", cx) {
             return;
         }
+        self.stash_request_seq = self.stash_request_seq.wrapping_add(1);
+        self.loading_stashes = false;
 
         cx.spawn(async move |this, cx| {
             let result = match op {
@@ -101,8 +119,8 @@ impl VcsView {
                 StashOp::Drop(idx) => driver.stash_drop(&repo, idx).await,
             };
             // 操作后刷新 stashes + status
-            let new_stashes = driver.list_stashes(&repo).await.unwrap_or_default();
-            let new_status = driver.status(&repo).await.ok();
+            let new_stashes = driver.list_stashes(&repo).await;
+            let new_status = driver.status(&repo).await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -110,20 +128,47 @@ impl VcsView {
                     cx.notify();
                     return;
                 }
-                this.stashes = new_stashes;
-                if let Some(s) = new_status {
-                    this.status = Some(s);
+                if let Ok(list) = &new_stashes {
+                    this.stashes = list.clone();
                 }
+                if let Ok(status) = &new_status {
+                    this.status = Some(status.clone());
+                }
+                let conflict_count = new_status
+                    .as_ref()
+                    .ok()
+                    .map(|status| status.files.iter().filter(|file| file.is_conflicted()).count())
+                    .unwrap_or(0);
                 match result {
+                    Err(e)
+                        if conflict_count > 0
+                            && matches!(op, StashOp::Apply(_) | StashOp::Pop(_)) =>
+                    {
+                        tracing::info!(error = %e, ?op, conflict_count, "vcs: stash apply paused on conflict");
+                        this.error = None;
+                        this.view_mode = super::super::helpers::ViewMode::Workspace;
+                        this.files_view_mode = FilesViewMode::Changes;
+                        this.sync_changes_tabs_with_status(cx);
+                        this.notify_warning(
+                            format!(
+                                "Stash 已应用但有 {conflict_count} 个冲突；原 stash 条目已保留，请在 Changes 中解决"
+                            ),
+                            cx,
+                        );
+                    }
                     Err(e) => {
                         error!(error = %e, ?op, "vcs: stash op failed");
                         this.error = Some(format!("Stash 操作失败：{e}"));
                     }
                     Ok(_) => {
                         // apply / pop 会改工作区文件 → tabs 对齐
-                        this.sync_changes_tabs_with_status(cx);
+                        if matches!(op, StashOp::Apply(_) | StashOp::Pop(_)) {
+                            this.sync_changes_tabs_with_status(cx);
+                        }
                         // apply / pop 可能还原 untracked 文件，Project Files 视图同步刷新
-                        if matches!(this.files_view_mode, FilesViewMode::Project) {
+                        if matches!(op, StashOp::Apply(_) | StashOp::Pop(_))
+                            && matches!(this.files_view_mode, FilesViewMode::Project)
+                        {
                             this.reload_project_files(cx);
                         }
                         let msg = match op {
@@ -132,6 +177,12 @@ impl VcsView {
                             StashOp::Drop(_) => "已删除 stash",
                         };
                         this.notify_success(msg, cx);
+                        if let Err(e) = &new_stashes {
+                            this.error = Some(format!("Stash 操作已完成，但刷新列表失败：{e}"));
+                        } else if let Err(e) = &new_status {
+                            this.error =
+                                Some(format!("Stash 操作已完成，但刷新工作区状态失败：{e}"));
+                        }
                     }
                 }
                 cx.notify();

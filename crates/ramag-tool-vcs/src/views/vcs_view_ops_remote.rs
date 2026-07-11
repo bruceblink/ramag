@@ -13,15 +13,16 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         self.loading_remotes = true;
+        self.remotes_request_seq = self.remotes_request_seq.wrapping_add(1);
+        let request_seq = self.remotes_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_remotes(&repo).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_remotes = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.remotes_request_seq != request_seq {
                     return;
                 }
+                this.loading_remotes = false;
                 match result {
                     Ok(list) => this.remotes = list,
                     Err(e) => {

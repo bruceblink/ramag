@@ -6,37 +6,30 @@ use tracing::error;
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
-    /// 行号点击 → 拉当前文件 blame，命中行写到顶部 banner（_is_old 占位，预留 HEAD 侧逻辑）
-    pub(crate) fn show_inline_blame(
-        &mut self,
-        line_no: u32,
-        _is_old: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let path = self
-            .selected_file
-            .as_ref()
-            .map(|(p, _)| p.clone())
-            .or_else(|| self.selected_commit_file.clone())
-            .or_else(|| self.selected_pf_path.clone());
-        let Some(path) = path else {
+    /// 行号点击 → 拉当前工作区文件 blame，命中行写到顶部 banner。
+    /// 旧侧行号对应的是变更前内容，不能拿当前 HEAD 的 blame 冒充，直接忽略。
+    pub(crate) fn show_inline_blame(&mut self, line_no: u32, is_old: bool, cx: &mut Context<Self>) {
+        if is_old {
+            return;
+        }
+        let Some(path) = self.selected_file.as_ref().map(|(p, _)| p.clone()) else {
             return;
         };
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        if self.inline_blame_text.as_deref() == Some("加载行作者信息…") {
-            return;
-        }
+        self.inline_blame_request_seq = self.inline_blame_request_seq.wrapping_add(1);
+        let request_seq = self.inline_blame_request_seq;
         self.inline_blame_text = Some("加载行作者信息…".into());
         cx.notify();
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
             let result = driver.blame(&repo, &path).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo) {
-                    this.inline_blame_text = None;
-                    cx.notify();
+                if !this.is_current_repo(&repo)
+                    || this.inline_blame_request_seq != request_seq
+                    || this.selected_file.as_ref().map(|(p, _)| p.as_str()) != Some(path.as_str())
+                {
                     return;
                 }
                 match result {
@@ -67,6 +60,7 @@ impl VcsView {
 
     /// 清空 inline blame banner（用户切文件 / 关闭按钮 / 切视图时调）
     pub(crate) fn clear_inline_blame(&mut self, cx: &mut Context<Self>) {
+        self.inline_blame_request_seq = self.inline_blame_request_seq.wrapping_add(1);
         if self.inline_blame_text.is_some() {
             self.inline_blame_text = None;
             cx.notify();
@@ -74,15 +68,11 @@ impl VcsView {
     }
 
     /// 切换 diff/blame 视图；showing_blame=true 拉 blame，否则清空
-    /// 路径优先取 selected_file（Changes），其次 selected_commit_file（commit tab）
+    /// 只支持 Changes：历史 commit diff 需要按指定 revision blame，不能用当前 HEAD 数据冒充。
     pub(crate) fn toggle_blame(&mut self, cx: &mut Context<Self>) {
         self.showing_blame = !self.showing_blame;
         if self.showing_blame {
-            let path = self
-                .selected_file
-                .as_ref()
-                .map(|(p, _)| p.clone())
-                .or_else(|| self.selected_commit_file.clone());
+            let path = self.selected_file.as_ref().map(|(p, _)| p.clone());
             if let Some(p) = path {
                 self.load_blame(p, cx);
             } else {
@@ -102,20 +92,17 @@ impl VcsView {
         let driver = self.driver.clone();
         self.loading_blame = true;
         self.blame_lines = std::rc::Rc::new(Vec::new());
+        self.blame_request_seq = self.blame_request_seq.wrapping_add(1);
+        let request_seq = self.blame_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.blame(&repo, &path).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo) {
-                    this.loading_blame = false;
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.blame_request_seq != request_seq {
                     return;
                 }
                 // 请求身份校验：blame 目标文件已切换时，旧回包不写入（防串文件）
-                let target = this
-                    .selected_commit_file
-                    .clone()
-                    .or_else(|| this.selected_file.as_ref().map(|(p, _)| p.clone()));
+                let target = this.selected_file.as_ref().map(|(p, _)| p.clone());
                 if target.as_deref() != Some(path.as_str()) {
                     cx.notify();
                     return;

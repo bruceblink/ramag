@@ -1,4 +1,4 @@
-//! 三方冲突编辑器：ours | theirs 双栏。整文件采纳 / 手改后标记已解决（git add）
+//! 冲突对比：index stage 2（ours）| stage 3（theirs）。整文件采纳 / 手改后标记已解决。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -15,6 +15,7 @@ use gpui_component::{
 
 use super::helpers::ConflictOp;
 use super::vcs_view::VcsView;
+use super::workspace_conflict::conflict_side_labels;
 
 impl VcsView {
     /// 三方冲突编辑器主入口（IDE 布局 render_main_area 路由调用）
@@ -49,6 +50,8 @@ impl VcsView {
         let path = content.path.clone();
         let ours = content.ours.clone();
         let theirs = content.theirs.clone();
+        let (ours_label, theirs_label) =
+            conflict_side_labels(self.status.as_ref().and_then(|status| status.operation));
 
         let mut ours_hdr_bg = accent;
         ours_hdr_bg.a = 0.08;
@@ -72,8 +75,10 @@ impl VcsView {
                     .icon(IconName::ArrowLeft)
                     .label("关闭")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.conflict_request_seq = this.conflict_request_seq.wrapping_add(1);
                         this.conflict_editor_path = None;
                         this.conflict_content = None;
+                        this.loading_conflict = false;
                         cx.notify();
                     })),
             )
@@ -86,21 +91,19 @@ impl VcsView {
                     .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(format!("冲突：{path}")),
+                    .child(format!("冲突对比：{path}")),
             )
             .child(
                 Button::new("vcs-conflict-use-ours")
                     .outline()
                     .small()
-                    .label("采纳 HEAD")
-                    .tooltip("整文件使用 HEAD（ours）版本")
+                    .label(format!("采纳 {ours_label}"))
+                    .tooltip(format!("整文件使用 {ours_label}（ours / stage 2）版本"))
                     .disabled(busy)
                     .on_click({
                         let p = path.clone();
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.run_conflict_op(ConflictOp::UseOurs, p.clone(), cx);
-                            this.conflict_editor_path = None;
-                            this.conflict_content = None;
                         })
                     }),
             )
@@ -108,15 +111,13 @@ impl VcsView {
                 Button::new("vcs-conflict-use-theirs")
                     .outline()
                     .small()
-                    .label("采纳 对方")
-                    .tooltip("整文件使用对方（theirs）版本")
+                    .label(format!("采纳 {theirs_label}"))
+                    .tooltip(format!("整文件使用 {theirs_label}（theirs / stage 3）版本"))
                     .disabled(busy)
                     .on_click({
                         let p = path.clone();
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.run_conflict_op(ConflictOp::UseTheirs, p.clone(), cx);
-                            this.conflict_editor_path = None;
-                            this.conflict_content = None;
                         })
                     }),
             )
@@ -132,85 +133,82 @@ impl VcsView {
                         let p = path.clone();
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.run_conflict_op(ConflictOp::MarkResolved, p.clone(), cx);
-                            this.conflict_editor_path = None;
-                            this.conflict_content = None;
                         })
                     }),
             );
 
-        let body = h_flex()
-            .flex_1()
-            .min_h_0()
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .border_r_1()
-                    .border_color(border)
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .w_full()
-                            .px(px(10.0))
-                            .py(px(3.0))
-                            .bg(ours_hdr_bg)
-                            .border_b_1()
-                            .border_color(border)
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(Icon::new(IconName::ArrowLeft).xsmall().text_color(accent))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(accent)
-                                    .child(format!("HEAD（ours） — {} 行", ours.len())),
-                            ),
-                    )
-                    .child(div().flex_1().min_h_0().child(lines_panel_virtual(
-                        ours,
-                        mono.clone(),
-                        fg,
-                        muted_fg,
-                        self.conflict_ours_scroll.clone(),
-                        "vcs-conflict-ours",
-                        cx,
-                    ))),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .w_full()
-                            .px(px(10.0))
-                            .py(px(3.0))
-                            .bg(theirs_hdr_bg)
-                            .border_b_1()
-                            .border_color(border)
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(Icon::new(IconName::ArrowRight).xsmall().text_color(danger))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(danger)
-                                    .child(format!("对方（theirs） — {} 行", theirs.len())),
-                            ),
-                    )
-                    .child(div().flex_1().min_h_0().child(lines_panel_virtual(
-                        theirs,
-                        mono,
-                        fg,
-                        muted_fg,
-                        self.conflict_theirs_scroll.clone(),
-                        "vcs-conflict-theirs",
-                        cx,
-                    ))),
-            );
+        let body =
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .border_r_1()
+                        .border_color(border)
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .w_full()
+                                .px(px(10.0))
+                                .py(px(3.0))
+                                .bg(ours_hdr_bg)
+                                .border_b_1()
+                                .border_color(border)
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(Icon::new(IconName::ArrowLeft).xsmall().text_color(accent))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(accent)
+                                        .child(format!("{ours_label}（ours）— {} 行", ours.len())),
+                                ),
+                        )
+                        .child(div().flex_1().min_h_0().child(lines_panel_virtual(
+                            ours,
+                            mono.clone(),
+                            fg,
+                            muted_fg,
+                            self.conflict_ours_scroll.clone(),
+                            "vcs-conflict-ours",
+                            cx,
+                        ))),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .w_full()
+                                .px(px(10.0))
+                                .py(px(3.0))
+                                .bg(theirs_hdr_bg)
+                                .border_b_1()
+                                .border_color(border)
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(Icon::new(IconName::ArrowRight).xsmall().text_color(danger))
+                                .child(div().text_xs().text_color(danger).child(format!(
+                                    "{theirs_label}（theirs）— {} 行",
+                                    theirs.len()
+                                ))),
+                        )
+                        .child(div().flex_1().min_h_0().child(lines_panel_virtual(
+                            theirs,
+                            mono,
+                            fg,
+                            muted_fg,
+                            self.conflict_theirs_scroll.clone(),
+                            "vcs-conflict-theirs",
+                            cx,
+                        ))),
+                );
 
         v_flex()
             .size_full()

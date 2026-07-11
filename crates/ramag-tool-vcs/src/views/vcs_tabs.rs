@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -123,6 +123,7 @@ impl VcsView {
                         .xsmall()
                         .icon(IconName::Close)
                         .tooltip("关闭该仓库标签（不影响仓库本身）")
+                        .disabled(self.busy || self.loading)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_open_repo(path_close.clone(), cx);
                         })),

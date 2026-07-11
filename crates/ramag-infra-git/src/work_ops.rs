@@ -37,7 +37,14 @@ pub fn list_files(repo_path: &Path) -> Result<Vec<String>> {
 
 /// 不改工作区
 pub fn unstage(repo_path: &Path, paths: &[String]) -> Result<()> {
-    let mut args: Vec<&str> = vec!["reset", "HEAD", "--"];
+    // 首次 commit 前没有 HEAD，`git reset HEAD` 会报 ambiguous argument。
+    // 此时从 index 移除即可，`--cached` 保留工作区文件不丢内容。
+    let has_head = run_git_bytes(repo_path, &["rev-parse", "--verify", "HEAD"]).is_ok();
+    let mut args: Vec<&str> = if has_head {
+        vec!["reset", "HEAD", "--"]
+    } else {
+        vec!["rm", "--cached", "--"]
+    };
     for p in paths {
         args.push(p);
     }
@@ -58,7 +65,16 @@ pub fn checkout(repo_path: &Path, target: &str) -> Result<()> {
 }
 
 pub fn create_branch(repo_path: &Path, name: &str, base: Option<&str>) -> Result<()> {
-    let mut args: Vec<&str> = vec!["branch", name];
+    let is_remote_base = base.is_some_and(|base| {
+        let remote_ref = format!("refs/remotes/{base}");
+        run_git_bytes(repo_path, &["show-ref", "--verify", "--quiet", &remote_ref]).is_ok()
+    });
+    let mut args: Vec<&str> = if is_remote_base {
+        // 不依赖用户的 branch.autoSetupMerge 配置，兑现 UI“创建本地副本”的 tracking 承诺。
+        vec!["branch", "--track", name]
+    } else {
+        vec!["branch", name]
+    };
     if let Some(b) = base {
         args.push(b);
     }

@@ -1,7 +1,7 @@
 //! hunk 级 patch：discard_hunk（按 source 分流回滚）+ build_patch_for_hunk
 
 use gpui::Context;
-use ramag_domain::entities::{DiffLineKind, FileDiff};
+use ramag_domain::entities::{DiffLineKind, FileChangeKind, FileDiff};
 use tracing::{error, info};
 
 use super::helpers::{FileTabSource, GroupKind};
@@ -154,11 +154,25 @@ pub(super) fn build_patch_for_hunk(diff: &FileDiff, hunk_idx: usize) -> Option<S
     let hunk = diff.hunks.get(hunk_idx)?;
     let mut out = String::new();
     let path = &diff.path;
-    out.push_str(&format!("diff --git a/{path} b/{path}\n"));
-    out.push_str(&format!("--- a/{path}\n"));
-    out.push_str(&format!("+++ b/{path}\n"));
-    // 占位 hunk header；--recount 让 git 自动重算 line counts
-    out.push_str("@@ -1,1 +1,1 @@\n");
+    let old_path = diff.old_path.as_deref().unwrap_or(path);
+    out.push_str(&format!("diff --git a/{old_path} b/{path}\n"));
+    if matches!(
+        diff.change_kind,
+        FileChangeKind::Added | FileChangeKind::Untracked
+    ) {
+        out.push_str("--- /dev/null\n");
+    } else {
+        out.push_str(&format!("--- a/{old_path}\n"));
+    }
+    if matches!(diff.change_kind, FileChangeKind::Deleted) {
+        out.push_str("+++ /dev/null\n");
+    } else {
+        out.push_str(&format!("+++ b/{path}\n"));
+    }
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+    ));
     for line in &hunk.lines {
         let prefix = match line.kind {
             DiffLineKind::Context => " ",
@@ -168,4 +182,52 @@ pub(super) fn build_patch_for_hunk(diff: &FileDiff, hunk_idx: usize) -> Option<S
         out.push_str(&format!("{prefix}{}\n", line.text));
     }
     Some(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use ramag_domain::entities::{DiffLine, FileChangeKind, Hunk};
+
+    use super::*;
+
+    fn diff(kind: FileChangeKind, old_start: u32, new_start: u32) -> FileDiff {
+        FileDiff {
+            path: "src/new.rs".into(),
+            old_path: None,
+            change_kind: kind,
+            binary: false,
+            old_mode: None,
+            new_mode: None,
+            hunks: vec![Hunk {
+                old_start,
+                old_lines: 0,
+                new_start,
+                new_lines: 1,
+                heading: None,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Add,
+                    old_lineno: None,
+                    new_lineno: Some(new_start),
+                    text: "line".into(),
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn added_file_patch_uses_dev_null_and_real_range() {
+        let patch = build_patch_for_hunk(&diff(FileChangeKind::Added, 0, 1), 0).unwrap();
+        assert!(patch.contains("--- /dev/null\n+++ b/src/new.rs\n"));
+        assert!(patch.contains("@@ -0,0 +1,1 @@"));
+    }
+
+    #[test]
+    fn modified_file_patch_keeps_actual_hunk_position() {
+        let mut modified = diff(FileChangeKind::Modified, 42, 43);
+        modified.hunks[0].old_lines = 1;
+        let patch = build_patch_for_hunk(&modified, 0).unwrap();
+        assert!(patch.contains("--- a/src/new.rs\n+++ b/src/new.rs\n"));
+        assert!(patch.contains("@@ -42,1 +43,1 @@"));
+    }
 }

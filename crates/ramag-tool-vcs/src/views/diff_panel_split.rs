@@ -93,6 +93,7 @@ pub fn render_file_diff_split(
     // 左右两栏共享同一横滚 handle，两栏一起横滚（IDEA 风格，避免错位无法对比）
     h_scroll: &ScrollHandle,
     has_blame: bool,
+    allow_blame: bool,
     expanded_spacers: &HashSet<(usize, usize)>,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
@@ -110,6 +111,7 @@ pub fn render_file_diff_split(
             muted_bg,
             scroll,
             h_scroll,
+            allow_blame,
             cx,
         );
     }
@@ -164,6 +166,7 @@ pub fn render_file_diff_split(
         keys.clone(),
         mono.clone(),
         scroll_v.clone(),
+        allow_blame,
         cx,
     );
     let left_content_list = build_content_list(
@@ -197,6 +200,7 @@ pub fn render_file_diff_split(
         keys.clone(),
         mono.clone(),
         scroll_v.clone(),
+        allow_blame,
         cx,
     );
     let right_content_list = build_content_list(
@@ -281,6 +285,7 @@ fn build_gutter_list(
     keys: Rc<Vec<SplitKey>>,
     mono: SharedString,
     scroll_v: UniformListScrollHandle,
+    allow_blame: bool,
     cx: &mut Context<VcsView>,
 ) -> gpui::UniformList {
     uniform_list(
@@ -307,6 +312,7 @@ fn build_gutter_list(
                             is_left,
                             muted_fg,
                             mono.clone(),
+                            allow_blame,
                             cx,
                         )
                     }

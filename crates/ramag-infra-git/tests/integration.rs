@@ -87,6 +87,14 @@ fn init_stage_commit_log() {
 }
 
 #[test]
+fn empty_repo_log_is_normal_empty_state() {
+    let (driver, id, _tmp) = setup();
+    let log = block_on(driver.log(&id, LogOptions::default()))
+        .expect("空仓库历史应返回空列表而不是 fatal");
+    assert!(log.is_empty());
+}
+
+#[test]
 fn unstage_and_discard() {
     let (driver, id, tmp) = setup();
     commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
@@ -104,6 +112,48 @@ fn unstage_and_discard() {
     block_on(driver.discard(&id, &["a.txt".to_string()])).unwrap();
     let st = block_on(driver.status(&id)).unwrap();
     assert!(st.files.is_empty(), "discard 后工作区应干净");
+}
+
+#[test]
+fn unstage_before_first_commit_keeps_worktree_file() {
+    let (driver, id, tmp) = setup();
+    write(tmp.path(), "first.txt", "draft\n");
+    block_on(driver.stage(&id, &["first.txt".to_string()])).unwrap();
+
+    block_on(driver.unstage(&id, &["first.txt".to_string()]))
+        .expect("首次 commit 前也应能取消暂存");
+
+    let status = block_on(driver.status(&id)).unwrap();
+    let file = status
+        .files
+        .iter()
+        .find(|file| file.path == "first.txt")
+        .expect("工作区文件不应被删除");
+    assert!(file.staged.is_none());
+    assert!(matches!(file.unstaged, Some(FileChangeKind::Untracked)));
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("first.txt")).unwrap(),
+        "draft\n"
+    );
+}
+
+#[test]
+fn hunk_unstage_before_first_commit_keeps_worktree_file() {
+    let (driver, id, tmp) = setup();
+    write(tmp.path(), "first.txt", "draft\n");
+    block_on(driver.stage(&id, &["first.txt".to_string()])).unwrap();
+    let patch = "diff --git a/first.txt b/first.txt\n--- /dev/null\n+++ b/first.txt\n@@ -0,0 +1,1 @@\n+draft\n";
+
+    block_on(driver.unstage_patch(&id, patch)).expect("首次 commit 前也应能按 hunk 取消暂存");
+
+    let status = block_on(driver.status(&id)).unwrap();
+    let file = status
+        .files
+        .iter()
+        .find(|file| file.path == "first.txt")
+        .expect("工作区文件不应被删除");
+    assert!(file.staged.is_none());
+    assert!(matches!(file.unstaged, Some(FileChangeKind::Untracked)));
 }
 
 /// 行级部分暂存：只 stage 选中的新增行，其余改动留在工作区
@@ -174,6 +224,45 @@ fn branch_checkout_merge() {
         log.iter().any(|c| c.subject == "feat commit"),
         "merge 后历史应含 feature commit"
     );
+}
+
+#[test]
+fn branch_created_from_remote_explicitly_tracks_upstream() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
+    let main = current_branch(&driver, &id);
+    let bare = tempfile::TempDir::new().unwrap();
+    let initialized = std::process::Command::new("git")
+        .args(["init", "--bare", bare.path().to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success();
+    assert!(initialized, "初始化 bare remote 失败");
+    block_on(driver.add_remote(&id, "origin", bare.path().to_str().unwrap())).unwrap();
+    block_on(driver.push(&id, "origin", &main, true, false)).unwrap();
+
+    block_on(driver.create_branch(&id, "feature", None)).unwrap();
+    block_on(driver.checkout(&id, "feature")).unwrap();
+    commit_file(
+        &driver,
+        &id,
+        tmp.path(),
+        "feature.txt",
+        "feature\n",
+        "feature",
+    );
+    block_on(driver.push(&id, "origin", "feature", true, false)).unwrap();
+    block_on(driver.checkout(&id, &main)).unwrap();
+    block_on(driver.delete_branch(&id, "feature", true)).unwrap();
+    block_on(driver.fetch(&id, "origin")).unwrap();
+
+    block_on(driver.create_branch(&id, "feature", Some("origin/feature"))).unwrap();
+    let branches = block_on(driver.list_branches(&id, BranchKind::Local)).unwrap();
+    let feature = branches
+        .iter()
+        .find(|branch| branch.name == "feature")
+        .expect("应创建本地 feature");
+    assert_eq!(feature.upstream.as_deref(), Some("origin/feature"));
 }
 
 #[test]
@@ -256,6 +345,29 @@ fn revert_conflict_then_abort() {
 }
 
 #[test]
+fn revert_conflict_can_continue_without_editor() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "v1\n", "c1");
+    commit_file(&driver, &id, tmp.path(), "a.txt", "v2\n", "c2");
+    commit_file(&driver, &id, tmp.path(), "a.txt", "v3\n", "c3");
+    let log = block_on(driver.log(&id, LogOptions::default())).unwrap();
+    let c2 = log[1].id.0.clone();
+
+    assert!(block_on(driver.revert(&id, &c2)).is_err());
+    block_on(driver.use_theirs(&id, &["a.txt".to_string()])).unwrap();
+    block_on(driver.revert_continue(&id))
+        .expect("解决冲突后 revert --continue 应成功且不打开编辑器");
+    assert_eq!(block_on(driver.status(&id)).unwrap().operation, None);
+    assert_eq!(
+        block_on(driver.log(&id, LogOptions::default()))
+            .unwrap()
+            .len(),
+        4,
+        "continue 应生成 revert commit"
+    );
+}
+
+#[test]
 fn cherry_pick_commit() {
     let (driver, id, tmp) = setup();
     commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
@@ -291,7 +403,7 @@ fn diff_and_blame() {
 }
 
 #[test]
-fn merge_conflict_detected() {
+fn merge_conflict_can_continue_without_editor() {
     let (driver, id, tmp) = setup();
     commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
     let main = current_branch(&driver, &id);
@@ -323,6 +435,51 @@ fn merge_conflict_detected() {
         has_conflict || st.operation.is_some(),
         "冲突 merge 后应检测到冲突文件或进行中操作"
     );
+    block_on(driver.use_ours(&id, &["a.txt".to_string()])).unwrap();
+    block_on(driver.merge_continue(&id)).expect("解决冲突后 merge --continue 应成功且不打开编辑器");
+    let status = block_on(driver.status(&id)).unwrap();
+    assert_eq!(status.operation, None);
+}
+
+#[test]
+fn cherry_pick_conflict_can_continue_without_editor() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
+    let main = current_branch(&driver, &id);
+    block_on(driver.create_branch(&id, "feature", None)).unwrap();
+    block_on(driver.checkout(&id, "feature")).unwrap();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "feature\n", "feature");
+    let feature_commit = block_on(driver.log(&id, LogOptions::default())).unwrap()[0]
+        .id
+        .0
+        .clone();
+    block_on(driver.checkout(&id, &main)).unwrap();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "main\n", "main");
+
+    assert!(block_on(driver.cherry_pick(&id, &feature_commit)).is_err());
+    block_on(driver.use_theirs(&id, &["a.txt".to_string()])).unwrap();
+    block_on(driver.cherry_pick_continue(&id))
+        .expect("解决冲突后 cherry-pick --continue 应成功且不打开编辑器");
+    assert_eq!(block_on(driver.status(&id)).unwrap().operation, None);
+}
+
+#[test]
+fn rebase_conflict_can_continue_without_editor() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
+    let main = current_branch(&driver, &id);
+    block_on(driver.create_branch(&id, "feature", None)).unwrap();
+    block_on(driver.checkout(&id, "feature")).unwrap();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "feature\n", "feature");
+    block_on(driver.checkout(&id, &main)).unwrap();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "main\n", "main");
+    block_on(driver.checkout(&id, "feature")).unwrap();
+
+    assert!(block_on(driver.rebase(&id, &main)).is_err());
+    block_on(driver.use_theirs(&id, &["a.txt".to_string()])).unwrap();
+    block_on(driver.rebase_continue(&id))
+        .expect("解决冲突后 rebase --continue 应成功且不打开编辑器");
+    assert_eq!(block_on(driver.status(&id)).unwrap().operation, None);
 }
 
 #[test]

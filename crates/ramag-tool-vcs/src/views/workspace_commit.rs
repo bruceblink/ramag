@@ -27,7 +27,18 @@ impl VcsView {
             .unwrap_or(0);
         // 非 amend 必须有 commit message；amend 可沿用上一次 message 故不强制
         let has_message = !self.commit_input.read(cx).value().trim().is_empty();
+        let has_head = self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_some();
         let can_commit = !self.busy
+            && self
+                .status
+                .as_ref()
+                .and_then(|status| status.operation)
+                .is_none()
+            && (!self.commit_amend || has_head)
             && (staged_count > 0 || self.commit_amend)
             && (has_message || self.commit_amend);
 
@@ -63,6 +74,7 @@ impl VcsView {
             }));
         // 右侧小箭头：下拉切换 Amend 模式（与主按钮拼成分体按钮）
         let amend_on = self.commit_amend;
+        let sign_on = self.commit_sign;
         let entity = cx.entity();
         let more_btn = Button::new("vcs-commit-more")
             .primary()
@@ -71,13 +83,29 @@ impl VcsView {
             .tooltip("更多提交方式")
             .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let ent = entity.clone();
-                let label = if amend_on {
+                let label = if !has_head {
+                    "Amend 上一次提交（暂无 commit）"
+                } else if amend_on {
                     "✓ Amend 模式（点击退出）"
                 } else {
                     "Amend 上一次提交"
                 };
-                m = m.item(PopupMenuItem::new(label).on_click(move |_, _, app| {
-                    ent.update(app, |this, cx| this.toggle_commit_amend(cx));
+                m = m.item(PopupMenuItem::new(label).disabled(!has_head).on_click(
+                    move |_, _, app| {
+                        ent.update(app, |this, cx| this.toggle_commit_amend(cx));
+                    },
+                ));
+                let ent = entity.clone();
+                let sign_label = if sign_on {
+                    "✓ GPG 签名提交（点击关闭）"
+                } else {
+                    "GPG 签名提交"
+                };
+                m = m.item(PopupMenuItem::new(sign_label).on_click(move |_, _, app| {
+                    ent.update(app, |this, cx| {
+                        this.commit_sign = !this.commit_sign;
+                        cx.notify();
+                    });
                 }));
                 m
             });

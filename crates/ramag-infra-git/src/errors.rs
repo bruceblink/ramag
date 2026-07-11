@@ -64,6 +64,23 @@ pub fn friendly_git_error(args: &[&str], stderr: &str) -> String {
         )
     } else if lower.contains("nothing to commit") {
         Some("暂存区为空，没有内容可提交。先 Stage 文件或勾选要提交的行。")
+    } else if lower.contains("author identity unknown")
+        || lower.contains("unable to auto-detect email address")
+        || lower.contains("please tell me who you are")
+    {
+        Some(
+            "尚未配置 Git 提交身份：\n\
+             - 在终端运行 git config user.name \"你的名字\"\n\
+             - 再运行 git config user.email \"你的邮箱\"\n\
+             以上命令默认只配置当前仓库；需要全局配置时再加 --global",
+        )
+    } else if lower.contains("gpg failed to sign the data")
+        || lower.contains("signing failed")
+        || lower.contains("failed to write commit object") && lower.contains("gpg")
+    {
+        Some(
+            "GPG 签名失败：检查 signing key 与 gpg-agent；也可在提交菜单中关闭「GPG 签名」后重试。",
+        )
     } else if lower.contains("no upstream branch")
         || lower.contains("no tracking information")
         || lower.contains("the current branch") && lower.contains("has no upstream")
@@ -227,6 +244,26 @@ mod tests {
             "error: Your local changes to the following files would be overwritten by merge",
         );
         assert!(msg.contains("Stash"));
+    }
+
+    #[test]
+    fn translates_missing_commit_identity() {
+        let msg = friendly_git_error(
+            &["commit"],
+            "Author identity unknown\n*** Please tell me who you are.\nfatal: unable to auto-detect email address",
+        );
+        assert!(msg.contains("Git 提交身份"));
+        assert!(msg.contains("user.email"));
+    }
+
+    #[test]
+    fn translates_gpg_signing_failure() {
+        let msg = friendly_git_error(
+            &["commit", "-S"],
+            "error: gpg failed to sign the data\nfatal: failed to write commit object",
+        );
+        assert!(msg.contains("GPG 签名失败"));
+        assert!(msg.contains("关闭"));
     }
 
     #[test]

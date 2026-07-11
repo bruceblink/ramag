@@ -446,7 +446,13 @@ impl VcsView {
                 busy,
                 cx,
             )],
-            GroupKind::Conflict => conflict_buttons(idx, &f.path, busy, cx),
+            GroupKind::Conflict => conflict_buttons(
+                idx,
+                &f.path,
+                busy,
+                self.status.as_ref().and_then(|status| status.operation),
+                cx,
+            ),
         };
 
         // 「查看历史」按钮：所有非 Untracked 文件都可看（untracked 文件还没进 git，无历史）

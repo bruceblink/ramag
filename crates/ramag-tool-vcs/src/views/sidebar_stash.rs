@@ -13,7 +13,12 @@ impl VcsView {
     /// Stash 列表 body：供 IDE Files panel Stash 视图主区调用
     pub(super) fn render_stash_list_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted_fg = cx.theme().muted_foreground;
-        let busy = self.busy;
+        let busy = self.busy
+            || self
+                .status
+                .as_ref()
+                .and_then(|status| status.operation)
+                .is_some();
         if self.loading_stashes {
             return div()
                 .pl(px(4.0))

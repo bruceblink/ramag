@@ -14,10 +14,13 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
+        self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
+        let request_seq = self.diff_request_seq;
         // 视觉复位仅在真正换文件时执行：外部改动触发的静默刷新会对同一文件重走
         // select_file，若无条件归零会打断用户正在进行的 diff 阅读（滚动/展开态丢失）
         let same_file = self.selected_file.as_ref() == Some(&(path.clone(), kind));
         if !same_file {
+            self.reset_blame_context();
             // 清 spacer 展开态（hunk_idx 随 diff 变化，跨文件保留无意义）
             self.expanded_diff_spacers.clear();
             // 横滚归位，否则新文件停在上个文件的横滚位置、看不到行首
@@ -78,7 +81,7 @@ impl VcsView {
             GroupKind::Unstaged => DiffKind::WorkingTreeVsIndex,
             // Untracked 不在 index：git diff 无输出 → 读盘构造「全新增」伪 diff 预览
             GroupKind::Untracked => {
-                self.load_untracked_preview(path, cx);
+                self.load_untracked_preview(path, request_seq, cx);
                 return;
             }
             // Conflict 走三栏解决器（左侧行点击直达），diff 区仅给提示
@@ -92,47 +95,41 @@ impl VcsView {
         let path_for_diff = path.clone();
         let ignore_ws = self.diff_ignore_whitespace;
         let context_lines = self.diff_view_mode.context_lines();
-        let active_idx = self.active_file_tab_idx;
+        let source_for_diff = FileTabSource::Changes(kind);
         cx.spawn(async move |this, cx| {
             let result = driver
                 .diff_file_full_opts(&repo, &path_for_diff, diff_kind, ignore_ws, context_lines)
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo) {
+            let _ =
+                this.update(cx, |this, cx| {
+                    if !this.is_current_repo(&repo) || this.diff_request_seq != request_seq {
+                        return;
+                    }
                     this.loading_diff = false;
+                    match result {
+                        Ok(d) => {
+                            let d = std::rc::Rc::new(d);
+                            let still_current =
+                                this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind));
+                            if still_current {
+                                this.current_diff = Some(d.clone());
+                            }
+                            // 不缓存到捕获的索引：关 tab 后索引可能位移，必须按完整来源定位。
+                            if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
+                                tab.path == path_for_diff && tab.source == source_for_diff
+                            }) {
+                                tab.cached_diff = Some(d);
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = %e, path = %path_for_diff, "vcs: diff failed");
+                            if this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind)) {
+                                this.error = Some(format!("拉取 diff 失败：{e}"));
+                            }
+                        }
+                    }
                     cx.notify();
-                    return;
-                }
-                // 请求身份校验：用户可能已切到别的文件，旧回包只写自己 tab 的缓存，
-                // 不覆盖当前展示区、不熄灭新请求的 loading（否则快速切换会显示错 diff）
-                let still_current =
-                    this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind));
-                if still_current {
-                    this.loading_diff = false;
-                }
-                match result {
-                    Ok(d) => {
-                        let d = std::rc::Rc::new(d);
-                        if still_current {
-                            this.current_diff = Some(d.clone());
-                        }
-                        // 缓存到对应 tab（按 path 校验，索引可能已因关 tab 位移）
-                        if let Some(idx) = active_idx
-                            && let Some(tab) = this.file_tabs.get_mut(idx)
-                            && tab.path == path_for_diff
-                        {
-                            tab.cached_diff = Some(d);
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, path = %path_for_diff, "vcs: diff failed");
-                        if still_current {
-                            this.error = Some(format!("拉取 diff 失败：{e}"));
-                        }
-                    }
-                }
-                cx.notify();
-            });
+                });
         })
         .detach();
     }
@@ -143,6 +140,8 @@ impl VcsView {
             return;
         }
         self.file_tabs.remove(idx);
+        self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
+        self.reset_blame_context();
         if self.file_tabs.is_empty() {
             self.active_file_tab_idx = None;
             self.selected_file = None;
@@ -152,6 +151,7 @@ impl VcsView {
             self.current_file_content = None;
             self.loading_file_content = false;
             self.selected_commit_file = None;
+            self.commit_file_diff = None;
         } else {
             let new_idx = match self.active_file_tab_idx {
                 Some(i) if i == idx => idx.saturating_sub(1).min(self.file_tabs.len() - 1),
@@ -160,8 +160,14 @@ impl VcsView {
                 None => 0,
             };
             self.active_file_tab_idx = Some(new_idx);
-            if let Some(tab) = self.file_tabs.get(new_idx) {
-                self.activate_file_tab_state(tab.clone());
+            if let Some(tab) = self.file_tabs.get(new_idx).cloned() {
+                match tab.source {
+                    FileTabSource::Changes(kind) => self.select_file(tab.path, kind, cx),
+                    FileTabSource::ProjectFiles => self.select_pf_file(tab.path, cx),
+                    FileTabSource::Commit { commit_id, .. } => {
+                        self.select_commit_file(tab.path, commit_id, cx);
+                    }
+                }
             }
         }
         cx.notify();
@@ -169,7 +175,7 @@ impl VcsView {
 
     /// 读盘构造 untracked 文件的「全新增」伪 diff：与普通 diff 同一渲染管线，
     /// 新文件点开即可预览内容（之前是占位文案，必须先 Stage 才能看）
-    fn load_untracked_preview(&mut self, path: String, cx: &mut Context<Self>) {
+    fn load_untracked_preview(&mut self, path: String, request_seq: u64, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref() else {
             return;
         };
@@ -184,11 +190,10 @@ impl VcsView {
             });
             let raw = rx.await.ok();
             let _ = this.update(cx, |this, cx| {
-                this.loading_diff = false;
-                if !this.is_current_repo(&repo_id) {
-                    cx.notify();
+                if !this.is_current_repo(&repo_id) || this.diff_request_seq != request_seq {
                     return;
                 }
+                this.loading_diff = false;
                 match raw {
                     Some(raw) if raw.error.is_none() => {
                         let d = std::rc::Rc::new(build_untracked_diff(raw));
@@ -209,10 +214,18 @@ impl VcsView {
                     Some(raw) => {
                         let msg = raw.error.unwrap_or_else(|| "未知错误".into());
                         error!(error = %msg, path = %path, "vcs: read untracked file failed");
-                        this.error = Some(format!("读取文件失败：{msg}"));
+                        if this.selected_file.as_ref()
+                            == Some(&(path.clone(), GroupKind::Untracked))
+                        {
+                            this.error = Some(format!("读取文件失败：{msg}"));
+                        }
                     }
                     None => {
-                        this.error = Some("读取文件失败：内部通道中断".into());
+                        if this.selected_file.as_ref()
+                            == Some(&(path.clone(), GroupKind::Untracked))
+                        {
+                            this.error = Some("读取文件失败：内部通道中断".into());
+                        }
                     }
                 }
                 cx.notify();

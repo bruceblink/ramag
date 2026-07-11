@@ -128,12 +128,22 @@ impl VcsView {
             .iter()
             .enumerate()
             .map(|(idx, todo)| {
+                let can_move_up = idx > 0
+                    && !(idx == 1
+                        && matches!(todo.action, RebaseAction::Squash | RebaseAction::Fixup));
+                let can_move_down = idx + 1 < total
+                    && !(idx == 0
+                        && matches!(
+                            todos[idx + 1].action,
+                            RebaseAction::Squash | RebaseAction::Fixup
+                        ));
                 rebase_todo_row(
                     idx,
                     todo.action,
                     &todo.hash,
                     &todo.subject,
-                    total,
+                    can_move_up,
+                    can_move_down,
                     busy,
                     entity.clone(),
                     cx,
@@ -208,6 +218,12 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) {
         if let Some(todo) = self.rebase_todos.get_mut(idx) {
+            if !is_rebase_action_valid(idx, action) {
+                self.error =
+                    Some("第一条 commit 不能使用 Squash / Fixup，因为前面没有可合并对象".into());
+                cx.notify();
+                return;
+            }
             todo.action = action;
             cx.notify();
         }
@@ -216,6 +232,21 @@ impl VcsView {
     /// 上移 / 下移 todo（up=true 往前挪）
     pub(super) fn move_rebase_todo(&mut self, idx: usize, up: bool, cx: &mut Context<Self>) {
         let todos = &mut self.rebase_todos;
+        let would_make_invalid_first = (up
+            && idx == 1
+            && todos.get(idx).is_some_and(|todo| {
+                matches!(todo.action, RebaseAction::Squash | RebaseAction::Fixup)
+            }))
+            || (!up
+                && idx == 0
+                && todos.get(1).is_some_and(|todo| {
+                    matches!(todo.action, RebaseAction::Squash | RebaseAction::Fixup)
+                }));
+        if would_make_invalid_first {
+            self.error = Some("Squash / Fixup 前必须保留一条 commit 作为合并目标".into());
+            cx.notify();
+            return;
+        }
         if up && idx > 0 {
             todos.swap(idx, idx - 1);
         } else if !up && idx + 1 < todos.len() {
@@ -232,7 +263,8 @@ fn rebase_todo_row(
     action: RebaseAction,
     hash: &str,
     subject: &str,
-    total: usize,
+    can_move_up: bool,
+    can_move_down: bool,
     busy: bool,
     entity: gpui::Entity<VcsView>,
     cx: &mut Context<VcsView>,
@@ -262,13 +294,15 @@ fn rebase_todo_row(
         .dropdown_menu(move |mut menu: PopupMenu, _: &mut Window, _| {
             for a in all_rebase_actions() {
                 let ent = entity_a.clone();
-                menu = menu.item(PopupMenuItem::new(a.label_zh()).on_click(
-                    move |_: &ClickEvent, _: &mut Window, app: &mut App| {
-                        ent.update(app, |this, cx| {
-                            this.change_rebase_action(idx, a, cx);
-                        });
-                    },
-                ));
+                menu = menu.item(
+                    PopupMenuItem::new(a.label_zh())
+                        .disabled(!is_rebase_action_valid(idx, a))
+                        .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
+                            ent.update(app, |this, cx| {
+                                this.change_rebase_action(idx, a, cx);
+                            });
+                        }),
+                );
             }
             menu
         });
@@ -317,7 +351,7 @@ fn rebase_todo_row(
                         .xsmall()
                         .icon(IconName::ArrowUp)
                         .tooltip("上移（先 rebase）")
-                        .disabled(busy || idx == 0)
+                        .disabled(busy || !can_move_up)
                         .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             entity_up.update(app, |this, cx| {
                                 this.move_rebase_todo(idx, true, cx);
@@ -330,7 +364,7 @@ fn rebase_todo_row(
                         .xsmall()
                         .icon(IconName::ArrowDown)
                         .tooltip("下移（后 rebase）")
-                        .disabled(busy || idx + 1 >= total)
+                        .disabled(busy || !can_move_down)
                         .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             entity_dn.update(app, |this, cx| {
                                 this.move_rebase_todo(idx, false, cx);
@@ -341,13 +375,29 @@ fn rebase_todo_row(
         .into_any_element()
 }
 
-fn all_rebase_actions() -> [RebaseAction; 6] {
+fn all_rebase_actions() -> [RebaseAction; 4] {
     [
         RebaseAction::Pick,
-        RebaseAction::Reword,
-        RebaseAction::Edit,
         RebaseAction::Squash,
         RebaseAction::Fixup,
         RebaseAction::Drop,
     ]
+}
+
+fn is_rebase_action_valid(idx: usize, action: RebaseAction) -> bool {
+    idx > 0 || !matches!(action, RebaseAction::Squash | RebaseAction::Fixup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_rebase_action_valid;
+    use ramag_domain::entities::RebaseAction;
+
+    #[test]
+    fn first_rebase_item_cannot_merge_into_missing_parent() {
+        assert!(!is_rebase_action_valid(0, RebaseAction::Squash));
+        assert!(!is_rebase_action_valid(0, RebaseAction::Fixup));
+        assert!(is_rebase_action_valid(0, RebaseAction::Pick));
+        assert!(is_rebase_action_valid(1, RebaseAction::Squash));
+    }
 }

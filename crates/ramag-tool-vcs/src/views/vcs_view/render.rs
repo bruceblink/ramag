@@ -39,6 +39,19 @@ impl Render for VcsView {
                 });
             });
         }
+        if self.pending_clear_creation_inputs {
+            self.pending_clear_creation_inputs = false;
+            let branch_input = self.create_branch_input.clone();
+            let tag_input = self.create_tag_input.clone();
+            let tag_message_input = self.create_tag_message_input.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                for input in [branch_input, tag_input, tag_message_input] {
+                    input.update(cx, |state, ctx| {
+                        state.set_value("", window, ctx);
+                    });
+                }
+            });
+        }
         let theme = cx.theme();
         let bg = theme.background;
         let muted_fg = theme.muted_foreground;
@@ -91,7 +104,7 @@ impl Render for VcsView {
             // cmd-r：手动刷新工作区
             .on_action(
                 cx.listener(|this, _: &crate::actions::RefreshWorkspace, _, cx| {
-                    if this.repo.is_some() && !this.loading {
+                    if this.repo.is_some() && !this.loading && !this.busy {
                         this.refresh_workspace_silent(cx);
                     }
                 }),
@@ -102,11 +115,13 @@ impl Render for VcsView {
                     this.run_remote_op(super::super::helpers::RemoteOp::Push, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &crate::actions::PullNow, _, cx| {
-                if this.repo.is_some() && !this.busy {
-                    this.run_remote_op(super::super::helpers::RemoteOp::Pull, cx);
-                }
-            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::PullNow, window, cx| {
+                    if this.repo.is_some() && !this.busy {
+                        this.confirm_remote_op(super::super::helpers::RemoteOp::Pull, window, cx);
+                    }
+                }),
+            )
             // cmd-shift-h：底部历史面板
             .on_action(
                 cx.listener(|this, _: &crate::actions::ToggleHistoryPane, _, cx| {

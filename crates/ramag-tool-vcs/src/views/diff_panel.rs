@@ -63,6 +63,7 @@ pub fn render_file_diff(
     _muted_bg: gpui::Hsla,
     scroll: &UniformListScrollHandle,
     h_scroll: &ScrollHandle,
+    allow_blame: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     if let Some(empty) = render_diff_empty(diff.as_ref(), muted_fg) {
@@ -115,6 +116,7 @@ pub fn render_file_diff(
                                 fg,
                                 muted_fg,
                                 content_w,
+                                allow_blame,
                                 cx,
                             )
                             .into_any_element()
@@ -247,6 +249,7 @@ fn render_diff_line(
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     content_w: f32,
+    allow_blame: bool,
     cx: &mut Context<VcsView>,
 ) -> impl IntoElement {
     let (bg, marker, marker_color) = line_palette(line.kind);
@@ -266,6 +269,7 @@ fn render_diff_line(
             true,
             old_id,
             muted_fg,
+            false,
             cx,
         ))
         .child(line_no_cell_clickable(
@@ -273,6 +277,7 @@ fn render_diff_line(
             false,
             new_id,
             muted_fg,
+            allow_blame,
             cx,
         ))
         .child(
@@ -311,6 +316,7 @@ pub(super) fn line_no_cell_clickable(
     is_old: bool,
     cell_id: SharedString,
     muted_fg: gpui::Hsla,
+    enabled: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let label = line_no.map(|n| n.to_string()).unwrap_or_default();
@@ -322,7 +328,7 @@ pub(super) fn line_no_cell_clickable(
         .justify_end()
         .text_color(muted_fg)
         .child(label);
-    if let Some(n) = line_no {
+    if enabled && let Some(n) = line_no {
         cell = cell
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {

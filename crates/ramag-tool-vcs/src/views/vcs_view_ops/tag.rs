@@ -3,7 +3,7 @@
 use gpui::Context;
 use tracing::{error, info};
 
-use super::super::helpers::TagOp;
+use super::super::helpers::{TagOp, default_remote_name};
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
@@ -14,15 +14,16 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         self.loading_tags = true;
+        self.tag_request_seq = self.tag_request_seq.wrapping_add(1);
+        let request_seq = self.tag_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_tags(&repo).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_tags = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.tag_request_seq != request_seq {
                     return;
                 }
+                this.loading_tags = false;
                 match result {
                     Ok(list) => this.tags = list,
                     Err(e) => {
@@ -42,9 +43,23 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
+        let push_remote = if matches!(op, TagOp::Push(_)) {
+            match default_remote_name(&self.remotes) {
+                Ok(remote) => Some(remote),
+                Err(message) => {
+                    self.error = Some(message);
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         if !self.begin_op("Tag 操作中…", cx) {
             return;
         }
+        self.tag_request_seq = self.tag_request_seq.wrapping_add(1);
+        self.loading_tags = false;
 
         cx.spawn(async move |this, cx| {
             let result = match &op {
@@ -55,9 +70,13 @@ impl VcsView {
                         .await
                 }
                 TagOp::Delete(name) => driver.delete_tag(&repo, name).await,
-                TagOp::Push(name) => driver.push_tag(&repo, "origin", name).await,
+                TagOp::Push(name) => {
+                    driver
+                        .push_tag(&repo, push_remote.as_deref().unwrap_or("origin"), name)
+                        .await
+                }
             };
-            let new_tags = driver.list_tags(&repo).await.unwrap_or_default();
+            let new_tags = driver.list_tags(&repo).await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -65,12 +84,17 @@ impl VcsView {
                     cx.notify();
                     return;
                 }
-                this.tags = new_tags;
+                if let Ok(tags) = &new_tags {
+                    this.tags = tags.clone();
+                }
                 if let Err(e) = result {
                     error!(error = %e, ?op, "vcs: tag op failed");
                     this.error = Some(format!("Tag 操作失败：{e}"));
                 } else {
                     info!(?op, "vcs: tag op done");
+                    if matches!(op, TagOp::Create { .. }) {
+                        this.pending_clear_creation_inputs = true;
+                    }
                     // 建/删 tag 会改变 commit 行的 ref 标签，历史列表同步刷新
                     if matches!(op, TagOp::Create { .. } | TagOp::Delete(_))
                         && (this.history_pane_visible || !this.history_commits.is_empty())
@@ -80,9 +104,15 @@ impl VcsView {
                     let msg = match &op {
                         TagOp::Create { name, .. } => format!("已创建 tag {name}"),
                         TagOp::Delete(name) => format!("已删除 tag {name}"),
-                        TagOp::Push(name) => format!("已推送 tag {name} 到 origin"),
+                        TagOp::Push(name) => format!(
+                            "已推送 tag {name} 到 {}",
+                            push_remote.as_deref().unwrap_or("origin")
+                        ),
                     };
                     this.notify_success(msg, cx);
+                    if let Err(e) = &new_tags {
+                        this.error = Some(format!("Tag 操作已完成，但刷新列表失败：{e}"));
+                    }
                 }
                 cx.notify();
             });
@@ -94,6 +124,16 @@ impl VcsView {
     ///
     /// message 非空时走 annotated tag；空则走 lightweight。
     pub(in crate::views) fn handle_create_tag(&mut self, cx: &mut Context<Self>) {
+        if self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_none()
+        {
+            self.error = Some("首次 commit 前没有可标记的版本，无法创建 Tag".into());
+            cx.notify();
+            return;
+        }
         let name = self.create_tag_input.read(cx).value().trim().to_string();
         if name.is_empty() {
             self.error = Some("tag 名不能为空".into());

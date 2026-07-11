@@ -15,7 +15,7 @@ use gpui_component::{
 use ramag_domain::entities::Branch;
 
 use super::confirm_dialogs::open_confirm_dialog;
-use super::helpers::BranchOp;
+use super::helpers::{BranchOp, checkout_remote_branch_op};
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
 
@@ -23,6 +23,11 @@ impl VcsView {
     /// 本地段底部「新建分支」输入行（name 输入 + 创建按钮，固定 28px 高）
     pub(super) fn render_create_branch_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.busy;
+        let has_head = self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_some();
         h_flex()
             .h(px(LEFT_ROW_H))
             .flex_none()
@@ -40,8 +45,12 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip("基于当前 HEAD 创建本地分支")
-                    .disabled(busy)
+                    .tooltip(if has_head {
+                        "基于当前 HEAD 创建本地分支"
+                    } else {
+                        "首次提交后才能从 HEAD 创建分支"
+                    })
+                    .disabled(busy || !has_head)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.handle_create_branch(cx);
                     })),
@@ -180,17 +189,13 @@ fn branch_actions_menu(
         m = m.item(
             PopupMenuItem::new("切到此远程分支（创建本地副本）").on_click(move |_, w, app| {
                 e1.update(app, |this, cx| {
-                    // 真「创建本地副本」：派生本地名（去掉 remote 前缀），
-                    // 已有同名本地分支则直接切换；否则基于远程分支创建（git 自动设 upstream）。
-                    // 直接 checkout origin/xxx 会进入 detached HEAD，与菜单承诺不符
-                    let local_name = n1
-                        .split_once('/')
-                        .map(|(_, rest)| rest.to_string())
-                        .unwrap_or_else(|| n1.clone());
-                    let op = if this.local_branches.iter().any(|b| b.name == local_name) {
-                        BranchOp::Checkout(local_name)
-                    } else {
-                        BranchOp::Create(local_name, Some(n1.clone()))
+                    let op = match checkout_remote_branch_op(&n1, &this.local_branches) {
+                        Ok(op) => op,
+                        Err(message) => {
+                            this.error = Some(message);
+                            cx.notify();
+                            return;
+                        }
                     };
                     this.confirm_branch_op(op, w, cx);
                 });

@@ -13,6 +13,8 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
+        self.status_request_seq = self.status_request_seq.wrapping_add(1);
+        let request_seq = self.status_request_seq;
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
             let status_fut = driver.status(&repo);
@@ -21,26 +23,37 @@ impl VcsView {
             let (status, local, remote) =
                 futures::future::join3(status_fut, local_fut, remote_fut).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo) {
+                if !this.is_current_repo(&repo) || this.status_request_seq != request_seq {
                     return;
                 }
                 // 文件状态指纹没变 → 跳过 tabs 对齐和 diff 重拉，避免窗口激活白闪一次
-                let files_changed = match (&this.status, &status) {
-                    (Some(old), Ok(new)) => {
-                        files_fingerprint(&old.files) != files_fingerprint(&new.files)
-                    }
-                    _ => true,
+                let (files_changed, head_changed) = match (&this.status, &status) {
+                    (Some(old), Ok(new)) => status_changes(old, new),
+                    (None, Ok(_)) => (true, false),
+                    _ => (false, false),
                 };
-                if let Ok(s) = status {
-                    this.status = Some(s);
+                match status {
+                    Ok(s) => this.status = Some(s),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "vcs: workspace status refresh failed");
+                        this.error = Some(format!("刷新工作区状态失败：{e}"));
+                    }
                 }
-                if let Ok(b) = local {
-                    this.local_branches = b;
+                match local {
+                    Ok(b) => this.local_branches = b,
+                    Err(e) => tracing::warn!(error = %e, "vcs: local branch refresh failed"),
                 }
-                if let Ok(b) = remote {
-                    this.remote_branches = b;
+                match remote {
+                    Ok(b) => this.remote_branches = b,
+                    Err(e) => tracing::warn!(error = %e, "vcs: remote branch refresh failed"),
                 }
-                if files_changed {
+                if head_changed {
+                    // 两个分支都干净时 files 指纹同为空，但文件内容仍可能完全不同。
+                    this.refresh_after_head_change(cx);
+                    if this.history_pane_visible || !this.history_commits.is_empty() {
+                        this.load_history_page(0, cx);
+                    }
+                } else if files_changed {
                     // Project Files 内容缓存随外部改动失效（重激活 tab 时按需重读）
                     for tab in &mut this.file_tabs {
                         if matches!(tab.source, FileTabSource::ProjectFiles) {
@@ -203,6 +216,16 @@ fn files_fingerprint(
         .collect()
 }
 
+fn status_changes(
+    old: &ramag_domain::entities::WorkingTreeStatus,
+    new: &ramag_domain::entities::WorkingTreeStatus,
+) -> (bool, bool) {
+    (
+        files_fingerprint(&old.files) != files_fingerprint(&new.files),
+        old.head_commit != new.head_commit || old.head_branch != new.head_branch,
+    )
+}
+
 /// 按最新文件状态推导 tab 应归属的组：原组仍有效则保持，否则按 冲突 > 已暂存 > 未暂存 > 未跟踪 迁移
 fn redirect_group_kind(f: &FileStatus, prefer: GroupKind) -> GroupKind {
     if f.is_conflicted() {
@@ -256,6 +279,21 @@ mod tests {
             redirect_group_kind(&f, GroupKind::Unstaged),
             GroupKind::Unstaged
         );
+    }
+
+    #[test]
+    fn clean_external_checkout_still_counts_as_head_change() {
+        let old = ramag_domain::entities::WorkingTreeStatus {
+            head_branch: Some("main".into()),
+            head_commit: Some("aaaaaaa".into()),
+            ..Default::default()
+        };
+        let new = ramag_domain::entities::WorkingTreeStatus {
+            head_branch: Some("feature".into()),
+            head_commit: Some("bbbbbbb".into()),
+            ..Default::default()
+        };
+        assert_eq!(status_changes(&old, &new), (false, true));
     }
 
     #[test]

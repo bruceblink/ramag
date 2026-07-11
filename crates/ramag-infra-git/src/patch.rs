@@ -9,7 +9,14 @@ use crate::git_cmd::run_git_stdin;
 pub fn stage(repo_path: &Path, patch: &str) -> Result<()> {
     run_git_stdin(
         repo_path,
-        &["apply", "--cached", "--recount", "--unidiff-zero", "-"],
+        &[
+            "apply",
+            "--cached",
+            "--recount",
+            "--unidiff-zero",
+            "--inaccurate-eof",
+            "-",
+        ],
         patch,
     )
     .map(|_| ())
@@ -25,6 +32,7 @@ pub fn unstage(repo_path: &Path, patch: &str) -> Result<()> {
             "--reverse",
             "--recount",
             "--unidiff-zero",
+            "--inaccurate-eof",
             "-",
         ],
         patch,
@@ -36,7 +44,14 @@ pub fn unstage(repo_path: &Path, patch: &str) -> Result<()> {
 pub fn discard(repo_path: &Path, patch: &str) -> Result<()> {
     run_git_stdin(
         repo_path,
-        &["apply", "--reverse", "--recount", "--unidiff-zero", "-"],
+        &[
+            "apply",
+            "--reverse",
+            "--recount",
+            "--unidiff-zero",
+            "--inaccurate-eof",
+            "-",
+        ],
         patch,
     )
     .map(|_| ())

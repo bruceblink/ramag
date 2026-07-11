@@ -12,7 +12,7 @@ use gpui_component::{
     v_flex,
 };
 
-use super::helpers::BranchOp;
+use super::helpers::{BranchOp, checkout_remote_branch_op};
 use super::vcs_view::VcsView;
 
 /// 分支 leaf：(完整名 / 是否 HEAD / 上游同步信息文本如 "↑3 ↓1"，None=无)
@@ -307,7 +307,19 @@ fn push_branch_leaf(
         }
         let n = n.clone();
         entity.update(app, |this, cx| {
-            this.confirm_branch_op(BranchOp::Checkout(n), w, cx);
+            let op = if is_remote {
+                match checkout_remote_branch_op(&n, &this.local_branches) {
+                    Ok(op) => op,
+                    Err(message) => {
+                        this.error = Some(message);
+                        cx.notify();
+                        return;
+                    }
+                }
+            } else {
+                BranchOp::Checkout(n)
+            };
+            this.confirm_branch_op(op, w, cx);
         });
     }))
 }

@@ -53,15 +53,16 @@ impl VcsView {
         self.selected_commit_file = None;
         self.commit_file_diff = None;
         self.loading_commit_files = true;
+        self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
+        let request_seq = self.commit_detail_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_commit_files(&repo, &commit_id).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_commit_files = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.commit_detail_request_seq != request_seq {
                     return;
                 }
+                this.loading_commit_files = false;
                 match result {
                     Ok(files) => {
                         // 默认不选中任何文件，等用户主动点击
@@ -97,10 +98,16 @@ impl VcsView {
             commit_id: commit_id.clone(),
             change_kind,
         };
-        let existing = self
-            .file_tabs
-            .iter()
-            .position(|t| t.path == path && t.source == source);
+        let existing = self.file_tabs.iter().position(|t| {
+            t.path == path
+                && matches!(
+                    &t.source,
+                    super::helpers::FileTabSource::Commit {
+                        commit_id: existing_commit,
+                        ..
+                    } if existing_commit == &commit_id
+                )
+        });
         let idx = existing.unwrap_or_else(|| {
             self.file_tabs.push(super::helpers::FileTab {
                 path: path.clone(),
@@ -110,6 +117,15 @@ impl VcsView {
             });
             self.file_tabs.len() - 1
         });
+        // 文件类型信息可能在恢复 session 后才重新加载；复用 tab 时补齐最新值。
+        self.file_tabs[idx].source = source.clone();
+        let same_target = self.active_file_tab_idx == Some(idx)
+            && self.selected_commit_file.as_deref() == Some(path.as_str());
+        if !same_target {
+            self.reset_blame_context();
+        }
+        self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
+        let request_seq = self.diff_request_seq;
         self.active_file_tab_idx = Some(idx);
         self.selected_commit_file = Some(path.clone());
         self.selected_file = None;
@@ -136,62 +152,68 @@ impl VcsView {
         let ignore_ws = self.diff_ignore_whitespace;
         let context_lines = self.diff_view_mode.context_lines();
         let path_for_diff = path.clone();
+        let commit_for_diff = commit_id.clone();
+        let source_for_diff = source;
         cx.spawn(async move |this, cx| {
             let result = driver
                 .diff_file_full_opts(
                     &repo,
                     &path_for_diff,
-                    DiffKind::CommitVsParent(ramag_domain::entities::CommitId(commit_id)),
+                    DiffKind::CommitVsParent(ramag_domain::entities::CommitId(commit_for_diff)),
                     ignore_ws,
                     context_lines,
                 )
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo) {
+            let _ =
+                this.update(cx, |this, cx| {
+                    if !this.is_current_repo(&repo) || this.diff_request_seq != request_seq {
+                        return;
+                    }
                     this.loading_diff = false;
+                    match result {
+                        Ok(d) => {
+                            let d = std::rc::Rc::new(d);
+                            let still_current = this.active_file_tab_idx.is_some_and(|idx| {
+                                this.file_tabs.get(idx).is_some_and(|tab| {
+                                    tab.path == path_for_diff && tab.source == source_for_diff
+                                })
+                            });
+                            if still_current {
+                                this.current_diff = Some(d.clone());
+                                this.commit_file_diff = Some(d.clone());
+                            }
+                            if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
+                                tab.path == path_for_diff && tab.source == source_for_diff
+                            }) {
+                                tab.cached_diff = Some(d);
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = %e, path = %path_for_diff, "vcs: commit diff failed");
+                            if this.active_file_tab_idx.is_some_and(|idx| {
+                                this.file_tabs.get(idx).is_some_and(|tab| {
+                                    tab.path == path_for_diff && tab.source == source_for_diff
+                                })
+                            }) {
+                                this.error = Some(format!("拉取 commit diff 失败：{e}"));
+                            }
+                        }
+                    }
                     cx.notify();
-                    return;
-                }
-                // 请求身份校验：用户可能已切到别的 commit 文件，旧回包不覆盖展示区
-                let still_current =
-                    this.selected_commit_file.as_deref() == Some(path_for_diff.as_str());
-                if still_current {
-                    this.loading_diff = false;
-                }
-                match result {
-                    Ok(d) => {
-                        let d = std::rc::Rc::new(d);
-                        if still_current {
-                            this.current_diff = Some(d.clone());
-                            this.commit_file_diff = Some(d.clone());
-                        }
-                        if let Some(idx) = this.active_file_tab_idx
-                            && let Some(tab) = this.file_tabs.get_mut(idx)
-                            && tab.path == path_for_diff
-                        {
-                            tab.cached_diff = Some(d);
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, path = %path_for_diff, "vcs: commit diff failed");
-                        if still_current {
-                            this.error = Some(format!("拉取 commit diff 失败：{e}"));
-                        }
-                    }
-                }
-                cx.notify();
-            });
+                });
         })
         .detach();
     }
 
     /// 退出 commit 详情视图，回到 history 列表
     pub(crate) fn close_commit_detail(&mut self, cx: &mut Context<Self>) {
+        self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
         self.viewing_commit = None;
         self.commit_files = Vec::new();
         self.commit_files_collapsed.clear();
         self.selected_commit_file = None;
         self.commit_file_diff = None;
+        self.loading_commit_files = false;
         cx.notify();
     }
 }

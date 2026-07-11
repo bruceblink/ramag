@@ -47,6 +47,10 @@ impl VcsView {
         if self.loading {
             return;
         }
+        if self.busy {
+            self.notify_warning("当前 Git 写操作尚未完成，完成后再切换仓库", cx);
+            return;
+        }
         let driver = self.driver.clone();
         let pb = std::path::PathBuf::from(path);
         self.loading = true;
@@ -88,15 +92,16 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         self.loading_project_files = true;
+        self.project_files_request_seq = self.project_files_request_seq.wrapping_add(1);
+        let request_seq = self.project_files_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_files(&repo).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_project_files = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.project_files_request_seq != request_seq {
                     return;
                 }
+                this.loading_project_files = false;
                 match result {
                     Ok(mut paths) => {
                         // 字母序：让目录树渲染稳定（同一目录文件聚拢）
@@ -134,6 +139,11 @@ impl VcsView {
         }
         let repo_path = repo.path.clone();
         let repo_id = repo.id.clone();
+        self.file_content_request_seq = self.file_content_request_seq.wrapping_add(1);
+        let request_seq = self.file_content_request_seq;
+        if self.selected_pf_path.as_deref() != Some(path.as_str()) {
+            self.reset_blame_context();
+        }
         let idx = if let Some(i) = self
             .file_tabs
             .iter()
@@ -167,7 +177,10 @@ impl VcsView {
             });
             let raw = rx.await.ok();
             let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo_id) {
+                if !this.is_current_repo(&repo_id)
+                    || this.file_content_request_seq != request_seq
+                    || this.selected_pf_path.as_deref() != Some(path.as_str())
+                {
                     return;
                 }
                 let snapshot = raw.map(finalize_file_snapshot);
@@ -194,6 +207,8 @@ impl VcsView {
             return;
         };
         let driver = self.driver.clone();
+        self.status_request_seq = self.status_request_seq.wrapping_add(1);
+        let request_seq = self.status_request_seq;
         cx.spawn(async move |this, cx| {
             let new_status = match driver.status(&repo).await {
                 Ok(s) => Some(s),
@@ -204,7 +219,7 @@ impl VcsView {
                 }
             };
             let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo) {
+                if !this.is_current_repo(&repo) || this.status_request_seq != request_seq {
                     return;
                 }
                 if let Some(s) = new_status {
@@ -218,7 +233,15 @@ impl VcsView {
 
     /// 关闭指定路径的 tab；若是当前 tab 则尝试切到下一个，否则直接移除
     pub(super) fn remove_open_repo(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.busy || self.loading {
+            self.notify_warning("当前操作尚未完成，完成后再关闭仓库标签", cx);
+            return;
+        }
         let is_current = self.repo.as_ref().map(|r| r.path == path).unwrap_or(false);
+        if is_current {
+            // 关闭标签不应静默丢掉尚未提交的 message 与已打开文件；本次进程内重开可恢复。
+            self.save_current_session_to_cache(cx);
+        }
         self.open_repos.retain(|r| r.path != path);
         if is_current {
             if let Some(next) = self.open_repos.first().cloned() {
@@ -233,19 +256,11 @@ impl VcsView {
 
     fn reset_session_state(&mut self, cx: &mut Context<Self>) {
         self.fs_watcher = None;
+        self.clear_session_data();
         self.repo = None;
         self.status = None;
         self.local_branches.clear();
         self.remote_branches.clear();
-        self.set_history_commits(Vec::new());
-        self.viewing_commit = None;
-        self.commit_files.clear();
-        self.selected_commit_file = None;
-        self.commit_file_diff = None;
-        self.selected_file = None;
-        self.current_diff = None;
-        self.file_tabs.clear();
-        self.active_file_tab_idx = None;
         self.active_view = ActiveView::RepoList;
         cx.notify();
     }
@@ -280,7 +295,12 @@ impl VcsView {
     pub(super) fn restore_session_from_cache(&mut self, path: &str) -> bool {
         let cached = self.repo_session_cache.get(path).cloned();
         match cached {
-            Some(state) => {
+            Some(mut state) => {
+                // 切回仓库时磁盘 / HEAD 可能已被终端或其它工具修改；保留 tab，丢弃内容缓存。
+                for tab in &mut state.file_tabs {
+                    tab.cached_diff = None;
+                    tab.cached_content = None;
+                }
                 self.file_tabs = state.file_tabs;
                 self.active_file_tab_idx = state.active_file_tab_idx;
                 self.commit_amend = state.commit_amend;
@@ -338,14 +358,27 @@ pub(super) async fn open_repo_async(
         this.loading = false;
         this.loading_label = None;
         let mut repo_config = repo_config;
+        // driver 返回运行时配置；名称与收藏属于用户元数据，重新打开时必须保留。
+        if let Some(existing) = this
+            .recent_repos
+            .iter()
+            .find(|existing| existing.path == repo_config.path)
+        {
+            repo_config.name = existing.name.clone();
+            repo_config.favorite = existing.favorite;
+        }
         repo_config.last_opened_at = Some(chrono::Utc::now());
         // 是否首次打开（区分「新开仓库」和「tab 切换」）
         let is_new = !this.open_repos.iter().any(|r| r.path == repo_config.path);
         this.save_current_session_to_cache(cx);
-        if is_new && !this.recent_repos.iter().any(|r| r.path == repo_config.path) {
-            // 全新仓库：追加到列表末尾，再按名字排序保持稳定顺序
+        if let Some(existing) = this
+            .recent_repos
+            .iter_mut()
+            .find(|existing| existing.path == repo_config.path)
+        {
+            *existing = repo_config.clone();
+        } else {
             this.recent_repos.push(repo_config.clone());
-            this.recent_repos.sort_by(|a, b| a.name.cmp(&b.name));
         }
         this.save_repo_async(repo_config.clone(), cx);
         this.clear_session_data();
@@ -353,6 +386,12 @@ pub(super) async fn open_repo_async(
         this.repo = Some(repo_config.clone());
         if is_new {
             this.open_repos.push(repo_config.clone());
+        } else if let Some(open) = this
+            .open_repos
+            .iter_mut()
+            .find(|open| open.path == repo_config.path)
+        {
+            *open = repo_config.clone();
         }
         // 仓库打开成功但状态查询失败：不静默显示成空工作区，给出可见错误
         match status {
@@ -369,6 +408,20 @@ pub(super) async fn open_repo_async(
 
         // 已访问过的仓库：还原文件 tab 状态；新仓库：空 tabs 让用户自己选
         this.restore_session_from_cache(&repo_config.path);
+        // session 只恢复“打开了哪些 tab”，内容必须基于本次刚读取的仓库状态重拉。
+        if let Some(tab) = this
+            .active_file_tab_idx
+            .and_then(|idx| this.file_tabs.get(idx))
+            .cloned()
+        {
+            match tab.source {
+                FileTabSource::Changes(kind) => this.select_file(tab.path, kind, cx),
+                FileTabSource::ProjectFiles => this.select_pf_file(tab.path, cx),
+                FileTabSource::Commit { commit_id, .. } => {
+                    this.select_commit_file(tab.path, commit_id, cx);
+                }
+            }
+        }
         // 启动该仓库的文件系统监听（旧仓库的 watcher 在内部先 drop）
         this.start_fs_watcher(cx);
         cx.notify();

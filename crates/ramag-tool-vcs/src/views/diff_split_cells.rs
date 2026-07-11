@@ -13,6 +13,7 @@ use super::diff_panel::{
 use super::vcs_view::VcsView;
 
 /// gutter 单元格：左栏 `[marker][lineno]`；右栏 `[lineno][marker]`（blame 移至中间列）
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_gutter_cell(
     side: &'static str,
     line: Option<(usize, &DiffLine)>,
@@ -20,6 +21,7 @@ pub(super) fn render_gutter_cell(
     is_left: bool,
     muted_fg: gpui::Hsla,
     mono: SharedString,
+    allow_blame: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let Some((line_idx, line)) = line else {
@@ -48,7 +50,14 @@ pub(super) fn render_gutter_cell(
     } else {
         line.new_lineno
     };
-    let lineno_div = line_no_cell_clickable(lineno_value, is_left, lineno_id, muted_fg, cx);
+    let lineno_div = line_no_cell_clickable(
+        lineno_value,
+        is_left,
+        lineno_id,
+        muted_fg,
+        allow_blame && !is_left,
+        cx,
+    );
 
     let marker_div = div()
         .flex_none()

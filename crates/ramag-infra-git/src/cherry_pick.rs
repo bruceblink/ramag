@@ -11,7 +11,7 @@ pub fn start(repo_path: &Path, commit: &str) -> Result<()> {
 }
 
 pub fn cont(repo_path: &Path) -> Result<()> {
-    run_git_bytes(repo_path, &["cherry-pick", "--continue", "--no-edit"]).map(|_| ())
+    run_git_bytes(repo_path, &["cherry-pick", "--continue"]).map(|_| ())
 }
 
 pub fn abort(repo_path: &Path) -> Result<()> {

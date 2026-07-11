@@ -9,7 +9,7 @@ use gpui_component::{
     Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
-use ramag_domain::entities::{FileChangeKind, FileDiff};
+use ramag_domain::entities::{Branch, FileChangeKind, FileDiff, Remote};
 
 use super::vcs_view::VcsView;
 
@@ -178,6 +178,54 @@ pub(super) enum BranchOp {
     Rebase(String),
 }
 
+/// 远程分支必须落到本地 tracking 分支，不能直接 checkout 成 detached HEAD。
+pub(super) fn checkout_remote_branch_op(
+    remote_branch: &str,
+    local_branches: &[Branch],
+) -> Result<BranchOp, String> {
+    let Some((_, local_name)) = remote_branch.split_once('/') else {
+        return Err(format!("远程分支名无效：{remote_branch}"));
+    };
+    if local_name.is_empty() {
+        return Err(format!("远程分支名无效：{remote_branch}"));
+    }
+    match local_branches
+        .iter()
+        .find(|branch| branch.name == local_name)
+    {
+        None => Ok(BranchOp::Create(
+            local_name.to_string(),
+            Some(remote_branch.to_string()),
+        )),
+        Some(branch) if branch.upstream.as_deref() == Some(remote_branch) => {
+            Ok(BranchOp::Checkout(local_name.to_string()))
+        }
+        Some(branch) => Err(format!(
+            "本地分支「{local_name}」已存在，但上游是「{}」，未自动改写关联；请切换该本地分支或先在 Git 中调整 upstream",
+            branch.upstream.as_deref().unwrap_or("未设置")
+        )),
+    }
+}
+
+/// 首次 Push / Tag Push 的默认 remote：约定优先 origin，否则仅在唯一候选时自动选择。
+pub(super) fn default_remote_name(remotes: &[Remote]) -> Result<String, String> {
+    if remotes.iter().any(|remote| remote.name == "origin") {
+        return Ok("origin".into());
+    }
+    match remotes {
+        [remote] => Ok(remote.name.clone()),
+        [] => Err("当前仓库没有 remote：请先配置远程仓库再 Push".into()),
+        _ => Err(format!(
+            "当前仓库有多个 remote（{}），且没有 origin；请先为分支设置 upstream，避免推送到错误仓库",
+            remotes
+                .iter()
+                .map(|remote| remote.name.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        )),
+    }
+}
+
 /// 冲突文件解决操作（行尾按钮触发）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConflictOp {
@@ -316,5 +364,66 @@ pub(super) fn code_letter_color(code: &str, fallback: gpui::Hsla) -> gpui::Hsla 
         "T" => gpui::hsla(280.0 / 360.0, 0.55, 0.55, 1.0),
         "U" => gpui::hsla(0.0, 0.75, 0.5, 1.0),
         _ => fallback,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use ramag_domain::entities::{Branch, BranchKind, CommitId, Remote};
+
+    use super::{BranchOp, checkout_remote_branch_op, default_remote_name};
+
+    fn local(name: &str, upstream: Option<&str>) -> Branch {
+        Branch {
+            name: name.into(),
+            kind: BranchKind::Local,
+            commit: CommitId("abc".into()),
+            is_head: false,
+            upstream: upstream.map(str::to_owned),
+            ahead: None,
+            behind: None,
+        }
+    }
+
+    #[test]
+    fn remote_branch_creates_or_reuses_matching_tracking_branch() {
+        assert!(matches!(
+            checkout_remote_branch_op("origin/feature/a", &[]),
+            Ok(BranchOp::Create(name, Some(base)))
+                if name == "feature/a" && base == "origin/feature/a"
+        ));
+        assert!(matches!(
+            checkout_remote_branch_op(
+                "origin/main",
+                &[local("main", Some("origin/main"))]
+            ),
+            Ok(BranchOp::Checkout(name)) if name == "main"
+        ));
+    }
+
+    #[test]
+    fn remote_branch_does_not_retarget_existing_local_branch() {
+        let result =
+            checkout_remote_branch_op("upstream/main", &[local("main", Some("origin/main"))]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_remote_prefers_origin_or_the_only_remote() {
+        let remote = |name: &str| Remote {
+            name: name.into(),
+            fetch_url: String::new(),
+            push_url: None,
+        };
+        assert_eq!(
+            default_remote_name(&[remote("upstream")]).unwrap(),
+            "upstream"
+        );
+        assert_eq!(
+            default_remote_name(&[remote("upstream"), remote("origin")]).unwrap(),
+            "origin"
+        );
+        assert!(default_remote_name(&[remote("a"), remote("b")]).is_err());
     }
 }

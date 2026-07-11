@@ -340,8 +340,11 @@ fn repo_row(
 
     let path_for_open = r.path.clone();
     let path_for_remove = r.path.clone();
+    let path_for_favorite = r.path.clone();
     let row_id = SharedString::from(format!("vcs-repo-row-{idx}-{}", r.path));
     let del_id = SharedString::from(format!("vcs-repo-del-{idx}-{}", r.path));
+    let favorite_id = SharedString::from(format!("vcs-repo-fav-{idx}-{}", r.path));
+    let is_favorite = r.favorite;
 
     let mono = cx.theme().mono_font_family.clone();
 
@@ -396,7 +399,7 @@ fn repo_row(
                 .text_ellipsis()
                 .child(r.path.clone()),
         )
-        // 操作按钮组（80px 右对齐，mouse_down 拦冒泡避免触发整行打开）
+        // 操作按钮组（收藏 + 移除；mouse_down 拦冒泡避免触发整行打开）
         .child(
             h_flex()
                 .flex_none()
@@ -404,6 +407,25 @@ fn repo_row(
                 .w(px(80.0))
                 .justify_end()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    Button::new(favorite_id)
+                        .ghost()
+                        .small()
+                        .icon(if is_favorite {
+                            IconName::StarFill
+                        } else {
+                            IconName::Star
+                        })
+                        .tooltip(if is_favorite {
+                            "取消收藏"
+                        } else {
+                            "收藏并置顶"
+                        })
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.toggle_repo_favorite(path_for_favorite.clone(), cx);
+                        })),
+                )
                 .child(
                     Button::new(del_id)
                         .ghost()

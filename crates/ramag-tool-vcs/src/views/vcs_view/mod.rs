@@ -21,7 +21,8 @@ use ramag_domain::entities::{
 use ramag_domain::traits::{GitDriver, Storage};
 
 use super::helpers::{
-    ActiveView, DiffViewMode, FileContentSnapshot, FileTab, FilesViewMode, GroupKind, ViewMode,
+    ActiveView, DiffViewMode, FileContentSnapshot, FileTab, FileTabSource, FilesViewMode,
+    GroupKind, ViewMode,
 };
 use super::project_files::ProjectRowsCacheEntry;
 
@@ -51,6 +52,8 @@ pub struct VcsView {
     pub(super) repo: Option<RepoConfig>,
     /// 工作区状态快照
     pub(super) status: Option<WorkingTreeStatus>,
+    /// status / branch 静默刷新代际号，防窗口激活与文件监听的旧回包倒灌
+    pub(super) status_request_seq: u64,
     /// 本地分支列表
     pub(super) local_branches: Vec<Branch>,
     /// 远程分支列表
@@ -79,12 +82,16 @@ pub struct VcsView {
     pub(super) pending_commit_text: Option<SharedString>,
     /// 切仓库后待清空的搜索框（文件搜索 / 历史搜索）；同 pending_commit_text 的 defer 模式
     pub(super) pending_clear_search_inputs: bool,
+    /// 分支 / tag 创建成功后清空输入，避免下一次误用旧名称
+    pub(super) pending_clear_creation_inputs: bool,
     /// 当前选中查看 diff 的文件（path + 来源分组）
     pub(super) selected_file: Option<(String, GroupKind)>,
     /// 当前文件的 diff 快照（Rc：渲染层多列表零拷贝共享，不每帧 clone 全量 diff）
     pub(super) current_diff: Option<std::rc::Rc<FileDiff>>,
     /// diff 是否正在拉取中
     pub(super) loading_diff: bool,
+    /// diff 请求代际号：快速切文件 / 切选项时，旧回包不得覆盖当前视图
+    pub(super) diff_request_seq: u64,
     /// 视图模式：工作区 / 历史
     pub(super) view_mode: ViewMode,
     /// History 累积的 commit 列表（按页 append）。Rc 供 uniform_list 闭包零拷贝共享，
@@ -102,6 +109,7 @@ pub struct VcsView {
     pub(super) stashes: Vec<Stash>,
     /// Stash 是否正在拉取中
     pub(super) loading_stashes: bool,
+    pub(super) stash_request_seq: u64,
     /// 新建分支输入框
     pub(super) create_branch_input: Entity<InputState>,
     /// 新建分支的源（None=当前 HEAD；Some(name)=指定分支作 base）
@@ -110,6 +118,7 @@ pub struct VcsView {
     pub(super) tags: Vec<Tag>,
     /// Tag 是否正在拉取
     pub(super) loading_tags: bool,
+    pub(super) tag_request_seq: u64,
     /// 新建 tag 输入框：tag 名
     pub(super) create_tag_input: Entity<InputState>,
     /// 新建 tag 输入框：message（可选；非空 → annotated tag，空 → lightweight）
@@ -126,6 +135,7 @@ pub struct VcsView {
     pub(super) remotes: Vec<Remote>,
     /// remote 列表是否正在拉取
     pub(super) loading_remotes: bool,
+    pub(super) remotes_request_seq: u64,
     /// 当前在 commit 详情视图查看的 commit（None = 处于 history 列表态）
     pub(super) viewing_commit: Option<Commit>,
     /// 详情视图的文件列表（git diff-tree --name-status 解析）
@@ -136,6 +146,8 @@ pub struct VcsView {
     pub(super) commit_file_diff: Option<std::rc::Rc<FileDiff>>,
     /// 详情视图文件列表是否正在拉取
     pub(super) loading_commit_files: bool,
+    /// commit 详情请求代际号：快速点不同 commit 时丢弃旧文件列表
+    pub(super) commit_detail_request_seq: u64,
     /// commit 详情 / Changes 文件树折叠目录（分开维护：commit 切换时只清前者）
     pub(super) commit_files_collapsed: std::collections::HashSet<String>,
     pub(super) changes_collapsed_dirs: std::collections::HashSet<String>,
@@ -147,6 +159,9 @@ pub struct VcsView {
     /// blame 数据。Rc 供 diff 中间列 processor 零拷贝共享（大文件 blame 不每帧全量 clone）
     pub(super) blame_lines: std::rc::Rc<Vec<ramag_domain::entities::BlameLine>>,
     pub(super) loading_blame: bool,
+    /// 完整 blame / 行级 blame 分开计代，互不干扰且都能取消旧回包
+    pub(super) blame_request_seq: u64,
+    pub(super) inline_blame_request_seq: u64,
     /// diff header 切换：false=显示 diff（默认）/ true=显示 blame
     pub(super) showing_blame: bool,
     /// 行号 inline blame：Some = 顶部 banner 显示该行作者；点行号触发，× 关闭
@@ -159,6 +174,7 @@ pub struct VcsView {
     pub(super) reflog_entries: Vec<ramag_domain::entities::ReflogEntry>,
     /// reflog 是否正在拉取
     pub(super) loading_reflog: bool,
+    pub(super) reflog_request_seq: u64,
     /// history 顶部切换：false=commit 列表（默认）/ true=reflog 列表
     pub(super) showing_reflog: bool,
     /// IDE 布局：上半区左右拖拽（左 files / 右 main）
@@ -181,6 +197,7 @@ pub struct VcsView {
     pub(super) project_files: Vec<String>,
     /// Project Files 是否正在拉取
     pub(super) loading_project_files: bool,
+    pub(super) project_files_request_seq: u64,
     /// Project Files 已展开目录（相对路径），默认空集合 = 全部折叠
     pub(super) project_expanded_dirs: std::collections::HashSet<String>,
     /// 缓存版本号：reload / toggle / expand_all / collapse_all 时递增对应字段；
@@ -198,6 +215,8 @@ pub struct VcsView {
     pub(super) current_file_content: Option<FileContentSnapshot>,
     /// 文件内容是否正在读盘
     pub(super) loading_file_content: bool,
+    /// Project 文件内容请求代际号：同一路径重复打开时旧读盘结果不得覆盖新结果
+    pub(super) file_content_request_seq: u64,
     /// Project Files 文件内容渲染的虚拟列表滚动句柄（垂直方向，uniform_list 行级虚拟化）
     pub(super) pf_content_scroll: UniformListScrollHandle,
     /// Diff 视图的虚拟化列表滚动 handle（unified / split 共用一个）
@@ -236,11 +255,14 @@ pub struct VcsView {
     pub(super) rebase_plan_onto: String,
     pub(super) rebase_todos: Vec<RebaseTodo>,
     pub(super) loading_rebase_plan: bool,
+    pub(super) rebase_request_seq: u64,
 
     // ---- Conflict Editor ----
     pub(super) conflict_editor_path: Option<String>,
     pub(super) conflict_content: Option<ConflictContent>,
     pub(super) loading_conflict: bool,
+    /// 冲突内容请求代际号：快速切冲突文件时只接收最后一次请求
+    pub(super) conflict_request_seq: u64,
 
     /// 当前仓库的文件系统监听句柄（drop 即停）；切仓重建，关仓置 None
     pub(super) fs_watcher: Option<crate::watcher::RepoWatcher>,
@@ -264,7 +286,20 @@ impl VcsView {
         self.repo.as_ref().map(|r| &r.id) == Some(repo_id)
     }
 
-    /// 工作区是否有未提交改动（staged 或 unstaged，untracked 不计）：checkout 前的 dirty 判断
+    /// 需要干净 Git 操作状态的入口统一调用；冲突处理的 stage/continue/abort 不走此闸门。
+    pub(super) fn ensure_no_operation(&mut self, action: &str, cx: &mut Context<Self>) -> bool {
+        let Some(operation) = self.status.as_ref().and_then(|status| status.operation) else {
+            return true;
+        };
+        self.error = Some(format!(
+            "{}仍在进行中：请先点顶部「继续」或「中止」，再{action}",
+            super::helpers::operation_label(operation)
+        ));
+        cx.notify();
+        false
+    }
+
+    /// 工作区是否有未提交改动（含 untracked）：checkout 前的 dirty 判断
     pub(super) fn is_working_tree_dirty(&self) -> bool {
         self.status
             .as_ref()
@@ -313,9 +348,11 @@ impl VcsView {
         self.selected_file = None;
         self.current_diff = None;
         self.loading_diff = false;
+        self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         self.selected_pf_path = None;
         self.current_file_content = None;
         self.loading_file_content = false;
+        self.file_content_request_seq = self.file_content_request_seq.wrapping_add(1);
         self.viewing_commit = None;
         self.commit_files.clear();
         self.commit_files_collapsed.clear();
@@ -323,15 +360,22 @@ impl VcsView {
         self.selected_commit_file = None;
         self.commit_file_diff = None;
         self.loading_commit_files = false;
+        self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
         self.show_rebase_plan = false;
         self.rebase_todos.clear();
+        self.loading_rebase_plan = false;
+        self.rebase_request_seq = self.rebase_request_seq.wrapping_add(1);
         self.conflict_editor_path = None;
         self.conflict_content = None;
+        self.loading_conflict = false;
         self.set_history_commits(Vec::new());
         self.history_has_more = false;
+        self.loading_history = false;
         // 代际推进：上一个仓库在途的 history 回包全部失效
-        self.history_request_seq += 1;
+        self.history_request_seq = self.history_request_seq.wrapping_add(1);
         self.project_files.clear();
+        self.loading_project_files = false;
+        self.project_files_request_seq = self.project_files_request_seq.wrapping_add(1);
         self.project_expanded_dirs.clear();
         self.file_tabs.clear();
         self.active_file_tab_idx = None;
@@ -341,18 +385,30 @@ impl VcsView {
         self.reflog_entries.clear();
         self.showing_reflog = false;
         self.loading_reflog = false;
+        self.reflog_request_seq = self.reflog_request_seq.wrapping_add(1);
         self.blame_lines = std::rc::Rc::new(Vec::new());
         self.showing_blame = false;
         self.loading_blame = false;
+        self.blame_request_seq = self.blame_request_seq.wrapping_add(1);
+        self.inline_blame_request_seq = self.inline_blame_request_seq.wrapping_add(1);
         self.inline_blame_text = None;
         self.expanded_diff_spacers.clear();
         self.error = None;
+        self.conflict_request_seq = self.conflict_request_seq.wrapping_add(1);
         // 列表清空：切仓后 open_repo_async 会重拉，避免拉取期间短暂显示旧仓数据
         self.stashes.clear();
+        self.loading_stashes = false;
+        self.stash_request_seq = self.stash_request_seq.wrapping_add(1);
         self.tags.clear();
+        self.loading_tags = false;
+        self.tag_request_seq = self.tag_request_seq.wrapping_add(1);
         self.remotes.clear();
+        self.loading_remotes = false;
+        self.remotes_request_seq = self.remotes_request_seq.wrapping_add(1);
+        self.status_request_seq = self.status_request_seq.wrapping_add(1);
         // 搜索框内容属仓库上下文，经 Render 的 defer 写回清空（异步处拿不到 Window）
         self.pending_clear_search_inputs = true;
+        self.pending_clear_creation_inputs = true;
         // 注：busy 不清——它是全局写操作闸，进行中的 op 结束时自会复位；
         // diff_ignore_whitespace / diff_view_mode 是用户偏好，跨仓保留
     }
@@ -390,9 +446,18 @@ impl VcsView {
     /// 否则置忙碌态 + 进度文案并清上次错误。调用方拿到 false 应立即 return
     pub(super) fn begin_op(&mut self, label: &'static str, cx: &mut Context<Self>) -> bool {
         if self.busy {
+            self.notify_warning(
+                format!(
+                    "已有 Git 操作正在执行（{}），请等待完成",
+                    self.busy_label.unwrap_or("处理中…")
+                ),
+                cx,
+            );
             return false;
         }
         self.busy = true;
+        // 所有更早发起的静默 status 刷新失效；写操作结束时取得的状态才是权威结果。
+        self.status_request_seq = self.status_request_seq.wrapping_add(1);
         self.busy_label = Some(label);
         self.error = None;
         cx.notify();
@@ -410,6 +475,28 @@ impl VcsView {
         cx.notify();
     }
 
+    /// 预期中的暂停 / 冲突用 warning toast，不与真正失败共用红色错误横幅。
+    pub(super) fn notify_warning(
+        &mut self,
+        message: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_notification = Some(
+            gpui_component::notification::Notification::warning(message.into()).autohide(true),
+        );
+        cx.notify();
+    }
+
+    /// 文件上下文变化时清理 blame，并让尚未返回的旧请求失效。
+    pub(super) fn reset_blame_context(&mut self) {
+        self.blame_request_seq = self.blame_request_seq.wrapping_add(1);
+        self.inline_blame_request_seq = self.inline_blame_request_seq.wrapping_add(1);
+        self.blame_lines = std::rc::Rc::new(Vec::new());
+        self.loading_blame = false;
+        self.showing_blame = false;
+        self.inline_blame_text = None;
+    }
+
     /// 切换 diff 视图模式；FullFile 与 Standard 后端 unified 行数不同，要清缓存重拉
     pub(super) fn set_diff_view_mode(&mut self, mode: DiffViewMode, cx: &mut Context<Self>) {
         if self.diff_view_mode == mode {
@@ -424,22 +511,30 @@ impl VcsView {
         }
     }
 
+    /// 切换 `git diff -w`；后端结果不同，当前 diff 必须失效并重拉。
+    pub(super) fn toggle_diff_ignore_whitespace(&mut self, cx: &mut Context<Self>) {
+        self.diff_ignore_whitespace = !self.diff_ignore_whitespace;
+        self.invalidate_active_diff_and_refetch(cx);
+    }
+
     /// 清当前 active tab 的 diff 缓存 + 触发重拉（视 source 调对应 select_*）
     fn invalidate_active_diff_and_refetch(&mut self, cx: &mut Context<Self>) {
+        let active_tab = self
+            .active_file_tab_idx
+            .and_then(|idx| self.file_tabs.get(idx))
+            .cloned();
         if let Some(idx) = self.active_file_tab_idx
             && let Some(tab) = self.file_tabs.get_mut(idx)
         {
             tab.cached_diff = None;
         }
         self.current_diff = None;
-        if let Some((p, k)) = self.selected_file.clone() {
-            self.select_file(p, k, cx);
-        } else if let Some(commit) = self.viewing_commit.clone()
-            && let Some(path) = self.selected_commit_file.clone()
-        {
-            self.select_commit_file(path, commit.id.0, cx);
-        } else {
-            cx.notify();
+        match active_tab.map(|tab| (tab.path, tab.source)) {
+            Some((path, FileTabSource::Changes(kind))) => self.select_file(path, kind, cx),
+            Some((path, FileTabSource::Commit { commit_id, .. })) => {
+                self.select_commit_file(path, commit_id, cx);
+            }
+            _ => cx.notify(),
         }
     }
 }

@@ -6,11 +6,16 @@ use std::path::Path;
 use ramag_domain::entities::{Commit, CommitId, LogOptions, Signature};
 use ramag_domain::error::Result;
 
-use crate::git_cmd::run_git_text;
+use crate::git_cmd::{run_git_bytes, run_git_text};
 
 const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%P%x1f%D%x1f%s%x1f%b%x1e";
 
 pub fn run_log(repo_path: &Path, opts: &LogOptions) -> Result<Vec<Commit>> {
+    // 新初始化仓库没有 HEAD；这是正常空态，不应把 git log 的 fatal 暴露给用户。
+    if opts.start.is_none() && run_git_bytes(repo_path, &["rev-parse", "--verify", "HEAD"]).is_err()
+    {
+        return Ok(Vec::new());
+    }
     let mut args: Vec<String> = vec!["log".into(), format!("--pretty=format:{LOG_FORMAT}")];
     if opts.skip > 0 {
         args.push(format!("--skip={}", opts.skip));

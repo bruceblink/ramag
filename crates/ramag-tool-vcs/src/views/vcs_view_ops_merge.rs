@@ -15,16 +15,20 @@ impl VcsView {
         self.conflict_editor_path = Some(path);
         self.conflict_content = None;
         self.loading_conflict = true;
+        self.conflict_request_seq = self.conflict_request_seq.wrapping_add(1);
+        let request_seq = self.conflict_request_seq;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
             let result = driver.get_conflict_content(&repo, &path_clone).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_conflict = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo)
+                    || this.conflict_request_seq != request_seq
+                    || this.conflict_editor_path.as_deref() != Some(path_clone.as_str())
+                {
                     return;
                 }
+                this.loading_conflict = false;
                 match result {
                     Ok(content) => this.conflict_content = Some(content),
                     Err(e) => {
@@ -44,8 +48,40 @@ use super::helpers::{ConflictOp, OperationStep, operation_label, step_label};
 use super::vcs_view::VcsView;
 
 impl VcsView {
+    /// Git 已进入可恢复的进行中状态：这是操作暂停，不是终态失败。
+    pub(super) fn handle_operation_paused(
+        &mut self,
+        operation: RepoOperation,
+        cx: &mut Context<Self>,
+    ) {
+        let conflicts = self
+            .status
+            .as_ref()
+            .map(|s| s.files.iter().filter(|f| f.is_conflicted()).count())
+            .unwrap_or(0);
+        self.error = None;
+        self.view_mode = super::helpers::ViewMode::Workspace;
+        self.files_view_mode = super::helpers::FilesViewMode::Changes;
+        self.sync_changes_tabs_with_status(cx);
+        let message = if conflicts > 0 {
+            format!(
+                "{}已暂停：请先解决 {conflicts} 个冲突文件，再点「继续」",
+                operation_label(operation)
+            )
+        } else {
+            format!(
+                "{}已暂停：确认当前改动后点「继续」，或点「中止」回滚",
+                operation_label(operation)
+            )
+        };
+        self.notify_warning(message, cx);
+    }
+
     /// Cherry-pick 单个 commit 到当前 HEAD
     pub(super) fn run_cherry_pick(&mut self, commit_id: String, cx: &mut Context<Self>) {
+        if !self.ensure_no_operation("执行 Cherry-pick", cx) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
@@ -66,9 +102,14 @@ impl VcsView {
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
-                if let Err(e) = result {
+                let paused = this.status.as_ref().and_then(|s| s.operation);
+                if let Some(operation) = paused {
+                    info!(%commit_id, ?operation, "vcs: cherry-pick paused");
+                    this.handle_operation_paused(operation, cx);
+                    this.refresh_after_head_change(cx);
+                } else if let Err(e) = result {
                     error!(error = %e, %commit_id, "vcs: cherry-pick failed");
-                    this.error = Some(format!("Cherry-pick 失败：{e}（如有冲突请到工作区处理）"));
+                    this.error = Some(format!("Cherry-pick 失败：{e}"));
                 } else {
                     info!(%commit_id, "vcs: cherry-pick done");
                     // HEAD 推进了一个新 commit
@@ -123,10 +164,13 @@ impl VcsView {
                     }
                     // 文件离开冲突组（→ 已暂存）：tabs 跟着迁移
                     this.sync_changes_tabs_with_status(cx);
+                    let labels = super::workspace_conflict::conflict_side_labels(
+                        this.status.as_ref().and_then(|status| status.operation),
+                    );
                     let what = match op {
-                        ConflictOp::UseOurs => "已采纳我方（HEAD）版本",
-                        ConflictOp::UseTheirs => "已采纳对方版本",
-                        ConflictOp::MarkResolved => "已标记为已解决",
+                        ConflictOp::UseOurs => format!("已采纳「{}」版本", labels.0),
+                        ConflictOp::UseTheirs => format!("已采纳「{}」版本", labels.1),
+                        ConflictOp::MarkResolved => "已标记为已解决".into(),
                     };
                     this.notify_success(format!("{what}：{path}"), cx);
                 }
@@ -181,10 +225,7 @@ impl VcsView {
             };
             // 操作后刷新 status + branches（merge 完会切回干净状态，分支 ahead/behind 也变了）
             let new_status = driver.status(&repo).await.ok();
-            let new_local = driver
-                .list_branches(&repo, BranchKind::Local)
-                .await
-                .unwrap_or_default();
+            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -195,8 +236,17 @@ impl VcsView {
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
-                this.local_branches = new_local;
-                if let Err(e) = result {
+                if let Some(branches) = new_local {
+                    this.local_branches = branches;
+                }
+                let paused = (!matches!(step, OperationStep::Abort))
+                    .then(|| this.status.as_ref().and_then(|s| s.operation))
+                    .flatten();
+                if let Some(next_operation) = paused {
+                    info!(?operation, ?step, ?next_operation, "vcs: op step paused");
+                    this.handle_operation_paused(next_operation, cx);
+                    this.refresh_after_head_change(cx);
+                } else if let Err(e) = result {
                     error!(error = %e, ?operation, ?step, "vcs: op step failed");
                     this.error = Some(format!(
                         "{}·{}失败：{e}",
@@ -223,6 +273,9 @@ impl VcsView {
 
     /// 加载交互式 rebase 计划并显示编辑器
     pub(super) fn start_interactive_rebase(&mut self, onto: String, cx: &mut Context<Self>) {
+        if !self.ensure_no_operation("开始新的 Rebase", cx) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
@@ -232,15 +285,16 @@ impl VcsView {
         self.rebase_plan_onto = onto;
         self.show_rebase_plan = true;
         self.error = None;
+        self.rebase_request_seq = self.rebase_request_seq.wrapping_add(1);
+        let request_seq = self.rebase_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.interactive_rebase_plan(&repo, &onto_clone).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_rebase_plan = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.rebase_request_seq != request_seq {
                     return;
                 }
+                this.loading_rebase_plan = false;
                 match result {
                     Ok(todos) => this.rebase_todos = todos,
                     Err(e) => {
@@ -271,10 +325,7 @@ impl VcsView {
                 .interactive_rebase_execute(&repo, &onto, &todos)
                 .await;
             let new_status = driver.status(&repo).await.ok();
-            let new_local = driver
-                .list_branches(&repo, BranchKind::Local)
-                .await
-                .unwrap_or_default();
+            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -287,22 +338,20 @@ impl VcsView {
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
-                this.local_branches = new_local;
-                if let Err(e) = result {
-                    error!(error = %e, %onto, "vcs: interactive rebase failed");
-                    this.error = Some(format!("交互式 Rebase 失败：{e}（如有冲突请在工作区处理）"));
-                } else if matches!(
+                if let Some(branches) = new_local {
+                    this.local_branches = branches;
+                }
+                if matches!(
                     this.status.as_ref().and_then(|s| s.operation),
                     Some(ramag_domain::entities::RepoOperation::Rebase)
                 ) {
-                    // driver 对进入冲突态返回 Ok（推进成功）；此时绝不能报"完成"——
-                    // 仓库仍处于 rebase 进行中，引导用户去工作区解决
-                    info!(%onto, "vcs: interactive rebase paused on conflict");
-                    this.view_mode = super::helpers::ViewMode::Workspace;
-                    this.error = Some(
-                        "Rebase 遇到冲突：请在工作区解决冲突后点「继续」，或「中止」回滚".into(),
-                    );
+                    // 冲突或 edit 暂停都保持 operation=Rebase；无论 driver 返回 Ok/Err 都按暂停处理。
+                    info!(%onto, "vcs: interactive rebase paused");
+                    this.handle_operation_paused(RepoOperation::Rebase, cx);
                     this.refresh_after_head_change(cx);
+                } else if let Err(e) = result {
+                    error!(error = %e, %onto, "vcs: interactive rebase failed");
+                    this.error = Some(format!("交互式 Rebase 失败：{e}"));
                 } else {
                     info!(%onto, "vcs: interactive rebase done");
                     // 历史被改写：history 与所有 diff 缓存都要重建

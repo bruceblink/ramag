@@ -9,7 +9,7 @@ use gpui_component::{
 };
 use ramag_domain::entities::RepoOperation;
 
-use super::helpers::{BranchOp, FileOp, RemoteOp, StashOp, TagOp};
+use super::helpers::{BranchOp, FileOp, RemoteOp, StashOp, TagOp, default_remote_name};
 use super::vcs_view::VcsView;
 
 /// 委托 `ramag_ui::open_confirm`，把 `FnOnce(&mut VcsView, &mut Context)` 适配成 `FnOnce(&mut Window, &mut App)`
@@ -100,6 +100,30 @@ impl VcsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let diverged_pull = matches!(op, RemoteOp::Pull)
+            && self.status.as_ref().is_some_and(|status| {
+                status.ahead.unwrap_or(0) > 0 && status.behind.unwrap_or(0) > 0
+            });
+        if diverged_pull {
+            let ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
+            let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
+            let view = cx.entity();
+            open_confirm_dialog(
+                view,
+                "本地与远程已分叉",
+                format!(
+                    "本地领先 {ahead} 个 commit，同时落后 {behind} 个 commit。\n\n\
+                     Pull 会把远程改动合并到当前分支，可能产生 merge commit 或冲突；\
+                     如希望线性历史，可取消后先 Fetch，再选择 Rebase。"
+                ),
+                "Pull 并合并",
+                false,
+                move |this, cx| this.run_remote_op(RemoteOp::Pull, cx),
+                window,
+                cx,
+            );
+            return;
+        }
         if !matches!(op, RemoteOp::PushForce) {
             self.run_remote_op(op, cx);
             return;
@@ -234,7 +258,7 @@ impl VcsView {
                 false,
             ),
             BranchOp::Checkout(name) => {
-                // dirty（staged/unstaged 非空，untracked 不阻止 checkout）时引导 stash/discard
+                // dirty（含 untracked）时引导 stash/discard
                 if self.is_working_tree_dirty() {
                     open_checkout_dirty_dialog(cx.entity(), name.clone(), window, cx);
                 } else {
@@ -274,12 +298,22 @@ impl VcsView {
                 "删除",
                 true,
             ),
-            TagOp::Push(name) => (
-                "推送 tag 到远程？",
-                format!("将把 tag「{name}」推送到 origin。\n推送后此 tag 对所有协作者可见。"),
-                "推送",
-                false,
-            ),
+            TagOp::Push(name) => {
+                let remote = match default_remote_name(&self.remotes) {
+                    Ok(remote) => remote,
+                    Err(message) => {
+                        self.error = Some(message);
+                        cx.notify();
+                        return;
+                    }
+                };
+                (
+                    "推送 tag 到远程？",
+                    format!("将把 tag「{name}」推送到 {remote}。\n推送后此 tag 对所有协作者可见。"),
+                    "推送",
+                    false,
+                )
+            }
             _ => {
                 self.run_tag_op(op, cx);
                 return;
@@ -298,7 +332,7 @@ impl VcsView {
         );
     }
 
-    /// 进行中操作的步进；Abort 弹确认（Continue / Skip 不弹）
+    /// 进行中操作的步进；Continue 直接执行，Skip / Abort 涉及丢弃内容须确认。
     pub(super) fn confirm_op_step(
         &mut self,
         step: super::helpers::OperationStep,
@@ -306,8 +340,23 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) {
         use super::helpers::OperationStep;
-        if !matches!(step, OperationStep::Abort) {
+        if matches!(step, OperationStep::Continue) {
             self.run_op_step(step, cx);
+            return;
+        }
+        if matches!(step, OperationStep::Skip) {
+            let view = cx.entity();
+            open_confirm_dialog(
+                view,
+                "跳过当前 Rebase commit？",
+                "将丢弃当前正在重放的 commit，并继续处理下一条。\n该 commit 的改动不会进入 Rebase 结果，确认继续吗？"
+                    .into(),
+                "跳过 commit",
+                true,
+                move |this, cx| this.run_op_step(OperationStep::Skip, cx),
+                window,
+                cx,
+            );
             return;
         }
         let op_name = self
@@ -368,10 +417,9 @@ pub(super) fn open_checkout_dirty_dialog(
 ) {
     let title = SharedString::from("工作区有未提交改动");
     let desc = format!(
-        "切换到「{target}」会与当前未提交的改动冲突，git 会拒绝切换。\n\n\
-         - 「Stash 后切换」：把当前改动暂存到 stash 列表，切换后可在 Stash 面板恢复（推荐）\n\
-         - 「丢弃后切换」：丢弃全部已暂存与未暂存改动（reset --hard，不可恢复；\
-         未跟踪的新文件保留）"
+        "工作区有未提交改动。直接切换到「{target}」可能被 Git 拒绝，也可能把改动带到目标分支。\n\n\
+         - 「Stash 后切换」：把当前改动（含未跟踪文件）暂存到 stash 列表，切换后可在 Stash 面板恢复（推荐）\n\
+         - 「丢弃后切换」：先临时保护改动，确认切换成功后再永久删除该备份（不可恢复）"
     );
     window.open_dialog(cx, move |dialog, _, _| {
         let view_cancel = view.clone();
@@ -414,6 +462,7 @@ pub(super) fn open_checkout_dirty_dialog(
                             .danger()
                             .small()
                             .label("丢弃后切换")
+                            .tooltip("切换成功后永久丢弃当前全部改动（含未跟踪文件）")
                             .on_click({
                                 let v = view_discard.clone();
                                 move |_: &ClickEvent, w, app| {

@@ -22,6 +22,11 @@ impl VcsView {
     /// message 非空 → annotated tag；空 → lightweight tag
     pub(super) fn render_create_tag_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.busy;
+        let has_head = self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_some();
         h_flex()
             .h(px(LEFT_ROW_H))
             .flex_none()
@@ -46,8 +51,12 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip("创建 tag（message 非空 → annotated；空 → lightweight）")
-                    .disabled(busy)
+                    .tooltip(if has_head {
+                        "创建 tag（message 非空 → annotated；空 → lightweight）"
+                    } else {
+                        "首次提交后才能创建 tag"
+                    })
+                    .disabled(busy || !has_head)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.handle_create_tag(cx);
                     })),
@@ -135,7 +144,7 @@ pub(super) fn tag_row(
                     let name = name.clone();
                     side_op_button(
                         format!("vcs-side-tag-push-{idx}"),
-                        "推送 tag 到 origin",
+                        "推送 tag 到默认 remote（优先 origin）",
                         IconName::ArrowUp,
                         busy,
                         move |this, window, cx| {

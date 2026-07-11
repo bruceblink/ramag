@@ -30,7 +30,7 @@ pub fn start(
 }
 
 pub fn cont(repo_path: &Path) -> Result<()> {
-    run_git_bytes(repo_path, &["merge", "--continue", "--no-edit"]).map(|_| ())
+    run_git_bytes(repo_path, &["merge", "--continue"]).map(|_| ())
 }
 
 pub fn abort(repo_path: &Path) -> Result<()> {

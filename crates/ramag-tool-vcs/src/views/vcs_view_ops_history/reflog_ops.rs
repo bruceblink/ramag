@@ -11,6 +11,9 @@ impl VcsView {
         self.showing_reflog = !self.showing_reflog;
         if self.showing_reflog {
             self.load_reflog(cx);
+        } else {
+            self.reflog_request_seq = self.reflog_request_seq.wrapping_add(1);
+            self.loading_reflog = false;
         }
         cx.notify();
     }
@@ -22,15 +25,16 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         self.loading_reflog = true;
+        self.reflog_request_seq = self.reflog_request_seq.wrapping_add(1);
+        let request_seq = self.reflog_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_reflog(&repo, None, Some(200)).await;
             let _ = this.update(cx, |this, cx| {
-                this.loading_reflog = false;
-                if !this.is_current_repo(&repo) {
-                    cx.notify();
+                if !this.is_current_repo(&repo) || this.reflog_request_seq != request_seq {
                     return;
                 }
+                this.loading_reflog = false;
                 match result {
                     Ok(entries) => this.reflog_entries = entries,
                     Err(e) => {
@@ -47,6 +51,9 @@ impl VcsView {
 
     /// reflog 条目点击 → checkout 到该 commit（detached HEAD；checkout 后切回 commit 历史）
     pub(crate) fn checkout_reflog_entry(&mut self, commit: String, cx: &mut Context<Self>) {
+        if !self.ensure_no_operation("Checkout 历史版本", cx) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
@@ -61,7 +68,7 @@ impl VcsView {
             let new_local = driver
                 .list_branches(&repo, ramag_domain::entities::BranchKind::Local)
                 .await
-                .unwrap_or_default();
+                .ok();
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -72,7 +79,9 @@ impl VcsView {
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
-                this.local_branches = new_local;
+                if let Some(branches) = new_local {
+                    this.local_branches = branches;
+                }
                 if let Err(e) = result {
                     error!(error = %e, %commit, "vcs: reflog checkout failed");
                     this.error = Some(format!("Checkout 到 {commit} 失败：{e}"));

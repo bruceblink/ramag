@@ -298,6 +298,11 @@ impl VcsView {
             .iter()
             .map(|b| b.name.clone())
             .collect();
+        let has_head = self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_some();
         // 加边框 + 深色文字，比纯 ghost+蓝字更醒目（用户反馈纯文字辨识度低）
         let _ = accent;
         Button::new("vcs-branch-picker")
@@ -323,25 +328,29 @@ impl VcsView {
                         .find(|(_, is_head, _)| *is_head)
                         .map(|(n, _, _)| n.clone())
                         .unwrap_or_else(|| "(HEAD)".into());
-                    m = m.item(PopupMenuItem::new("新建分支").on_click({
-                        let ent = ent_new.clone();
-                        let hdlg = head_for_dlg.clone();
-                        let local_for_dlg = local
-                            .iter()
-                            .map(|(n, h, _)| (n.clone(), *h))
-                            .collect::<Vec<_>>();
-                        let remote_for_dlg = remote.clone();
-                        move |_, window, app| {
-                            super::branch_picker::open_new_branch_dialog(
-                                ent.clone(),
-                                hdlg.clone(),
-                                local_for_dlg.clone(),
-                                remote_for_dlg.clone(),
-                                window,
-                                app,
-                            );
-                        }
-                    }));
+                    m = m.item(
+                        PopupMenuItem::new("新建分支")
+                            .disabled(!has_head)
+                            .on_click({
+                                let ent = ent_new.clone();
+                                let hdlg = head_for_dlg.clone();
+                                let local_for_dlg = local
+                                    .iter()
+                                    .map(|(n, h, _)| (n.clone(), *h))
+                                    .collect::<Vec<_>>();
+                                let remote_for_dlg = remote.clone();
+                                move |_, window, app| {
+                                    super::branch_picker::open_new_branch_dialog(
+                                        ent.clone(),
+                                        hdlg.clone(),
+                                        local_for_dlg.clone(),
+                                        remote_for_dlg.clone(),
+                                        window,
+                                        app,
+                                    );
+                                }
+                            }),
+                    );
                     m = m.separator();
                     // 本地分支：按 / 路径分组（feature/xxx → 「feature」 submenu，hover 展开侧菜单）
                     m = m.item(PopupMenuItem::label("本地"));
@@ -415,7 +424,15 @@ impl VcsView {
             .icon(IconName::Inbox)
             .label("Stash 工作区改动")
             .tooltip("把当前全部改动（含未跟踪文件）存入 stash 堆栈，工作区恢复干净")
-            .disabled(self.busy || !has_changes)
+            .disabled(
+                self.busy
+                    || !has_changes
+                    || self
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.operation)
+                        .is_some(),
+            )
             .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                 let entity = cx.entity();
                 ramag_ui::open_prompt(

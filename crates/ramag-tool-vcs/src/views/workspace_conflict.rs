@@ -41,7 +41,7 @@ impl VcsView {
         let title = if conflicts > 0 {
             format!("{base_title}：剩余 {conflicts} 个冲突文件待解决")
         } else {
-            format!("{base_title}：冲突已解决，可点「继续」完成")
+            format!("{base_title}：当前已暂停，可点「继续」推进或「中止」回滚")
         };
         let supports_skip = matches!(op, RepoOperation::Rebase);
 
@@ -77,7 +77,7 @@ impl VcsView {
                     .tooltip(if conflicts > 0 {
                         "还有冲突未解决，解决全部冲突后才能继续"
                     } else {
-                        "提交解决后的合并 / cherry-pick / rebase"
+                        "继续当前合并 / cherry-pick / rebase / revert"
                     })
                     .disabled(busy || conflicts > 0)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -119,8 +119,10 @@ pub(super) fn conflict_buttons(
     idx: usize,
     path: &str,
     busy: bool,
+    operation: Option<RepoOperation>,
     cx: &mut Context<VcsView>,
 ) -> Vec<AnyElement> {
+    let (ours_label, theirs_label) = conflict_side_labels(operation);
     let path_for_view = path.to_string();
     let view_btn = {
         let id = SharedString::from(format!("vcs-conflict-view-{idx}-{path}"));
@@ -128,7 +130,7 @@ pub(super) fn conflict_buttons(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::columns_2())
-            .tooltip("打开三方冲突编辑器（查看 HEAD vs 对方内容）")
+            .tooltip(format!("打开冲突对比（{ours_label} vs {theirs_label}）"))
             .disabled(busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.open_conflict_editor(path_for_view.clone(), cx);
@@ -141,7 +143,7 @@ pub(super) fn conflict_buttons(
             "use-ours",
             idx,
             path,
-            "采纳「我们」（HEAD 侧）的版本",
+            format!("采纳「{ours_label}」版本"),
             IconName::ArrowLeft,
             ConflictOp::UseOurs,
             busy,
@@ -151,7 +153,7 @@ pub(super) fn conflict_buttons(
             "use-theirs",
             idx,
             path,
-            "采纳「他们」（对方分支）的版本",
+            format!("采纳「{theirs_label}」版本"),
             IconName::ArrowRight,
             ConflictOp::UseTheirs,
             busy,
@@ -161,7 +163,7 @@ pub(super) fn conflict_buttons(
             "mark-resolved",
             idx,
             path,
-            "标记已解决（手动改完文件后点这里）",
+            "标记已解决（手动改完文件后点这里）".into(),
             IconName::Check,
             ConflictOp::MarkResolved,
             busy,
@@ -175,7 +177,7 @@ fn conflict_btn(
     kind: &'static str,
     idx: usize,
     path: &str,
-    tooltip: &'static str,
+    tooltip: String,
     icon: IconName,
     op: ConflictOp,
     busy: bool,
@@ -193,4 +195,32 @@ fn conflict_btn(
             this.run_conflict_op(op, path_owned.clone(), cx);
         }))
         .into_any_element()
+}
+
+/// Git index stage 2/3 在不同操作中的真实语义；尤其 Rebase 与直觉中的 ours/theirs 相反。
+pub(super) fn conflict_side_labels(
+    operation: Option<RepoOperation>,
+) -> (&'static str, &'static str) {
+    match operation {
+        Some(RepoOperation::Merge) => ("当前 HEAD", "待合并分支"),
+        Some(RepoOperation::Rebase) => ("Rebase 目标分支", "正在重放的 commit"),
+        Some(RepoOperation::CherryPick) => ("当前 HEAD", "Cherry-pick commit"),
+        Some(RepoOperation::Revert) => ("当前 HEAD", "Revert 计算结果"),
+        None => ("ours / stage 2", "theirs / stage 3"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ramag_domain::entities::RepoOperation;
+
+    use super::conflict_side_labels;
+
+    #[test]
+    fn rebase_conflict_labels_explain_git_semantics() {
+        assert_eq!(
+            conflict_side_labels(Some(RepoOperation::Rebase)),
+            ("Rebase 目标分支", "正在重放的 commit")
+        );
+    }
 }

@@ -22,12 +22,14 @@ pub(crate) fn command() -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
         // GUI 子进程没有可用终端；仍允许 Git Credential Manager 等图形凭据助手运行。
         command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env("GIT_EDITOR", "true");
         command
     }
     #[cfg(not(target_os = "windows"))]
     {
         let mut command = Command::new("git");
         command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env("GIT_EDITOR", "true");
         command
     }
 }
@@ -118,5 +120,10 @@ mod tests {
             .find(|(key, _)| *key == "GIT_TERMINAL_PROMPT")
             .and_then(|(_, value)| value);
         assert_eq!(prompt, Some(std::ffi::OsStr::new("0")));
+        let editor = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_EDITOR")
+            .and_then(|(_, value)| value);
+        assert_eq!(editor, Some(std::ffi::OsStr::new("true")));
     }
 }

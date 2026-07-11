@@ -19,7 +19,15 @@ impl VcsView {
         }
         let ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
         let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
-        let (id, label, tip, op): (&'static str, String, String, RemoteOp) = if behind > 0 {
+        let diverged = ahead > 0 && behind > 0;
+        let (id, label, tip, op): (&'static str, String, String, RemoteOp) = if diverged {
+            (
+                "vcs-quick-diverged",
+                format!("分叉 ↑{ahead} ↓{behind}"),
+                "本地与远程都有新 commit；点击查看 Pull 合并风险".to_string(),
+                RemoteOp::Pull,
+            )
+        } else if behind > 0 {
             (
                 "vcs-quick-pull",
                 format!("Pull ↓{behind}"),
@@ -48,8 +56,8 @@ impl VcsView {
             .label(label)
             .tooltip(tip)
             .disabled(self.busy)
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.run_remote_op(op, cx);
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.confirm_remote_op(op, window, cx);
             }))
             .into_any_element()
     }
@@ -62,6 +70,11 @@ impl VcsView {
         let busy = self.busy;
         let ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
         let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
+        let has_head = self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_some();
         let entity = cx.entity();
 
         let pull_shortcut = ramag_ui::platform::primary_shortcut("T");
@@ -95,25 +108,31 @@ impl VcsView {
                         });
                     }))
                     .item(
-                        PopupMenuItem::new(pull_label.clone()).on_click(move |_, _, app| {
-                            entity2.update(app, |this, cx| {
-                                this.run_remote_op(RemoteOp::Pull, cx);
-                            });
-                        }),
+                        PopupMenuItem::new(pull_label.clone())
+                            .disabled(!has_head)
+                            .on_click(move |_, window, app| {
+                                entity2.update(app, |this, cx| {
+                                    this.confirm_remote_op(RemoteOp::Pull, window, cx);
+                                });
+                            }),
                     )
                     .item(
-                        PopupMenuItem::new(push_label.clone()).on_click(move |_, _, app| {
-                            entity3.update(app, |this, cx| {
-                                this.run_remote_op(RemoteOp::Push, cx);
-                            });
-                        }),
+                        PopupMenuItem::new(push_label.clone())
+                            .disabled(!has_head)
+                            .on_click(move |_, _, app| {
+                                entity3.update(app, |this, cx| {
+                                    this.run_remote_op(RemoteOp::Push, cx);
+                                });
+                            }),
                     )
                     .separator()
-                    .item(PopupMenuItem::new("⚠ 强推").on_click(move |_, w, app| {
-                        entity4.update(app, |this, cx| {
-                            this.confirm_remote_op(RemoteOp::PushForce, w, cx);
-                        });
-                    }));
+                    .item(PopupMenuItem::new("⚠ 强推").disabled(!has_head).on_click(
+                        move |_, w, app| {
+                            entity4.update(app, |this, cx| {
+                                this.confirm_remote_op(RemoteOp::PushForce, w, cx);
+                            });
+                        },
+                    ));
                 m
             })
             .into_any_element()

@@ -4,34 +4,51 @@ use gpui::Context;
 use ramag_domain::entities::BranchKind;
 use tracing::{error, info};
 
-use super::super::helpers::RemoteOp;
+use super::super::helpers::{RemoteOp, default_remote_name};
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
     /// fetch=`--all --prune`；push 无 upstream 自动 -u；pull 无 upstream 引导先 push
     pub(in crate::views) fn run_remote_op(&mut self, op: RemoteOp, cx: &mut Context<Self>) {
+        if !matches!(op, RemoteOp::Fetch)
+            && self
+                .status
+                .as_ref()
+                .and_then(|status| status.head_commit.as_ref())
+                .is_none()
+        {
+            self.error = Some("首次提交前没有可 Pull / Push 的分支历史；请先创建 commit".into());
+            cx.notify();
+            return;
+        }
+        if !matches!(op, RemoteOp::Fetch)
+            && let Some(operation) = self.status.as_ref().and_then(|status| status.operation)
+        {
+            self.error = Some(format!(
+                "{}仍在进行中：完成或中止后再执行 Pull / Push",
+                super::super::helpers::operation_label(operation)
+            ));
+            cx.notify();
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        let Some(local_branch) = self.status.as_ref().and_then(|s| s.head_branch.clone()) else {
+        let local_branch = self.status.as_ref().and_then(|s| s.head_branch.clone());
+        if local_branch.is_none() && !matches!(op, RemoteOp::Fetch) {
             self.error = Some("当前为 detached HEAD，无法 push/pull".into());
             cx.notify();
             return;
-        };
+        }
+        // Fetch 与 HEAD 无关；detached HEAD 下仍应允许更新远端引用。
+        let local_branch = local_branch.unwrap_or_default();
         // 从 local_branches 找当前 head 的 upstream（"origin/main"）
         let upstream = self
             .local_branches
             .iter()
             .find(|b| b.is_head)
             .and_then(|b| b.upstream.clone());
-        let (remote_name, remote_branch) = match upstream.as_deref().and_then(|u| u.split_once('/'))
-        {
-            Some((r, b)) => (r.to_string(), b.to_string()),
-            None => ("origin".to_string(), local_branch.clone()),
-        };
         let need_set_upstream = upstream.is_none();
-        // PushForce → 走 --force-with-lease；其他 op 忽略
-        let this_force_lease = matches!(op, RemoteOp::PushForce);
         // pull 模式下若没有 upstream 直接报错引导（避免提示「fatal: no tracking info」）
         if matches!(op, RemoteOp::Pull) && need_set_upstream {
             self.error =
@@ -39,6 +56,25 @@ impl VcsView {
             cx.notify();
             return;
         }
+        let (remote_name, remote_branch) = match upstream.as_deref().and_then(|u| u.split_once('/'))
+        {
+            Some((r, b)) => (r.to_string(), b.to_string()),
+            None if matches!(op, RemoteOp::Push | RemoteOp::PushForce) => {
+                let remote = match default_remote_name(&self.remotes) {
+                    Ok(remote) => remote,
+                    Err(message) => {
+                        self.error = Some(message);
+                        cx.notify();
+                        return;
+                    }
+                };
+                (remote, local_branch.clone())
+            }
+            // Fetch 拉所有 remote，不使用这里的名字。
+            None => (String::new(), local_branch.clone()),
+        };
+        // PushForce → 走 --force-with-lease；其他 op 忽略
+        let this_force_lease = matches!(op, RemoteOp::PushForce);
         let driver = self.driver.clone();
         // 操作前的 ahead/behind：完成后据此区分「真的推/拉了 N 个」与「本来就是最新」
         let pre_ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
@@ -101,12 +137,20 @@ impl VcsView {
                 if let Some(b) = remote_b {
                     this.remote_branches = b;
                 }
-                match result {
-                    Err(e) => {
+                let paused = matches!(op, RemoteOp::Pull)
+                    .then(|| this.status.as_ref().and_then(|s| s.operation))
+                    .flatten();
+                match (result, paused) {
+                    (_, Some(operation)) => {
+                        info!(?operation, "vcs: pull paused");
+                        this.handle_operation_paused(operation, cx);
+                        this.refresh_after_head_change(cx);
+                    }
+                    (Err(e), None) => {
                         error!(error = %e, ?op, "vcs: remote op failed");
                         this.error = Some(format!("{op_label} 失败：{e}"));
                     }
-                    Ok(_) => {
+                    (Ok(_), None) => {
                         info!(?op, "vcs: remote op done");
                         // fetch 后 behind 增加 = 远端有新 commit 被发现
                         let post_behind =
@@ -115,9 +159,9 @@ impl VcsView {
                             RemoteOp::Fetch if post_behind > pre_behind => {
                                 format!("Fetch 完成：发现 {} 个新 commit", post_behind - pre_behind)
                             }
-                            RemoteOp::Fetch => "Fetch 完成：已是最新".to_string(),
+                            RemoteOp::Fetch => "Fetch 完成：远程引用已更新".to_string(),
                             RemoteOp::Pull if pre_behind == 0 => {
-                                format!("已是最新（{remote_name}/{remote_branch} 无新 commit）")
+                                format!("Pull 完成：已同步 {remote_name}/{remote_branch}")
                             }
                             RemoteOp::Pull => format!(
                                 "Pull 完成：合入 {pre_behind} 个 commit（{remote_name}/{remote_branch}）"
@@ -126,7 +170,7 @@ impl VcsView {
                                 format!("Push 成功，已设置 upstream {remote_name}/{local_branch}")
                             }
                             RemoteOp::Push if pre_ahead == 0 => {
-                                format!("已是最新（{remote_name}/{local_branch} 无待推送 commit）")
+                                format!("Push 完成：已同步 {remote_name}/{local_branch}")
                             }
                             RemoteOp::Push => format!(
                                 "Push 成功：已推送 {pre_ahead} 个 commit（{remote_name}/{local_branch}）"

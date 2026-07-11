@@ -24,7 +24,7 @@ pub fn revert(repo_path: &Path, commit: &str) -> Result<()> {
 
 /// revert 冲突解决后继续
 pub fn revert_continue(repo_path: &Path) -> Result<()> {
-    run_git_bytes(repo_path, &["revert", "--continue", "--no-edit"]).map(|_| ())
+    run_git_bytes(repo_path, &["revert", "--continue"]).map(|_| ())
 }
 
 /// revert 冲突后中止，回滚到 revert 前状态

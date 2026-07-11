@@ -15,6 +15,14 @@ use super::vcs_view_ops_history::parse_search_query;
 impl VcsView {
     /// checkout / create / delete / merge / rebase
     pub(in crate::views) fn run_branch_op(&mut self, op: BranchOp, cx: &mut Context<Self>) {
+        if let Some(operation) = self.status.as_ref().and_then(|status| status.operation) {
+            self.error = Some(format!(
+                "{}仍在进行中：请先在顶部横幅选择继续或中止，再操作分支",
+                super::helpers::operation_label(operation)
+            ));
+            cx.notify();
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
@@ -51,10 +59,7 @@ impl VcsView {
                 BranchOp::Rebase(name) => driver.rebase(&repo, name).await,
             };
             let new_status = driver.status(&repo).await.ok();
-            let new_local = driver
-                .list_branches(&repo, BranchKind::Local)
-                .await
-                .unwrap_or_default();
+            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -62,16 +67,26 @@ impl VcsView {
                     cx.notify();
                     return;
                 }
-                this.local_branches = new_local;
+                if let Some(branches) = new_local {
+                    this.local_branches = branches;
+                }
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
-                match &result {
-                    Err(e) => {
+                let paused = this.status.as_ref().and_then(|s| s.operation);
+                match (&result, paused) {
+                    (_, Some(operation)) => {
+                        info!(?operation, ?op, "vcs: branch op paused");
+                        this.handle_operation_paused(operation, cx);
+                    }
+                    (Err(e), None) => {
                         error!(error = %e, ?op, "vcs: branch op failed");
                         this.error = Some(format!("分支操作失败：{e}"));
                     }
-                    Ok(_) => {
+                    (Ok(_), None) => {
+                        if matches!(op, BranchOp::Create(_, _)) {
+                            this.pending_clear_creation_inputs = true;
+                        }
                         let done_msg = match &op {
                             BranchOp::Checkout(n) => format!("已切换到 {n}"),
                             BranchOp::Create(n, _) => format!("已创建并切换到 {n}"),
@@ -82,7 +97,7 @@ impl VcsView {
                         this.notify_success(done_msg, cx);
                     }
                 }
-                if result.is_ok()
+                if (result.is_ok() || paused.is_some())
                     && matches!(
                         op,
                         BranchOp::Checkout(_)
@@ -135,6 +150,17 @@ impl VcsView {
     /// 切换 amend：勾上且 message 为空时，异步拉 HEAD 的 message 填入输入框（IDEA 同款），
     /// 方便在原文基础上改；取消勾选不动已输入内容
     pub(in crate::views) fn toggle_commit_amend(&mut self, cx: &mut Context<Self>) {
+        if !self.commit_amend
+            && self
+                .status
+                .as_ref()
+                .and_then(|status| status.head_commit.as_ref())
+                .is_none()
+        {
+            self.error = Some("当前仓库还没有 commit，无法 Amend；请先创建首次提交".into());
+            cx.notify();
+            return;
+        }
         self.commit_amend = !self.commit_amend;
         cx.notify();
         if !self.commit_amend {
@@ -176,6 +202,16 @@ impl VcsView {
 
     /// base=None 时从当前 HEAD 建
     pub(in crate::views) fn handle_create_branch(&mut self, cx: &mut Context<Self>) {
+        if self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .is_none()
+        {
+            self.error = Some("首次 commit 前不能从 HEAD 创建分支；请先完成首次提交".into());
+            cx.notify();
+            return;
+        }
         let name = self.create_branch_input.read(cx).value().trim().to_string();
         if name.is_empty() {
             self.error = Some("分支名不能为空".into());
@@ -262,10 +298,24 @@ impl VcsView {
     }
 
     pub(in crate::views) fn run_commit(&mut self, cx: &mut Context<Self>) {
+        if !self.ensure_no_operation("创建普通提交", cx) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
         let message = self.commit_input.read(cx).value().trim().to_string();
+        if self.commit_amend
+            && self
+                .status
+                .as_ref()
+                .and_then(|status| status.head_commit.as_ref())
+                .is_none()
+        {
+            self.error = Some("当前仓库还没有 commit，无法 Amend".into());
+            cx.notify();
+            return;
+        }
         if message.is_empty() && !self.commit_amend {
             self.error = Some("commit message 不能为空".into());
             cx.notify();

@@ -1,6 +1,5 @@
 //! 仓库 storage 管理 + Clone / Init / 确认弹窗
 
-use gpui::prelude::*;
 use gpui::{Context, Window};
 use ramag_domain::entities::{RepoConfig, RepoId};
 
@@ -8,12 +7,32 @@ use super::super::vcs_view::VcsView;
 use super::open_repo_async;
 
 impl VcsView {
-    /// 保存单条 RepoConfig 到 storage（失败仅 warn，不阻塞 UI）
+    /// 收藏 / 取消收藏最近仓库，并立即持久化。
+    pub(crate) fn toggle_repo_favorite(&mut self, path: String, cx: &mut Context<Self>) {
+        let repo = self
+            .recent_repos
+            .iter_mut()
+            .find(|repo| repo.path == path)
+            .map(|repo| {
+                repo.favorite = !repo.favorite;
+                repo.clone()
+            });
+        if let Some(repo) = repo {
+            self.save_repo_async(repo, cx);
+            cx.notify();
+        }
+    }
+
+    /// 保存单条 RepoConfig 到 storage；失败要可见，否则收藏 / 最近时间会在重启后悄悄丢失。
     pub(crate) fn save_repo_async(&self, repo: RepoConfig, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
-        cx.background_spawn(async move {
+        cx.spawn(async move |this, cx| {
             if let Err(e) = storage.save_repo(&repo).await {
                 tracing::warn!(error = %e, repo = %repo.name, "vcs: save_repo failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.error = Some(format!("仓库记录未能保存（重启后设置可能丢失）：{e}"));
+                    cx.notify();
+                });
             }
         })
         .detach();
@@ -141,7 +160,11 @@ impl VcsView {
                     this.recent_repos = list;
                     cx.notify();
                 }
-                Err(e) => tracing::warn!(error = %e, "vcs: list_repos failed"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "vcs: list_repos failed");
+                    this.error = Some(format!("加载最近仓库失败：{e}"));
+                    cx.notify();
+                }
             });
         })
         .detach();
