@@ -74,6 +74,25 @@ const WRITE_COMMANDS: &[&str] = &[
     "revokeprivilegesfromrole",
     "dropallusersfromdatabase",
     "dropallrolesfromdatabase",
+    // oplog / 底层写：applyOps 可执行任意写操作，必须拦
+    "applyops",
+    // 分片管理（改集群拓扑 / 触发数据迁移）
+    "shardcollection",
+    "enablesharding",
+    "movechunk",
+    "moveprimary",
+    "split",
+    "splitchunk",
+    "mergechunks",
+    "removeshard",
+    "addshard",
+    "refinecollectionshardkey",
+    "reshardcollection",
+    // 服务端参数 / 维护
+    "setparameter",
+    "setclusterparameter",
+    "fsync",
+    "killop",
     // 集群 / 兼容性
     "setfeaturecompatibilityversion",
 ];

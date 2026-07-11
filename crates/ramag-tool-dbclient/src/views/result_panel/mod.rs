@@ -264,6 +264,18 @@ impl ResultPanel {
         Some((col_name, val.display_for_edit(), has_pk))
     }
 
+    /// 该单元格是否为二进制值。二进制显示的是 hex 文本，编辑保存会把它写成 hex 的
+    /// ASCII 文本（损坏原始字节），故弹框强制只读（可查看 / 复制，不能提交）
+    pub(super) fn cell_is_binary(&self, ri: usize, ci: usize) -> bool {
+        let ResultState::Ok(result) = &self.state else {
+            return false;
+        };
+        matches!(
+            result.rows.get(ri).and_then(|r| r.values.get(ci)),
+            Some(ramag_domain::entities::Value::Bytes(_))
+        )
+    }
+
     pub fn set_source_sql(&mut self, sql: Option<String>) {
         self.source_sql = sql;
     }

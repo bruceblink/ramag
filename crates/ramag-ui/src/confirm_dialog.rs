@@ -59,6 +59,18 @@ pub fn open_confirm(
         dialog
             .title(title.clone())
             .margin_top(px(180.0))
+            // 键盘 Enter 走 ConfirmDialog action → button_props.on_ok；设了 footer 后
+            // 库会忽略 button_props 的按钮渲染，但 on_ok 仍是 Enter 的回调，必须显式绑定，
+            // 否则回车只关窗不执行确认（返回 true = 执行后关闭对话框）
+            .on_ok({
+                let cell = on_confirm_cell.clone();
+                move |_, window, app| {
+                    if let Some(cb) = cell.borrow_mut().take() {
+                        cb(window, app);
+                    }
+                    true
+                }
+            })
             .content(move |content, _, cx| {
                 let muted_fg = cx.theme().muted_foreground;
                 content.child(

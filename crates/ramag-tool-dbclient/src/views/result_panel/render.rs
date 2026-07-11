@@ -103,7 +103,7 @@ impl Render for ResultPanel {
 
             ResultState::Ok(result) => render_table(
                 self,
-                result.clone(),
+                result,
                 fg,
                 muted_fg,
                 secondary_bg,

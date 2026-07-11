@@ -208,7 +208,7 @@ impl ResultPanel {
             .join(", ");
         let vals_sql = values
             .iter()
-            .map(|(_, v)| v.to_sql_literal())
+            .map(|(_, v)| v.to_sql_literal_for(driver))
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!("INSERT INTO {table_ref} ({cols_sql}) VALUES ({vals_sql});");
@@ -317,13 +317,25 @@ impl ResultPanel {
                                 r.rows.remove(ri);
                             }
                             this.selected_cell = None;
-                            this.pending_notification = Some(
-                                Notification::success(format!(
-                                    "已删除 {} 行（{strategy}匹配）",
-                                    qr.affected_rows
-                                ))
-                                .autohide(true),
-                            );
+                            // affected>1：DELETE 命中多行（无唯一主键 + PG 无 LIMIT），
+                            // 本地只移除了一行，DB 实际删了多行——数据已不一致，必须显式告警
+                            if qr.affected_rows > 1 {
+                                this.pending_notification = Some(
+                                    Notification::warning(format!(
+                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），该表可能无唯一主键，请重新查询核对",
+                                        qr.affected_rows
+                                    ))
+                                    .autohide(false),
+                                );
+                            } else {
+                                this.pending_notification = Some(
+                                    Notification::success(format!(
+                                        "已删除 {} 行（{strategy}匹配）",
+                                        qr.affected_rows
+                                    ))
+                                    .autohide(true),
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -383,7 +395,7 @@ impl ResultPanel {
 
         let driver = conn.driver;
         let where_clause = build_pk_where(result, &row, driver);
-        let new_literal = escape_new_value_for_old(&cell_val, &new_text);
+        let new_literal = escape_new_value_for_old(&cell_val, &new_text, driver);
         let limit_clause = dml_row_limit(driver);
         let sql = format!(
             "UPDATE {table_ref} SET {} = {new_literal} WHERE {where_clause}{limit_clause};",
@@ -409,13 +421,25 @@ impl ResultPanel {
                             {
                                 *slot = new_cell_val;
                             }
-                            this.pending_notification = Some(
-                                Notification::success(format!(
-                                    "已更新 {} 行（{strategy}匹配）",
-                                    qr.affected_rows
-                                ))
-                                .autohide(true),
-                            );
+                            // affected>1：WHERE 命中多行（无真实主键 + 全列等值 + PG 无 LIMIT）
+                            // 意味着可能误改了其它行，必须显式告警而非当成功
+                            if qr.affected_rows > 1 {
+                                this.pending_notification = Some(
+                                    Notification::warning(format!(
+                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），该表可能无唯一主键，请核对数据",
+                                        qr.affected_rows
+                                    ))
+                                    .autohide(false),
+                                );
+                            } else {
+                                this.pending_notification = Some(
+                                    Notification::success(format!(
+                                        "已更新 {} 行（{strategy}匹配）",
+                                        qr.affected_rows
+                                    ))
+                                    .autohide(true),
+                                );
+                            }
                         }
                     }
                     Err(e) => {

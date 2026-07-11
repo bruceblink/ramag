@@ -4,10 +4,64 @@
 //! 管理类命令（CONFIG / CLUSTER / ACL / SCRIPT 等）整体归写——子命令不细分，
 //! 少量只读子命令被一并拦截，但生产只读场景本就不应使用，符合保守封死原则
 
-/// 命令名（大小写不敏感）是否为写命令
+/// 命令名（大小写不敏感）是否为写命令。
+/// 除固定黑名单外，还拦截：① 模块写命令（RedisJSON/TS/Search/Graph/Bloom 等，
+/// 按 `点号 + 非只读后缀` 识别）；② 会把复用连接卡在特殊模式或危险的管理命令
 pub fn is_write_command(cmd: &str) -> bool {
     let upper = cmd.to_ascii_uppercase();
-    WRITE_COMMANDS.contains(&upper.as_str())
+    if WRITE_COMMANDS.contains(&upper.as_str()) || BLOCKING_OR_UNSAFE.contains(&upper.as_str()) {
+        return true;
+    }
+    is_module_write_command(&upper)
+}
+
+/// 模块命令形如 `JSON.SET` / `TS.ADD` / `FT.DROPINDEX`。无法穷举各模块的读命令，
+/// 故采用保守策略：已知只读后缀（GET/MGET/RANGE/INFO 等）放行，其余点号命令一律当写。
+fn is_module_write_command(upper: &str) -> bool {
+    let Some((namespace, sub)) = upper.split_once('.') else {
+        return false;
+    };
+    // 仅对已知模块命名空间生效，避免误判含点号的普通字符串
+    const MODULE_NAMESPACES: &[&str] = &[
+        "JSON", "TS", "FT", "GRAPH", "BF", "CF", "CMS", "TOPK", "TDIGEST", "SEARCH",
+    ];
+    if !MODULE_NAMESPACES.contains(&namespace) {
+        return false;
+    }
+    // 只读子命令后缀白名单：命中放行，其余（SET/DEL/ADD/INCRBY/CREATE/DROP…）当写
+    const READ_SUFFIXES: &[&str] = &[
+        "GET",
+        "MGET",
+        "TYPE",
+        "STRLEN",
+        "ARRLEN",
+        "OBJLEN",
+        "OBJKEYS",
+        "RESP",
+        "DEBUG",
+        "RANGE",
+        "REVRANGE",
+        "MRANGE",
+        "MREVRANGE",
+        "GET",
+        "INFO",
+        "QUERYINDEX",
+        "SEARCH",
+        "AGGREGATE",
+        "EXPLAIN",
+        "PROFILE",
+        "CARD",
+        "COUNT",
+        "QUERY",
+        "EXISTS",
+        "MEXISTS",
+        "RANK",
+        "MIN",
+        "MAX",
+        "LIST",
+        "SUGGET",
+    ];
+    !READ_SUFFIXES.contains(&sub)
 }
 
 const WRITE_COMMANDS: &[&str] = &[
@@ -146,6 +200,23 @@ const WRITE_COMMANDS: &[&str] = &[
     "LATENCY",
 ];
 
+/// 会把复用的 ConnectionManager 卡在特殊模式或有危险副作用的命令：
+/// MONITOR/SUBSCRIBE 类会让连接进入不可逆的接收模式，CLIENT KILL 可断别的连接。
+/// 生产只读连接一律拦截（连非生产也不该经值编辑面板发这些）。
+const BLOCKING_OR_UNSAFE: &[&str] = &[
+    "MONITOR",
+    "SUBSCRIBE",
+    "PSUBSCRIBE",
+    "SSUBSCRIBE",
+    "UNSUBSCRIBE",
+    "PUNSUBSCRIBE",
+    "SUNSUBSCRIBE",
+    "PUBLISH",
+    "SPUBLISH",
+    "CLIENT",
+    "WAIT",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +260,45 @@ mod tests {
             "GEORADIUS_RO",
         ] {
             assert!(!is_write_command(c), "{c} 应判为只读命令");
+        }
+    }
+
+    #[test]
+    fn module_write_commands_are_blocked() {
+        // 模块写命令拦截
+        for c in [
+            "JSON.SET",
+            "json.del",
+            "TS.ADD",
+            "TS.CREATE",
+            "FT.DROPINDEX",
+            "FT.CREATE",
+            "GRAPH.DELETE",
+            "BF.ADD",
+            "CF.INSERT",
+        ] {
+            assert!(is_write_command(c), "{c} 应判为写命令");
+        }
+        // 模块只读命令放行
+        for c in [
+            "JSON.GET",
+            "json.mget",
+            "TS.RANGE",
+            "TS.INFO",
+            "FT.SEARCH",
+            "FT.AGGREGATE",
+            "BF.EXISTS",
+        ] {
+            assert!(!is_write_command(c), "{c} 应判为只读命令");
+        }
+        // 含点号的普通字符串（非模块命名空间）不误判
+        assert!(!is_write_command("MY.CUSTOM"));
+    }
+
+    #[test]
+    fn blocking_and_unsafe_commands_are_blocked() {
+        for c in ["MONITOR", "subscribe", "CLIENT", "PUBLISH"] {
+            assert!(is_write_command(c), "{c} 应被拦截");
         }
     }
 }

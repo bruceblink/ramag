@@ -31,7 +31,9 @@ use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
 /// 用 Rc 包装才能在 'static + Fn 闭包内 capture（不能 borrow 栈局部变量）
 struct TableRowFrame {
     columns: Vec<String>,
-    display_rows: Vec<Row>,
+    /// (源行下标, 行数据)：源下标定位原始 result.rows，用于 DML / 复制 / 编辑；
+    /// 显示序号仅用于渲染定位，绝不能拿去索引原始行
+    display_rows: Vec<(usize, Row)>,
     visible_col_indices: Vec<usize>,
     col_widths: Vec<gpui::Pixels>,
     right_align: Vec<bool>,
@@ -52,7 +54,9 @@ struct TableRowFrame {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_table(
     panel: &ResultPanel,
-    result: QueryResult,
+    // 借用而非按值：避免每帧深拷贝整个结果集（大结果集卡顿主因）。
+    // 需要 own 的 display_rows / columns 在内部按需 clone，仅拷渲染必需部分
+    result: &QueryResult,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     secondary_bg: gpui::Hsla,
@@ -61,23 +65,25 @@ pub(super) fn render_table(
     accent: gpui::Hsla,
     cx: &mut Context<ResultPanel>,
 ) -> AnyElement {
-    let result = &result;
     let columns = result.columns.clone();
     let column_types = result.column_types.clone();
     let total_rows = result.rows.len();
+    // 保留每个显示行对应的原始行下标（source_idx），供 DML / 复制 / 编辑定位真实行。
+    // 排序、行过滤都在 (source_idx, row) 对上进行，避免用显示序号误索引原始 rows。
     let mut display_rows = result
         .rows
         .iter()
         .take(MAX_ROWS_DISPLAY)
         .cloned()
-        .collect::<Vec<_>>();
+        .enumerate()
+        .collect::<Vec<(usize, Row)>>();
     let truncated = total_rows > MAX_ROWS_DISPLAY;
     let affected = result.affected_rows;
     let elapsed = result.elapsed_ms;
 
     // 排序（仅排前 MAX_ROWS_DISPLAY 行）
     if let Some((sort_col, dir)) = panel.sort_by() {
-        display_rows.sort_by(|a, b| {
+        display_rows.sort_by(|(_, a), (_, b)| {
             let av = a.values.get(sort_col);
             let bv = b.values.get(sort_col);
             let ord = compare_values(av, bv);
@@ -119,7 +125,7 @@ pub(super) fn render_table(
     if row_filtering {
         let needle = row_filter.clone();
         let scoped_indices = visible_col_indices.clone();
-        display_rows.retain(|row| {
+        display_rows.retain(|(_, row)| {
             scoped_indices.iter().any(|&ci| {
                 row.values
                     .get(ci)
@@ -294,9 +300,10 @@ pub(super) fn render_table(
     // list 单 Y 滚，限制轴避免 wheel dx 被劫持
     .restrict_scroll_to_axis();
 
+    // selected_cell 存源行下标（与 DML 一致）：直接索引原始 result.rows
     let selected_info: Option<String> = panel.selected_cell().and_then(|(ri, ci)| {
         let col_name = columns.get(ci)?.clone();
-        let val = display_rows.get(ri)?.values.get(ci)?;
+        let val = result.rows.get(ri)?.values.get(ci)?;
         let preview = val.display_preview(40);
         Some(format!("· [{}, {}] = {}", ri + 1, col_name, preview))
     });

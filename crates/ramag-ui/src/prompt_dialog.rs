@@ -28,6 +28,10 @@ pub fn open_prompt(
     let description: SharedString = description.into();
     let confirm_label: SharedString = confirm_label.into();
     let input: Entity<InputState> = cx.new(|cx| InputState::new(window, cx).default_value(initial));
+    // 打开即聚焦输入框：重命名类操作无需先点一下即可编辑
+    input.update(cx, |state, cx| {
+        state.focus(window, cx);
+    });
     // FnOnce 包成可 Clone 的 Fn 句柄
     let on_confirm_cell = Rc::new(RefCell::new(Some(on_confirm)));
 
@@ -66,6 +70,22 @@ pub fn open_prompt(
         dialog
             .title(title.clone())
             .margin_top(px(180.0))
+            // 键盘 Enter：与 ok 按钮同逻辑（读输入、空则不关、非空执行）。
+            // 返回 false 时对话框不关闭——空输入下回车保持打开，等用户填内容
+            .on_ok({
+                let cell = on_confirm_cell.clone();
+                let input = input.clone();
+                move |_, window, app| {
+                    let value = input.read(app).value().trim().to_string();
+                    if value.is_empty() {
+                        return false;
+                    }
+                    if let Some(cb) = cell.borrow_mut().take() {
+                        cb(value, window, app);
+                    }
+                    true
+                }
+            })
             .content(move |content, _, cx| {
                 let muted_fg = cx.theme().muted_foreground;
                 content.child(

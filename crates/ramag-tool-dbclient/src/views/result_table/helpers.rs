@@ -13,7 +13,8 @@ pub(super) fn estimate_col_width(
     ci: usize,
     columns: &[String],
     column_types: &[String],
-    rows: &[Row],
+    // (源行下标, 行数据)：宽度估算只用行数据，忽略源下标
+    rows: &[(usize, Row)],
 ) -> gpui::Pixels {
     const MIN_W: f32 = 100.0;
     const MAX_W: f32 = 380.0;
@@ -31,7 +32,7 @@ pub(super) fn estimate_col_width(
 
     let mut max_chars = header_chars;
     // display_preview(60) 与渲染保持一致：被截断成 60 的内容自然不会撑爆 380 上限
-    for row in rows.iter().take(100) {
+    for (_, row) in rows.iter().take(100) {
         if let Some(v) = row.values.get(ci) {
             let chars = v.display_preview(60).chars().count();
             if chars > max_chars {
@@ -84,10 +85,10 @@ pub(super) fn render_col_resize_handle(ci: usize, cx: &mut Context<ResultPanel>)
         .into_any_element()
 }
 
-pub(super) fn detect_numeric_column(ci: usize, rows: &[Row]) -> bool {
+pub(super) fn detect_numeric_column(ci: usize, rows: &[(usize, Row)]) -> bool {
     let mut has_num = false;
     let mut all_num = true;
-    for row in rows.iter().take(20) {
+    for (_, row) in rows.iter().take(20) {
         if let Some(v) = row.values.get(ci) {
             match v {
                 Value::Null => {}
@@ -113,8 +114,9 @@ pub(super) fn open_cell_editor(
     let Some((col_name, initial_text, has_pk)) = panel.cell_info(ri, ci) else {
         return;
     };
-    // 视图作为只读：弹框正常打开（用于查看完整内容），但里头「确认」按钮被禁用
-    let is_view = panel.target_is_view();
+    // 视图 或 二进制单元格：弹框正常打开（查看 / 复制完整内容），但禁用提交——
+    // 二进制值显示为 hex 文本，若允许保存会把原始字节写成 hex 的 ASCII 文本损坏数据
+    let is_view = panel.target_is_view() || panel.cell_is_binary(ri, ci);
     let input = cx.new(|cx_inner| {
         InputState::new(window, cx_inner)
             .multi_line(true)

@@ -125,9 +125,11 @@ pub(super) fn render_row(
                         // - 顶层：行 _id + 列名
                         // - 下钻对象层：顶层 _id + 完整 dotted 路径
                         // - 其余（数组层 / 派生只读视图 / 无 _id）：只读查看
+                        // 只有可无损往返的类型才允许编辑；binary/regex/code/ts 等只读查看
                         if allow_edit
                             && panel.can_write()
                             && !panel.is_drilled()
+                            && super::edit::kind_is_editable(kind_for_click)
                             && let Some(id) = &id_for_click
                         {
                             panel.open_cell_edit_dialog(
@@ -143,6 +145,7 @@ pub(super) fn render_row(
                         if allow_edit
                             && panel.can_write()
                             && panel.drill_editable()
+                            && super::edit::kind_is_editable(kind_for_click)
                             && let Some(pid) = panel.drill_parent_id()
                         {
                             panel.open_cell_edit_dialog(

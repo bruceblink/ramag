@@ -65,34 +65,44 @@ pub(super) fn find_pk_idx(result: &QueryResult) -> Option<usize> {
         })
 }
 
-/// 构造按主键的 WHERE 子句：主键缺失时回退所有列等值（脆弱但安全）
+/// 单列等值条件：NULL 用 `IS NULL`（`= NULL` 恒不成立会漏匹配），其余用 `col = 字面量`。
+/// driver 决定标识符引号字符与字面量方言
+fn col_eq_condition(
+    col: &str,
+    val: &ramag_domain::entities::Value,
+    driver: ramag_domain::entities::DriverKind,
+) -> String {
+    use ramag_domain::entities::Value;
+    let ident = driver.quote_identifier(col);
+    if matches!(val, Value::Null) {
+        format!("{ident} IS NULL")
+    } else {
+        format!("{ident} = {}", val.to_sql_literal_for(driver))
+    }
+}
+
+/// 构造定位单行的 WHERE 子句：优先猜测主键列，缺失时回退所有列等值。
+/// NULL 用 IS NULL，浮点等参与全列等值虽脆弱但配合 LIMIT 1 / 影响行数校验兜底。
 ///
-/// `driver` 决定标识符引号字符（MySQL 反引号 / PG 双引号）
+/// `driver` 决定标识符引号字符（MySQL 反引号 / PG 双引号）与字面量方言
 pub(super) fn build_pk_where(
     result: &QueryResult,
     row: &ramag_domain::entities::Row,
     driver: ramag_domain::entities::DriverKind,
 ) -> String {
+    use ramag_domain::entities::Value;
     if let Some(idx) = find_pk_idx(result) {
         let col = result.columns.get(idx).cloned().unwrap_or_default();
-        let val = row
-            .values
-            .get(idx)
-            .map(|v| v.to_sql_literal())
-            .unwrap_or_else(|| "NULL".into());
-        format!("{} = {}", driver.quote_identifier(&col), val)
+        let val = row.values.get(idx).cloned().unwrap_or(Value::Null);
+        col_eq_condition(&col, &val, driver)
     } else {
         result
             .columns
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let v = row
-                    .values
-                    .get(i)
-                    .map(|v| v.to_sql_literal())
-                    .unwrap_or_else(|| "NULL".into());
-                format!("{} = {}", driver.quote_identifier(c), v)
+                let v = row.values.get(i).cloned().unwrap_or(Value::Null);
+                col_eq_condition(c, &v, driver)
             })
             .collect::<Vec<_>>()
             .join(" AND ")
@@ -131,9 +141,13 @@ pub(super) fn build_new_value(old: &Value, new_text: &str) -> Value {
     build_new_value_for_old(old, new_text)
 }
 
-/// SQL 字面量包装（apply_cell_update_async 用）：build → to_sql_literal
-pub(super) fn escape_new_value_for_old(old: &Value, new_text: &str) -> String {
-    build_new_value_for_old(old, new_text).to_sql_literal()
+/// SQL 字面量包装（apply_cell_update_async 用）：build → 按 driver 方言的 to_sql_literal
+pub(super) fn escape_new_value_for_old(
+    old: &Value,
+    new_text: &str,
+    driver: ramag_domain::entities::DriverKind,
+) -> String {
+    build_new_value_for_old(old, new_text).to_sql_literal_for(driver)
 }
 
 /// 单行 DML LIMIT 子句。MySQL ` LIMIT 1` 防误删；PG / Redis / MongoDB 不支持，返回空
@@ -318,13 +332,14 @@ mod tests {
     }
 
     #[test]
-    fn build_pk_where_fallback_all_columns() {
+    fn build_pk_where_fallback_all_columns_null_uses_is_null() {
         let r = make_result(&["name", "email"]);
         let row = Row {
             values: vec![Value::Text("a".into()), Value::Null],
         };
         let s = build_pk_where(&r, &row, DriverKind::Mysql);
-        assert_eq!(s, "`name` = 'a' AND `email` = NULL");
+        // NULL 列必须用 IS NULL：`= NULL` 恒不成立会导致 WHERE 永不匹配、行改不动删不掉
+        assert_eq!(s, "`name` = 'a' AND `email` IS NULL");
     }
 
     #[test]

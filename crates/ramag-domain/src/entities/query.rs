@@ -95,8 +95,18 @@ impl Value {
         }
     }
 
-    /// 转 SQL 字面量。Bytes 走 MySQL 风格 `0xHEX`，DateTime 走 `'YYYY-MM-DD HH:MM:SS'`
+    /// 转 SQL 字面量（MySQL 方言，向后兼容）。新代码优先用 [`Value::to_sql_literal_for`]
     pub fn to_sql_literal(&self) -> String {
+        self.to_sql_literal_for(super::connection::DriverKind::Mysql)
+    }
+
+    /// 转 SQL 字面量，按 driver 方言处理字符串转义 / 字节 / 时间。
+    /// - 字符串转义：MySQL 双写反斜杠；PG 默认 standard_conforming_strings，反斜杠是字面量不双写
+    /// - Bytes：MySQL `0xHEX` / PG `'\xHEX'`（bytea 输入）
+    /// - DateTime：亚秒精度保留（`%.6f`），避免高精度时间戳无法命中
+    pub fn to_sql_literal_for(&self, driver: super::connection::DriverKind) -> String {
+        use super::connection::DriverKind;
+        let is_pg = matches!(driver, DriverKind::Postgres);
         match self {
             Value::Null => "NULL".to_string(),
             Value::Bool(b) => {
@@ -108,19 +118,24 @@ impl Value {
             }
             Value::Int(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::Text(s) => format!("'{}'", escape_sql_string(s)),
+            Value::Text(s) => format!("'{}'", escape_sql_string(s, is_pg)),
             Value::Bytes(b) => {
-                let mut hex = String::with_capacity(2 + b.len() * 2);
-                hex.push_str("0x");
+                let mut hex = String::with_capacity(4 + b.len() * 2);
                 for byte in b {
-                    hex.push_str(&format!("{:02x}", byte));
+                    hex.push_str(&format!("{byte:02x}"));
                 }
-                hex
+                if is_pg {
+                    // PG bytea 输入字面量：'\xDEADBEEF'
+                    format!("'\\x{hex}'")
+                } else {
+                    format!("0x{hex}")
+                }
             }
             Value::DateTime(dt) => {
-                format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S"))
+                // 保留亚秒（去尾零由 %.f 语义处理），命中高精度时间列
+                format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S%.6f"))
             }
-            Value::Json(v) => format!("'{}'", escape_sql_string(&v.to_string())),
+            Value::Json(v) => format!("'{}'", escape_sql_string(&v.to_string(), is_pg)),
         }
     }
 
@@ -153,12 +168,14 @@ impl Value {
     }
 }
 
-/// SQL 字符串字面量转义：反斜杠 + 单引号
-fn escape_sql_string(s: &str) -> String {
+/// SQL 字符串字面量转义。单引号一律双写（两方言通用）；
+/// 反斜杠仅 MySQL 双写——PG 默认 standard_conforming_strings=on 时反斜杠是字面量，
+/// 双写会把 `a\b` 污染成 `a\\b`（写歪数据 / WHERE 匹配不中）
+fn escape_sql_string(s: &str, is_pg: bool) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for ch in s.chars() {
         match ch {
-            '\\' => out.push_str("\\\\"),
+            '\\' if !is_pg => out.push_str("\\\\"),
             '\'' => out.push_str("''"),
             _ => out.push(ch),
         }
@@ -254,9 +271,30 @@ mod tests {
         let dt = chrono::Utc
             .with_ymd_and_hms(2026, 4, 8, 17, 31, 15)
             .unwrap();
+        // 带亚秒精度（整秒时为 .000000）：高精度时间列才能命中
         assert_eq!(
             Value::DateTime(dt).to_sql_literal(),
-            "'2026-04-08 17:31:15'"
+            "'2026-04-08 17:31:15.000000'"
+        );
+    }
+
+    #[test]
+    fn sql_literal_pg_dialect() {
+        use super::super::connection::DriverKind;
+        // PG：反斜杠不双写（standard_conforming_strings）
+        assert_eq!(
+            Value::Text("a\\b".to_string()).to_sql_literal_for(DriverKind::Postgres),
+            "'a\\b'"
+        );
+        // PG bytea：'\xHEX'
+        assert_eq!(
+            Value::Bytes(vec![0xde, 0xad]).to_sql_literal_for(DriverKind::Postgres),
+            "'\\xdead'"
+        );
+        // 单引号两方言都双写
+        assert_eq!(
+            Value::Text("O'x".to_string()).to_sql_literal_for(DriverKind::Postgres),
+            "'O''x'"
         );
     }
 

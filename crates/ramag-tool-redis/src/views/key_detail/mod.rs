@@ -172,6 +172,11 @@ impl KeyDetailPanel {
             )
             .await;
             let _ = this.update(cx, |this, cx| {
+                // 请求身份校验：用户可能已点开别的 key / 切了 db，
+                // 慢的旧回包不得覆盖新详情（大 value 场景极易触发）
+                if this.key.as_deref() != Some(key.as_str()) || this.db != db {
+                    return;
+                }
                 this.loading = false;
                 match value_res {
                     Ok(v) => this.value = Some(v),
@@ -273,6 +278,10 @@ impl KeyDetailPanel {
             let argv = vec!["MEMORY".into(), "USAGE".into(), key.clone()];
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| {
+                // 估算期间已切 key / 切 db：丢弃旧回包，避免把 A 的大小标在 B 上
+                if this.key.as_deref() != Some(key.as_str()) || this.db != db {
+                    return;
+                }
                 this.estimating_size = false;
                 match result {
                     Ok(RedisValue::Int(n)) if n >= 0 => {

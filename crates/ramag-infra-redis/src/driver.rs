@@ -297,6 +297,10 @@ fn parse_redis_version(info: &str) -> String {
     "unknown".into()
 }
 
+/// 集合类型单次加载成员上限：防百万成员 key 一次性拉全量撑爆内存 / 卡死服务端。
+/// 超过时只取前 N，UI 侧据 RedisValue 的成员数与实际长度差异提示「仅显示前 N」。
+const MAX_COLLECTION_MEMBERS: isize = 10_000;
+
 async fn fetch_string(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
     let v: RV = redis::cmd("GET")
         .arg(key)
@@ -307,10 +311,11 @@ async fn fetch_string(mgr: &mut ConnectionManager, key: &str) -> Result<RedisVal
 }
 
 async fn fetch_list(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
+    // LRANGE 0 N-1 只取前 N，避免 `0 -1` 全量拉取
     let v: RV = redis::cmd("LRANGE")
         .arg(key)
         .arg(0)
-        .arg(-1)
+        .arg(MAX_COLLECTION_MEMBERS - 1)
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
@@ -327,27 +332,34 @@ async fn fetch_list(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue
 }
 
 async fn fetch_hash(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
-    let v: RV = redis::cmd("HGETALL")
+    // HSCAN 游标取前 N 对，替代可能拉全量的 HGETALL
+    let v: RV = redis::cmd("HSCAN")
         .arg(key)
+        .arg(0)
+        .arg("COUNT")
+        .arg(MAX_COLLECTION_MEMBERS)
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
-    decode_hash_pairs(v)
+    decode_hash_pairs(scan_payload(v, "HSCAN")?)
 }
 
 async fn fetch_set(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
-    let v: RV = redis::cmd("SMEMBERS")
+    // SSCAN 游标取前 N，替代可能拉全量的 SMEMBERS
+    let v: RV = redis::cmd("SSCAN")
         .arg(key)
+        .arg(0)
+        .arg("COUNT")
+        .arg(MAX_COLLECTION_MEMBERS)
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
-    let elems = match v {
+    let elems = match scan_payload(v, "SSCAN")? {
         RV::Array(a) => a.into_iter().map(decode_value).collect(),
-        RV::Set(a) => a.into_iter().map(decode_value).collect(),
         RV::Nil => return Ok(RedisValue::Nil),
         other => {
             return Err(DomainError::QueryFailed(format!(
-                "SMEMBERS 应答非数组：{other:?}"
+                "SSCAN 应答非数组：{other:?}"
             )));
         }
     };
@@ -355,10 +367,11 @@ async fn fetch_set(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue>
 }
 
 async fn fetch_zset(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
+    // ZRANGE 0 N-1 只取前 N（按 score 升序），避免 `0 -1` 全量拉取
     let v: RV = redis::cmd("ZRANGE")
         .arg(key)
         .arg(0)
-        .arg(-1)
+        .arg(MAX_COLLECTION_MEMBERS - 1)
         .arg("WITHSCORES")
         .query_async(mgr)
         .await
@@ -367,14 +380,28 @@ async fn fetch_zset(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue
 }
 
 async fn fetch_stream(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
+    // XRANGE - + COUNT N 只取前 N 条
     let v: RV = redis::cmd("XRANGE")
         .arg(key)
         .arg("-")
         .arg("+")
+        .arg("COUNT")
+        .arg(MAX_COLLECTION_MEMBERS)
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
     decode_stream_entries(v)
+}
+
+/// SCAN 系列（HSCAN/SSCAN）应答 `Array([cursor, Array([...])])`，取出成员数组部分
+fn scan_payload(v: RV, cmd: &str) -> Result<RV> {
+    match v {
+        RV::Array(mut a) if a.len() == 2 => Ok(a.pop().unwrap_or(RV::Nil)),
+        RV::Nil => Ok(RV::Nil),
+        other => Err(DomainError::QueryFailed(format!(
+            "{cmd} 应答格式异常：{other:?}"
+        ))),
+    }
 }
 
 /// SCAN 应答 `Array([cursor_str, Array([key, ...])])`

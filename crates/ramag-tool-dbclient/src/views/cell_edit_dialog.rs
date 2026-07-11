@@ -63,7 +63,7 @@ pub(super) fn open(
             .label("确认")
             .disabled(is_view)
             .tooltip(if is_view {
-                "视图不可写入（来源是只读视图）"
+                "该单元格只读（来源是视图，或为二进制内容）"
             } else {
                 "提交 UPDATE 到数据库"
             })
@@ -91,14 +91,14 @@ pub(super) fn open(
                 let muted_fg = theme.muted_foreground;
                 let warning = theme.warning;
                 let hint: gpui::AnyElement = if is_view {
-                    // 视图来源：弹框是只读查看模式，明确告知用户不能提交
+                    // 只读来源（视图 / 二进制值）：弹框仅供查看与复制，不能提交
                     div()
                         .text_xs()
                         .text_color(warning)
                         .pb(px(6.0))
                         .child(
-                            "⚠ 来源是只读视图，可查看 / 复制单元格内容，\
-                             但不能提交 UPDATE",
+                            "⚠ 该单元格只读（来源是视图，或为二进制内容），\
+                             可查看 / 复制，但不能提交 UPDATE",
                         )
                         .into_any_element()
                 } else if has_pk {

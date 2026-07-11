@@ -147,6 +147,17 @@ impl ResultPanel {
 
 /// 按列原始 BSON 类型把单元格编辑文本还原为写入值：
 /// 特殊类型（oid/date/decimal）包回 Extended JSON，避免 $set 把它降级成字符串 / 浮点；
+/// 该 BSON 类型的单元格是否可安全编辑。只放行能从显示文本无损还原的类型：
+/// binary/code/regex/ts/symbol/dbptr/minkey/maxkey 等显示的是摘要串，编辑会把真实
+/// BSON 覆盖成摘要（静默毁数据）；date 显示形态不定（canonical 为毫秒数字），
+/// 回写易被 driver 拒绝，一并设为只读。
+pub(super) fn kind_is_editable(kind: &str) -> bool {
+    matches!(
+        kind,
+        "text" | "int" | "i" | "double" | "bool" | "null" | "oid" | "decimal"
+    )
+}
+
 /// 其余按 JSON 解析（123→数字 / true→布尔 / 其它→字符串），保留「可改类型」的灵活性。
 /// 注：date 文本需为 ISO8601（结果集 relaxed Extended JSON 形态即 ISO），否则 driver 转换报错
 fn value_for_kind(kind: &str, raw: String) -> Value {

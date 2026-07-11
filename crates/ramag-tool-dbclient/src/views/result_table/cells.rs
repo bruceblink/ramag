@@ -107,7 +107,9 @@ pub(super) fn render_data_row(
     idx: usize,
     cx: &mut Context<ResultPanel>,
 ) -> AnyElement {
-    let row = &frame.display_rows[idx];
+    // display_rows[idx] = (源行下标, 行数据)：渲染用行数据，选中/DML 存源下标
+    let (source_idx, row) = &frame.display_rows[idx];
+    let source_idx = *source_idx;
     let bg = if idx.is_multiple_of(2) {
         frame.muted_bg.opacity(0.0)
     } else {
@@ -125,10 +127,11 @@ pub(super) fn render_data_row(
             let val = row.values.get(ci).cloned().unwrap_or(Value::Null);
             let display = val.display_preview(60);
             let is_null = matches!(val, Value::Null);
-            let is_selected = selected == Some((idx, ci));
+            // 选中态按源下标比对（selected_cell 存的是源行下标）
+            let is_selected = selected == Some((source_idx, ci));
             let is_right = *frame.right_align.get(ci).unwrap_or(&false);
             let cw = frame.col_widths[ci];
-            let row_idx = idx;
+            let row_idx = source_idx;
             let mono_font = frame.mono_font.clone();
             let fg = frame.fg;
             let muted_fg = frame.muted_fg;
@@ -194,11 +197,11 @@ pub(super) fn render_data_row(
         .child(SharedString::from((idx + 1).to_string()))
         .into_any_element();
 
-    // 多选 checkbox
+    // 多选 checkbox：选中集按源下标存（供 DML 定位真实行）
     let row_checkbox_cell = {
         let panel = panel_entity.clone();
-        let row_idx = idx;
-        let is_row_selected = selected_rows_set.contains(&idx);
+        let row_idx = source_idx;
+        let is_row_selected = selected_rows_set.contains(&source_idx);
         div()
             .w(frame.checkbox_col_width)
             .h_full()

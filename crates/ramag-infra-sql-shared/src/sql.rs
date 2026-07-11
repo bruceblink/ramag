@@ -159,32 +159,40 @@ pub fn first_keyword(stmt: &str) -> Option<String> {
     (i > start).then(|| stmt[start..i].to_ascii_uppercase())
 }
 
-/// 单条语句是否为写操作（黑名单）：生产模式只读保护用。
-/// 首关键字命中写动词即写；CTE（WITH）/ EXPLAIN 进一步扫描语句体内的写动词
-/// （覆盖 PG `WITH ... DELETE` 与 `EXPLAIN ANALYZE INSERT` 两个陷阱）
+/// 单条语句是否为写操作：生产模式只读保护用。**默认拒绝**语义——
+/// 只有能明确认定为只读 / 无害的语句才返回 false，其余一律当写拦截。
+/// 黑名单式（命中写动词才拦）会被 MySQL 可执行注释 `/*! DELETE */`、
+/// PG 匿名代码块 `DO $$ ... $$`、`SELECT ... INTO/OUTFILE` 等绕过。
 pub fn is_write_statement(stmt: &str) -> bool {
-    // 首词即写动词。COPY/LOCK/VACUUM 等保守归写（生产只读不应执行）
-    const WRITE_LEADING: &[&str] = &[
-        "INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE", "UPSERT", "TRUNCATE", "DROP", "CREATE",
-        "ALTER", "RENAME", "GRANT", "REVOKE", "CALL", "EXEC", "EXECUTE", "LOAD", "COPY", "IMPORT",
-        "REINDEX", "VACUUM", "CLUSTER", "REFRESH", "COMMENT", "LOCK",
+    // 只读 / 无害的首关键字白名单：这些开头才可能被判为非写。
+    // SET/USE/BEGIN 等会话级语句不改数据，生产只读连接应放行
+    const SAFE_LEADING: &[&str] = &[
+        "SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "WITH", "VALUES", "TABLE", "SET", "USE",
+        "BEGIN", "START", "COMMIT", "ROLLBACK", "PRAGMA", "ANALYZE",
     ];
-    // CTE / EXPLAIN 语句体内若含这些动词则视为写
+    // 即便首词安全，语句体内出现这些写动词也视为写（覆盖 WITH ... DELETE /
+    // EXPLAIN ANALYZE INSERT / SELECT ... INTO 建表 / SELECT ... INTO OUTFILE）
     const WRITE_INNER: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "CREATE", "DROP", "ALTER", "TRUNCATE",
-        "CALL",
+        "GRANT", "REVOKE", "OUTFILE", "DUMPFILE",
     ];
+    let upper = stmt.to_ascii_uppercase();
     let Some(kw) = first_keyword(stmt) else {
-        return false;
+        // 无法提取首关键字（纯空白 / 纯注释 / `/*! ... */` 可执行注释 / 括号开头）：
+        // 空白与纯注释不含写动词→放行；`/*! DELETE */` 含写动词→拦截
+        return WRITE_INNER.iter().any(|w| contains_word(&upper, w));
     };
-    if WRITE_LEADING.contains(&kw.as_str()) {
+    if !SAFE_LEADING.contains(&kw.as_str()) {
+        // 首词不在安全白名单（所有写动词、CALL、DO、COPY、LOCK、VACUUM、LOAD 等）：当写
         return true;
     }
-    if kw == "WITH" || kw == "EXPLAIN" {
-        let upper = stmt.to_ascii_uppercase();
-        return WRITE_INNER.iter().any(|w| contains_word(&upper, w));
+    // 首词安全，再扫语句体：含写动词则升级为写（INTO 单列判定，避免误伤 SELECT INTO @var）
+    if WRITE_INNER.iter().any(|w| contains_word(&upper, w)) {
+        return true;
     }
-    false
+    // `... INTO tbl`（建表）/ `... INTO OUTFILE` 已由 OUTFILE 覆盖；
+    // 裸 SELECT INTO 建表（PG）：INTO 后跟标识符而非 @var / : 变量时视为写
+    contains_word(&upper, "INTO") && !upper.contains("INTO @") && !upper.contains("INTO :")
 }
 
 /// 仅对未带 LIMIT 的 SELECT/WITH 注入 ` LIMIT n`；其他语句返回 None
@@ -404,5 +412,27 @@ mod tests {
         assert!(!is_write_statement("BEGIN"));
         assert!(!is_write_statement(""));
         assert!(!is_write_statement("   "));
+    }
+
+    #[test]
+    fn write_statement_blocks_known_bypasses() {
+        // MySQL 可执行注释：/*! ... */ 内的 DELETE 会被 MySQL 执行，必须拦
+        assert!(is_write_statement("/*! DELETE FROM t */"));
+        assert!(is_write_statement("/*!40000 UPDATE t SET x=1 */"));
+        // PG 匿名代码块：DO 首词不在白名单，当写
+        assert!(is_write_statement("DO $$ BEGIN DELETE FROM t; END $$"));
+        // SELECT ... INTO 建表 / OUTFILE 落盘：首词 SELECT 但含 INTO/OUTFILE
+        assert!(is_write_statement("SELECT * INTO newtable FROM t"));
+        assert!(is_write_statement(
+            "SELECT * FROM t INTO OUTFILE '/tmp/x.csv'"
+        ));
+        // 未知首词一律当写（COPY/LOAD/纯注释含写动词）
+        assert!(is_write_statement("COPY t FROM '/tmp/x.csv'"));
+        assert!(is_write_statement("LOAD DATA INFILE '/x' INTO TABLE t"));
+        // 正常只读不误伤
+        assert!(!is_write_statement(
+            "SELECT * FROM t WHERE name = 'no limit'"
+        ));
+        assert!(!is_write_statement("SELECT id INTO @v FROM t")); // MySQL 变量赋值，只读
     }
 }

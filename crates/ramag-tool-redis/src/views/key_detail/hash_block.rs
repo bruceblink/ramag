@@ -70,7 +70,9 @@ fn hash_row(
 ) -> impl IntoElement + use<> {
     let field_name = field.to_string();
     let value_preview = value.display_preview(256);
-    // 编辑用的"原始文本"取最完整可读形态；二进制 Bytes 走 hex 预览
+    // 仅文本值可编辑：二进制值显示的是 `[N bytes]` 摘要，若允许编辑会把真实二进制
+    // 覆盖成摘要串（静默毁数据），故非文本值只读（双击不打开编辑窗）
+    let editable = matches!(value, RedisValue::Text(_));
     let value_for_edit = match value {
         RedisValue::Text(s) => s.clone(),
         other => other.display_preview(8192),
@@ -93,10 +95,10 @@ fn hash_row(
         .border_color(border)
         .gap(px(8.0))
         .items_center()
-        .cursor_pointer()
-        // 双击该行打开编辑窗口
+        .when(editable, |row| row.cursor_pointer())
+        // 双击该行打开编辑窗口（仅文本值可编辑，二进制只读）
         .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
-            if e.click_count() >= 2 {
+            if editable && e.click_count() >= 2 {
                 cx.emit(KeyDetailEvent::RequestEditHashField(
                     key_for_edit.clone(),
                     field_for_edit.clone(),
