@@ -90,9 +90,8 @@ pub(super) fn connection_row(
         }
     };
 
-    let version_text = version
-        .map(|v| format!("{kind_label} {v}"))
-        .unwrap_or_default();
+    // 类型名已由独立类型列展示，版本列只放纯版本号，避免重复
+    let version_text = version.unwrap_or_default();
 
     // 固定宽度的次要信息列：内容为空也占位，保证各行整列对齐
     let secondary_col = move |w: f32, text: String| {
@@ -124,23 +123,16 @@ pub(super) fn connection_row(
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             this.handle_click(conn_for_open.clone(), cx);
         }))
-        // 类型 badge（固定宽度，一类一色）：品牌彩色 logo + 类型名
+        // 行首只放品牌彩色 logo（固定窄槽）：各行图标与名称起点整列对齐
         .child(
-            div().flex_none().w(px(96.0)).flex().justify_center().child(
-                h_flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .px(px(8.0))
-                    .py(px(2.0))
-                    .rounded(px(4.0))
-                    .text_xs()
-                    .text_color(badge_fg)
-                    .bg(badge_bg)
-                    .when_some(brand_icon, |b, icon| {
-                        b.child(img(icon).size(px(14.0)).flex_none())
-                    })
-                    .child(kind_label),
-            ),
+            div()
+                .flex_none()
+                .w(px(24.0))
+                .flex()
+                .justify_center()
+                .when_some(brand_icon, |slot, icon| {
+                    slot.child(img(icon).size(px(18.0)).flex_none())
+                }),
         )
         // 名称（占主空间）
         .child(
@@ -153,6 +145,19 @@ pub(super) fn connection_row(
                 .overflow_hidden()
                 .text_ellipsis()
                 .child(primary_label),
+        )
+        // 类型胶囊移到名称之后的固定列（一类一色，保留扫读区分度）
+        .child(
+            div().flex_none().w(px(84.0)).flex().justify_center().child(
+                div()
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .text_xs()
+                    .text_color(badge_fg)
+                    .bg(badge_bg)
+                    .child(kind_label),
+            ),
         )
         // 只读徽章槽（固定宽，生产连接显示红色「只读」，否则空白占位 → 整列对齐）
         .child(div().flex_none().w(px(44.0)).flex().justify_center().when(
