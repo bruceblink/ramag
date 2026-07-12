@@ -10,6 +10,16 @@ use super::super::vcs_view::VcsView;
 impl VcsView {
     /// fetch=`--all --prune`；push 无 upstream 自动 -u；pull 无 upstream 引导先 push
     pub(in crate::views) fn run_remote_op(&mut self, op: RemoteOp, cx: &mut Context<Self>) {
+        self.run_remote_op_to(op, None, cx);
+    }
+
+    /// `selected_remote` 仅用于首次 Push 的显式选择；已有 upstream 时仍严格跟随 upstream。
+    pub(in crate::views) fn run_remote_op_to(
+        &mut self,
+        op: RemoteOp,
+        selected_remote: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if !matches!(op, RemoteOp::Fetch)
             && self
                 .status
@@ -60,13 +70,21 @@ impl VcsView {
         {
             Some((r, b)) => (r.to_string(), b.to_string()),
             None if matches!(op, RemoteOp::Push | RemoteOp::PushForce) => {
-                let remote = match default_remote_name(&self.remotes) {
-                    Ok(remote) => remote,
-                    Err(message) => {
-                        self.error = Some(message);
+                let remote = match selected_remote {
+                    Some(remote) if self.remotes.iter().any(|item| item.name == remote) => remote,
+                    Some(remote) => {
+                        self.error = Some(format!("远程仓库「{remote}」已不存在，请重新选择"));
                         cx.notify();
                         return;
                     }
+                    None => match default_remote_name(&self.remotes) {
+                        Ok(remote) => remote,
+                        Err(message) => {
+                            self.error = Some(message);
+                            cx.notify();
+                            return;
+                        }
+                    },
                 };
                 (remote, local_branch.clone())
             }

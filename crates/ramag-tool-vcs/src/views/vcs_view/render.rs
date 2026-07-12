@@ -159,11 +159,13 @@ impl Render for VcsView {
                 }),
             )
             // cmd-shift-k / cmd-t：push / pull 当前分支
-            .on_action(cx.listener(|this, _: &crate::actions::PushNow, _, cx| {
-                if this.repo.is_some() && !this.busy {
-                    this.run_remote_op(super::super::helpers::RemoteOp::Push, cx);
-                }
-            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::PushNow, window, cx| {
+                    if this.repo.is_some() && !this.busy {
+                        this.confirm_remote_op(super::super::helpers::RemoteOp::Push, window, cx);
+                    }
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &crate::actions::PullNow, window, cx| {
                     if this.repo.is_some() && !this.busy {

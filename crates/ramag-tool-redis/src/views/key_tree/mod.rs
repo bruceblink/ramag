@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use gpui::{
     AppContext as _, ClickEvent, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
-    Styled, UniformListScrollHandle, Window, div, px, uniform_list,
+    Styled, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _,
@@ -28,10 +28,10 @@ use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
 use ramag_ui::platform::primary_shortcut;
 
-use tree::{TreeNode, VisibleRow, build_tree, collect_namespace_paths, has_match_descendant};
+use tree::{TreeNode, VisibleRow, build_tree};
 
-/// 单次最多加载的 key 数（防爆内存）
-const MAX_KEYS: usize = 5_000;
+/// 每次追加加载的 key 数（防止首次进入大库即占用过多内存）
+const KEYS_PAGE_SIZE: usize = 5_000;
 
 /// 命名空间分隔符（业界事实标准）
 const NAMESPACE_SEP: char = ':';
@@ -84,14 +84,21 @@ pub struct KeyTreePanel {
     query: String,
     /// 服务端 MATCH 模式（Enter 下推触发重扫）；None = 全库扫描
     match_pattern: Option<String>,
+    /// 搜索输入防抖代际与等待态；停顿后自动下推 MATCH，Enter 可立即触发。
+    search_generation: u64,
+    search_pending: bool,
     /// 扫描代际：换代（停止 / 重扫 / 换 pattern / 切库）后在途批次回包一律作废
     scan_generation: u64,
     /// 上次重建 Trie 时的 key 数（分批加载期间节流重建，避免每批 O(N) 重建）
     last_rebuilt_count: usize,
     /// 当前选中的 key（高亮）
     selected: Option<String>,
-    /// 是否到达 MAX_KEYS 截断
+    /// 是否在本次分页目标处暂停，仍可继续扫描。
     truncated: bool,
+    /// 下一次应继续使用的 SCAN cursor；None 表示已经完整扫完。
+    resume_cursor: Option<u64>,
+    /// 当前这轮扫描允许累计到的 key 数，点“继续加载”后按页增加。
+    scan_target: usize,
     /// 虚拟列表滚动句柄：树扁平化后用 uniform_list 行级虚拟化，
     /// 支持 5w+ key 仍流畅
     uniform_scroll: UniformListScrollHandle,
@@ -104,7 +111,8 @@ impl EventEmitter<KeyTreeEvent> for KeyTreePanel {}
 
 impl KeyTreePanel {
     pub fn new(service: Arc<RedisService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("过滤 key"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("全库搜索 key（支持 * ? [）"));
 
         let subs = vec![cx.subscribe_in(
             &search,
@@ -112,15 +120,14 @@ impl KeyTreePanel {
             |this: &mut Self, _, e: &InputEvent, _, cx| match e {
                 InputEvent::Change => {
                     this.query = this.search.read(cx).value().trim().to_lowercase();
-                    // 清空搜索框时撤掉服务端 MATCH 重扫全库，避免状态栏计数与空搜索框互相矛盾
-                    if this.query.is_empty() && this.match_pattern.is_some() {
-                        this.match_pattern = None;
-                        this.refresh(cx);
-                    }
-                    cx.notify();
+                    this.schedule_server_match(cx);
                 }
-                // Enter：把关键字下推为服务端 MATCH 重扫（大库不再只能对已加载子集过滤）
-                InputEvent::PressEnter { .. } => this.apply_server_match(cx),
+                // Enter 跳过去抖立即全库搜索。
+                InputEvent::PressEnter { .. } => {
+                    this.search_generation = this.search_generation.wrapping_add(1);
+                    this.search_pending = false;
+                    this.apply_server_match(cx);
+                }
                 _ => {}
             },
         )];
@@ -138,10 +145,14 @@ impl KeyTreePanel {
             search,
             query: String::new(),
             match_pattern: None,
+            search_generation: 0,
+            search_pending: false,
             scan_generation: 0,
             last_rebuilt_count: 0,
             selected: None,
             truncated: false,
+            resume_cursor: None,
+            scan_target: KEYS_PAGE_SIZE,
             uniform_scroll: UniformListScrollHandle::new(),
             pending_notification: None,
             _subscriptions: subs,
@@ -164,6 +175,9 @@ impl KeyTreePanel {
         self.tree.clear();
         self.expanded.clear();
         self.truncated = false;
+        self.resume_cursor = None;
+        self.scan_target = KEYS_PAGE_SIZE;
+        self.search_pending = false;
         // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，这里清 loading
         // 让新目标的 refresh 不被防重入拒绝
         self.loading = false;
@@ -174,7 +188,7 @@ impl KeyTreePanel {
         }
     }
 
-    /// 连接健康快照 (loading, has_error)：供上层 Tab 圆点显示真实连接状态
+    /// key 元数据加载快照 (loading, has_error)，不代表实时连接健康。
     pub fn health(&self) -> (bool, bool) {
         (self.loading, self.error.is_some())
     }
@@ -219,74 +233,6 @@ impl KeyTreePanel {
         }
         cx.notify();
     }
-
-    fn matches_query(&self, key: &str) -> bool {
-        if self.query.is_empty() {
-            return true;
-        }
-        key.to_lowercase().contains(&self.query)
-    }
-
-    /// 把树扁平化为可见行列表（owned 结构，避免与 cx.listener 借用冲突）
-    fn flatten_visible(&self) -> Vec<VisibleRow> {
-        let mut out = Vec::new();
-        let in_search = !self.query.is_empty();
-        for n in &self.tree {
-            self.collect_visible(n, 0, in_search, &mut out);
-        }
-        out
-    }
-
-    fn collect_visible(
-        &self,
-        node: &TreeNode,
-        depth: usize,
-        in_search: bool,
-        out: &mut Vec<VisibleRow>,
-    ) {
-        let leaf_match = node.is_key && self.matches_query(&node.full_path);
-        let descendant_match = node.is_namespace() && has_match_descendant(node, &self.query);
-
-        if in_search && !leaf_match && !descendant_match {
-            return;
-        }
-
-        let is_namespace = node.is_namespace();
-        let is_expanded = if in_search {
-            descendant_match
-        } else {
-            self.expanded.contains(&node.full_path)
-        };
-
-        out.push(VisibleRow {
-            depth,
-            label: node.label.clone(),
-            full_path: node.full_path.clone(),
-            is_key: node.is_key,
-            leaf_type: node.leaf_type,
-            is_namespace,
-            is_expanded,
-        });
-
-        if is_namespace && is_expanded {
-            for c in &node.children {
-                self.collect_visible(c, depth + 1, in_search, out);
-            }
-        }
-    }
-
-    fn expand_all(&mut self, cx: &mut Context<Self>) {
-        self.expanded.clear();
-        for n in &self.tree {
-            collect_namespace_paths(n, &mut self.expanded);
-        }
-        cx.notify();
-    }
-
-    fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.expanded.clear();
-        cx.notify();
-    }
 }
 
 impl Render for KeyTreePanel {
@@ -318,6 +264,8 @@ impl Render for KeyTreePanel {
             .unwrap_or_default();
         let count_label = if self.config.is_none() {
             "尚未连接".to_string()
+        } else if self.search_pending {
+            format!("正在准备全库搜索“{}”…", self.query)
         } else if self.loading {
             format!("{pattern_note}已加载 {total} 个 key…（扫描中，可点⏹停止）")
         } else if let Some(ref e) = self.error {
@@ -326,7 +274,7 @@ impl Render for KeyTreePanel {
             format!(
                 "{pattern_note}共 {total} 个 key{}",
                 if self.truncated {
-                    "（已达上限截断）"
+                    "（已暂停，可继续加载）"
                 } else {
                     ""
                 }
@@ -510,7 +458,17 @@ impl Render for KeyTreePanel {
             !self.loading && total == 0 && self.config.is_some() && self.error.is_none();
 
         let body: gpui::AnyElement = if row_count == 0 {
-            if empty_hint {
+            if self.search_pending {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .py(px(28.0))
+                    .text_center()
+                    .text_sm()
+                    .text_color(muted_fg)
+                    .child("正在全库搜索…")
+                    .into_any_element()
+            } else if empty_hint {
                 // 空态分场景：服务端 MATCH 零命中 ≠ 空库；本地过滤零命中另有「匹配 0/N」计数
                 let hint = match &self.match_pattern {
                     Some(p) => format!("没有匹配 MATCH {p} 的 key（服务端已全库扫描）"),
@@ -524,6 +482,16 @@ impl Render for KeyTreePanel {
                     .text_sm()
                     .text_color(muted_fg)
                     .child(hint)
+                    .into_any_element()
+            } else if !self.loading && in_search && self.error.is_none() {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .py(px(28.0))
+                    .text_center()
+                    .text_sm()
+                    .text_color(muted_fg)
+                    .child(format!("没有匹配“{}”的 key", self.query))
                     .into_any_element()
             } else {
                 div().flex_1().min_h_0().into_any_element()
@@ -559,16 +527,30 @@ impl Render for KeyTreePanel {
             .into_any_element()
         };
 
-        let status_bar = div()
+        let can_load_more = self.truncated && self.resume_cursor.is_some() && !self.loading;
+        let status_bar = h_flex()
             .flex_none()
             .w_full()
+            .items_center()
+            .justify_between()
             .px(px(10.0))
             .py(px(4.0))
             .border_t_1()
             .border_color(border)
             .text_xs()
             .text_color(muted_fg)
-            .child(count_label);
+            .child(count_label)
+            .when(can_load_more, |bar| {
+                bar.child(
+                    Button::new("redis-key-load-more")
+                        .ghost()
+                        .xsmall()
+                        .label(format!("继续加载 {KEYS_PAGE_SIZE}"))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.load_more(cx);
+                        })),
+                )
+            });
 
         v_flex()
             .size_full()

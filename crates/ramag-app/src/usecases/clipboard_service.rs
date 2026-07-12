@@ -2,6 +2,9 @@
 //! 采集判定（去重 / 黑名单 / 大小 / 分类）抽成纯函数 `decide_capture` 便于测试，
 //! `capture_tick` 仅做 driver/storage 编排
 
+mod media_ops;
+mod pending_media;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
@@ -16,6 +19,7 @@ use ramag_domain::traits::{ClipboardDriver, Storage};
 use tracing::{debug, warn};
 
 use crate::usecases::clip_thumb::{THUMB_MAX_W, make_thumbnail};
+use pending_media::PendingMediaDeletes;
 
 /// 设置持久化 key（prefs 表，JSON）
 const SETTINGS_KEY: &str = "clipboard_settings";
@@ -58,6 +62,8 @@ pub struct ClipboardService {
     hotkey_state: Arc<AtomicU8>,
     /// 设置降级标记：读取失败 / JSON 损坏时置位（采集 fail-closed），设置面板显示告警
     settings_degraded: Arc<AtomicBool>,
+    /// 图片删除的待清理媒体；存在即仍在撤销窗口内。
+    pending_media_deletes: Arc<PendingMediaDeletes>,
 }
 
 /// 全局热键注册状态（AtomicU8 编码）
@@ -101,6 +107,7 @@ impl ClipboardService {
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
             hotkey_state: Arc::new(AtomicU8::new(HotkeyState::Disabled.as_u8())),
             settings_degraded: Arc::new(AtomicBool::new(false)),
+            pending_media_deletes: Arc::new(PendingMediaDeletes::default()),
         }
     }
 
@@ -430,57 +437,6 @@ impl ClipboardService {
         self.driver.app_icon_png(bundle_id)
     }
 
-    /// 读原图明文 PNG（读密文 → 解密）；非图片或无图返回 None
-    pub async fn load_image(&self, item: &ClipItem) -> Result<Option<Vec<u8>>> {
-        match &item.image_path {
-            Some(p) => {
-                let enc = self.driver.read_media(p)?;
-                Ok(Some(self.storage.unseal(&enc).await?))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// 读缩略图明文 PNG（列表展示用）；无缩略图回退原图
-    pub async fn load_thumb(&self, item: &ClipItem) -> Result<Option<Vec<u8>>> {
-        match &item.thumb_path {
-            Some(p) => {
-                let enc = self.driver.read_media(p)?;
-                Ok(Some(self.storage.unseal(&enc).await?))
-            }
-            None => self.load_image(item).await,
-        }
-    }
-
-    /// 清理孤儿媒体文件：磁盘上有、但库里任何条目都不引用的文件（崩溃/不一致残留）。
-    /// 启动时调一次，返回清理数量
-    pub async fn cleanup_orphans(&self) -> Result<usize> {
-        let items = self.storage.clip_list().await?;
-        let mut referenced = std::collections::HashSet::new();
-        for it in &items {
-            if let Some(p) = &it.image_path {
-                referenced.insert(p.clone());
-            }
-            if let Some(p) = &it.thumb_path {
-                referenced.insert(p.clone());
-            }
-        }
-        let mut removed = 0;
-        for path in self.driver.list_media()? {
-            if !referenced.contains(&path) {
-                if let Err(e) = self.driver.remove_media(&path) {
-                    warn!(error = %e, path, "remove orphan media failed");
-                } else {
-                    removed += 1;
-                }
-            }
-        }
-        if removed > 0 {
-            debug!(removed, "orphan media cleaned");
-        }
-        Ok(removed)
-    }
-
     /// 用默认浏览器打开链接
     pub fn open_url(&self, url: &str) -> Result<()> {
         self.driver.open_url(url)
@@ -489,48 +445,6 @@ impl ClipboardService {
     /// 在系统文件管理器中显示文件
     pub fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()> {
         self.driver.reveal_in_file_manager(paths)
-    }
-
-    pub async fn delete(&self, item: &ClipItem) -> Result<()> {
-        self.storage.clip_delete(&item.id).await?;
-        self.cache_remove(&item.id);
-        for path in [&item.image_path, &item.thumb_path].into_iter().flatten() {
-            self.driver.remove_media(path)?;
-        }
-        self.bump();
-        Ok(())
-    }
-
-    /// 撤销删除：把误删条目原样回存（含缓存与版本号）。
-    /// 仅限无媒体条目（文本 / 链接 / 颜色）——delete 已即时删除媒体文件，图片类不可恢复
-    pub async fn restore(&self, item: ClipItem) -> Result<()> {
-        self.storage.clip_save(&item).await?;
-        self.cache_upsert(item);
-        self.bump();
-        Ok(())
-    }
-
-    pub async fn clear(&self) -> Result<()> {
-        let images = self.storage.clip_clear().await?;
-        self.cache_clear();
-        self.cleanup_media(images);
-        self.bump();
-        Ok(())
-    }
-
-    async fn prune(&self) {
-        match self.storage.clip_prune(MAX_ITEMS, MAX_AGE_DAYS).await {
-            Ok(images) => self.cleanup_media(images),
-            Err(e) => warn!(error = %e, "clip prune failed"),
-        }
-    }
-
-    fn cleanup_media(&self, paths: Vec<String>) {
-        for path in paths {
-            if let Err(e) = self.driver.remove_media(&path) {
-                warn!(error = %e, path, "remove clip media failed");
-            }
-        }
     }
 }
 

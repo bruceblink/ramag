@@ -55,7 +55,7 @@ impl SessionEntity {
             SessionEntity::Mongo(_) => "MongoDB",
         }
     }
-    /// 连接健康快照 (loading, has_error)：Tab 圆点据此显示真实状态（黄=连接中/红=失败/绿=正常）
+    /// 元数据树状态 (loading, has_error)：不能等同于实时连接健康。
     pub(super) fn health(&self, cx: &App) -> (bool, bool) {
         match self {
             SessionEntity::Sql(e) => e.read(cx).health(cx),

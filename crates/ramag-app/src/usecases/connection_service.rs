@@ -40,7 +40,20 @@ impl ConnectionService {
     }
 
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
-        self.storage.delete_connection(id).await
+        self.storage.delete_connection(id).await?;
+        // 连接删除已由用户确认；同步清理不可再访问的查询历史与本地草稿，避免敏感文本残留。
+        if let Err(e) = self.storage.clear_history(Some(id)).await {
+            tracing::warn!(error = %e, connection_id = %id, "cleanup deleted connection history failed");
+        }
+        for key in [
+            format!("sql_query_drafts_{id}"),
+            format!("mongo_query_drafts_{id}"),
+        ] {
+            if let Err(e) = self.storage.delete_preference(&key).await {
+                tracing::warn!(error = %e, connection_id = %id, "cleanup deleted connection drafts failed");
+            }
+        }
+        Ok(())
     }
 
     // 连接动作（走 driver）

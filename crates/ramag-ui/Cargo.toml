@@ -30,3 +30,5 @@ schemars = { workspace = true }
 serde = { workspace = true }
 # 窗口位置尺寸偏好序列化（workspace 既有依赖复用）
 serde_json = { workspace = true }
+# 按需出现的分隔面板需共享一次性待恢复状态；复用 workspace 既有同步原语。
+parking_lot = { workspace = true }

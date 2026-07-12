@@ -4,6 +4,8 @@
 //! - cmd-w 关当前 Tab；最后一个 Tab 关闭后 propagate 给全局 fallback 关窗
 //! - 由 mongo_session 在 TreeEvent::CollectionSelected 时调 prefill_collection 自动开 Tab + 运行
 
+mod drafts;
+
 use std::sync::Arc;
 
 use gpui::{
@@ -25,7 +27,7 @@ use ramag_ui::{
 };
 
 use crate::actions::{NewMongoQueryTab, ToggleMongoEditor};
-use crate::views::query_tab::MongoQueryTab;
+use crate::views::query_tab::{MongoQueryTab, MongoQueryTabEvent};
 
 pub struct MongoQueryPanel {
     service: Arc<MongoService>,
@@ -44,7 +46,13 @@ pub struct MongoQueryPanel {
     focus_handle: FocusHandle,
     /// 历史弹框事件订阅（单槽：重复打开整体替换，不随打开次数累积）
     history_sub: Option<Subscription>,
-    _subscriptions: Vec<Subscription>,
+    /// 每个查询标签的草稿变化订阅，与 tabs 同下标。
+    draft_subscriptions: Vec<Subscription>,
+    /// 草稿落盘防抖代际；会话关闭后最后一次后台写仍可完成。
+    draft_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// 读取旧草稿期间，空默认标签不得覆盖存储内容。
+    draft_load_pending: bool,
+    restoring_drafts: bool,
 }
 
 impl MongoQueryPanel {
@@ -61,7 +69,10 @@ impl MongoQueryPanel {
             show_editor: false,
             focus_handle: cx.focus_handle(),
             history_sub: None,
-            _subscriptions: Vec::new(),
+            draft_subscriptions: Vec::new(),
+            draft_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            draft_load_pending: false,
+            restoring_drafts: false,
         }
     }
 
@@ -72,6 +83,7 @@ impl MongoQueryPanel {
         for tab in &self.tabs {
             tab.update(cx, |t, cx| t.set_show_editor(self.show_editor, cx));
         }
+        self.schedule_draft_persist(cx);
         if self.show_editor {
             self.focus_active_editor(window, cx);
         } else {
@@ -81,7 +93,12 @@ impl MongoQueryPanel {
         self.show_editor
     }
 
-    pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
+    pub fn set_connection(
+        &mut self,
+        conn: Option<ConnectionConfig>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(c) = &conn
             && let Some(db) = c.database.clone().filter(|s| !s.is_empty())
         {
@@ -91,7 +108,9 @@ impl MongoQueryPanel {
         // 重置 tabs（不同连接的 tabs 不共享上下文）
         self.tabs.clear();
         self.titles.clear();
+        self.draft_subscriptions.clear();
         self.active = 0;
+        self.load_persisted_drafts(window, cx);
         cx.notify();
     }
 
@@ -101,6 +120,7 @@ impl MongoQueryPanel {
             for tab in &self.tabs {
                 tab.update(cx, |t, cx| t.set_database(db.clone(), cx));
             }
+            self.schedule_draft_persist(cx);
             cx.notify();
         }
     }
@@ -130,6 +150,7 @@ impl MongoQueryPanel {
             t.run(cx);
         });
         self.focus_active_editor(window, cx);
+        self.schedule_draft_persist(cx);
         cx.notify();
     }
 
@@ -139,19 +160,19 @@ impl MongoQueryPanel {
         };
         // 找出未使用的最小编号（与 dbclient::QueryPanel 同款策略）
         let title = self.next_tab_title();
-        let svc = self.service.clone();
-        let db = Some(self.database.clone());
-        let show_editor = self.show_editor;
-        let tab = cx.new(|cx| {
-            let mut t = MongoQueryTab::new(svc, conf, db, window, cx);
-            t.set_show_editor(show_editor, cx);
-            t
+        let tab = self.build_tab(conf, window, cx);
+        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &MongoQueryTabEvent, cx| {
+            if matches!(e, MongoQueryTabEvent::DraftChanged) {
+                this.schedule_draft_persist(cx);
+            }
         });
         self.tabs.push(tab);
         self.titles.push(title);
+        self.draft_subscriptions.push(sub);
         self.active = self.tabs.len() - 1;
         self.scroll_tabs_to_end();
         self.focus_active_editor(window, cx);
+        self.schedule_draft_persist(cx);
         cx.notify();
     }
 
@@ -218,10 +239,12 @@ impl MongoQueryPanel {
                         window.close_dialog(cx);
                         // 复用示例插入语义：有手写草稿自动另开 Tab（防丢稿）
                         this.apply_example(cmd, window, cx);
+                        this.mark_active_as_user_draft(cx);
                     }
                     MongoHistoryEvent::RunCommand(cmd) => {
                         window.close_dialog(cx);
                         this.apply_example(cmd, window, cx);
+                        this.mark_active_as_user_draft(cx);
                         if let Some(tab) = this.tabs.get(this.active) {
                             tab.update(cx, |t, cx| t.run(cx));
                         }
@@ -271,9 +294,15 @@ impl MongoQueryPanel {
         if idx >= self.tabs.len() {
             return;
         }
+        if let Some(tab) = self.tabs.get(idx) {
+            tab.update(cx, |tab, cx| tab.cancel_if_running(cx));
+        }
         self.tabs.remove(idx);
         if idx < self.titles.len() {
             self.titles.remove(idx);
+        }
+        if idx < self.draft_subscriptions.len() {
+            let _ = self.draft_subscriptions.remove(idx);
         }
         if self.tabs.is_empty() {
             // 至少保留一个 Tab（与 dbclient 一致）
@@ -286,6 +315,7 @@ impl MongoQueryPanel {
             self.active -= 1;
         }
         self.focus_active_editor(window, cx);
+        self.schedule_draft_persist(cx);
         cx.notify();
     }
 
@@ -293,6 +323,7 @@ impl MongoQueryPanel {
         if idx < self.tabs.len() && self.active != idx {
             self.active = idx;
             self.focus_active_editor(window, cx);
+            self.schedule_draft_persist(cx);
             cx.notify();
         }
     }
@@ -316,7 +347,42 @@ impl MongoQueryPanel {
         };
         tab.update(cx, |t, cx| t.set_command(cmd, window, cx));
         self.focus_active_editor(window, cx);
+        self.schedule_draft_persist(cx);
         cx.notify();
+    }
+
+    fn mark_active_as_user_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            tab.update(cx, |tab, _| tab.mark_user_draft());
+        }
+        self.schedule_draft_persist(cx);
+    }
+
+    /// 集合改名成功：同步受影响标签并让旧结果失效。
+    pub fn collection_renamed(
+        &mut self,
+        database: &str,
+        old: &str,
+        new: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| {
+                tab.collection_renamed(database, old, new, window, cx)
+            });
+        }
+        self.schedule_draft_persist(cx);
+    }
+
+    /// 集合删除成功：清掉受影响标签的 DML 目标并标明结果失效。
+    pub fn collection_dropped(&mut self, database: &str, collection: &str, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| {
+                tab.collection_dropped(database, collection, cx)
+            });
+        }
+        self.schedule_draft_persist(cx);
     }
 }
 
@@ -480,7 +546,7 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(icons::scroll_text())
-                                        .tooltip("常用命令示例（替换编辑器内容）")
+                                        .tooltip("常用命令示例（有手写草稿时新建标签）")
                                         .dropdown_menu(move |menu, _, _| {
                                             let mut m = menu;
                                             for (label, cmd) in

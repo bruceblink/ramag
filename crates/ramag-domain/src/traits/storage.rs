@@ -59,6 +59,10 @@ pub trait Storage: Send + Sync {
     // 偏好 KV
     async fn get_preference(&self, key: &str) -> Result<Option<String>>;
     async fn set_preference(&self, key: &str, value: &str) -> Result<()>;
+    /// 删除单条偏好；默认以空值覆盖，旧 mock 无需同步实现。
+    async fn delete_preference(&self, key: &str) -> Result<()> {
+        self.set_preference(key, "").await
+    }
 
     /// 用主密钥 AES-GCM 加密任意字节（剪贴图片落盘前调，密文存磁盘）
     async fn seal(&self, _plain: &[u8]) -> Result<Vec<u8>> {

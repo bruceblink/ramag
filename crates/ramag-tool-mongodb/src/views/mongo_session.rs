@@ -46,7 +46,7 @@ impl MongoSessionPanel {
         // 立即同步 connection；queries 初始化一个空 Tab（与 dbclient 一致：保证至少一个 Tab）
         tree.update(cx, |t, cx| t.set_connection(Some(config.clone()), cx));
         queries.update(cx, |q, cx| {
-            q.set_connection(Some(config.clone()), cx);
+            q.set_connection(Some(config.clone()), window, cx);
             q.add_tab(window, cx);
         });
 
@@ -66,6 +66,19 @@ impl MongoSessionPanel {
                         q.prefill_collection(database.clone(), collection.clone(), window, cx);
                     });
                 }
+                TreeEvent::CollectionRenamed { database, old, new } => {
+                    queries_handle.update(cx, |q, cx| {
+                        q.collection_renamed(database, old, new, window, cx);
+                    });
+                }
+                TreeEvent::CollectionDropped {
+                    database,
+                    collection,
+                } => {
+                    queries_handle.update(cx, |q, cx| {
+                        q.collection_dropped(database, collection, cx);
+                    });
+                }
                 TreeEvent::DatabaseActivated { database } => {
                     info!(db = %database, "mongo db activated");
                     queries_handle.update(cx, |q, cx| q.set_database(database.clone(), cx));
@@ -79,6 +92,13 @@ impl MongoSessionPanel {
         ));
 
         let resize_state = cx.new(|_| ResizableState::default());
+        // collection 树 / 查询区分隔宽度跨重启
+        subs.push(ramag_ui::persist_resizable_sizes(
+            &resize_state,
+            "split_mongo_session",
+            window,
+            cx,
+        ));
         Self {
             config,
             tree,

@@ -115,13 +115,20 @@ impl Render for DbClientView {
             let tab_id = SharedString::from(format!("conn-tab-{idx}"));
             let close_id = SharedString::from(format!("conn-tab-close-{idx}"));
 
-            // 连接指示点按真实健康着色：黄=元数据加载中 / 红=加载失败 / 绿=正常
+            // 这里只掌握元数据树状态，不冒充实时连接健康：黄=加载中、红=失败、灰=已加载/未知。
             let dot_color = if h_loading {
                 gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
             } else if h_error {
                 gpui::hsla(0.0, 0.7, 0.55, 1.0)
             } else {
-                gpui::hsla(120.0 / 360.0, 0.5, 0.5, 1.0)
+                muted_fg
+            };
+            let metadata_label = if h_loading {
+                Some("元数据加载中")
+            } else if h_error {
+                Some("元数据失败")
+            } else {
+                None
             };
 
             let mut tab = h_flex()
@@ -142,6 +149,9 @@ impl Render for DbClientView {
                         .child(title.clone()),
                 )
                 .child(div().text_xs().text_color(muted_fg).child(kind_label))
+                .when_some(metadata_label, |tab, label| {
+                    tab.child(div().text_xs().text_color(dot_color).child(label))
+                })
                 .child(
                     Button::new(close_id)
                         .ghost()

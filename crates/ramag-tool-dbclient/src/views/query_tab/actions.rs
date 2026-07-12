@@ -298,6 +298,7 @@ impl QueryTab {
             state.set_value(formatted, window, cx);
         });
         self.prefetch_columns_for_used_tables(cx);
+        cx.emit(super::QueryTabEvent::DraftChanged);
         cx.notify();
     }
 

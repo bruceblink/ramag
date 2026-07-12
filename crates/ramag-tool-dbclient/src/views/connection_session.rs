@@ -64,7 +64,7 @@ impl ConnectionSession {
         let conn_for_tree = config.clone();
         tree.update(cx, |t, cx| t.set_connection(Some(conn_for_tree), cx));
         let conn_for_q = config.clone();
-        queries.update(cx, |q, cx| q.set_connection(Some(conn_for_q), cx));
+        queries.update(cx, |q, cx| q.set_connection(Some(conn_for_q), window, cx));
 
         // 后台拉表名填补全 cache（默认 schema 优先；无默认时拉所有非系统库）
         Self::warm_schema_cache(service.clone(), config.clone(), schema_cache.clone(), cx);
@@ -123,6 +123,13 @@ impl ConnectionSession {
         ));
 
         let resize_state = cx.new(|_| ResizableState::default());
+        // 表树 / 查询区分隔宽度跨重启（所有 SQL 会话共用同一偏好，布局一致）
+        subs.push(ramag_ui::persist_resizable_sizes(
+            &resize_state,
+            "split_dbclient_session",
+            window,
+            cx,
+        ));
         let focus_handle = cx.focus_handle();
 
         Self {

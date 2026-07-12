@@ -167,6 +167,19 @@ impl ResultPanel {
         self.database = db;
     }
 
+    /// 切库后旧结果绝不能继续作为新库的 DML 上下文；有结果时明确标为失效。
+    pub fn switch_database(&mut self, db: String, cx: &mut Context<Self>) {
+        let had_result = self.running || self.result.is_some() || self.error.is_some();
+        self.database = db;
+        self.target_collection = None;
+        self.selected_rows.clear();
+        if had_result {
+            self.set_error("已切换数据库，旧结果已失效；请重新运行命令".into(), cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     /// 清空列 / 行过滤框：切换 collection（换数据源）时调，避免旧过滤词残留串到新结果
     pub fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.column_filter

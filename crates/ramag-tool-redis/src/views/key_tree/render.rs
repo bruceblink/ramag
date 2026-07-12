@@ -9,10 +9,71 @@ use gpui_component::{
 };
 use ramag_domain::entities::RedisType;
 
-use super::tree::VisibleRow;
+use super::tree::{TreeNode, VisibleRow, collect_namespace_paths, has_match_descendant};
 use super::{INDENT_PX, KeyTreePanel};
 
 impl KeyTreePanel {
+    fn matches_query(&self, key: &str) -> bool {
+        self.query.is_empty() || key.to_lowercase().contains(&self.query)
+    }
+
+    /// 把树扁平化为可见行列表（owned 结构，避免与 cx.listener 借用冲突）
+    pub(super) fn flatten_visible(&self) -> Vec<VisibleRow> {
+        let mut out = Vec::new();
+        let in_search = !self.query.is_empty();
+        for node in &self.tree {
+            self.collect_visible(node, 0, in_search, &mut out);
+        }
+        out
+    }
+
+    fn collect_visible(
+        &self,
+        node: &TreeNode,
+        depth: usize,
+        in_search: bool,
+        out: &mut Vec<VisibleRow>,
+    ) {
+        let leaf_match = node.is_key && self.matches_query(&node.full_path);
+        let descendant_match = node.is_namespace() && has_match_descendant(node, &self.query);
+        if in_search && !leaf_match && !descendant_match {
+            return;
+        }
+        let is_namespace = node.is_namespace();
+        let is_expanded = if in_search {
+            descendant_match
+        } else {
+            self.expanded.contains(&node.full_path)
+        };
+        out.push(VisibleRow {
+            depth,
+            label: node.label.clone(),
+            full_path: node.full_path.clone(),
+            is_key: node.is_key,
+            leaf_type: node.leaf_type,
+            is_namespace,
+            is_expanded,
+        });
+        if is_namespace && is_expanded {
+            for child in &node.children {
+                self.collect_visible(child, depth + 1, in_search, out);
+            }
+        }
+    }
+
+    pub(super) fn expand_all(&mut self, cx: &mut Context<Self>) {
+        self.expanded.clear();
+        for node in &self.tree {
+            collect_namespace_paths(node, &mut self.expanded);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        self.expanded.clear();
+        cx.notify();
+    }
+
     /// `+ use<>` 显式不捕获生命周期，避免返回值锁住 &self 与 cx.listener 借用冲突
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_node_row(

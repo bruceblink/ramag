@@ -129,7 +129,9 @@ impl DbClientView {
         let view = cx.entity();
         ramag_ui::open_confirm(
             "删除连接？",
-            format!("确定要删除连接「{conn_name}」吗？此操作不可撤销。"),
+            format!(
+                "确定要删除连接「{conn_name}」吗？\n将同时清除该连接在本机的查询历史和未完成草稿，不影响数据库中的数据。此操作不可撤销。"
+            ),
             "删除",
             true,
             move |_window, app| {

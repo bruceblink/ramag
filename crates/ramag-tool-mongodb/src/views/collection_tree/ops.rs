@@ -185,6 +185,11 @@ impl CollectionTreePanel {
                             Notification::success(format!("已重命名为 {db}.{new}"))
                                 .autohide(true),
                         );
+                        cx.emit(super::TreeEvent::CollectionRenamed {
+                            database: db.clone(),
+                            old: old.clone(),
+                            new: new.clone(),
+                        });
                         this.load_collections(db.clone(), cx);
                     }
                     Err(e) => {
@@ -220,6 +225,10 @@ impl CollectionTreePanel {
                         this.pending_notification = Some(
                             Notification::success(format!("已删除 {db}.{coll}")).autohide(true),
                         );
+                        cx.emit(super::TreeEvent::CollectionDropped {
+                            database: db.clone(),
+                            collection: coll.clone(),
+                        });
                         this.load_collections(db.clone(), cx);
                     }
                     Err(e) => {

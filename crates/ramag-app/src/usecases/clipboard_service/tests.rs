@@ -198,3 +198,24 @@ fn image_respects_size_and_toggle() {
         CaptureDecision::Skip("image dimensions too large")
     );
 }
+
+#[test]
+fn pending_media_delete_can_restore_or_expire_once() {
+    let pending = PendingMediaDeletes::default();
+    let restored_id = ClipId::new();
+    let first_token = pending.stage(restored_id.clone(), vec!["a.img".into(), "a.thumb".into()]);
+    assert_eq!(
+        pending.take_for_restore(&restored_id),
+        Some(vec!["a.img".into(), "a.thumb".into()])
+    );
+    assert_eq!(pending.expire(&restored_id, first_token), None);
+
+    // 同一个条目撤销后再次删除：第一次删除的旧计时器不得清掉第二次删除的媒体。
+    let second_token = pending.stage(restored_id.clone(), vec!["b.img".into()]);
+    assert_eq!(pending.expire(&restored_id, first_token), None);
+    assert_eq!(
+        pending.expire(&restored_id, second_token),
+        Some(vec!["b.img".into()])
+    );
+    assert_eq!(pending.take_for_restore(&restored_id), None);
+}

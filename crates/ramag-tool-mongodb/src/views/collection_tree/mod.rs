@@ -92,6 +92,17 @@ pub enum TreeEvent {
         database: String,
         collection: String,
     },
+    /// 集合改名成功，查询面板据此同步/失效旧上下文。
+    CollectionRenamed {
+        database: String,
+        old: String,
+        new: String,
+    },
+    /// 集合删除成功，查询面板据此禁用旧结果的编辑入口。
+    CollectionDropped {
+        database: String,
+        collection: String,
+    },
     /// 用户点了 database 行，切换"当前 db"
     DatabaseActivated { database: String },
     /// 用户点了"切换命令编辑器"按钮，父级（query_panel）执行 toggle_editor 并把新状态回填给 tree
@@ -174,7 +185,7 @@ impl CollectionTreePanel {
         }
     }
 
-    /// 连接健康快照 (loading, has_error)：供上层 Tab 圆点显示真实连接状态
+    /// collection 元数据加载快照 (loading, has_error)，不代表实时连接健康。
     pub fn health(&self) -> (bool, bool) {
         (self.loading, self.error.is_some())
     }

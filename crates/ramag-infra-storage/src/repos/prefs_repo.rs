@@ -41,3 +41,21 @@ pub(crate) fn set(db: Arc<Database>, key: String, value: String) -> Result<()> {
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
     Ok(())
 }
+
+pub(crate) fn delete(db: Arc<Database>, key: String) -> Result<()> {
+    let write_txn = db
+        .begin_write()
+        .map_err(|e| DomainError::Storage(format!("启动写事务失败：{e}")))?;
+    {
+        let mut table = write_txn
+            .open_table(PREFERENCES_TABLE)
+            .map_err(|e| DomainError::Storage(format!("打开 preferences 表失败：{e}")))?;
+        table
+            .remove(key.as_str())
+            .map_err(|e| DomainError::Storage(format!("删除偏好失败：{e}")))?;
+    }
+    write_txn
+        .commit()
+        .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
+    Ok(())
+}

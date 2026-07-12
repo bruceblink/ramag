@@ -1,5 +1,8 @@
 //! 多标签查询面板：顶部 TabBar + 当前 QueryTab 视图
 
+mod drafts;
+mod history;
+
 use std::sync::Arc;
 
 use gpui::{
@@ -9,7 +12,7 @@ use gpui::{
 
 use crate::actions::NewQueryTab;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -24,8 +27,7 @@ use ramag_ui::{
 };
 
 use crate::sql_completion::SchemaCache;
-use crate::views::history_dialog::{HistoryEvent, HistoryList};
-use crate::views::query_tab::QueryTab;
+use crate::views::query_tab::{QueryTab, QueryTabEvent};
 
 pub struct QueryPanel {
     service: Arc<ConnectionService>,
@@ -47,7 +49,14 @@ pub struct QueryPanel {
     tabs_scroll: ScrollHandle,
     /// 历史弹框「填入编辑器」订阅：每次打开弹框整体替换，不随打开次数累积
     history_sub: Option<gpui::Subscription>,
-    _subscriptions: Vec<gpui::Subscription>,
+    /// 每个 QueryTab 的草稿变化订阅，与 tabs 同下标。
+    draft_subscriptions: Vec<gpui::Subscription>,
+    /// 草稿落盘防抖代际；Arc 让会话关闭后最后一次写入仍可完成。
+    draft_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// 异步读取旧草稿期间，空默认标签不应抢先覆盖持久化内容。
+    draft_load_pending: bool,
+    /// 异步恢复期间抑制中间态落盘。
+    restoring_drafts: bool,
 }
 
 impl QueryPanel {
@@ -69,7 +78,10 @@ impl QueryPanel {
             show_editor: false,
             tabs_scroll: ScrollHandle::new(),
             history_sub: None,
-            _subscriptions: Vec::new(),
+            draft_subscriptions: Vec::new(),
+            draft_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            draft_load_pending: false,
+            restoring_drafts: false,
         };
         // 默认创建一个 Tab
         this.add_tab(window, cx);
@@ -77,7 +89,12 @@ impl QueryPanel {
     }
 
     /// 设置当前连接（会同步给所有 Tab + 历史面板）
-    pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
+    pub fn set_connection(
+        &mut self,
+        conn: Option<ConnectionConfig>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.connection = conn.clone();
         // 切换连接时把 active_schema 重置为新连接的 database 字段
         self.active_schema = conn
@@ -87,6 +104,7 @@ impl QueryPanel {
         for tab in self.tabs.iter() {
             tab.update(cx, |t, cx| t.set_connection(conn.clone(), cx));
         }
+        self.load_persisted_drafts(window, cx);
         cx.notify();
     }
 
@@ -100,6 +118,7 @@ impl QueryPanel {
         for tab in self.tabs.iter() {
             tab.update(cx, |t, cx| t.set_active_schema(normalized.clone(), cx));
         }
+        self.schedule_draft_persist(cx);
         cx.notify();
     }
 
@@ -110,6 +129,7 @@ impl QueryPanel {
         for tab in self.tabs.iter() {
             tab.update(cx, |t, cx| t.set_show_editor(v, cx));
         }
+        self.schedule_draft_persist(cx);
         cx.notify();
         v
     }
@@ -126,27 +146,22 @@ impl QueryPanel {
                 n += 1;
             }
         };
-        let svc = self.service.clone();
-        let conn = self.connection.clone();
-        let cache = self.schema_cache.clone();
-        let title_for_tab = title.clone();
-        let active_schema = self.active_schema.clone();
-        let initial_show_editor = self.show_editor;
-        let tab = cx.new(|cx| {
-            let mut t = QueryTab::new(svc, title_for_tab, conn, cache, window, cx);
-            t.set_active_schema(active_schema, cx);
-            // 新 Tab 跟随 panel 的全局开关初始化（隐藏态下新建 Tab 也保持隐藏）
-            t.set_show_editor(initial_show_editor, cx);
-            t
+        let tab = self.build_tab(title.clone(), window, cx);
+        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| {
+            if matches!(e, QueryTabEvent::DraftChanged) {
+                this.schedule_draft_persist(cx);
+            }
         });
         self.tabs.push(tab);
         self.titles.push(title);
+        self.draft_subscriptions.push(sub);
         self.active = self.tabs.len() - 1;
         // 聚焦编辑器，cmd-t 后立即可输入
         self.focus_active_editor(window, cx);
         // 大负 offset 让 tab bar 滚末尾，GPUI 自动 clamp 到 max_offset
         self.tabs_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
+        self.schedule_draft_persist(cx);
         cx.notify();
     }
 
@@ -187,6 +202,9 @@ impl QueryPanel {
         }
         self.tabs.remove(index);
         self.titles.remove(index);
+        if index < self.draft_subscriptions.len() {
+            let _ = self.draft_subscriptions.remove(index);
+        }
         // 调整 active
         if self.tabs.is_empty() {
             self.add_tab(window, cx); // 总保持至少一个 Tab（add_tab 内部会 focus）
@@ -197,6 +215,7 @@ impl QueryPanel {
         }
         // 关闭后让新 active tab 编辑器获得焦点，无需再点一下
         self.focus_active_editor(window, cx);
+        self.schedule_draft_persist(cx);
         cx.notify();
     }
 
@@ -204,6 +223,7 @@ impl QueryPanel {
         if index < self.tabs.len() && self.active != index {
             self.active = index;
             self.focus_active_editor(window, cx);
+            self.schedule_draft_persist(cx);
             cx.notify();
         }
     }
@@ -229,10 +249,12 @@ impl QueryPanel {
     ) {
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
-                t.set_sql(sql, window, cx);
+                t.set_sql(sql.clone(), window, cx);
+                t.mark_injected(sql);
                 t.run(cx);
             });
         }
+        self.schedule_draft_persist(cx);
     }
 
     /// 同 prefill_active_sql_and_run，额外注入精确目标表 (schema, table)
@@ -264,6 +286,7 @@ impl QueryPanel {
                 t.run(cx);
             });
         }
+        self.schedule_draft_persist(cx);
     }
 
     /// 新建一个 Tab 写入 SQL 并立即执行（用于 SHOW CREATE TABLE 等辅助查询，
@@ -299,6 +322,7 @@ impl QueryPanel {
         if let Some(tab) = self.tabs.get(self.active).cloned() {
             tab.update(cx, |t, cx| t.insert_example(sql, window, cx));
         }
+        self.schedule_draft_persist(cx);
     }
 
     /// 把 SQL 填入当前活动 Tab 的编辑器并聚焦（不执行）。
@@ -313,44 +337,8 @@ impl QueryPanel {
                 t.focus_editor(window, cx);
             });
         }
+        self.schedule_draft_persist(cx);
         cx.notify();
-    }
-
-    /// 打开查询历史弹框：搜索 / 复制 / 填入 / 重跑 / 删除 / 清空
-    fn open_history_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(conn) = self.connection.clone() else {
-            return;
-        };
-        let list = cx.new(|cx| HistoryList::new(self.service.clone(), conn.id.clone(), window, cx));
-        // 订阅行为事件：先关弹框再写入聚焦，避免弹框焦点恢复盖掉编辑器焦点
-        self.history_sub = Some(cx.subscribe_in(
-            &list,
-            window,
-            |this: &mut Self, _, e: &HistoryEvent, window, cx| match e {
-                HistoryEvent::FillEditor(sql) => {
-                    window.close_dialog(cx);
-                    this.fill_active_sql(sql.clone(), window, cx);
-                }
-                HistoryEvent::RunSql(sql) => {
-                    window.close_dialog(cx);
-                    this.fill_active_sql(sql.clone(), window, cx);
-                    if let Some(tab) = this.tabs.get(this.active) {
-                        tab.update(cx, |t, cx| t.run(cx));
-                    }
-                }
-            },
-        ));
-
-        let title = SharedString::from(format!("查询历史 · {}", conn.name));
-        let list_for_dialog = list;
-        window.open_dialog(cx, move |dialog, _, _| {
-            let list = list_for_dialog.clone();
-            dialog
-                .title(title.clone())
-                .close_button(true)
-                .width(px(760.0))
-                .content(move |content, _, _| content.child(list.clone()))
-        });
     }
 }
 

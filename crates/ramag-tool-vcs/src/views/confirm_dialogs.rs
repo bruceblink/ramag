@@ -1,6 +1,8 @@
 //! 破坏性操作二次确认。click 统一走 `confirm_xxx`，非破坏性直转 run，破坏性弹 dialog。
 //! 删 / 强推 / 丢工作 用 danger 红；合并 / rebase / amend 用 primary 蓝
 
+mod remote_dialog;
+
 use gpui::{ClickEvent, Context, Entity, ParentElement, SharedString, Styled, Window, div, px};
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _,
@@ -9,7 +11,9 @@ use gpui_component::{
 };
 use ramag_domain::entities::RepoOperation;
 
-use super::helpers::{BranchOp, FileOp, RemoteOp, StashOp, TagOp, default_remote_name};
+use super::helpers::{
+    BranchOp, FileOp, RemoteOp, StashOp, TagOp, default_remote_name, needs_first_push_remote_picker,
+};
 use super::vcs_view::VcsView;
 
 /// 委托 `ramag_ui::open_confirm`，把 `FnOnce(&mut VcsView, &mut Context)` 适配成 `FnOnce(&mut Window, &mut App)`
@@ -125,6 +129,16 @@ impl VcsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let upstream = self
+            .local_branches
+            .iter()
+            .find(|branch| branch.is_head)
+            .and_then(|branch| branch.upstream.as_deref());
+        let needs_first_push_remote = needs_first_push_remote_picker(op, &self.remotes, upstream);
+        if needs_first_push_remote {
+            self.open_first_push_remote_picker(op, window, cx);
+            return;
+        }
         let diverged_pull = matches!(op, RemoteOp::Pull)
             && self.status.as_ref().is_some_and(|status| {
                 status.ahead.unwrap_or(0) > 0 && status.behind.unwrap_or(0) > 0

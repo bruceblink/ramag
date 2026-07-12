@@ -119,9 +119,9 @@ impl VcsView {
                     .item(
                         PopupMenuItem::new(push_label.clone())
                             .disabled(!has_head)
-                            .on_click(move |_, _, app| {
+                            .on_click(move |_, window, app| {
                                 entity3.update(app, |this, cx| {
-                                    this.run_remote_op(RemoteOp::Push, cx);
+                                    this.confirm_remote_op(RemoteOp::Push, window, cx);
                                 });
                             }),
                     )

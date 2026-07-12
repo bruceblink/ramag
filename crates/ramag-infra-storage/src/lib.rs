@@ -231,6 +231,12 @@ impl Storage for RedbStorage {
         run_blocking(move || repos::prefs_repo::set(db, key, value)).await
     }
 
+    async fn delete_preference(&self, key: &str) -> Result<()> {
+        let db = self.db.clone();
+        let key = key.to_string();
+        run_blocking(move || repos::prefs_repo::delete(db, key)).await
+    }
+
     async fn seal(&self, plain: &[u8]) -> Result<Vec<u8>> {
         let cipher = self.cipher.clone();
         let plain = plain.to_vec();
@@ -324,6 +330,18 @@ mod tests {
         let path = storage.path().to_path_buf();
         drop(storage);
         assert!(RedbStorage::open_with_key(&path, &[0x24; 32]).is_err());
+    }
+
+    #[tokio::test]
+    async fn preference_delete_removes_value() {
+        let (storage, _tmp) = make_test_storage();
+        assert!(storage.set_preference("draft", "text").await.is_ok());
+        assert!(matches!(
+            storage.get_preference("draft").await,
+            Ok(Some(value)) if value == "text"
+        ));
+        assert!(storage.delete_preference("draft").await.is_ok());
+        assert!(matches!(storage.get_preference("draft").await, Ok(None)));
     }
 
     fn sample_config(name: &str) -> ConnectionConfig {

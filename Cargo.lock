@@ -6498,6 +6498,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "parking_lot",
  "ramag-app",
  "ramag-domain",
  "rust-embed",

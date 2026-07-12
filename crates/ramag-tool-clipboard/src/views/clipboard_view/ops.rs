@@ -1,5 +1,8 @@
 //! ClipboardView 异步操作：重载 / 复制 / 删除 / 清空 / 键盘导航
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use gpui::{Context, ScrollStrategy, Window};
 use gpui_component::notification::Notification;
 use ramag_domain::entities::{
@@ -9,6 +12,9 @@ use tracing::error;
 
 use super::ClipboardView;
 use crate::views::helpers::filter_items;
+
+/// 图片删除的撤销宽限期；到期仅清理仍未被任何条目引用的媒体。
+const MEDIA_UNDO_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 全量搜索去抖：输入停顿此间隔后才触发后台扫描
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
@@ -214,8 +220,11 @@ impl ClipboardView {
 
     pub(super) fn delete_clip(&mut self, item: ClipItem, cx: &mut Context<Self>) {
         let svc = self.service.clone();
+        let has_media = item.image_path.is_some() || item.thumb_path.is_some();
+        let item_id = item.id.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.delete(&item).await;
+            let cleanup_token = result.as_ref().ok().copied().flatten();
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Err(e) => {
@@ -223,55 +232,67 @@ impl ClipboardView {
                         this.pending_notification =
                             Some(Notification::error(format!("删除失败：{e}")));
                     }
-                    Ok(()) => {
-                        // 无媒体条目（文本/链接/颜色）给「撤销」；图片类媒体已物理删除，不可恢复
-                        let restorable = item.image_path.is_none() && item.thumb_path.is_none();
-                        if !restorable {
-                            // 明确说明不可撤销，而非静默消失
-                            this.pending_notification = Some(Notification::info(
-                                "已删除该条目（图片媒体已即时清除，不可恢复）",
-                            ));
-                        }
-                        if restorable {
-                            let svc_for_undo = this.service.clone();
-                            let view = cx.entity().clone();
-                            let item_for_undo = item.clone();
-                            // action 模式的 toast 不自动隐藏，由「撤销」点击或用户手动关闭收起
-                            this.pending_notification =
-                                Some(Notification::info("已删除该条目").action(move |_, _, cx| {
-                                    let svc = svc_for_undo.clone();
-                                    let view = view.clone();
-                                    let item = item_for_undo.clone();
-                                    let notif = cx.entity().clone();
-                                    gpui_component::button::Button::new("clip-undo-delete")
-                                        .label("撤销")
-                                        .on_click(move |_, window, app| {
-                                            let svc = svc.clone();
-                                            let view = view.clone();
-                                            let item = item.clone();
-                                            // 先收起 toast，再异步回存并刷新列表
-                                            notif.update(app, |n, cx| n.dismiss(window, cx));
-                                            app.spawn(async move |cx| {
-                                                let r = svc.restore(item).await;
-                                                view.update(cx, |this, cx| {
-                                                    if let Err(e) = r {
-                                                        error!(error = %e, "restore clip failed");
-                                                        this.pending_notification =
-                                                            Some(Notification::error(format!(
-                                                                "撤销失败：{e}"
-                                                            )));
-                                                    }
-                                                    this.reload(cx);
-                                                });
-                                            })
-                                            .detach();
+                    Ok(_) => {
+                        let svc_for_undo = this.service.clone();
+                        let view = cx.entity().clone();
+                        let item_for_undo = item.clone();
+                        let expiry_scheduled = Arc::new(AtomicBool::new(false));
+                        this.pending_notification = Some(
+                            Notification::info("已删除该条目").action(move |_, window, cx| {
+                                // action 通知默认不会自动消失；图片宽限期结束时同步收起过期按钮。
+                                if has_media && !expiry_scheduled.swap(true, Ordering::Relaxed) {
+                                    let notification = cx.entity();
+                                    cx.spawn_in(window, async move |_, cx| {
+                                        cx.background_executor().timer(MEDIA_UNDO_GRACE).await;
+                                        let _ = notification.update_in(cx, |note, window, cx| {
+                                            note.dismiss(window, cx);
+                                        });
+                                    })
+                                    .detach();
+                                }
+                                let svc = svc_for_undo.clone();
+                                let view = view.clone();
+                                let item = item_for_undo.clone();
+                                let notif = cx.entity().clone();
+                                gpui_component::button::Button::new("clip-undo-delete")
+                                    .label(if has_media {
+                                        "撤销（30 秒内）"
+                                    } else {
+                                        "撤销"
+                                    })
+                                    .on_click(move |_, window, app| {
+                                        let svc = svc.clone();
+                                        let view = view.clone();
+                                        let item = item.clone();
+                                        // 先收起 toast，再异步回存并刷新列表
+                                        notif.update(app, |n, cx| n.dismiss(window, cx));
+                                        app.spawn(async move |cx| {
+                                            let r = svc.restore(item).await;
+                                            view.update(cx, |this, cx| {
+                                                if let Err(e) = r {
+                                                    error!(error = %e, "restore clip failed");
+                                                    this.pending_notification =
+                                                        Some(Notification::error(format!(
+                                                            "撤销失败：{e}"
+                                                        )));
+                                                }
+                                                this.reload(cx);
+                                            });
                                         })
-                                }));
-                        }
+                                        .detach();
+                                    })
+                            }),
+                        );
                     }
                 }
                 this.reload(cx);
             });
+            if let Some(token) = cleanup_token {
+                cx.background_executor().timer(MEDIA_UNDO_GRACE).await;
+                if let Err(e) = svc.finalize_deleted_media(&item_id, token) {
+                    error!(error = %e, "cleanup deleted clip media failed");
+                }
+            }
         })
         .detach();
     }

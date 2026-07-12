@@ -47,6 +47,10 @@ impl VcsView {
         let ide_left_resize = cx.new(|_| ResizableState::default());
         let ide_files_resize = cx.new(|_| ResizableState::default());
         let detail_resize = cx.new(|_| ResizableState::default());
+        // 主分隔宽高跨重启（左栏宽 / 上下分栏高）
+        ramag_ui::persist_resizable_sizes(&ide_left_resize, "split_vcs_left", window, cx).detach();
+        ramag_ui::persist_resizable_sizes(&ide_files_resize, "split_vcs_main", window, cx).detach();
+        ramag_ui::persist_resizable_sizes(&detail_resize, "split_vcs_detail", window, cx).detach();
         let repo_search_input = cx.new(|cx_inner| {
             InputState::new(window, cx_inner).placeholder("搜索仓库（名称 / 路径）")
         });

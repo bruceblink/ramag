@@ -5,12 +5,14 @@ use gpui::Context;
 use ramag_domain::entities::ConnectionConfig;
 use tracing::{error, info};
 
-use super::{KeyTreePanel, MAX_KEYS};
+use super::{KEYS_PAGE_SIZE, KeyTreePanel};
 
 /// 单批 SCAN 的 COUNT hint
 const SCAN_BATCH: u32 = 500;
 /// 分批加载期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次
 const REBUILD_STEP: usize = 2_000;
+/// 输入停顿后自动把过滤词下推到服务端，避免旧 MATCH 子集造成假“无结果”。
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
 
 impl KeyTreePanel {
     /// 重新扫描：换代作废在途批次，清空后从 cursor=0 起按当前 MATCH 模式增量扫
@@ -26,6 +28,8 @@ impl KeyTreePanel {
         self.tree.clear();
         self.last_rebuilt_count = 0;
         self.truncated = false;
+        self.resume_cursor = Some(0);
+        self.scan_target = KEYS_PAGE_SIZE;
         cx.notify();
         let generation = self.scan_generation;
         self.scan_next_batch(config, 0, generation, cx);
@@ -43,23 +47,66 @@ impl KeyTreePanel {
         cx.notify();
     }
 
+    /// 输入停顿后自动应用服务端 MATCH；清空搜索立即回到全库，避免显示旧子集。
+    pub(super) fn schedule_server_match(&mut self, cx: &mut Context<Self>) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
+        if self.query.is_empty() {
+            self.search_pending = false;
+            if self.match_pattern.is_some() {
+                self.match_pattern = None;
+                self.refresh(cx);
+            } else {
+                cx.notify();
+            }
+            return;
+        }
+        self.search_pending = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_generation != generation {
+                    return;
+                }
+                this.search_pending = false;
+                this.apply_server_match(cx);
+            });
+        })
+        .detach();
+    }
+
     /// Enter 下推服务端 MATCH：普通关键字包成 `*kw*`，含 glob 元字符（* ? [）则原样使用；
     /// 空关键字清除模式回到全库扫描
     pub(super) fn apply_server_match(&mut self, cx: &mut Context<Self>) {
+        self.search_pending = false;
         let raw = self.search.read(cx).value().trim().to_string();
-        let pattern = if raw.is_empty() {
-            None
-        } else if raw.contains(['*', '?', '[']) {
-            Some(raw)
-        } else {
-            Some(format!("*{raw}*"))
-        };
+        let pattern = server_match_pattern(&raw);
         // 模式未变且不在扫描中：无需重扫（扫描中按 Enter 视为「以此模式重来」）
         if pattern == self.match_pattern && !self.loading {
+            cx.notify();
             return;
         }
         self.match_pattern = pattern;
         self.refresh(cx);
+    }
+
+    /// 从上次暂停的 cursor 再加载一页，保留已加载 key 与树状态。
+    pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+        let (Some(config), Some(cursor)) = (self.config.clone(), self.resume_cursor) else {
+            return;
+        };
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        self.scan_target = next_scan_target(self.keys.len());
+        self.loading = true;
+        self.truncated = false;
+        self.error = None;
+        let generation = self.scan_generation;
+        cx.notify();
+        self.scan_next_batch(config, cursor, generation, cx);
     }
 
     /// 扫一批：回包三重校验通过则追加，按需节流重建 Trie 并续扫，扫完 / 达上限收尾
@@ -93,7 +140,8 @@ impl KeyTreePanel {
                             }
                         }
                         let done = r.cursor == 0;
-                        let capped = this.keys.len() >= MAX_KEYS;
+                        this.resume_cursor = (!done).then_some(r.cursor);
+                        let capped = this.keys.len() >= this.scan_target;
                         if done || capped {
                             this.loading = false;
                             this.truncated = capped && !done;
@@ -112,15 +160,59 @@ impl KeyTreePanel {
                     Err(e) => {
                         error!(error = %e, db, "redis scan failed");
                         this.loading = false;
-                        this.error = Some(format!("加载失败：{e}"));
-                        this.keys.clear();
-                        this.seen_keys.clear();
-                        this.tree.clear();
+                        if this.keys.is_empty() {
+                            this.error = Some(format!("加载失败：{e}"));
+                            this.seen_keys.clear();
+                            this.tree.clear();
+                            this.resume_cursor = None;
+                        } else {
+                            // 后续页失败时保留已经可用的数据，并从失败批次的输入 cursor 重试。
+                            this.error = Some(format!(
+                                "扫描中断：{e}（已保留 {} 个 key，可继续重试）",
+                                this.keys.len()
+                            ));
+                            this.resume_cursor = Some(cursor);
+                            this.truncated = true;
+                            this.rebuild_tree();
+                        }
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+}
+
+fn server_match_pattern(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        None
+    } else if raw.contains(['*', '?', '[']) {
+        Some(raw.to_string())
+    } else {
+        Some(format!("*{raw}*"))
+    }
+}
+
+fn next_scan_target(loaded: usize) -> usize {
+    loaded.saturating_add(KEYS_PAGE_SIZE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_scan_target, server_match_pattern};
+
+    #[test]
+    fn plain_search_becomes_contains_match() {
+        assert_eq!(server_match_pattern("user"), Some("*user*".into()));
+        assert_eq!(server_match_pattern("user:*"), Some("user:*".into()));
+        assert_eq!(server_match_pattern("  "), None);
+    }
+
+    #[test]
+    fn load_more_adds_one_page_without_overflow() {
+        assert_eq!(next_scan_target(5_123), 10_123);
+        assert_eq!(next_scan_target(usize::MAX), usize::MAX);
     }
 }

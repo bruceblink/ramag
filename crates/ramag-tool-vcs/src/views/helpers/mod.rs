@@ -226,6 +226,18 @@ pub(super) fn default_remote_name(remotes: &[Remote]) -> Result<String, String> 
     }
 }
 
+/// 首次 Push 在“多个 remote 且没有 origin”时必须让用户显式选择，不能猜目标。
+pub(super) fn needs_first_push_remote_picker(
+    op: RemoteOp,
+    remotes: &[Remote],
+    upstream: Option<&str>,
+) -> bool {
+    matches!(op, RemoteOp::Push | RemoteOp::PushForce)
+        && upstream.is_none()
+        && remotes.len() > 1
+        && !remotes.iter().any(|remote| remote.name == "origin")
+}
+
 /// 冲突文件解决操作（行尾按钮触发）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConflictOp {
@@ -372,7 +384,10 @@ pub(super) fn code_letter_color(code: &str, fallback: gpui::Hsla) -> gpui::Hsla 
 mod tests {
     use ramag_domain::entities::{Branch, BranchKind, CommitId, Remote};
 
-    use super::{BranchOp, checkout_remote_branch_op, default_remote_name};
+    use super::{
+        BranchOp, RemoteOp, checkout_remote_branch_op, default_remote_name,
+        needs_first_push_remote_picker,
+    };
 
     fn local(name: &str, upstream: Option<&str>) -> Branch {
         Branch {
@@ -383,6 +398,14 @@ mod tests {
             upstream: upstream.map(str::to_owned),
             ahead: None,
             behind: None,
+        }
+    }
+
+    fn remote(name: &str) -> Remote {
+        Remote {
+            name: name.into(),
+            fetch_url: String::new(),
+            push_url: None,
         }
     }
 
@@ -411,11 +434,6 @@ mod tests {
 
     #[test]
     fn default_remote_prefers_origin_or_the_only_remote() {
-        let remote = |name: &str| Remote {
-            name: name.into(),
-            fetch_url: String::new(),
-            push_url: None,
-        };
         assert_eq!(
             default_remote_name(&[remote("upstream")]).unwrap(),
             "upstream"
@@ -425,5 +443,30 @@ mod tests {
             "origin"
         );
         assert!(default_remote_name(&[remote("a"), remote("b")]).is_err());
+    }
+
+    #[test]
+    fn first_push_with_ambiguous_remotes_requires_picker() {
+        let remotes = [remote("upstream"), remote("fork")];
+        assert!(needs_first_push_remote_picker(
+            RemoteOp::Push,
+            &remotes,
+            None
+        ));
+        assert!(!needs_first_push_remote_picker(
+            RemoteOp::Pull,
+            &remotes,
+            None
+        ));
+        assert!(!needs_first_push_remote_picker(
+            RemoteOp::Push,
+            &remotes,
+            Some("fork/main")
+        ));
+        assert!(!needs_first_push_remote_picker(
+            RemoteOp::Push,
+            &[remote("origin"), remote("upstream")],
+            None
+        ));
     }
 }

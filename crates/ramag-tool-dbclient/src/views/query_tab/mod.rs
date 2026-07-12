@@ -12,7 +12,7 @@ pub(crate) use examples::sql_examples;
 use std::sync::Arc;
 use std::time::Instant;
 
-use gpui::{AppContext as _, Context, Entity, Task, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Task, Window};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
 use parking_lot::RwLock;
@@ -66,6 +66,13 @@ pub struct QueryTab {
     pub(super) _editor_sub: gpui::Subscription,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum QueryTabEvent {
+    DraftChanged,
+}
+
+impl EventEmitter<QueryTabEvent> for QueryTab {}
+
 impl QueryTab {
     pub fn new(
         service: Arc<ConnectionService>,
@@ -106,6 +113,7 @@ impl QueryTab {
         let editor_sub = cx.subscribe(&editor, |this: &mut Self, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 this.prefetch_columns_for_used_tables(cx);
+                cx.emit(QueryTabEvent::DraftChanged);
             }
         });
 
@@ -146,6 +154,26 @@ impl QueryTab {
             return false;
         }
         self.last_injected_sql.as_deref().map(str::trim) != Some(cur)
+    }
+
+    /// 手写草稿快照；自动注入或空编辑器不参与跨重启持久化。
+    pub fn draft_text(&self, cx: &gpui::App) -> Option<String> {
+        self.has_user_draft(cx)
+            .then(|| self.editor.read(cx).value().to_string())
+    }
+
+    /// 从本地偏好恢复手写草稿，不触发查询执行。
+    pub fn restore_draft(
+        &mut self,
+        text: String,
+        schema: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_sql(text, window, cx);
+        self.active_schema = schema.filter(|s| !s.is_empty());
+        // 恢复内容必须被视为用户草稿，关闭时继续受保护。
+        self.last_injected_sql = None;
     }
 
     /// 标记「当前编辑器内容是自动注入的」（表树浏览 / 示例），供草稿判定

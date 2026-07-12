@@ -8,12 +8,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window, div,
-    prelude::*, px,
+    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Subscription, Task,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, WindowExt as _,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     notification::Notification,
     v_flex,
 };
@@ -40,6 +40,8 @@ pub struct MongoQueryTab {
     /// 结果展示
     pub(crate) result: Entity<ResultPanel>,
     pub(crate) running: bool,
+    /// 当前 UI 等待任务；drop 后停止等待与历史追加，旧后端回包也无法再触碰标签。
+    current_task: Option<Task<()>>,
     /// 运行代际号：切库 / 切 collection / 重新运行都自增，慢查询旧回包据此丢弃，
     /// 不串到新上下文（防运行期间切换后旧结果显示在新库/集合的界面里）
     pub(crate) run_seq: u64,
@@ -50,6 +52,13 @@ pub struct MongoQueryTab {
     last_injected_cmd: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum MongoQueryTabEvent {
+    DraftChanged,
+}
+
+impl EventEmitter<MongoQueryTabEvent> for MongoQueryTab {}
 
 impl MongoQueryTab {
     pub fn new(
@@ -85,6 +94,11 @@ impl MongoQueryTab {
         let refresh_sub = cx.subscribe(&result, |this, _, _e: &ResultEvent, cx| {
             this.run(cx);
         });
+        let editor_sub = cx.subscribe(&editor, |_this: &mut Self, _, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::Change) {
+                cx.emit(MongoQueryTabEvent::DraftChanged);
+            }
+        });
 
         Self {
             service,
@@ -95,11 +109,12 @@ impl MongoQueryTab {
             show_editor: false,
             result,
             running: false,
+            current_task: None,
             run_seq: 0,
             pending_notification: None,
             // 新 Tab 出生自带默认模板，属自动注入（未手改前树点击可原地覆盖）
             last_injected_cmd: Some(default_command_template()),
-            _subscriptions: vec![refresh_sub],
+            _subscriptions: vec![refresh_sub, editor_sub],
         }
     }
 
@@ -111,6 +126,34 @@ impl MongoQueryTab {
             return false;
         }
         self.last_injected_cmd.as_deref().map(str::trim) != Some(cur)
+    }
+
+    /// 手写草稿快照；默认模板和树自动注入不落盘。
+    pub fn draft_text(&self, cx: &gpui::App) -> Option<String> {
+        self.has_user_draft(cx)
+            .then(|| self.editor.read(cx).value().to_string())
+    }
+
+    /// 从本地偏好恢复手写命令，不自动执行。
+    pub fn restore_draft(
+        &mut self,
+        text: String,
+        database: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(database) = database.filter(|db| !db.is_empty()) {
+            self.database = database;
+        }
+        self.editor
+            .update(cx, |editor, cx| editor.set_value(text, window, cx));
+        self.collection = None;
+        self.last_injected_cmd = None;
+        self.result.update(cx, |panel, _| {
+            panel.set_database(self.database.clone());
+            panel.set_target_collection(None);
+        });
+        cx.notify();
     }
 
     /// 由 QueryPanel 同步全局开关给新建 / 切换的 Tab
@@ -155,12 +198,76 @@ impl MongoQueryTab {
         cx.notify();
     }
 
+    /// 历史记录填入属于用户主动选择，后续关闭/重启都应按手写草稿保护。
+    pub fn mark_user_draft(&mut self) {
+        self.last_injected_cmd = None;
+    }
+
     /// 设置当前 db（点击树上 db 行时调）
     pub fn set_database(&mut self, db: String, cx: &mut Context<Self>) {
         if self.database != db {
             self.database = db;
+            // Mongo driver 当前没有可靠 killOp 句柄；让旧回包失效，并清除旧结果的 DML 目标。
+            self.current_task = None;
+            self.run_seq = self.run_seq.wrapping_add(1);
+            self.running = false;
+            self.result.update(cx, |panel, cx| {
+                panel.switch_database(self.database.clone(), cx)
+            });
             cx.notify();
         }
+    }
+
+    /// 集合改名后同步或失效旧查询上下文，防止结果区继续对旧集合执行 DML。
+    pub fn collection_renamed(
+        &mut self,
+        db: &str,
+        old: &str,
+        new: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.database != db || self.collection.as_deref() != Some(old) {
+            return;
+        }
+        let auto_injected = self.last_injected_cmd.as_deref().map(str::trim)
+            == Some(self.editor.read(cx).value().trim());
+        self.run_seq = self.run_seq.wrapping_add(1);
+        self.current_task = None;
+        self.running = false;
+        if auto_injected {
+            self.prefill_for_collection(db.to_string(), new.to_string(), window, cx);
+        } else {
+            self.collection = Some(new.to_string());
+        }
+        self.result.update(cx, |panel, cx| {
+            panel.set_database(db.to_string());
+            panel.set_target_collection(Some(new.to_string()));
+            panel.set_error(
+                format!("集合已从 {old} 重命名为 {new}，旧结果已失效；请检查命令后重新运行"),
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// 集合删除后清除结果区写入目标，保留手写命令供用户参考。
+    pub fn collection_dropped(&mut self, db: &str, coll: &str, cx: &mut Context<Self>) {
+        if self.database != db || self.collection.as_deref() != Some(coll) {
+            return;
+        }
+        self.run_seq = self.run_seq.wrapping_add(1);
+        self.current_task = None;
+        self.running = false;
+        self.collection = None;
+        self.result.update(cx, |panel, cx| {
+            panel.set_target_collection(None);
+            panel.set_error(
+                format!("集合 {db}.{coll} 已删除，旧结果与编辑入口已失效"),
+                cx,
+            );
+        });
+        cx.notify();
     }
 
     /// 运行：编辑器内容解析为 JSON 命令 → run_command → 智能解包 cursor.firstBatch
@@ -207,7 +314,7 @@ impl MongoQueryTab {
         self.result.update(cx, |p, cx| p.set_running(cx));
         let result_handle = self.result.clone();
 
-        cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let start = Instant::now();
             let outcome = svc.run_command(&conf, &db, cmd).await;
             let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -232,6 +339,7 @@ impl MongoQueryTab {
                     return;
                 }
                 this.running = false;
+                this.current_task = None;
                 match qr {
                     Ok(r) => {
                         info!(
@@ -255,8 +363,21 @@ impl MongoQueryTab {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.current_task = Some(task);
+    }
+
+    /// 关闭标签前停止等待当前命令。MongoDB 暂无可靠 killOp 句柄，因此只保证客户端任务退出、
+    /// 结果不再回写；服务器端命令仍由服务端超时/完成机制收尾。
+    pub fn cancel_if_running(&mut self, cx: &mut Context<Self>) {
+        if self.current_task.take().is_some() || self.running {
+            self.run_seq = self.run_seq.wrapping_add(1);
+            self.running = false;
+            self.result.update(cx, |panel, cx| {
+                panel.set_error("已停止等待该命令；服务器端操作可能仍在收尾".into(), cx);
+            });
+            cx.notify();
+        }
     }
 
     /// 聚焦编辑器（新建 / 切换 / 关闭 Tab 后由 QueryPanel 调用，避免用户再点一下）
@@ -282,6 +403,7 @@ impl MongoQueryTab {
             self.editor.update(cx, |s, cx| {
                 s.set_value(pretty, window, cx);
             });
+            cx.emit(MongoQueryTabEvent::DraftChanged);
             cx.notify();
         }
     }
