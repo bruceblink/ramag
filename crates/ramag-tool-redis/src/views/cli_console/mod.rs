@@ -6,6 +6,7 @@
 //! - 显隐由 RedisSession 控制（cmd-e / 工具栏图标 / 点击外部关闭），本面板只管内容
 
 mod complete;
+mod danger;
 mod format;
 
 use std::sync::Arc;
@@ -151,6 +152,39 @@ impl CliConsole {
             return;
         }
 
+        // 高危命令（FLUSHALL / SHUTDOWN / CONFIG SET / CLIENT KILL 等）先弹确认，
+        // 明示连接名 + DB；取消则保留输入供修改
+        if let Some(reason) = danger::dangerous_reason(&argv) {
+            let desc = format!(
+                "目标：{} · DB {}\n命令：{raw}\n\n{reason}。确认继续吗？",
+                self.config.name, self.db
+            );
+            let entity = cx.entity();
+            ramag_ui::open_confirm(
+                "执行高危命令？",
+                desc,
+                "执行",
+                true,
+                move |window, app| {
+                    entity.update(app, |this, cx| this.dispatch(raw, argv, window, cx));
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+
+        self.dispatch(raw, argv, window, cx);
+    }
+
+    /// 真正执行：登记应答历史 + 清输入 + 异步发后端（危险命令确认后也走这里）
+    fn dispatch(
+        &mut self,
+        raw: String,
+        argv: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let idx = self.history.len();
         self.history.push(Entry {
             command: raw,
