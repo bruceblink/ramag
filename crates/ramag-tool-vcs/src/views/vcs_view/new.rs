@@ -107,6 +107,8 @@ impl VcsView {
             error: None,
             loading: false,
             loading_label: None,
+            clone_cancel: None,
+            clone_progress: None,
             busy: false,
             busy_label: None,
             pending_notification: None,

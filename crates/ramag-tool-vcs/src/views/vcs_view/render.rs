@@ -68,11 +68,24 @@ impl Render for VcsView {
         // body 由 active_view 路由：RepoList → 仓库管理页；Session → IDE 布局
         // 注意：error 不再独占 body —— 由 RepoList 顶部 banner 承载（不阻塞用户操作）
         let body: AnyElement = if self.loading {
-            div()
+            // Clone 进行中：附加 git --progress 实时行 + 取消按钮（进度槽每帧读取）
+            let clone_line = self
+                .clone_progress
+                .as_ref()
+                .and_then(|p| p.lock().ok().map(|s| s.clone()))
+                .filter(|s| !s.is_empty());
+            let cancel_btn = self.clone_cancel.clone().map(|cancel| {
+                gpui_component::button::Button::new("vcs-clone-cancel")
+                    .label("取消 Clone")
+                    .on_click(move |_: &gpui::ClickEvent, _, _| {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    })
+            });
+            gpui_component::v_flex()
                 .size_full()
-                .flex()
                 .items_center()
                 .justify_center()
+                .gap(gpui::px(10.0))
                 .text_sm()
                 .text_color(muted_fg)
                 .child(
@@ -80,6 +93,8 @@ impl Render for VcsView {
                         .clone()
                         .unwrap_or_else(|| "加载中…".to_string()),
                 )
+                .children(clone_line.map(|l| div().text_xs().text_color(muted_fg).child(l)))
+                .children(cancel_btn)
                 .into_any_element()
         } else {
             match self.active_view {

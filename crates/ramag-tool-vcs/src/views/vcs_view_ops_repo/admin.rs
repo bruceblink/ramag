@@ -99,30 +99,73 @@ impl VcsView {
             .next()
             .unwrap_or("仓库")
             .trim_end_matches(".git");
-        self.loading_label = Some(format!(
-            "正在 Clone {repo_hint} 到 {}…（大仓库可能需要几分钟）",
-            dest.display()
-        ));
+        self.loading_label = Some(format!("正在 Clone {repo_hint} 到 {}…", dest.display()));
         self.error = None;
         self.show_clone_panel = false;
+        // 进度槽 + 取消位：infra 持续写进度，loading 屏每帧读；取消钮置位后 kill 子进程
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        self.clone_cancel = Some(cancel.clone());
+        self.clone_progress = Some(progress.clone());
         cx.notify();
-        cx.spawn(
-            async move |this, cx| match driver.clone_repo(&url, &dest).await {
+        // 进度刷新 ticker：进度槽由后台线程写入，须周期 notify 驱动 loading 屏重渲染；
+        // clone 结束（槽被清空）自动退出
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        let alive = this.clone_progress.is_some();
+                        if alive {
+                            cx.notify();
+                        }
+                        alive
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            let was_cancelled = cancel.clone();
+            match driver
+                .clone_repo_streaming(&url, &dest, cancel, progress)
+                .await
+            {
                 Ok(rc) => {
                     tracing::info!("vcs clone done");
+                    let _ = this.update(cx, |this, cx| {
+                        this.clone_cancel = None;
+                        this.clone_progress = None;
+                        cx.notify();
+                    });
                     open_repo_async(&this, driver, std::path::PathBuf::from(&rc.path), cx).await;
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, "vcs: clone failed");
+                    let cancelled = was_cancelled.load(std::sync::atomic::Ordering::Relaxed);
+                    if cancelled {
+                        tracing::info!("vcs clone cancelled by user");
+                    } else {
+                        tracing::error!(error = %e, "vcs: clone failed");
+                    }
                     let _ = this.update(cx, |this, cx| {
                         this.loading = false;
                         this.loading_label = None;
-                        this.error = Some(format!("Clone 失败: {e}"));
+                        this.clone_cancel = None;
+                        this.clone_progress = None;
+                        // 用户主动取消：静默回列表，不当错误弹横幅
+                        if !cancelled {
+                            this.error = Some(format!("Clone 失败: {e}"));
+                        }
                         cx.notify();
                     });
                 }
-            },
-        )
+            }
+        })
         .detach();
     }
 

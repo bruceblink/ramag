@@ -64,6 +64,10 @@ pub struct VcsView {
     pub(super) loading: bool,
     /// 整屏加载时显示的任务说明（如「正在 Clone xxx…」）；None 用通用「加载中…」
     pub(super) loading_label: Option<String>,
+    /// Clone 进行中的取消位（None = 无 clone 进行中）；置位后 infra watcher kill 子进程
+    pub(super) clone_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Clone 实时进度槽（git --progress stderr 最新行），loading 屏每帧读取展示
+    pub(super) clone_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     /// 写操作正在进行中（stage / unstage / discard / commit）：避免重复点击
     pub(super) busy: bool,
     /// busy 时工具栏 spinner 旁的操作名（"Pull 中…"等）；None = 不显示指示器

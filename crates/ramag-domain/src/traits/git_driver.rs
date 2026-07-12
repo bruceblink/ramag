@@ -329,6 +329,20 @@ pub trait GitDriver: Send + Sync {
         not_impl("clone_repo")
     }
 
+    /// Clone（带进度 + 可取消）：实现方把人类可读进度行持续写入 `progress` 共享槽
+    /// （UI 每帧读取展示），`cancel` 置位后中止并返回错误（与 CancelHandle 同哲学，
+    /// 保持 dyn-safe）。默认回退到无进度 clone_repo
+    async fn clone_repo_streaming(
+        &self,
+        url: &str,
+        dest: &Path,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<RepoConfig> {
+        let _ = (cancel, progress);
+        self.clone_repo(url, dest).await
+    }
+
     /// `git init`
     async fn init_repo(&self, _path: &Path) -> Result<RepoConfig> {
         not_impl("init_repo")

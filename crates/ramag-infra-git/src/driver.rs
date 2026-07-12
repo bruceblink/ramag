@@ -473,6 +473,20 @@ impl GitDriver for GitDriverImpl {
         self.open_repo(dest).await
     }
 
+    async fn clone_repo_streaming(
+        &self,
+        url: &str,
+        dest: &Path,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<RepoConfig> {
+        let url = url.to_string();
+        let dest_clone = dest.to_path_buf();
+        run_blocking(move || clone::clone_repo_streaming(&url, &dest_clone, cancel, progress))
+            .await?;
+        self.open_repo(dest).await
+    }
+
     async fn init_repo(&self, path: &Path) -> Result<RepoConfig> {
         let path_init = path.to_path_buf();
         run_blocking(move || clone::init_repo(&path_init)).await?;
