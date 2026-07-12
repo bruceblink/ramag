@@ -9,7 +9,7 @@ use gpui::{
 
 use crate::actions::NewQueryTab;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -24,6 +24,7 @@ use ramag_ui::{
 };
 
 use crate::sql_completion::SchemaCache;
+use crate::views::history_dialog::{HistoryEvent, HistoryList};
 use crate::views::query_tab::QueryTab;
 
 pub struct QueryPanel {
@@ -44,6 +45,8 @@ pub struct QueryPanel {
     show_editor: bool,
     /// tab bar 横向滚动句柄：tab 多到溢出时，新建后滚到末尾让新 tab 可见
     tabs_scroll: ScrollHandle,
+    /// 历史弹框「填入编辑器」订阅：每次打开弹框整体替换，不随打开次数累积
+    history_sub: Option<gpui::Subscription>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -65,6 +68,7 @@ impl QueryPanel {
             // 数据浏览 / 导出是主场景，写 SQL 走 cmd-e 或表树按钮唤出
             show_editor: false,
             tabs_scroll: ScrollHandle::new(),
+            history_sub: None,
             _subscriptions: Vec::new(),
         };
         // 默认创建一个 Tab
@@ -244,6 +248,51 @@ impl QueryPanel {
             tab.update(cx, |t, cx| t.insert_example(sql, window, cx));
         }
     }
+
+    /// 把 SQL 填入当前活动 Tab 的编辑器并聚焦（不执行）。
+    /// 面板恒保持至少一个 Tab，空列表仅是兜底防御
+    fn fill_active_sql(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
+            self.add_tab(window, cx);
+        }
+        if let Some(tab) = self.tabs.get(self.active) {
+            tab.update(cx, |t, cx| {
+                t.set_sql(sql, window, cx);
+                t.focus_editor(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// 打开查询历史弹框：当前连接最近 HISTORY_LIMIT 条，行操作复制 / 填入编辑器
+    fn open_history_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        let list = cx.new(|cx| HistoryList::new(self.service.clone(), conn.id.clone(), cx));
+        // 订阅「填入编辑器」：先关弹框再写入聚焦，避免弹框焦点恢复盖掉编辑器焦点
+        self.history_sub = Some(cx.subscribe_in(
+            &list,
+            window,
+            |this: &mut Self, _, e: &HistoryEvent, window, cx| match e {
+                HistoryEvent::FillEditor(sql) => {
+                    window.close_dialog(cx);
+                    this.fill_active_sql(sql.clone(), window, cx);
+                }
+            },
+        ));
+
+        let title = SharedString::from(format!("查询历史 · {}", conn.name));
+        let list_for_dialog = list;
+        window.open_dialog(cx, move |dialog, _, _| {
+            let list = list_for_dialog.clone();
+            dialog
+                .title(title.clone())
+                .close_button(true)
+                .width(px(760.0))
+                .content(move |content, _, _| content.child(list.clone()))
+        });
+    }
 }
 
 impl Render for QueryPanel {
@@ -374,7 +423,7 @@ impl Render for QueryPanel {
                                         )),
                                 ),
                         )
-                        // 右：示例 / 格式化 / EXPLAIN（历史改弹框，不放这里）
+                        // 右：示例 / 格式化 / EXPLAIN / 历史（弹框）
                         .child(
                             h_flex()
                                 .flex_none()
@@ -458,6 +507,20 @@ impl Render for QueryPanel {
                                                 tab.update(cx, |t, cx| t.handle_explain(cx));
                                             }
                                         })),
+                                )
+                                .child(
+                                    // 上游 IconName 无 History 变体，用旧版历史入口同款日历图标
+                                    Button::new("query-history")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Calendar)
+                                        .tooltip("查询历史")
+                                        .disabled(self.connection.is_none())
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.open_history_dialog(window, cx);
+                                            },
+                                        )),
                                 ),
                         ),
                 )
