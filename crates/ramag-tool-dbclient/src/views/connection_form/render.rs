@@ -1,7 +1,8 @@
 //! ConnectionFormPanel Render：driver 选择 + 字段分组 + 测试 / 取消 / 保存
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px,
+    ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
+    prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Sizable as _,
@@ -201,13 +202,68 @@ impl Render for ConnectionFormPanel {
                             ),
                     )
                     .when(self.tls, |this| {
-                        this.child(field_row(
-                            "自定义 CA 证书（自签服务端用；留空走系统信任链）",
-                            Input::new(&self.ca_cert_path),
-                        ))
+                        // 身份验证三档：加密 ≠ 确认对端身份，明示各档语义
+                        let current = self.tls_verify;
+                        let mut verify_row = h_flex().w_full().items_center().gap(px(8.0));
+                        for (mode, label) in [
+                            (
+                                ramag_domain::entities::TlsVerify::Full,
+                                "验证证书与主机名（推荐）",
+                            ),
+                            (ramag_domain::entities::TlsVerify::Ca, "仅验证 CA 证书链"),
+                            (
+                                ramag_domain::entities::TlsVerify::None,
+                                "仅加密（不验证身份）",
+                            ),
+                        ] {
+                            let selected = current == mode;
+                            verify_row = verify_row.child(
+                                Button::new(SharedString::from(format!("tls-verify-{mode:?}")))
+                                    .small()
+                                    .label(label)
+                                    .when(selected, |b| b.primary())
+                                    .when(!selected, |b| b.ghost())
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        if this.tls_verify != mode {
+                                            this.tls_verify = mode;
+                                            this.invalidate_test(cx);
+                                            cx.notify();
+                                        }
+                                    })),
+                            );
+                        }
+                        this.child(verify_row)
+                            .child(field_row(
+                                "自定义 CA 证书（PEM，自签服务端用；留空用系统信任链验证）",
+                                Input::new(&self.ca_cert_path),
+                            ))
+                            // Redis / Mongo 驱动无「验链不验名」档：Ca 档在这两类上等同严格校验
+                            .when(
+                                matches!(self.driver_id, "redis" | "mongodb")
+                                    && current == ramag_domain::entities::TlsVerify::Ca,
+                                |t| {
+                                    t.child(div().text_xs().text_color(muted_fg).child(
+                                        "该数据库驱动不支持「验链不验名」，此档等同完整验证",
+                                    ))
+                                },
+                            )
+                    })
+                    // SSH 与 TLS 同开时验证等级受限（隧道内主机名校验必败），如实提示
+                    .when(self.tls, |t| {
+                        let ssh_on = !self
+                            .ssh_target
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .is_empty();
+                        t.when(ssh_on, |t| {
+                            t.child(div().text_xs().text_color(muted_fg).child(
+                                "经 SSH 隧道时身份验证自动降级：MySQL/PG 最高验 CA，Redis/Mongo 仅加密（隧道段已由 SSH 加密）",
+                            ))
+                        })
                     })
                     // SSH 跳板：target 非空即启用；密钥 / agent / 别名由系统 ssh 处理，
-                    // 不在此存任何 SSH 凭证。与 TLS 互斥（保存时校验）
+                    // 不在此存任何 SSH 凭证
                     .child(
                         h_flex()
                             .w_full()

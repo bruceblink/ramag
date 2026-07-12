@@ -51,12 +51,25 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
         .log_statements(tracing::log::LevelFilter::Debug)
         .log_slow_statements(tracing::log::LevelFilter::Warn, Duration::from_secs(1));
 
-    // TLS：关闭时保持历史行为（Prefer 有则用、无则降级）；
-    // 开启则强制加密，配了自定义 CA 再升级为按该 CA 校验证书链（自签场景）
-    let opts = match (config.tls, config.ca_cert_path.as_deref()) {
-        (false, _) => opts.ssl_mode(PgSslMode::Prefer),
-        (true, None) => opts.ssl_mode(PgSslMode::Require),
-        (true, Some(ca)) => opts.ssl_mode(PgSslMode::VerifyCa).ssl_root_cert(ca),
+    // TLS：关闭保持历史行为（Prefer 有则用、无则降级）；开启按验证等级三档映射。
+    // 经 SSH 隧道时 Full 降级为 Ca（实际连 127.0.0.1，主机名校验必败；隧道本身已加密）
+    let opts = if !config.tls {
+        opts.ssl_mode(PgSslMode::Prefer)
+    } else {
+        let mut verify = config.tls_verify;
+        if config.ssh_target.is_some() && verify == ramag_domain::entities::TlsVerify::Full {
+            warn!(host = %config.host, "tls verify downgraded Full->Ca over ssh tunnel");
+            verify = ramag_domain::entities::TlsVerify::Ca;
+        }
+        let opts = match verify {
+            ramag_domain::entities::TlsVerify::None => opts.ssl_mode(PgSslMode::Require),
+            ramag_domain::entities::TlsVerify::Ca => opts.ssl_mode(PgSslMode::VerifyCa),
+            ramag_domain::entities::TlsVerify::Full => opts.ssl_mode(PgSslMode::VerifyFull),
+        };
+        match config.ca_cert_path.as_deref().filter(|s| !s.is_empty()) {
+            Some(ca) => opts.ssl_root_cert(ca),
+            None => opts,
+        }
     };
 
     PgPoolOptions::new()

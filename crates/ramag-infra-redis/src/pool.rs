@@ -158,13 +158,20 @@ fn build_connection_info(
         Some(config.password.clone())
     };
 
-    // TLS 开启用 TcpTls（严格校验主机名，不提供 insecure 选项）；
-    // tls_params 留 None——自定义 CA 在 build_with_tls 注入
+    // TLS：rustls 校验时总是连带主机名（无「只验链不验名」档），因此
+    // Ca 与 Full 同为严格校验；None 档或经 SSH 隧道（实际连 127.0.0.1，校验必败、
+    // 隧道本身已加密）时置 insecure 仅加密。tls_params 留 None——自定义 CA 在
+    // build_with_tls 注入
     let addr = if config.tls {
+        let insecure = matches!(config.tls_verify, ramag_domain::entities::TlsVerify::None)
+            || config.ssh_target.is_some();
+        if insecure && config.ssh_target.is_some() {
+            warn!(host = %config.host, "redis tls verification disabled over ssh tunnel");
+        }
         ConnectionAddr::TcpTls {
             host,
             port,
-            insecure: false,
+            insecure,
             tls_params: None,
         }
     } else {

@@ -48,6 +48,18 @@ impl DriverKind {
     }
 }
 
+/// TLS 身份验证等级。「加密」不等于「确认连接的是正确服务器」，故显式分档
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TlsVerify {
+    /// 仅加密，不验证服务器证书（自签且无 CA 文件时的最后选择，防窃听不防冒充）
+    None,
+    /// 验证 CA 证书链，不校验主机名（证书名与连接地址不符 / 经 SSH 隧道时用）
+    Ca,
+    /// 验证证书链 + 主机名（推荐，完整确认服务器身份）
+    #[default]
+    Full,
+}
+
 /// 连接配置。密码运行时明文，落盘前由 storage 层 AES-GCM 加密
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
@@ -69,6 +81,9 @@ pub struct ConnectionConfig {
     /// 启用 TLS 加密传输（默认关，与历史行为一致；各 driver 底层均走 rustls）
     #[serde(default)]
     pub tls: bool,
+    /// TLS 身份验证等级（仅 tls=true 时生效；默认 Full = 验证书链 + 主机名）
+    #[serde(default)]
+    pub tls_verify: TlsVerify,
     /// 自定义 CA 证书路径（PEM）。仅 tls=true 时生效：留空用系统 / webpki 根证书，
     /// 填写则以该 CA 严格校验服务端证书链（自签证书场景）
     #[serde(default)]
@@ -102,6 +117,7 @@ impl ConnectionConfig {
             remark: None,
             production: false,
             tls: false,
+            tls_verify: TlsVerify::default(),
             ca_cert_path: None,
             ssh_target: None,
             ssh_port: None,
@@ -123,6 +139,7 @@ impl ConnectionConfig {
             remark: None,
             production: false,
             tls: false,
+            tls_verify: TlsVerify::default(),
             ca_cert_path: None,
             ssh_target: None,
             ssh_port: None,
@@ -144,6 +161,7 @@ impl ConnectionConfig {
             remark: None,
             production: false,
             tls: false,
+            tls_verify: TlsVerify::default(),
             ca_cert_path: None,
             ssh_target: None,
             ssh_port: None,

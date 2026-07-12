@@ -14,7 +14,7 @@ pub use clipboard::{
     CapturedClip, ClipId, ClipItem, ClipKind, ClipSource, ClipboardSettings, blacklist_matches,
     classify_text, fnv1a_hash, make_preview, normalize_blacklist_source, parse_hex_color,
 };
-pub use connection::{ConnectionConfig, ConnectionId, DriverKind};
+pub use connection::{ConnectionConfig, ConnectionId, DriverKind, TlsVerify};
 pub use git::{
     BlameLine, Branch, BranchKind, Commit, CommitId, ConflictContent, DiffKind, DiffLine,
     DiffLineKind, FileChangeKind, FileDiff, FileStatus, Hunk, LogOptions, RebaseAction, RebaseTodo,

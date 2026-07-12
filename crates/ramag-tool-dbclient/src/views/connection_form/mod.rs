@@ -69,6 +69,8 @@ pub struct ConnectionFormPanel {
     pub(super) production: bool,
     /// 启用 TLS 加密传输
     pub(super) tls: bool,
+    /// TLS 身份验证等级（Full 推荐 / Ca / None 仅加密）
+    pub(super) tls_verify: ramag_domain::entities::TlsVerify,
     /// 自定义 CA 证书路径输入框（PEM，可选；仅 tls 开启时渲染）
     pub(super) ca_cert_path: Entity<InputState>,
     /// MongoDB URI 粘贴框（仅 MongoDB 渲染）：解析回填 host/port/凭证/库/authSource/tls
@@ -150,6 +152,7 @@ impl ConnectionFormPanel {
             remark: None,
             production: false,
             tls: false,
+            tls_verify: Default::default(),
             ca_cert_path: None,
             ssh_target: None,
             ssh_port: None,
@@ -269,6 +272,7 @@ impl ConnectionFormPanel {
 
         let initial_production = p.production;
         let initial_tls = p.tls;
+        let initial_tls_verify = p.tls_verify;
 
         Self {
             service,
@@ -285,6 +289,7 @@ impl ConnectionFormPanel {
             auth_source,
             production: initial_production,
             tls: initial_tls,
+            tls_verify: initial_tls_verify,
             ca_cert_path,
             mongo_uri,
             ssh_target,

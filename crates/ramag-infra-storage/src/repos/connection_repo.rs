@@ -33,9 +33,11 @@ struct EncryptedConnection {
     remark: Option<String>,
     #[serde(default)]
     production: bool,
-    /// TLS 开关与自定义 CA 路径（明文元数据，非机密；老数据缺省 = 关）
+    /// TLS 开关、验证等级与自定义 CA 路径（明文元数据，非机密；老数据缺省 = 关 / Full）
     #[serde(default)]
     tls: bool,
+    #[serde(default)]
+    tls_verify: ramag_domain::entities::TlsVerify,
     #[serde(default)]
     ca_cert_path: Option<String>,
     /// SSH 跳板目标与端口（认证走系统 ssh，不存任何 SSH 凭证；老数据缺省 = 不走隧道）
@@ -60,6 +62,7 @@ impl EncryptedConnection {
             remark: plain.remark.clone(),
             production: plain.production,
             tls: plain.tls,
+            tls_verify: plain.tls_verify,
             ca_cert_path: plain.ca_cert_path.clone(),
             ssh_target: plain.ssh_target.clone(),
             ssh_port: plain.ssh_port,
@@ -80,6 +83,7 @@ impl EncryptedConnection {
             remark: self.remark,
             production: self.production,
             tls: self.tls,
+            tls_verify: self.tls_verify,
             ca_cert_path: self.ca_cert_path,
             ssh_target: self.ssh_target,
             ssh_port: self.ssh_port,

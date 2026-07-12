@@ -107,11 +107,20 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         )
     };
 
-    // TLS：开启走 rustls（默认系统信任链），配了自定义 CA 则以该 PEM 校验（自签场景）
+    // TLS：mongodb 驱动无「验链不验名」档，故 Ca 与 Full 同为严格校验；
+    // None 档或经 SSH 隧道（实际连 127.0.0.1，校验必败、隧道已加密）时跳过证书校验
     let tls = if config.tls {
         let mut tls_opts = mongodb::options::TlsOptions::builder().build();
         if let Some(ca) = config.ca_cert_path.as_deref().filter(|s| !s.is_empty()) {
             tls_opts.ca_file_path = Some(std::path::PathBuf::from(ca));
+        }
+        let insecure = matches!(config.tls_verify, ramag_domain::entities::TlsVerify::None)
+            || config.ssh_target.is_some();
+        if insecure {
+            if config.ssh_target.is_some() {
+                warn!(host = %config.host, "mongo tls verification disabled over ssh tunnel");
+            }
+            tls_opts.allow_invalid_certificates = Some(true);
         }
         Some(mongodb::options::Tls::Enabled(tls_opts))
     } else {

@@ -27,6 +27,7 @@ fn config_from_env() -> Option<ConnectionConfig> {
         remark: None,
         production: false,
         tls: false,
+        tls_verify: Default::default(),
         ca_cert_path: None,
         ssh_target: None,
         ssh_port: None,

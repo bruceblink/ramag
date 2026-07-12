@@ -170,11 +170,8 @@ impl ConnectionFormPanel {
                 )
             }
         };
-        // 经隧道后 DB 实际连 127.0.0.1，TLS 主机名校验（Redis/Mongo）必然失败；
-        // 隧道本身已加密，两者同开是配置矛盾，直接拦下而非放行半错状态
-        if ssh_target.is_some() && self.tls {
-            return Err("SSH 隧道与 TLS 不能同时开启（隧道已加密传输，请二选一）".into());
-        }
+        // SSH 与 TLS 允许同开（分别保护跳板段与后段链路）；经隧道后主机名校验必败，
+        // driver 层自动降级验证等级（MySQL/PG Full→Ca；Redis/Mongo 仅加密），表单有提示
 
         Ok(ConnectionConfig {
             id,
@@ -189,6 +186,7 @@ impl ConnectionFormPanel {
             remark: None,
             production: self.production,
             tls: self.tls,
+            tls_verify: self.tls_verify,
             ca_cert_path,
             ssh_target,
             ssh_port,
