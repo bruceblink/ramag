@@ -91,7 +91,7 @@ impl Render for ConnectionFormPanel {
         // PG 协议要求连接时必须绑定具体 database，单独标"必填"以区别 MySQL 的可选
         let is_redis = self.driver_id == "redis";
         let database_label = match self.driver_id {
-            "redis" => "DB（0-15）",
+            "redis" => "DB（默认 0-15，自建实例可更高）",
             "postgres" => "默认库（必填）",
             "mongodb" => "默认打开的库（可选）",
             _ => "默认库（可选）",

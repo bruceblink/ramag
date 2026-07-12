@@ -154,6 +154,10 @@ impl QueryPanel {
         if index >= self.tabs.len() {
             return;
         }
+        // 执行中的查询先取消（含后端 KILL），避免关 Tab 后语句仍占用数据库
+        if let Some(tab) = self.tabs.get(index) {
+            tab.update(cx, |t, cx| t.cancel_if_running(window, cx));
+        }
         self.tabs.remove(index);
         self.titles.remove(index);
         // 调整 active

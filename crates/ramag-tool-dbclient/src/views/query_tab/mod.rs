@@ -227,6 +227,14 @@ impl QueryTab {
         self.handle_run(cx);
     }
 
+    /// 关闭 Tab 前调用：查询执行中先取消（drop 客户端任务 + 发后端 KILL），
+    /// 避免 Tab 关掉后语句仍占用数据库资源
+    pub fn cancel_if_running(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running {
+            self.handle_cancel(window, cx);
+        }
+    }
+
     /// 把示例 SQL 写入编辑器：整体覆盖现有内容（与 MongoDB 行为一致，不保留旧语句）
     pub(super) fn insert_example(
         &mut self,

@@ -350,7 +350,12 @@ impl Render for KeyTreePanel {
                     .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
                         let mut m = menu;
                         let entity = session_entity.clone();
-                        for db in 0u8..=15 {
+                        // 常规列 0-15；当前 db 更高（自建实例 databases > 16）时并入列表可回切
+                        let mut dbs: Vec<u8> = (0u8..=15).collect();
+                        if current_db > 15 {
+                            dbs.push(current_db);
+                        }
+                        for db in dbs {
                             let is_active = db == current_db;
                             let label = if is_active {
                                 format!("✓ DB {db}")
@@ -366,6 +371,34 @@ impl Render for KeyTreePanel {
                                 });
                             }));
                         }
+                        // 自建实例可配 databases > 16：提供自由输入入口（0-255）
+                        let entity_for_prompt = session_entity.clone();
+                        m = m.item(PopupMenuItem::new("  其他 DB…").on_click(
+                            move |_, window, app| {
+                                let entity = entity_for_prompt.clone();
+                                ramag_ui::open_prompt(
+                                    "切换 DB",
+                                    "输入 DB 序号（0-255，须不超过服务端 databases 配置）"
+                                        .to_string(),
+                                    "",
+                                    "切换",
+                                    move |value, _window, app| match value.trim().parse::<u8>() {
+                                        Ok(db) => {
+                                            entity.update(app, |this, cx| {
+                                                if this.db != db {
+                                                    cx.emit(KeyTreeEvent::DbSelected(db));
+                                                }
+                                            });
+                                        }
+                                        Err(_) => {
+                                            tracing::warn!("invalid redis db input ignored");
+                                        }
+                                    },
+                                    window,
+                                    app,
+                                );
+                            },
+                        ));
                         m
                     }),
             );
