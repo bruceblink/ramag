@@ -454,6 +454,15 @@ impl ClipboardService {
         Ok(())
     }
 
+    /// 撤销删除：把误删条目原样回存（含缓存与版本号）。
+    /// 仅限无媒体条目（文本 / 链接 / 颜色）——delete 已即时删除媒体文件，图片类不可恢复
+    pub async fn restore(&self, item: ClipItem) -> Result<()> {
+        self.storage.clip_save(&item).await?;
+        self.cache_upsert(item);
+        self.bump();
+        Ok(())
+    }
+
     pub async fn clear(&self) -> Result<()> {
         let images = self.storage.clip_clear().await?;
         self.cache_clear();

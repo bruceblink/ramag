@@ -203,9 +203,52 @@ impl ClipboardView {
         cx.spawn(async move |this, cx| {
             let result = svc.delete(&item).await;
             let _ = this.update(cx, |this, cx| {
-                if let Err(e) = result {
-                    error!(error = %e, "delete clip failed");
-                    this.pending_notification = Some(Notification::error(format!("删除失败：{e}")));
+                match result {
+                    Err(e) => {
+                        error!(error = %e, "delete clip failed");
+                        this.pending_notification =
+                            Some(Notification::error(format!("删除失败：{e}")));
+                    }
+                    Ok(()) => {
+                        // 无媒体条目（文本/链接/颜色）给「撤销」；图片类媒体已物理删除，不可恢复
+                        let restorable = item.image_path.is_none() && item.thumb_path.is_none();
+                        if restorable {
+                            let svc_for_undo = this.service.clone();
+                            let view = cx.entity().clone();
+                            let item_for_undo = item.clone();
+                            // action 模式的 toast 不自动隐藏，由「撤销」点击或用户手动关闭收起
+                            this.pending_notification =
+                                Some(Notification::info("已删除该条目").action(move |_, _, cx| {
+                                    let svc = svc_for_undo.clone();
+                                    let view = view.clone();
+                                    let item = item_for_undo.clone();
+                                    let notif = cx.entity().clone();
+                                    gpui_component::button::Button::new("clip-undo-delete")
+                                        .label("撤销")
+                                        .on_click(move |_, window, app| {
+                                            let svc = svc.clone();
+                                            let view = view.clone();
+                                            let item = item.clone();
+                                            // 先收起 toast，再异步回存并刷新列表
+                                            notif.update(app, |n, cx| n.dismiss(window, cx));
+                                            app.spawn(async move |cx| {
+                                                let r = svc.restore(item).await;
+                                                view.update(cx, |this, cx| {
+                                                    if let Err(e) = r {
+                                                        error!(error = %e, "restore clip failed");
+                                                        this.pending_notification =
+                                                            Some(Notification::error(format!(
+                                                                "撤销失败：{e}"
+                                                            )));
+                                                    }
+                                                    this.reload(cx);
+                                                });
+                                            })
+                                            .detach();
+                                        })
+                                }));
+                        }
+                    }
                 }
                 this.reload(cx);
             });

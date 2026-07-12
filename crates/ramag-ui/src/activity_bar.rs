@@ -155,15 +155,8 @@ impl Render for ActivityBar {
                 }
             },
         ));
-        container = container.child(activity_item(
-            "settings",
-            Icon::new(IconName::Settings),
-            false,
-            accent,
-            transparent,
-            None,
-            |_: &ClickEvent, _, _| {},
-        ));
+        // 注：设置中心尚未实现，不放 no-op 占位按钮（点了没反应比没有更困惑）；
+        // 落地后在此恢复 settings 入口
 
         container
     }
