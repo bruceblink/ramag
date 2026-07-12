@@ -92,6 +92,11 @@ impl MongoSessionPanel {
         &self.config
     }
 
+    /// 连接健康快照 (loading, has_error)：取 collection 树的加载状态
+    pub fn health(&self, cx: &gpui::App) -> (bool, bool) {
+        self.tree.read(cx).health()
+    }
+
     pub fn title(&self) -> &str {
         &self.config.name
     }

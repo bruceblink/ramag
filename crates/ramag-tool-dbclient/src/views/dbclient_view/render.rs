@@ -30,8 +30,9 @@ impl Render for DbClientView {
 
         let active = self.active_session;
 
-        // (idx, 连接名, 类型, 选中)
-        let session_titles: Vec<(usize, String, &'static str, bool)> = self
+        // (idx, 连接名, 类型, 选中, 健康 (loading, has_error))
+        #[allow(clippy::type_complexity)]
+        let session_titles: Vec<(usize, String, &'static str, bool, (bool, bool))> = self
             .sessions
             .iter()
             .enumerate()
@@ -41,6 +42,7 @@ impl Render for DbClientView {
                     s.title(cx).to_string(),
                     s.kind_label(cx),
                     Some(i) == active,
+                    s.health(cx),
                 )
             })
             .collect::<Vec<_>>();
@@ -97,12 +99,18 @@ impl Render for DbClientView {
             .overflow_x_scroll()
             .track_scroll(&self.sessions_scroll);
 
-        for (idx, title, kind_label, is_active) in session_titles {
+        for (idx, title, kind_label, is_active, (h_loading, h_error)) in session_titles {
             let tab_id = SharedString::from(format!("conn-tab-{idx}"));
             let close_id = SharedString::from(format!("conn-tab-close-{idx}"));
 
-            // 连接指示点（固定绿）
-            let dot_color = gpui::hsla(120.0 / 360.0, 0.5, 0.5, 1.0);
+            // 连接指示点按真实健康着色：黄=元数据加载中 / 红=加载失败 / 绿=正常
+            let dot_color = if h_loading {
+                gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
+            } else if h_error {
+                gpui::hsla(0.0, 0.7, 0.55, 1.0)
+            } else {
+                gpui::hsla(120.0 / 360.0, 0.5, 0.5, 1.0)
+            };
 
             let mut tab = h_flex()
                 .id(tab_id)

@@ -189,6 +189,11 @@ impl ConnectionSession {
         &self.config
     }
 
+    /// 连接健康快照 (loading, has_error)：取表树的元数据加载状态
+    pub fn health(&self, cx: &gpui::App) -> (bool, bool) {
+        self.tree.read(cx).health()
+    }
+
     /// Tab 标题（连接名）
     pub fn title(&self) -> &str {
         &self.config.name

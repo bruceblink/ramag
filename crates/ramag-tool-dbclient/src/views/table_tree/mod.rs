@@ -78,6 +78,11 @@ pub enum TreeEvent {
 impl EventEmitter<TreeEvent> for TableTreePanel {}
 
 impl TableTreePanel {
+    /// 连接健康快照 (loading, has_error)：供上层 Tab 圆点显示真实连接状态
+    pub fn health(&self) -> (bool, bool) {
+        (self.loading_schemas, self.error.is_some())
+    }
+
     pub fn new(
         service: Arc<ConnectionService>,
         schema_cache: Arc<RwLock<SchemaCache>>,

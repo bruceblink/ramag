@@ -169,6 +169,11 @@ impl KeyTreePanel {
         }
     }
 
+    /// 连接健康快照 (loading, has_error)：供上层 Tab 圆点显示真实连接状态
+    pub fn health(&self) -> (bool, bool) {
+        (self.loading, self.error.is_some())
+    }
+
     /// 会话 Tab 被（重新）激活时调用：仅当从未成功加载（无 key 且非加载中）才 SCAN，
     /// 避免每次切 Tab 都重置展开/选中。首次加载失败留下的空状态会在下次激活时自动重试
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {

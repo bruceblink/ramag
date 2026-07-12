@@ -295,6 +295,11 @@ impl RedisSessionPanel {
         &self.config
     }
 
+    /// 连接健康快照 (loading, has_error)：取 key 树的扫描状态
+    pub fn health(&self, cx: &gpui::App) -> (bool, bool) {
+        self.tree.read(cx).health()
+    }
+
     pub fn title(&self) -> &str {
         &self.config.name
     }
