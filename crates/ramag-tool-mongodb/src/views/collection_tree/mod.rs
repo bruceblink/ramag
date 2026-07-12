@@ -107,7 +107,13 @@ impl CollectionTreePanel {
                 .placeholder("搜索 database / collection")
                 .clean_on_escape()
         });
-        let subs = vec![cx.subscribe(&search, |_this, _, _e: &InputEvent, cx| cx.notify())];
+        let subs = vec![
+            cx.subscribe(&search, |this: &mut Self, _, _e: &InputEvent, cx| {
+                // 搜索应覆盖全部库：非空关键字时补拉未加载 db 的 collection（幂等）
+                this.ensure_search_coverage(cx);
+                cx.notify();
+            }),
+        ];
         Self {
             service,
             connection: None,
@@ -229,6 +235,28 @@ impl CollectionTreePanel {
             });
         })
         .detach();
+    }
+
+    /// 搜索非空时补拉所有未加载 db 的 collection（搜索覆盖全部库）。
+    /// 已有 entry 的不重复拉，幂等；db 过多时不自动全拉防雪崩
+    fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
+        const AUTO_LOAD_MAX_DBS: usize = 50;
+        if self.search.read(cx).value().trim().is_empty() {
+            return;
+        }
+        if self.databases.len() > AUTO_LOAD_MAX_DBS {
+            return;
+        }
+        let missing: Vec<String> = self
+            .databases
+            .iter()
+            .map(|d| d.name.clone())
+            .filter(|n| !self.expanded.contains_key(n))
+            .collect();
+        for db in missing {
+            self.expanded.insert(db.clone(), ExpandedState::default());
+            self.load_collections(db, cx);
+        }
     }
 
     fn toggle_database(&mut self, db: &str, cx: &mut Context<Self>) {

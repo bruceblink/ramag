@@ -95,7 +95,13 @@ impl TableTreePanel {
                 .clean_on_escape()
         });
         // 搜索框文本变化时重渲染
-        let subs = vec![cx.subscribe(&search, |_this, _, _e: &InputEvent, cx| cx.notify())];
+        let subs = vec![
+            cx.subscribe(&search, |this: &mut Self, _, _e: &InputEvent, cx| {
+                // 搜索应覆盖全库：非空关键字时补拉未加载 schema 的表（幂等），而非只搜已展开节点
+                this.ensure_search_coverage(cx);
+                cx.notify();
+            }),
+        ];
 
         Self {
             service,
@@ -210,6 +216,27 @@ impl TableTreePanel {
             });
         })
         .detach();
+    }
+
+    /// 搜索非空时把所有未加载 schema 的表补拉进来（搜索覆盖全库）。
+    /// 已有 entry 的（含加载中 / 失败）不重复拉，天然幂等；schema 过多时不自动全拉防雪崩
+    fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
+        const AUTO_LOAD_MAX_SCHEMAS: usize = 50;
+        if self.search.read(cx).value().trim().is_empty() {
+            return;
+        }
+        if self.schemas.len() > AUTO_LOAD_MAX_SCHEMAS {
+            return;
+        }
+        let missing: Vec<String> = self
+            .schemas
+            .iter()
+            .map(|s| s.name.clone())
+            .filter(|n| !self.expanded.contains_key(n))
+            .collect();
+        for name in missing {
+            self.load_tables_for(name, cx);
+        }
     }
 
     pub(super) fn toggle_schema(&mut self, schema_name: String, cx: &mut Context<Self>) {
