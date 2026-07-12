@@ -5,14 +5,33 @@ use bson::{Bson, Document};
 use ramag_domain::error::{DomainError, Result};
 use serde_json::Value;
 
-/// BSON Bson → serde_json::Value（relaxed Extended JSON）。
-/// relaxed 模式保留可读性（Int64/Double 直接输出数字），canonical 模式会给所有类型加包装
+/// BSON Bson → serde_json::Value。整体走 relaxed Extended JSON，**但 Int64 显式包成
+/// `{"$numberLong":"N"}`**（其余类型仍 relaxed，可读性不变）。
+///
+/// 为何特化 Int64：relaxed 下 Int32/Int64 都输出裸数字、无法区分，导致单元格编辑一个
+/// Int64 正小值（≤ i32::MAX）时经 serde 反序列化被窄化成 Int32（静默改 BSON 类型）。
+/// 包装后 cell 层可标 "long" kind、编辑时按 $numberLong 还原写回，保住 64 位类型。
 pub fn bson_to_json(b: Bson) -> Value {
-    b.into_relaxed_extjson()
+    bson_to_json_int64_safe(b)
 }
 
 pub fn document_to_json(doc: Document) -> Value {
-    Bson::Document(doc).into_relaxed_extjson()
+    bson_to_json_int64_safe(Bson::Document(doc))
+}
+
+/// 递归转换：仅 Int64 特化为 `$numberLong` 包装；容器（Document/Array）递归以覆盖嵌套 Int64；
+/// 其余叶子类型逐个委托 `into_relaxed_extjson`，与原行为完全一致
+fn bson_to_json_int64_safe(b: Bson) -> Value {
+    match b {
+        Bson::Int64(n) => serde_json::json!({ "$numberLong": n.to_string() }),
+        Bson::Document(doc) => Value::Object(
+            doc.into_iter()
+                .map(|(k, v)| (k, bson_to_json_int64_safe(v)))
+                .collect(),
+        ),
+        Bson::Array(arr) => Value::Array(arr.into_iter().map(bson_to_json_int64_safe).collect()),
+        other => other.into_relaxed_extjson(),
+    }
 }
 
 /// serde_json::Value → BSON Bson。识别 Extended JSON 形态（$oid / $numberDecimal 等）。
@@ -36,6 +55,32 @@ pub fn json_to_document(v: Value) -> Result<Document> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn int64_wrapped_as_numberlong() {
+        // Int64 必须包成 $numberLong（含嵌套 doc / array），否则编辑正小值会被窄化成 Int32
+        let doc = bson::doc! { "big": 42_i64, "nested": { "n": 7_i64 }, "arr": [9_i64] };
+        let v = document_to_json(doc);
+        assert_eq!(v["big"], json!({ "$numberLong": "42" }));
+        assert_eq!(v["nested"]["n"], json!({ "$numberLong": "7" }));
+        assert_eq!(v["arr"][0], json!({ "$numberLong": "9" }));
+    }
+
+    #[test]
+    fn int32_stays_bare_number() {
+        // Int32 仍是裸数字（relaxed），与 Int64 的 $numberLong 包装区分开
+        let v = document_to_json(bson::doc! { "small": 42_i32 });
+        assert_eq!(v["small"], json!(42));
+    }
+
+    #[test]
+    fn numberlong_roundtrips_to_int64() {
+        // 编辑写回：$numberLong 包装经 json_to_bson 还原为真正的 Int64（不窄化）
+        assert_eq!(
+            json_to_bson(json!({ "$numberLong": "42" })).unwrap(),
+            Bson::Int64(42)
+        );
+    }
 
     #[test]
     fn roundtrip_basic_doc() {

@@ -56,7 +56,10 @@ pub(super) fn render(
     if let Some((sort_path, dir)) = panel.sort_by.clone()
         && let Some(si) = table.columns.iter().position(|c| c.path == sort_path)
     {
-        let numeric = matches!(table.columns[si].kind, "int" | "double" | "decimal");
+        let numeric = matches!(
+            table.columns[si].kind,
+            "int" | "long" | "double" | "decimal"
+        );
         visible_rows.sort_by(|&a, &b| {
             let ord = compare_cells(&table.rows[a][si].text, &table.rows[b][si].text, numeric);
             if matches!(dir, SortDir::Desc) {

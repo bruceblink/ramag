@@ -341,6 +341,14 @@ mod tests {
     }
 
     #[test]
+    fn flatten_int64_numberlong_is_long() {
+        // Int64（driver 包装成 $numberLong）→ 独立 "long" kind，当标量不误判嵌套
+        let t = build_flat_table(&[json!({"n": {"$numberLong": "9999999999"}})]);
+        assert_eq!(t.rows[0][0].kind, "long");
+        assert_eq!(t.rows[0][0].text, "9999999999");
+    }
+
+    #[test]
     fn flatten_double_canonical() {
         let t = build_flat_table(&[json!({"d": {"$numberDouble": "Infinity"}})]);
         assert_eq!(t.rows[0][0].kind, "double");

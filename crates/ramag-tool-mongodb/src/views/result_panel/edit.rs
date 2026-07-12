@@ -154,7 +154,7 @@ impl ResultPanel {
 pub(super) fn kind_is_editable(kind: &str) -> bool {
     matches!(
         kind,
-        "text" | "int" | "i" | "double" | "bool" | "null" | "oid" | "decimal"
+        "text" | "int" | "i" | "long" | "double" | "bool" | "null" | "oid" | "decimal"
     )
 }
 
@@ -165,6 +165,8 @@ fn value_for_kind(kind: &str, raw: String) -> Value {
         "oid" => serde_json::json!({ "$oid": raw }),
         "date" => serde_json::json!({ "$date": raw }),
         "decimal" => serde_json::json!({ "$numberDecimal": raw }),
+        // Int64：显式包 $numberLong 保住 64 位，否则正小值会被 serde 反序列化窄化成 Int32
+        "long" => serde_json::json!({ "$numberLong": raw }),
         _ => match serde_json::from_str::<Value>(&raw) {
             Ok(v) => v,
             Err(_) => Value::String(raw),
@@ -199,5 +201,14 @@ mod tests {
         assert_eq!(value_for_kind("int", "42".into()), json!(42));
         assert_eq!(value_for_kind("bool", "true".into()), json!(true));
         assert_eq!(value_for_kind("text", "alice".into()), json!("alice"));
+    }
+
+    #[test]
+    fn long_kind_wraps_numberlong() {
+        // Int64 编辑写回必须包 $numberLong，保住 64 位不被 serde 窄化成 Int32
+        assert_eq!(
+            value_for_kind("long", "9999999999".into()),
+            json!({ "$numberLong": "9999999999" })
+        );
     }
 }

@@ -74,7 +74,7 @@ pub(super) fn render_row(
         let preview = sanitize_inline(&truncate(&cell.text, CELL_PREVIEW_MAX));
         let is_null = cell.kind == "null" && preview.is_empty();
         // 数字类型列右对齐（与 dbclient is_right 同款）
-        let is_right = matches!(column.kind, "int" | "double" | "decimal");
+        let is_right = matches!(column.kind, "int" | "long" | "double" | "decimal");
         let mf = mono_font.clone();
         // 捕获列信息 + 单元格值，双击 → 弹单元格 dialog（与 dbclient 单元格编辑器同款交互）
         let path_for_click = column.path.clone();

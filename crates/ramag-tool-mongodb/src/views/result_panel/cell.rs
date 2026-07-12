@@ -72,11 +72,11 @@ pub(super) fn extjson_cell(map: &serde_json::Map<String, Value>) -> Option<Cell>
             kind: "binary",
         });
     }
-    // Int64
+    // Int64（driver 特化包装成 $numberLong，与 Int32 分开标 "long"，编辑时按 64 位还原）
     if let Some(v) = map.get("$numberLong").and_then(|x| x.as_str()) {
         return Some(Cell {
             text: v.to_string(),
-            kind: "int",
+            kind: "long",
         });
     }
     // Int32 canonical
