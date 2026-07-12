@@ -22,6 +22,8 @@ futures = { workspace = true }
 
 # 快捷键 Action derive（gpui Action 宏要求 Deserialize + JsonSchema）
 serde = { workspace = true }
+# 打开中的仓库 Tab 列表偏好序列化（workspace 既有依赖复用）
+serde_json = { workspace = true }
 schemars = { workspace = true }
 
 # 文件系统监听：外部改动自动刷新工作区（依赖树中已有，零新增编译单元）

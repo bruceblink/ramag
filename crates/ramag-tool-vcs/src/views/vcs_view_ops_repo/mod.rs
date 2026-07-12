@@ -243,6 +243,7 @@ impl VcsView {
             self.save_current_session_to_cache(cx);
         }
         self.open_repos.retain(|r| r.path != path);
+        self.persist_open_repos(cx);
         if is_current {
             if let Some(next) = self.open_repos.first().cloned() {
                 self.open_recent_repo(next.path, cx);
@@ -393,6 +394,7 @@ pub(super) async fn open_repo_async(
         {
             *open = repo_config.clone();
         }
+        this.persist_open_repos(cx);
         // 仓库打开成功但状态查询失败：不静默显示成空工作区，给出可见错误
         match status {
             Ok(s) => this.status = Some(s),

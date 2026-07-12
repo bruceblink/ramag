@@ -451,6 +451,8 @@ fn open_drawer_window(
 
 /// init / on_reopen / 托盘唤起共用；成功后把窗口句柄记入 MainWindowGlobal
 fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
+    // 恢复上次停留的工具（重启不回炉 Home）；registry 校验防 pref 残留失效 id
+    let last_tool = read_preference(&deps.storage, "last_tool").filter(|t| !t.is_empty());
     let AppDeps {
         registry,
         conn_service,
@@ -534,6 +536,13 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                     shell
                 });
 
+                // 恢复上次工具视图（工具已被移除则忽略，留在 Home）
+                if let Some(tool_id) = last_tool.clone().filter(|t| registry.find(t).is_some()) {
+                    shell.update(cx, |s, cx| {
+                        s.navigate_to(NavTarget::Tool(tool_id), window, cx);
+                    });
+                }
+
                 cx.new(|cx| Root::new(shell, window, cx))
             },
         );
@@ -608,23 +617,28 @@ fn build_connection_service() -> anyhow::Result<(Arc<ConnectionService>, Arc<dyn
     Ok((svc, storage))
 }
 
-/// 读取失败时跟随系统主题，并保留可诊断日志。
-fn read_theme_preference(storage: &Arc<dyn Storage>) -> Option<String> {
+/// 启动期同步读取单个偏好（起临时 runtime，仅启动阶段一次性使用）；失败返回 None 并留日志
+fn read_preference(storage: &Arc<dyn Storage>, key: &'static str) -> Option<String> {
     let storage = storage.clone();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {
-            warn!(error = %error, "create theme preference runtime failed");
+            warn!(error = %error, key, "create preference runtime failed");
             return None;
         }
     };
-    match runtime.block_on(async move { storage.get_preference("theme_mode").await }) {
+    match runtime.block_on(async move { storage.get_preference(key).await }) {
         Ok(preference) => preference,
         Err(error) => {
-            warn!(error = %error, "read theme preference failed");
+            warn!(error = %error, key, "read preference failed");
             None
         }
     }
+}
+
+/// 读取失败时跟随系统主题
+fn read_theme_preference(storage: &Arc<dyn Storage>) -> Option<String> {
+    read_preference(storage, "theme_mode")
 }
 
 /// MySQL / Postgres / Redis 共用 DbClient 入口，driver 在表单选择器内

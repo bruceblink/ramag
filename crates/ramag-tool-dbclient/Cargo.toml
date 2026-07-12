@@ -31,6 +31,8 @@ futures = { workspace = true }
 
 # Action 派生需要
 serde = { workspace = true }
+# 打开中的连接列表偏好序列化（workspace 既有依赖复用）
+serde_json = { workspace = true }
 schemars = { workspace = true }
 
 # 时间显示（历史面板）

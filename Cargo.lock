@@ -6409,6 +6409,7 @@ dependencies = [
  "ropey",
  "schemars",
  "serde",
+ "serde_json",
  "sqlformat",
  "tracing",
 ]
@@ -6471,6 +6472,7 @@ dependencies = [
  "ropey",
  "schemars",
  "serde",
+ "serde_json",
  "tracing",
 ]
 

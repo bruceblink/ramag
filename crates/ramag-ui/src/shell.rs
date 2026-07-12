@@ -76,9 +76,26 @@ impl Shell {
 
         if self.selected != new_selected {
             self.selected = new_selected;
+            // 记住停留位置：下次启动直接回到该工具（重启不回炉 Home）
+            persist_last_tool(self.selected.clone(), cx);
             cx.notify();
         }
     }
+}
+
+/// 上次工具落 prefs（后台异步，失败仅告警）。Home 存空串
+fn persist_last_tool(selected: Option<String>, cx: &mut gpui::App) {
+    let Some(storage) = crate::theme::storage_from_cx(cx) else {
+        return;
+    };
+    let value = selected.unwrap_or_default();
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(e) = storage.set_preference("last_tool", &value).await {
+                tracing::warn!(error = %e, "persist last tool failed");
+            }
+        })
+        .detach();
 }
 
 impl Render for Shell {

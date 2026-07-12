@@ -106,8 +106,14 @@ pub struct DbClientView {
     pub(super) sessions_scroll: ScrollHandle,
     /// 异步操作（如删除连接）失败时挂起的提示，render 持 Window 时推送
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
+    /// 跨重启恢复：启动异步读回上次打开的连接（按保存顺序），render 首帧消费逐个重开
+    /// （render 才有 Window；不自动连库，树在 Tab 激活时惰性拉取）
+    pub(super) pending_restore: Option<Vec<ConnectionConfig>>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
+
+/// 打开中的连接 id 列表的偏好 key（JSON 数组）
+const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
 
 impl DbClientView {
     pub fn new(
@@ -129,6 +135,37 @@ impl DbClientView {
 
         let subs = vec![cx.subscribe_in(&picker, window, Self::on_picker_event)];
 
+        // 跨重启恢复：读上次打开的连接 id 列表 + 全部连接配置，按保存顺序匹配，
+        // 存入 pending_restore 由 render 首帧（有 Window）逐个重开
+        if let Some(storage) = ramag_ui::theme::storage_from_cx(cx) {
+            let svc = service.clone();
+            cx.spawn(async move |this, cx| {
+                let ids: Vec<ramag_domain::entities::ConnectionId> =
+                    match storage.get_preference(OPEN_SESSIONS_PREF).await {
+                        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
+                        _ => Vec::new(),
+                    };
+                if ids.is_empty() {
+                    return;
+                }
+                let Ok(all) = svc.list().await else {
+                    return;
+                };
+                let configs: Vec<ConnectionConfig> = ids
+                    .iter()
+                    .filter_map(|id| all.iter().find(|c| &c.id == id).cloned())
+                    .collect();
+                if configs.is_empty() {
+                    return;
+                }
+                let _ = this.update(cx, |this, cx| {
+                    this.pending_restore = Some(configs);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+
         Self {
             service,
             redis_service,
@@ -140,8 +177,35 @@ impl DbClientView {
             picker,
             sessions_scroll: ScrollHandle::new(),
             pending_notification: None,
+            pending_restore: None,
             _subscriptions: subs,
         }
+    }
+
+    /// 把当前打开的连接 id 列表落 prefs（开 / 关 Session 时调；后台异步，失败仅日志）
+    fn persist_open_sessions(&self, cx: &mut Context<Self>) {
+        let Some(storage) = ramag_ui::theme::storage_from_cx(cx) else {
+            return;
+        };
+        let ids: Vec<ramag_domain::entities::ConnectionId> = self
+            .sessions
+            .iter()
+            .map(|s| s.config(cx).id.clone())
+            .collect();
+        let json = match serde_json::to_string(&ids) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "serialize open sessions failed");
+                return;
+            }
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = storage.set_preference(OPEN_SESSIONS_PREF, &json).await {
+                    tracing::warn!(error = %e, "persist open sessions failed");
+                }
+            })
+            .detach();
     }
 
     fn on_picker_event(
@@ -223,6 +287,7 @@ impl DbClientView {
         // 用户主动打开后才异步探测版本（不打开的连接不会去建池/试连）
         self.picker
             .update(cx, |p, cx| p.prefetch_version(&conn_id, cx));
+        self.persist_open_sessions(cx);
         cx.notify();
     }
 
@@ -245,6 +310,7 @@ impl DbClientView {
                 self.active_session = Some(active - 1);
             }
         }
+        self.persist_open_sessions(cx);
         cx.notify();
     }
 

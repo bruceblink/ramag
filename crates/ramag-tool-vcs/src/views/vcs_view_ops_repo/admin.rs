@@ -6,6 +6,9 @@ use ramag_domain::entities::{RepoConfig, RepoId};
 use super::super::vcs_view::VcsView;
 use super::open_repo_async;
 
+/// 打开中的仓库 Tab 路径列表的偏好 key（JSON 数组，跨重启恢复用）
+const OPEN_REPOS_PREF: &str = "vcs_open_repos";
+
 impl VcsView {
     /// 收藏 / 取消收藏最近仓库，并立即持久化。
     pub(crate) fn toggle_repo_favorite(&mut self, path: String, cx: &mut Context<Self>) {
@@ -147,7 +150,8 @@ impl VcsView {
         .detach();
     }
 
-    /// 启动时从 storage 加载 recent_repos（跨重启保留）
+    /// 启动时从 storage 加载 recent_repos（跨重启保留），并按偏好恢复上次打开的仓库 Tab
+    /// （仅恢复 Tab 列表，不自动 open 任何仓库——停留在仓库管理页，点 Tab 才真正打开）
     pub(crate) fn load_recent_repos_async(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let storage = match this.update(cx, |this, _| this.storage.clone()) {
@@ -155,8 +159,17 @@ impl VcsView {
                 Err(_) => return,
             };
             let result = storage.list_repos().await;
+            let open_paths: Vec<String> = match storage.get_preference(OPEN_REPOS_PREF).await {
+                Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
+                _ => Vec::new(),
+            };
             let _ = this.update(cx, |this, cx| match result {
                 Ok(list) => {
+                    // 按保存顺序恢复 Tab；已从 recent 移除的仓库自动跳过
+                    this.open_repos = open_paths
+                        .iter()
+                        .filter_map(|p| list.iter().find(|r| &r.path == p).cloned())
+                        .collect();
                     this.recent_repos = list;
                     cx.notify();
                 }
@@ -168,5 +181,25 @@ impl VcsView {
             });
         })
         .detach();
+    }
+
+    /// 把当前打开的仓库 Tab 路径列表落 prefs（开 / 关 Tab 时调；后台异步，失败仅日志）
+    pub(crate) fn persist_open_repos(&self, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self.open_repos.iter().map(|r| r.path.clone()).collect();
+        let json = match serde_json::to_string(&paths) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "vcs: serialize open repos failed");
+                return;
+            }
+        };
+        let storage = self.storage.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = storage.set_preference(OPEN_REPOS_PREF, &json).await {
+                    tracing::warn!(error = %e, "vcs: persist open repos failed");
+                }
+            })
+            .detach();
     }
 }

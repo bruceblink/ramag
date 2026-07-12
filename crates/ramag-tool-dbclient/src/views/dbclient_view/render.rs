@@ -19,6 +19,12 @@ impl Render for DbClientView {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
         }
+        // 跨重启恢复：首帧逐个重开上次打开的连接（此处才有 Window；树惰性加载不自动连库）
+        if let Some(configs) = self.pending_restore.take() {
+            for c in configs {
+                self.open_session(c, window, cx);
+            }
+        }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;
