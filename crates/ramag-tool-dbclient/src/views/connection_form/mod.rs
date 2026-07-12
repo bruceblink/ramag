@@ -33,8 +33,8 @@ pub(super) enum TestState {
 /// 表单事件
 #[derive(Debug, Clone)]
 pub enum FormEvent {
-    /// 用户保存成功
-    Saved(ConnectionConfig),
+    /// 用户保存成功（Box 压缩枚举尺寸，config 已有十余字段）
+    Saved(Box<ConnectionConfig>),
     /// 用户取消
     Cancelled,
 }
@@ -67,6 +67,12 @@ pub struct ConnectionFormPanel {
     pub(super) auth_source: Entity<InputState>,
     /// 生产模式：开启后该连接由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     pub(super) production: bool,
+    /// 启用 TLS 加密传输
+    pub(super) tls: bool,
+    /// 自定义 CA 证书路径输入框（PEM，可选；仅 tls 开启时渲染）
+    pub(super) ca_cert_path: Entity<InputState>,
+    /// MongoDB URI 粘贴框（仅 MongoDB 渲染）：解析回填 host/port/凭证/库/authSource/tls
+    pub(super) mongo_uri: Entity<InputState>,
     pub(super) test_state: TestState,
     /// 测试结果代次：连接参数变更即递增，在途测试结果代次不符则丢弃
     pub(super) test_epoch: u64,
@@ -139,6 +145,8 @@ impl ConnectionFormPanel {
             auth_source: None,
             remark: None,
             production: false,
+            tls: false,
+            ca_cert_path: None,
         });
         let driver_id = driver_kind_to_id(p.driver);
         let port_text = if is_create {
@@ -190,6 +198,16 @@ impl ConnectionFormPanel {
                 .placeholder("admin")
                 .default_value(p.auth_source.unwrap_or_default())
         });
+        // 自定义 CA 证书路径（仅 TLS 开启时渲染；留空用系统信任链）
+        let ca_cert_path = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("CA 证书路径（PEM，可选；留空用系统信任链）")
+                .default_value(p.ca_cert_path.unwrap_or_default())
+        });
+        // MongoDB URI 粘贴框（仅 MongoDB 渲染，粘贴后点「填充」解析回填表单）
+        let mongo_uri = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("mongodb://user:pass@host:27017/db?tls=true")
+        });
 
         // host 变化 → 名称虚影跟随（名称始终留给用户输入，不写入真实值）
         let mut subscriptions = Vec::new();
@@ -210,7 +228,15 @@ impl ConnectionFormPanel {
         ));
 
         // 连接参数变化 → 重置已显示的测试结论（旧结论对新参数不成立）；名称/颜色不影响连通性
-        for input in [&host, &port, &username, &password, &database, &auth_source] {
+        for input in [
+            &host,
+            &port,
+            &username,
+            &password,
+            &database,
+            &auth_source,
+            &ca_cert_path,
+        ] {
             subscriptions.push(cx.subscribe_in(
                 input,
                 window,
@@ -223,6 +249,7 @@ impl ConnectionFormPanel {
         }
 
         let initial_production = p.production;
+        let initial_tls = p.tls;
 
         Self {
             service,
@@ -238,6 +265,9 @@ impl ConnectionFormPanel {
             database,
             auth_source,
             production: initial_production,
+            tls: initial_tls,
+            ca_cert_path,
+            mongo_uri,
             test_state: TestState::Idle,
             test_epoch: 0,
             saving: false,
@@ -315,3 +345,4 @@ fn id_to_driver_kind(id: &str) -> Option<DriverKind> {
 mod defaults;
 mod ops;
 mod render;
+mod uri;

@@ -28,10 +28,16 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
         .charset("utf8mb4")
         // 统一 UTC 避免时区歧义
         .timezone(Some("+00:00".into()))
-        // SSL 有则用、无则降级
-        .ssl_mode(MySqlSslMode::Preferred)
         .log_statements(tracing::log::LevelFilter::Debug)
         .log_slow_statements(tracing::log::LevelFilter::Warn, Duration::from_secs(1));
+
+    // TLS：关闭时保持历史行为（Preferred 有则用、无则降级）；
+    // 开启则强制加密，配了自定义 CA 再升级为按该 CA 校验证书链（自签场景）
+    let opts = match (config.tls, config.ca_cert_path.as_deref()) {
+        (false, _) => opts.ssl_mode(MySqlSslMode::Preferred),
+        (true, None) => opts.ssl_mode(MySqlSslMode::Required),
+        (true, Some(ca)) => opts.ssl_mode(MySqlSslMode::VerifyCa).ssl_ca(ca),
+    };
 
     let opts = if let Some(db) = config.database.as_ref().filter(|s| !s.is_empty()) {
         opts.database(db)

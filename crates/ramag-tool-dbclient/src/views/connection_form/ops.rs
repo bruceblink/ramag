@@ -14,6 +14,43 @@ use super::{
 };
 
 impl ConnectionFormPanel {
+    /// 「从 URI 填充」：解析 mongodb:// 地址回填表单各字段。
+    /// 解析失败复用测试结论区显示红字；副本集多主机仅取首个
+    pub(super) fn apply_mongo_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.mongo_uri.read(cx).value().trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        let parts = match super::uri::parse_mongo_uri(&raw) {
+            Ok(p) => p,
+            Err(msg) => {
+                self.test_state = TestState::Failed(format!("URI 解析失败：{msg}"));
+                cx.notify();
+                return;
+            }
+        };
+        self.host
+            .update(cx, |s, cx| s.set_value(parts.host, window, cx));
+        self.port.update(cx, |s, cx| {
+            let v = parts.port.map(|p| p.to_string()).unwrap_or_default();
+            s.set_value(v, window, cx);
+        });
+        self.username
+            .update(cx, |s, cx| s.set_value(parts.username, window, cx));
+        self.password
+            .update(cx, |s, cx| s.set_value(parts.password, window, cx));
+        self.database.update(cx, |s, cx| {
+            s.set_value(parts.database.unwrap_or_default(), window, cx)
+        });
+        self.auth_source.update(cx, |s, cx| {
+            s.set_value(parts.auth_source.unwrap_or_default(), window, cx)
+        });
+        self.tls = parts.tls;
+        info!("mongo uri applied to form");
+        self.invalidate_test(cx);
+        cx.notify();
+    }
+
     /// 连接参数变更后调用：丢弃在途测试的结果，并清掉已显示的测试结论
     pub(super) fn invalidate_test(&mut self, cx: &mut Context<Self>) {
         self.test_epoch = self.test_epoch.wrapping_add(1);
@@ -110,6 +147,14 @@ impl ConnectionFormPanel {
             FormMode::Edit(id) => id.clone(),
         };
 
+        // CA 路径仅 TLS 开启时保存；关着时留空避免脏值残留
+        let ca_cert_path = if self.tls {
+            let v = self.ca_cert_path.read(cx).value().trim().to_string();
+            if v.is_empty() { None } else { Some(v) }
+        } else {
+            None
+        };
+
         Ok(ConnectionConfig {
             id,
             name,
@@ -122,6 +167,8 @@ impl ConnectionFormPanel {
             auth_source,
             remark: None,
             production: self.production,
+            tls: self.tls,
+            ca_cert_path,
         })
     }
 
@@ -262,7 +309,7 @@ impl ConnectionFormPanel {
                 match result {
                     Ok(_) => {
                         info!(name = %config.name, "connection saved");
-                        cx.emit(FormEvent::Saved(config));
+                        cx.emit(FormEvent::Saved(Box::new(config)));
                     }
                     Err(e) => {
                         error!(error = %e, "save connection failed");

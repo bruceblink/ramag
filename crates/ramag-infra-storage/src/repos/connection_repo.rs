@@ -33,6 +33,11 @@ struct EncryptedConnection {
     remark: Option<String>,
     #[serde(default)]
     production: bool,
+    /// TLS 开关与自定义 CA 路径（明文元数据，非机密；老数据缺省 = 关）
+    #[serde(default)]
+    tls: bool,
+    #[serde(default)]
+    ca_cert_path: Option<String>,
 }
 
 impl EncryptedConnection {
@@ -49,6 +54,8 @@ impl EncryptedConnection {
             auth_source: plain.auth_source.clone(),
             remark: plain.remark.clone(),
             production: plain.production,
+            tls: plain.tls,
+            ca_cert_path: plain.ca_cert_path.clone(),
         })
     }
 
@@ -65,6 +72,8 @@ impl EncryptedConnection {
             auth_source: self.auth_source,
             remark: self.remark,
             production: self.production,
+            tls: self.tls,
+            ca_cert_path: self.ca_cert_path,
         })
     }
 }

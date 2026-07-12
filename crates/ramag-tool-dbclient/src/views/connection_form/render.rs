@@ -109,6 +109,28 @@ impl Render for ConnectionFormPanel {
             .pb(px(4.0))
             // —— 数据库类型（仅新建时显示，编辑模式 driver 不可变更）——
             .children(driver_selector)
+            // —— MongoDB：粘贴连接 URI 一键填充（副本集多主机取首个；+srv 不支持） ——
+            .when(self.driver_id == "mongodb", |this| {
+                this.child(
+                    h_flex()
+                        .w_full()
+                        .items_end()
+                        .gap(px(8.0))
+                        .child(div().flex_1().min_w_0().child(field_row(
+                            "从 URI 填充（可选）",
+                            Input::new(&self.mongo_uri),
+                        )))
+                        .child(
+                            Button::new("apply-mongo-uri")
+                                .small()
+                                .label("填充")
+                                .tooltip("解析 mongodb:// 地址并回填下方字段")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.apply_mongo_uri(window, cx);
+                                })),
+                        ),
+                )
+            })
             // —— 连接信息 ——
             .child(
                 v_flex()
@@ -147,6 +169,41 @@ impl Render for ConnectionFormPanel {
                         this.child(field_row(
                             "认证库 authSource（可选，留空 = admin）",
                             Input::new(&self.auth_source),
+                        ))
+                    }),
+            )
+            // —— 传输安全 ——
+            .child(
+                v_flex()
+                    .gap(px(12.0))
+                    .child(section_title("传输安全", muted_fg))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                v_flex()
+                                    .gap(px(2.0))
+                                    .child(div().text_sm().child("启用 TLS 加密"))
+                                    .child(div().text_xs().text_color(muted_fg).child(
+                                        "关闭时按服务端能力协商（SQL 有则用）；开启则强制加密连接",
+                                    )),
+                            )
+                            .child(
+                                gpui_component::switch::Switch::new("conn-tls")
+                                    .checked(self.tls)
+                                    .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                        this.tls = !this.tls;
+                                        this.invalidate_test(cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .when(self.tls, |this| {
+                        this.child(field_row(
+                            "自定义 CA 证书（自签服务端用；留空走系统信任链）",
+                            Input::new(&self.ca_cert_path),
                         ))
                     }),
             )

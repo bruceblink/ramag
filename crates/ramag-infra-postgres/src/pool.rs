@@ -37,10 +37,16 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
         .password(&config.password)
         .database(database)
         .application_name(DEFAULT_APPLICATION_NAME)
-        // 有 SSL 用 SSL，无则降级
-        .ssl_mode(PgSslMode::Prefer)
         .log_statements(tracing::log::LevelFilter::Debug)
         .log_slow_statements(tracing::log::LevelFilter::Warn, Duration::from_secs(1));
+
+    // TLS：关闭时保持历史行为（Prefer 有则用、无则降级）；
+    // 开启则强制加密，配了自定义 CA 再升级为按该 CA 校验证书链（自签场景）
+    let opts = match (config.tls, config.ca_cert_path.as_deref()) {
+        (false, _) => opts.ssl_mode(PgSslMode::Prefer),
+        (true, None) => opts.ssl_mode(PgSslMode::Require),
+        (true, Some(ca)) => opts.ssl_mode(PgSslMode::VerifyCa).ssl_root_cert(ca),
+    };
 
     PgPoolOptions::new()
         .max_connections(8)

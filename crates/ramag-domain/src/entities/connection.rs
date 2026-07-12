@@ -66,6 +66,13 @@ pub struct ConnectionConfig {
     /// 生产模式：开启后由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     #[serde(default)]
     pub production: bool,
+    /// 启用 TLS 加密传输（默认关，与历史行为一致；各 driver 底层均走 rustls）
+    #[serde(default)]
+    pub tls: bool,
+    /// 自定义 CA 证书路径（PEM）。仅 tls=true 时生效：留空用系统 / webpki 根证书，
+    /// 填写则以该 CA 严格校验服务端证书链（自签证书场景）
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
 }
 
 impl ConnectionConfig {
@@ -87,6 +94,8 @@ impl ConnectionConfig {
             auth_source: None,
             remark: None,
             production: false,
+            tls: false,
+            ca_cert_path: None,
         }
     }
 
@@ -104,6 +113,8 @@ impl ConnectionConfig {
             auth_source: None,
             remark: None,
             production: false,
+            tls: false,
+            ca_cert_path: None,
         }
     }
 
@@ -121,6 +132,8 @@ impl ConnectionConfig {
             auth_source: None,
             remark: None,
             production: false,
+            tls: false,
+            ca_cert_path: None,
         }
     }
 }

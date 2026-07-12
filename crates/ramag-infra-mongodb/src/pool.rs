@@ -95,12 +95,24 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         )
     };
 
+    // TLS：开启走 rustls（默认系统信任链），配了自定义 CA 则以该 PEM 校验（自签场景）
+    let tls = if config.tls {
+        let mut tls_opts = mongodb::options::TlsOptions::builder().build();
+        if let Some(ca) = config.ca_cert_path.as_deref().filter(|s| !s.is_empty()) {
+            tls_opts.ca_file_path = Some(std::path::PathBuf::from(ca));
+        }
+        Some(mongodb::options::Tls::Enabled(tls_opts))
+    } else {
+        None
+    };
+
     let opts = ClientOptions::builder()
         .hosts(vec![ServerAddress::Tcp {
             host: config.host.clone(),
             port: Some(config.port),
         }])
         .credential(credential)
+        .tls(tls)
         .app_name(Some("ramag".to_string()))
         .connect_timeout(Some(Duration::from_secs(10)))
         .server_selection_timeout(Some(Duration::from_secs(10)))

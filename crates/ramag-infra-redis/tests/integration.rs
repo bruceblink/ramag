@@ -28,6 +28,8 @@ fn config_from_env() -> Option<ConnectionConfig> {
         auth_source: None,
         remark: None,
         production: false,
+        tls: false,
+        ca_cert_path: None,
     })
 }
 

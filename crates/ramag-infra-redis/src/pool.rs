@@ -90,10 +90,29 @@ impl PoolCache {
 async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<ConnectionManager> {
     let info = build_connection_info(config, db);
 
-    let client = Client::open(info).map_err(|e| {
-        warn!(error = %e, host = %config.host, "build redis client failed");
-        map_redis_error(e)
-    })?;
+    // 自定义 CA：读 PEM 字节经 build_with_tls 注入信任根（自签场景）；否则走系统信任链
+    let client = if config.tls
+        && let Some(ca) = config.ca_cert_path.as_deref().filter(|s| !s.is_empty())
+    {
+        let pem = std::fs::read(ca)
+            .map_err(|e| DomainError::InvalidConfig(format!("读取 CA 证书失败（{ca}）：{e}")))?;
+        Client::build_with_tls(
+            info,
+            redis::TlsCertificates {
+                client_tls: None,
+                root_cert: Some(pem),
+            },
+        )
+        .map_err(|e| {
+            warn!(error = %e, host = %config.host, "build redis tls client failed");
+            map_redis_error(e)
+        })?
+    } else {
+        Client::open(info).map_err(|e| {
+            warn!(error = %e, host = %config.host, "build redis client failed");
+            map_redis_error(e)
+        })?
+    };
 
     // 设连接 / 应答超时避免 GUI 卡死
     let mgr = ConnectionManager::new_with_config(
@@ -111,7 +130,7 @@ async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<C
     Ok(mgr)
 }
 
-/// 当前仅支持 plain TCP；TLS / Unix Socket 待扩展 ConnectionConfig schema
+/// TCP 或 TLS（config.tls）；Unix Socket 暂不支持
 fn build_connection_info(config: &ConnectionConfig, db: u8) -> ConnectionInfo {
     let username = if config.username.is_empty() {
         None
@@ -124,8 +143,21 @@ fn build_connection_info(config: &ConnectionConfig, db: u8) -> ConnectionInfo {
         Some(config.password.clone())
     };
 
+    // TLS 开启用 TcpTls（严格校验主机名，不提供 insecure 选项）；
+    // tls_params 留 None——自定义 CA 在 build_with_tls 注入
+    let addr = if config.tls {
+        ConnectionAddr::TcpTls {
+            host: config.host.clone(),
+            port: config.port,
+            insecure: false,
+            tls_params: None,
+        }
+    } else {
+        ConnectionAddr::Tcp(config.host.clone(), config.port)
+    };
+
     ConnectionInfo {
-        addr: ConnectionAddr::Tcp(config.host.clone(), config.port),
+        addr,
         redis: RedisConnectionInfo {
             db: db as i64,
             username,
