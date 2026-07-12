@@ -11,7 +11,7 @@ use gpui::{
     ScrollHandle, SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -42,6 +42,8 @@ pub struct MongoQueryPanel {
     show_editor: bool,
     /// 面板根焦点：隐藏编辑器后焦点收回这里，保证 cmd-e 仍能再次触发
     focus_handle: FocusHandle,
+    /// 历史弹框事件订阅（单槽：重复打开整体替换，不随打开次数累积）
+    history_sub: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -58,6 +60,7 @@ impl MongoQueryPanel {
             // 隐藏编辑器，让结果区直接占满（与 dbclient 默认一致）
             show_editor: false,
             focus_handle: cx.focus_handle(),
+            history_sub: None,
             _subscriptions: Vec::new(),
         }
     }
@@ -186,6 +189,55 @@ impl MongoQueryPanel {
     fn scroll_tabs_to_end(&self) {
         self.tabs_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
+    }
+
+    /// 打开查询历史弹框：搜索 / 复制 / 填入 / 重跑 / 删除 / 清空（与 SQL 历史中心同构）
+    fn open_history_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        let list = cx.new(|cx| {
+            crate::views::history_dialog::MongoHistoryList::new(
+                self.service.clone(),
+                conn.id.clone(),
+                window,
+                cx,
+            )
+        });
+        self.history_sub = Some(cx.subscribe_in(
+            &list,
+            window,
+            |this: &mut Self,
+             _,
+             e: &crate::views::history_dialog::MongoHistoryEvent,
+             window,
+             cx| {
+                use crate::views::history_dialog::MongoHistoryEvent;
+                match e {
+                    MongoHistoryEvent::FillEditor(cmd) => {
+                        window.close_dialog(cx);
+                        // 复用示例插入语义：有手写草稿自动另开 Tab（防丢稿）
+                        this.apply_example(cmd, window, cx);
+                    }
+                    MongoHistoryEvent::RunCommand(cmd) => {
+                        window.close_dialog(cx);
+                        this.apply_example(cmd, window, cx);
+                        if let Some(tab) = this.tabs.get(this.active) {
+                            tab.update(cx, |t, cx| t.run(cx));
+                        }
+                    }
+                }
+            },
+        ));
+        let title = SharedString::from(format!("查询历史 · {}", conn.name));
+        window.open_dialog(cx, move |dialog, _, _| {
+            let list = list.clone();
+            dialog
+                .title(title.clone())
+                .close_button(true)
+                .width(px(760.0))
+                .content(move |content, _, _| content.child(list.clone()))
+        });
     }
 
     pub fn close_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -404,6 +456,19 @@ impl Render for MongoQueryPanel {
                                 .items_center()
                                 .border_l_1()
                                 .border_color(border)
+                                .child(
+                                    Button::new("mongo-history")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Calendar)
+                                        .tooltip("查询历史")
+                                        .disabled(self.connection.is_none())
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.open_history_dialog(window, cx);
+                                            },
+                                        )),
+                                )
                                 .child({
                                     let entity = cx.entity();
                                     let coll = self

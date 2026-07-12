@@ -316,13 +316,13 @@ impl QueryPanel {
         cx.notify();
     }
 
-    /// 打开查询历史弹框：当前连接最近 HISTORY_LIMIT 条，行操作复制 / 填入编辑器
+    /// 打开查询历史弹框：搜索 / 复制 / 填入 / 重跑 / 删除 / 清空
     fn open_history_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
         };
-        let list = cx.new(|cx| HistoryList::new(self.service.clone(), conn.id.clone(), cx));
-        // 订阅「填入编辑器」：先关弹框再写入聚焦，避免弹框焦点恢复盖掉编辑器焦点
+        let list = cx.new(|cx| HistoryList::new(self.service.clone(), conn.id.clone(), window, cx));
+        // 订阅行为事件：先关弹框再写入聚焦，避免弹框焦点恢复盖掉编辑器焦点
         self.history_sub = Some(cx.subscribe_in(
             &list,
             window,
@@ -330,6 +330,13 @@ impl QueryPanel {
                 HistoryEvent::FillEditor(sql) => {
                     window.close_dialog(cx);
                     this.fill_active_sql(sql.clone(), window, cx);
+                }
+                HistoryEvent::RunSql(sql) => {
+                    window.close_dialog(cx);
+                    this.fill_active_sql(sql.clone(), window, cx);
+                    if let Some(tab) = this.tabs.get(this.active) {
+                        tab.update(cx, |t, cx| t.run(cx));
+                    }
                 }
             },
         ));

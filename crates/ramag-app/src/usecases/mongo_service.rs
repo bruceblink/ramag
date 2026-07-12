@@ -135,4 +135,23 @@ impl MongoService {
             tracing::warn!(error = %e, "append mongo history failed");
         }
     }
+
+    /// 按连接列出历史（历史中心用；与 SQL 共表，sql 字段即原始 JSON 命令）
+    pub async fn list_history(
+        &self,
+        connection_id: Option<&ConnectionId>,
+        limit: usize,
+    ) -> Result<Vec<QueryRecord>> {
+        self.storage.list_history(connection_id, limit).await
+    }
+
+    /// 删除单条历史
+    pub async fn delete_history(&self, id: &ramag_domain::entities::QueryRecordId) -> Result<()> {
+        self.storage.delete_history(id).await
+    }
+
+    /// 清空某连接（None = 全部）的历史
+    pub async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()> {
+        self.storage.clear_history(connection_id).await
+    }
 }

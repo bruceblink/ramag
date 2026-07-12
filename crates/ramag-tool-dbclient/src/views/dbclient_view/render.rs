@@ -19,10 +19,16 @@ impl Render for DbClientView {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
         }
-        // 跨重启恢复：首帧逐个重开上次打开的连接（此处才有 Window；树惰性加载不自动连库）
-        if let Some(configs) = self.pending_restore.take() {
+        // 跨重启恢复：首帧逐个重开上次打开的连接（此处才有 Window；树惰性加载不自动连库），
+        // 再切回上次激活的那个 Tab
+        if let Some((configs, active_id)) = self.pending_restore.take() {
             for c in configs {
                 self.open_session(c, window, cx);
+            }
+            if let Some(id) = active_id
+                && let Some(idx) = self.sessions.iter().position(|s| s.config(cx).id == id)
+            {
+                self.select_session(idx, window, cx);
             }
         }
         let theme = cx.theme();

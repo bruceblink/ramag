@@ -200,4 +200,14 @@ impl ConnectionService {
     ) -> Result<Vec<QueryRecord>> {
         self.storage.list_history(connection_id, limit).await
     }
+
+    /// 删除单条查询历史（历史中心行删除按钮用）
+    pub async fn delete_history(&self, id: &ramag_domain::entities::QueryRecordId) -> Result<()> {
+        self.storage.delete_history(id).await
+    }
+
+    /// 清空某连接（None = 全部）的查询历史
+    pub async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()> {
+        self.storage.clear_history(connection_id).await
+    }
 }

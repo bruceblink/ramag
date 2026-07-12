@@ -132,12 +132,23 @@ impl ClipboardView {
             {
                 return;
             }
-            let result = svc.search(&query, SEARCH_LIMIT).await.unwrap_or_default();
+            // 搜索失败必须明示（解密 / 存储错误），不得伪装成「无结果」
+            let result = svc.search(&query, SEARCH_LIMIT).await;
             let _ = this.update(cx, |this, cx| {
-                if this.search_gen == generation {
-                    this.search_results = result;
-                    cx.notify();
+                if this.search_gen != generation {
+                    return;
                 }
+                match result {
+                    Ok(items) => this.search_results = items,
+                    Err(e) => {
+                        error!(error = %e, "clip full search failed");
+                        this.search_results.clear();
+                        this.pending_notification = Some(Notification::error(format!(
+                            "全量搜索失败（结果仅含最近缓存）：{e}"
+                        )));
+                    }
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -215,6 +226,12 @@ impl ClipboardView {
                     Ok(()) => {
                         // 无媒体条目（文本/链接/颜色）给「撤销」；图片类媒体已物理删除，不可恢复
                         let restorable = item.image_path.is_none() && item.thumb_path.is_none();
+                        if !restorable {
+                            // 明确说明不可撤销，而非静默消失
+                            this.pending_notification = Some(Notification::info(
+                                "已删除该条目（图片媒体已即时清除，不可恢复）",
+                            ));
+                        }
                         if restorable {
                             let svc_for_undo = this.service.clone();
                             let view = cx.entity().clone();

@@ -106,14 +106,36 @@ pub struct DbClientView {
     pub(super) sessions_scroll: ScrollHandle,
     /// 异步操作（如删除连接）失败时挂起的提示，render 持 Window 时推送
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// 跨重启恢复：启动异步读回上次打开的连接（按保存顺序），render 首帧消费逐个重开
-    /// （render 才有 Window；不自动连库，树在 Tab 激活时惰性拉取）
-    pub(super) pending_restore: Option<Vec<ConnectionConfig>>,
+    /// 跨重启恢复：启动异步读回上次打开的连接（按保存顺序）与上次激活的连接 id，
+    /// render 首帧消费逐个重开（render 才有 Window；不自动连库，树惰性拉取）
+    pub(super) pending_restore: Option<(
+        Vec<ConnectionConfig>,
+        Option<ramag_domain::entities::ConnectionId>,
+    )>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
-/// 打开中的连接 id 列表的偏好 key（JSON 数组）
+/// 打开中的连接列表的偏好 key（JSON：{ids, active}；兼容旧版纯 id 数组）
 const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
+
+/// open sessions 偏好的落盘结构；`active` 记录上次激活的连接（重启回到原位）
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OpenSessionsPref {
+    ids: Vec<ramag_domain::entities::ConnectionId>,
+    #[serde(default)]
+    active: Option<ramag_domain::entities::ConnectionId>,
+}
+
+/// 解析偏好：优先新结构，回退旧版纯数组（active 未知）
+fn parse_open_sessions(json: &str) -> OpenSessionsPref {
+    if let Ok(p) = serde_json::from_str::<OpenSessionsPref>(json) {
+        return p;
+    }
+    OpenSessionsPref {
+        ids: serde_json::from_str(json).unwrap_or_default(),
+        active: None,
+    }
+}
 
 impl DbClientView {
     pub fn new(
@@ -140,18 +162,18 @@ impl DbClientView {
         if let Some(storage) = ramag_ui::theme::storage_from_cx(cx) {
             let svc = service.clone();
             cx.spawn(async move |this, cx| {
-                let ids: Vec<ramag_domain::entities::ConnectionId> =
-                    match storage.get_preference(OPEN_SESSIONS_PREF).await {
-                        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
-                        _ => Vec::new(),
-                    };
-                if ids.is_empty() {
+                let pref = match storage.get_preference(OPEN_SESSIONS_PREF).await {
+                    Ok(Some(json)) => parse_open_sessions(&json),
+                    _ => return,
+                };
+                if pref.ids.is_empty() {
                     return;
                 }
                 let Ok(all) = svc.list().await else {
                     return;
                 };
-                let configs: Vec<ConnectionConfig> = ids
+                let configs: Vec<ConnectionConfig> = pref
+                    .ids
                     .iter()
                     .filter_map(|id| all.iter().find(|c| &c.id == id).cloned())
                     .collect();
@@ -159,7 +181,7 @@ impl DbClientView {
                     return;
                 }
                 let _ = this.update(cx, |this, cx| {
-                    this.pending_restore = Some(configs);
+                    this.pending_restore = Some((configs, pref.active));
                     cx.notify();
                 });
             })
@@ -192,7 +214,11 @@ impl DbClientView {
             .iter()
             .map(|s| s.config(cx).id.clone())
             .collect();
-        let json = match serde_json::to_string(&ids) {
+        let active = self
+            .active_session
+            .and_then(|i| self.sessions.get(i))
+            .map(|s| s.config(cx).id.clone());
+        let json = match serde_json::to_string(&OpenSessionsPref { ids, active }) {
             Ok(j) => j,
             Err(e) => {
                 tracing::warn!(error = %e, "serialize open sessions failed");
@@ -327,6 +353,8 @@ impl DbClientView {
             self.sessions[idx].ensure_loaded(cx);
             // 聚焦内容，cmd-e 等快捷键无需先点内容区
             self.sessions[idx].focus(window, cx);
+            // active 变化也入偏好：重启后回到上次停留的连接
+            self.persist_open_sessions(cx);
             cx.notify();
         }
     }

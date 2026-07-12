@@ -2,6 +2,7 @@
 
 pub mod collection_tree;
 pub mod examples;
+pub mod history_dialog;
 pub mod mongo_session;
 pub mod query_panel;
 pub mod query_tab;

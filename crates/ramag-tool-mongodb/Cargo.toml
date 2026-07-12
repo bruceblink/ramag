@@ -10,6 +10,8 @@ description = "Ramag MongoDB 工具：仿 MySQL 三栏 UI（左 db/collection �
 workspace = true
 
 [dependencies]
+# 历史时间戳本地化展示（workspace 既有依赖复用）
+chrono = { workspace = true }
 ramag-domain = { workspace = true }
 ramag-app = { workspace = true }
 ramag-ui = { workspace = true }
