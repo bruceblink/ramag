@@ -195,6 +195,17 @@ impl ClipboardView {
     ) -> impl IntoElement {
         if visible.is_empty() {
             let muted = cx.theme().muted_foreground;
+            // 空态按场景区分：搜索无命中 / 类型筛选无命中 / 采集关闭 / 真·无历史
+            let query = self.search.read(cx).value().trim().to_string();
+            let hint = if !query.is_empty() {
+                format!("没有匹配「{query}」的条目")
+            } else if self.filter.is_some() {
+                "该类型下暂无条目".to_string()
+            } else if !self.settings.enabled {
+                "采集已关闭：右上角设置中开启后，复制的内容才会记录".to_string()
+            } else {
+                "暂无剪贴历史；复制任意内容后会出现在这里".to_string()
+            };
             return div()
                 .size_full()
                 .flex()
@@ -202,7 +213,7 @@ impl ClipboardView {
                 .justify_center()
                 .text_sm()
                 .text_color(muted)
-                .child("暂无剪贴历史")
+                .child(hint)
                 .into_any_element();
         }
 

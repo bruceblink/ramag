@@ -97,7 +97,10 @@ impl ResultPanel {
             column_completion_source.clone(),
         );
         let column_filter = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("过滤列（逗号分隔多列名）");
+            // 语法：标量列名=只显示这些列；object/array 字段或 a.b 路径=钻取查看其内容；
+            // 分号后=钻取层投影字段。placeholder 点明双语义，避免"输错被钻进去"的困惑
+            let mut state = InputState::new(window, cx)
+                .placeholder("过滤列（列名逗号分隔；填 object/array 字段或 a.b 路径则钻取）");
             state.lsp.completion_provider = Some(provider);
             state
         });
