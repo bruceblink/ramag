@@ -7,7 +7,7 @@ use tracing::error;
 
 use crate::views::connection_form::{self, ConnectionFormPanel, FormEvent};
 
-use super::{CenterMode, DbClientView};
+use super::DbClientView;
 
 impl DbClientView {
     pub(super) fn open_form_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -86,29 +86,17 @@ impl DbClientView {
                         self.mongo_service.evict_pool(&conn.id);
                     }
                 }
-                // 编辑场景：若该连接有正在打开的 Session，旧 config 已过期（如 database 改了）→
-                // 静默关闭旧 Session，避免它继续基于旧池跑查询误导用户
-                if let Some(idx) = self
-                    .sessions
-                    .iter()
-                    .position(|s| s.config(cx).id == conn.id)
-                {
-                    self.sessions.remove(idx);
-                    match self.active_session {
-                        Some(active) if active == idx => {
-                            if self.sessions.is_empty() {
-                                self.active_session = None;
-                                self.center = CenterMode::ConnectionPicker;
-                            } else {
-                                let new_active = active.min(self.sessions.len() - 1);
-                                self.active_session = Some(new_active);
-                            }
-                        }
-                        Some(active) if active > idx => {
-                            self.active_session = Some(active - 1);
-                        }
-                        _ => {}
-                    }
+                // 编辑场景：不再静默关闭已打开的 Session（会丢失用户未保存的查询稿）。
+                // 池已 evict，下次查询自动按新 config 走新池；仅提示配置已更新，
+                // 如需按新 database / schema 刷新元数据，用户可手动关标签重开
+                let has_open_session = self.sessions.iter().any(|s| s.config(cx).id == conn.id);
+                if has_open_session {
+                    self.pending_notification = Some(
+                        gpui_component::notification::Notification::info(
+                            "连接配置已更新。已打开的标签仍可继续使用；如需按新库/schema 刷新，请关闭后重新打开",
+                        )
+                        .autohide(true),
+                    );
                 }
                 cx.notify();
             }

@@ -108,7 +108,7 @@ const COMMANDS: &[CmdMeta] = &[
     // Server / Connection
     CmdMeta { name: "PING", syntax: "PING [message]", summary: "心跳探测" },
     CmdMeta { name: "ECHO", syntax: "ECHO message", summary: "回显消息" },
-    CmdMeta { name: "SELECT", syntax: "SELECT index", summary: "切换 DB" },
+    // 不提供 SELECT 补全：命令行内切库会破坏连接池上下文，改用顶部 DB 选择器
     CmdMeta { name: "DBSIZE", syntax: "DBSIZE", summary: "当前 DB key 数" },
     CmdMeta { name: "INFO", syntax: "INFO [section]", summary: "服务器信息" },
     CmdMeta { name: "CONFIG", syntax: "CONFIG GET|SET parameter [value]", summary: "读写配置" },

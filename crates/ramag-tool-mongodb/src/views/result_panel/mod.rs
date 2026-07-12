@@ -359,12 +359,12 @@ impl Render for ResultPanel {
                 .child(error_hint(err, danger))
                 .into_any_element();
         }
-        // 借用而非 clone：render 只用 affected / documents.len() / elapsed_ms 三个标量，
+        // 借用而非 clone：render 只用 affected / documents.len() / elapsed_ms / truncated，
         // 每帧深拷贝整个 MongoQueryResult（含万级文档）纯属浪费
-        let Some((affected, total_docs, elapsed)) = self
+        let Some((affected, total_docs, elapsed, truncated)) = self
             .result
             .as_ref()
-            .map(|r| (r.affected, r.documents.len(), r.elapsed_ms))
+            .map(|r| (r.affected, r.documents.len(), r.elapsed_ms, r.truncated))
         else {
             return v_flex()
                 .size_full()
@@ -449,6 +449,24 @@ impl Render for ResultPanel {
             .bg(bg)
             .child(toolbar::render(self, cx))
             .child(div().h(px(1.0)).bg(border));
+        // 截断横幅：结果被安全上限截断时醒目提示，避免用户误以为看到 / 导出的是全量
+        if truncated {
+            let warn = cx.theme().warning;
+            let mut warn_bg = warn;
+            warn_bg.a = 0.14;
+            root = root.child(
+                div()
+                    .w_full()
+                    .px(px(12.0))
+                    .py(px(5.0))
+                    .bg(warn_bg)
+                    .text_xs()
+                    .text_color(warn)
+                    .child(format!(
+                        "⚠ 结果较大，仅加载前 {total_docs} 条；统计、排序、过滤与导出均基于这部分数据。请用 filter / limit 精确查询"
+                    )),
+            );
+        }
         if self.is_drilled() {
             root = root.child(self.render_breadcrumb(cx));
         }

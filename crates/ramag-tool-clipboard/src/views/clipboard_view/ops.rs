@@ -20,9 +20,10 @@ impl ClipboardView {
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.loaded_revision = self.service.revision();
         self.items = self.service.cached_snapshot();
-        // 选中项若已被删除则清空
+        // 选中项若已不在缓存窗口且也不在搜索结果中才清空——否则会误清"仅搜索命中"的选中
         if let Some(sel) = &self.selected
             && !self.items.iter().any(|i| &i.id == sel)
+            && !self.search_results.iter().any(|i| &i.id == sel)
         {
             self.selected = None;
         }
@@ -274,7 +275,13 @@ impl ClipboardView {
 
     pub(super) fn selected_item(&self, _cx: &gpui::App) -> Option<ClipItem> {
         let sel = self.selected.as_ref()?;
-        self.items.iter().find(|i| &i.id == sel).cloned()
+        // 先查缓存窗口，再查搜索结果——选中的可能是"仅搜索命中"（窗口外）的旧记录，
+        // 否则详情空白、回车复制 / 删除静默失效
+        self.items
+            .iter()
+            .find(|i| &i.id == sel)
+            .or_else(|| self.search_results.iter().find(|i| &i.id == sel))
+            .cloned()
     }
 
     /// 取图片的解密内存图片（thumb=true 用缩略图，否则原图）。

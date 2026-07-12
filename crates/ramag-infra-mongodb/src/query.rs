@@ -235,8 +235,10 @@ async fn collect_cursor_command(client: &Client, db: &str, cmd: Document) -> Res
             "mongo cursor truncated at safety cap"
         );
     }
+    // 内部标记：截断信息随 firstBatch 一起上传，parse_run_command_response 提取后剔除
     let resp = doc! {
         "cursor": { "firstBatch": Bson::Array(docs), "id": 0i64 },
+        "__ramag_truncated": truncated,
         "ok": 1.0,
     };
     Ok(document_to_json(resp))

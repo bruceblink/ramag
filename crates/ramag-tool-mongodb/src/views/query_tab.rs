@@ -40,6 +40,9 @@ pub struct MongoQueryTab {
     /// 结果展示
     pub(crate) result: Entity<ResultPanel>,
     pub(crate) running: bool,
+    /// 运行代际号：切库 / 切 collection / 重新运行都自增，慢查询旧回包据此丢弃，
+    /// 不串到新上下文（防运行期间切换后旧结果显示在新库/集合的界面里）
+    pub(crate) run_seq: u64,
     /// 待弹出的 toast（生产模式只读拦截等，render 时 push，不覆盖结果区）
     pending_notification: Option<Notification>,
     _subscriptions: Vec<Subscription>,
@@ -89,6 +92,7 @@ impl MongoQueryTab {
             show_editor: false,
             result,
             running: false,
+            run_seq: 0,
             pending_notification: None,
             _subscriptions: vec![refresh_sub],
         }
@@ -177,6 +181,10 @@ impl MongoQueryTab {
         let db = self.database.clone();
         let cmd_text = text.clone();
         self.running = true;
+        // 代际推进 + 记录本次运行的 db（回包时比对，防运行期间切库导致串台）
+        self.run_seq = self.run_seq.wrapping_add(1);
+        let request_seq = self.run_seq;
+        let request_db = self.database.clone();
         self.result.update(cx, |p, cx| p.set_running(cx));
         let result_handle = self.result.clone();
 
@@ -192,6 +200,14 @@ impl MongoQueryTab {
             svc.append_history(&conf, cmd_text, &qr).await;
 
             let _ = this.update(cx, |this, cx| {
+                // 请求身份校验：切库 / 重新运行后旧回包不得覆盖新上下文的结果
+                if this.run_seq != request_seq || this.database != request_db {
+                    // 仅当自己仍是最新在途请求时才复位 running，避免误清新查询的忙碌态
+                    if this.run_seq == request_seq {
+                        this.running = false;
+                    }
+                    return;
+                }
                 this.running = false;
                 match qr {
                     Ok(r) => {
@@ -316,6 +332,11 @@ fn default_command_template() -> String {
 
 /// 解析 run_command 返回：智能识别 cursor.firstBatch / 普通文档 / 错误结构
 fn parse_run_command_response(response: Value, elapsed_ms: u64) -> MongoQueryResult {
+    // infra 层塞的截断标记（游标超上限只取前 N），提取后据此提示用户
+    let truncated = response
+        .get("__ramag_truncated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // 优先：cursor.firstBatch（find / aggregate / listCollections / listIndexes）
     if let Some(batch) = response
         .get("cursor")
@@ -323,7 +344,7 @@ fn parse_run_command_response(response: Value, elapsed_ms: u64) -> MongoQueryRes
         .and_then(|b| b.as_array())
         .cloned()
     {
-        return MongoQueryResult::read(batch, elapsed_ms);
+        return MongoQueryResult::read_maybe_truncated(batch, elapsed_ms, truncated);
     }
     // 次优：count 返回 `n`
     if let Some(n) = response.get("n").and_then(|v| v.as_u64()) {
@@ -332,6 +353,7 @@ fn parse_run_command_response(response: Value, elapsed_ms: u64) -> MongoQueryRes
             affected: n,
             elapsed_ms,
             summary: format!("count={n}, {elapsed_ms}ms"),
+            truncated: false,
         };
     }
     // 写命令：insert/update/delete 直接看 n / nModified

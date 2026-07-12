@@ -64,6 +64,10 @@ pub struct MongoQueryResult {
     pub elapsed_ms: u64,
     /// UI 状态栏 / 历史摘要，如 "12 docs, 18ms"
     pub summary: String,
+    /// 结果是否被安全上限截断（游标超过上限只取前 N）。UI 据此提示"仅显示前 N 条"，
+    /// 导出也据此告知用户导出的是已加载数据而非完整查询结果
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// 集合统计
@@ -79,12 +83,27 @@ pub struct MongoCollectionStats {
 impl MongoQueryResult {
     /// read 类构造（拼摘要）
     pub fn read(documents: Vec<MongoDocument>, elapsed_ms: u64) -> Self {
+        Self::read_maybe_truncated(documents, elapsed_ms, false)
+    }
+
+    /// read 类构造，携带截断标志（游标超上限只取前 N 时 truncated=true）
+    pub fn read_maybe_truncated(
+        documents: Vec<MongoDocument>,
+        elapsed_ms: u64,
+        truncated: bool,
+    ) -> Self {
         let n = documents.len();
+        let summary = if truncated {
+            format!("已加载前 {n} 条（结果被截断）, {elapsed_ms}ms")
+        } else {
+            format!("{n} docs, {elapsed_ms}ms")
+        };
         Self {
             documents,
             affected: 0,
             elapsed_ms,
-            summary: format!("{n} docs, {elapsed_ms}ms"),
+            summary,
+            truncated,
         }
     }
 
@@ -95,6 +114,7 @@ impl MongoQueryResult {
             affected,
             elapsed_ms,
             summary: format!("{op} affected={affected}, {elapsed_ms}ms"),
+            truncated: false,
         }
     }
 }

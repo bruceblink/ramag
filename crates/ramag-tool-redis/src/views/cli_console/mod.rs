@@ -115,6 +115,33 @@ impl CliConsole {
                 return;
             }
         };
+        // 命令行本地拦截两类会破坏复用连接的命令，就地报错不发后端：
+        // - SELECT：改变底层连接 DB 却仍缓存为原 db，后续命令打错库（引导用 DB 选择器）
+        // - MONITOR/SUBSCRIBE 等：会把连接卡在特殊接收模式，不可逆
+        let blocked_reason = argv.first().and_then(|c| {
+            let up = c.to_ascii_uppercase();
+            if up == "SELECT" {
+                Some("请用顶部「DB」选择器切换数据库（命令行内 SELECT 会破坏连接池的库上下文）")
+            } else if matches!(
+                up.as_str(),
+                "MONITOR" | "SUBSCRIBE" | "PSUBSCRIBE" | "SSUBSCRIBE"
+            ) {
+                Some("该命令会让连接卡在特殊接收模式，命令行不支持")
+            } else {
+                None
+            }
+        });
+        if let Some(reason) = blocked_reason {
+            self.history.push(Entry {
+                command: raw,
+                db: self.db,
+                outcome: Outcome::Err(format!("(error) {reason}")),
+                elapsed_ms: 0,
+            });
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            cx.notify();
+            return;
+        }
 
         let idx = self.history.len();
         self.history.push(Entry {

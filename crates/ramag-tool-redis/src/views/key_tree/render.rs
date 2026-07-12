@@ -36,14 +36,22 @@ impl KeyTreePanel {
         let path_for_click = row.full_path.clone();
         let path_for_load = row.full_path.clone();
 
-        // 折叠/展开图标（命名空间专属）
+        // 折叠/展开图标（命名空间专属）。既是 key 又是命名空间时，展开只由 chevron 负责，
+        // 行点击留给"加载值"（否则该 key 的值永远点不开）
         let chevron: gpui::AnyElement = if is_namespace {
             let glyph = if row.is_expanded { "▼" } else { "▶" };
+            let path_for_chevron = row.full_path.clone();
             div()
+                .id(SharedString::from(format!("chev-{}", row.full_path)))
                 .w(px(12.0))
                 .text_xs()
                 .text_color(muted_fg)
+                .cursor_pointer()
                 .child(glyph)
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.toggle_expanded(path_for_chevron.clone(), cx);
+                }))
                 .into_any_element()
         } else {
             div().w(px(12.0)).into_any_element()
@@ -70,13 +78,14 @@ impl KeyTreePanel {
                 .into_any_element()
         });
 
-        // 行点击：用一个统一闭包按 is_namespace 分支，避免 if/else 产生不同 closure 类型
-        let toggle_mode = is_namespace;
+        // 行点击：节点本身是 key 就加载值（既是 key 又是命名空间时，展开交给 chevron）；
+        // 纯命名空间（非 key）才 toggle 展开。修复"user 与 user:1 共存时 user 点不开"
+        let load_on_click = is_leaf;
         let on_row_click = cx.listener(move |this, _: &ClickEvent, _, cx| {
-            if toggle_mode {
-                this.toggle_expanded(path_for_click.clone(), cx);
-            } else {
+            if load_on_click {
                 this.select_key(path_for_click.clone(), cx);
+            } else {
+                this.toggle_expanded(path_for_click.clone(), cx);
             }
         });
 

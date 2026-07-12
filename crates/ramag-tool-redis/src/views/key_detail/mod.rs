@@ -97,6 +97,11 @@ pub struct KeyDetailPanel {
     pub(super) estimating_size: bool,
     /// 标量值视图模式：None=按内容自动（JSON 美化 / Raw），Some=用户手动选定
     value_view_mode: Option<ViewMode>,
+    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 内容文本, gzip 提示)。避免每帧重复
+    /// 解压 + JSON 解析 + pretty（大 String 值这些都在主线程）。key/value/view_mode 变化失效
+    #[allow(clippy::type_complexity)]
+    pub(super) scalar_cache:
+        std::cell::RefCell<Option<(Option<ViewMode>, ViewMode, String, Option<String>)>>,
     /// Session 调 focus_panel 聚焦后，cmd-w 等 action 走焦点链路由到 Session
     focus_handle: FocusHandle,
     /// 容器值（hash/list/set/zset/stream）uniform_list 行级虚拟化的滚动句柄
@@ -125,6 +130,7 @@ impl KeyDetailPanel {
             pending_notification: None,
             key_size_bytes: None,
             value_view_mode: None,
+            scalar_cache: std::cell::RefCell::new(None),
             focus_handle: cx.focus_handle(),
             estimating_size: false,
             value_scroll: UniformListScrollHandle::new(),
@@ -145,6 +151,7 @@ impl KeyDetailPanel {
         self.error = None;
         self.key_size_bytes = None;
         self.value_view_mode = None;
+        *self.scalar_cache.borrow_mut() = None;
         cx.notify();
     }
 
@@ -160,6 +167,7 @@ impl KeyDetailPanel {
         self.error = None;
         self.key_size_bytes = None;
         self.value_view_mode = None;
+        *self.scalar_cache.borrow_mut() = None;
         cx.notify();
 
         let svc = self.service.clone();
@@ -244,6 +252,7 @@ impl KeyDetailPanel {
         self.key_size_bytes = None;
         self.estimating_size = false;
         self.value_view_mode = None;
+        *self.scalar_cache.borrow_mut() = None;
         cx.notify();
     }
 
@@ -479,8 +488,10 @@ impl Render for KeyDetailPanel {
                 ),
                 // 标量 String/Bytes 走 scalar 模块（含 Gzip 提示 + 编辑按钮）
                 Some(v @ (RedisValue::Text(_) | RedisValue::Bytes(_))) => (
-                    scalar::render_scalar(&key, v, view_mode, fg, muted_fg, border, cx, window)
-                        .into_any_element(),
+                    scalar::render_scalar(
+                        self, &key, v, view_mode, fg, muted_fg, border, cx, window,
+                    )
+                    .into_any_element(),
                     false,
                 ),
                 // Nil/Int/Float/Bool/Array：小体量，普通渲染

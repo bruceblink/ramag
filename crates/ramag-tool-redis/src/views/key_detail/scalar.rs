@@ -12,25 +12,17 @@ use ramag_domain::entities::RedisValue;
 use super::{KeyDetailEvent, KeyDetailPanel};
 use crate::views::value_display::{self, ViewMode};
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_scalar(
-    key: &str,
+/// 纯计算：字节流 → (生效 mode, 显示文本, gzip 提示)。解压 + JSON 解析 + pretty 都在
+/// 这里，结果由 panel.scalar_cache 缓存，避免每帧重算
+fn compute_scalar_display(
     v: &RedisValue,
     view_mode: Option<ViewMode>,
-    fg: gpui::Hsla,
-    muted_fg: gpui::Hsla,
-    border: gpui::Hsla,
-    cx: &mut Context<KeyDetailPanel>,
-    _window: &Window,
-) -> impl IntoElement + use<> {
-    // 取原始字节流（用于 Gzip 检测 + 渲染）
+) -> (ViewMode, String, Option<String>) {
     let raw_bytes: Vec<u8> = match v {
         RedisValue::Text(s) => s.as_bytes().to_vec(),
         RedisValue::Bytes(b) => b.clone(),
         _ => Vec::new(),
     };
-
-    // 自动 Gzip 解压（成功则用解压结果替代原 bytes 渲染）
     let (display_bytes, gzip_hint) = match value_display::try_decompress_gzip(&raw_bytes) {
         Some(decoded) => {
             let hint = format!(
@@ -40,10 +32,8 @@ pub(super) fn render_scalar(
             );
             (decoded, Some(hint))
         }
-        None => (raw_bytes.clone(), None),
+        None => (raw_bytes, None),
     };
-
-    // 视图模式：用户未手动选则按内容自动判定（JSON 美化 / Raw）
     let mode = view_mode.unwrap_or_else(|| value_display::auto_view_mode(&display_bytes));
     let content_text = match v {
         RedisValue::Text(_) => match std::str::from_utf8(&display_bytes) {
@@ -51,6 +41,35 @@ pub(super) fn render_scalar(
             Err(_) => value_display::render_bytes(&display_bytes, mode),
         },
         _ => value_display::render_bytes(&display_bytes, mode),
+    };
+    (mode, content_text, gzip_hint)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_scalar(
+    panel: &KeyDetailPanel,
+    key: &str,
+    v: &RedisValue,
+    view_mode: Option<ViewMode>,
+    fg: gpui::Hsla,
+    muted_fg: gpui::Hsla,
+    border: gpui::Hsla,
+    cx: &mut Context<KeyDetailPanel>,
+    _window: &Window,
+) -> impl IntoElement + use<> {
+    // 缓存命中（同 view_mode）直接取；否则计算一次并写回缓存。
+    // 缓存随 load_key / 切 view_mode 清空，此处仅比对 view_mode 兜底
+    let (mode, content_text, gzip_hint) = {
+        let mut cache = panel.scalar_cache.borrow_mut();
+        if let Some((cached_req, eff_mode, text, hint)) = cache.as_ref()
+            && *cached_req == view_mode
+        {
+            (*eff_mode, text.clone(), hint.clone())
+        } else {
+            let (eff_mode, text, hint) = compute_scalar_display(v, view_mode);
+            *cache = Some((view_mode, eff_mode, text.clone(), hint.clone()));
+            (eff_mode, text, hint)
+        }
     };
 
     // 编辑入口仅对 Text 类型开放（Bytes 二进制不支持文本编辑）：双击内容区打开编辑窗口
