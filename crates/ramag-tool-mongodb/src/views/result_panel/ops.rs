@@ -28,12 +28,9 @@ impl ResultPanel {
             .and_then(|d| d.as_object())
             .map(|m| m.keys().filter(|k| k.as_str() != "_id").cloned().collect())
             .unwrap_or_default();
+        // 空集合无字段模板：不再一味报错，改弹「整篇文档 JSON」输入框，支持插入首个文档
         if fields.is_empty() {
-            return self.notify_error(
-                "无字段模板：请先查询出该 collection 的文档，或在编辑器用 insert 命令新增"
-                    .to_string(),
-                cx,
-            );
+            return self.open_raw_insert_dialog(coll, window, cx);
         }
         let inputs: Vec<(String, Entity<InputState>)> = fields
             .iter()
@@ -113,6 +110,70 @@ impl ResultPanel {
             return self.notify_error("未填写任何字段".to_string(), cx);
         }
         self.do_insert_doc(Value::Object(map), cx);
+    }
+
+    /// 空集合兜底：直接输入整篇文档 JSON → insert_one（无字段模板可依时用）
+    fn open_raw_insert_dialog(
+        &mut self,
+        coll: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|c| {
+            InputState::new(window, c)
+                .multi_line(true)
+                .placeholder("输入完整文档 JSON，如 {\"name\": \"alice\", \"age\": 30}")
+                .default_value("{\n  \n}")
+        });
+        input.update(cx, |s, c| s.focus(window, c));
+        let panel = cx.entity().clone();
+        let title = SharedString::from(format!("新增文档 → {coll}"));
+        window.open_dialog(cx, move |dialog, _, _| {
+            let panel_apply = panel.clone();
+            let input_apply = input.clone();
+            let input_content = input.clone();
+            let cancel = Button::new("mongo-rawinsert-cancel")
+                .ghost()
+                .small()
+                .label("取消")
+                .on_click(move |_: &ClickEvent, window, app| window.close_dialog(app));
+            let apply = Button::new("mongo-rawinsert-apply")
+                .primary()
+                .small()
+                .label("插入")
+                .on_click(move |_: &ClickEvent, window, app| {
+                    let raw = input_apply.read(app).value().to_string();
+                    panel_apply.update(app, |this, cx| this.do_insert_raw(raw, cx));
+                    window.close_dialog(app);
+                });
+            dialog
+                .title(title.clone())
+                .width(px(520.0))
+                .margin_top(px(100.0))
+                .content(move |content, _, cx| {
+                    let muted = cx.theme().muted_foreground;
+                    content.child(
+                        v_flex()
+                            .w_full()
+                            .gap(px(6.0))
+                            .child(div().text_xs().text_color(muted).child(
+                                "该集合暂无文档，直接输入整篇文档 JSON（_id 可省，自动生成）",
+                            ))
+                            .child(Input::new(&input_content).h(px(200.0))),
+                    )
+                })
+                .footer(dialog_footer(cancel, apply))
+        });
+    }
+
+    /// 原始 JSON 文本 → 校验为对象 → insert_one
+    fn do_insert_raw(&mut self, raw: String, cx: &mut Context<Self>) {
+        let doc = match serde_json::from_str::<Value>(raw.trim()) {
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) => return self.notify_error("文档必须是 JSON 对象 {…}".to_string(), cx),
+            Err(e) => return self.notify_error(format!("JSON 解析失败：{e}"), cx),
+        };
+        self.do_insert_doc(doc, cx);
     }
 
     /// 异步 insert_one；成功 emit Refresh + toast
