@@ -122,11 +122,15 @@ impl Render for TableTreePanel {
         let mut tree_rows: Vec<TreeRow> = Vec::with_capacity(schemas.len() * 4);
         let total_schemas = self.schemas.len();
         let visible_schemas = schemas.len();
-        let header_text = if total_schemas == visible_schemas {
+        let mut header_text = if total_schemas == visible_schemas {
             format!("数据库 ({total_schemas})")
         } else {
             format!("数据库 ({visible_schemas}/{total_schemas})")
         };
+        // 库过多时搜索不自动补拉未加载 schema（防雪崩，见 ensure_search_coverage）——如实标注范围
+        if !self.current_filter(cx).is_empty() && total_schemas > 50 {
+            header_text.push_str(" · 库过多，搜索仅覆盖已展开的库");
+        }
         let toggle_icon = if show_system {
             IconName::Eye
         } else {

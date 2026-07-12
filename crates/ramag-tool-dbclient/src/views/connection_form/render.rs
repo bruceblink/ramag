@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _,
+    ActiveTheme, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -292,11 +292,19 @@ impl Render for ConnectionFormPanel {
                             .min_w_0()
                             .items_center()
                             .gap(px(12.0))
-                            .child(Button::new("test").small().label("测试连接").on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.handle_test(cx);
-                                }),
-                            ))
+                            .child(
+                                Button::new("test")
+                                    .small()
+                                    .label(if matches!(self.test_state, TestState::Testing) {
+                                        "测试中…"
+                                    } else {
+                                        "测试连接"
+                                    })
+                                    .disabled(matches!(self.test_state, TestState::Testing))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.handle_test(cx);
+                                    })),
+                            )
                             .when_some(test_msg, |this, (msg, color)| {
                                 let msg_for_copy = msg.clone();
                                 let msg_el = div()

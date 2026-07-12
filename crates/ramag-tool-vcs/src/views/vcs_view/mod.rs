@@ -68,6 +68,8 @@ pub struct VcsView {
     pub(super) clone_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Clone 实时进度槽（git --progress stderr 最新行），loading 屏每帧读取展示
     pub(super) clone_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
+    /// Clone 取消后残留的半成品目录：render 消费弹确认（删除 / 保留由用户定）
+    pub(super) pending_clone_cleanup: Option<std::path::PathBuf>,
     /// 写操作正在进行中（stage / unstage / discard / commit）：避免重复点击
     pub(super) busy: bool,
     /// busy 时工具栏 spinner 旁的操作名（"Pull 中…"等）；None = 不显示指示器

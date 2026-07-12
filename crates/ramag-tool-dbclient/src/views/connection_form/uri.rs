@@ -13,7 +13,7 @@ pub(super) struct MongoUriParts {
     pub tls: bool,
 }
 
-/// 解析常见单主机 mongodb URI。仅取首个 host（副本集多 host 取第一个并在 UI 提示）
+/// 解析单主机 mongodb URI；多主机（副本集）与拓扑类参数显式报错，不静默降级
 pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
     let raw = raw.trim();
     if let Some(rest) = raw.strip_prefix("mongodb+srv://") {
@@ -52,20 +52,25 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
         },
         None => (String::new(), String::new()),
     };
-    // 多主机（副本集）取首个
-    let first_host = hostport.split(',').next().unwrap_or(hostport);
-    let (host, port) = match first_host.rsplit_once(':') {
+    // 多主机（副本集）拒绝而非静默取首个：悄悄改变连接拓扑比报错更危险
+    if hostport.contains(',') {
+        return Err(
+            "URI 含多个主机（副本集拓扑），本表单仅支持单主机直连；请填写要直连的那台节点".into(),
+        );
+    }
+    let (host, port) = match hostport.rsplit_once(':') {
         Some((h, p)) => {
             let port: u16 = p.parse().map_err(|_| format!("端口不是有效数字：{p}"))?;
             (h.to_string(), Some(port))
         }
-        None => (first_host.to_string(), None),
+        None => (hostport.to_string(), None),
     };
     if host.is_empty() {
         return Err("URI 缺少主机地址".into());
     }
 
-    // query：仅识别 authSource / tls / ssl，其余忽略
+    // query：识别 authSource / tls / ssl；影响连接拓扑或读写语义的参数显式拒绝
+    // （静默忽略 replicaSet 等会让实际连接行为偏离 URI 声明）
     let mut auth_source = None;
     let mut tls = false;
     if let Some(q) = query {
@@ -82,6 +87,11 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
                     }
                 }
                 "tls" | "ssl" => tls = v.eq_ignore_ascii_case("true"),
+                "replicaset" | "readpreference" | "directconnection" | "loadbalanced" => {
+                    return Err(format!(
+                        "URI 参数「{k}」影响连接拓扑，本表单不支持；请移除后重试（将单主机直连）"
+                    ));
+                }
                 _ => {}
             }
         }
@@ -151,11 +161,13 @@ mod tests {
     }
 
     #[test]
-    fn replica_set_takes_first_host() {
-        let p = parse_mongo_uri("mongodb://a.example.com:27017,b.example.com:27018/db").unwrap();
-        assert_eq!(p.host, "a.example.com");
-        assert_eq!(p.port, Some(27017));
-        assert_eq!(p.database.as_deref(), Some("db"));
+    fn replica_set_rejected_explicitly() {
+        // 多主机与拓扑参数都不允许静默降级——必须显式报错
+        let e =
+            parse_mongo_uri("mongodb://a.example.com:27017,b.example.com:27018/db").unwrap_err();
+        assert!(e.contains("多个主机"));
+        let e2 = parse_mongo_uri("mongodb://h:27017/db?replicaSet=rs0").unwrap_err();
+        assert!(e2.contains("replicaSet") || e2.contains("replicaset"));
     }
 
     #[test]

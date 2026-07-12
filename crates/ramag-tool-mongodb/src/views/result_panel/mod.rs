@@ -65,6 +65,10 @@ pub struct ResultPanel {
     pub(crate) target_collection: Option<String>,
     /// 异步 DML 完成后挂起的 toast，下次 render 推送
     pub(crate) pending_notification: Option<gpui_component::notification::Notification>,
+    /// 文档 DML（插入 / 编辑弹框）忙碌闸：提交中防重入；失败保留弹框与输入
+    pub(super) doc_dml_busy: bool,
+    /// DML 成功后待关闭弹框（render 持 Window 时消费）——成功才关，失败留着改
+    pub(super) pending_close_dialog: bool,
     /// 勾选的行（按 documents 索引）；删除文档用
     pub(crate) selected_rows: BTreeSet<usize>,
     /// 下钻栈：栈底=原始查询结果，双击嵌套 push 一层；栈深 > 1 即下钻态（只读 + 面包屑）
@@ -131,6 +135,8 @@ impl ResultPanel {
             database: String::new(),
             target_collection: None,
             pending_notification: None,
+            doc_dml_busy: false,
+            pending_close_dialog: false,
             selected_rows: BTreeSet::new(),
             drill_stack: Vec::new(),
             sort_by: None,
@@ -339,6 +345,10 @@ impl Render for ResultPanel {
         // 异步 DML 完成的 toast 在这里推送
         if let Some(n) = self.pending_notification.take() {
             window.push_notification(n, cx);
+        }
+        // DML 成功后才关闭插入 / 编辑弹框（失败保留弹框与用户输入）
+        if std::mem::take(&mut self.pending_close_dialog) {
+            window.close_dialog(cx);
         }
         // 把需要的颜色字段提前 Copy 出来，避免 cx.theme() 的 immut borrow 与 toolbar/table 的 mut borrow 冲突
         let bg = cx.theme().background;

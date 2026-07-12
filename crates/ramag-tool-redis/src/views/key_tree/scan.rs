@@ -22,6 +22,7 @@ impl KeyTreePanel {
         self.loading = true;
         self.error = None;
         self.keys.clear();
+        self.seen_keys.clear();
         self.tree.clear();
         self.last_rebuilt_count = 0;
         self.truncated = false;
@@ -85,7 +86,12 @@ impl KeyTreePanel {
                 }
                 match result {
                     Ok(r) => {
-                        this.keys.extend(r.keys);
+                        // SCAN 弱一致：同一 key 可能跨批重复返回，按 key 名去重追加
+                        for meta in r.keys {
+                            if this.seen_keys.insert(meta.key.clone()) {
+                                this.keys.push(meta);
+                            }
+                        }
                         let done = r.cursor == 0;
                         let capped = this.keys.len() >= MAX_KEYS;
                         if done || capped {
@@ -108,6 +114,7 @@ impl KeyTreePanel {
                         this.loading = false;
                         this.error = Some(format!("加载失败：{e}"));
                         this.keys.clear();
+                        this.seen_keys.clear();
                         this.tree.clear();
                     }
                 }

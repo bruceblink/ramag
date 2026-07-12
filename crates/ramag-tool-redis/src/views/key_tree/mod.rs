@@ -70,6 +70,9 @@ pub struct KeyTreePanel {
     db: u8,
     /// 已加载（缓存）的 key 列表（原始顺序）
     keys: Vec<KeyMeta>,
+    /// 已加载 key 名集合：SCAN 弱一致会跨批重复返回同一 key，追加前据此去重
+    /// （否则计数虚高、Trie 重复插入）
+    seen_keys: HashSet<String>,
     /// 已加载 key 的 Trie 树（按 NAMESPACE_SEP 分层）
     tree: Vec<TreeNode>,
     /// 已展开的命名空间路径集合（按 full_path 索引）
@@ -127,6 +130,7 @@ impl KeyTreePanel {
             config: None,
             db: 0,
             keys: Vec::new(),
+            seen_keys: HashSet::new(),
             tree: Vec::new(),
             expanded: HashSet::new(),
             loading: false,
@@ -156,6 +160,7 @@ impl KeyTreePanel {
         self.selected = None;
         self.error = None;
         self.keys.clear();
+        self.seen_keys.clear();
         self.tree.clear();
         self.expanded.clear();
         self.truncated = false;
@@ -506,6 +511,11 @@ impl Render for KeyTreePanel {
 
         let body: gpui::AnyElement = if row_count == 0 {
             if empty_hint {
+                // 空态分场景：服务端 MATCH 零命中 ≠ 空库；本地过滤零命中另有「匹配 0/N」计数
+                let hint = match &self.match_pattern {
+                    Some(p) => format!("没有匹配 MATCH {p} 的 key（服务端已全库扫描）"),
+                    None => "DB 内没有 key".to_string(),
+                };
                 div()
                     .flex_1()
                     .min_h_0()
@@ -513,7 +523,7 @@ impl Render for KeyTreePanel {
                     .text_center()
                     .text_sm()
                     .text_color(muted_fg)
-                    .child("DB 内没有 key")
+                    .child(hint)
                     .into_any_element()
             } else {
                 div().flex_1().min_h_0().into_any_element()

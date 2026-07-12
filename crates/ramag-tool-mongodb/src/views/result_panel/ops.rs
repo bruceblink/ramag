@@ -58,13 +58,13 @@ impl ResultPanel {
                 .primary()
                 .small()
                 .label("插入")
-                .on_click(move |_: &ClickEvent, window, app| {
+                .on_click(move |_: &ClickEvent, _window, app| {
                     let pairs: Vec<(String, String)> = inputs_apply
                         .iter()
                         .map(|(f, inp)| (f.clone(), inp.read(app).value().to_string()))
                         .collect();
+                    // 不立即关弹框：成功经 pending_close_dialog 关闭，失败 / 校验不过保留输入
                     panel_apply.update(app, |this, cx| this.do_insert_fields(pairs, cx));
-                    window.close_dialog(app);
                 });
             dialog
                 .title(title.clone())
@@ -141,10 +141,10 @@ impl ResultPanel {
                 .primary()
                 .small()
                 .label("插入")
-                .on_click(move |_: &ClickEvent, window, app| {
+                .on_click(move |_: &ClickEvent, _window, app| {
                     let raw = input_apply.read(app).value().to_string();
+                    // 不立即关弹框：成功经 pending_close_dialog 关闭，解析失败保留输入
                     panel_apply.update(app, |this, cx| this.do_insert_raw(raw, cx));
-                    window.close_dialog(app);
                 });
             dialog
                 .title(title.clone())
@@ -176,8 +176,15 @@ impl ResultPanel {
         self.do_insert_doc(doc, cx);
     }
 
-    /// 异步 insert_one；成功 emit Refresh + toast
+    /// 异步 insert_one；成功关弹框 + emit Refresh + toast，失败保留弹框与输入
     fn do_insert_doc(&mut self, doc: Value, cx: &mut Context<Self>) {
+        // 防重入：上一提交未回包前忽略再次点击
+        if self.doc_dml_busy {
+            self.pending_notification =
+                Some(Notification::warning("提交执行中，请稍候").autohide(true));
+            cx.notify();
+            return;
+        }
         let (Some(svc), Some(conf), Some(coll)) = (
             self.service.clone(),
             self.config.clone(),
@@ -186,11 +193,14 @@ impl ResultPanel {
             return;
         };
         let db = self.database.clone();
+        self.doc_dml_busy = true;
         cx.spawn(async move |this, cx| {
             let r = svc.insert_one(&conf, &db, &coll, doc).await;
             let _ = this.update(cx, |this, cx| {
+                this.doc_dml_busy = false;
                 match r {
                     Ok(id) => {
+                        this.pending_close_dialog = true;
                         this.pending_notification = Some(
                             Notification::success(format!("已插入文档 _id={id}")).autohide(true),
                         );

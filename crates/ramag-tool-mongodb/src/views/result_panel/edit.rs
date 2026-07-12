@@ -49,14 +49,14 @@ impl ResultPanel {
                 .primary()
                 .small()
                 .label("保存")
-                .on_click(move |_: &ClickEvent, window, app| {
+                .on_click(move |_: &ClickEvent, _window, app| {
                     let raw = input_apply.read(app).value().to_string();
                     let id = id_apply.clone();
                     let path = path_apply.clone();
+                    // 不立即关弹框：请求成功后经 pending_close_dialog 关闭，失败保留输入可改
                     panel_apply.update(app, |this, cx| {
                         this.do_update_async(id, path, kind, raw, cx)
                     });
-                    window.close_dialog(app);
                 });
             dialog
                 .title(title.clone())
@@ -98,6 +98,13 @@ impl ResultPanel {
         raw: String,
         cx: &mut Context<Self>,
     ) {
+        // 防重入：上一提交未回包前忽略再次点击（弹框仍开着，按钮可被连点）
+        if self.doc_dml_busy {
+            self.pending_notification =
+                Some(Notification::warning("提交执行中，请稍候").autohide(true));
+            cx.notify();
+            return;
+        }
         let new_val = value_for_kind(kind, raw);
         let (Some(svc), Some(conf), Some(coll)) = (
             self.service.clone(),
@@ -113,11 +120,14 @@ impl ResultPanel {
         let mut update = serde_json::Map::new();
         update.insert("$set".to_string(), Value::Object(set));
         let update = Value::Object(update);
+        self.doc_dml_busy = true;
         cx.spawn(async move |this, cx| {
             let r = svc.update_one(&conf, &db, &coll, &filter, &update).await;
             let _ = this.update(cx, |this, cx| {
+                this.doc_dml_busy = false;
                 match r {
                     Ok(res) if res.affected == 0 => {
+                        // 未命中不关弹框：用户可核对 _id / 库后再试
                         this.pending_notification = Some(
                             Notification::warning(
                                 "未匹配到文档：该行无 _id，或当前 collection 与所选库不一致"
@@ -127,6 +137,7 @@ impl ResultPanel {
                         );
                     }
                     Ok(res) => {
+                        this.pending_close_dialog = true;
                         this.pending_notification = Some(
                             Notification::success(format!("已更新 {} 条文档", res.affected))
                                 .autohide(true),
@@ -134,6 +145,7 @@ impl ResultPanel {
                         cx.emit(ResultEvent::Refresh);
                     }
                     Err(e) => {
+                        // 失败保留弹框与输入，仅 toast 说明原因
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("更新失败")).autohide(true));
                     }

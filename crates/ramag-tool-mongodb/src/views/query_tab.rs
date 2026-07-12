@@ -221,9 +221,13 @@ impl MongoQueryTab {
             let _ = this.update(cx, |this, cx| {
                 // 请求身份校验：切库 / 重新运行后旧回包不得覆盖新上下文的结果
                 if this.run_seq != request_seq || this.database != request_db {
-                    // 仅当自己仍是最新在途请求时才复位 running，避免误清新查询的忙碌态
+                    // 仅当自己仍是最新在途请求时才复位忙碌态（含结果区，否则「执行中」
+                    // 永久卡在界面上）；已有更新请求在途则一概不动，避免误清新查询状态
                     if this.run_seq == request_seq {
                         this.running = false;
+                        result_handle.update(cx, |p, cx| {
+                            p.set_error("查询上下文已切换，本次结果已丢弃；请重新运行".into(), cx);
+                        });
                     }
                     return;
                 }

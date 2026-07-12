@@ -157,9 +157,12 @@ impl VcsView {
                         this.loading_label = None;
                         this.clone_cancel = None;
                         this.clone_progress = None;
-                        // 用户主动取消：静默回列表，不当错误弹横幅
+                        // 用户主动取消：静默回列表，不当错误弹横幅；
+                        // 半成品目录（git 已创建）交用户决定删除或保留
                         if !cancelled {
                             this.error = Some(format!("Clone 失败: {e}"));
+                        } else if dest.exists() {
+                            this.pending_clone_cleanup = Some(dest.clone());
                         }
                         cx.notify();
                     });

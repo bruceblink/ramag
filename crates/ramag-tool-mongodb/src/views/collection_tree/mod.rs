@@ -506,11 +506,15 @@ impl Render for CollectionTreePanel {
                     .unwrap_or(false)
             })
             .count();
-        let footer_text = if total_dbs == visible_dbs {
+        let mut footer_text = if total_dbs == visible_dbs {
             format!("数据库 ({total_dbs})")
         } else {
             format!("数据库 ({visible_dbs}/{total_dbs})")
         };
+        // 库过多时搜索不自动补拉未加载 db（防雪崩，见 ensure_search_coverage）——如实标注范围
+        if !filter.is_empty() && total_dbs > 50 {
+            footer_text.push_str(" · 库过多，搜索仅覆盖已展开的库");
+        }
 
         v_flex()
             .size_full()

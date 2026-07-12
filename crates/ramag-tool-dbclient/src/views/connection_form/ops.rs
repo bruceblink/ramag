@@ -267,6 +267,10 @@ impl ConnectionFormPanel {
     }
 
     pub(super) fn handle_test(&mut self, cx: &mut Context<Self>) {
+        // 防重入：测试进行中不再发起（结果竞态已由 epoch 挡，这里挡资源重复占用）
+        if matches!(self.test_state, TestState::Testing) {
+            return;
+        }
         let config = match self.validate(cx) {
             Ok(c) => c,
             Err(e) => {
@@ -275,6 +279,11 @@ impl ConnectionFormPanel {
                 return;
             }
         };
+        // 测试一律用一次性 id 的副本：池 / SSH 隧道按 ConnectionId 缓存——
+        // ① 不污染正式 id 的缓存（Edit 模式下否则会复用旧参数的池，测的不是新参数）
+        // ② 测完立即释放，不留孤儿池 / 隧道
+        let mut config = config;
+        config.id = ConnectionId::new();
         self.test_state = TestState::Testing;
         let epoch = self.test_epoch;
         cx.notify();
@@ -289,6 +298,12 @@ impl ConnectionFormPanel {
                 DriverKind::Redis => redis_svc.test(&config).await,
                 DriverKind::Mongodb => mongo_svc.test(&config).await,
             };
+            // 无论成败，释放本次测试建的池与 SSH 隧道（一次性 id，无人复用）
+            match config.driver {
+                DriverKind::Mysql | DriverKind::Postgres => sql_svc.evict_pool(&config),
+                DriverKind::Redis => redis_svc.evict_pool(&config.id),
+                DriverKind::Mongodb => mongo_svc.evict_pool(&config.id),
+            }
             let _ = this.update(cx, |this, cx| {
                 // 测试期间参数已变更：结果作废，保持重置后的 Idle
                 if this.test_epoch != epoch {

@@ -16,6 +16,32 @@ impl Render for VcsView {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
         }
+        // Clone 取消后的半成品目录：弹确认交用户决定删除或保留（删除是不可逆文件操作，
+        // 只对本次 clone 创建的目录发起，绝不触碰既有目录）
+        if let Some(dir) = self.pending_clone_cleanup.take() {
+            cx.defer_in(window, move |_, window, cx| {
+                let display = dir.display().to_string();
+                ramag_ui::open_confirm(
+                    "删除未完成的 Clone 目录？",
+                    format!("Clone 已取消，残留半成品目录：\n{display}\n\n删除该目录？选择保留可稍后手动处理。"),
+                    "删除",
+                    true,
+                    move |_, app| {
+                        app.background_executor()
+                            .spawn(async move {
+                                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                                    tracing::warn!(error = %e, dir = %dir.display(), "cleanup cancelled clone failed");
+                                } else {
+                                    tracing::info!(dir = %dir.display(), "cancelled clone dir removed");
+                                }
+                            })
+                            .detach();
+                    },
+                    window,
+                    cx,
+                );
+            });
+        }
         // commit 草稿恢复：仓库切换后用 cx.defer_in 借 Window 写回 InputState
         if let Some(text) = self.pending_commit_text.take() {
             let input = self.commit_input.clone();
