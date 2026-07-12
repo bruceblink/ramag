@@ -72,11 +72,13 @@ impl Render for ConnectionFormPanel {
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
 
-        let test_msg = match &self.test_state {
-            TestState::Idle => None,
-            TestState::Testing => Some(("测试中…".to_string(), muted_fg)),
-            TestState::Success => Some(("✓ 连接成功".to_string(), gpui::green())),
-            TestState::Failed(msg) => Some((msg.clone(), gpui::red())),
+        // 失败时须能读全 + 复制诊断，故单列 test_failed 标记：失败文案换行展开、附复制按钮，
+        // 成功 / 测试中沿用单行省略
+        let (test_msg, test_failed) = match &self.test_state {
+            TestState::Idle => (None, false),
+            TestState::Testing => (Some(("测试中…".to_string(), muted_fg)), false),
+            TestState::Success => (Some(("✓ 连接成功".to_string(), gpui::green())), false),
+            TestState::Failed(msg) => (Some((msg.clone(), gpui::red())), true),
         };
 
         // 内容（不带 dialog 标题/边框，dialog 系统提供）：
@@ -138,7 +140,8 @@ impl Render for ConnectionFormPanel {
                     .gap(px(12.0))
                     .child(section_title("认证", muted_fg))
                     .child(field_row(username_label, Input::new(&self.username)))
-                    .child(field_row("密码", Input::new(&self.password)))
+                    // 密码默认掩码显示，右侧提供显示/隐藏切换按钮
+                    .child(field_row("密码", Input::new(&self.password).mask_toggle()))
                     // MongoDB 专属：认证库 authSource（独立于"默认打开的库"）
                     .when(self.driver_id == "mongodb", |this| {
                         this.child(field_row(
@@ -166,17 +169,37 @@ impl Render for ConnectionFormPanel {
                                 }),
                             ))
                             .when_some(test_msg, |this, (msg, color)| {
-                                this.child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::NORMAL)
-                                        .text_color(color)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(msg),
-                                )
+                                let msg_for_copy = msg.clone();
+                                let msg_el = div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::NORMAL)
+                                    .text_color(color)
+                                    // 失败诊断换行全量展示，成功 / 测试中保持单行省略
+                                    .when(!test_failed, |d| d.overflow_hidden().text_ellipsis())
+                                    .child(msg);
+                                if test_failed {
+                                    this.child(msg_el).child(
+                                        Button::new("copy-test-err")
+                                            .ghost()
+                                            .xsmall()
+                                            .flex_none()
+                                            .label("复制")
+                                            .tooltip("复制错误诊断")
+                                            .on_click(cx.listener(
+                                                move |_, _: &ClickEvent, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui::ClipboardItem::new_string(
+                                                            msg_for_copy.clone(),
+                                                        ),
+                                                    );
+                                                },
+                                            )),
+                                    )
+                                } else {
+                                    this.child(msg_el)
+                                }
                             }),
                     )
                     .child(

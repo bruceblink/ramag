@@ -176,6 +176,7 @@ impl ConnectionFormPanel {
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("（留空表示无密码）")
+                .masked(true)
                 .default_value(p.password)
         });
         let database = cx.new(|cx| {
