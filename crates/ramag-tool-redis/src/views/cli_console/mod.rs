@@ -47,6 +47,10 @@ pub struct CliConsole {
     db: u8,
     history: Vec<Entry>,
     input: Entity<InputState>,
+    /// 已提交命令的输入历史（旧→新），供 ↑/↓ 召回；与上方应答历史 history 是两回事
+    cmd_history: Vec<String>,
+    /// 当前 ↑/↓ 浏览位置：None = 停在实时输入行，Some(i) = 正显示 cmd_history[i]
+    history_cursor: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,6 +84,8 @@ impl CliConsole {
             db,
             history: Vec::new(),
             input,
+            cmd_history: Vec::new(),
+            history_cursor: None,
             _subscriptions: subs,
         }
     }
@@ -99,6 +105,8 @@ impl CliConsole {
         if raw.is_empty() {
             return;
         }
+        // 记录到输入历史（含被拦截 / 解析失败的命令，便于 ↑ 召回后修正）
+        self.record_history(&raw);
         // 引号解析失败：就地记错误行，不发后端
         let argv = match format::tokenize(&raw) {
             Ok(a) if a.is_empty() => return,
@@ -185,6 +193,52 @@ impl CliConsole {
         self.history.clear();
         cx.notify();
     }
+
+    /// 记录一条输入历史：跳过与上一条完全相同的（避免连按重复堆积），上限 500 条防无界增长；
+    /// 记录后浏览位置复位到实时行
+    fn record_history(&mut self, cmd: &str) {
+        if self.cmd_history.last().map(String::as_str) != Some(cmd) {
+            self.cmd_history.push(cmd.to_string());
+            const MAX: usize = 500;
+            if self.cmd_history.len() > MAX {
+                self.cmd_history.remove(0);
+            }
+        }
+        self.history_cursor = None;
+    }
+
+    /// ↑ 召回更旧命令：从实时行首按即跳到最新一条，再按逐条往旧，至最旧停住
+    fn history_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(idx) = prev_cursor(self.cmd_history.len(), self.history_cursor) else {
+            return;
+        };
+        self.history_cursor = Some(idx);
+        self.apply_history_value(idx, window, cx);
+    }
+
+    /// ↓ 走向更新命令：越过最新一条即回到空的实时输入行
+    fn history_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cur) = self.history_cursor else {
+            return;
+        };
+        match next_cursor(self.cmd_history.len(), cur) {
+            Some(idx) => {
+                self.history_cursor = Some(idx);
+                self.apply_history_value(idx, window, cx);
+            }
+            None => {
+                self.history_cursor = None;
+                self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            }
+        }
+    }
+
+    fn apply_history_value(&self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cmd) = self.cmd_history.get(idx).cloned() else {
+            return;
+        };
+        self.input.update(cx, |s, cx| s.set_value(cmd, window, cx));
+    }
 }
 
 impl Render for CliConsole {
@@ -260,14 +314,21 @@ impl Render for CliConsole {
             .bg(bg)
             // 单行输入不挂 up/down handler（gpui-component 限制），手动把 ↑/↓ 转发给补全菜单导航
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| {
-                this.input.update(cx, |state, cx| {
-                    state.handle_action_for_context_menu(Box::new(MoveUp), window, cx);
+                // 补全菜单打开时 ↑ 交其导航；菜单关闭（未消费）时召回更旧的历史命令
+                let handled = this.input.update(cx, |state, cx| {
+                    state.handle_action_for_context_menu(Box::new(MoveUp), window, cx)
                 });
+                if !handled {
+                    this.history_prev(window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &MoveDown, window, cx| {
-                this.input.update(cx, |state, cx| {
-                    state.handle_action_for_context_menu(Box::new(MoveDown), window, cx);
+                let handled = this.input.update(cx, |state, cx| {
+                    state.handle_action_for_context_menu(Box::new(MoveDown), window, cx)
                 });
+                if !handled {
+                    this.history_next(window, cx);
+                }
             }))
             .child(toolbar)
             .child(input_row)
@@ -354,5 +415,55 @@ fn line_color(line: &str, fg: gpui::Hsla, muted_fg: gpui::Hsla, accent: gpui::Hs
         muted_fg
     } else {
         fg
+    }
+}
+
+/// ↑ 召回时的目标光标（纯逻辑，便于测试）。`len` = 历史条数，`cur` = 当前浏览位置。
+/// 返回 None 表示历史为空、无动作；Some(i) 表示定位到第 i 条：
+/// 从实时行（cur=None）首按跳到最新一条，往旧逐条递减，到最旧（0）停住
+fn prev_cursor(len: usize, cur: Option<usize>) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match cur {
+        None => len - 1,
+        Some(0) => 0,
+        Some(i) => i - 1,
+    })
+}
+
+/// ↓ 前进时的目标光标。返回 Some(i) 定位到第 i 条；返回 None 表示已越过最新一条、
+/// 应回到空的实时输入行。仅在 cur 有效（正在浏览历史）时调用
+fn next_cursor(len: usize, cur: usize) -> Option<usize> {
+    if cur + 1 < len { Some(cur + 1) } else { None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_cursor, prev_cursor};
+
+    #[test]
+    fn prev_from_live_jumps_to_newest() {
+        // 实时行首按 ↑ → 最新一条（末尾）
+        assert_eq!(prev_cursor(3, None), Some(2));
+    }
+
+    #[test]
+    fn prev_walks_back_and_stops_at_oldest() {
+        assert_eq!(prev_cursor(3, Some(2)), Some(1));
+        assert_eq!(prev_cursor(3, Some(1)), Some(0));
+        assert_eq!(prev_cursor(3, Some(0)), Some(0)); // 到最旧停住，不越界
+    }
+
+    #[test]
+    fn prev_empty_history_is_noop() {
+        assert_eq!(prev_cursor(0, None), None);
+    }
+
+    #[test]
+    fn next_walks_forward_then_returns_to_live() {
+        assert_eq!(next_cursor(3, 0), Some(1));
+        assert_eq!(next_cursor(3, 1), Some(2));
+        assert_eq!(next_cursor(3, 2), None); // 越过最新 → 回到实时行
     }
 }
