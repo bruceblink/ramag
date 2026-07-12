@@ -318,7 +318,7 @@ impl Render for HistoryList {
                     .xsmall()
                     .label("清空")
                     .tooltip("清空当前连接的全部查询历史")
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                         let entity = cx.entity();
                         ramag_ui::open_confirm(
                             "清空查询历史？",
