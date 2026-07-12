@@ -279,6 +279,20 @@ impl VcsView {
             tab.cached_diff = Some(diff);
         }
         let commit_text = self.commit_input.read(cx).value();
+        // 切仓即持久化当前草稿（作废在途防抖任务——其读到的将是新仓文本），重启后可恢复
+        self.commit_draft_gen = self.commit_draft_gen.wrapping_add(1);
+        {
+            let storage = self.storage.clone();
+            let key = commit_draft_pref_key(&path);
+            let text = commit_text.to_string();
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(e) = storage.set_preference(&key, &text).await {
+                        tracing::warn!(error = %e, "persist commit draft on switch failed");
+                    }
+                })
+                .detach();
+        }
         self.repo_session_cache.insert(
             path,
             RepoSessionState {
@@ -289,6 +303,43 @@ impl VcsView {
                 commit_sign: self.commit_sign,
             },
         );
+    }
+
+    /// 提交草稿防抖持久化：输入停顿 800ms 后按当前仓库 path 写 prefs；
+    /// 期间再输入 / 切仓则代际不符自动作废（切仓另有同步写兜底）
+    pub(super) fn schedule_commit_draft_persist(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.repo.is_none() {
+            return;
+        }
+        self.commit_draft_gen = self.commit_draft_gen.wrapping_add(1);
+        let generation = self.commit_draft_gen;
+        let storage = self.storage.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(800))
+                .await;
+            // 代际校验通过才读文本与 path（保证读到的仍是同一仓库的草稿）
+            let snapshot = this
+                .update(cx, |this, cx| {
+                    if this.commit_draft_gen != generation {
+                        return None;
+                    }
+                    let path = this.repo.as_ref().map(|r| r.path.clone())?;
+                    Some((path, this.commit_input.read(cx).value().to_string()))
+                })
+                .ok()
+                .flatten();
+            let Some((path, text)) = snapshot else {
+                return;
+            };
+            if let Err(e) = storage
+                .set_preference(&commit_draft_pref_key(&path), &text)
+                .await
+            {
+                tracing::warn!(error = %e, "persist commit draft failed");
+            }
+        })
+        .detach();
     }
 
     /// 从缓存还原文件 tab + commit 面板状态；commit 文本通过 pending_commit_text 让
@@ -409,7 +460,31 @@ pub(super) async fn open_repo_async(
         this.active_view = ActiveView::Session;
 
         // 已访问过的仓库：还原文件 tab 状态；新仓库：空 tabs 让用户自己选
-        this.restore_session_from_cache(&repo_config.path);
+        let session_hit = this.restore_session_from_cache(&repo_config.path);
+        // 重启后 session cache 为空：从 prefs 恢复上次的提交草稿（异步读回后经
+        // pending_commit_text 让 Render 写回输入框；期间用户已输入则不覆盖）
+        if !session_hit {
+            let storage = this.storage.clone();
+            let path = repo_config.path.clone();
+            cx.spawn(async move |this, cx| {
+                let draft = storage
+                    .get_preference(&commit_draft_pref_key(&path))
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.is_empty());
+                let Some(draft) = draft else { return };
+                let _ = this.update(cx, |this, cx| {
+                    let same_repo = this.repo.as_ref().is_some_and(|r| r.path == path);
+                    let untouched = this.commit_input.read(cx).value().trim().is_empty();
+                    if same_repo && untouched {
+                        this.pending_commit_text = Some(draft.into());
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
         // session 只恢复“打开了哪些 tab”，内容必须基于本次刚读取的仓库状态重拉。
         if let Some(tab) = this
             .active_file_tab_idx
@@ -437,6 +512,11 @@ pub(super) async fn open_repo_async(
             this.load_history_page(0, cx);
         }
     });
+}
+
+/// 提交草稿的 prefs key（按仓库 path 隔离）
+pub(super) fn commit_draft_pref_key(path: &str) -> String {
+    format!("vcs_commit_draft:{path}")
 }
 
 mod admin;

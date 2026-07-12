@@ -84,6 +84,8 @@ pub struct VcsView {
     pub(super) commit_sign: bool,
     /// 切仓库后待恢复的 commit 草稿；Render 内 cx.defer_in 调 set_value 写回 InputState
     pub(super) pending_commit_text: Option<SharedString>,
+    /// 提交草稿防抖持久化代际号：输入触发 +1，切仓 / 换代后在途写任务作废
+    pub(super) commit_draft_gen: u64,
     /// 切仓库后待清空的搜索框（文件搜索 / 历史搜索）；同 pending_commit_text 的 defer 模式
     pub(super) pending_clear_search_inputs: bool,
     /// 分支 / tag 创建成功后清空输入，避免下一次误用旧名称

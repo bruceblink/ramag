@@ -52,6 +52,17 @@ impl VcsView {
         });
         let files_search_input =
             cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("搜索文件路径"));
+        // 提交草稿输入即防抖持久化（重启后可恢复；切仓恢复走 session cache）。
+        // 恢复写回用 set_value（不发 Change），不会触发本订阅形成回写环
+        cx.subscribe(
+            &commit_input,
+            |this: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.schedule_commit_draft_persist(cx);
+                }
+            },
+        )
+        .detach();
         // 订阅搜索框 Change → notify 主 view 重渲染（触发文件过滤即时反馈）
         cx.subscribe(
             &files_search_input,
@@ -117,6 +128,7 @@ impl VcsView {
             commit_amend: false,
             commit_sign: false,
             pending_commit_text: None,
+            commit_draft_gen: 0,
             pending_clear_search_inputs: false,
             pending_clear_creation_inputs: false,
             selected_file: None,

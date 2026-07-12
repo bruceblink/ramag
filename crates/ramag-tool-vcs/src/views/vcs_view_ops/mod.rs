@@ -349,8 +349,22 @@ impl VcsView {
                             this.status = Some(s);
                         }
                         this.commit_amend = false;
-                        // 提交成功：清空 message（避免下次误用同一条），已提交文件的 tabs 对齐
+                        // 提交成功：清空 message（避免下次误用同一条），已提交文件的 tabs 对齐；
+                        // 持久化的草稿一并清除（作废在途防抖写）
                         this.pending_commit_text = Some(gpui::SharedString::default());
+                        this.commit_draft_gen = this.commit_draft_gen.wrapping_add(1);
+                        if let Some(path) = this.repo.as_ref().map(|r| r.path.clone()) {
+                            let storage = this.storage.clone();
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let key =
+                                        super::vcs_view_ops_repo::commit_draft_pref_key(&path);
+                                    if let Err(e) = storage.set_preference(&key, "").await {
+                                        tracing::warn!(error = %e, "clear commit draft failed");
+                                    }
+                                })
+                                .detach();
+                        }
                         this.sync_changes_tabs_with_status(cx);
                         // history 已加载过 / 面板开着 → 立即把新 commit 刷到列表顶部
                         if this.history_pane_visible || !this.history_commits.is_empty() {

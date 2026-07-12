@@ -192,6 +192,33 @@ impl MongoQueryPanel {
         if idx >= self.tabs.len() {
             return;
         }
+        // 防丢稿：有手写草稿先确认（确认弹窗模态，idx 在回调前不会漂移）
+        let has_draft = self
+            .tabs
+            .get(idx)
+            .is_some_and(|t| t.read(cx).has_user_draft(cx));
+        if has_draft {
+            let entity = cx.entity();
+            ramag_ui::open_confirm(
+                "关闭查询标签？",
+                "该标签的编辑器有未保存的手写内容，关闭将丢弃。".to_string(),
+                "关闭",
+                true,
+                move |window, app| {
+                    entity.update(app, |this, cx| this.close_tab_inner(idx, window, cx));
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        self.close_tab_inner(idx, window, cx);
+    }
+
+    fn close_tab_inner(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if idx >= self.tabs.len() {
+            return;
+        }
         self.tabs.remove(idx);
         if idx < self.titles.len() {
             self.titles.remove(idx);
@@ -222,9 +249,14 @@ impl MongoQueryPanel {
         self.tabs.len()
     }
 
-    /// 把示例命令写入当前激活 Tab 的编辑器（整体替换）；没 Tab 时先建一个
+    /// 把示例命令写入当前激活 Tab 的编辑器（整体替换）；没 Tab 时先建一个。
+    /// 有手写草稿时另开 Tab，不覆盖（防丢稿）
     fn apply_example(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.is_empty() {
+        let has_draft = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.read(cx).has_user_draft(cx));
+        if self.tabs.is_empty() || has_draft {
             self.add_tab(window, cx);
         }
         let Some(tab) = self.tabs.get(self.active).cloned() else {

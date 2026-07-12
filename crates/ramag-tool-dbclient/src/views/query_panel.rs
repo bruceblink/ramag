@@ -154,6 +154,33 @@ impl QueryPanel {
         if index >= self.tabs.len() {
             return;
         }
+        // 防丢稿：有手写草稿先确认（确认弹窗模态，index 在回调前不会漂移）
+        let has_draft = self
+            .tabs
+            .get(index)
+            .is_some_and(|t| t.read(cx).has_user_draft(cx));
+        if has_draft {
+            let entity = cx.entity();
+            ramag_ui::open_confirm(
+                "关闭查询标签？",
+                "该标签的编辑器有未保存的手写内容，关闭将丢弃。".to_string(),
+                "关闭",
+                true,
+                move |window, app| {
+                    entity.update(app, |this, cx| this.close_tab_inner(index, window, cx));
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        self.close_tab_inner(index, window, cx);
+    }
+
+    fn close_tab_inner(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
         // 执行中的查询先取消（含后端 KILL），避免关 Tab 后语句仍占用数据库
         if let Some(tab) = self.tabs.get(index) {
             tab.update(cx, |t, cx| t.cancel_if_running(window, cx));
@@ -251,22 +278,33 @@ impl QueryPanel {
         self.prefill_active_sql_and_run(sql, window, cx);
     }
 
-    /// 把示例 SQL 插入当前激活 Tab 的编辑器（Tab 栏「示例」下拉用）
+    /// 活动 Tab 是否存在手写草稿（防丢稿：示例 / 历史填入前判定，有稿改道新 Tab）
+    fn active_has_draft(&self, cx: &Context<Self>) -> bool {
+        self.tabs
+            .get(self.active)
+            .is_some_and(|t| t.read(cx).has_user_draft(cx))
+    }
+
+    /// 把示例 SQL 插入当前激活 Tab 的编辑器（Tab 栏「示例」下拉用）。
+    /// 有手写草稿时另开 Tab，不覆盖
     fn insert_example_into_active(
         &mut self,
         sql: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.active_has_draft(cx) {
+            self.add_tab(window, cx);
+        }
         if let Some(tab) = self.tabs.get(self.active).cloned() {
             tab.update(cx, |t, cx| t.insert_example(sql, window, cx));
         }
     }
 
     /// 把 SQL 填入当前活动 Tab 的编辑器并聚焦（不执行）。
-    /// 面板恒保持至少一个 Tab，空列表仅是兜底防御
+    /// 有手写草稿时另开 Tab，不覆盖；面板恒保持至少一个 Tab，空列表仅是兜底防御
     fn fill_active_sql(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() || self.active_has_draft(cx) {
             self.add_tab(window, cx);
         }
         if let Some(tab) = self.tabs.get(self.active) {
