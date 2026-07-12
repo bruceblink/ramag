@@ -198,6 +198,15 @@ fn main() {
             else {
                 return;
             };
+            // 主窗口不因 cmd-w 关闭（IDEA 语义）：视图层有 tab 可关时已消费不冒泡，
+            // 冒到这里说明无 tab 可关；误关主窗会丢弃全部会话 / 查询稿，代价过高。
+            // 主窗关闭走 cmd-q 或系统关闭按钮；非主窗（抽屉等浮层）照常关闭
+            if cx
+                .try_global::<MainWindowGlobal>()
+                .is_some_and(|g| g.0 == handle)
+            {
+                return;
+            }
             cx.defer(move |cx| {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             });
