@@ -271,6 +271,27 @@ impl VcsView {
             }
         }
 
+        // 远程仓库段：表头 + 行（空则占位）+ 底部新建（管 remote 配置，区别于「远程分支」）
+        rows.push(LeftRow::Header {
+            title: "远程仓库",
+            count: self.remotes.len(),
+            collapsed: self.collapsed_remote_repos,
+            section: SidebarSection::RemoteRepo,
+        });
+        if !self.collapsed_remote_repos {
+            if self.remotes.is_empty() {
+                rows.push(LeftRow::Empty("暂无远程仓库（下方输入框添加）"));
+            } else {
+                for (idx, r) in self.remotes.iter().enumerate() {
+                    rows.push(LeftRow::Remote {
+                        idx,
+                        remote: r.clone(),
+                    });
+                }
+            }
+            rows.push(LeftRow::CreateRemote);
+        }
+
         // Tag 段：表头 + 行（空则占位）+ 底部新建
         rows.push(LeftRow::Header {
             title: "Tag",

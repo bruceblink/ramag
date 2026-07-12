@@ -25,6 +25,10 @@ pub fn set_url(repo_path: &Path, name: &str, url: &str) -> Result<()> {
     run_git_bytes(repo_path, &["remote", "set-url", name, url]).map(|_| ())
 }
 
+pub fn rename(repo_path: &Path, old: &str, new: &str) -> Result<()> {
+    run_git_bytes(repo_path, &["remote", "rename", old, new]).map(|_| ())
+}
+
 /// remote 为空时拉所有 remote
 pub fn fetch(repo_path: &Path, remote: &str) -> Result<()> {
     if remote.is_empty() {

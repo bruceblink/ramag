@@ -5,7 +5,7 @@ use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex};
-use ramag_domain::entities::{Branch, Tag};
+use ramag_domain::entities::{Branch, Remote, Tag};
 
 use super::vcs_view::VcsView;
 
@@ -18,6 +18,8 @@ pub(super) enum SidebarSection {
     Local,
     Remote,
     Tag,
+    /// 远程仓库配置（origin 等），区别于 `Remote`（远程分支引用）
+    RemoteRepo,
 }
 
 /// 左栏扁平行：段表头 / 分支 / Tag / 新建输入 / 空占位
@@ -37,8 +39,13 @@ pub(super) enum LeftRow {
         idx: usize,
         tag: Tag,
     },
+    Remote {
+        idx: usize,
+        remote: Remote,
+    },
     CreateBranch,
     CreateTag,
+    CreateRemote,
     Empty(&'static str),
 }
 
@@ -61,8 +68,12 @@ impl VcsView {
             LeftRow::Tag { idx, tag } => {
                 super::sidebar_tags::tag_row(*idx, tag, self.busy, cx).into_any_element()
             }
+            LeftRow::Remote { idx, remote } => {
+                super::sidebar_remotes::remote_row(*idx, remote, self.busy, cx).into_any_element()
+            }
             LeftRow::CreateBranch => self.render_create_branch_row(cx),
             LeftRow::CreateTag => self.render_create_tag_row(cx),
+            LeftRow::CreateRemote => self.render_create_remote_row(cx),
             LeftRow::Empty(msg) => {
                 let muted_fg = cx.theme().muted_foreground;
                 h_flex()
@@ -100,6 +111,7 @@ pub(super) fn section_header(
             SidebarSection::Local => "local",
             SidebarSection::Remote => "remote",
             SidebarSection::Tag => "tag",
+            SidebarSection::RemoteRepo => "remote-repo",
         }
     ));
     let hover_bg = theme.muted;
@@ -119,6 +131,9 @@ pub(super) fn section_header(
                 SidebarSection::Local => this.collapsed_local = !this.collapsed_local,
                 SidebarSection::Remote => this.collapsed_remote = !this.collapsed_remote,
                 SidebarSection::Tag => this.collapsed_tag = !this.collapsed_tag,
+                SidebarSection::RemoteRepo => {
+                    this.collapsed_remote_repos = !this.collapsed_remote_repos
+                }
             }
             cx.notify();
         }))

@@ -33,6 +33,11 @@ impl VcsView {
             cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("tag 名"));
         let create_tag_message_input =
             cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("备注（可选）"));
+        let create_remote_name_input =
+            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("远程名（如 origin）"));
+        let create_remote_url_input = cx.new(|cx_inner| {
+            InputState::new(window, cx_inner).placeholder("远程 URL（HTTPS / SSH）")
+        });
         let history_search_input = cx.new(|cx_inner| {
             InputState::new(window, cx_inner).placeholder("搜索：关键词 / @作者 / 7d/1m 时间下限")
         });
@@ -135,10 +140,13 @@ impl VcsView {
             collapsed_local: false,
             collapsed_remote: true,
             collapsed_tag: true,
+            collapsed_remote_repos: true,
             expanded_diff_spacers: std::collections::HashSet::new(),
             remotes: Vec::new(),
             loading_remotes: false,
             remotes_request_seq: 0,
+            create_remote_name_input,
+            create_remote_url_input,
             viewing_commit: None,
             commit_files: Vec::new(),
             selected_commit_file: None,

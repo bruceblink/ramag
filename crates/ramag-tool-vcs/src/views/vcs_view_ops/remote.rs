@@ -1,7 +1,7 @@
 //! VcsView Remote 异步操作：fetch / pull / push（含 force-with-lease）
 
 use gpui::Context;
-use ramag_domain::entities::BranchKind;
+use ramag_domain::entities::{BranchKind, RepoId};
 use tracing::{error, info};
 
 use super::super::helpers::{RemoteOp, default_remote_name};
@@ -193,5 +193,159 @@ impl VcsView {
             });
         })
         .detach();
+    }
+
+    /// 「添加远程」按钮：读双输入 → 校验非空 → add_remote_op
+    pub(in crate::views) fn handle_create_remote(&mut self, cx: &mut Context<Self>) {
+        let name = self
+            .create_remote_name_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let url = self
+            .create_remote_url_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if name.is_empty() || url.is_empty() {
+            self.error = Some("远程名与 URL 均不能为空".into());
+            cx.notify();
+            return;
+        }
+        self.add_remote_op(name, url, cx);
+    }
+
+    /// git remote add；成功后清空创建输入并刷新列表
+    pub(in crate::views) fn add_remote_op(
+        &mut self,
+        name: String,
+        url: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
+            return;
+        };
+        let driver = self.driver.clone();
+        if !self.begin_op("添加远程中…", cx) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = driver.add_remote(&repo, &name, &url).await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_remote_crud(&repo, result, format!("已添加远程 {name}"), true, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// git remote remove
+    pub(in crate::views) fn remove_remote_op(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
+            return;
+        };
+        let driver = self.driver.clone();
+        if !self.begin_op("删除远程中…", cx) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = driver.remove_remote(&repo, &name).await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_remote_crud(&repo, result, format!("已删除远程 {name}"), false, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// git remote set-url（改 fetch URL）
+    pub(in crate::views) fn set_remote_url_op(
+        &mut self,
+        name: String,
+        url: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
+            return;
+        };
+        let driver = self.driver.clone();
+        if !self.begin_op("修改远程 URL 中…", cx) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = driver.set_remote_url(&repo, &name, &url).await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_remote_crud(
+                    &repo,
+                    result,
+                    format!("已更新远程 {name} 的 URL"),
+                    false,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    /// git remote rename
+    pub(in crate::views) fn rename_remote_op(
+        &mut self,
+        old: String,
+        new: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
+            return;
+        };
+        let driver = self.driver.clone();
+        if !self.begin_op("重命名远程中…", cx) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = driver.rename_remote(&repo, &old, &new).await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_remote_crud(
+                    &repo,
+                    result,
+                    format!("已将远程 {old} 重命名为 {new}"),
+                    false,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    /// 远程 CRUD 统一收尾：复位忙碌 → 归属校验 → 成功刷新列表+toast / 失败错误横幅。
+    /// clear_inputs=true 时（仅添加）经 pending 标志清空创建输入
+    fn finish_remote_crud(
+        &mut self,
+        repo: &RepoId,
+        result: ramag_domain::error::Result<()>,
+        success: String,
+        clear_inputs: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = false;
+        self.busy_label = None;
+        if !self.is_current_repo(repo) {
+            cx.notify();
+            return;
+        }
+        match result {
+            Ok(()) => {
+                info!("vcs: remote crud done");
+                if clear_inputs {
+                    self.pending_clear_creation_inputs = true;
+                }
+                self.notify_success(success, cx);
+                self.reload_remotes(cx);
+            }
+            Err(e) => {
+                error!(error = %e, "vcs: remote crud failed");
+                self.error = Some(format!("远程操作失败：{e}"));
+            }
+        }
+        cx.notify();
     }
 }

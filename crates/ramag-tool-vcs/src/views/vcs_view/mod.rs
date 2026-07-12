@@ -129,6 +129,8 @@ pub struct VcsView {
     pub(super) collapsed_remote: bool,
     /// sidebar 「Tag」段是否折叠（默认折叠，tag 通常较多）
     pub(super) collapsed_tag: bool,
+    /// sidebar 「远程仓库」段是否折叠（默认折叠；与「远程分支」段独立）
+    pub(super) collapsed_remote_repos: bool,
     /// 用户已点击展开的 diff spacer：(hunk_idx, run_start_line_idx)；切换文件 / commit 时清空
     pub(super) expanded_diff_spacers: std::collections::HashSet<(usize, usize)>,
     /// 远程仓库列表（git remote -v 解析）
@@ -136,6 +138,10 @@ pub struct VcsView {
     /// remote 列表是否正在拉取
     pub(super) loading_remotes: bool,
     pub(super) remotes_request_seq: u64,
+    /// 新建远程输入框：远程名
+    pub(super) create_remote_name_input: Entity<InputState>,
+    /// 新建远程输入框：远程 URL
+    pub(super) create_remote_url_input: Entity<InputState>,
     /// 当前在 commit 详情视图查看的 commit（None = 处于 history 列表态）
     pub(super) viewing_commit: Option<Commit>,
     /// 详情视图的文件列表（git diff-tree --name-status 解析）

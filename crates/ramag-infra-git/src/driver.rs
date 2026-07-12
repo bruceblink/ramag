@@ -434,6 +434,13 @@ impl GitDriver for GitDriverImpl {
         run_write_blocking(handle, move |p| remote::set_url(p, &name, &url)).await
     }
 
+    async fn rename_remote(&self, repo: &RepoId, old: &str, new: &str) -> Result<()> {
+        let handle = self.get_repo(repo)?;
+        let old = old.to_string();
+        let new = new.to_string();
+        run_write_blocking(handle, move |p| remote::rename(p, &old, &new)).await
+    }
+
     async fn list_commit_files(&self, repo: &RepoId, commit: &str) -> Result<Vec<FileStatus>> {
         let handle = self.get_repo(repo)?;
         let commit = commit.to_string();

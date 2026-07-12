@@ -37,6 +37,31 @@ pub(super) fn open_confirm_dialog(
     );
 }
 
+/// 委托 `ramag_ui::open_prompt`（单行输入），把 `FnOnce(&mut VcsView, String, &mut Context)` 适配成 App 闭包
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_prompt_dialog(
+    view: Entity<VcsView>,
+    title: impl Into<SharedString>,
+    description: String,
+    initial: String,
+    confirm_label: impl Into<SharedString>,
+    on_confirm: impl FnOnce(&mut VcsView, String, &mut Context<VcsView>) + 'static,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    ramag_ui::open_prompt(
+        title,
+        description,
+        &initial,
+        confirm_label,
+        move |value, _window, app| {
+            view.update(app, |this, cx| on_confirm(this, value, cx));
+        },
+        window,
+        cx,
+    );
+}
+
 impl VcsView {
     /// File 操作（Stage / Unstage / Discard）；只有 Discard 弹确认
     pub(super) fn confirm_file_op(
@@ -402,6 +427,66 @@ impl VcsView {
             "Amend 提交",
             false,
             move |this, cx| this.run_commit(cx),
+            window,
+            cx,
+        );
+    }
+
+    /// 删除远程仓库（弹危险确认；仅移除本地配置，不影响远程服务器）
+    pub(super) fn confirm_remote_delete(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        open_confirm_dialog(
+            view,
+            "删除远程仓库？",
+            format!("将删除远程「{name}」及其跟踪配置（不影响远程服务器）。\n确认继续吗？"),
+            "删除",
+            true,
+            move |this, cx| this.remove_remote_op(name, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// 重命名远程仓库（单行输入，预填当前名）
+    pub(super) fn prompt_remote_rename(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let old = name.clone();
+        open_prompt_dialog(
+            cx.entity(),
+            "重命名远程仓库",
+            format!("为远程「{name}」输入新名称："),
+            name,
+            "重命名",
+            move |this, new, cx| this.rename_remote_op(old.clone(), new, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// 修改远程 fetch URL（单行输入，预填当前 URL）
+    pub(super) fn prompt_remote_set_url(
+        &mut self,
+        name: String,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_prompt_dialog(
+            cx.entity(),
+            "修改远程 URL",
+            format!("为远程「{name}」输入新的 fetch URL："),
+            current,
+            "保存",
+            move |this, url, cx| this.set_remote_url_op(name.clone(), url, cx),
             window,
             cx,
         );

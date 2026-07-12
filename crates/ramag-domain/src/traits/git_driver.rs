@@ -299,6 +299,11 @@ pub trait GitDriver: Send + Sync {
         not_impl("set_remote_url")
     }
 
+    /// 重命名远程（`git remote rename`），保留其 URL 与分支跟踪配置
+    async fn rename_remote(&self, _repo: &RepoId, _old: &str, _new: &str) -> Result<()> {
+        not_impl("rename_remote")
+    }
+
     /// commit 引入的文件变更。`staged` 承载该 commit 的变更类型，`unstaged` 始终 None
     async fn list_commit_files(&self, _repo: &RepoId, _commit: &str) -> Result<Vec<FileStatus>> {
         not_impl("list_commit_files")

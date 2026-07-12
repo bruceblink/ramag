@@ -44,8 +44,16 @@ impl Render for VcsView {
             let branch_input = self.create_branch_input.clone();
             let tag_input = self.create_tag_input.clone();
             let tag_message_input = self.create_tag_message_input.clone();
+            let remote_name_input = self.create_remote_name_input.clone();
+            let remote_url_input = self.create_remote_url_input.clone();
             cx.defer_in(window, move |_, window, cx| {
-                for input in [branch_input, tag_input, tag_message_input] {
+                for input in [
+                    branch_input,
+                    tag_input,
+                    tag_message_input,
+                    remote_name_input,
+                    remote_url_input,
+                ] {
                     input.update(cx, |state, ctx| {
                         state.set_value("", window, ctx);
                     });

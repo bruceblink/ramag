@@ -540,6 +540,29 @@ fn remote_add_list() {
 }
 
 #[test]
+fn remote_rename_set_url_remove() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "base\n", "init");
+    block_on(driver.add_remote(&id, "origin", "https://example.com/r.git")).unwrap();
+
+    block_on(driver.rename_remote(&id, "origin", "upstream")).unwrap();
+    let remotes = block_on(driver.list_remotes(&id)).unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "upstream", "重命名后应为 upstream");
+
+    block_on(driver.set_remote_url(&id, "upstream", "https://example.com/new.git")).unwrap();
+    let remotes = block_on(driver.list_remotes(&id)).unwrap();
+    assert_eq!(
+        remotes[0].fetch_url, "https://example.com/new.git",
+        "fetch URL 应已更新"
+    );
+
+    block_on(driver.remove_remote(&id, "upstream")).unwrap();
+    let remotes = block_on(driver.list_remotes(&id)).unwrap();
+    assert!(remotes.is_empty(), "删除后应无 remote");
+}
+
+#[test]
 fn reflog_records_commits() {
     let (driver, id, tmp) = setup();
     commit_file(&driver, &id, tmp.path(), "a.txt", "v1\n", "c1");
