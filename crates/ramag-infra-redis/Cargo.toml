@@ -10,6 +10,7 @@ description = "Ramag Redis 驱动实现（实现 Domain 的 KvDriver trait，封
 workspace = true
 
 [dependencies]
+ramag-infra-tunnel = { workspace = true }
 ramag-domain = { workspace = true }
 
 # Redis 异步驱动

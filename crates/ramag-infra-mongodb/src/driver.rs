@@ -270,5 +270,7 @@ impl DocDriver for MongoDriver {
 
     fn evict_pool(&self, id: &ConnectionId) {
         self.pools.evict(id);
+        // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
+        ramag_infra_tunnel::evict(id);
     }
 }

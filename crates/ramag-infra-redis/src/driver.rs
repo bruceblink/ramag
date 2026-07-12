@@ -261,6 +261,8 @@ impl KvDriver for RedisDriver {
     fn evict_pool(&self, id: &ramag_domain::entities::ConnectionId) {
         // 池按 (ConnectionId, db) 索引，需清空该连接所有 db
         self.pools.evict_all_dbs(id);
+        // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
+        ramag_infra_tunnel::evict(id);
     }
 }
 

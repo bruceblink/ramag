@@ -88,7 +88,16 @@ impl PoolCache {
 }
 
 async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<ConnectionManager> {
-    let info = build_connection_info(config, db);
+    // SSH 隧道：启用时改连 127.0.0.1:本地转发端口（就绪探测阻塞，经 spawn_blocking 隔离）
+    let cfg_for_tunnel = config.clone();
+    let tunnel = tokio::task::spawn_blocking(move || ramag_infra_tunnel::ensure(&cfg_for_tunnel))
+        .await
+        .map_err(|e| DomainError::QueryFailed(format!("SSH 隧道任务失败：{e}")))??;
+    let (host, port) = match tunnel {
+        Some((h, p)) => (h, p),
+        None => (config.host.clone(), config.port),
+    };
+    let info = build_connection_info(config, db, host, port);
 
     // 自定义 CA：读 PEM 字节经 build_with_tls 注入信任根（自签场景）；否则走系统信任链
     let client = if config.tls
@@ -130,8 +139,14 @@ async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<C
     Ok(mgr)
 }
 
-/// TCP 或 TLS（config.tls）；Unix Socket 暂不支持
-fn build_connection_info(config: &ConnectionConfig, db: u8) -> ConnectionInfo {
+/// TCP 或 TLS（config.tls）；Unix Socket 暂不支持。
+/// host / port 由调用方传入（可能已被 SSH 隧道替换为本地转发地址）
+fn build_connection_info(
+    config: &ConnectionConfig,
+    db: u8,
+    host: String,
+    port: u16,
+) -> ConnectionInfo {
     let username = if config.username.is_empty() {
         None
     } else {
@@ -147,13 +162,13 @@ fn build_connection_info(config: &ConnectionConfig, db: u8) -> ConnectionInfo {
     // tls_params 留 None——自定义 CA 在 build_with_tls 注入
     let addr = if config.tls {
         ConnectionAddr::TcpTls {
-            host: config.host.clone(),
-            port: config.port,
+            host,
+            port,
             insecure: false,
             tls_params: None,
         }
     } else {
-        ConnectionAddr::Tcp(config.host.clone(), config.port)
+        ConnectionAddr::Tcp(host, port)
     };
 
     ConnectionInfo {
@@ -184,7 +199,7 @@ mod tests {
     #[test]
     fn build_info_no_auth() {
         let cfg = ConnectionConfig::new_redis("local", "127.0.0.1", 6379);
-        let info = build_connection_info(&cfg, 0);
+        let info = build_connection_info(&cfg, 0, cfg.host.clone(), cfg.port);
         assert!(matches!(info.addr, ConnectionAddr::Tcp(_, 6379)));
         assert_eq!(info.redis.db, 0);
         assert!(info.redis.username.is_none());
@@ -196,7 +211,7 @@ mod tests {
         let mut cfg = ConnectionConfig::new_redis("local", "127.0.0.1", 6379);
         cfg.username = "default".into();
         cfg.password = "secret".into();
-        let info = build_connection_info(&cfg, 3);
+        let info = build_connection_info(&cfg, 3, cfg.host.clone(), cfg.port);
         assert_eq!(info.redis.db, 3);
         assert_eq!(info.redis.username.as_deref(), Some("default"));
         assert_eq!(info.redis.password.as_deref(), Some("secret"));

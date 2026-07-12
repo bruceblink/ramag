@@ -205,7 +205,23 @@ impl Render for ConnectionFormPanel {
                             "自定义 CA 证书（自签服务端用；留空走系统信任链）",
                             Input::new(&self.ca_cert_path),
                         ))
-                    }),
+                    })
+                    // SSH 跳板：target 非空即启用；密钥 / agent / 别名由系统 ssh 处理，
+                    // 不在此存任何 SSH 凭证。与 TLS 互斥（保存时校验）
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(px(12.0))
+                            .child(div().flex_1().min_w_0().child(field_row(
+                                "SSH 跳板（可选，需已配密钥或 ssh-agent）",
+                                Input::new(&self.ssh_target),
+                            )))
+                            .child(
+                                div()
+                                    .w(px(110.0))
+                                    .child(field_row("SSH 端口", Input::new(&self.ssh_port))),
+                            ),
+                    ),
             )
             // —— 分隔 + 按钮区 ——
             .child(div().h(px(1.0)).bg(border).my(px(2.0)))

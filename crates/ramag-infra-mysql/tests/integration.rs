@@ -28,6 +28,8 @@ fn config_from_env() -> Option<ConnectionConfig> {
         production: false,
         tls: false,
         ca_cert_path: None,
+        ssh_target: None,
+        ssh_port: None,
     })
 }
 

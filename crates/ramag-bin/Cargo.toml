@@ -41,6 +41,7 @@ ramag-infra-mongodb = { workspace = true }
 ramag-infra-storage = { workspace = true }
 ramag-infra-git = { workspace = true }
 ramag-infra-clipboard = { workspace = true }
+ramag-infra-tunnel = { workspace = true }
 
 # GPUI
 gpui = { workspace = true }

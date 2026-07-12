@@ -19,9 +19,20 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
         )));
     }
 
+    // SSH 隧道：启用时先确保系统 ssh 转发就绪，DB 改连 127.0.0.1:本地端口；
+    // 就绪探测是阻塞调用，经 spawn_blocking 隔离，不占 tokio worker
+    let cfg_for_tunnel = config.clone();
+    let tunnel = tokio::task::spawn_blocking(move || ramag_infra_tunnel::ensure(&cfg_for_tunnel))
+        .await
+        .map_err(|e| DomainError::QueryFailed(format!("SSH 隧道任务失败：{e}")))??;
+    let (host, port) = match tunnel {
+        Some((h, p)) => (h, p),
+        None => (config.host.clone(), config.port),
+    };
+
     let opts = MySqlConnectOptions::new()
-        .host(&config.host)
-        .port(config.port)
+        .host(&host)
+        .port(port)
         .username(&config.username)
         .password(&config.password)
         // utf8mb4 覆盖 emoji + 全部中文

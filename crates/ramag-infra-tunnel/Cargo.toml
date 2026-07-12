@@ -1,0 +1,19 @@
+[package]
+name = "ramag-infra-tunnel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Ramag SSH tunnel manager (system ssh subprocess, local port forwarding)"
+
+[dependencies]
+ramag-domain = { workspace = true }
+
+# 与 infra-git 同哲学：走系统 ssh 子进程，密钥 / agent / known_hosts / config 别名
+# 全由系统 ssh 处理，不引入 Rust SSH 实现（省去密钥管理与 host key 校验的全部 UI 成本）
+tracing = { workspace = true }
+
+[lints]
+workspace = true

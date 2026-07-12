@@ -10,6 +10,7 @@ description = "Ramag MongoDB 驱动实现（实现 Domain 的 DocDriver trait，
 workspace = true
 
 [dependencies]
+ramag-infra-tunnel = { workspace = true }
 ramag-domain = { workspace = true }
 
 # MongoDB 异步驱动 + BSON 序列化

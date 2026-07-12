@@ -160,6 +160,8 @@ macro_rules! impl_driver_for {
             fn evict_pool(&self, id: &::ramag_domain::entities::ConnectionId) {
                 // PoolCache 内部 DashMap，同步操作，不走 tokio
                 <$ty as $crate::SqlBackend>::cache(self).evict(id);
+                // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
+                ::ramag_infra_tunnel::evict(id);
             }
         }
     };

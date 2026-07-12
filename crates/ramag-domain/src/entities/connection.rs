@@ -73,6 +73,13 @@ pub struct ConnectionConfig {
     /// 填写则以该 CA 严格校验服务端证书链（自签证书场景）
     #[serde(default)]
     pub ca_cert_path: Option<String>,
+    /// SSH 跳板目标（`user@host` / `host` / `~/.ssh/config` 别名；空 = 不走隧道）。
+    /// 认证由系统 ssh 处理（密钥 / agent），经隧道时 DB 实际连 127.0.0.1:本地转发端口
+    #[serde(default)]
+    pub ssh_target: Option<String>,
+    /// SSH 跳板端口（None = 22 或 ~/.ssh/config 决定）
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
 }
 
 impl ConnectionConfig {
@@ -96,6 +103,8 @@ impl ConnectionConfig {
             production: false,
             tls: false,
             ca_cert_path: None,
+            ssh_target: None,
+            ssh_port: None,
         }
     }
 
@@ -115,6 +124,8 @@ impl ConnectionConfig {
             production: false,
             tls: false,
             ca_cert_path: None,
+            ssh_target: None,
+            ssh_port: None,
         }
     }
 
@@ -134,6 +145,8 @@ impl ConnectionConfig {
             production: false,
             tls: false,
             ca_cert_path: None,
+            ssh_target: None,
+            ssh_port: None,
         }
     }
 }

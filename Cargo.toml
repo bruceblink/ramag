@@ -11,6 +11,7 @@ members = [
     "crates/ramag-infra-storage",
     "crates/ramag-infra-git",
     "crates/ramag-infra-clipboard",
+    "crates/ramag-infra-tunnel",
     "crates/ramag-tool-dbclient",
     "crates/ramag-tool-redis",
     "crates/ramag-tool-mongodb",
@@ -40,6 +41,7 @@ ramag-infra-sql-shared = { path = "crates/ramag-infra-sql-shared" }
 ramag-infra-storage = { path = "crates/ramag-infra-storage" }
 ramag-infra-git = { path = "crates/ramag-infra-git" }
 ramag-infra-clipboard = { path = "crates/ramag-infra-clipboard" }
+ramag-infra-tunnel = { path = "crates/ramag-infra-tunnel" }
 ramag-tool-dbclient = { path = "crates/ramag-tool-dbclient" }
 ramag-tool-redis = { path = "crates/ramag-tool-redis" }
 ramag-tool-mongodb = { path = "crates/ramag-tool-mongodb" }

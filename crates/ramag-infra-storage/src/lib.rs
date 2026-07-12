@@ -341,6 +341,8 @@ mod tests {
             production: false,
             tls: false,
             ca_cert_path: None,
+            ssh_target: None,
+            ssh_port: None,
         }
     }
 

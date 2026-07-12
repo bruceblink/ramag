@@ -158,6 +158,12 @@ fn main() {
         // 必须先 bind_keys 把退出快捷键绑到 Quit，原生菜单项才会显示快捷键
         cx.on_action(|_: &Quit, cx| cx.quit());
 
+        // 退出时关闭全部 SSH 隧道子进程，避免残留孤儿 ssh 占用端口
+        cx.on_app_quit(|_| async {
+            ramag_infra_tunnel::shutdown_all();
+        })
+        .detach();
+
         // Windows：托盘常驻——关窗后采集继续，托盘可唤回/退出；
         // 托盘安装失败则回退「关最后窗口即退出」，避免无处唤回的无形后台进程。
         // macOS 保留「关窗不退出」+ dock on_reopen，无需此回调

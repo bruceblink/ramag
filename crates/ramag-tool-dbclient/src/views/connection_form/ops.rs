@@ -154,6 +154,27 @@ impl ConnectionFormPanel {
         } else {
             None
         };
+        // SSH 跳板：target 非空即启用；端口须为数字
+        let ssh_target = {
+            let v = self.ssh_target.read(cx).value().trim().to_string();
+            if v.is_empty() { None } else { Some(v) }
+        };
+        let ssh_port = {
+            let v = self.ssh_port.read(cx).value().trim().to_string();
+            if v.is_empty() {
+                None
+            } else {
+                Some(
+                    v.parse::<u16>()
+                        .map_err(|_| "SSH 端口必须是 1-65535 的数字".to_string())?,
+                )
+            }
+        };
+        // 经隧道后 DB 实际连 127.0.0.1，TLS 主机名校验（Redis/Mongo）必然失败；
+        // 隧道本身已加密，两者同开是配置矛盾，直接拦下而非放行半错状态
+        if ssh_target.is_some() && self.tls {
+            return Err("SSH 隧道与 TLS 不能同时开启（隧道已加密传输，请二选一）".into());
+        }
 
         Ok(ConnectionConfig {
             id,
@@ -169,6 +190,8 @@ impl ConnectionFormPanel {
             production: self.production,
             tls: self.tls,
             ca_cert_path,
+            ssh_target,
+            ssh_port,
         })
     }
 

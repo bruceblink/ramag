@@ -10,6 +10,9 @@ description = "Ramag PostgreSQL 驱动实现（实现 SqlBackend，由宏一行 
 workspace = true
 
 [dependencies]
+ramag-infra-tunnel = { workspace = true }
+# SSH 隧道就绪探测为阻塞调用，经 spawn_blocking 隔离（workspace 既有依赖复用）
+tokio = { workspace = true }
 ramag-domain = { workspace = true }
 # 关系型 DB 共享层：runtime / SqlBackend / impl_driver_for! 宏
 ramag-infra-sql-shared = { workspace = true }

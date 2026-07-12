@@ -74,6 +74,18 @@ impl PoolCache {
 }
 
 async fn build_client(config: &ConnectionConfig) -> Result<Client> {
+    // SSH 隧道：启用时改连 127.0.0.1:本地转发端口（就绪探测阻塞，经 spawn_blocking 隔离）
+    let cfg_for_tunnel = config.clone();
+    let tunnel = tokio::task::spawn_blocking(move || ramag_infra_tunnel::ensure(&cfg_for_tunnel))
+        .await
+        .map_err(|e| {
+            ramag_domain::error::DomainError::QueryFailed(format!("SSH 隧道任务失败：{e}"))
+        })??;
+    let (host, port) = match tunnel {
+        Some((h, p)) => (h, p),
+        None => (config.host.clone(), config.port),
+    };
+
     // 用 builder 拼接 Options，避免手写 URI 时的 URL 编码陷阱
     let credential = if config.username.is_empty() {
         None
@@ -108,8 +120,8 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
 
     let opts = ClientOptions::builder()
         .hosts(vec![ServerAddress::Tcp {
-            host: config.host.clone(),
-            port: Some(config.port),
+            host,
+            port: Some(port),
         }])
         .credential(credential)
         .tls(tls)

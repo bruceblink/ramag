@@ -73,6 +73,10 @@ pub struct ConnectionFormPanel {
     pub(super) ca_cert_path: Entity<InputState>,
     /// MongoDB URI 粘贴框（仅 MongoDB 渲染）：解析回填 host/port/凭证/库/authSource/tls
     pub(super) mongo_uri: Entity<InputState>,
+    /// SSH 跳板目标（user@host / 别名；留空不走隧道，认证由系统 ssh 处理）
+    pub(super) ssh_target: Entity<InputState>,
+    /// SSH 跳板端口（留空 = 22 或 ~/.ssh/config 决定）
+    pub(super) ssh_port: Entity<InputState>,
     pub(super) test_state: TestState,
     /// 测试结果代次：连接参数变更即递增，在途测试结果代次不符则丢弃
     pub(super) test_epoch: u64,
@@ -147,6 +151,8 @@ impl ConnectionFormPanel {
             production: false,
             tls: false,
             ca_cert_path: None,
+            ssh_target: None,
+            ssh_port: None,
         });
         let driver_id = driver_kind_to_id(p.driver);
         let port_text = if is_create {
@@ -208,6 +214,17 @@ impl ConnectionFormPanel {
         let mongo_uri = cx.new(|cx| {
             InputState::new(window, cx).placeholder("mongodb://user:pass@host:27017/db?tls=true")
         });
+        // SSH 跳板：target 非空即启用；认证走系统 ssh（密钥 / agent / config 别名）
+        let ssh_target = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("user@bastion 或 ~/.ssh/config 别名（留空不启用）")
+                .default_value(p.ssh_target.unwrap_or_default())
+        });
+        let ssh_port = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("22")
+                .default_value(p.ssh_port.map(|v| v.to_string()).unwrap_or_default())
+        });
 
         // host 变化 → 名称虚影跟随（名称始终留给用户输入，不写入真实值）
         let mut subscriptions = Vec::new();
@@ -236,6 +253,8 @@ impl ConnectionFormPanel {
             &database,
             &auth_source,
             &ca_cert_path,
+            &ssh_target,
+            &ssh_port,
         ] {
             subscriptions.push(cx.subscribe_in(
                 input,
@@ -268,6 +287,8 @@ impl ConnectionFormPanel {
             tls: initial_tls,
             ca_cert_path,
             mongo_uri,
+            ssh_target,
+            ssh_port,
             test_state: TestState::Idle,
             test_epoch: 0,
             saving: false,

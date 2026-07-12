@@ -23,3 +23,7 @@ dashmap = { workspace = true }
 once_cell = { workspace = true }
 
 tracing = { workspace = true }
+
+[dev-dependencies]
+# tests/spike.rs 展开 impl_driver_for! 宏，宏体引用隧道 evict
+ramag-infra-tunnel = { workspace = true }

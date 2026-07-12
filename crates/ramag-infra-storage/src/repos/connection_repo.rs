@@ -38,6 +38,11 @@ struct EncryptedConnection {
     tls: bool,
     #[serde(default)]
     ca_cert_path: Option<String>,
+    /// SSH 跳板目标与端口（认证走系统 ssh，不存任何 SSH 凭证；老数据缺省 = 不走隧道）
+    #[serde(default)]
+    ssh_target: Option<String>,
+    #[serde(default)]
+    ssh_port: Option<u16>,
 }
 
 impl EncryptedConnection {
@@ -56,6 +61,8 @@ impl EncryptedConnection {
             production: plain.production,
             tls: plain.tls,
             ca_cert_path: plain.ca_cert_path.clone(),
+            ssh_target: plain.ssh_target.clone(),
+            ssh_port: plain.ssh_port,
         })
     }
 
@@ -74,6 +81,8 @@ impl EncryptedConnection {
             production: self.production,
             tls: self.tls,
             ca_cert_path: self.ca_cert_path,
+            ssh_target: self.ssh_target,
+            ssh_port: self.ssh_port,
         })
     }
 }
