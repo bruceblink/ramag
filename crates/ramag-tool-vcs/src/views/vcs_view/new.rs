@@ -195,6 +195,7 @@ impl VcsView {
             diff_h_scroll: ScrollHandle::new(),
             history_pane_visible: false,
             open_repos: Vec::new(),
+            repos_scroll: ScrollHandle::new(),
             file_tabs: Vec::new(),
             active_file_tab_idx: None,
             repo_session_cache: std::collections::HashMap::new(),

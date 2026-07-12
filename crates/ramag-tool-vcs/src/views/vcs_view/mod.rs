@@ -241,6 +241,8 @@ pub struct VcsView {
 
     // ---- 多仓库 Tabs ----
     pub(super) open_repos: Vec<RepoConfig>,
+    /// 仓库 Tab Bar 横向滚动句柄：仓库开多了超出宽度时可横滚，固定「仓库管理」tab 常驻不参与滚动
+    pub(super) repos_scroll: ScrollHandle,
     pub(super) file_tabs: Vec<FileTab>,
     pub(super) active_file_tab_idx: Option<usize>,
     pub(super) repo_session_cache: std::collections::HashMap<String, RepoSessionState>,

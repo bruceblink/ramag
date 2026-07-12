@@ -66,7 +66,13 @@ impl VcsView {
         }
         bar = bar.child(list_tab);
 
-        // 每个已打开仓库对应一个 tab
+        // 每个已打开仓库对应一个 tab；仓库开多了超出宽度时横向滚动，固定「仓库管理」tab 常驻不参与
+        let mut strip = h_flex()
+            .id("vcs-repo-tabs-scroll")
+            .flex_1()
+            .min_w_0()
+            .overflow_x_scroll()
+            .track_scroll(&self.repos_scroll);
         for repo in &self.open_repos {
             let is_active = !on_list
                 && self
@@ -84,6 +90,7 @@ impl VcsView {
             // 外层无 on_click，内层标签区单独响应切换，关闭按钮独立，避免事件冒泡冲突
             let mut tab = h_flex()
                 .id(tab_id)
+                .flex_none()
                 .items_center()
                 .border_r_1()
                 .border_color(border)
@@ -133,9 +140,9 @@ impl VcsView {
             } else {
                 tab = tab.hover(move |this| this.bg(muted_bg));
             }
-            bar = bar.child(tab);
+            strip = strip.child(tab);
         }
 
-        bar.into_any_element()
+        bar.child(strip).into_any_element()
     }
 }
