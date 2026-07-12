@@ -48,6 +48,108 @@ struct TableRowFrame {
     accent: gpui::Hsla,
 }
 
+/// 表格当前视图（排序 + 列/行过滤后的所见内容）；渲染与导出共用，保证所见即所导
+pub(crate) struct DisplayView {
+    /// 可见列的原始下标（列过滤后）
+    pub(crate) visible_col_indices: Vec<usize>,
+    /// (原始行下标, 行)：排序 + 行过滤后的显示序
+    pub(crate) display_rows: Vec<(usize, Row)>,
+    /// 是否因 MAX_ROWS_DISPLAY 截断
+    pub(crate) truncated: bool,
+    /// 列过滤是否激活
+    pub(crate) cols_filtered: bool,
+    /// 行过滤是否激活
+    pub(crate) row_filtering: bool,
+    /// 行过滤前的行数（显示"过滤 N/M"用）
+    pub(crate) pre_filter_count: usize,
+}
+
+impl DisplayView {
+    /// 视图是否与原始结果不同（有排序 / 过滤）——导出时据此决定导原始还是导视图
+    pub(crate) fn differs_from_raw(&self, panel: &ResultPanel) -> bool {
+        self.cols_filtered || self.row_filtering || panel.sort_by().is_some()
+    }
+}
+
+/// 计算表格当前视图：保留原始行下标供 DML / 复制 / 编辑定位真实行；
+/// 排序、行过滤都在 (source_idx, row) 对上进行（仅前 MAX_ROWS_DISPLAY 行）
+pub(crate) fn compute_display_view(
+    panel: &ResultPanel,
+    result: &QueryResult,
+    cx: &gpui::App,
+) -> DisplayView {
+    let mut display_rows = result
+        .rows
+        .iter()
+        .take(MAX_ROWS_DISPLAY)
+        .cloned()
+        .enumerate()
+        .collect::<Vec<(usize, Row)>>();
+    let truncated = result.rows.len() > MAX_ROWS_DISPLAY;
+
+    if let Some((sort_col, dir)) = panel.sort_by() {
+        display_rows.sort_by(|(_, a), (_, b)| {
+            let av = a.values.get(sort_col);
+            let bv = b.values.get(sort_col);
+            let ord = compare_values(av, bv);
+            if matches!(dir, SortDir::Desc) {
+                ord.reverse()
+            } else {
+                ord
+            }
+        });
+    }
+
+    let col_filter = panel.column_filter_text(cx);
+    let row_filter = panel.row_filter_text(cx).to_lowercase();
+    let col_tokens: Vec<String> = col_filter
+        .split(',')
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let cols_filtered = !col_tokens.is_empty();
+    let visible_col_indices: Vec<usize> = if cols_filtered {
+        result
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                let lc = c.to_lowercase();
+                col_tokens.iter().any(|t| lc.contains(t))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    } else {
+        (0..result.columns.len()).collect()
+    };
+    let pre_filter_count = display_rows.len();
+    let row_filtering = !row_filter.is_empty();
+    if row_filtering {
+        let scoped_indices = visible_col_indices.clone();
+        display_rows.retain(|(_, row)| {
+            scoped_indices.iter().any(|&ci| {
+                row.values
+                    .get(ci)
+                    .map(|v| {
+                        v.display_preview(usize::MAX)
+                            .to_lowercase()
+                            .contains(&row_filter)
+                    })
+                    .unwrap_or(false)
+            })
+        });
+    }
+
+    DisplayView {
+        visible_col_indices,
+        display_rows,
+        truncated,
+        cols_filtered,
+        row_filtering,
+        pre_filter_count,
+    }
+}
+
 /// 渲染单次查询结果表格
 ///
 /// 入口由 ResultPanel::render 调用，接收所有需要的主题色和上下文
@@ -68,76 +170,21 @@ pub(super) fn render_table(
     let columns = result.columns.clone();
     let column_types = result.column_types.clone();
     let total_rows = result.rows.len();
-    // 保留每个显示行对应的原始行下标（source_idx），供 DML / 复制 / 编辑定位真实行。
-    // 排序、行过滤都在 (source_idx, row) 对上进行，避免用显示序号误索引原始 rows。
-    let mut display_rows = result
-        .rows
-        .iter()
-        .take(MAX_ROWS_DISPLAY)
-        .cloned()
-        .enumerate()
-        .collect::<Vec<(usize, Row)>>();
-    let truncated = total_rows > MAX_ROWS_DISPLAY;
     let affected = result.affected_rows;
     let elapsed = result.elapsed_ms;
 
-    // 排序（仅排前 MAX_ROWS_DISPLAY 行）
-    if let Some((sort_col, dir)) = panel.sort_by() {
-        display_rows.sort_by(|(_, a), (_, b)| {
-            let av = a.values.get(sort_col);
-            let bv = b.values.get(sort_col);
-            let ord = compare_values(av, bv);
-            if matches!(dir, SortDir::Desc) {
-                ord.reverse()
-            } else {
-                ord
-            }
-        });
-    }
-
-    // 列 + 行过滤
-    let col_filter = panel.column_filter_text(cx);
-    let row_filter = panel.row_filter_text(cx).to_lowercase();
-    let col_tokens: Vec<String> = col_filter
-        .split(',')
-        .map(|t| t.trim().to_lowercase())
-        .filter(|t| !t.is_empty())
-        .collect();
-    let cols_filtering = !col_tokens.is_empty();
-    let visible_col_indices: Vec<usize> = if cols_filtering {
-        columns
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                let lc = c.to_lowercase();
-                col_tokens.iter().any(|t| lc.contains(t))
-            })
-            .map(|(i, _)| i)
-            .collect()
-    } else {
-        (0..columns.len()).collect()
-    };
-    let cols_filtered = cols_filtering;
+    // 排序 + 列/行过滤统一走 compute_display_view（导出复用同一函数，保证所见即所导）
+    let view = compute_display_view(panel, result, cx);
+    let DisplayView {
+        visible_col_indices,
+        display_rows,
+        truncated,
+        cols_filtered,
+        row_filtering,
+        pre_filter_count,
+    } = view;
     let total_cols = columns.len();
     let visible_cols_count = visible_col_indices.len();
-    let pre_filter_count = display_rows.len();
-    let row_filtering = !row_filter.is_empty();
-    if row_filtering {
-        let needle = row_filter.clone();
-        let scoped_indices = visible_col_indices.clone();
-        display_rows.retain(|(_, row)| {
-            scoped_indices.iter().any(|&ci| {
-                row.values
-                    .get(ci)
-                    .map(|v| {
-                        v.display_preview(usize::MAX)
-                            .to_lowercase()
-                            .contains(&needle)
-                    })
-                    .unwrap_or(false)
-            })
-        });
-    }
     let visible_count = display_rows.len();
 
     // DML/DDL：没有列，只显示 affected_rows

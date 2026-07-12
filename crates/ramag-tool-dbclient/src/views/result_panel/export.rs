@@ -43,7 +43,7 @@ impl ResultPanel {
             return;
         }
 
-        // 勾选了行 → 仅导出勾选行；否则全部
+        // 导出范围三档：勾选行 > 当前视图（有排序/过滤时，所见即所导）> 原始全量
         let (result, scope_label) = if !self.selected_rows.is_empty() {
             let mut filtered = base.clone();
             let selected = self.selected_rows.clone();
@@ -63,7 +63,45 @@ impl ResultPanel {
             let n = filtered.rows.len();
             (filtered, format!("选中 {n} 行"))
         } else {
-            (base.clone(), format!("全部 {} 行", base.rows.len()))
+            let view = crate::views::result_table::compute_display_view(self, base, cx);
+            if view.differs_from_raw(self) {
+                // 视图与原始不同：按可见列投影 + 视图行序导出，与表格所见一致
+                let cols = &view.visible_col_indices;
+                let mut projected = base.clone();
+                projected.columns = cols.iter().map(|&i| base.columns[i].clone()).collect();
+                projected.column_types = if base.column_types.is_empty() {
+                    Vec::new()
+                } else {
+                    cols.iter()
+                        .filter_map(|&i| base.column_types.get(i).cloned())
+                        .collect()
+                };
+                projected.rows = view
+                    .display_rows
+                    .iter()
+                    .map(|(_, row)| ramag_domain::entities::Row {
+                        values: cols
+                            .iter()
+                            .map(|&i| {
+                                row.values
+                                    .get(i)
+                                    .cloned()
+                                    .unwrap_or(ramag_domain::entities::Value::Null)
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                if projected.rows.is_empty() {
+                    self.pending_notification =
+                        Some(Notification::warning("当前筛选下无行可导出").autohide(true));
+                    cx.notify();
+                    return;
+                }
+                let n = projected.rows.len();
+                (projected, format!("当前视图（筛选/排序后）{n} 行"))
+            } else {
+                (base.clone(), format!("全部 {} 行", base.rows.len()))
+            }
         };
 
         // 数据序列化（主线程毫秒级）
