@@ -329,6 +329,16 @@ impl ClipboardView {
 
     /// 取图片的解密内存图片（thumb=true 用缩略图，否则原图）。
     /// 缓存命中同步返回；miss 异步解密填充后 notify，本帧返回 None（占位）
+    /// 该条目的图片是否已判定解密 / 解码失败（详情页显示失败文案而非永久「加载中」）
+    pub(super) fn image_failed(&self, item: &ClipItem, thumb: bool) -> bool {
+        let path = if thumb {
+            item.thumb_path.clone().or_else(|| item.image_path.clone())
+        } else {
+            item.image_path.clone()
+        };
+        path.is_some_and(|p| self.img_cache.is_failed(&p))
+    }
+
     pub(super) fn image_for(
         &self,
         item: &ClipItem,

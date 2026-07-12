@@ -12,6 +12,8 @@ use gpui::Image;
 pub(crate) struct ImageCache {
     cache: RefCell<HashMap<String, Arc<Image>>>,
     loading: RefCell<HashSet<String>>,
+    /// 解密 / 解码失败的路径：显示失败占位，不再每帧无限重试
+    failed: RefCell<HashSet<String>>,
 }
 
 impl ImageCache {
@@ -24,9 +26,14 @@ impl ImageCache {
         self.cache.borrow().get(path).cloned()
     }
 
-    /// 抢加载权：之前既未缓存也未在加载中才返回 true（防同路径重复 spawn）
+    /// 该路径是否已判定失败（渲染显示「无法解密」占位）
+    pub(crate) fn is_failed(&self, path: &str) -> bool {
+        self.failed.borrow().contains(path)
+    }
+
+    /// 抢加载权：未缓存、未在加载、未失败才返回 true（防同路径重复 spawn / 失败风暴）
     pub(crate) fn begin_load(&self, path: &str) -> bool {
-        if self.cache.borrow().contains_key(path) {
+        if self.cache.borrow().contains_key(path) || self.failed.borrow().contains(path) {
             return false;
         }
         self.loading.borrow_mut().insert(path.to_string())
@@ -37,8 +44,9 @@ impl ImageCache {
         self.cache.borrow_mut().insert(path, image);
     }
 
-    /// 加载失败：清加载标记（不缓存，下次可重试）
+    /// 加载失败：记入失败集（本次会话内不再重试，显示失败占位）
     pub(crate) fn fail(&self, path: &str) {
         self.loading.borrow_mut().remove(path);
+        self.failed.borrow_mut().insert(path.to_string());
     }
 }

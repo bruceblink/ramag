@@ -148,6 +148,11 @@ impl ClipboardView {
         match item.kind {
             ClipKind::Image => match self.image_for(item, false, cx) {
                 Some(image) => img(image).max_w_full().into_any_element(),
+                // 失败明示（媒体文件缺失 / 解密失败），不再永久显示假「加载中」
+                None if self.image_failed(item, false) => div()
+                    .text_sm()
+                    .child("图片无法解密或已缺失（媒体文件可能被清理）")
+                    .into_any_element(),
                 None => div().child("加载中…").into_any_element(),
             },
             ClipKind::Files => v_flex()
