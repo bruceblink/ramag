@@ -28,3 +28,5 @@ rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 # Action 派生需要：CloseTab 等共享 action 用 schemars/serde 实现 GPUI Action trait
 schemars = { workspace = true }
 serde = { workspace = true }
+# 窗口位置尺寸偏好序列化（workspace 既有依赖复用）
+serde_json = { workspace = true }

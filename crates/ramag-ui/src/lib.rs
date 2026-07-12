@@ -18,7 +18,7 @@ pub use prompt_dialog::open_prompt;
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget};
 pub use home_view::{HomeEvent, HomeView};
-pub use shell::Shell;
+pub use shell::{Shell, WindowBoundsPref};
 pub use theme::{
     Mode, StorageGlobal, apply_theme, current_mode, init_theme, on_system_appearance_changed,
 };

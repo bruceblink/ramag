@@ -18,8 +18,28 @@ pub struct Shell {
     home_view: Option<AnyView>,
     /// None=首页，Some(tool_id)=某工具
     selected: Option<String>,
+    /// 窗口 bounds 持久化防抖代际：拖动 / 缩放高频回调，停顿后才落盘
+    bounds_gen: u64,
 
     _subscriptions: Vec<Subscription>,
+}
+
+/// 窗口位置尺寸偏好（prefs key `window_bounds`）；重启按此恢复
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct WindowBoundsPref {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub maximized: bool,
+}
+
+impl WindowBoundsPref {
+    pub const PREF_KEY: &'static str = "window_bounds";
+
+    pub fn parse(json: &str) -> Option<Self> {
+        serde_json::from_str(json).ok()
+    }
 }
 
 impl Shell {
@@ -40,14 +60,82 @@ impl Shell {
         subs.push(cx.observe_window_appearance(window, |_this, window, cx| {
             crate::theme::on_system_appearance_changed(window.appearance(), cx);
         }));
+        // 窗口移动 / 缩放 → 防抖持久化位置尺寸（重启恢复）
+        subs.push(cx.observe_window_bounds(window, |this, window, cx| {
+            this.schedule_persist_bounds(window, cx);
+        }));
 
         Self {
             activity_bar,
             tool_views: HashMap::new(),
             home_view: None,
             selected: None,
+            bounds_gen: 0,
             _subscriptions: subs,
         }
+    }
+
+    /// 防抖 600ms 落盘窗口 bounds：拖动期间高频回调只取最终静止值。
+    /// 最大化时不覆盖记录的普通尺寸（仅更新 maximized 标记），取消最大化能回原位
+    fn schedule_persist_bounds(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(storage) = crate::theme::storage_from_cx(cx) else {
+            return;
+        };
+        self.bounds_gen = self.bounds_gen.wrapping_add(1);
+        let generation = self.bounds_gen;
+        let maximized = window.is_maximized();
+        let b = window.bounds();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(600))
+                .await;
+            let fresh = this
+                .update(cx, |this, _| this.bounds_gen == generation)
+                .unwrap_or(false);
+            if !fresh {
+                return;
+            }
+            // 最大化态：读回已存普通尺寸，仅翻 maximized 位（没有存过则记当前值兜底）
+            let pref = if maximized {
+                let existing = storage
+                    .get_preference(WindowBoundsPref::PREF_KEY)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|j| WindowBoundsPref::parse(&j));
+                match existing {
+                    Some(mut p) => {
+                        p.maximized = true;
+                        p
+                    }
+                    None => WindowBoundsPref {
+                        x: f32::from(b.origin.x),
+                        y: f32::from(b.origin.y),
+                        w: f32::from(b.size.width),
+                        h: f32::from(b.size.height),
+                        maximized: true,
+                    },
+                }
+            } else {
+                WindowBoundsPref {
+                    x: f32::from(b.origin.x),
+                    y: f32::from(b.origin.y),
+                    w: f32::from(b.size.width),
+                    h: f32::from(b.size.height),
+                    maximized: false,
+                }
+            };
+            let Ok(json) = serde_json::to_string(&pref) else {
+                return;
+            };
+            if let Err(e) = storage
+                .set_preference(WindowBoundsPref::PREF_KEY, &json)
+                .await
+            {
+                tracing::warn!(error = %e, "persist window bounds failed");
+            }
+        })
+        .detach();
     }
 
     pub fn set_home_view(&mut self, view: AnyView) {

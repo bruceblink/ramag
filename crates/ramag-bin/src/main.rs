@@ -53,6 +53,16 @@ use crate::window_layout::{drawer_bounds, preferred_display};
 #[action(namespace = ramag)]
 struct Quit;
 
+/// 帮助菜单：快捷键一览弹窗
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct ShowShortcuts;
+
+/// 帮助菜单：关于（版本 + 日志路径）
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct ShowAbout;
+
 /// 全部工具服务与存储的共享句柄；主窗口重建（on_reopen / 托盘 / 单实例激活）复用
 #[derive(Clone)]
 struct AppDeps {
@@ -272,11 +282,37 @@ fn main() {
         // 平台全局热键（macOS Command+Shift+V / Windows Ctrl+Shift+V）唤起抽屉
         spawn_clipboard_hotkey(deps.clipboard_service.clone(), cx);
 
-        cx.set_menus(vec![Menu {
-            name: "Ramag".into(),
-            items: vec![MenuItem::action("Quit Ramag", Quit)],
-            disabled: false,
-        }]);
+        // 帮助入口：快捷键一览 / 关于（active window 上开 dialog；无窗口时静默）
+        cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
+            if let Some(handle) = cx.active_window() {
+                let _ = handle.update(cx, |_, window, cx| open_shortcuts_dialog(window, cx));
+            }
+        });
+        let log_path_for_about = log_path.clone();
+        cx.on_action(move |_: &ShowAbout, cx: &mut App| {
+            let log_path = log_path_for_about.clone();
+            if let Some(handle) = cx.active_window() {
+                let _ = handle.update(cx, move |_, window, cx| {
+                    open_about_dialog(log_path, window, cx)
+                });
+            }
+        });
+
+        cx.set_menus(vec![
+            Menu {
+                name: "Ramag".into(),
+                items: vec![MenuItem::action("Quit Ramag", Quit)],
+                disabled: false,
+            },
+            Menu {
+                name: "帮助".into(),
+                items: vec![
+                    MenuItem::action("快捷键一览", ShowShortcuts),
+                    MenuItem::action("关于 Ramag", ShowAbout),
+                ],
+                disabled: false,
+            },
+        ]);
 
         open_main_window(deps.clone(), initial_pref.clone(), cx);
     });
@@ -459,6 +495,10 @@ fn open_drawer_window(
 fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
     // 恢复上次停留的工具（重启不回炉 Home）；registry 校验防 pref 残留失效 id
     let last_tool = read_preference(&deps.storage, "last_tool").filter(|t| !t.is_empty());
+    // 恢复上次窗口位置尺寸；无记录默认最大化（centered 作取消最大化的复位 bounds）。
+    // 尺寸下限对齐 window_min_size，防坏数据 / 换显示器造出不可用窗口
+    let saved_bounds = read_preference(&deps.storage, ramag_ui::WindowBoundsPref::PREF_KEY)
+        .and_then(|j| ramag_ui::WindowBoundsPref::parse(&j));
     let AppDeps {
         registry,
         conn_service,
@@ -467,13 +507,26 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
         clipboard_service,
         storage,
     } = deps;
-    // Maximized 需 fallback Bounds 给取消最大化复位
-    let bounds = Bounds::centered(None, size(px(1200.0), px(780.0)), cx);
+    let fallback = Bounds::centered(None, size(px(1200.0), px(780.0)), cx);
+    let window_bounds = match &saved_bounds {
+        Some(p) => {
+            let b = Bounds::new(
+                gpui::point(px(p.x), px(p.y)),
+                size(px(p.w.max(800.0)), px(p.h.max(500.0))),
+            );
+            if p.maximized {
+                WindowBounds::Maximized(b)
+            } else {
+                WindowBounds::Windowed(b)
+            }
+        }
+        None => WindowBounds::Maximized(fallback),
+    };
 
     cx.spawn(async move |cx| {
         let result = cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Maximized(bounds)),
+                window_bounds: Some(window_bounds),
                 window_min_size: Some(size(px(800.0), px(500.0))),
                 // 原生标题栏需 appears_transparent=false，否则失去双击 zoom 命中区
                 titlebar: Some(TitlebarOptions {
@@ -621,6 +674,112 @@ fn build_connection_service() -> anyhow::Result<(Arc<ConnectionService>, Arc<dyn
 
     let svc = Arc::new(ConnectionService::new(drivers, storage.clone()));
     Ok((svc, storage))
+}
+
+/// 快捷键一览弹窗（静态内容；⌘=macOS / Ctrl=Windows 同位）
+fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
+    use gpui::{ParentElement as _, Styled as _};
+    use gpui_component::WindowExt as _;
+    const ROWS: &[(&str, &str)] = &[
+        (
+            "⌘/Ctrl ⇧ V",
+            "全局唤起剪贴板抽屉（系统级，应用不在前台也可）",
+        ),
+        (
+            "⌘/Ctrl Q · ⌘/Ctrl W",
+            "退出应用 · 关闭当前标签（主窗口不因 W 关闭）",
+        ),
+        ("⌘/Ctrl Enter", "DB：运行查询 ｜ VCS：提交（提交框聚焦时）"),
+        ("⌘/Ctrl ⇧ Enter", "DB：运行光标处语句"),
+        ("⌘/Ctrl T", "DB：新建查询标签 ｜ VCS：Pull"),
+        (
+            "⌘/Ctrl E",
+            "DB：显示 / 隐藏编辑器（SQL · Mongo · Redis 控制台）",
+        ),
+        ("⌘/Ctrl F", "DB：结果内查找 ｜ 剪贴板：聚焦搜索"),
+        ("⌘/Ctrl ⇧ F", "DB：格式化 SQL / JSON"),
+        ("⌘/Ctrl ⇧ E", "SQL：EXPLAIN 当前查询"),
+        ("⌘/Ctrl K · ⌘/Ctrl ⇧ K", "VCS：聚焦提交输入 · Push"),
+        ("⌘/Ctrl R · ⌘/Ctrl ⇧ H", "VCS：刷新工作区 · 底部历史面板"),
+        (
+            "Enter / Delete / ↑ ↓",
+            "剪贴板：复制选中 / 删除选中 / 上下选择",
+        ),
+    ];
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title("快捷键一览")
+            .close_button(true)
+            .width(gpui::px(560.0))
+            .content(move |content, _, cx| {
+                let muted = gpui_component::ActiveTheme::theme(cx).muted_foreground;
+                let mut col = gpui_component::v_flex().w_full().gap(gpui::px(6.0));
+                for (keys, desc) in ROWS {
+                    col = col.child(
+                        gpui_component::h_flex()
+                            .w_full()
+                            .gap(gpui::px(12.0))
+                            .child(
+                                gpui::div()
+                                    .w(gpui::px(170.0))
+                                    .flex_none()
+                                    .text_sm()
+                                    .font_family("monospace")
+                                    .child(*keys),
+                            )
+                            .child(
+                                gpui::div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child(*desc),
+                            ),
+                    );
+                }
+                content.child(col)
+            })
+    });
+}
+
+/// 关于弹窗：版本 + 日志路径（可复制排查）
+fn open_about_dialog(
+    log_path: Option<std::path::PathBuf>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    use gpui::{ParentElement as _, Styled as _};
+    use gpui_component::WindowExt as _;
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let log_text = log_path
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "（日志文件不可用）".to_string());
+    window.open_dialog(cx, move |dialog, _, _| {
+        let version = version.clone();
+        let log_text = log_text.clone();
+        dialog
+            .title("关于 Ramag")
+            .close_button(true)
+            .width(gpui::px(520.0))
+            .content(move |content, _, cx| {
+                let muted = gpui_component::ActiveTheme::theme(cx).muted_foreground;
+                content.child(
+                    gpui_component::v_flex()
+                        .w_full()
+                        .gap(gpui::px(8.0))
+                        .child(gpui::div().text_sm().child(format!("版本：{version}")))
+                        .child(
+                            gpui::div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(format!("日志：{log_text}")),
+                        )
+                        .child(gpui::div().text_xs().text_color(muted).child(
+                            "本地优先：连接密码经系统钥匙串主密钥 AES-GCM 加密落盘，剪贴板历史全量本地加密存储",
+                        )),
+                )
+            })
+    });
 }
 
 /// 启动期同步读取单个偏好（起临时 runtime，仅启动阶段一次性使用）；失败返回 None 并留日志
