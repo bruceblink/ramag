@@ -58,6 +58,8 @@ pub struct ResultPanel {
     pub(super) pinned_target: Option<(Option<String>, String)>,
     /// 列宽手动覆盖：用户拖动列分隔线后写入
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
+    /// DML（增删改）防重入闸：spawn 前置位、回包复位；置位期间再次提交被 dml_conn 拦下
+    pub(super) dml_busy: bool,
     /// 当前排序列与方向：单击列头切换 None→Asc→Desc→None
     pub(super) sort_by: Option<(usize, SortDir)>,
     /// 列过滤输入框：逗号分隔多列名（命中即显示该列）
@@ -108,6 +110,7 @@ impl ResultPanel {
             selected_cell: None,
             source_sql: None,
             col_width_overrides: Vec::new(),
+            dml_busy: false,
             sort_by: None,
             column_filter_input,
             row_filter_input,

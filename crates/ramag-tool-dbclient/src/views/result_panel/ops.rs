@@ -22,6 +22,14 @@ impl ResultPanel {
         action: &str,
         cx: &mut Context<Self>,
     ) -> Option<(Arc<ConnectionService>, ConnectionConfig)> {
+        // 防重入：上一 DML 未回包前拒绝新提交，避免连点确认重复执行
+        if self.dml_busy {
+            self.pending_notification = Some(
+                Notification::warning(format!("上一操作尚未完成，请稍候再{action}")).autohide(true),
+            );
+            cx.notify();
+            return None;
+        }
         let (Some(svc), Some(conn)) = (self.service.clone(), self.connection.clone()) else {
             self.pending_notification =
                 Some(Notification::warning(format!("当前未注入连接，无法{action}")).autohide(true));
@@ -136,6 +144,7 @@ impl ResultPanel {
             return;
         }
 
+        self.dml_busy = true;
         cx.spawn(async move |this, cx| {
             let mut deleted: Vec<usize> = Vec::new();
             let mut last_err: Option<ramag_domain::error::DomainError> = None;
@@ -152,6 +161,7 @@ impl ResultPanel {
                 }
             }
             let _ = this.update(cx, |this, cx| {
+                this.dml_busy = false;
                 if let ResultState::Ok(r) = &mut this.state {
                     let mut to_remove = deleted.clone();
                     to_remove.sort_by(|a, b| b.cmp(a));
@@ -229,9 +239,11 @@ impl ResultPanel {
             _ => None,
         };
 
+        self.dml_busy = true;
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
             let _ = this.update(cx, |this, cx| {
+                this.dml_busy = false;
                 match outcome {
                     Ok(qr) => {
                         if qr.affected_rows == 0 {
@@ -298,9 +310,11 @@ impl ResultPanel {
         let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
         let q = Query::new(sql);
 
+        self.dml_busy = true;
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
             let _ = this.update(cx, |this, cx| {
+                this.dml_busy = false;
                 match outcome {
                     Ok(qr) => {
                         if qr.affected_rows == 0 {
@@ -404,9 +418,11 @@ impl ResultPanel {
         let new_cell_val = build_new_value(&cell_val, &new_text);
         let q = Query::new(sql);
 
+        self.dml_busy = true;
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
             let _ = this.update(cx, |this, cx| {
+                this.dml_busy = false;
                 match outcome {
                     Ok(qr) => {
                         if qr.affected_rows == 0 {
