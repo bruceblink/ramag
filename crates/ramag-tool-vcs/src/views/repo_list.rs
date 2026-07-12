@@ -44,6 +44,20 @@ impl VcsView {
                         .text_color(danger)
                         .child(err.clone()),
                 )
+                .child({
+                    // 长诊断（网络 / git stderr）单行难读全，支持一键复制出去排查
+                    let err_for_copy = err.clone();
+                    Button::new("vcs-error-copy")
+                        .ghost()
+                        .xsmall()
+                        .label("复制")
+                        .tooltip("复制错误诊断")
+                        .on_click(move |_: &ClickEvent, _, app| {
+                            app.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                err_for_copy.clone(),
+                            ));
+                        })
+                })
                 .child(
                     Button::new("vcs-error-clear")
                         .ghost()
