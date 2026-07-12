@@ -96,6 +96,8 @@ pub struct DbClientView {
     pub(super) picker: Entity<ConnectionListPanel>,
     /// 顶部连接 tab bar 横向滚动句柄：连接多到溢出时新开后滚到末尾
     pub(super) sessions_scroll: ScrollHandle,
+    /// 异步操作（如删除连接）失败时挂起的提示，render 持 Window 时推送
+    pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -129,6 +131,7 @@ impl DbClientView {
             center: CenterMode::ConnectionPicker,
             picker,
             sessions_scroll: ScrollHandle::new(),
+            pending_notification: None,
             _subscriptions: subs,
         }
     }

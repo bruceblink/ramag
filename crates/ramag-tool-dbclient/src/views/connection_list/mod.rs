@@ -22,6 +22,8 @@ pub struct ConnectionListPanel {
     pub(super) connections: Vec<ConnectionConfig>,
     pub(super) selected: Option<ConnectionId>,
     pub(super) loading: bool,
+    /// 加载失败信息：非空时顶部显示错误条，避免把"读取失败"伪装成"没有连接"
+    pub(super) load_error: Option<String>,
     pub(super) search: Entity<InputState>,
     /// 小写的搜索关键字
     pub(super) query: String,
@@ -69,6 +71,7 @@ impl ConnectionListPanel {
             connections: Vec::new(),
             selected: None,
             loading: true,
+            load_error: None,
             search,
             query: String::new(),
             versions: HashMap::new(),
@@ -86,10 +89,14 @@ impl ConnectionListPanel {
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(list) => this.connections = list,
+                    Ok(list) => {
+                        this.connections = list;
+                        this.load_error = None;
+                    }
                     Err(e) => {
                         error!(error = %e, "list connections failed");
-                        this.connections = Vec::new();
+                        // 保留旧列表（若有）而非清空成假空态，并记错误供顶部提示
+                        this.load_error = Some(format!("加载连接列表失败：{e}"));
                     }
                 }
                 cx.notify();

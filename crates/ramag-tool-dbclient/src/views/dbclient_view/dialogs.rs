@@ -162,6 +162,13 @@ impl DbClientView {
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
                     error!(error = %e, "delete connection failed");
+                    this.pending_notification = Some(
+                        gpui_component::notification::Notification::error(format!(
+                            "删除连接失败：{e}"
+                        ))
+                        .autohide(true),
+                    );
+                    cx.notify();
                     return;
                 }
                 // 关闭对应 session（如果开着）

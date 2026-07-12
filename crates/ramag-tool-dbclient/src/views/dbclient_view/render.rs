@@ -13,7 +13,12 @@ use gpui_component::{
 use super::{CenterMode, DbClientView};
 
 impl Render for DbClientView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 异步失败提示：Render 持 Window 时统一推送（与各面板同款）
+        if let Some(n) = self.pending_notification.take() {
+            use gpui_component::WindowExt as _;
+            window.push_notification(n, cx);
+        }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;

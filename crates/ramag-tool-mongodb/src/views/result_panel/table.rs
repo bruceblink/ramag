@@ -113,14 +113,10 @@ pub(super) fn render(
     let table_for_list = table.clone();
     let cols_for_list = visible_cols.clone();
     let rows_for_list = visible_rows.clone();
-    // 行文档来源：默认当前结果集；展平视图等传 docs_override 覆盖（双击下钻据此取原值）
-    let docs_for_list: Arc<Vec<serde_json::Value>> = docs_override.unwrap_or_else(|| {
-        panel
-            .result
-            .as_ref()
-            .map(|r| Arc::new(r.documents.clone()))
-            .unwrap_or_else(|| Arc::new(Vec::new()))
-    });
+    // 行文档来源：默认当前结果集的 Arc 缓存（零拷贝）；展平视图等传 docs_override 覆盖
+    let docs_for_list: Arc<Vec<serde_json::Value>> = docs_override
+        .or_else(|| panel.docs_arc.clone())
+        .unwrap_or_else(|| Arc::new(Vec::new()));
 
     let body = uniform_list(
         "mongo-result-rows",

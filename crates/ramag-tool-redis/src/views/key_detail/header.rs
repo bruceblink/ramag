@@ -22,15 +22,18 @@ pub(super) fn render_header(
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
     let ttl_label = match panel.ttl_ms {
+        // PTTL 语义：-1=无过期时间（永久）；-2=key 不存在（非"已过期"）
         Some(-1) => "永久".to_string(),
-        Some(-2) => "已过期".to_string(),
+        Some(-2) => "Key 不存在".to_string(),
         Some(ms) if ms >= 0 => format_ttl_ms(ms),
         _ => "—".to_string(),
     };
     let key_for_ttl = key.to_string();
     let ttl_ms_for_event = panel.ttl_ms;
     let db = panel.db;
-    let value_clone = panel.value.clone();
+    // 借用而非 clone：header 只按 variant 判类型 / 取长度，不读容器内容。
+    // 原来每帧深拷贝整个 value（大 Hash/ZSet 可达数 MB / 十万级元素）
+    let value_ref = panel.value.as_ref();
 
     // 元信息行（第二行）
     let mut info_row = h_flex()
@@ -40,7 +43,7 @@ pub(super) fn render_header(
         .child(div().child(format!("DB {db}")));
 
     // 类型 chip：色点 + 类型名，颜色与 Key 树徽标一致
-    if let Some((label, color)) = value_clone.as_ref().and_then(redis_type_label_color) {
+    if let Some((label, color)) = value_ref.and_then(redis_type_label_color) {
         info_row = info_row.child(
             h_flex()
                 .items_center()
@@ -73,7 +76,7 @@ pub(super) fn render_header(
             })),
     );
 
-    if let Some(n) = value_clone.as_ref().and_then(|v| v.len()) {
+    if let Some(n) = value_ref.and_then(|v| v.len()) {
         info_row = info_row.child(div().child(format!("{n} 元素")));
     }
 
@@ -112,7 +115,7 @@ pub(super) fn render_header(
         );
 
     let key_owned = key.to_string();
-    if let Some(value) = value_clone.as_ref() {
+    if let Some(value) = value_ref {
         let key_for_emit = key_owned.clone();
         header = match value {
             RedisValue::Hash(_) => header.child(add_btn(

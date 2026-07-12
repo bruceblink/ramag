@@ -44,9 +44,14 @@ impl ClipboardView {
     pub(super) fn save_settings(&mut self, settings: ClipboardSettings, cx: &mut Context<Self>) {
         self.settings = settings.clone();
         let svc = self.service.clone();
-        cx.spawn(async move |_this, _cx| {
+        cx.spawn(async move |this, cx| {
             if let Err(e) = svc.save_settings(&settings).await {
                 error!(error = %e, "save clip settings failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.pending_notification =
+                        Some(Notification::error(format!("设置保存失败：{e}")));
+                    cx.notify();
+                });
             }
         })
         .detach();
@@ -195,10 +200,14 @@ impl ClipboardView {
     pub(super) fn delete_clip(&mut self, item: ClipItem, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            if let Err(e) = svc.delete(&item).await {
-                error!(error = %e, "delete clip failed");
-            }
-            let _ = this.update(cx, |this, cx| this.reload(cx));
+            let result = svc.delete(&item).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    error!(error = %e, "delete clip failed");
+                    this.pending_notification = Some(Notification::error(format!("删除失败：{e}")));
+                }
+                this.reload(cx);
+            });
         })
         .detach();
     }
@@ -206,10 +215,14 @@ impl ClipboardView {
     pub(super) fn clear_all(&mut self, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            if let Err(e) = svc.clear().await {
-                error!(error = %e, "clear clips failed");
-            }
-            let _ = this.update(cx, |this, cx| this.reload(cx));
+            let result = svc.clear().await;
+            let _ = this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    error!(error = %e, "clear clips failed");
+                    this.pending_notification = Some(Notification::error(format!("清空失败：{e}")));
+                }
+                this.reload(cx);
+            });
         })
         .detach();
     }

@@ -77,7 +77,26 @@ impl Render for ConnectionListPanel {
                 .child(div().text_sm().text_color(muted_fg).child("加载中…"))
                 .into_any_element()
         } else if total == 0 {
-            empty_state(border, muted_fg, fg, accent, cx).into_any_element()
+            // 区分「加载失败」与「真的没有连接」：失败时给错误 + 重试，不误导为空
+            if let Some(err) = self.load_error.clone() {
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.0))
+                    .child(div().text_sm().text_color(theme.danger).child(err))
+                    .child(
+                        Button::new("conn-list-retry")
+                            .small()
+                            .label("重试")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.refresh(cx);
+                            })),
+                    )
+                    .into_any_element()
+            } else {
+                empty_state(border, muted_fg, fg, accent, cx).into_any_element()
+            }
         } else if visible_count == 0 {
             v_flex()
                 .size_full()

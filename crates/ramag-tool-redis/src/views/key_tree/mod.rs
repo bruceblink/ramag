@@ -141,6 +141,9 @@ impl KeyTreePanel {
         self.tree.clear();
         self.expanded.clear();
         self.truncated = false;
+        // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，这里清 loading
+        // 让新目标的 refresh 不被防重入拒绝
+        self.loading = false;
         if self.config.is_some() {
             self.refresh(cx);
         } else {
@@ -152,15 +155,27 @@ impl KeyTreePanel {
         let Some(config) = self.config.clone() else {
             return;
         };
+        // 防重入：正在 SCAN 时连点刷新会并发多次全库扫描，叠加 db 竞态更易乱序
+        if self.loading {
+            return;
+        }
         self.loading = true;
         self.error = None;
         cx.notify();
 
         let svc = self.service.clone();
         let db = self.db;
+        let config_id = config.id.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.scan_all(&config, db, None, None, MAX_KEYS).await;
             let _ = this.update(cx, |this, cx| {
+                // 请求身份校验：切 db / 切连接后旧 SCAN 回包不得灌入当前树
+                let stale =
+                    this.db != db || this.config.as_ref().map(|c| &c.id) != Some(&config_id);
+                if stale {
+                    cx.notify();
+                    return;
+                }
                 this.loading = false;
                 match result {
                     Ok(keys) => {

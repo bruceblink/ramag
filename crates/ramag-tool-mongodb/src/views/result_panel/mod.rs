@@ -40,6 +40,9 @@ const PATH_COMPLETION_DEPTH: usize = 5;
 
 pub struct ResultPanel {
     pub(crate) result: Option<MongoQueryResult>,
+    /// result.documents 的 Arc 缓存：set_result 时构造一次，供 uniform_list 闭包
+    /// 零拷贝共享（原来每帧 Arc::new(documents.clone()) 深拷贝万级文档）
+    pub(crate) docs_arc: Option<Arc<Vec<serde_json::Value>>>,
     pub(crate) error: Option<String>,
     pub(crate) running: bool,
     /// 扁平化表格视图（result 变化时重算）
@@ -111,6 +114,7 @@ impl ResultPanel {
 
         Self {
             result: None,
+            docs_arc: None,
             error: None,
             running: false,
             table: None,
@@ -216,6 +220,7 @@ impl ResultPanel {
             .unwrap_or_else(|| "结果".to_string());
         self.reset_drill(label, r.documents.clone());
         self.sort_by = None;
+        self.docs_arc = Some(Arc::new(r.documents.clone()));
         self.result = Some(r);
         self.error = None;
         self.running = false;
@@ -354,7 +359,13 @@ impl Render for ResultPanel {
                 .child(error_hint(err, danger))
                 .into_any_element();
         }
-        let Some(result) = self.result.clone() else {
+        // 借用而非 clone：render 只用 affected / documents.len() / elapsed_ms 三个标量，
+        // 每帧深拷贝整个 MongoQueryResult（含万级文档）纯属浪费
+        let Some((affected, total_docs, elapsed)) = self
+            .result
+            .as_ref()
+            .map(|r| (r.affected, r.documents.len(), r.elapsed_ms))
+        else {
             return v_flex()
                 .size_full()
                 .bg(bg)
@@ -366,8 +377,8 @@ impl Render for ResultPanel {
                 .into_any_element();
         };
         let Some(table_arc) = self.table.clone() else {
-            let hint = if result.affected > 0 {
-                format!("已执行写操作，影响 {} 条", result.affected)
+            let hint = if affected > 0 {
+                format!("已执行写操作，影响 {affected} 条")
             } else if self.is_drilled() {
                 "（空）".to_string()
             } else {
@@ -416,8 +427,6 @@ impl Render for ResultPanel {
                 .into_any_element();
         }
 
-        let total_docs = result.documents.len();
-        let elapsed = result.elapsed_ms;
         let col_indices = self.filtered_column_indices(cx);
         let row_indices = self.filtered_row_indices(cx);
         let filtered_rows = row_indices.as_ref().map(|v| v.len()).unwrap_or(total_docs);
