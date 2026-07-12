@@ -100,6 +100,7 @@ impl Render for ActivityBar {
             is_home_selected,
             accent,
             transparent,
+            Some(SharedString::from("首页")),
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.navigate(NavTarget::Home, cx);
             }),
@@ -112,6 +113,7 @@ impl Render for ActivityBar {
             let id_for_click = id.clone();
             let is_selected = matches!(&selected, NavTarget::Tool(s) if s == &id);
             let icon = Self::icon_for_tool(&id);
+            let tip = SharedString::from(tool.meta().name.clone());
 
             container = container.child(activity_item(
                 &format!("tool-{id}"),
@@ -119,28 +121,38 @@ impl Render for ActivityBar {
                 is_selected,
                 accent,
                 transparent,
+                Some(tip),
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.navigate(NavTarget::Tool(id_for_click.clone()), cx);
                 }),
             ));
         }
 
-        // 底部：太阳/月亮主题切换（暗色显太阳 → 点击切浅色，反之亦然）+ 设置占位
+        // 底部：主题三态循环（浅色 → 深色 → 跟随系统 → …），图标示当前态、tooltip 说明点击后果 + 设置占位
         container = container.child(div().flex_1());
-        let toggle_icon = match crate::theme::current_mode(cx) {
-            crate::theme::Mode::Dark => IconName::Sun,
-            crate::theme::Mode::Light => IconName::Moon,
+        let (theme_icon, theme_tip) = if crate::theme::is_following_system(cx) {
+            (IconName::Palette, "外观：跟随系统 · 点击切为 浅色")
+        } else if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
+            (IconName::Sun, "外观：浅色 · 点击切为 深色")
+        } else {
+            (IconName::Moon, "外观：深色 · 点击切为 跟随系统")
         };
         container = container.child(activity_item(
             "theme-toggle",
-            Icon::new(toggle_icon),
+            Icon::new(theme_icon),
             false,
             accent,
             transparent,
-            |_: &ClickEvent, _, app| {
-                // 点击时现取当前模式，避免渲染后主题被系统外观联动改过导致切错方向
-                let next = crate::theme::current_mode(app).toggled();
-                set_theme(next, app);
+            Some(SharedString::from(theme_tip)),
+            |_: &ClickEvent, window, app| {
+                // 三态循环：跟随系统 → 浅色 → 深色 → 跟随系统。现取状态避免与系统外观联动错步
+                if crate::theme::is_following_system(app) {
+                    set_theme(crate::theme::Mode::Light, app);
+                } else if matches!(crate::theme::current_mode(app), crate::theme::Mode::Light) {
+                    set_theme(crate::theme::Mode::Dark, app);
+                } else {
+                    set_follow_system(window, app);
+                }
             },
         ));
         container = container.child(activity_item(
@@ -149,6 +161,7 @@ impl Render for ActivityBar {
             false,
             accent,
             transparent,
+            None,
             |_: &ClickEvent, _, _| {},
         ));
 
@@ -156,7 +169,7 @@ impl Render for ActivityBar {
     }
 }
 
-/// 切主题 + 持久化。用户显式选过则 follow_system=false
+/// 显式切浅 / 深主题 + 持久化。显式选过即 follow_system=false（不再随系统外观变）
 fn set_theme(mode: crate::theme::Mode, app: &mut gpui::App) {
     if crate::theme::current_mode(app) == mode && !crate::theme::is_following_system(app) {
         return;
@@ -164,19 +177,37 @@ fn set_theme(mode: crate::theme::Mode, app: &mut gpui::App) {
     crate::theme::apply_theme(mode, app);
     crate::theme::set_following_system(app, false);
     app.refresh_windows();
-    if let Some(storage) = crate::theme::storage_from_cx(app) {
-        let value = match mode {
-            crate::theme::Mode::Dark => "dark".to_string(),
-            crate::theme::Mode::Light => "light".to_string(),
-        };
-        app.background_executor()
-            .spawn(async move {
-                if let Err(e) = storage.set_preference("theme_mode", &value).await {
-                    tracing::warn!(error = %e, "failed to persist theme");
-                }
-            })
-            .detach();
-    }
+    persist_theme_pref(
+        app,
+        match mode {
+            crate::theme::Mode::Dark => "dark",
+            crate::theme::Mode::Light => "light",
+        },
+    );
+}
+
+/// 切回「跟随系统」：按当前系统外观定明暗 + 标记跟随 + 持久化 "system"，
+/// 之后系统深浅变化会经 on_system_appearance_changed 自动同步
+fn set_follow_system(window: &Window, app: &mut gpui::App) {
+    let mode = crate::theme::mode_from_appearance(window.appearance());
+    crate::theme::apply_theme(mode, app);
+    crate::theme::set_following_system(app, true);
+    app.refresh_windows();
+    persist_theme_pref(app, "system");
+}
+
+/// 主题偏好落 redb（后台异步，失败仅告警不阻断 UI）
+fn persist_theme_pref(app: &mut gpui::App, value: &'static str) {
+    let Some(storage) = crate::theme::storage_from_cx(app) else {
+        return;
+    };
+    app.background_executor()
+        .spawn(async move {
+            if let Err(e) = storage.set_preference("theme_mode", value).await {
+                tracing::warn!(error = %e, "failed to persist theme");
+            }
+        })
+        .detach();
 }
 
 /// 选中时左侧 2px accent 竖条
@@ -186,8 +217,15 @@ fn activity_item(
     is_selected: bool,
     accent: gpui::Hsla,
     transparent: gpui::Hsla,
+    tooltip: Option<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
+    let mut button = Button::new(SharedString::from(id.to_string()))
+        .ghost()
+        .icon(icon);
+    if let Some(tip) = tooltip {
+        button = button.tooltip(tip);
+    }
     h_flex()
         .w(px(BAR_WIDTH))
         .h(px(ITEM_HEIGHT))
@@ -199,10 +237,5 @@ fn activity_item(
                 .h(px(20.0))
                 .bg(if is_selected { accent } else { transparent }),
         )
-        .child(
-            Button::new(SharedString::from(id.to_string()))
-                .ghost()
-                .icon(icon)
-                .on_click(on_click),
-        )
+        .child(button.on_click(on_click))
 }

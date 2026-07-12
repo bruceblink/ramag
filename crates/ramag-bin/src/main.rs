@@ -460,6 +460,12 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
             move |window, cx| {
                 // 拿 window.appearance 后才能正式 init 主题
                 init_theme(theme_pref.as_deref(), window.appearance(), cx);
+                // 「跟随系统」时运行中系统深浅切换需实时同步；用户显式选过 dark/light 则内部忽略
+                window
+                    .observe_window_appearance(|window, cx| {
+                        ramag_ui::theme::on_system_appearance_changed(window.appearance(), cx);
+                    })
+                    .detach();
 
                 let home_view =
                     cx.new(|cx| HomeView::new(registry.clone(), conn_service.clone(), cx));

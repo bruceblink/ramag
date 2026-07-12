@@ -1,4 +1,4 @@
-//! VSCode 风格暗 / 亮主题。`init_theme` 启动时初始化，ActivityBar 太阳/月亮按钮切换
+//! VSCode 风格暗 / 亮主题。`init_theme` 启动时初始化，ActivityBar 主题按钮三态循环（浅 / 暗 / 跟随系统）
 
 use std::sync::Arc;
 
@@ -33,15 +33,6 @@ pub fn set_following_system(cx: &mut App, follow: bool) {
 pub enum Mode {
     Dark,
     Light,
-}
-
-impl Mode {
-    pub fn toggled(self) -> Self {
-        match self {
-            Mode::Dark => Mode::Light,
-            Mode::Light => Mode::Dark,
-        }
-    }
 }
 
 pub fn mode_from_appearance(appearance: WindowAppearance) -> Mode {
@@ -254,10 +245,18 @@ impl Opacity for Hsla {
 mod tests {
     use super::*;
 
-    /// ActivityBar 太阳/月亮按钮靠 toggled 在暗 / 亮间互切
+    /// 系统外观 → 主题模式映射：暗系（含 VibrantDark）归 Dark，其余归 Light
     #[test]
-    fn mode_toggle_roundtrip() {
-        assert_eq!(Mode::Dark.toggled(), Mode::Light);
-        assert_eq!(Mode::Light.toggled(), Mode::Dark);
+    fn appearance_maps_to_mode() {
+        assert_eq!(mode_from_appearance(WindowAppearance::Dark), Mode::Dark);
+        assert_eq!(
+            mode_from_appearance(WindowAppearance::VibrantDark),
+            Mode::Dark
+        );
+        assert_eq!(mode_from_appearance(WindowAppearance::Light), Mode::Light);
+        assert_eq!(
+            mode_from_appearance(WindowAppearance::VibrantLight),
+            Mode::Light
+        );
     }
 }
