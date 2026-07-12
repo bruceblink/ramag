@@ -310,8 +310,15 @@ fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
             if l.is_none() {
                 error!("global hotkey register failed; clipboard drawer disabled");
             }
+            // 状态上报给设置面板展示（失败常见原因：组合键被其它应用占用）
+            service.set_hotkey_state(if l.is_some() {
+                ramag_app::HotkeyState::Registered
+            } else {
+                ramag_app::HotkeyState::Failed
+            });
             l
         } else {
+            service.set_hotkey_state(ramag_app::HotkeyState::Disabled);
             None
         };
 
@@ -334,7 +341,13 @@ fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
                     if listener.is_none() {
                         error!("global hotkey re-register failed");
                     }
+                    service.set_hotkey_state(if listener.is_some() {
+                        ramag_app::HotkeyState::Registered
+                    } else {
+                        ramag_app::HotkeyState::Failed
+                    });
                 } else {
+                    service.set_hotkey_state(ramag_app::HotkeyState::Disabled);
                     // 关闭残留抽屉：热键已注销，否则无法再 toggle 关闭
                     if let Some(handle) = drawer.take() {
                         let _ = cx

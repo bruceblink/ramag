@@ -3,7 +3,7 @@
 //! `capture_tick` 仅做 driver/storage 编排
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use chrono::Utc;
 use parking_lot::RwLock;
@@ -53,6 +53,38 @@ pub struct ClipboardService {
     capture_enabled: Arc<AtomicBool>,
     /// 备用热键内存镜像（主修饰键+Alt+V），维护方式同 capture_enabled
     alternate_hotkey: Arc<AtomicBool>,
+    /// 全局热键注册状态（见 HotkeyState）：App 级热键循环写，设置面板读，
+    /// 让「热键没注册上（如被占用）」对用户可见而非只留日志
+    hotkey_state: Arc<AtomicU8>,
+}
+
+/// 全局热键注册状态（AtomicU8 编码）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotkeyState {
+    /// 采集关闭，未注册（主动释放）
+    Disabled,
+    /// 已注册，热键可用
+    Registered,
+    /// 注册失败（热键被其它应用占用等）
+    Failed,
+}
+
+impl HotkeyState {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => HotkeyState::Registered,
+            2 => HotkeyState::Failed,
+            _ => HotkeyState::Disabled,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            HotkeyState::Disabled => 0,
+            HotkeyState::Registered => 1,
+            HotkeyState::Failed => 2,
+        }
+    }
 }
 
 impl ClipboardService {
@@ -65,7 +97,18 @@ impl ClipboardService {
             // 默认开（同 ClipboardSettings::default）；启动由 prime_capture_enabled 校正
             capture_enabled: Arc::new(AtomicBool::new(true)),
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
+            hotkey_state: Arc::new(AtomicU8::new(HotkeyState::Disabled.as_u8())),
         }
+    }
+
+    /// 当前全局热键注册状态（设置面板展示用）
+    pub fn hotkey_state(&self) -> HotkeyState {
+        HotkeyState::from_u8(self.hotkey_state.load(Ordering::Relaxed))
+    }
+
+    /// 热键循环在注册 / 注销 / 失败时上报状态
+    pub fn set_hotkey_state(&self, state: HotkeyState) {
+        self.hotkey_state.store(state.as_u8(), Ordering::Relaxed);
     }
 
     pub fn driver(&self) -> &Arc<dyn ClipboardDriver> {

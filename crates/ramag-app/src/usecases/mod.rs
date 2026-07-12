@@ -33,7 +33,7 @@ pub mod export;
 pub mod mongo_service;
 pub mod redis_service;
 
-pub use clipboard_service::{CaptureDecision, ClipboardService, decide_capture};
+pub use clipboard_service::{CaptureDecision, ClipboardService, HotkeyState, decide_capture};
 pub use connection_service::ConnectionService;
 pub use mongo_service::MongoService;
 pub use redis_service::RedisService;

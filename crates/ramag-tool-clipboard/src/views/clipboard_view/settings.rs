@@ -51,6 +51,21 @@ impl ClipboardView {
                     this.save_settings(next, cx);
                 }),
             ))
+            // 热键注册失败对用户可见（常见原因：组合键被其它应用占用），成功时不打扰
+            .when(
+                s.enabled && matches!(self.service.hotkey_state(), ramag_app::HotkeyState::Failed),
+                |view| {
+                    view.child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::red())
+                            .child(format!(
+                                "全局热键 {} 注册失败：组合键可能被其它应用占用，可尝试切换「备用全局热键」",
+                                clipboard_hotkey(s.alternate_hotkey)
+                            )),
+                    )
+                },
+            )
             .child(self.toggle_row(
                 "clip-hotkey-alt",
                 "备用全局热键",

@@ -7,4 +7,4 @@ pub mod tool_registry;
 pub mod usecases;
 
 pub use tool_registry::ToolRegistry;
-pub use usecases::{ClipboardService, ConnectionService, MongoService, RedisService};
+pub use usecases::{ClipboardService, ConnectionService, HotkeyState, MongoService, RedisService};
