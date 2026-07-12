@@ -1,8 +1,10 @@
-//! Key 树：SCAN 0→0 累计到 MAX_KEYS 后客户端过滤；按 `:` 折叠命名空间。
-//! 同时是叶子+命名空间的节点（`user` 与 `user:1` 共存）单击仅展开，类型 badge 才加载值
+//! Key 树：增量 SCAN 分批加载（服务端 MATCH 下推 + 进度 + 可停止，状态机在 scan.rs），
+//! 按 `:` 折叠命名空间。同时是叶子+命名空间的节点（`user` 与 `user:1` 共存）单击仅展开，
+//! 类型 badge 才加载值
 
 mod ops;
 mod render;
+mod scan;
 mod tree;
 
 use std::collections::HashSet;
@@ -25,7 +27,6 @@ use gpui_component::{
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
 use ramag_ui::platform::primary_shortcut;
-use tracing::{error, info};
 
 use tree::{TreeNode, VisibleRow, build_tree, collect_namespace_paths, has_match_descendant};
 
@@ -78,6 +79,12 @@ pub struct KeyTreePanel {
     /// 客户端搜索框 / 关键字（小写）
     search: Entity<InputState>,
     query: String,
+    /// 服务端 MATCH 模式（Enter 下推触发重扫）；None = 全库扫描
+    match_pattern: Option<String>,
+    /// 扫描代际：换代（停止 / 重扫 / 换 pattern / 切库）后在途批次回包一律作废
+    scan_generation: u64,
+    /// 上次重建 Trie 时的 key 数（分批加载期间节流重建，避免每批 O(N) 重建）
+    last_rebuilt_count: usize,
     /// 当前选中的 key（高亮）
     selected: Option<String>,
     /// 是否到达 MAX_KEYS 截断
@@ -99,11 +106,19 @@ impl KeyTreePanel {
         let subs = vec![cx.subscribe_in(
             &search,
             window,
-            |this: &mut Self, _, e: &InputEvent, _, cx| {
-                if matches!(e, InputEvent::Change) {
+            |this: &mut Self, _, e: &InputEvent, _, cx| match e {
+                InputEvent::Change => {
                     this.query = this.search.read(cx).value().trim().to_lowercase();
+                    // 清空搜索框时撤掉服务端 MATCH 重扫全库，避免状态栏计数与空搜索框互相矛盾
+                    if this.query.is_empty() && this.match_pattern.is_some() {
+                        this.match_pattern = None;
+                        this.refresh(cx);
+                    }
                     cx.notify();
                 }
+                // Enter：把关键字下推为服务端 MATCH 重扫（大库不再只能对已加载子集过滤）
+                InputEvent::PressEnter { .. } => this.apply_server_match(cx),
+                _ => {}
             },
         )];
 
@@ -118,6 +133,9 @@ impl KeyTreePanel {
             error: None,
             search,
             query: String::new(),
+            match_pattern: None,
+            scan_generation: 0,
+            last_rebuilt_count: 0,
             selected: None,
             truncated: false,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -151,52 +169,6 @@ impl KeyTreePanel {
         }
     }
 
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
-        // 防重入：正在 SCAN 时连点刷新会并发多次全库扫描，叠加 db 竞态更易乱序
-        if self.loading {
-            return;
-        }
-        self.loading = true;
-        self.error = None;
-        cx.notify();
-
-        let svc = self.service.clone();
-        let db = self.db;
-        let config_id = config.id.clone();
-        cx.spawn(async move |this, cx| {
-            let result = svc.scan_all(&config, db, None, None, MAX_KEYS).await;
-            let _ = this.update(cx, |this, cx| {
-                // 请求身份校验：切 db / 切连接后旧 SCAN 回包不得灌入当前树
-                let stale =
-                    this.db != db || this.config.as_ref().map(|c| &c.id) != Some(&config_id);
-                if stale {
-                    cx.notify();
-                    return;
-                }
-                this.loading = false;
-                match result {
-                    Ok(keys) => {
-                        info!(count = keys.len(), db, "redis scan_all completed");
-                        this.truncated = keys.len() >= MAX_KEYS;
-                        this.keys = keys;
-                        this.rebuild_tree();
-                    }
-                    Err(e) => {
-                        error!(error = %e, "redis scan_all failed");
-                        this.error = Some(format!("加载失败：{e}"));
-                        this.keys.clear();
-                        this.tree.clear();
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// 会话 Tab 被（重新）激活时调用：仅当从未成功加载（无 key 且非加载中）才 SCAN，
     /// 避免每次切 Tab 都重置展开/选中。首次加载失败留下的空状态会在下次激活时自动重试
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
@@ -205,9 +177,10 @@ impl KeyTreePanel {
         }
     }
 
-    /// 由 keys 重建 Trie 树；默认展开第一层命名空间
+    /// 由 keys 重建 Trie 树；默认展开第一层命名空间。记录重建时 key 数供分批加载节流
     fn rebuild_tree(&mut self) {
         self.tree = build_tree(&self.keys);
+        self.last_rebuilt_count = self.keys.len();
         if self.expanded.is_empty() {
             for n in &self.tree {
                 if n.is_namespace() {
@@ -327,23 +300,29 @@ impl Render for KeyTreePanel {
         let visible_leaf_count = visible.iter().filter(|r| r.is_key).count();
         let selected = self.selected.clone();
 
+        // 状态栏：扫描中报进度；带服务端 MATCH 时标注模式，区别于「共 N（全库）」
+        let pattern_note = self
+            .match_pattern
+            .as_deref()
+            .map(|p| format!("MATCH {p} · "))
+            .unwrap_or_default();
         let count_label = if self.config.is_none() {
             "尚未连接".to_string()
         } else if self.loading {
-            "加载中…".to_string()
+            format!("{pattern_note}已加载 {total} 个 key…（扫描中，可点⏹停止）")
         } else if let Some(ref e) = self.error {
             e.clone()
         } else if !in_search {
             format!(
-                "共 {total} 个 key{}",
+                "{pattern_note}共 {total} 个 key{}",
                 if self.truncated {
-                    "（已截断）"
+                    "（已达上限截断）"
                 } else {
                     ""
                 }
             )
         } else {
-            format!("匹配 {visible_leaf_count} / {total}")
+            format!("{pattern_note}匹配 {visible_leaf_count} / {total}")
         };
 
         // 顶部第 1 行：DB 选择
@@ -432,13 +411,27 @@ impl Render for KeyTreePanel {
                         }
                     }))
             })
-            .child(
+            .child({
+                // 扫描中该位变「停止」：保留已加载部分，随时可中断大库扫描
+                let scanning = self.loading;
+                let (icon, tip) = if scanning {
+                    (Icon::new(IconName::CircleX), "停止扫描（保留已加载）")
+                } else {
+                    (ramag_ui::icons::refresh_cw(), "重新扫描")
+                };
                 Button::new("redis-key-refresh")
                     .ghost()
                     .xsmall()
-                    .icon(ramag_ui::icons::refresh_cw())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.refresh(cx))),
-            )
+                    .icon(icon)
+                    .tooltip(tip)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if scanning {
+                            this.stop_scan(cx);
+                        } else {
+                            this.refresh(cx);
+                        }
+                    }))
+            })
             .child(
                 Button::new("redis-open-console")
                     .ghost()

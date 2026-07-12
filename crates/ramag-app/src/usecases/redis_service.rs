@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, DriverKind, KeyMeta, RedisType, RedisValue,
+    ConnectionConfig, ConnectionId, DriverKind, KeyMeta, RedisType, RedisValue, ScanResult,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{KvDriver, Storage};
@@ -89,6 +89,26 @@ impl RedisService {
             out.truncate(max_keys);
         }
         Ok(out)
+    }
+
+    /// 单批 SCAN（增量加载用）：透传 cursor 给调用方循环续扫，随时可停；
+    /// pattern 服务端 MATCH 下推，避免大库全量拉回客户端过滤
+    pub async fn scan_batch(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        cursor: u64,
+        pattern: Option<&str>,
+        type_filter: Option<RedisType>,
+        count: u32,
+    ) -> Result<ScanResult> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver
+                .scan(config, db, cursor, pattern, type_filter, count)
+                .await
+        )
     }
 
     pub async fn key_type(
