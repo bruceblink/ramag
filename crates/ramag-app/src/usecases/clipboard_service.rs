@@ -56,6 +56,8 @@ pub struct ClipboardService {
     /// 全局热键注册状态（见 HotkeyState）：App 级热键循环写，设置面板读，
     /// 让「热键没注册上（如被占用）」对用户可见而非只留日志
     hotkey_state: Arc<AtomicU8>,
+    /// 设置降级标记：读取失败 / JSON 损坏时置位（采集 fail-closed），设置面板显示告警
+    settings_degraded: Arc<AtomicBool>,
 }
 
 /// 全局热键注册状态（AtomicU8 编码）
@@ -98,6 +100,7 @@ impl ClipboardService {
             capture_enabled: Arc::new(AtomicBool::new(true)),
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
             hotkey_state: Arc::new(AtomicU8::new(HotkeyState::Disabled.as_u8())),
+            settings_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -164,22 +167,66 @@ impl ClipboardService {
 
     // —— 设置 ——
 
+    /// 读取设置。隐私 fail-closed：存储读取失败或 JSON 损坏时**默认关闭采集**并置
+    /// 降级标记（设置面板显示告警），绝不因异常回退到「继续记录」；仅「从未保存过」
+    /// 才用出厂默认（enabled=true，首次使用语义）
     pub async fn load_settings(&self) -> ClipboardSettings {
         match self.storage.get_preference(SETTINGS_KEY).await {
-            Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
-            _ => ClipboardSettings::default(),
+            Ok(Some(json)) => match serde_json::from_str(&json) {
+                Ok(s) => {
+                    self.settings_degraded.store(false, Ordering::Relaxed);
+                    s
+                }
+                Err(e) => {
+                    warn!(error = %e, "clip settings corrupted; capture fail-closed");
+                    self.settings_degraded.store(true, Ordering::Relaxed);
+                    ClipboardSettings {
+                        enabled: false,
+                        ..ClipboardSettings::default()
+                    }
+                }
+            },
+            Ok(None) => {
+                self.settings_degraded.store(false, Ordering::Relaxed);
+                ClipboardSettings::default()
+            }
+            Err(e) => {
+                warn!(error = %e, "clip settings unreadable; capture fail-closed");
+                self.settings_degraded.store(true, Ordering::Relaxed);
+                ClipboardSettings {
+                    enabled: false,
+                    ..ClipboardSettings::default()
+                }
+            }
         }
+    }
+
+    /// 设置是否处于降级态（读取失败 / 损坏，采集已 fail-closed 暂停）
+    pub fn settings_degraded(&self) -> bool {
+        self.settings_degraded.load(Ordering::Relaxed)
     }
 
     pub async fn save_settings(&self, settings: &ClipboardSettings) -> Result<()> {
         // 先更新内存镜像（与 UI 乐观更新一致），热键循环最迟下一拍生效
-        self.capture_enabled
-            .store(settings.enabled, Ordering::Relaxed);
-        self.alternate_hotkey
-            .store(settings.alternate_hotkey, Ordering::Relaxed);
-        let json = serde_json::to_string(settings)
-            .map_err(|e| DomainError::Storage(format!("序列化剪贴设置失败：{e}")))?;
-        self.storage.set_preference(SETTINGS_KEY, &json).await
+        let prev_enabled = self
+            .capture_enabled
+            .swap(settings.enabled, Ordering::Relaxed);
+        let prev_alternate = self
+            .alternate_hotkey
+            .swap(settings.alternate_hotkey, Ordering::Relaxed);
+        let result = async {
+            let json = serde_json::to_string(settings)
+                .map_err(|e| DomainError::Storage(format!("序列化剪贴设置失败：{e}")))?;
+            self.storage.set_preference(SETTINGS_KEY, &json).await
+        }
+        .await;
+        // 持久化失败回滚镜像：内存与落盘不一致会让「界面已关但仍在采集」类偏差跨拍存在
+        if result.is_err() {
+            self.capture_enabled.store(prev_enabled, Ordering::Relaxed);
+            self.alternate_hotkey
+                .store(prev_alternate, Ordering::Relaxed);
+        }
+        result
     }
 
     /// 采集是否开启（内存镜像，热键循环每拍读）

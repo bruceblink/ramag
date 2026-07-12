@@ -43,14 +43,17 @@ impl ClipboardView {
     }
 
     pub(super) fn save_settings(&mut self, settings: ClipboardSettings, cx: &mut Context<Self>) {
+        // 乐观更新 + 失败回滚：持久化失败时 UI 若停在新值，会与磁盘/内存镜像不一致
+        let prev = self.settings.clone();
         self.settings = settings.clone();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             if let Err(e) = svc.save_settings(&settings).await {
                 error!(error = %e, "save clip settings failed");
                 let _ = this.update(cx, |this, cx| {
+                    this.settings = prev;
                     this.pending_notification =
-                        Some(Notification::error(format!("设置保存失败：{e}")));
+                        Some(Notification::error(format!("设置保存失败（已还原）：{e}")));
                     cx.notify();
                 });
             }

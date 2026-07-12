@@ -34,6 +34,12 @@ impl ClipboardView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("剪贴板设置"),
             )
+            // 设置降级（读取失败 / 损坏）：采集已 fail-closed 暂停，必须让用户知情
+            .when(self.service.settings_degraded(), |view| {
+                view.child(div().text_xs().text_color(gpui::red()).child(
+                    "设置读取异常，采集已自动暂停（不会记录新内容）；重新保存任一设置可尝试修复",
+                ))
+            })
             // 启用采集为总开关，关闭后下面几项均失效（变灰不可点）
             .child(self.toggle_row(
                 "clip-enabled",
