@@ -294,7 +294,7 @@ fn render_header(
 }
 
 /// 单元格排序比较：空值（null）排前；数字列按数值，否则按字符串（ISO 日期 / oid 字典序合理）
-fn compare_cells(a: &str, b: &str, numeric: bool) -> std::cmp::Ordering {
+pub(super) fn compare_cells(a: &str, b: &str, numeric: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a.is_empty(), b.is_empty()) {
         (true, true) => return Ordering::Equal,
