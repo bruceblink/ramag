@@ -213,10 +213,20 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 草稿保护：活动 Tab 存在手写内容（非空且非上次自动注入）时不覆盖，
+        // 另开 Tab 浏览；未手改的浏览 SQL / 示例则原地复用，连点切表不膨胀 Tab
+        let has_draft = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.read(cx).has_user_draft(cx));
+        if has_draft {
+            self.add_tab(window, cx);
+        }
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
                 // set_sql 内会清 pinned_target，所以必须先 set_sql 再 set_pinned_target
-                t.set_sql(sql, window, cx);
+                t.set_sql(sql.clone(), window, cx);
+                t.mark_injected(sql);
                 t.set_pinned_target(target);
                 // 切表时同步清空两个过滤框，避免旧 filter 挡新表数据
                 t.clear_result_filters(window, cx);

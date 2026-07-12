@@ -45,6 +45,9 @@ pub struct MongoQueryTab {
     pub(crate) run_seq: u64,
     /// 待弹出的 toast（生产模式只读拦截等，render 时 push，不覆盖结果区）
     pending_notification: Option<Notification>,
+    /// 上次自动注入的命令（默认模板 / 树点 collection / 示例）。编辑器内容仍等于它
+    /// = 未手改，树点击可原地覆盖；否则视为手写草稿，浏览另开 Tab（防丢稿）
+    last_injected_cmd: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -94,8 +97,20 @@ impl MongoQueryTab {
             running: false,
             run_seq: 0,
             pending_notification: None,
+            // 新 Tab 出生自带默认模板，属自动注入（未手改前树点击可原地覆盖）
+            last_injected_cmd: Some(default_command_template()),
             _subscriptions: vec![refresh_sub],
         }
+    }
+
+    /// 是否存在用户手写草稿：编辑器非空且内容不等于上次自动注入的命令
+    pub fn has_user_draft(&self, cx: &gpui::App) -> bool {
+        let value = self.editor.read(cx).value();
+        let cur = value.trim();
+        if cur.is_empty() {
+            return false;
+        }
+        self.last_injected_cmd.as_deref().map(str::trim) != Some(cur)
     }
 
     /// 由 QueryPanel 同步全局开关给新建 / 切换的 Tab
@@ -121,8 +136,10 @@ impl MongoQueryTab {
             collection
         );
         self.editor.update(cx, |s, cx| {
-            s.set_value(cmd, window, cx);
+            s.set_value(cmd.clone(), window, cx);
         });
+        // 树点击注入属自动内容：未手改前再点其它 collection 仍原地覆盖
+        self.last_injected_cmd = Some(cmd);
         // 切 collection 是换数据源：清掉结果区残留的列 / 行过滤，避免旧过滤词串到新结果
         self.result.update(cx, |p, cx| p.clear_filters(window, cx));
         cx.notify();
@@ -133,6 +150,8 @@ impl MongoQueryTab {
         self.editor.update(cx, |s, cx| {
             s.set_value(cmd.to_string(), window, cx);
         });
+        // 示例模板属自动注入：未手改前树点击仍可原地覆盖
+        self.last_injected_cmd = Some(cmd.to_string());
         cx.notify();
     }
 

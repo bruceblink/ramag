@@ -59,6 +59,9 @@ pub struct QueryTab {
     pub(super) auto_limit_enabled: bool,
     /// 分页状态：本次 run 命中"未手写 LIMIT 的单条 SELECT"时为 Some
     pub(super) pager: Option<paging::Pager>,
+    /// 上次自动注入的 SQL（表树浏览 / 示例）。编辑器内容仍与之相等 = 用户未手改，
+    /// 表树切表可安全原地覆盖；否则视为手写草稿，浏览须另开 Tab（防丢稿）
+    pub(super) last_injected_sql: Option<String>,
     /// 编辑器变化订阅 keep-alive
     pub(super) _editor_sub: gpui::Subscription,
 }
@@ -129,8 +132,25 @@ impl QueryTab {
             // 默认开启 LIMIT 自动注入；用户可在工具条切换
             auto_limit_enabled: true,
             pager: None,
+            last_injected_sql: None,
             _editor_sub: editor_sub,
         }
+    }
+
+    /// 是否存在用户手写草稿：编辑器非空且内容不等于上次自动注入的 SQL。
+    /// 表树切表据此决定原地覆盖还是另开 Tab
+    pub fn has_user_draft(&self, cx: &gpui::App) -> bool {
+        let value = self.editor.read(cx).value();
+        let cur = value.trim();
+        if cur.is_empty() {
+            return false;
+        }
+        self.last_injected_sql.as_deref().map(str::trim) != Some(cur)
+    }
+
+    /// 标记「当前编辑器内容是自动注入的」（表树浏览 / 示例），供草稿判定
+    pub fn mark_injected(&mut self, sql: String) {
+        self.last_injected_sql = Some(sql);
     }
 
     /// 由 QueryPanel 全局同步：是否展示顶部 SQL 编辑器
@@ -195,6 +215,8 @@ impl QueryTab {
         self.pinned_target = None;
         // 编辑器被整体替换后旧分页状态作废（避免"下一页"重跑已被换掉的 SQL）
         self.pager = None;
+        // 默认视为普通写入（可能是历史填入等用户内容）；自动注入路径由调用方再 mark_injected
+        self.last_injected_sql = None;
         // set_value 不发 InputEvent::Change（emit_events=false），手动触发预拉
         self.prefetch_columns_for_used_tables(cx);
         cx.notify();
@@ -216,6 +238,8 @@ impl QueryTab {
             state.set_value(sql.to_string(), window, cx);
             state.focus(window, cx);
         });
+        // 示例模板属自动注入：未手改前点表树仍可原地覆盖
+        self.last_injected_sql = Some(sql.to_string());
         // set_value 不发 Change 事件，手动触发列结构预拉（与 set_sql 一致）
         self.prefetch_columns_for_used_tables(cx);
         cx.notify();

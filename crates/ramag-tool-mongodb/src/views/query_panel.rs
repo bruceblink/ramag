@@ -102,7 +102,8 @@ impl MongoQueryPanel {
         }
     }
 
-    /// 树点 collection：复用当前激活 Tab（覆盖编辑器 + 运行）；如果还没 Tab 自动建一个
+    /// 树点 collection：复用当前激活 Tab（覆盖编辑器 + 运行）；如果还没 Tab 自动建一个。
+    /// 活动 Tab 有手写草稿（非空且非上次自动注入）时不覆盖，另开 Tab 浏览（防丢稿）
     pub fn prefill_collection(
         &mut self,
         database: String,
@@ -110,7 +111,11 @@ impl MongoQueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.tabs.is_empty() {
+        let has_draft = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.read(cx).has_user_draft(cx));
+        if self.tabs.is_empty() || has_draft {
             self.add_tab(window, cx);
         }
         self.database = database.clone();
