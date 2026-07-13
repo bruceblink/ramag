@@ -39,8 +39,8 @@ use ramag_tool_vcs::{
     create_vcs_view,
 };
 use ramag_ui::{
-    CloseTab, HomeEvent, HomeView, Mode, NavTarget, RamagAssets, Shell, StorageGlobal, apply_theme,
-    init_theme,
+    CloseTab, CycleSection, HomeEvent, HomeView, Mode, NavTarget, RamagAssets, SelectTool1,
+    SelectTool2, SelectTool3, Shell, ShowOnboarding, StorageGlobal, apply_theme, init_theme,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -62,6 +62,63 @@ struct ShowShortcuts;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct ShowAbout;
+
+/// 帮助菜单：复制诊断信息（版本 / 平台 / 日志路径）到剪贴板，便于反馈
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct CopyDiagnostics;
+
+/// 帮助菜单：在系统文件管理器中打开日志目录
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct OpenLogDir;
+
+// 原生「编辑」菜单项：paired action 仅占位，macOS 由 os_action 角色经响应链处理标准编辑命令
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct EditUndo;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct EditRedo;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct EditCut;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct EditCopy;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct EditPaste;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct EditSelectAll;
+
+/// 在系统文件管理器中打开目录（打开日志目录用）
+fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(dir);
+    cmd.spawn().map(|_| ())
+}
+
+/// 诊断信息文本：版本 + 平台 + 日志路径（复制 / 关于弹窗共用）
+fn diagnostics_text(log_path: &Option<std::path::PathBuf>) -> String {
+    let log_line = log_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "（日志未启用）".to_string());
+    format!(
+        "Ramag {}\n平台：{} {}\n日志：{}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        log_line
+    )
+}
 
 /// 全部工具服务与存储的共享句柄；主窗口重建（on_reopen / 托盘 / 单实例激活）复用
 #[derive(Clone)]
@@ -230,6 +287,11 @@ fn main() {
 
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
+            // 工具切换：主修饰键+1/2/3 跳到第 N 个工具；Ctrl+Tab 循环区段（Shell 处理）
+            KeyBinding::new("secondary-1", SelectTool1, None),
+            KeyBinding::new("secondary-2", SelectTool2, None),
+            KeyBinding::new("secondary-3", SelectTool3, None),
+            KeyBinding::new("ctrl-tab", CycleSection, None),
             // dbclient (MySQL / PG) 视图的快捷键（context=QueryPanel/QueryTab 见 dbclient 视图实现）
             KeyBinding::new("secondary-enter", RunQuery, None),
             KeyBinding::new("secondary-shift-enter", RunStatementAtCursor, None),
@@ -297,6 +359,21 @@ fn main() {
                 });
             }
         });
+        // 复制诊断信息：版本 / 平台 / 日志路径写入剪贴板
+        let log_path_for_diag = log_path.clone();
+        cx.on_action(move |_: &CopyDiagnostics, cx: &mut App| {
+            let text = diagnostics_text(&log_path_for_diag);
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        });
+        // 打开日志目录：在系统文件管理器中定位日志文件所在目录
+        let log_path_for_open = log_path.clone();
+        cx.on_action(move |_: &OpenLogDir, _cx: &mut App| {
+            if let Some(dir) = log_path_for_open.as_ref().and_then(|p| p.parent())
+                && let Err(e) = open_path_in_file_manager(dir)
+            {
+                tracing::warn!(error = %e, "open log dir failed");
+            }
+        });
 
         cx.set_menus(vec![
             Menu {
@@ -304,10 +381,30 @@ fn main() {
                 items: vec![MenuItem::action("Quit Ramag", Quit)],
                 disabled: false,
             },
+            // 原生编辑菜单：os_action 角色让 macOS 标准编辑命令（撤销 / 剪切 / 复制 / 粘贴 / 全选）
+            // 在菜单可见且沿响应链生效，输入框内到处可用
+            Menu {
+                name: "编辑".into(),
+                items: vec![
+                    MenuItem::os_action("撤销", EditUndo, gpui::OsAction::Undo),
+                    MenuItem::os_action("重做", EditRedo, gpui::OsAction::Redo),
+                    MenuItem::separator(),
+                    MenuItem::os_action("剪切", EditCut, gpui::OsAction::Cut),
+                    MenuItem::os_action("复制", EditCopy, gpui::OsAction::Copy),
+                    MenuItem::os_action("粘贴", EditPaste, gpui::OsAction::Paste),
+                    MenuItem::os_action("全选", EditSelectAll, gpui::OsAction::SelectAll),
+                ],
+                disabled: false,
+            },
             Menu {
                 name: "帮助".into(),
                 items: vec![
                     MenuItem::action("快捷键一览", ShowShortcuts),
+                    MenuItem::action("重新查看快速上手", ShowOnboarding),
+                    MenuItem::separator(),
+                    MenuItem::action("复制诊断信息", CopyDiagnostics),
+                    MenuItem::action("打开日志目录", OpenLogDir),
+                    MenuItem::separator(),
                     MenuItem::action("关于 Ramag", ShowAbout),
                 ],
                 disabled: false,
@@ -514,7 +611,15 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                 gpui::point(px(p.x), px(p.y)),
                 size(px(p.w.max(800.0)), px(p.h.max(500.0))),
             );
-            if p.maximized {
+            // 校验保存的位置是否仍落在某个显示器内：外接屏拔除后旧坐标可能整体在屏幕外，
+            // 恢复出去将无法拖回。要求标题栏区域（顶部中点）落在某显示器内，保证可拖动，
+            // 否则丢弃位置、回退居中最大化
+            let title_pt = gpui::point(b.origin.x + b.size.width / 2.0, b.origin.y + px(16.0));
+            let on_screen = cx.displays().iter().any(|d| d.bounds().contains(&title_pt));
+            if !on_screen {
+                info!("saved window position is off-screen; falling back to centered");
+                WindowBounds::Maximized(fallback)
+            } else if p.maximized {
                 WindowBounds::Maximized(b)
             } else {
                 WindowBounds::Windowed(b)
@@ -569,6 +674,8 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                 let shell = cx.new(|cx| {
                     let mut shell = Shell::new(registry.clone(), window, cx);
                     shell.set_home_view(home_view.clone().into());
+                    // 首页强类型句柄：菜单「重新查看快速上手」经 Shell 转发重开引导
+                    shell.set_home_entity(home_view.clone());
                     shell.register_tool_view(DbClientTool::ID, dbclient_view);
                     shell.register_tool_view(VcsTool::ID, vcs_view.into());
                     shell.register_tool_view(ClipboardTool::ID, clipboard_view.into());

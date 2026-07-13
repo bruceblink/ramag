@@ -8,3 +8,24 @@ use serde::Deserialize;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 pub struct CloseTab;
+
+/// 主修饰键+1/2/3 跳到第 N 个已注册工具（Shell 处理）
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+pub struct SelectTool1;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+pub struct SelectTool2;
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+pub struct SelectTool3;
+
+/// Ctrl+Tab 在主区各区段（首页 + 工具）间循环切换（Shell 处理）
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+pub struct CycleSection;
+
+/// 菜单「帮助 → 重新查看快速上手」：Shell 切回首页并重开引导卡片
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+pub struct ShowOnboarding;

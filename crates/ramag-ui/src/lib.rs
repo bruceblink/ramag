@@ -13,7 +13,9 @@ pub mod resizable_persist;
 pub mod shell;
 pub mod theme;
 
-pub use actions::CloseTab;
+pub use actions::{
+    CloseTab, CycleSection, SelectTool1, SelectTool2, SelectTool3, ShowOnboarding,
+};
 pub use assets::RamagAssets;
 pub use confirm_dialog::open_confirm;
 pub use prompt_dialog::open_prompt;
