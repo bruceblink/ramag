@@ -86,14 +86,15 @@ impl DbClientView {
                         self.mongo_service.evict_pool(&conn.id);
                     }
                 }
-                // 编辑场景：不再静默关闭已打开的 Session（会丢失用户未保存的查询稿）。
-                // 池已 evict，下次查询自动按新 config 走新池；仅提示配置已更新，
-                // 如需按新 database / schema 刷新元数据，用户可手动关标签重开
-                let has_open_session = self.sessions.iter().any(|s| s.config(cx).id == conn.id);
-                if has_open_session {
+                // 编辑场景：旧标签的实体仍持旧配置（host / 库 / production 只读态都可能已变），
+                // 继续使用存在按旧配置读写的风险。立即丢弃旧实体（终止其后台元数据刷新与
+                // 在途等待，与关标签同语义）并置 stale，中央区显示"重新连接"面板；
+                // 手写草稿按连接 id 持久化，重连后自动恢复，不会丢失
+                let any_stale = self.mark_sessions_stale(conn);
+                if any_stale {
                     self.pending_notification = Some(
                         gpui_component::notification::Notification::info(
-                            "连接配置已更新。已打开的标签仍可继续使用；如需按新库/schema 刷新，请关闭后重新打开",
+                            "连接配置已更新。已打开的标签已暂停使用旧配置，请在标签页中重新连接（草稿已保留）",
                         )
                         .autohide(true),
                     );
@@ -104,6 +105,20 @@ impl DbClientView {
                 window.close_dialog(cx);
             }
         }
+    }
+
+    /// 保存连接后同步新配置到同 id 的打开槽位：有实体的丢弃实体并置 stale（暂停使用），
+    /// 惰性占位只更新配置（下次激活自然按新配置连）。返回是否有槽位被置 stale
+    fn mark_sessions_stale(&mut self, conn: &ConnectionConfig) -> bool {
+        let mut any_stale = false;
+        for slot in self.sessions.iter_mut().filter(|s| s.config.id == conn.id) {
+            slot.config = conn.clone();
+            if slot.entity.take().is_some() || slot.stale {
+                slot.stale = true;
+                any_stale = true;
+            }
+        }
+        any_stale
     }
 
     /// 弹出删除确认对话框；用户点「删除」后才真正执行 handle_delete
@@ -166,7 +181,7 @@ impl DbClientView {
                     .sessions
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.config(cx).id == id_for_async)
+                    .filter(|(_, s)| s.config.id == id_for_async)
                     .map(|(i, _)| i)
                     .collect();
                 for idx in to_close.into_iter().rev() {

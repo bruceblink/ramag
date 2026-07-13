@@ -111,12 +111,13 @@ pub(super) fn open_cell_editor(
     window: &mut gpui::Window,
     cx: &mut Context<ResultPanel>,
 ) {
-    let Some((col_name, initial_text, has_pk)) = panel.cell_info(ri, ci) else {
+    let Some((col_name, initial_text)) = panel.cell_info(ri, ci) else {
         return;
     };
-    // 视图 或 二进制单元格：弹框正常打开（查看 / 复制完整内容），但禁用提交——
-    // 二进制值显示为 hex 文本，若允许保存会把原始字节写成 hex 的 ASCII 文本损坏数据
-    let is_view = panel.target_is_view() || panel.cell_is_binary(ri, ci);
+    // 写入闸门未过（非单表 / 无定位键 / 生产只读 / 视图）或二进制单元格：
+    // 弹框仍打开供查看 / 复制完整内容，但禁用提交并说明原因
+    let read_only_reason = panel.cell_edit_block_reason(ri, ci);
+    let locate_label = panel.identity_label();
     let input = cx.new(|cx_inner| {
         InputState::new(window, cx_inner)
             .multi_line(true)
@@ -131,8 +132,8 @@ pub(super) fn open_cell_editor(
         ci,
         col_name,
         input,
-        has_pk,
-        is_view,
+        read_only_reason,
+        locate_label,
         window,
         cx,
     );

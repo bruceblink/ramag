@@ -11,7 +11,7 @@ use tracing::error;
 use super::ResultPanel;
 use super::ResultState;
 use super::helpers::{
-    build_new_value, build_pk_where, dml_row_limit, escape_new_value_for_old, find_pk_idx,
+    RowIdentity, build_identity_where, build_new_value, dml_row_limit, escape_new_value_for_old,
 };
 
 impl ResultPanel {
@@ -39,15 +39,27 @@ impl ResultPanel {
         Some((svc, conn))
     }
 
+    /// 行内修改 / 删除的总闸门（按钮已禁用，这里兜底弹框期间条件变化）：
+    /// 过闸返回行定位键，未过弹 toast 返回 None
+    fn guard_modify(&mut self, action: &str, cx: &mut Context<Self>) -> Option<RowIdentity> {
+        if let Some(reason) = self.modify_block_reason() {
+            self.pending_notification =
+                Some(Notification::warning(format!("无法{action}：{reason}")).autohide(true));
+            cx.notify();
+            return None;
+        }
+        self.row_identity.clone()
+    }
+
     /// 删除前的预览数据：(row_idx, "列=值" 简短文案)；调用方拿去给 confirm dialog 用
-    /// 优先用主键列做预览，没主键用第一列
+    /// 优先用行定位键第一列做预览，无键用第一列
     pub(crate) fn delete_preview(&self) -> Option<(usize, String)> {
         let (ri, _) = self.selected_cell?;
         let ResultState::Ok(result) = &self.state else {
             return None;
         };
         let row = result.rows.get(ri)?;
-        let idx = find_pk_idx(result).unwrap_or(0);
+        let idx = self.preview_col_idx(result);
         let col = result.columns.get(idx)?.clone();
         let val = row
             .values
@@ -76,7 +88,7 @@ impl ResultPanel {
         if indices.is_empty() {
             return None;
         }
-        let pk_or_first = find_pk_idx(result).unwrap_or(0);
+        let pk_or_first = self.preview_col_idx(result);
         let preview_col = result.columns.get(pk_or_first).cloned().unwrap_or_default();
         let mut samples: Vec<String> = indices
             .iter()
@@ -104,6 +116,9 @@ impl ResultPanel {
         indices: Vec<usize>,
         cx: &mut Context<Self>,
     ) {
+        let Some(identity) = self.guard_modify("删除", cx) else {
+            return;
+        };
         let Some((svc, conn)) = self.dml_conn("删除", cx) else {
             return;
         };
@@ -114,32 +129,33 @@ impl ResultPanel {
             Some(t) => t,
             None => {
                 self.pending_notification = Some(
-                    Notification::error("无法识别目标表，请先用 SELECT 单表查询后再删除")
-                        .autohide(true),
+                    Notification::error("无法识别目标表，请从表树打开单表后再删除").autohide(true),
                 );
                 cx.notify();
                 return;
             }
         };
 
-        let by_pk = find_pk_idx(result).is_some();
-        let strategy = if by_pk {
-            "按主键"
-        } else {
-            "按全列等值"
-        };
-
+        let strategy = format!("按{}", identity.label);
         let driver = conn.driver;
         let limit_clause = dml_row_limit(driver);
-        let plans: Vec<(usize, String)> = indices
-            .iter()
-            .filter_map(|&ri| {
-                let row = result.rows.get(ri)?;
-                let where_clause = build_pk_where(result, row, driver);
-                let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
-                Some((ri, sql))
-            })
-            .collect();
+        let mut plans: Vec<(usize, String)> = Vec::with_capacity(indices.len());
+        for &ri in &indices {
+            let Some(row) = result.rows.get(ri) else {
+                continue;
+            };
+            // 键列缺失（理论上单表 SELECT * 不会发生）：整批拒绝，绝不退化成模糊匹配
+            let Some(where_clause) = build_identity_where(result, row, &identity, driver) else {
+                self.pending_notification = Some(
+                    Notification::error("结果集缺少定位键列，已取消删除；请重新查询该表")
+                        .autohide(true),
+                );
+                cx.notify();
+                return;
+            };
+            let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
+            plans.push((ri, sql));
+        }
         if plans.is_empty() {
             return;
         }
@@ -195,6 +211,13 @@ impl ResultPanel {
         if values.is_empty() {
             return;
         }
+        // 兜底草稿行提交时条件已变化（如手改 SQL / 配置转生产只读）
+        if let Some(reason) = self.insert_block_reason() {
+            self.pending_notification =
+                Some(Notification::warning(format!("无法新增：{reason}")).autohide(true));
+            cx.notify();
+            return;
+        }
         let Some((svc, conn)) = self.dml_conn("新增", cx) else {
             return;
         };
@@ -202,8 +225,7 @@ impl ResultPanel {
             Some(t) => t,
             None => {
                 self.pending_notification = Some(
-                    Notification::error("无法识别目标表，请先用 SELECT 单表查询后再新增")
-                        .autohide(true),
+                    Notification::error("无法识别目标表，请从表树打开单表后再新增").autohide(true),
                 );
                 cx.notify();
                 return;
@@ -277,6 +299,9 @@ impl ResultPanel {
 
     /// 二次确认后真执行 DELETE：异步发到 DB，成功后本地移除该行
     pub(crate) fn execute_delete_row_async(&mut self, ri: usize, cx: &mut Context<Self>) {
+        let Some(identity) = self.guard_modify("删除", cx) else {
+            return;
+        };
         let Some((svc, conn)) = self.dml_conn("删除", cx) else {
             return;
         };
@@ -291,21 +316,22 @@ impl ResultPanel {
             Some(t) => t,
             None => {
                 self.pending_notification = Some(
-                    Notification::error("无法识别目标表，请先用 SELECT 单表查询后再删除")
-                        .autohide(true),
+                    Notification::error("无法识别目标表，请从表树打开单表后再删除").autohide(true),
                 );
                 cx.notify();
                 return;
             }
         };
 
-        let by_pk = find_pk_idx(result).is_some();
-        let strategy = if by_pk {
-            "按主键"
-        } else {
-            "按全列等值"
+        let strategy = format!("按{}", identity.label);
+        let Some(where_clause) = build_identity_where(result, &row, &identity, conn.driver) else {
+            self.pending_notification = Some(
+                Notification::error("结果集缺少定位键列，已取消删除；请重新查询该表")
+                    .autohide(true),
+            );
+            cx.notify();
+            return;
         };
-        let where_clause = build_pk_where(result, &row, conn.driver);
         let limit_clause = dml_row_limit(conn.driver);
         let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
         let q = Query::new(sql);
@@ -331,12 +357,12 @@ impl ResultPanel {
                                 r.rows.remove(ri);
                             }
                             this.selected_cell = None;
-                            // affected>1：DELETE 命中多行（无唯一主键 + PG 无 LIMIT），
+                            // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
                             // 本地只移除了一行，DB 实际删了多行——数据已不一致，必须显式告警
                             if qr.affected_rows > 1 {
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），该表可能无唯一主键，请重新查询核对",
+                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），定位键可能已失效，请重新查询核对",
                                         qr.affected_rows
                                     ))
                                     .autohide(false),
@@ -372,6 +398,9 @@ impl ResultPanel {
         new_text: String,
         cx: &mut Context<Self>,
     ) {
+        let Some(identity) = self.guard_modify("修改", cx) else {
+            return;
+        };
         let Some((svc, conn)) = self.dml_conn("修改", cx) else {
             return;
         };
@@ -392,23 +421,23 @@ impl ResultPanel {
             Some(t) => t,
             None => {
                 self.pending_notification = Some(
-                    Notification::error("无法识别目标表，请先用 SELECT 单表查询后再编辑")
-                        .autohide(true),
+                    Notification::error("无法识别目标表，请从表树打开单表后再编辑").autohide(true),
                 );
                 cx.notify();
                 return;
             }
         };
 
-        let by_pk = find_pk_idx(result).is_some();
-        let strategy = if by_pk {
-            "按主键"
-        } else {
-            "按全列等值"
-        };
-
+        let strategy = format!("按{}", identity.label);
         let driver = conn.driver;
-        let where_clause = build_pk_where(result, &row, driver);
+        let Some(where_clause) = build_identity_where(result, &row, &identity, driver) else {
+            self.pending_notification = Some(
+                Notification::error("结果集缺少定位键列，已取消修改；请重新查询该表")
+                    .autohide(true),
+            );
+            cx.notify();
+            return;
+        };
         let new_literal = escape_new_value_for_old(&cell_val, &new_text, driver);
         let limit_clause = dml_row_limit(driver);
         let sql = format!(
@@ -437,12 +466,12 @@ impl ResultPanel {
                             {
                                 *slot = new_cell_val;
                             }
-                            // affected>1：WHERE 命中多行（无真实主键 + 全列等值 + PG 无 LIMIT）
+                            // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
                             // 意味着可能误改了其它行，必须显式告警而非当成功
                             if qr.affected_rows > 1 {
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），该表可能无唯一主键，请核对数据",
+                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），定位键可能已失效，请核对数据",
                                         qr.affected_rows
                                     ))
                                     .autohide(false),

@@ -140,6 +140,8 @@ impl QueryTab {
     ) {
         self.running = true;
         self.query_start = Some(Instant::now());
+        // 生产只读拦截（Forbidden）时需要恢复的原结果快照：不能让结果区停留在"执行中"
+        let prev_state = self.result.read(cx).state().clone();
         self.result.update(cx, |r, cx| {
             r.set_state(ResultState::Running, cx);
         });
@@ -213,14 +215,24 @@ impl QueryTab {
                             r.set_pinned_target(target_for_result);
                             r.set_state(ResultState::Ok(qr), cx);
                         });
+                        // 表树单表数据：异步拉真实主键 / 唯一索引作为行定位键，
+                        // 就绪前增删改保持禁用（绝不按列名猜键）
+                        if let Some((schema, table)) = this.pinned_target.clone() {
+                            this.fetch_row_identity(schema, table, cx);
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "query failed");
                         let err_msg = e.to_string();
-                        // 生产模式只读拦截：弹 toast 保留结果区原有内容；其余错误仍进结果区便于排查 / 复制
+                        // 生产模式只读拦截：弹 toast 并恢复拦截前的结果快照
+                        // （run 开始时已置 Running，不恢复会永久停在"执行中"）；
+                        // 其余错误仍进结果区便于排查 / 复制
                         if matches!(e, DomainError::Forbidden(_)) {
                             this.pending_notification =
                                 Some(Notification::warning(err_msg).autohide(true));
+                            result_handle.update(cx, |r, cx| {
+                                r.restore_state(prev_state, cx);
+                            });
                         } else {
                             this.highlight_sql_error(&err_msg, cx);
                             result_handle.update(cx, |r, cx| {
@@ -233,6 +245,44 @@ impl QueryTab {
             });
         });
         self.current_task = Some(task);
+    }
+
+    /// 拉目标表元数据推导行定位键（真实主键，无主键回退全非空唯一索引），注入结果面板。
+    /// 任一步失败仅记日志、键保持 None（行内修改 / 删除持续禁用，宁缺勿猜）
+    fn fetch_row_identity(&self, schema: String, table: String, cx: &mut Context<Self>) {
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        let svc = self.service.clone();
+        let result_handle = self.result.clone();
+        cx.spawn(async move |_this, cx| {
+            let identity = match svc.list_columns(&conn, &schema, &table).await {
+                Ok(cols) => {
+                    let has_pk = cols.iter().any(|c| c.is_primary_key);
+                    // 有主键就不再多查一次索引
+                    let indexes = if has_pk {
+                        Vec::new()
+                    } else {
+                        match svc.list_indexes(&conn, &schema, &table).await {
+                            Ok(idx) => idx,
+                            Err(e) => {
+                                tracing::warn!(error = %e, table = %table, "fetch indexes for row identity failed");
+                                Vec::new()
+                            }
+                        }
+                    };
+                    crate::views::result_panel::derive_row_identity(&cols, &indexes)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, table = %table, "fetch columns for row identity failed");
+                    None
+                }
+            };
+            result_handle.update(cx, |r, cx| {
+                r.set_row_identity_if_target(&schema, &table, identity, cx);
+            });
+        })
+        .detach();
     }
 
     /// 检查 SQL 是否是 DDL（CREATE / DROP / ALTER / RENAME / TRUNCATE）
@@ -334,8 +384,9 @@ impl QueryTab {
     }
 
     /// 取消当前查询
-    /// 1. drop Task 中断客户端 await
-    /// 2. 若已拿到后端 thread id，detach 一个任务发 `KILL QUERY <id>` 真正中断 mysql 端语句
+    /// 1. drop Task 中断客户端 await（这步必然成功，反馈只承诺到这一层）
+    /// 2. 若已拿到后端 thread id，detach 一个任务发 `KILL QUERY <id>`，
+    ///    服务器确认 / 失败后再补一条准确的结果 toast
     pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.current_task.take().is_none() {
             return;
@@ -345,23 +396,43 @@ impl QueryTab {
             if tid > 0 { Some(tid) } else { None }
         });
         if let (Some(tid), Some(conn)) = (cancel_target, self.connection.clone()) {
+            window.push_notification(
+                Notification::info("已停止等待，正在请求服务器取消该查询…").autohide(true),
+                cx,
+            );
             let svc = self.service.clone();
-            cx.spawn(async move |_this, _cx| {
-                if let Err(e) = svc.cancel_query(&conn, tid).await {
-                    tracing::warn!(error = %e, thread_id = tid, "KILL QUERY failed");
-                } else {
-                    info!(thread_id = tid, "KILL QUERY sent");
+            cx.spawn(async move |this, cx| {
+                let outcome = svc.cancel_query(&conn, tid).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.pending_notification = Some(match &outcome {
+                        Ok(()) => Notification::success("服务器已确认取消查询").autohide(true),
+                        Err(e) => Notification::warning(format!(
+                            "服务器取消请求失败：{e}（客户端已停止等待，语句可能仍在服务器执行）"
+                        ))
+                        .autohide(true),
+                    });
+                    cx.notify();
+                });
+                match outcome {
+                    Ok(()) => info!(thread_id = tid, "KILL QUERY confirmed"),
+                    Err(e) => tracing::warn!(error = %e, thread_id = tid, "KILL QUERY failed"),
                 }
             })
             .detach();
+        } else {
+            // 未拿到后端线程 id（尚在建连等早期阶段）：只能保证客户端不再等待
+            window.push_notification(
+                Notification::info("已停止等待；未获取到服务器线程，语句可能仍在服务器执行")
+                    .autohide(true),
+                cx,
+            );
         }
         self.running = false;
         self.query_start = None;
         self.result.update(cx, |r, cx| {
             r.set_state(ResultState::Empty, cx);
         });
-        window.push_notification(Notification::info("已取消查询").autohide(true), cx);
-        info!("query cancelled");
+        info!("query cancelled (client side)");
         cx.notify();
     }
 

@@ -33,28 +33,6 @@ pub(super) enum SessionEntity {
 }
 
 impl SessionEntity {
-    pub(super) fn config<'a>(&'a self, cx: &'a App) -> &'a ConnectionConfig {
-        match self {
-            SessionEntity::Sql(e) => e.read(cx).config(),
-            SessionEntity::Redis(e) => e.read(cx).config(),
-            SessionEntity::Mongo(e) => e.read(cx).config(),
-        }
-    }
-    pub(super) fn title<'a>(&'a self, cx: &'a App) -> &'a str {
-        match self {
-            SessionEntity::Sql(e) => e.read(cx).title(),
-            SessionEntity::Redis(e) => e.read(cx).title(),
-            SessionEntity::Mongo(e) => e.read(cx).title(),
-        }
-    }
-    /// 数据库类型副标签（Tab Bar 副标题）。Sql 变体走 ConnectionSession 自身的 kind_label
-    pub(super) fn kind_label<'a>(&'a self, cx: &'a App) -> &'static str {
-        match self {
-            SessionEntity::Sql(e) => e.read(cx).kind_label(),
-            SessionEntity::Redis(_) => "Redis",
-            SessionEntity::Mongo(_) => "MongoDB",
-        }
-    }
     /// 元数据树状态 (loading, has_error)：不能等同于实时连接健康。
     pub(super) fn health(&self, cx: &App) -> (bool, bool) {
         match self {
@@ -90,12 +68,34 @@ impl SessionEntity {
     }
 }
 
+/// 顶部一个连接 Tab 对应的槽位。实体惰性创建：跨重启恢复的标签先只有配置，
+/// 首次激活才真正建会话连库；连接配置保存后旧实体立即丢弃并置 stale，
+/// 由用户在标签内一键重连（草稿按连接 id 持久化，重连自动恢复）
+pub(super) struct SessionSlot {
+    /// None = 尚未创建（恢复占位 / 配置更新后待重连）
+    pub(super) entity: Option<SessionEntity>,
+    /// 该槽位当前应使用的连接配置（保存连接后同步为最新）
+    pub(super) config: ConnectionConfig,
+    /// 配置已更新：旧实体已丢弃，暂停查询与写入，等待用户重连
+    pub(super) stale: bool,
+}
+
+/// 数据库类型副标签（Tab Bar 副标题；无需实体即可从配置得出）
+pub(super) fn driver_kind_label(driver: DriverKind) -> &'static str {
+    match driver {
+        DriverKind::Mysql => "MySQL",
+        DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Redis => "Redis",
+        DriverKind::Mongodb => "MongoDB",
+    }
+}
+
 pub struct DbClientView {
     pub(super) service: Arc<ConnectionService>,
     pub(super) redis_service: Arc<RedisService>,
     pub(super) mongo_service: Arc<MongoService>,
-    /// 已打开的连接会话（含 MySQL + Redis + MongoDB）
-    pub(super) sessions: Vec<SessionEntity>,
+    /// 已打开的连接会话槽位（含 MySQL + Redis + MongoDB）
+    pub(super) sessions: Vec<SessionSlot>,
     /// 当前激活的 session 索引
     pub(super) active_session: Option<usize>,
     /// 中央显示模式
@@ -212,12 +212,12 @@ impl DbClientView {
         let ids: Vec<ramag_domain::entities::ConnectionId> = self
             .sessions
             .iter()
-            .map(|s| s.config(cx).id.clone())
+            .map(|s| s.config.id.clone())
             .collect();
         let active = self
             .active_session
             .and_then(|i| self.sessions.get(i))
-            .map(|s| s.config(cx).id.clone());
+            .map(|s| s.config.id.clone());
         let json = match serde_json::to_string(&OpenSessionsPref { ids, active }) {
             Ok(j) => j,
             Err(e) => {
@@ -258,33 +258,14 @@ impl DbClientView {
         }
     }
 
-    /// 打开一个连接作为新 Session（如果已开就切到那个 Tab）
-    fn open_session(
-        &mut self,
+    /// 按 driver 真正创建会话实体（此刻起才会连库 / 拉元数据）
+    fn build_session_entity(
+        &self,
         config: ConnectionConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        // 已开过的话直接切过去
-        if let Some(idx) = self
-            .sessions
-            .iter()
-            .position(|s| s.config(cx).id == config.id)
-        {
-            self.active_session = Some(idx);
-            self.center = CenterMode::Session;
-            // 重新激活已打开的连接：树为空则补拉（含首次加载失败后的重试）
-            self.sessions[idx].ensure_loaded(cx);
-            // 聚焦内容，cmd-e 等快捷键无需先点内容区
-            self.sessions[idx].focus(window, cx);
-            cx.notify();
-            return;
-        }
-
-        // 在 config 被 move 进 session 之前先抓 id 用于版本探测
-        let conn_id = config.id.clone();
-        // 按 driver dispatch：SQL 类（MySQL/Postgres）走 ConnectionSession；Redis 走 RedisSessionPanel；MongoDB 走 MongoSessionPanel
-        let new_session = match config.driver {
+    ) -> SessionEntity {
+        match config.driver {
             DriverKind::Mysql | DriverKind::Postgres => {
                 let svc = self.service.clone();
                 let entity = cx.new(|cx| ConnectionSession::new(config, svc, window, cx));
@@ -300,13 +281,82 @@ impl DbClientView {
                 let entity = cx.new(|cx| MongoSessionPanel::new(config, svc, window, cx));
                 SessionEntity::Mongo(entity)
             }
+        }
+    }
+
+    /// 惰性占位槽首次激活：按槽内配置建实体并聚焦（stale 槽不在此建，由重连按钮触发）
+    pub(super) fn materialize_slot(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(slot) = self.sessions.get(idx) else {
+            return;
         };
-        self.sessions.push(new_session);
-        let new_idx = self.sessions.len() - 1;
-        self.active_session = Some(new_idx);
-        self.center = CenterMode::Session;
+        if slot.entity.is_some() || slot.stale {
+            return;
+        }
+        let config = slot.config.clone();
+        let conn_id = config.id.clone();
+        let entity = self.build_session_entity(config, window, cx);
+        entity.focus(window, cx);
+        self.sessions[idx].entity = Some(entity);
+        // 真正连库时才异步探测版本（占位标签不建池 / 不试连）
+        self.picker
+            .update(cx, |p, cx| p.prefetch_version(&conn_id, cx));
+        cx.notify();
+    }
+
+    /// 配置更新后的一键重连：丢弃 stale 标记，用槽内新配置重建会话
+    /// （手写草稿按连接 id 持久化，新会话创建时自动恢复）
+    pub(super) fn reconnect_slot(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(slot) = self.sessions.get_mut(idx) else {
+            return;
+        };
+        slot.stale = false;
+        slot.entity = None;
+        self.materialize_slot(idx, window, cx);
+    }
+
+    /// 打开一个连接作为新 Session（如果已开就切到那个 Tab）
+    fn open_session(
+        &mut self,
+        config: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 已开过的话直接切过去；stale 槽视为用户明确要求按新配置连接，直接重连
+        if let Some(idx) = self.sessions.iter().position(|s| s.config.id == config.id) {
+            self.active_session = Some(idx);
+            self.center = CenterMode::Session;
+            if self.sessions[idx].stale {
+                self.reconnect_slot(idx, window, cx);
+            } else if self.sessions[idx].entity.is_none() {
+                self.materialize_slot(idx, window, cx);
+            } else if let Some(entity) = &self.sessions[idx].entity {
+                // 重新激活已打开的连接：树为空则补拉（含首次加载失败后的重试）
+                entity.ensure_loaded(cx);
+                // 聚焦内容，cmd-e 等快捷键无需先点内容区
+                entity.focus(window, cx);
+            }
+            self.persist_open_sessions(cx);
+            cx.notify();
+            return;
+        }
+
+        // 在 config 被 move 进 session 之前先抓 id 用于版本探测
+        let conn_id = config.id.clone();
+        let entity = self.build_session_entity(config.clone(), window, cx);
         // 新会话立即聚焦内容，cmd-e 等快捷键无需先点内容区
-        self.sessions[new_idx].focus(window, cx);
+        entity.focus(window, cx);
+        self.sessions.push(SessionSlot {
+            entity: Some(entity),
+            config,
+            stale: false,
+        });
+        self.active_session = Some(self.sessions.len() - 1);
+        self.center = CenterMode::Session;
         // tab 多溢出时让新连接 tab 滚入视图（GPUI 自动 clamp 到 max_offset）
         self.sessions_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
@@ -349,10 +399,17 @@ impl DbClientView {
         if idx < self.sessions.len() {
             self.active_session = Some(idx);
             self.center = CenterMode::Session;
-            // 切到该 Tab：树为空则补拉（含首次加载失败后的重试）
-            self.sessions[idx].ensure_loaded(cx);
-            // 聚焦内容，cmd-e 等快捷键无需先点内容区
-            self.sessions[idx].focus(window, cx);
+            if self.sessions[idx].stale {
+                // 配置已更新：不建实体不聚焦，中央区显示"重新连接"面板
+            } else if self.sessions[idx].entity.is_none() {
+                // 惰性占位首次激活：此刻才建会话连库
+                self.materialize_slot(idx, window, cx);
+            } else if let Some(entity) = &self.sessions[idx].entity {
+                // 切到该 Tab：树为空则补拉（含首次加载失败后的重试）
+                entity.ensure_loaded(cx);
+                // 聚焦内容，cmd-e 等快捷键无需先点内容区
+                entity.focus(window, cx);
+            }
             // active 变化也入偏好：重启后回到上次停留的连接
             self.persist_open_sessions(cx);
             cx.notify();

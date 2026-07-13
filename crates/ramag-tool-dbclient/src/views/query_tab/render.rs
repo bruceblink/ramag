@@ -55,8 +55,13 @@ impl Render for QueryTab {
         let panel_for_btn = self.result.read(cx);
         let has_multi_selected = !panel_for_btn.selected_rows().is_empty();
         let has_selected = has_multi_selected || panel_for_btn.selected_cell().is_some();
-        let target_is_view = panel_for_btn.target_is_view();
+        // 写入口统一闸门：单表模式 / 视图 / 定位键 / 生产只读，禁用时 tooltip 给出原因
+        let insert_reason = panel_for_btn.insert_block_reason();
+        let modify_reason = panel_for_btn.modify_block_reason();
+        let has_pending_insert = panel_for_btn.pending_insert().is_some();
         let _ = panel_for_btn;
+        let is_production = self.connection.as_ref().is_some_and(|c| c.production);
+        let warning = theme.warning;
 
         // 分页控件：只在"翻过页或还有下一页"时显示，单页结果不打扰
         let pager_ui: Option<(usize, bool, String)> = self.pager.as_ref().and_then(|p| {
@@ -183,6 +188,22 @@ impl Render for QueryTab {
                                 ),
                             )
                     })
+                    // 生产只读徽标：常驻工具条，与连接 Tab 徽标、写入口禁用同一语义
+                    .when(is_production, |this| {
+                        let mut chip_bg = warning;
+                        chip_bg.a = 0.15;
+                        this.child(
+                            div()
+                                .flex_none()
+                                .px(px(6.0))
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .bg(chip_bg)
+                                .text_xs()
+                                .text_color(warning)
+                                .child("生产 · 只读"),
+                        )
+                    })
                     .when_some(result_summary, |this, summary| {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
                     })
@@ -221,23 +242,18 @@ impl Render for QueryTab {
                         )
                     })
                     .child({
-                        let can_insert = self.connection.is_some()
-                            && self.pinned_target.is_some()
-                            && !target_is_view
-                            && self.result.read(cx).pending_insert().is_none();
+                        let can_insert = insert_reason.is_none() && !has_pending_insert;
+                        let insert_tip: gpui::SharedString = match (insert_reason, has_pending_insert)
+                        {
+                            (Some(reason), _) => format!("新增行（{reason}）").into(),
+                            (None, true) => "新增行（已在草稿中，先提交或取消）".into(),
+                            (None, false) => "新增行".into(),
+                        };
                         Button::new("toolbar-insert")
                             .ghost()
                             .small()
                             .icon(IconName::Plus)
-                            .tooltip(if can_insert {
-                                "新增行"
-                            } else if target_is_view {
-                                "新增行（视图不可写入）"
-                            } else if self.pinned_target.is_none() {
-                                "新增行（请先从表树点开单表）"
-                            } else {
-                                "新增行（已在草稿中，先提交或取消）"
-                            })
+                            .tooltip(insert_tip)
                             .disabled(!can_insert)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let Some(conn) = this.connection.clone() else {
@@ -298,12 +314,15 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(IconName::Minus)
-                            .tooltip(if target_is_view {
-                                "删除选中行（视图不可写入）"
-                            } else {
-                                "删除选中行"
+                            .tooltip({
+                                let tip: gpui::SharedString = match (modify_reason, has_selected) {
+                                    (Some(reason), _) => format!("删除选中行（{reason}）").into(),
+                                    (None, false) => "删除选中行（先勾选行或点选单元格）".into(),
+                                    (None, true) => "删除选中行".into(),
+                                };
+                                tip
                             })
-                            .disabled(!has_selected || target_is_view)
+                            .disabled(!has_selected || modify_reason.is_some())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let panel_ref = this.result.read(cx);
                                 let multi = panel_ref.delete_preview_multi();

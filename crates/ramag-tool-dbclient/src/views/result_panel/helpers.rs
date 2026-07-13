@@ -1,8 +1,8 @@
-//! ResultPanel 自由函数：主键定位 / WHERE 拼装 / 类型转换 / DML LIMIT 方言 / 表名提取 / 输入校验
+//! ResultPanel 自由函数：行定位键推导 / WHERE 拼装 / 类型转换 / DML LIMIT 方言 / 表名提取 / 输入校验
 
 use gpui::Entity;
 use gpui_component::input::InputState;
-use ramag_domain::entities::{Column, ColumnKind, QueryResult, Value};
+use ramag_domain::entities::{Column, ColumnKind, Index, QueryResult, Value};
 
 /// 新增草稿行。表名在 INSERT 时由 `extract_first_table_ref` 从 SQL 反推，与 UPDATE/DELETE 一致
 pub(crate) struct PendingInsert {
@@ -51,17 +51,42 @@ pub(super) fn parse_value_for_kind(
     }
 }
 
-/// 推断主键列：优先名为 `id`，其次任意 `_id` 后缀列；都没有返回 None
-pub(super) fn find_pk_idx(result: &QueryResult) -> Option<usize> {
-    result
-        .columns
+/// 行定位键：来自元数据的真实主键或全非空唯一索引（QueryTab 查询成功后异步注入）。
+/// 行内修改 / 删除仅在拿到它后放行，绝不按列名猜测
+#[derive(Clone, Debug)]
+pub(crate) struct RowIdentity {
+    /// 键列名（复合键保持索引列序）
+    pub(crate) columns: Vec<String>,
+    /// 定位方式提示文案："主键" / "唯一键"
+    pub(crate) label: &'static str,
+}
+
+/// 从列元数据 + 索引推导行定位键：优先主键，其次首个全列非空的唯一索引
+/// （可空唯一列允许多个 NULL，不能唯一定位行）；都没有返回 None → 调用方禁写
+pub(crate) fn derive_row_identity(columns: &[Column], indexes: &[Index]) -> Option<RowIdentity> {
+    let pk: Vec<String> = columns
         .iter()
-        .position(|c| c.eq_ignore_ascii_case("id"))
-        .or_else(|| {
-            result
-                .columns
-                .iter()
-                .position(|c| c.to_ascii_lowercase().ends_with("_id"))
+        .filter(|c| c.is_primary_key)
+        .map(|c| c.name.clone())
+        .collect();
+    if !pk.is_empty() {
+        return Some(RowIdentity {
+            columns: pk,
+            label: "主键",
+        });
+    }
+    let non_nullable = |name: &str| {
+        columns
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(name) && !c.nullable)
+    };
+    indexes
+        .iter()
+        .filter(|i| i.unique && !i.primary && !i.columns.is_empty())
+        .find(|i| i.columns.iter().all(|c| non_nullable(c)))
+        .map(|i| RowIdentity {
+            columns: i.columns.clone(),
+            label: "唯一键",
         })
 }
 
@@ -81,32 +106,24 @@ fn col_eq_condition(
     }
 }
 
-/// 构造定位单行的 WHERE 子句：优先猜测主键列，缺失时回退所有列等值。
-/// NULL 用 IS NULL，浮点等参与全列等值虽脆弱但配合 LIMIT 1 / 影响行数校验兜底。
-///
-/// `driver` 决定标识符引号字符（MySQL 反引号 / PG 双引号）与字面量方言
-pub(super) fn build_pk_where(
+/// 构造按行定位键匹配单行的 WHERE：键列必须全部在结果集中（SELECT * 的单表数据必然满足），
+/// 缺任一列返回 None，调用方拒绝执行而不是退化成模糊匹配
+pub(super) fn build_identity_where(
     result: &QueryResult,
     row: &ramag_domain::entities::Row,
+    identity: &RowIdentity,
     driver: ramag_domain::entities::DriverKind,
-) -> String {
-    use ramag_domain::entities::Value;
-    if let Some(idx) = find_pk_idx(result) {
-        let col = result.columns.get(idx).cloned().unwrap_or_default();
-        let val = row.values.get(idx).cloned().unwrap_or(Value::Null);
-        col_eq_condition(&col, &val, driver)
-    } else {
-        result
+) -> Option<String> {
+    let mut parts = Vec::with_capacity(identity.columns.len());
+    for col in &identity.columns {
+        let idx = result
             .columns
             .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let v = row.values.get(i).cloned().unwrap_or(Value::Null);
-                col_eq_condition(c, &v, driver)
-            })
-            .collect::<Vec<_>>()
-            .join(" AND ")
+            .position(|c| c.eq_ignore_ascii_case(col))?;
+        let val = row.values.get(idx)?;
+        parts.push(col_eq_condition(col, val, driver));
     }
+    Some(parts.join(" AND "))
 }
 
 /// 按原 cell 类型把用户输入转换成新的 Value（同时供本地刷新 + SQL 字面量）
@@ -287,59 +304,119 @@ mod tests {
         assert_eq!(lit(v.as_ref().unwrap()), "'hello'");
     }
 
-    #[test]
-    fn find_pk_idx_prefers_id() {
-        let r = make_result(&["name", "id", "user_id"]);
-        assert_eq!(find_pk_idx(&r), Some(1));
+    /// 构造列元数据（name, nullable, is_pk）
+    fn make_col(name: &str, nullable: bool, is_pk: bool) -> Column {
+        Column {
+            name: name.to_string(),
+            data_type: ramag_domain::entities::ColumnType {
+                kind: ColumnKind::Text,
+                raw_type: "text".into(),
+            },
+            nullable,
+            default_value: None,
+            is_primary_key: is_pk,
+            comment: None,
+        }
+    }
+
+    fn make_index(name: &str, unique: bool, primary: bool, cols: &[&str]) -> Index {
+        Index {
+            name: name.to_string(),
+            unique,
+            primary,
+            columns: cols.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     #[test]
-    fn find_pk_idx_case_insensitive() {
-        let r = make_result(&["name", "ID"]);
-        assert_eq!(find_pk_idx(&r), Some(1));
+    fn derive_identity_prefers_real_pk() {
+        let cols = vec![
+            make_col("uid", false, true),
+            make_col("id", true, false), // 名叫 id 但不是主键：绝不能被选中
+        ];
+        let ident = derive_row_identity(&cols, &[]).unwrap();
+        assert_eq!(ident.columns, vec!["uid".to_string()]);
+        assert_eq!(ident.label, "主键");
     }
 
     #[test]
-    fn find_pk_idx_falls_back_to_id_suffix() {
-        let r = make_result(&["name", "user_id", "created_at"]);
-        assert_eq!(find_pk_idx(&r), Some(1));
+    fn derive_identity_composite_pk() {
+        let cols = vec![
+            make_col("order_id", false, true),
+            make_col("item_id", false, true),
+            make_col("qty", false, false),
+        ];
+        let ident = derive_row_identity(&cols, &[]).unwrap();
+        assert_eq!(
+            ident.columns,
+            vec!["order_id".to_string(), "item_id".to_string()]
+        );
     }
 
     #[test]
-    fn find_pk_idx_none() {
-        let r = make_result(&["name", "email"]);
-        assert_eq!(find_pk_idx(&r), None);
+    fn derive_identity_falls_back_to_non_null_unique() {
+        let cols = vec![make_col("email", false, false), make_col("name", true, false)];
+        let indexes = vec![make_index("uq_email", true, false, &["email"])];
+        let ident = derive_row_identity(&cols, &indexes).unwrap();
+        assert_eq!(ident.columns, vec!["email".to_string()]);
+        assert_eq!(ident.label, "唯一键");
     }
 
     #[test]
-    fn build_pk_where_with_pk_mysql() {
+    fn derive_identity_rejects_nullable_unique() {
+        // 可空唯一列允许多个 NULL，不能唯一定位行
+        let cols = vec![make_col("email", true, false)];
+        let indexes = vec![make_index("uq_email", true, false, &["email"])];
+        assert!(derive_row_identity(&cols, &indexes).is_none());
+    }
+
+    #[test]
+    fn derive_identity_none_without_pk_or_unique() {
+        let cols = vec![make_col("name", false, false)];
+        let indexes = vec![make_index("idx_name", false, false, &["name"])];
+        assert!(derive_row_identity(&cols, &indexes).is_none());
+    }
+
+    #[test]
+    fn build_identity_where_single_pk_mysql() {
         let r = make_result(&["id", "name"]);
         let row = Row {
             values: vec![Value::Int(7), Value::Text("alice".into())],
         };
-        let s = build_pk_where(&r, &row, DriverKind::Mysql);
+        let ident = RowIdentity {
+            columns: vec!["id".into()],
+            label: "主键",
+        };
+        let s = build_identity_where(&r, &row, &ident, DriverKind::Mysql).unwrap();
         assert_eq!(s, "`id` = 7");
     }
 
     #[test]
-    fn build_pk_where_with_pk_postgres() {
-        let r = make_result(&["user_id", "name"]);
+    fn build_identity_where_composite_postgres() {
+        let r = make_result(&["order_id", "item_id", "qty"]);
         let row = Row {
-            values: vec![Value::Int(42), Value::Text("bob".into())],
+            values: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
         };
-        let s = build_pk_where(&r, &row, DriverKind::Postgres);
-        assert_eq!(s, "\"user_id\" = 42");
+        let ident = RowIdentity {
+            columns: vec!["order_id".into(), "item_id".into()],
+            label: "主键",
+        };
+        let s = build_identity_where(&r, &row, &ident, DriverKind::Postgres).unwrap();
+        assert_eq!(s, "\"order_id\" = 1 AND \"item_id\" = 2");
     }
 
     #[test]
-    fn build_pk_where_fallback_all_columns_null_uses_is_null() {
-        let r = make_result(&["name", "email"]);
+    fn build_identity_where_missing_key_column_returns_none() {
+        // 结果集缺键列（如用户只 SELECT 了部分列）：拒绝执行而不是模糊匹配
+        let r = make_result(&["name"]);
         let row = Row {
-            values: vec![Value::Text("a".into()), Value::Null],
+            values: vec![Value::Text("a".into())],
         };
-        let s = build_pk_where(&r, &row, DriverKind::Mysql);
-        // NULL 列必须用 IS NULL：`= NULL` 恒不成立会导致 WHERE 永不匹配、行改不动删不掉
-        assert_eq!(s, "`name` = 'a' AND `email` IS NULL");
+        let ident = RowIdentity {
+            columns: vec!["id".into()],
+            label: "主键",
+        };
+        assert!(build_identity_where(&r, &row, &ident, DriverKind::Mysql).is_none());
     }
 
     #[test]

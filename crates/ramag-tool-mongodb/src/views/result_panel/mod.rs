@@ -188,9 +188,17 @@ impl ResultPanel {
             .update(cx, |s, cx| s.set_value("", window, cx));
     }
 
-    /// 能否写（增删改）：上下文齐全 + 有目标 collection
+    /// 当前连接是否生产只读（driver 层拦截写操作；前端同步禁用写入口）
+    pub(crate) fn is_production(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.production)
+    }
+
+    /// 能否写（增删改）：上下文齐全 + 有目标 collection + 非生产只读
     pub(crate) fn can_write(&self) -> bool {
-        self.service.is_some() && self.config.is_some() && self.target_collection.is_some()
+        self.service.is_some()
+            && self.config.is_some()
+            && self.target_collection.is_some()
+            && !self.is_production()
     }
 
     /// 切换某行勾选（按 documents 索引）
@@ -230,6 +238,14 @@ impl ResultPanel {
     pub fn set_running(&mut self, cx: &mut Context<Self>) {
         self.running = true;
         self.error = None;
+        cx.notify();
+    }
+
+    /// 生产只读拦截（Forbidden）后复位忙碌态并恢复拦截前的错误文案：
+    /// 旧结果 / 旧错误原样保留，结果区绝不停留在"执行中"
+    pub fn restore_idle(&mut self, prev_error: Option<String>, cx: &mut Context<Self>) {
+        self.running = false;
+        self.error = prev_error;
         cx.notify();
     }
 

@@ -19,17 +19,34 @@ impl Render for DbClientView {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
         }
-        // 跨重启恢复：首帧逐个重开上次打开的连接（此处才有 Window；树惰性加载不自动连库），
-        // 再切回上次激活的那个 Tab
-        if let Some((configs, active_id)) = self.pending_restore.take() {
+        // 跨重启恢复：首帧只建占位槽（不连库），仅上次激活的那个立即建会话；
+        // 其余标签首次点击时才真正连接，避免恢复 N 个标签时全部拉元数据 / SCAN
+        if let Some((configs, active_id)) = self.pending_restore.take()
+            && !configs.is_empty()
+        {
             for c in configs {
-                self.open_session(c, window, cx);
+                self.sessions.push(super::SessionSlot {
+                    entity: None,
+                    config: c,
+                    stale: false,
+                });
             }
-            if let Some(id) = active_id
-                && let Some(idx) = self.sessions.iter().position(|s| s.config(cx).id == id)
-            {
-                self.select_session(idx, window, cx);
-            }
+            let idx = active_id
+                .and_then(|id| self.sessions.iter().position(|s| s.config.id == id))
+                .unwrap_or(0);
+            self.active_session = Some(idx);
+            self.center = CenterMode::Session;
+            self.materialize_slot(idx, window, cx);
+        }
+        // 中央区为激活会话但实体尚未创建（如恢复兜底路径）：此处有 Window，补建
+        if matches!(self.center, CenterMode::Session)
+            && let Some(idx) = self.active_session
+            && self
+                .sessions
+                .get(idx)
+                .is_some_and(|s| s.entity.is_none() && !s.stale)
+        {
+            self.materialize_slot(idx, window, cx);
         }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -39,23 +56,37 @@ impl Render for DbClientView {
         let muted_bg = theme.muted;
         let accent = theme.accent;
         let bg = theme.background;
+        let warning = theme.warning;
 
         let active = self.active_session;
 
-        // (idx, 连接名, 类型, 选中, 健康 (loading, has_error))
-        #[allow(clippy::type_complexity)]
-        let session_titles: Vec<(usize, String, &'static str, bool, (bool, bool))> = self
+        /// Tab 条目的展示快照
+        struct TabInfo {
+            idx: usize,
+            title: String,
+            kind_label: &'static str,
+            is_active: bool,
+            /// 元数据 (loading, has_error)；占位 / stale 槽无实体，恒 (false, false)
+            health: (bool, bool),
+            stale: bool,
+            production: bool,
+        }
+        let session_titles: Vec<TabInfo> = self
             .sessions
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                (
-                    i,
-                    s.title(cx).to_string(),
-                    s.kind_label(cx),
-                    Some(i) == active,
-                    s.health(cx),
-                )
+            .map(|(i, s)| TabInfo {
+                idx: i,
+                title: s.config.name.clone(),
+                kind_label: super::driver_kind_label(s.config.driver),
+                is_active: Some(i) == active,
+                health: s
+                    .entity
+                    .as_ref()
+                    .map(|e| e.health(cx))
+                    .unwrap_or((false, false)),
+                stale: s.stale,
+                production: s.config.production,
             })
             .collect::<Vec<_>>();
 
@@ -111,7 +142,16 @@ impl Render for DbClientView {
             .overflow_x_scroll()
             .track_scroll(&self.sessions_scroll);
 
-        for (idx, title, kind_label, is_active, (h_loading, h_error)) in session_titles {
+        for info in session_titles {
+            let TabInfo {
+                idx,
+                title,
+                kind_label,
+                is_active,
+                health: (h_loading, h_error),
+                stale,
+                production,
+            } = info;
             let tab_id = SharedString::from(format!("conn-tab-{idx}"));
             let close_id = SharedString::from(format!("conn-tab-close-{idx}"));
 
@@ -123,13 +163,16 @@ impl Render for DbClientView {
             } else {
                 muted_fg
             };
-            let metadata_label = if h_loading {
+            let metadata_label = if stale {
+                Some("需重连")
+            } else if h_loading {
                 Some("元数据加载中")
             } else if h_error {
                 Some("元数据失败")
             } else {
                 None
             };
+            let metadata_color = if stale { warning } else { dot_color };
 
             let mut tab = h_flex()
                 .id(tab_id)
@@ -149,8 +192,24 @@ impl Render for DbClientView {
                         .child(title.clone()),
                 )
                 .child(div().text_xs().text_color(muted_fg).child(kind_label))
+                // 生产只读徽标：会话顶部持续可见，与 driver 层拦截、写入口禁用同一语义
+                .when(production, |tab| {
+                    let mut chip_bg = warning;
+                    chip_bg.a = 0.15;
+                    tab.child(
+                        div()
+                            .flex_none()
+                            .px(px(6.0))
+                            .py(px(1.0))
+                            .rounded(px(4.0))
+                            .bg(chip_bg)
+                            .text_xs()
+                            .text_color(warning)
+                            .child("只读"),
+                    )
+                })
                 .when_some(metadata_label, |tab, label| {
-                    tab.child(div().text_xs().text_color(dot_color).child(label))
+                    tab.child(div().text_xs().text_color(metadata_color).child(label))
                 })
                 .child(
                     Button::new(close_id)
@@ -178,12 +237,37 @@ impl Render for DbClientView {
 
         tab_bar = tab_bar.child(session_strip);
 
-        let center_view: AnyView = match &self.center {
-            CenterMode::Session => match active.and_then(|i| self.sessions.get(i)) {
-                Some(s) => s.to_any_view(),
-                None => self.picker.clone().into(),
+        // stale 槽显示"配置已更新"面板（暂停查询与写入，等待用户一键重连）
+        let center_view: gpui::AnyElement = match &self.center {
+            CenterMode::Session => match active.and_then(|i| self.sessions.get(i).map(|s| (i, s))) {
+                Some((idx, slot)) if slot.stale => self
+                    .render_stale_panel(idx, &slot.config.name, cx)
+                    .into_any_element(),
+                Some((_, slot)) => match &slot.entity {
+                    Some(entity) => {
+                        let view: AnyView = entity.to_any_view();
+                        div().size_full().child(view).into_any_element()
+                    }
+                    // 兜底：实体缺失（本帧顶部已尝试补建），显示占位避免空白
+                    None => div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .text_color(muted_fg)
+                        .child("正在打开连接…")
+                        .into_any_element(),
+                },
+                None => {
+                    let view: AnyView = self.picker.clone().into();
+                    div().size_full().child(view).into_any_element()
+                }
             },
-            CenterMode::ConnectionPicker => self.picker.clone().into(),
+            CenterMode::ConnectionPicker => {
+                let view: AnyView = self.picker.clone().into();
+                div().size_full().child(view).into_any_element()
+            }
         };
 
         v_flex()
@@ -192,5 +276,69 @@ impl Render for DbClientView {
             .text_color(fg)
             .child(tab_bar)
             .child(div().flex_1().min_h_0().child(center_view))
+    }
+}
+
+impl DbClientView {
+    /// 配置已更新的暂停面板：说明原因 + 一键重连 / 关闭标签
+    fn render_stale_panel(
+        &self,
+        idx: usize,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let muted_fg = theme.muted_foreground;
+        let fg = theme.foreground;
+        let warning = theme.warning;
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(warning)
+                    .child(format!("连接「{name}」的配置已更新")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted_fg)
+                    .child("该标签持有的旧配置已停用（查询与写入已暂停），以避免按旧地址或旧只读设置操作数据库。"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted_fg)
+                    .child("手写 SQL / 命令草稿已保留，重新连接后自动恢复。"),
+            )
+            .child(
+                h_flex()
+                    .pt_2()
+                    .gap_2()
+                    .child(
+                        Button::new("stale-reconnect")
+                            .primary()
+                            .small()
+                            .label("重新连接")
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.reconnect_slot(idx, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("stale-close")
+                            .ghost()
+                            .small()
+                            .label("关闭标签")
+                            .text_color(fg)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.close_session(idx, cx);
+                            })),
+                    ),
+            )
     }
 }

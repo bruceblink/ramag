@@ -311,6 +311,8 @@ impl MongoQueryTab {
         self.run_seq = self.run_seq.wrapping_add(1);
         let request_seq = self.run_seq;
         let request_db = self.database.clone();
+        // 生产只读拦截（Forbidden）时恢复用：set_running 会清掉原错误文案
+        let prev_error = self.result.read(cx).error.clone();
         self.result.update(cx, |p, cx| p.set_running(cx));
         let result_handle = self.result.clone();
 
@@ -352,10 +354,12 @@ impl MongoQueryTab {
                     }
                     Err(e) => {
                         warn!(error = %e, "mongo command failed");
-                        // 生产模式只读拦截：弹 toast 保留结果区原有内容；其余错误仍进结果区便于排查
+                        // 生产模式只读拦截：弹 toast 并复位忙碌态（旧结果 / 旧错误原样恢复，
+                        // 否则结果区永久停在"执行中"）；其余错误仍进结果区便于排查
                         if matches!(e, DomainError::Forbidden(_)) {
                             this.pending_notification =
                                 Some(Notification::warning(e.to_string()).autohide(true));
+                            result_handle.update(cx, |p, cx| p.restore_idle(prev_error, cx));
                         } else {
                             result_handle.update(cx, |p, cx| p.set_error(e.to_string(), cx));
                         }

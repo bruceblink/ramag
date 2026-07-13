@@ -22,7 +22,10 @@ use ramag_app::ConnectionService;
 use ramag_domain::entities::{Column, ConnectionConfig, QueryResult, Value};
 
 use crate::sql_completion::SchemaCache;
-use helpers::{PendingInsert, extract_first_table_ref, find_pk_idx, parse_value_for_kind};
+use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
+
+// QueryTab 在查询成功后据元数据推导行定位键并注入
+pub(crate) use helpers::{RowIdentity, derive_row_identity};
 
 /// UI 表格最多渲染行数（超出截断 + 状态栏提示"已截断"）
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
@@ -56,6 +59,9 @@ pub struct ResultPanel {
     pub(super) source_sql: Option<String>,
     /// 上游显式注入的目标 (schema, table)：表树点击时由 QueryPanel 传入
     pub(super) pinned_target: Option<(Option<String>, String)>,
+    /// 行定位键（真实主键 / 全非空唯一索引）：QueryTab 查询成功后异步注入；
+    /// None = 元数据未就绪或该表无键，行内修改 / 删除一律禁用
+    pub(super) row_identity: Option<RowIdentity>,
     /// 列宽手动覆盖：用户拖动列分隔线后写入
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
     /// DML（增删改）防重入闸：spawn 前置位、回包复位；置位期间再次提交被 dml_conn 拦下
@@ -119,6 +125,7 @@ impl ResultPanel {
             connection: None,
             schema_cache: None,
             pinned_target: None,
+            row_identity: None,
             selected_rows: BTreeSet::new(),
             pending_insert: None,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -204,6 +211,61 @@ impl ResultPanel {
         self.pinned_target = target;
     }
 
+    /// 注入行定位键，但仅当结果集仍对应该目标表（防慢回包串到新查询）
+    pub(crate) fn set_row_identity_if_target(
+        &mut self,
+        schema: &str,
+        table: &str,
+        identity: Option<RowIdentity>,
+        cx: &mut Context<Self>,
+    ) {
+        let matches_target = self
+            .pinned_target
+            .as_ref()
+            .is_some_and(|(s, t)| s.as_deref() == Some(schema) && t == table);
+        if matches_target {
+            self.row_identity = identity;
+            cx.notify();
+        }
+    }
+
+    /// 用户手改 SQL 后立即失去"表树单表数据"资格：清目标表与定位键，结果区转只读
+    pub fn clear_editable_target(&mut self, cx: &mut Context<Self>) {
+        if self.pinned_target.is_some() || self.row_identity.is_some() {
+            self.pinned_target = None;
+            self.row_identity = None;
+            cx.notify();
+        }
+    }
+
+    /// 行内新增被禁用的原因；None = 可新增（INSERT 不依赖行定位键）
+    pub(crate) fn insert_block_reason(&self) -> Option<&'static str> {
+        let Some(conn) = &self.connection else {
+            return Some("未注入连接");
+        };
+        if conn.production {
+            return Some("生产连接 · 只读");
+        }
+        if self.pinned_target.is_none() {
+            return Some("仅表树打开的单表数据支持增删改；手写 / 手改 SQL 的结果为只读");
+        }
+        if self.target_is_view() {
+            return Some("视图不可写入");
+        }
+        None
+    }
+
+    /// 行内修改 / 删除被禁用的原因；None = 允许（比新增额外要求行定位键）
+    pub(crate) fn modify_block_reason(&self) -> Option<&'static str> {
+        if let Some(r) = self.insert_block_reason() {
+            return Some(r);
+        }
+        if self.row_identity.is_none() {
+            return Some("该表无主键或全非空唯一索引，禁用行内修改 / 删除");
+        }
+        None
+    }
+
     /// 当前结果集对应的目标表的引用字符串：优先用 pinned_target，再回退 SQL 解析
     pub(super) fn current_table_ref(&self) -> Option<String> {
         let driver = self.connection.as_ref().map(|c| c.driver)?;
@@ -257,14 +319,44 @@ impl ResultPanel {
         self.cell_edit_input = input;
     }
 
-    pub(super) fn cell_info(&self, ri: usize, ci: usize) -> Option<(String, String, bool)> {
+    pub(super) fn cell_info(&self, ri: usize, ci: usize) -> Option<(String, String)> {
         let ResultState::Ok(result) = &self.state else {
             return None;
         };
         let col_name = result.columns.get(ci)?.clone();
         let val = result.rows.get(ri)?.values.get(ci)?;
-        let has_pk = find_pk_idx(result).is_some();
-        Some((col_name, val.display_for_edit(), has_pk))
+        Some((col_name, val.display_for_edit()))
+    }
+
+    /// 单元格编辑弹框的只读原因：写入闸门未过 → 相应原因；二进制单元格 → 防损坏只读。
+    /// None = 可编辑提交
+    pub(super) fn cell_edit_block_reason(&self, ri: usize, ci: usize) -> Option<String> {
+        if let Some(reason) = self.modify_block_reason() {
+            return Some(reason.to_string());
+        }
+        if self.cell_is_binary(ri, ci) {
+            return Some("二进制内容显示为 hex 文本，直接保存会损坏原始字节，仅可查看 / 复制".to_string());
+        }
+        None
+    }
+
+    /// 行定位方式的提示文案（"主键" / "唯一键"）；编辑弹框展示用
+    pub(super) fn identity_label(&self) -> &'static str {
+        self.row_identity.as_ref().map(|i| i.label).unwrap_or("主键")
+    }
+
+    /// 删除 / 预览用的展示列：行定位键第一列在结果集中的下标，无键回退第 0 列
+    fn preview_col_idx(&self, result: &QueryResult) -> usize {
+        self.row_identity
+            .as_ref()
+            .and_then(|ident| ident.columns.first())
+            .and_then(|key| {
+                result
+                    .columns
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case(key))
+            })
+            .unwrap_or(0)
     }
 
     /// 该单元格是否为二进制值。二进制显示的是 hex 文本，编辑保存会把它写成 hex 的
@@ -300,9 +392,21 @@ impl ResultPanel {
         self.col_width_overrides.clear();
         self.pending_insert = None;
         self.warnings_expanded = false;
+        // 行定位键跟随结果集：新结果由 QueryTab 在查询成功后重新拉元数据注入
+        self.row_identity = None;
         // 切表/重跑时双向归位：垂直回顶 + 水平回左
         self.uniform_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
+        cx.notify();
+    }
+
+    /// 恢复被 Running 覆盖前的状态快照（生产只读拦截 Forbidden 时用）：
+    /// 不走 set_state 的清理逻辑，选中 / 排序 / 滚动位置全部保持原样
+    pub fn restore_state(&mut self, state: ResultState, cx: &mut Context<Self>) {
+        if let ResultState::Ok(qr) = &state {
+            *self.column_completion_source.write() = qr.columns.clone();
+        }
+        self.state = state;
         cx.notify();
     }
 

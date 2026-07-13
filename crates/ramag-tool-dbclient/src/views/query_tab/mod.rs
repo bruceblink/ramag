@@ -112,6 +112,12 @@ impl QueryTab {
         // 订阅编辑器内容变化：发现新提到的表 → 后台预拉它的列结构
         let editor_sub = cx.subscribe(&editor, |this: &mut Self, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
+                // 手改 SQL 即失去"表树单表数据"资格：清目标表，当前结果立即转只读
+                // （程序注入走 set_value 不发 Change，不会误触）
+                if this.pinned_target.is_some() && this.has_user_draft(cx) {
+                    this.pinned_target = None;
+                    this.result.update(cx, |r, cx| r.clear_editable_target(cx));
+                }
                 this.prefetch_columns_for_used_tables(cx);
                 cx.emit(QueryTabEvent::DraftChanged);
             }

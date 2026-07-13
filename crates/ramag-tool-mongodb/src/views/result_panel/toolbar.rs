@@ -15,6 +15,8 @@ use super::{ResultEvent, ResultPanel};
 
 pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> impl IntoElement {
     let secondary = cx.theme().secondary;
+    let warning = cx.theme().warning;
+    let production = panel.is_production();
 
     h_flex()
         .w_full()
@@ -76,6 +78,22 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                     ),
                 ),
         )
+        // 生产只读徽标：常驻工具条，与连接 Tab 徽标、写入口禁用同一语义
+        .when(production, |this| {
+            let mut chip_bg = warning;
+            chip_bg.a = 0.15;
+            this.child(
+                div()
+                    .flex_none()
+                    .px(px(6.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .bg(chip_bg)
+                    .text_xs()
+                    .text_color(warning)
+                    .child("生产 · 只读"),
+            )
+        })
         .child({
             let can = panel.can_write();
             Button::new("mongo-insert")
@@ -84,6 +102,8 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .icon(IconName::Plus)
                 .tooltip(if can {
                     "新增文档"
+                } else if production {
+                    "新增文档（生产连接 · 只读）"
                 } else {
                     "新增文档（需当前命令指定 collection）"
                 })
@@ -99,6 +119,8 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .icon(IconName::Minus)
                 .tooltip(if can_del {
                     "删除选中文档"
+                } else if production {
+                    "删除选中文档（生产连接 · 只读）"
                 } else {
                     "删除选中文档（先勾选行）"
                 })
