@@ -85,19 +85,29 @@ impl QueryPanel {
         };
         let generation = self.draft_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let generation_ref = self.draft_generation.clone();
-        let executor = cx.background_executor().clone();
-        let timer = executor.timer(PERSIST_DEBOUNCE);
-        executor
-            .spawn(async move {
-                timer.await;
-                if generation_ref.load(Ordering::Relaxed) != generation {
-                    return;
+        // cx.spawn 而非 background spawn：失败要回写 draft_persist_error 供警示条展示。
+        // 任务 detach 后独立运行至完成，面板关闭不影响最后一次真实落盘
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(PERSIST_DEBOUNCE).await;
+            if generation_ref.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let result = storage.set_preference(&key, &json).await;
+            let _ = this.update(cx, |this, cx| match &result {
+                Ok(()) => {
+                    // 恢复成功后撤掉之前的失败警示
+                    if this.draft_persist_error.take().is_some() {
+                        cx.notify();
+                    }
                 }
-                if let Err(e) = storage.set_preference(&key, &json).await {
+                Err(e) => {
                     tracing::warn!(error = %e, "persist SQL drafts failed");
+                    this.draft_persist_error = Some(e.to_string());
+                    cx.notify();
                 }
-            })
-            .detach();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn load_persisted_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {

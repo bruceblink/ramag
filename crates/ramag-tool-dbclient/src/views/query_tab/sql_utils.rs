@@ -1,9 +1,12 @@
-//! query_tab 的 SQL 纯函数：LIMIT 注入 / 多语句切分 / 光标处取语句 / 错误行号 / 短标题 / 耗时格式
+//! query_tab 的 SQL 纯函数：LIMIT 注入 / 高危语句检测 / 多语句切分 / 光标处取语句 / 错误行号 / 短标题 / 耗时格式
 
 use std::time::Duration;
 
-/// 自动 LIMIT 注入上限。用户已写 LIMIT 不被覆盖（见 `inject_limits`）
-pub(crate) const AUTO_LIMIT: usize = 10_000;
+/// 自动 LIMIT 注入的默认上限。用户已写 LIMIT 不被覆盖（见 `inject_limits`）
+pub(crate) const AUTO_LIMIT_DEFAULT: usize = 10_000;
+
+/// 工具条可选的自动 LIMIT 档位（另有"关闭"= None）
+pub(super) const AUTO_LIMIT_CHOICES: [usize; 3] = [1_000, 10_000, 50_000];
 
 /// 格式化运行中耗时：< 60s 显示 "X.Xs"，>= 60s 显示 "Mm Ss"
 pub(super) fn format_elapsed(d: Duration) -> String {
@@ -128,6 +131,50 @@ pub(super) fn has_top_level_keyword(sql_upper: &str, keyword: &str) -> bool {
 
 fn is_ident(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// 跳过语句开头的行注释 / 块注释与空白，返回真正的语句体
+fn strip_leading_comments(stmt: &str) -> &str {
+    let mut s = stmt.trim_start();
+    loop {
+        if let Some(rest) = s.strip_prefix("--") {
+            s = rest.split_once('\n').map(|(_, tail)| tail).unwrap_or("");
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            s = rest.split_once("*/").map(|(_, tail)| tail).unwrap_or("");
+        } else {
+            return s;
+        }
+        s = s.trim_start();
+    }
+}
+
+/// 高危语句检测：DELETE / UPDATE 无顶层 WHERE、DROP、TRUNCATE。
+/// 返回命中语句的风险描述（供执行前确认弹框展示）；普通写操作（带 WHERE 的
+/// UPDATE/DELETE、INSERT、ALTER 等）不拦，避免每次写操作都要确认
+pub(super) fn detect_dangerous_statements(
+    sql: &str,
+    driver: ramag_domain::entities::DriverKind,
+) -> Vec<String> {
+    let mut risks = Vec::new();
+    for stmt in split_sql_statements(sql, driver) {
+        let body = strip_leading_comments(&stmt);
+        if body.is_empty() {
+            continue;
+        }
+        let upper = body.to_ascii_uppercase();
+        let first = upper.split_whitespace().next().unwrap_or("");
+        let risk = match first {
+            "DELETE" if !has_top_level_keyword(&upper, "WHERE") => Some("DELETE 未带 WHERE（将删除整表数据）"),
+            "UPDATE" if !has_top_level_keyword(&upper, "WHERE") => Some("UPDATE 未带 WHERE（将改写整表数据）"),
+            "DROP" => Some("DROP（将删除表 / 库等对象，不可恢复）"),
+            "TRUNCATE" => Some("TRUNCATE（将清空整表数据，不可回滚）"),
+            _ => None,
+        };
+        if let Some(r) = risk {
+            risks.push(format!("{r}：{}", make_short_title(body)));
+        }
+    }
+    risks
 }
 
 /// 多语句切分：复用 sql-shared 的实现，按 driver 选择是否识别 PG dollar-quoted
@@ -451,6 +498,51 @@ mod tests {
     #[test]
     fn explain_strips_trailing_semicolons() {
         assert_eq!(wrap_explain("SELECT 1;;;"), "EXPLAIN SELECT 1");
+    }
+
+    #[test]
+    fn dangerous_detects_delete_update_without_where() {
+        let risks = detect_dangerous_statements("DELETE FROM t", DriverKind::Mysql);
+        assert_eq!(risks.len(), 1);
+        assert!(risks[0].contains("DELETE"));
+        let risks = detect_dangerous_statements("update t set a=1", DriverKind::Mysql);
+        assert_eq!(risks.len(), 1);
+        assert!(risks[0].contains("UPDATE"));
+    }
+
+    #[test]
+    fn dangerous_allows_where_and_plain_statements() {
+        assert!(detect_dangerous_statements("DELETE FROM t WHERE id=1", DriverKind::Mysql).is_empty());
+        assert!(detect_dangerous_statements("UPDATE t SET a=1 WHERE id=1", DriverKind::Mysql).is_empty());
+        assert!(detect_dangerous_statements("SELECT * FROM t", DriverKind::Mysql).is_empty());
+        assert!(detect_dangerous_statements("INSERT INTO t VALUES (1)", DriverKind::Mysql).is_empty());
+    }
+
+    #[test]
+    fn dangerous_detects_drop_truncate() {
+        assert_eq!(
+            detect_dangerous_statements("DROP TABLE t", DriverKind::Mysql).len(),
+            1
+        );
+        assert_eq!(
+            detect_dangerous_statements("TRUNCATE TABLE t", DriverKind::Postgres).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn dangerous_skips_leading_comments_and_multi_statements() {
+        // 注释开头不能骗过检测；多语句逐条检测
+        let sql = "-- 清理\nDELETE FROM t;\nSELECT 1;\n/* x */ TRUNCATE t2";
+        let risks = detect_dangerous_statements(sql, DriverKind::Mysql);
+        assert_eq!(risks.len(), 2);
+    }
+
+    #[test]
+    fn dangerous_where_with_subquery_counts_as_top_level() {
+        let risks =
+            detect_dangerous_statements("DELETE FROM t WHERE id IN (SELECT 1)", DriverKind::Mysql);
+        assert!(risks.is_empty());
     }
 
     #[test]

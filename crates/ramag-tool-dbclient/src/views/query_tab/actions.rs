@@ -13,7 +13,7 @@ use tracing::{error, info};
 use super::QueryTab;
 use super::paging::{Pager, page_sql, paging_base_sql};
 use super::sql_utils::{
-    AUTO_LIMIT, extract_statement_at_cursor, inject_limits, make_short_title,
+    detect_dangerous_statements, extract_statement_at_cursor, inject_limits, make_short_title,
     parse_mysql_error_line,
 };
 use crate::sql_completion::extract_tables_in_use_for_prefetch;
@@ -25,16 +25,16 @@ impl QueryTab {
         self.editor.read(cx).value().to_string()
     }
 
-    pub(super) fn handle_run(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn handle_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sql = self.current_sql(cx);
         let trimmed = sql.trim().to_string();
         // run = 用户主动执行，标题用原 SQL 派生，DDL 后刷新 cache
         let title_sql = trimmed.clone();
-        self.submit_sql(trimmed, title_sql, true, cx);
+        self.submit_sql(trimmed, title_sql, true, window, cx);
     }
 
     /// 仅执行光标所在的那条 SQL（按 `;` 切分；避开字符串/注释/dollar-quoted 里的 `;`）
-    pub(super) fn handle_run_at_cursor(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn handle_run_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sql = self.current_sql(cx);
         let cursor = self.editor.read(cx).cursor();
         let driver = self.connection.as_ref().map(|c| c.driver);
@@ -44,12 +44,12 @@ impl QueryTab {
             return;
         }
         let title_sql = trimmed.clone();
-        self.submit_sql(trimmed, title_sql, true, cx);
+        self.submit_sql(trimmed, title_sql, true, window, cx);
     }
 
     /// EXPLAIN 当前 SQL：把 SQL 包一层 `EXPLAIN ` 提交，结果展示在结果区
     /// 已经以 EXPLAIN 开头的 SQL 不重复加；末尾 `;` 自动 strip
-    pub(crate) fn handle_explain(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn handle_explain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sql = self.current_sql(cx);
         let trimmed = sql.trim().trim_end_matches(';').trim().to_string();
         if trimmed.is_empty() {
@@ -63,16 +63,17 @@ impl QueryTab {
         };
         // 标题用原 SQL（让 Tab 显示用户实际想看的语句，而不是 EXPLAIN xxx）
         // is_run=false：EXPLAIN 不会改 schema，跳过 DDL cache 刷新
-        self.submit_sql(to_run, trimmed, false, cx);
+        self.submit_sql(to_run, trimmed, false, window, cx);
     }
 
-    /// run / explain 共用核心。`sql_to_run` 实际发给 driver；`title_sql` 用于派生标题 + DDL 检测；
-    /// `is_run=false` 时是 explain，不刷 schema cache
+    /// run / explain 共用入口：高危语句（DELETE/UPDATE 无 WHERE、DROP、TRUNCATE）
+    /// 先弹确认（显示连接 / 数据库 / 完整 SQL），确认后才进入执行；其余直接执行
     pub(super) fn submit_sql(
         &mut self,
         sql_to_run: String,
         title_sql: String,
         is_run: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.running {
@@ -90,25 +91,64 @@ impl QueryTab {
             });
             return;
         }
+        // EXPLAIN（is_run=false）只读不拦；生产只读连接由 driver 层拦截，无需在此确认
+        let risks = if is_run && !conn.production {
+            detect_dangerous_statements(&sql_to_run, conn.driver)
+        } else {
+            Vec::new()
+        };
+        if !risks.is_empty() {
+            let entity = cx.entity();
+            let message = build_danger_prompt(&conn, self.active_schema.as_deref(), &risks, &sql_to_run);
+            ramag_ui::open_confirm(
+                "执行高危 SQL？",
+                message,
+                "仍要执行",
+                true,
+                move |_, app| {
+                    entity.update(app, |this, cx| {
+                        this.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
+                    });
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        self.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
+    }
+
+    /// 确认后（或无需确认）的执行准备：自动 LIMIT 注入 + 分页资格判定 + 提交执行
+    fn submit_prepared(
+        &mut self,
+        conn: ramag_domain::entities::ConnectionConfig,
+        sql_to_run: String,
+        title_sql: String,
+        is_run: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // 确认弹框期间可能已开始别的查询（如快捷键重复触发），再兜一次
+        if self.running {
+            return;
+        }
         // 自动 LIMIT 注入：仅普通 run 走，且用户没在工具条关掉
         // EXPLAIN 不注入；driver 端的 Query.auto_limit 作为兜底（防止其他路径漏掉）
-        let auto_limit_active = is_run && self.auto_limit_enabled;
+        let auto_limit = if is_run { self.auto_limit } else { None };
         // 分页资格：注入 LIMIT 的单条裸 SELECT 记下原始语句，工具条翻页时以它重写 OFFSET
-        self.pager = if auto_limit_active {
+        self.pager = auto_limit.and_then(|page_size| {
             paging_base_sql(&sql_to_run, conn.driver).map(|base_sql| Pager {
                 base_sql,
                 page: 0,
                 has_more: false,
+                page_size,
             })
-        } else {
-            None
-        };
-        let sql_to_run = if auto_limit_active {
-            inject_limits(&sql_to_run, AUTO_LIMIT, conn.driver)
+        });
+        let sql_to_run = if let Some(limit) = auto_limit {
+            inject_limits(&sql_to_run, limit, conn.driver)
         } else {
             sql_to_run
         };
-        self.execute_query(conn, sql_to_run, title_sql, is_run, auto_limit_active, cx);
+        self.execute_query(conn, sql_to_run, title_sql, is_run, auto_limit, cx);
     }
 
     /// 工具条翻页：用 pager.base_sql 重写 LIMIT/OFFSET 重跑，不重置分页状态
@@ -123,19 +163,20 @@ impl QueryTab {
             return;
         };
         pager.page = next_page;
-        let sql = page_sql(&pager.base_sql, AUTO_LIMIT, next_page);
+        let page_size = pager.page_size;
+        let sql = page_sql(&pager.base_sql, page_size, next_page);
         let title = pager.base_sql.clone();
-        self.execute_query(conn, sql, title, true, true, cx);
+        self.execute_query(conn, sql, title, true, Some(page_size), cx);
     }
 
-    /// submit_sql / handle_page 共用的执行核心：状态置忙 + 后台执行 + 回调落结果
+    /// submit / handle_page 共用的执行核心：状态置忙 + 后台执行 + 回调落结果
     fn execute_query(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
         sql_to_run: String,
         title_sql: String,
         is_run: bool,
-        auto_limit_active: bool,
+        auto_limit: Option<usize>,
         cx: &mut Context<Self>,
     ) {
         self.running = true;
@@ -176,11 +217,7 @@ impl QueryTab {
         let handle: ramag_domain::traits::CancelHandle =
             Arc::new(std::sync::atomic::AtomicU64::new(0));
         self.cancel_handle = Some(handle.clone());
-        let auto_limit_for_driver: Option<u32> = if auto_limit_active {
-            Some(AUTO_LIMIT as u32)
-        } else {
-            None
-        };
+        let auto_limit_for_driver: Option<u32> = auto_limit.map(|l| l as u32);
         let task = cx.spawn(async move |this, cx| {
             let mut query = Query::new(sql_to_run).with_auto_limit(auto_limit_for_driver);
             if let Some(s) = active_schema {
@@ -199,7 +236,7 @@ impl QueryTab {
                         info!(rows = qr.rows.len(), elapsed_ms = qr.elapsed_ms, "query ok");
                         // 本页打满页大小 ⇒ 可能还有下一页（不跑 COUNT，按行数推断）
                         if let Some(p) = &mut this.pager {
-                            p.has_more = qr.rows.len() >= AUTO_LIMIT;
+                            p.has_more = qr.rows.len() >= p.page_size;
                         }
                         this.clear_sql_diagnostics(cx);
                         this.short_title = Some(make_short_title(&title_sql));
@@ -496,4 +533,34 @@ impl QueryTab {
         })
         .detach();
     }
+}
+
+/// 高危 SQL 确认弹框文案：连接、目标数据库、命中的风险点与完整 SQL（超长截断展示）
+fn build_danger_prompt(
+    conn: &ramag_domain::entities::ConnectionConfig,
+    active_schema: Option<&str>,
+    risks: &[String],
+    sql: &str,
+) -> String {
+    const SQL_PREVIEW_MAX: usize = 600;
+    let database = active_schema
+        .map(str::to_string)
+        .or_else(|| conn.database.clone())
+        .unwrap_or_else(|| "（未指定）".to_string());
+    let risk_lines = risks
+        .iter()
+        .map(|r| format!("• {r}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sql_trimmed = sql.trim();
+    let sql_shown: String = if sql_trimmed.chars().count() > SQL_PREVIEW_MAX {
+        let head: String = sql_trimmed.chars().take(SQL_PREVIEW_MAX).collect();
+        format!("{head}\n…（SQL 过长已截断展示，执行的是完整语句）")
+    } else {
+        sql_trimmed.to_string()
+    };
+    format!(
+        "连接：{}（{}:{}）\n数据库：{database}\n\n{risk_lines}\n\n完整 SQL：\n{sql_shown}",
+        conn.name, conn.host, conn.port
+    )
 }

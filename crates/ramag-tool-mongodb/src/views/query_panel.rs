@@ -53,6 +53,8 @@ pub struct MongoQueryPanel {
     /// 读取旧草稿期间，空默认标签不得覆盖存储内容。
     draft_load_pending: bool,
     restoring_drafts: bool,
+    /// 最近一次草稿落盘失败的原因：顶部常驻警示条展示，成功后自动清除
+    pub(super) draft_persist_error: Option<String>,
 }
 
 impl MongoQueryPanel {
@@ -73,6 +75,7 @@ impl MongoQueryPanel {
             draft_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             draft_load_pending: false,
             restoring_drafts: false,
+            draft_persist_error: None,
         }
     }
 
@@ -467,6 +470,45 @@ impl Render for MongoQueryPanel {
             .on_action(
                 cx.listener(|this, _: &NewMongoQueryTab, window, cx| this.add_tab(window, cx)),
             )
+            // 草稿落盘失败常驻警示：用户以为可跨重启恢复，静默失败等于丢稿
+            .when_some(self.draft_persist_error.clone(), |panel, err| {
+                let warning = theme.warning;
+                let mut warn_bg = warning;
+                warn_bg.a = 0.12;
+                panel.child(
+                    h_flex()
+                        .w_full()
+                        .flex_none()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py(px(5.0))
+                        .bg(warn_bg)
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(warning)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(SharedString::from(format!(
+                                    "⚠ 草稿自动保存失败：{err}（草稿可能无法跨重启恢复，请复制重要内容备份）"
+                                ))),
+                        )
+                        .child(
+                            Button::new("mongo-draft-persist-retry")
+                                .ghost()
+                                .small()
+                                .label("重试")
+                                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                                    this.schedule_draft_persist(cx);
+                                })),
+                        ),
+                )
+            })
             // 多 tab 时关当前；剩一个或没有时冒泡到全局 fallback 关窗（与 dbclient::QueryPanel 一致）
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.tab_count() > 1 {

@@ -12,6 +12,8 @@ pub(crate) struct Pager {
     pub(crate) page: usize,
     /// 本页行数打满页大小即认为可能还有下一页（不跑 COUNT，避免大表代价）
     pub(crate) has_more: bool,
+    /// 本次 run 时的自动 LIMIT 档位；翻页沿用它，不受后续工具条改档影响
+    pub(crate) page_size: usize,
 }
 
 /// 分页资格判定：单条裸 SELECT/WITH（无顶层 LIMIT/OFFSET）才返回语句体。

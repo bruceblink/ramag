@@ -9,6 +9,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
+    scroll::ScrollableElement as _,
     v_flex,
 };
 
@@ -68,10 +69,14 @@ impl ConnectionFormPanel {
 }
 
 impl Render for ConnectionFormPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
+        // 主体最大高度按窗口计算：小窗口时表单主体滚动、底部按钮区固定可见，
+        // 避免长表单（TLS + SSH 展开）把保存 / 取消按钮挤出屏幕
+        let viewport_h = window.viewport_size().height;
+        let body_max_h = (viewport_h * 0.8 - px(190.0)).max(px(160.0));
 
         // 失败时须能读全 + 复制诊断，故单列 test_failed 标记：失败文案换行展开、附复制按钮，
         // 成功 / 测试中沿用单行省略
@@ -105,9 +110,18 @@ impl Render for ConnectionFormPanel {
 
         v_flex()
             .w_full()
-            .gap(px(18.0))
             .pt(px(4.0))
             .pb(px(4.0))
+            .child(
+                div()
+                    .id("conn-form-body")
+                    .w_full()
+                    .max_h(body_max_h)
+                    .overflow_y_scrollbar()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap(px(18.0))
             // —— 数据库类型（仅新建时显示，编辑模式 driver 不可变更）——
             .children(driver_selector)
             // —— MongoDB：粘贴连接 URI 一键填充（副本集多主机取首个；+srv 不支持） ——
@@ -279,7 +293,9 @@ impl Render for ConnectionFormPanel {
                             ),
                     ),
             )
-            // —— 分隔 + 按钮区 ——
+                    ),
+            )
+            // —— 分隔 + 按钮区（固定在滚动区外，小窗口下始终可见）——
             .child(div().h(px(1.0)).bg(border).my(px(2.0)))
             .child(
                 h_flex()
@@ -349,8 +365,8 @@ impl Render for ConnectionFormPanel {
                                     .ghost()
                                     .small()
                                     .label("取消")
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.handle_cancel(cx);
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.handle_cancel(window, cx);
                                     })),
                             )
                             .child(

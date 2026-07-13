@@ -83,7 +83,19 @@ pub struct ConnectionFormPanel {
     /// 测试结果代次：连接参数变更即递增，在途测试结果代次不符则丢弃
     pub(super) test_epoch: u64,
     pub(super) saving: bool,
+    /// 打开表单时的初始值快照：关闭前比对判断是否有未保存修改（脏保护）
+    initial: FormSnapshot,
     _subscriptions: Vec<Subscription>,
+}
+
+/// 表单可编辑项的值快照（脏检测用；输入框取字符串值，开关取枚举/布尔）
+#[derive(PartialEq)]
+struct FormSnapshot {
+    driver_id: &'static str,
+    fields: Vec<String>,
+    production: bool,
+    tls: bool,
+    tls_verify: ramag_domain::entities::TlsVerify,
 }
 
 impl EventEmitter<FormEvent> for ConnectionFormPanel {}
@@ -274,7 +286,7 @@ impl ConnectionFormPanel {
         let initial_tls = p.tls;
         let initial_tls_verify = p.tls_verify;
 
-        Self {
+        let mut this = Self {
             service,
             redis_service,
             mongo_service,
@@ -297,8 +309,50 @@ impl ConnectionFormPanel {
             test_state: TestState::Idle,
             test_epoch: 0,
             saving: false,
+            initial: FormSnapshot {
+                driver_id,
+                fields: Vec::new(),
+                production: initial_production,
+                tls: initial_tls,
+                tls_verify: initial_tls_verify,
+            },
             _subscriptions: subscriptions,
+        };
+        // 快照要读输入框真实值（default_value 已写入），struct 建好后再取一次
+        this.initial = this.snapshot(cx);
+        this
+    }
+
+    /// 当前表单值快照（与 initial 比对做脏检测）
+    fn snapshot(&self, cx: &gpui::App) -> FormSnapshot {
+        let fields = [
+            &self.name,
+            &self.host,
+            &self.port,
+            &self.username,
+            &self.password,
+            &self.database,
+            &self.auth_source,
+            &self.ca_cert_path,
+            &self.mongo_uri,
+            &self.ssh_target,
+            &self.ssh_port,
+        ]
+        .iter()
+        .map(|input| input.read(cx).value().to_string())
+        .collect();
+        FormSnapshot {
+            driver_id: self.driver_id,
+            fields,
+            production: self.production,
+            tls: self.tls,
+            tls_verify: self.tls_verify,
         }
+    }
+
+    /// 是否有未保存的修改（关闭前脏保护判定）
+    pub fn is_dirty(&self, cx: &gpui::App) -> bool {
+        self.snapshot(cx) != self.initial
     }
 }
 

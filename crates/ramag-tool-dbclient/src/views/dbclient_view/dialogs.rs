@@ -52,10 +52,35 @@ impl DbClientView {
 
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
             let title = title.clone();
             dialog
                 .title(title)
-                .close_button(true)
+                // 右上角 X 会绕过 on_cancel 直接关闭，无法做脏保护；隐藏之，
+                // 关闭统一走表单「取消」按钮 / Esc / 点遮罩（均有未保存修改确认）
+                .close_button(false)
+                // Esc / 点遮罩关闭前的脏保护：有修改先弹确认，确认「放弃修改」才关
+                .on_cancel(move |_, window, app| {
+                    if !form_for_cancel.read(app).is_dirty(app) {
+                        return true;
+                    }
+                    let form_inner = form_for_cancel.clone();
+                    ramag_ui::open_confirm(
+                        "放弃修改？",
+                        "表单有未保存的修改，关闭将丢弃这些修改。",
+                        "放弃修改",
+                        true,
+                        move |_, app| {
+                            // 发 Cancelled 走统一关闭路径（on_form_event 里 close_dialog）
+                            form_inner.update(app, |_f, cx| {
+                                cx.emit(connection_form::FormEvent::Cancelled)
+                            });
+                        },
+                        window,
+                        app,
+                    );
+                    false
+                })
                 .w(px(720.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))

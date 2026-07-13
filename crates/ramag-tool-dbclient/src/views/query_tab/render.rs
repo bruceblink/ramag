@@ -9,14 +9,27 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
-    menu::DropdownMenu as _,
+    menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     v_flex,
 };
 use ramag_ui::platform::primary_shortcut;
 
 use super::QueryTab;
-use super::sql_utils::{AUTO_LIMIT, format_elapsed};
+use super::sql_utils::format_elapsed;
+
+/// 千分位格式化（10_000 → "10,000"），自动限制档位展示用
+fn format_thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
 use crate::actions::{
     ExplainQuery, ExportCsv, ExportJson, ExportMarkdown, FormatSql, RunQuery, RunStatementAtCursor,
 };
@@ -70,8 +83,8 @@ impl Render for QueryTab {
             }
             let label = match self.result.read(cx).state() {
                 ResultState::Ok(qr) if !qr.rows.is_empty() => {
-                    let start = p.page * AUTO_LIMIT + 1;
-                    let end = p.page * AUTO_LIMIT + qr.rows.len();
+                    let start = p.page * p.page_size + 1;
+                    let end = p.page * p.page_size + qr.rows.len();
                     format!("{start}–{end} 行")
                 }
                 _ => format!("第 {} 页", p.page + 1),
@@ -79,15 +92,21 @@ impl Render for QueryTab {
             Some((p.page, p.has_more, label))
         });
 
+        // 自动 LIMIT 档位展示与切换入口（点击弹下拉）
+        let auto_limit_label: gpui::SharedString = match self.auto_limit {
+            Some(n) => format!("自动限制 {}", format_thousands(n)).into(),
+            None => "自动限制已关闭".into(),
+        };
+
         v_flex()
             .size_full()
             .bg(bg)
             .key_context("QueryTab")
-            .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
-                this.handle_run(cx);
+            .on_action(cx.listener(|this, _: &RunQuery, window, cx| {
+                this.handle_run(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &RunStatementAtCursor, _, cx| {
-                this.handle_run_at_cursor(cx);
+            .on_action(cx.listener(|this, _: &RunStatementAtCursor, window, cx| {
+                this.handle_run_at_cursor(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ExportCsv, _, cx| {
                 this.result.update(cx, |r, cx| {
@@ -102,8 +121,8 @@ impl Render for QueryTab {
             .on_action(cx.listener(|this, _: &FormatSql, window, cx| {
                 this.handle_format(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ExplainQuery, _, cx| {
-                this.handle_explain(cx);
+            .on_action(cx.listener(|this, _: &ExplainQuery, window, cx| {
+                this.handle_explain(window, cx);
             }))
             .when(self.show_editor, |this| {
                 this.child(
@@ -206,6 +225,34 @@ impl Render for QueryTab {
                     })
                     .when_some(result_summary, |this, summary| {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
+                    })
+                    .child({
+                        // 自动 LIMIT 档位切换：裸 SELECT 注入 LIMIT 的上限；关闭后按语句原样执行
+                        let entity = cx.entity();
+                        Button::new("auto-limit")
+                            .ghost()
+                            .small()
+                            .label(auto_limit_label)
+                            .tooltip("未写 LIMIT 的 SELECT 自动补上限，防止误拉全表；点击切换档位")
+                            .dropdown_menu(move |menu, _, _| {
+                                let mut m = menu;
+                                for n in super::sql_utils::AUTO_LIMIT_CHOICES {
+                                    let e = entity.clone();
+                                    m = m.item(PopupMenuItem::new(format!(
+                                        "自动限制 {}",
+                                        format_thousands(n)
+                                    ))
+                                    .on_click(move |_, _, app| {
+                                        e.update(app, |this, cx| this.set_auto_limit(Some(n), cx));
+                                    }));
+                                }
+                                let e = entity.clone();
+                                m.item(PopupMenuItem::new("关闭自动限制").on_click(
+                                    move |_, _, app| {
+                                        e.update(app, |this, cx| this.set_auto_limit(None, cx));
+                                    },
+                                ))
+                            })
                     })
                     .when_some(pager_ui, |this, (page, has_more, label)| {
                         this.child(
@@ -432,8 +479,8 @@ impl Render for QueryTab {
                                 .icon(IconName::Play)
                                 .disabled(!has_connection)
                                 .tooltip(format!("{} 运行 SQL", primary_shortcut("Enter")))
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.handle_run(cx);
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.handle_run(window, cx);
                                 })),
                         )
                     }),

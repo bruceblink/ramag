@@ -26,7 +26,7 @@ impl QueryPanel {
                     window.close_dialog(cx);
                     this.fill_active_sql(sql.clone(), window, cx);
                     if let Some(tab) = this.tabs.get(this.active) {
-                        tab.update(cx, |tab, cx| tab.run(cx));
+                        tab.update(cx, |tab, cx| tab.run(window, cx));
                     }
                 }
             },

@@ -358,7 +358,23 @@ impl ConnectionFormPanel {
         .detach();
     }
 
-    pub(super) fn handle_cancel(&mut self, cx: &mut Context<Self>) {
-        cx.emit(FormEvent::Cancelled);
+    /// 「取消」按钮：有未保存修改先确认，确认「放弃修改」才发 Cancelled 关闭表单
+    pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_dirty(cx) {
+            cx.emit(FormEvent::Cancelled);
+            return;
+        }
+        let entity = cx.entity();
+        ramag_ui::open_confirm(
+            "放弃修改？",
+            "表单有未保存的修改，关闭将丢弃这些修改。",
+            "放弃修改",
+            true,
+            move |_, app| {
+                entity.update(app, |_this, cx| cx.emit(FormEvent::Cancelled));
+            },
+            window,
+            cx,
+        );
     }
 }

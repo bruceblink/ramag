@@ -57,6 +57,8 @@ pub struct QueryPanel {
     draft_load_pending: bool,
     /// 异步恢复期间抑制中间态落盘。
     restoring_drafts: bool,
+    /// 最近一次草稿落盘失败的原因：顶部常驻警示条展示，成功后自动清除
+    pub(super) draft_persist_error: Option<String>,
 }
 
 impl QueryPanel {
@@ -82,6 +84,7 @@ impl QueryPanel {
             draft_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             draft_load_pending: false,
             restoring_drafts: false,
+            draft_persist_error: None,
         };
         // 默认创建一个 Tab
         this.add_tab(window, cx);
@@ -251,7 +254,7 @@ impl QueryPanel {
             tab.update(cx, |t, cx| {
                 t.set_sql(sql.clone(), window, cx);
                 t.mark_injected(sql);
-                t.run(cx);
+                t.run(window, cx);
             });
         }
         self.schedule_draft_persist(cx);
@@ -283,7 +286,7 @@ impl QueryPanel {
                 t.set_pinned_target(target);
                 // 切表时同步清空两个过滤框，避免旧 filter 挡新表数据
                 t.clear_result_filters(window, cx);
-                t.run(cx);
+                t.run(window, cx);
             });
         }
         self.schedule_draft_persist(cx);
@@ -429,6 +432,45 @@ impl Render for QueryPanel {
             .on_action(cx.listener(|this, _: &NewQueryTab, window, cx| {
                 this.add_tab(window, cx);
             }))
+            // 草稿落盘失败常驻警示：用户以为可跨重启恢复，静默失败等于丢稿
+            .when_some(self.draft_persist_error.clone(), |panel, err| {
+                let warning = theme.warning;
+                let mut warn_bg = warning;
+                warn_bg.a = 0.12;
+                panel.child(
+                    h_flex()
+                        .w_full()
+                        .flex_none()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py(px(5.0))
+                        .bg(warn_bg)
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(warning)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(format!(
+                                    "⚠ 草稿自动保存失败：{err}（草稿可能无法跨重启恢复，请复制重要内容备份）"
+                                )),
+                        )
+                        .child(
+                            Button::new("draft-persist-retry")
+                                .ghost()
+                                .small()
+                                .label("重试")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.schedule_draft_persist(cx);
+                                })),
+                        ),
+                )
+            })
             // 多 tab 时关当前；剩一个时冒泡到全局 fallback 关窗（VSCode 风）
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.tabs.len() > 1 {
@@ -549,11 +591,17 @@ impl Render for QueryPanel {
                                             "执行计划 EXPLAIN ({})",
                                             primary_shift_shortcut("E")
                                         ))
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            if let Some(tab) = this.tabs.get(this.active).cloned() {
-                                                tab.update(cx, |t, cx| t.handle_explain(cx));
-                                            }
-                                        })),
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                if let Some(tab) =
+                                                    this.tabs.get(this.active).cloned()
+                                                {
+                                                    tab.update(cx, |t, cx| {
+                                                        t.handle_explain(window, cx)
+                                                    });
+                                                }
+                                            },
+                                        )),
                                 )
                                 .child(
                                     // 上游 IconName 无 History 变体，用旧版历史入口同款日历图标
