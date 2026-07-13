@@ -216,6 +216,67 @@ impl GitDriver for GitDriverImpl {
         run_write_blocking(handle, move |p| remote::pull(p, &remote, &branch, rebase)).await
     }
 
+    async fn fetch_streaming(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<()> {
+        let handle = self.get_repo(repo)?;
+        let remote = remote.to_string();
+        run_write_blocking(handle, move |p| {
+            remote::fetch_streaming(p, &remote, cancel, progress)
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn push_streaming(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        branch: &str,
+        set_upstream: bool,
+        force_with_lease: bool,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<()> {
+        let handle = self.get_repo(repo)?;
+        let remote = remote.to_string();
+        let branch = branch.to_string();
+        run_write_blocking(handle, move |p| {
+            remote::push_streaming(
+                p,
+                &remote,
+                &branch,
+                set_upstream,
+                force_with_lease,
+                cancel,
+                progress,
+            )
+        })
+        .await
+    }
+
+    async fn pull_streaming(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        branch: &str,
+        rebase: bool,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<()> {
+        let handle = self.get_repo(repo)?;
+        let remote = remote.to_string();
+        let branch = branch.to_string();
+        run_write_blocking(handle, move |p| {
+            remote::pull_streaming(p, &remote, &branch, rebase, cancel, progress)
+        })
+        .await
+    }
+
     async fn list_stashes(&self, repo: &RepoId) -> Result<Vec<Stash>> {
         let handle = self.get_repo(repo)?;
         run_blocking(move || stash::list(&handle.path)).await

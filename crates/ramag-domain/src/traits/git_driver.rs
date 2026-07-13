@@ -135,6 +135,51 @@ pub trait GitDriver: Send + Sync {
         not_impl("pull")
     }
 
+    // —— 流式变体（带进度 + 可取消）：与 clone_repo_streaming 同哲学。默认回退到无进度版 ——
+
+    /// Fetch（带进度 + 可取消）
+    async fn fetch_streaming(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<()> {
+        let _ = (cancel, progress);
+        self.fetch(repo, remote).await
+    }
+
+    /// Push（带进度 + 可取消）
+    #[allow(clippy::too_many_arguments)]
+    async fn push_streaming(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        branch: &str,
+        set_upstream: bool,
+        force_with_lease: bool,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<()> {
+        let _ = (cancel, progress);
+        self.push(repo, remote, branch, set_upstream, force_with_lease)
+            .await
+    }
+
+    /// Pull（带进度 + 可取消）
+    async fn pull_streaming(
+        &self,
+        repo: &RepoId,
+        remote: &str,
+        branch: &str,
+        rebase: bool,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<()> {
+        let _ = (cancel, progress);
+        self.pull(repo, remote, branch, rebase).await
+    }
+
     async fn list_stashes(&self, _repo: &RepoId) -> Result<Vec<Stash>> {
         not_impl("list_stashes")
     }

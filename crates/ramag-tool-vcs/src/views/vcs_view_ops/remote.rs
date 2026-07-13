@@ -112,24 +112,63 @@ impl VcsView {
         if !self.begin_op(label, cx) {
             return;
         }
+        // 进度槽 + 取消位：streaming 变体持续写进度、监听取消；存入 self 供工具栏展示 / 取消按钮
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        self.remote_op_cancel = Some(cancel.clone());
+        self.remote_op_progress = Some(progress.clone());
+        // 进度轮询：每 120ms notify 让工具栏刷新最新进度行，操作结束（槽被清）即退出
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(120))
+                    .await;
+                let still = this
+                    .update(cx, |this, cx| {
+                        let active = this.remote_op_cancel.is_some();
+                        if active {
+                            cx.notify();
+                        }
+                        active
+                    })
+                    .unwrap_or(false);
+                if !still {
+                    break;
+                }
+            }
+        })
+        .detach();
 
         cx.spawn(async move |this, cx| {
             let result = match op {
                 // 空 remote 让 driver 拉所有 remote
-                RemoteOp::Fetch => driver.fetch(&repo, "").await,
+                RemoteOp::Fetch => {
+                    driver
+                        .fetch_streaming(&repo, "", cancel.clone(), progress.clone())
+                        .await
+                }
                 RemoteOp::Pull => {
                     driver
-                        .pull(&repo, &remote_name, &remote_branch, false)
+                        .pull_streaming(
+                            &repo,
+                            &remote_name,
+                            &remote_branch,
+                            false,
+                            cancel.clone(),
+                            progress.clone(),
+                        )
                         .await
                 }
                 RemoteOp::Push | RemoteOp::PushForce => {
                     driver
-                        .push(
+                        .push_streaming(
                             &repo,
                             &remote_name,
                             &local_branch,
                             need_set_upstream,
                             this_force_lease,
+                            cancel.clone(),
+                            progress.clone(),
                         )
                         .await
                 }
@@ -142,7 +181,23 @@ impl VcsView {
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
+                // 清进度 / 取消槽（也让轮询任务下一拍退出）
+                let was_cancelled = this
+                    .remote_op_cancel
+                    .as_ref()
+                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
+                this.remote_op_cancel = None;
+                this.remote_op_progress = None;
                 if !this.is_current_repo(&repo) {
+                    cx.notify();
+                    return;
+                }
+                // 用户主动取消：不当作失败刷错误横幅，给中性提示
+                if was_cancelled {
+                    if let Some(s) = new_status {
+                        this.status = Some(s);
+                    }
+                    this.notify_warning(format!("已取消 {op_label}"), cx);
                     cx.notify();
                     return;
                 }
@@ -211,6 +266,23 @@ impl VcsView {
             });
         })
         .detach();
+    }
+
+    /// 取消进行中的远端操作：置取消位，infra watcher kill git 子进程；
+    /// 收尾在异步完成回调里统一清槽 + 中性提示
+    pub(in crate::views) fn cancel_remote_op(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.remote_op_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.busy_label = Some("取消中…");
+            cx.notify();
+        }
+    }
+
+    /// 远端操作进行中的最新进度行（工具栏展示用）；无操作时 None
+    pub(in crate::views) fn remote_op_progress_line(&self) -> Option<String> {
+        let slot = self.remote_op_progress.as_ref()?;
+        let text = slot.lock().ok()?.clone();
+        if text.is_empty() { None } else { Some(text) }
     }
 
     /// 「添加远程」按钮：读双输入 → 校验非空 → add_remote_op

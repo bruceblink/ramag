@@ -1,8 +1,8 @@
 //! Files toolbar 远端操作：dropdown（Fetch / Pull / Push / 强推）
 
-use gpui::{AnyElement, ClickEvent, Context, IntoElement, div};
+use gpui::{AnyElement, ClickEvent, Context, IntoElement, ParentElement as _, Styled as _, div};
 use gpui_component::{
-    Disableable as _, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
 };
@@ -16,6 +16,36 @@ impl VcsView {
     pub(super) fn render_sync_quick_action(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.repo.is_none() {
             return div().into_any_element();
+        }
+        // 远端操作进行中：显示实时进度行 + 取消按钮（Fetch / Pull / Push 与 Clone 同款体验）
+        if self.remote_op_cancel.is_some() {
+            let line = self
+                .remote_op_progress_line()
+                .unwrap_or_else(|| self.busy_label.unwrap_or("处理中…").to_string());
+            return gpui_component::h_flex()
+                .items_center()
+                .gap(gpui::px(6.0))
+                .child(
+                    div()
+                        .max_w(gpui::px(240.0))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(line),
+                )
+                .child(
+                    Button::new("vcs-remote-cancel")
+                        .danger()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("取消当前远端操作")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.cancel_remote_op(cx);
+                        })),
+                )
+                .into_any_element();
         }
         let ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
         let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);

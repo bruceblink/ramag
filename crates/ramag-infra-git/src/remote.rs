@@ -2,11 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 
 use ramag_domain::entities::Remote;
 use ramag_domain::error::Result;
 
-use crate::git_cmd::{run_git_bytes, run_git_text};
+use crate::git_cmd::{run_git_bytes, run_git_streaming, run_git_text};
 
 pub fn list(repo_path: &Path) -> Result<Vec<Remote>> {
     let raw = run_git_text(repo_path, &["remote", "-v"])?;
@@ -66,6 +69,65 @@ pub fn pull(repo_path: &Path, remote: &str, branch: &str, rebase: bool) -> Resul
     args.push(remote);
     args.push(branch);
     run_git_bytes(repo_path, &args).map(|_| ())
+}
+
+// —— 流式变体（带进度 + 可取消）：与 clone_repo_streaming 同哲学，供 UI 展示进度并中止 ——
+
+/// Fetch（带进度 + 可取消）。remote 为空拉全部
+pub fn fetch_streaming(
+    repo_path: &Path,
+    remote: &str,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<String>>,
+) -> Result<()> {
+    let mut args: Vec<&str> = vec!["fetch", "--progress", "--prune"];
+    if remote.is_empty() {
+        args.push("--all");
+    } else {
+        args.push(remote);
+    }
+    run_git_streaming(repo_path, &args, cancel, progress)
+}
+
+/// Push（带进度 + 可取消）
+#[allow(clippy::too_many_arguments)]
+pub fn push_streaming(
+    repo_path: &Path,
+    remote: &str,
+    branch: &str,
+    set_upstream: bool,
+    force_with_lease: bool,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<String>>,
+) -> Result<()> {
+    let mut args: Vec<&str> = vec!["push", "--progress"];
+    if set_upstream {
+        args.push("-u");
+    }
+    if force_with_lease {
+        args.push("--force-with-lease");
+    }
+    args.push(remote);
+    args.push(branch);
+    run_git_streaming(repo_path, &args, cancel, progress)
+}
+
+/// Pull（带进度 + 可取消）
+pub fn pull_streaming(
+    repo_path: &Path,
+    remote: &str,
+    branch: &str,
+    rebase: bool,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<Mutex<String>>,
+) -> Result<()> {
+    let mut args: Vec<&str> = vec!["pull", "--progress"];
+    if rebase {
+        args.push("--rebase");
+    }
+    args.push(remote);
+    args.push(branch);
+    run_git_streaming(repo_path, &args, cancel, progress)
 }
 
 /// 一条 remote 两行（fetch 和 push）；fetch==push 时只留 fetch_url

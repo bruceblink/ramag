@@ -127,6 +127,8 @@ impl VcsView {
             pending_clone_cleanup: None,
             busy: false,
             busy_label: None,
+            remote_op_cancel: None,
+            remote_op_progress: None,
             pending_notification: None,
             was_window_active: window.is_window_active(),
             commit_input,
