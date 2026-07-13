@@ -24,10 +24,19 @@ use crate::views::helpers::filter_items;
 /// 过滤后最多展示的条目数（搜索在全量历史上进行，仅显示前 N 张）
 const DRAWER_LIMIT: usize = 60;
 
+/// 全量搜索去抖间隔（与主视图一致）
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+/// 抽屉全量搜索结果上限：展示只取前 60，多取些供去重后仍填满
+const DRAWER_SEARCH_LIMIT: usize = 200;
+
 pub struct ClipboardDrawer {
     service: Arc<ClipboardService>,
-    /// 全量历史（搜索在此过滤）
+    /// 最近窗口缓存快照（即时过滤层）
     items: Vec<ClipItem>,
+    /// 后台全量存储搜索结果（覆盖缓存窗口之外的历史；与主视图同款）
+    search_results: Vec<ClipItem>,
+    /// 全量搜索去抖代际：输入变化即自增，旧回包据此丢弃
+    search_gen: u64,
     /// 过滤后可见列表上的选中下标
     selected: usize,
     search: Entity<InputState>,
@@ -67,6 +76,8 @@ impl ClipboardDrawer {
             |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     this.selected = 0;
+                    // 全量搜索：覆盖缓存窗口之外的历史（旧记录也能搜到）
+                    this.schedule_search(cx);
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.paste(this.selected, window, cx),
@@ -81,6 +92,8 @@ impl ClipboardDrawer {
         let view = Self {
             service: service.clone(),
             items,
+            search_results: Vec::new(),
+            search_gen: 0,
             selected: 0,
             search,
             activation_target,
@@ -143,14 +156,69 @@ impl ClipboardDrawer {
         None
     }
 
-    /// 按搜索框内容过滤 + 截断的可见列表（渲染 / 选中 / 粘贴共用同一份）
+    /// 按搜索框内容过滤 + 截断的可见列表（渲染 / 选中 / 粘贴共用同一份）。
+    /// 有搜索词时：缓存即时匹配层在前，后台全量结果去重补后（与主视图同款），
+    /// 让缓存窗口之外的旧记录也能被搜到
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<ClipItem> {
         let q = self.search.read(cx).value().to_string();
-        filter_items(&self.items, &q, None)
-            .into_iter()
-            .take(DRAWER_LIMIT)
-            .cloned()
-            .collect()
+        if q.trim().is_empty() {
+            return filter_items(&self.items, "", None)
+                .into_iter()
+                .take(DRAWER_LIMIT)
+                .cloned()
+                .collect();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<ClipItem> = Vec::new();
+        for it in filter_items(&self.items, &q, None) {
+            seen.insert(it.id.clone());
+            out.push(it.clone());
+        }
+        for it in &self.search_results {
+            if !seen.contains(&it.id) {
+                out.push(it.clone());
+            }
+        }
+        out.into_iter().take(DRAWER_LIMIT).collect()
+    }
+
+    /// 搜索框变化：去抖后台全量搜索，补充缓存窗口之外的匹配（与主视图 schedule_search 同款）
+    fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        self.search_gen = self.search_gen.wrapping_add(1);
+        let generation = self.search_gen;
+        let query = self.search.read(cx).value().to_string();
+        if query.trim().is_empty() {
+            self.search_results.clear();
+            return;
+        }
+        let svc = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            if this
+                .update(cx, |this, _| this.search_gen != generation)
+                .unwrap_or(true)
+            {
+                return;
+            }
+            let result = svc.search(&query, DRAWER_SEARCH_LIMIT).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_gen != generation {
+                    return;
+                }
+                match result {
+                    Ok(items) => this.search_results = items,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "drawer full search failed");
+                        this.search_results.clear();
+                        this.pending_notification = Some(Notification::warning(format!(
+                            "全量搜索失败（仅显示最近缓存）：{e}"
+                        )));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 粘贴可见列表第 idx 条：写回剪贴板，并按平台恢复原窗口后模拟粘贴。

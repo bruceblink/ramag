@@ -28,8 +28,11 @@ const SETTINGS_KEY: &str = "clipboard_settings";
 const MAX_ITEMS: u32 = 1_000_000;
 const MAX_AGE_DAYS: u32 = 360;
 
-/// 内存缓存窗口：常驻最近 N 条（已解密），视图唤起 / 刷新同步读；内存与历史总量解耦
-const CACHE_WINDOW: usize = 10_000;
+/// 内存缓存窗口：常驻最近 N 条（已解密），视图唤起 / 刷新同步读；内存与历史总量解耦。
+/// 取 500 而非上万：启动只解密这些条、每次快照 / 过滤只深拷贝这些条（成本随窗口线性）；
+/// 更早的历史由主视图与抽屉的全量存储搜索（`search`）覆盖，不靠缓存兜底。
+/// 与 SEARCH_LIMIT 同量级，避免"缓存即时层"与"全量层"结果规模悬殊
+const CACHE_WINDOW: usize = 500;
 
 /// 防止高压缩图片在解码/渲染时膨胀为超大内存。
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
