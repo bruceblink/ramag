@@ -16,7 +16,7 @@ use super::row::connection_row;
 use super::{ConnectionListPanel, ListEvent};
 
 impl Render for ConnectionListPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;
@@ -24,6 +24,17 @@ impl Render for ConnectionListPanel {
         let border = theme.border;
         let row_hover = theme.muted;
         let bg = theme.background;
+
+        // 行密度按面板宽度分档：固定列在 800px 窗口下已挤占近满，窄窗口隐藏次要列。
+        // 面板宽 ≈ 窗口宽 - 左侧活动栏(约 52px)；用窗口宽近似，断点留足余量
+        let width = f32::from(window.viewport_size().width);
+        let density = if width < 900.0 {
+            super::row::RowDensity::Narrow
+        } else if width < 1120.0 {
+            super::row::RowDensity::Medium
+        } else {
+            super::row::RowDensity::Full
+        };
 
         let total = self.connections.len();
         let loading = self.loading;
@@ -127,6 +138,7 @@ impl Render for ConnectionListPanel {
                         conn,
                         is_selected,
                         version,
+                        density,
                         border,
                         row_hover,
                         accent,

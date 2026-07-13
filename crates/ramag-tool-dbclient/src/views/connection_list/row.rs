@@ -14,6 +14,17 @@ use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::{ConnectionListPanel, ListEvent};
 
+/// 行密度：按面板宽度决定隐藏哪些次要列（800px 窗口固定列已挤占近满）
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum RowDensity {
+    /// 宽：版本 / 地址 / 账号全显示
+    Full,
+    /// 中：隐藏版本、账号，保留地址
+    Medium,
+    /// 窄：仅名称、类型、只读、操作
+    Narrow,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn connection_row(
     idx: usize,
@@ -21,6 +32,7 @@ pub(super) fn connection_row(
     is_selected: bool,
     // 服务端版本（None = 还没拉到 / 拉失败）
     version: Option<String>,
+    density: RowDensity,
     border: gpui::Hsla,
     hover_bg: gpui::Hsla,
     accent: gpui::Hsla,
@@ -28,6 +40,9 @@ pub(super) fn connection_row(
     muted_fg: gpui::Hsla,
     cx: &mut Context<ConnectionListPanel>,
 ) -> impl IntoElement {
+    let show_version = density == RowDensity::Full;
+    let show_address = density != RowDensity::Narrow;
+    let show_account = density == RowDensity::Full;
     let kind_label = match conn.driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
@@ -175,12 +190,10 @@ pub(super) fn connection_row(
                 )
             },
         ))
-        // 版本（固定列，空占位）
-        .child(secondary_col(120.0, version_text))
-        // 地址 host:port（固定列，名称已含则空占位）
-        .child(secondary_col(150.0, address_text))
-        // 账号 user @ db（固定列，空占位）
-        .child(secondary_col(150.0, account_text))
+        // 版本 / 地址 / 账号：按密度隐藏，窄窗口下让位给名称与操作
+        .when(show_version, |row| row.child(secondary_col(120.0, version_text)))
+        .when(show_address, |row| row.child(secondary_col(150.0, address_text)))
+        .when(show_account, |row| row.child(secondary_col(150.0, account_text)))
         // 操作按钮（编辑 / 删除）：图标按钮 + tooltip
         // mouse_down 拦截避免点击事件冒泡到父行触发"打开连接"
         .child(
