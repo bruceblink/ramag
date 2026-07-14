@@ -96,16 +96,18 @@ impl ClipboardView {
                             .child(preview),
                     )
                     .child(card_action_btn(
-                        "copy",
+                        SharedString::from(format!("copy-{}", item.id)),
                         icons::copy(),
+                        "复制该条目",
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.copy_clip(item_copy.clone(), cx);
                         }),
                     ))
                     .child(card_action_btn(
-                        "del",
+                        SharedString::from(format!("del-{}", item.id)),
                         icons::trash(),
+                        "删除该条目",
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.delete_clip(item_del.clone(), cx);
@@ -179,13 +181,15 @@ fn kind_color(kind: ClipKind, theme: &gpui_component::Theme) -> Hsla {
 }
 
 fn card_action_btn(
-    id: &'static str,
+    id: SharedString,
     icon: Icon,
+    tooltip: &'static str,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     Button::new(id)
         .ghost()
         .xsmall()
         .icon(icon.size_3())
+        .tooltip(tooltip)
         .on_click(on_click)
 }

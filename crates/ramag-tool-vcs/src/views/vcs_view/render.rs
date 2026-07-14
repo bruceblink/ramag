@@ -141,11 +141,17 @@ impl Render for VcsView {
             .bg(bg)
             .key_context("VcsView")
             .track_focus(&self.focus_handle)
-            // CloseTab：有 active file tab 关它，否则冒泡到全局 fallback 关窗
+            // CloseTab：先关文件标签；没有文件标签时关闭当前仓库标签。
             .on_action(cx.listener(|this, _: &ramag_ui::CloseTab, window, cx| {
                 if let Some(idx) = this.active_file_tab_idx {
                     this.close_file_tab(idx, cx);
                     window.focus(&this.focus_handle, cx);
+                } else if matches!(this.active_view, ActiveView::Session) {
+                    if let Some(path) = this.repo.as_ref().map(|repo| repo.path.clone()) {
+                        this.remove_open_repo(path, cx);
+                    } else {
+                        cx.propagate();
+                    }
                 } else {
                     cx.propagate();
                 }

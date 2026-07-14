@@ -99,7 +99,8 @@ impl QueryTab {
         };
         if !risks.is_empty() {
             let entity = cx.entity();
-            let message = build_danger_prompt(&conn, self.active_schema.as_deref(), &risks, &sql_to_run);
+            let message =
+                build_danger_prompt(&conn, self.active_schema.as_deref(), &risks, &sql_to_run);
             ramag_ui::open_confirm(
                 "执行高危 SQL？",
                 message,
@@ -133,7 +134,11 @@ impl QueryTab {
         }
         // 自动 LIMIT 注入：仅普通 run 走，且用户没在工具条关掉
         // EXPLAIN 不注入；driver 端的 Query.auto_limit 作为兜底（防止其他路径漏掉）
-        let auto_limit = if is_run { self.auto_limit } else { None };
+        let auto_limit = if is_run {
+            ramag_ui::preferences::sql_auto_limit(cx)
+        } else {
+            None
+        };
         // 分页资格：注入 LIMIT 的单条裸 SELECT 记下原始语句，工具条翻页时以它重写 OFFSET
         self.pager = auto_limit.and_then(|page_size| {
             paging_base_sql(&sql_to_run, conn.driver).map(|base_sql| Pager {
@@ -250,7 +255,7 @@ impl QueryTab {
                         result_handle.update(cx, |r, cx| {
                             r.set_source_sql(Some(title_sql.clone()));
                             r.set_pinned_target(target_for_result);
-                            r.set_state(ResultState::Ok(qr), cx);
+                            r.set_state(ResultState::Ok(Arc::new(qr)), cx);
                         });
                         // 表树单表数据：异步拉真实主键 / 唯一索引作为行定位键，
                         // 就绪前增删改保持禁用（绝不按列名猜键）

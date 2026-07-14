@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 
 use ramag_domain::entities::Remote;
 use ramag_domain::error::Result;

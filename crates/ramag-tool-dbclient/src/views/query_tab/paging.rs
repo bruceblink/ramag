@@ -32,8 +32,9 @@ pub(super) fn paging_base_sql(sql: &str, driver: DriverKind) -> Option<String> {
     if !(head.starts_with("SELECT") || head.starts_with("WITH")) {
         return None;
     }
-    let upper = trimmed.to_ascii_uppercase();
-    if has_top_level_keyword(&upper, "LIMIT") || has_top_level_keyword(&upper, "OFFSET") {
+    if has_top_level_keyword(trimmed, "LIMIT", driver)
+        || has_top_level_keyword(trimmed, "OFFSET", driver)
+    {
         return None;
     }
     Some(trimmed.trim_end_matches(';').trim_end().to_string())
@@ -74,6 +75,12 @@ mod tests {
     fn keeps_subquery_limit_eligible() {
         let sql = "SELECT * FROM (SELECT * FROM t LIMIT 10) x";
         assert!(paging_base_sql(sql, DriverKind::Mysql).is_some());
+    }
+
+    #[test]
+    fn ignores_limit_inside_postgres_dollar_quoted_text() {
+        let sql = "SELECT $$ LIMIT 1 $$ AS text FROM t";
+        assert!(paging_base_sql(sql, DriverKind::Postgres).is_some());
     }
 
     #[test]

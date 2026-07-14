@@ -31,6 +31,28 @@ pub enum RedisValue {
     Array(Vec<RedisValue>),
 }
 
+/// Redis key 的受控加载结果。集合值可只加载前 N 项，`total` 保存服务端基数，
+/// 让界面明确区分“已完整加载”和“当前只展示一部分”。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisValueLoad {
+    pub value: RedisValue,
+    /// 标量为 None；List/Hash/Set/ZSet/Stream 为服务端当前元素总数。
+    pub total: Option<u64>,
+}
+
+impl RedisValueLoad {
+    pub fn loaded_len(&self) -> Option<usize> {
+        self.value.len()
+    }
+
+    pub fn has_more(&self) -> bool {
+        match (self.loaded_len(), self.total) {
+            (Some(loaded), Some(total)) => (loaded as u64) < total,
+            _ => false,
+        }
+    }
+}
+
 /// Stream 单条消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamEntry {
@@ -143,5 +165,16 @@ mod tests {
         let v = RedisValue::Text("line1\nline2\r\nline3".to_string());
         let p = v.display_preview(80);
         assert!(!p.contains('\n') && !p.contains('\r'));
+    }
+
+    #[test]
+    fn value_load_reports_partial_collection() {
+        let load = RedisValueLoad {
+            value: RedisValue::List(vec![RedisValue::Int(1)]),
+            total: Some(2),
+        };
+
+        assert_eq!(load.loaded_len(), Some(1));
+        assert!(load.has_more());
     }
 }

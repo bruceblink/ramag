@@ -150,7 +150,7 @@ impl MongoQueryPanel {
         };
         tab.update(cx, |t, cx| {
             t.prefill_for_collection(database, collection, window, cx);
-            t.run(cx);
+            t.request_run(window, cx);
         });
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
@@ -249,7 +249,7 @@ impl MongoQueryPanel {
                         this.apply_example(cmd, window, cx);
                         this.mark_active_as_user_draft(cx);
                         if let Some(tab) = this.tabs.get(this.active) {
-                            tab.update(cx, |t, cx| t.run(cx));
+                            tab.update(cx, |t, cx| t.request_run(window, cx));
                         }
                     }
                 }
@@ -509,9 +509,9 @@ impl Render for MongoQueryPanel {
                         ),
                 )
             })
-            // 多 tab 时关当前；剩一个或没有时冒泡到全局 fallback 关窗（与 dbclient::QueryPanel 一致）
+            // 始终关闭当前查询标签；最后一个关闭后会立即补一个空白标签。
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                if this.tab_count() > 1 {
+                if this.tab_count() > 0 {
                     let i = this.active;
                     this.close_tab(i, window, cx);
                 } else {

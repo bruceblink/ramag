@@ -40,8 +40,7 @@ const PATH_COMPLETION_DEPTH: usize = 5;
 
 pub struct ResultPanel {
     pub(crate) result: Option<MongoQueryResult>,
-    /// result.documents 的 Arc 缓存：set_result 时构造一次，供 uniform_list 闭包
-    /// 零拷贝共享（原来每帧 Arc::new(documents.clone()) 深拷贝万级文档）
+    /// 当前层文档的唯一共享所有权；查询结果 DTO 中的 documents 在 set_result 时移入这里。
     pub(crate) docs_arc: Option<Arc<Vec<serde_json::Value>>>,
     pub(crate) error: Option<String>,
     pub(crate) running: bool,
@@ -82,6 +81,8 @@ pub struct ResultPanel {
 #[derive(Clone, Debug)]
 pub enum ResultEvent {
     Refresh,
+    /// 仅停止客户端等待；MongoDB 服务端操作可能仍在执行。
+    Cancel,
 }
 
 /// 排序方向（单击列头切换 None→Asc→Desc→None）
@@ -101,10 +102,8 @@ impl ResultPanel {
             column_completion_source.clone(),
         );
         let column_filter = cx.new(|cx| {
-            // 语法：标量列名=只显示这些列；object/array 字段或 a.b 路径=钻取查看其内容；
-            // 分号后=钻取层投影字段。placeholder 点明双语义，避免"输错被钻进去"的困惑
-            let mut state = InputState::new(window, cx)
-                .placeholder("过滤列（列名逗号分隔；填 object/array 字段或 a.b 路径则钻取）");
+            let mut state =
+                InputState::new(window, cx).placeholder("过滤列（列名或路径，逗号分隔）");
             state.lsp.completion_provider = Some(provider);
             state
         });
@@ -113,7 +112,7 @@ impl ResultPanel {
 
         let subs = vec![
             cx.subscribe(&column_filter, |_this, _, _e: &InputEvent, cx| {
-                // 钻取/投影在 render 时派生（基础表不变）；补全源在 rebuild 时已就绪，仅重渲染
+                // 基础表不变；补全源在 rebuild 时已就绪，仅重渲染
                 cx.notify();
             }),
             cx.subscribe(&row_filter, |_this, _, _e: &InputEvent, cx| cx.notify()),
@@ -249,16 +248,17 @@ impl ResultPanel {
         cx.notify();
     }
 
-    pub fn set_result(&mut self, r: MongoQueryResult, cx: &mut Context<Self>) {
+    pub fn set_result(&mut self, mut r: MongoQueryResult, cx: &mut Context<Self>) {
         self.selected_rows.clear();
         // 新查询：重置下钻栈为顶层（label 用目标 collection）
         let label = self
             .target_collection
             .clone()
             .unwrap_or_else(|| "结果".to_string());
-        self.reset_drill(label, r.documents.clone());
+        let documents = Arc::new(std::mem::take(&mut r.documents));
+        self.reset_drill(label, documents.clone());
         self.sort_by = None;
-        self.docs_arc = Some(Arc::new(r.documents.clone()));
+        self.docs_arc = Some(documents);
         self.result = Some(r);
         self.error = None;
         self.running = false;
@@ -275,26 +275,23 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// 解析过滤列框（结合当前层 docs 判字段类型）；规则见 classify_filter
+    /// 解析过滤列框；规则见 classify_filter。
     pub(crate) fn parse_column_filter(&self, cx: &gpui::App) -> ParsedFilter {
         let raw = self.column_filter.read(cx).value().to_string();
-        let docs = self
-            .drill_stack
-            .last()
-            .map(|l| l.documents.as_slice())
-            .unwrap_or(&[]);
-        classify_filter(&raw, docs)
+        classify_filter(&raw)
     }
 
     /// 重建基础表格（不钻取）与补全源；钻取/投影在 render 时按过滤框派生
     pub(crate) fn rebuild_table(&mut self) {
         let level = self.drill_stack.last();
-        let docs = level.map(|l| l.documents.clone()).unwrap_or_default();
+        let docs = level
+            .map(|l| l.documents.clone())
+            .unwrap_or_else(|| Arc::new(Vec::new()));
         let ancestors = level.map(|l| l.ancestors.clone()).unwrap_or_default();
         self.table = if docs.is_empty() {
             None
         } else {
-            let mut ft = flatten::build_flat_table_with(&docs, &BTreeSet::new());
+            let mut ft = flatten::build_flat_table_with(docs.as_slice(), &BTreeSet::new());
             // 下钻层：祖先链为常量（该层所有行同一父），作前导列，根→深保序，列名即对象名
             if !ancestors.is_empty() {
                 let lead_cols: Vec<flatten::Column> = ancestors
@@ -311,7 +308,7 @@ impl ResultPanel {
             Some(Arc::new(ft))
         };
         *self.column_completion_source.write() =
-            flatten::collect_paths(&docs, PATH_COMPLETION_DEPTH);
+            flatten::collect_paths(docs.as_slice(), PATH_COMPLETION_DEPTH);
     }
 
     /// 当前过滤后的列索引（None 表示全选）；用所有 token 子串匹配（unwind 锚不匹配子列、自然不影响）
@@ -403,10 +400,10 @@ impl Render for ResultPanel {
         }
         // 借用而非 clone：render 只用 affected / documents.len() / elapsed_ms / truncated，
         // 每帧深拷贝整个 MongoQueryResult（含万级文档）纯属浪费
-        let Some((affected, total_docs, elapsed, truncated)) = self
+        let Some((affected, elapsed, truncated)) = self
             .result
             .as_ref()
-            .map(|r| (r.affected, r.documents.len(), r.elapsed_ms, r.truncated))
+            .map(|r| (r.affected, r.elapsed_ms, r.truncated))
         else {
             return v_flex()
                 .size_full()
@@ -418,6 +415,7 @@ impl Render for ResultPanel {
                 ))
                 .into_any_element();
         };
+        let total_docs = self.docs_arc.as_ref().map_or(0, |docs| docs.len());
         let Some(table_arc) = self.table.clone() else {
             let hint = if affected > 0 {
                 format!("已执行写操作，影响 {affected} 条")
@@ -434,47 +432,20 @@ impl Render for ResultPanel {
             return root.child(empty_hint(hint, muted)).into_any_element();
         };
 
-        // 钻取视图：输入对象/数组路径 → 钻进去只看其字段（裸名）
-        if let Some((flat_docs, flat_table, col_path)) = self.try_drill_path(cx) {
-            let n = flat_docs.len();
-            // 展平汇总视图同样支持列/行过滤（分号后的过滤 token 作用在展平表上）
-            let row_q = self.row_filter.read(cx).value().to_string();
-            let fcol = column_indices_for(&flat_table, &self.parse_column_filter(cx).filters);
-            let frow = row_indices_for(&flat_table, &row_q);
-            let mut root = v_flex()
-                .size_full()
-                .bg(bg)
-                .child(toolbar::render(self, cx))
-                .child(div().h(px(1.0)).bg(border))
-                .child(flatten_hint(&col_path, n, border, muted, bg));
-            if self.is_drilled() {
-                root = root.child(self.render_breadcrumb(cx));
-            }
-            return root
-                .child(div().flex_1().min_h_0().child(table::render(
-                    self,
-                    flat_table,
-                    fcol,
-                    frow,
-                    Some(flat_docs),
-                    false,
-                    cx,
-                )))
-                .child(render_status_bar(
-                    format!("钻取「{col_path}」· {n} 条"),
-                    border,
-                    muted,
-                    bg,
-                ))
-                .into_any_element();
-        }
-
         let col_indices = self.filtered_column_indices(cx);
         let row_indices = self.filtered_row_indices(cx);
         let filtered_rows = row_indices.as_ref().map(|v| v.len()).unwrap_or(total_docs);
+        let visible_selected = row_indices
+            .as_ref()
+            .map_or(self.selected_rows.len(), |rows| {
+                rows.iter()
+                    .filter(|ri| self.selected_rows.contains(ri))
+                    .count()
+            });
+        let hidden_selected = self.selected_rows.len().saturating_sub(visible_selected);
         let total_cols = self.table.as_ref().map(|t| t.columns.len()).unwrap_or(0);
         let visible_cols_count = col_indices.as_ref().map(|v| v.len()).unwrap_or(total_cols);
-        let summary = match (row_indices.is_some(), col_indices.is_some()) {
+        let mut summary = match (row_indices.is_some(), col_indices.is_some()) {
             (true, true) => format!(
                 "命中 {visible_cols_count} / {total_cols} 列 · {filtered_rows} / {total_docs} 行 · 耗时 {elapsed}ms"
             ),
@@ -484,6 +455,16 @@ impl Render for ResultPanel {
             ),
             (false, false) => format!("{total_docs} 行 · 耗时 {elapsed}ms"),
         };
+        if !self.selected_rows.is_empty() {
+            if hidden_selected > 0 {
+                summary.push_str(&format!(
+                    " · 已选 {} 行，其中 {hidden_selected} 行当前隐藏",
+                    self.selected_rows.len()
+                ));
+            } else {
+                summary.push_str(&format!(" · 已选 {} 行", self.selected_rows.len()));
+            }
+        }
 
         // toolbar（搜索栏）始终在顶、位置不变；下钻态时在其下方插入面包屑栏
         let mut root = v_flex()
@@ -545,30 +526,6 @@ fn render_status_bar(
         .text_xs()
         .text_color(muted)
         .child(SharedString::from(summary))
-}
-
-/// 展平视图顶部提示条：已展平某列 + 元素数 + 恢复方式
-fn flatten_hint(
-    col: &str,
-    n: usize,
-    border: gpui::Hsla,
-    muted: gpui::Hsla,
-    bg: gpui::Hsla,
-) -> impl IntoElement {
-    div()
-        .id("mongo-flatten-hint")
-        .w_full()
-        .flex_none()
-        .px(px(12.0))
-        .py(px(5.0))
-        .border_b_1()
-        .border_color(border)
-        .bg(bg)
-        .text_xs()
-        .text_color(muted)
-        .child(SharedString::from(format!(
-            "已钻取「{col}」· {n} 条（清空上方过滤列恢复）"
-        )))
 }
 
 fn empty_hint(text: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Stateful<gpui::Div> {

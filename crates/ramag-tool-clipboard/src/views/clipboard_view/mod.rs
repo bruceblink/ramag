@@ -26,6 +26,9 @@ pub struct ClipboardView {
     /// 最近窗口快照（来自 service 缓存，最近优先）
     pub(super) items: Vec<ClipItem>,
     pub(super) settings: ClipboardSettings,
+    pub(super) loaded_settings_revision: u64,
+    pub(super) settings_save_generation: u64,
+    pub(super) settings_saving: bool,
     pub(super) search: Entity<InputState>,
     /// 类型筛选；None = 全部
     pub(super) filter: Option<ClipKind>,
@@ -34,6 +37,8 @@ pub struct ClipboardView {
     pub(super) loaded_revision: u64,
     /// 后台全量搜索结果：补充缓存窗口之外的匹配（搜索词非空时与缓存即时结果合并）
     pub(super) search_results: Vec<ClipItem>,
+    /// 后台搜索命中超过 SEARCH_LIMIT；状态栏必须明确提示结果被截断。
+    pub(super) search_truncated: bool,
     /// 搜索去抖代号：每次输入自增，异步任务到期比对以丢弃过期搜索
     pub(super) search_gen: u64,
     /// 设置面板是否展开
@@ -53,6 +58,11 @@ impl Focusable for ClipboardView {
 }
 
 impl ClipboardView {
+    pub fn show_settings(&mut self, cx: &mut Context<Self>) {
+        self.show_settings = true;
+        cx.notify();
+    }
+
     pub fn new(
         service: Arc<ClipboardService>,
         window: &mut Window,
@@ -71,15 +81,20 @@ impl ClipboardView {
             }),
         );
 
+        let (settings, loaded_settings_revision) = service.settings_snapshot_with_revision();
         let mut view = Self {
             service,
             items: Vec::new(),
-            settings: ClipboardSettings::default(),
+            settings,
+            loaded_settings_revision,
+            settings_save_generation: 0,
+            settings_saving: false,
             search,
             filter: None,
             selected: None,
             loaded_revision: 0,
             search_results: Vec::new(),
+            search_truncated: false,
             search_gen: 0,
             show_settings: false,
             list_scroll: UniformListScrollHandle::new(),
@@ -103,6 +118,16 @@ impl ClipboardView {
                     .update(cx, |this, cx| {
                         if this.service.revision() != this.loaded_revision {
                             this.reload(cx);
+                        }
+                        let settings_revision = this.service.settings_revision();
+                        if !this.settings_saving
+                            && settings_revision != this.loaded_settings_revision
+                        {
+                            let (settings, revision) =
+                                this.service.settings_snapshot_with_revision();
+                            this.settings = settings;
+                            this.loaded_settings_revision = revision;
+                            cx.notify();
                         }
                     })
                     .is_ok();

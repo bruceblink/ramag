@@ -53,7 +53,7 @@ impl ResultPanel {
 
     /// 删除前的预览数据：(row_idx, "列=值" 简短文案)；调用方拿去给 confirm dialog 用
     /// 优先用行定位键第一列做预览，无键用第一列
-    pub(crate) fn delete_preview(&self) -> Option<(usize, String)> {
+    pub(crate) fn delete_preview(&self, cx: &gpui::App) -> Option<(usize, String)> {
         let (ri, _) = self.selected_cell?;
         let ResultState::Ok(result) = &self.state else {
             return None;
@@ -66,11 +66,19 @@ impl ResultPanel {
             .get(idx)
             .map(|v| v.display_preview(60))
             .unwrap_or_default();
-        Some((ri, format!("{col} = {val}")))
+        let visible = crate::views::result_table::compute_display_view(self, result, cx)
+            .display_indices
+            .contains(&ri);
+        let hidden_note = if visible {
+            ""
+        } else {
+            "（该行当前被筛选隐藏）"
+        };
+        Some((ri, format!("{col} = {val}{hidden_note}")))
     }
 
     /// 批量删除前的预览：返回 (排序去重后的 indices, "N 行预览" 文案)
-    pub(crate) fn delete_preview_multi(&self) -> Option<(Vec<usize>, String)> {
+    pub(crate) fn delete_preview_multi(&self, cx: &gpui::App) -> Option<(Vec<usize>, String)> {
         if self.selected_rows.is_empty() {
             return None;
         }
@@ -106,7 +114,21 @@ impl ResultPanel {
         if indices.len() > 3 {
             samples.push(format!("…还有 {} 行", indices.len() - 3));
         }
-        let summary = format!("将删除 {} 行：{}", indices.len(), samples.join(" / "));
+        let visible = crate::views::result_table::compute_display_view(self, result, cx)
+            .display_indices
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let hidden = indices.iter().filter(|ri| !visible.contains(ri)).count();
+        let hidden_note = if hidden > 0 {
+            format!("（其中 {hidden} 行当前被筛选隐藏）")
+        } else {
+            String::new()
+        };
+        let summary = format!(
+            "将删除 {} 行{hidden_note}：{}",
+            indices.len(),
+            samples.join(" / ")
+        );
         Some((indices, summary))
     }
 
@@ -179,6 +201,7 @@ impl ResultPanel {
             let _ = this.update(cx, |this, cx| {
                 this.dml_busy = false;
                 if let ResultState::Ok(r) = &mut this.state {
+                    let r = Arc::make_mut(r);
                     let mut to_remove = deleted.clone();
                     to_remove.sort_by(|a, b| b.cmp(a));
                     for ri in to_remove {
@@ -277,6 +300,7 @@ impl ResultPanel {
                             if let (ResultState::Ok(r), Some(vs)) =
                                 (&mut this.state, new_row_values)
                             {
+                                let r = Arc::make_mut(r);
                                 r.rows.push(ramag_domain::entities::Row { values: vs });
                             }
                             this.pending_notification = Some(
@@ -352,9 +376,11 @@ impl ResultPanel {
                             );
                         } else {
                             if let ResultState::Ok(r) = &mut this.state
-                                && ri < r.rows.len()
                             {
-                                r.rows.remove(ri);
+                                let r = Arc::make_mut(r);
+                                if ri < r.rows.len() {
+                                    r.rows.remove(ri);
+                                }
                             }
                             this.selected_cell = None;
                             // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
@@ -461,10 +487,13 @@ impl ResultPanel {
                             );
                         } else {
                             if let ResultState::Ok(r) = &mut this.state
-                                && let Some(row) = r.rows.get_mut(ri)
-                                && let Some(slot) = row.values.get_mut(ci)
                             {
-                                *slot = new_cell_val;
+                                let r = Arc::make_mut(r);
+                                if let Some(row) = r.rows.get_mut(ri)
+                                    && let Some(slot) = row.values.get_mut(ci)
+                                {
+                                    *slot = new_cell_val;
+                                }
                             }
                             // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
                             // 意味着可能误改了其它行，必须显式告警而非当成功

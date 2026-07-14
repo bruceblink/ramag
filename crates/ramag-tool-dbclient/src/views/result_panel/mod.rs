@@ -37,7 +37,7 @@ pub enum ResultState {
     Empty,
     Running,
     Error(String),
-    Ok(QueryResult),
+    Ok(Arc<QueryResult>),
 }
 
 /// 排序方向
@@ -335,14 +335,19 @@ impl ResultPanel {
             return Some(reason.to_string());
         }
         if self.cell_is_binary(ri, ci) {
-            return Some("二进制内容显示为 hex 文本，直接保存会损坏原始字节，仅可查看 / 复制".to_string());
+            return Some(
+                "二进制内容显示为 hex 文本，直接保存会损坏原始字节，仅可查看 / 复制".to_string(),
+            );
         }
         None
     }
 
     /// 行定位方式的提示文案（"主键" / "唯一键"）；编辑弹框展示用
     pub(super) fn identity_label(&self) -> &'static str {
-        self.row_identity.as_ref().map(|i| i.label).unwrap_or("主键")
+        self.row_identity
+            .as_ref()
+            .map(|i| i.label)
+            .unwrap_or("主键")
     }
 
     /// 删除 / 预览用的展示列：行定位键第一列在结果集中的下标，无键回退第 0 列
@@ -421,12 +426,8 @@ impl ResultPanel {
         cx.notify();
     }
 
-    pub(super) fn toggle_all_rows(&mut self, total: usize, cx: &mut Context<Self>) {
-        if self.selected_rows.len() == total {
-            self.selected_rows.clear();
-        } else {
-            self.selected_rows = (0..total).collect();
-        }
+    pub(super) fn toggle_visible_rows(&mut self, visible: &[usize], cx: &mut Context<Self>) {
+        toggle_visible_selection(&mut self.selected_rows, visible);
         cx.notify();
     }
 
@@ -497,5 +498,51 @@ impl ResultPanel {
 
     pub fn state(&self) -> &ResultState {
         &self.state
+    }
+}
+
+/// 全选只作用于当前视图的源行索引，避免过滤 / 排序后误选其它原始行。
+fn toggle_visible_selection(selected: &mut BTreeSet<usize>, visible: &[usize]) {
+    let all_visible_selected =
+        !visible.is_empty() && visible.iter().all(|ri| selected.contains(ri));
+    if all_visible_selected {
+        for ri in visible {
+            selected.remove(ri);
+        }
+    } else {
+        selected.extend(visible.iter().copied());
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::toggle_visible_selection;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn filtered_select_all_uses_source_row_indices() {
+        let mut selected = BTreeSet::new();
+
+        toggle_visible_selection(&mut selected, &[2]);
+
+        assert_eq!(selected, BTreeSet::from([2]));
+    }
+
+    #[test]
+    fn toggling_visible_rows_preserves_hidden_selection() {
+        let mut selected = BTreeSet::from([0, 2, 4]);
+
+        toggle_visible_selection(&mut selected, &[2, 4]);
+
+        assert_eq!(selected, BTreeSet::from([0]));
+    }
+
+    #[test]
+    fn partial_visible_selection_selects_remaining_visible_rows() {
+        let mut selected = BTreeSet::from([2]);
+
+        toggle_visible_selection(&mut selected, &[2, 4]);
+
+        assert_eq!(selected, BTreeSet::from([2, 4]));
     }
 }

@@ -213,9 +213,7 @@ impl QueryPanel {
             self.add_tab(window, cx); // 总保持至少一个 Tab（add_tab 内部会 focus）
             return;
         }
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len() - 1;
-        }
+        self.active = active_index_after_close(self.active, index, self.tabs.len());
         // 关闭后让新 active tab 编辑器获得焦点，无需再点一下
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
@@ -471,9 +469,9 @@ impl Render for QueryPanel {
                         ),
                 )
             })
-            // 多 tab 时关当前；剩一个时冒泡到全局 fallback 关窗（VSCode 风）
+            // 始终关闭当前查询标签；最后一个关闭后会立即补一个空白标签。
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                if this.tabs.len() > 1 {
+                if !this.tabs.is_empty() {
                     let idx = this.active;
                     this.close_tab(idx, window, cx);
                 } else {
@@ -635,4 +633,35 @@ fn theme_active_bg(_secondary: gpui::Hsla, accent: gpui::Hsla) -> gpui::Hsla {
     let mut a = accent;
     a.a = 0.15;
     a
+}
+
+fn active_index_after_close(active: usize, closed: usize, remaining: usize) -> usize {
+    debug_assert!(remaining > 0);
+    if active >= remaining {
+        remaining - 1
+    } else if active > closed {
+        active - 1
+    } else {
+        active
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_index_after_close;
+
+    #[test]
+    fn closing_tab_left_of_active_preserves_the_same_logical_tab() {
+        assert_eq!(active_index_after_close(1, 0, 2), 0);
+    }
+
+    #[test]
+    fn closing_active_last_tab_activates_new_last_tab() {
+        assert_eq!(active_index_after_close(2, 2, 2), 1);
+    }
+
+    #[test]
+    fn closing_tab_right_of_active_keeps_index() {
+        assert_eq!(active_index_after_close(0, 2, 2), 0);
+    }
 }

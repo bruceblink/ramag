@@ -55,11 +55,18 @@ pub struct ClipboardService {
     revision: Arc<AtomicU64>,
     /// 已解密的最近 N 条窗口缓存（最近优先）。写操作增量维护，视图同步快照取
     cache: Arc<RwLock<Vec<ClipItem>>>,
-    /// 采集开关内存镜像：save_settings 写、启动 prime 一次校正。
+    /// 采集开关内存镜像：设置读取/保存时在同一串行区间内同步。
     /// 供 App 级热键循环每拍读，避免每拍解密设置；关采集即据此释放全局热键
     capture_enabled: Arc<AtomicBool>,
-    /// 备用热键内存镜像（主修饰键+Alt+V），维护方式同 capture_enabled
+    /// 备用热键内存镜像（主修饰键+Alt+V），维护方式同 capture_enabled。
     alternate_hotkey: Arc<AtomicBool>,
+    /// 自动粘贴设置镜像。抽屉构造时同步读取，避免异步加载设置期间误执行自动粘贴。
+    auto_paste: Arc<AtomicBool>,
+    /// 设置快照与版本号：多个设置入口共享同一真实状态，避免各自长期持有过期副本。
+    settings_cache: Arc<RwLock<ClipboardSettings>>,
+    settings_revision: Arc<AtomicU64>,
+    /// 设置读写串行化，避免慢读取或旧保存晚完成后覆盖新值。
+    settings_save_lock: Arc<futures::lock::Mutex<()>>,
     /// 全局热键注册状态（见 HotkeyState）：App 级热键循环写，设置面板读，
     /// 让「热键没注册上（如被占用）」对用户可见而非只留日志
     hotkey_state: Arc<AtomicU8>,
@@ -108,6 +115,10 @@ impl ClipboardService {
             // 默认开（同 ClipboardSettings::default）；启动由 prime_capture_enabled 校正
             capture_enabled: Arc::new(AtomicBool::new(true)),
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
+            auto_paste: Arc::new(AtomicBool::new(true)),
+            settings_cache: Arc::new(RwLock::new(ClipboardSettings::default())),
+            settings_revision: Arc::new(AtomicU64::new(0)),
+            settings_save_lock: Arc::new(futures::lock::Mutex::new(())),
             hotkey_state: Arc::new(AtomicU8::new(HotkeyState::Disabled.as_u8())),
             settings_degraded: Arc::new(AtomicBool::new(false)),
             pending_media_deletes: Arc::new(PendingMediaDeletes::default()),
@@ -181,7 +192,10 @@ impl ClipboardService {
     /// 降级标记（设置面板显示告警），绝不因异常回退到「继续记录」；仅「从未保存过」
     /// 才用出厂默认（enabled=true，首次使用语义）
     pub async fn load_settings(&self) -> ClipboardSettings {
-        match self.storage.get_preference(SETTINGS_KEY).await {
+        // 与保存共用串行锁：防止早先发起的慢读取在新设置保存后才回包，
+        // 又把内存快照覆盖回旧值。
+        let _guard = self.settings_save_lock.lock().await;
+        let settings = match self.storage.get_preference(SETTINGS_KEY).await {
             Ok(Some(json)) => match serde_json::from_str(&json) {
                 Ok(s) => {
                     self.settings_degraded.store(false, Ordering::Relaxed);
@@ -208,7 +222,17 @@ impl ClipboardService {
                     ..ClipboardSettings::default()
                 }
             }
-        }
+        };
+        // 与读取同处串行区间内同步运行时镜像，避免启动预热在新保存之后
+        // 才把旧值写回内存。
+        self.capture_enabled
+            .store(settings.enabled, Ordering::Relaxed);
+        self.alternate_hotkey
+            .store(settings.alternate_hotkey, Ordering::Relaxed);
+        self.auto_paste
+            .store(settings.auto_paste, Ordering::Relaxed);
+        self.cache_settings(&settings);
+        settings
     }
 
     /// 设置是否处于降级态（读取失败 / 损坏，采集已 fail-closed 暂停）
@@ -217,6 +241,7 @@ impl ClipboardService {
     }
 
     pub async fn save_settings(&self, settings: &ClipboardSettings) -> Result<()> {
+        let _guard = self.settings_save_lock.lock().await;
         // 先更新内存镜像（与 UI 乐观更新一致），热键循环最迟下一拍生效
         let prev_enabled = self
             .capture_enabled
@@ -224,6 +249,7 @@ impl ClipboardService {
         let prev_alternate = self
             .alternate_hotkey
             .swap(settings.alternate_hotkey, Ordering::Relaxed);
+        let prev_auto_paste = self.auto_paste.swap(settings.auto_paste, Ordering::Relaxed);
         let result = async {
             let json = serde_json::to_string(settings)
                 .map_err(|e| DomainError::Storage(format!("序列化剪贴设置失败：{e}")))?;
@@ -235,8 +261,35 @@ impl ClipboardService {
             self.capture_enabled.store(prev_enabled, Ordering::Relaxed);
             self.alternate_hotkey
                 .store(prev_alternate, Ordering::Relaxed);
+            self.auto_paste.store(prev_auto_paste, Ordering::Relaxed);
+        } else {
+            self.cache_settings(settings);
         }
         result
+    }
+
+    fn cache_settings(&self, settings: &ClipboardSettings) {
+        let mut cached = self.settings_cache.write();
+        if &*cached != settings {
+            *cached = settings.clone();
+            self.settings_revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// 一致读取快照与版本号。若恰好遇到更新，重试而不返回“旧快照 + 新版本”。
+    pub fn settings_snapshot_with_revision(&self) -> (ClipboardSettings, u64) {
+        loop {
+            let before = self.settings_revision.load(Ordering::Acquire);
+            let snapshot = self.settings_cache.read().clone();
+            let after = self.settings_revision.load(Ordering::Acquire);
+            if before == after {
+                return (snapshot, after);
+            }
+        }
+    }
+
+    pub fn settings_revision(&self) -> u64 {
+        self.settings_revision.load(Ordering::Acquire)
     }
 
     /// 采集是否开启（内存镜像，热键循环每拍读）
@@ -249,15 +302,15 @@ impl ClipboardService {
         self.alternate_hotkey.load(Ordering::Relaxed)
     }
 
-    /// 启动时用持久化值校正内存镜像并返回采集开关。仅热键循环启动调一次——
-    /// 单独于 save_settings 之外的唯一写入点，避免与采集循环的 load_settings 竞争
+    /// 抽屉当前是否应在复制后自动粘贴（启动预热与设置保存都会同步更新）。
+    pub fn auto_paste(&self) -> bool {
+        self.auto_paste.load(Ordering::Relaxed)
+    }
+
+    /// 启动时预热持久化设置并返回采集开关。`load_settings` 已在串行区间内
+    /// 同步全部内存镜像，这里不再二次写入，避免启动期覆盖用户刚保存的新值。
     pub async fn prime_capture_enabled(&self) -> bool {
-        let settings = self.load_settings().await;
-        self.capture_enabled
-            .store(settings.enabled, Ordering::Relaxed);
-        self.alternate_hotkey
-            .store(settings.alternate_hotkey, Ordering::Relaxed);
-        settings.enabled
+        self.load_settings().await.enabled
     }
 
     // —— 采集 ——

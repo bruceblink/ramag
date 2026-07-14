@@ -39,8 +39,9 @@ use ramag_tool_vcs::{
     create_vcs_view,
 };
 use ramag_ui::{
-    CloseTab, CycleSection, HomeEvent, HomeView, Mode, NavTarget, RamagAssets, SelectTool1,
-    SelectTool2, SelectTool3, Shell, ShowOnboarding, StorageGlobal, apply_theme, init_theme,
+    CloseTab, CycleSection, CycleSectionReverse, HomeEvent, HomeView, Mode, NavTarget, RamagAssets,
+    SelectTool1, SelectTool2, SelectTool3, SettingsEvent, SettingsView, Shell, ShowOnboarding,
+    StorageGlobal, apply_theme, init_theme,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -191,6 +192,9 @@ fn main() {
 
     // 主题偏好。None / "system" 跟随系统，"dark"/"light" 用户固定
     let initial_pref = read_theme_preference(&storage);
+    let initial_sql_limit = ramag_ui::preferences::parse_sql_auto_limit(
+        read_preference(&storage, ramag_ui::preferences::SQL_AUTO_LIMIT_PREF).as_deref(),
+    );
 
     let registry = build_tool_registry();
     info!(tool_count = registry.count(), "tools registered");
@@ -220,6 +224,7 @@ fn main() {
         apply_theme(Mode::Dark, cx);
         // storage 注入 cx 全局，ActivityBar 切主题用它持久化
         cx.set_global(StorageGlobal(deps.storage.clone()));
+        cx.set_global(ramag_ui::preferences::SqlAutoLimitGlobal(initial_sql_limit));
         cx.activate(true);
 
         // 必须先 bind_keys 把退出快捷键绑到 Quit，原生菜单项才会显示快捷键
@@ -292,6 +297,7 @@ fn main() {
             KeyBinding::new("secondary-2", SelectTool2, None),
             KeyBinding::new("secondary-3", SelectTool3, None),
             KeyBinding::new("ctrl-tab", CycleSection, None),
+            KeyBinding::new("ctrl-shift-tab", CycleSectionReverse, None),
             // dbclient (MySQL / PG) 视图的快捷键（context=QueryPanel/QueryTab 见 dbclient 视图实现）
             KeyBinding::new("secondary-enter", RunQuery, None),
             KeyBinding::new("secondary-shift-enter", RunStatementAtCursor, None),
@@ -378,7 +384,7 @@ fn main() {
         cx.set_menus(vec![
             Menu {
                 name: "Ramag".into(),
-                items: vec![MenuItem::action("Quit Ramag", Quit)],
+                items: vec![MenuItem::action("退出 Ramag", Quit)],
                 disabled: false,
             },
             // 原生编辑菜单：os_action 角色让 macOS 标准编辑命令（撤销 / 剪切 / 复制 / 粘贴 / 全选）
@@ -670,34 +676,57 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                 let vcs_view = create_vcs_view(git_driver, storage.clone(), window, cx);
 
                 let clipboard_view = create_clipboard_view(clipboard_service.clone(), window, cx);
+                let settings_view = cx.new(|cx| SettingsView::new(clipboard_service.clone(), cx));
 
                 let shell = cx.new(|cx| {
                     let mut shell = Shell::new(registry.clone(), window, cx);
                     shell.set_home_view(home_view.clone().into());
+                    shell.set_settings_view(settings_view.clone().into());
                     // 首页强类型句柄：菜单「重新查看快速上手」经 Shell 转发重开引导
                     shell.set_home_entity(home_view.clone());
-                    shell.register_tool_view(DbClientTool::ID, dbclient_view);
+                    shell.register_tool_view(DbClientTool::ID, dbclient_view.clone().into());
                     shell.register_tool_view(VcsTool::ID, vcs_view.into());
-                    shell.register_tool_view(ClipboardTool::ID, clipboard_view.into());
+                    shell.register_tool_view(ClipboardTool::ID, clipboard_view.clone().into());
 
-                    let _sub: Subscription = cx.subscribe_in(
+                    let dbclient_for_home = dbclient_view.clone();
+                    let home_subscription: Subscription = cx.subscribe_in(
                         &home_view,
                         window,
                         move |this: &mut Shell, _, event: &HomeEvent, window, cx| match event {
                             HomeEvent::OpenTool(tool_id) => {
                                 this.navigate_to(NavTarget::Tool(tool_id.clone()), window, cx);
                             }
-                            HomeEvent::OpenConnection(_id) => {
+                            HomeEvent::OpenConnection(connection) => {
                                 this.navigate_to(
                                     NavTarget::Tool(DbClientTool::ID.to_string()),
                                     window,
                                     cx,
                                 );
+                                dbclient_for_home.update(cx, |view, cx| {
+                                    view.open_connection((**connection).clone(), window, cx);
+                                });
                             }
                         },
                     );
-                    // 让订阅活到 Shell 一样长
-                    std::mem::forget(_sub);
+                    shell.retain_subscription(home_subscription);
+
+                    let clipboard_for_settings = clipboard_view.clone();
+                    let settings_subscription: Subscription = cx.subscribe_in(
+                        &settings_view,
+                        window,
+                        move |this: &mut Shell, _, event: &SettingsEvent, window, cx| match event {
+                            SettingsEvent::OpenClipboardDetails => {
+                                this.navigate_to(
+                                    NavTarget::Tool(ClipboardTool::ID.to_string()),
+                                    window,
+                                    cx,
+                                );
+                                clipboard_for_settings
+                                    .update(cx, |view, cx| view.show_settings(cx));
+                            }
+                        },
+                    );
+                    shell.retain_subscription(settings_subscription);
 
                     shell
                 });
@@ -796,6 +825,8 @@ fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
             "⌘/Ctrl Q · ⌘/Ctrl W",
             "退出应用 · 关闭当前标签（主窗口不因 W 关闭）",
         ),
+        ("Ctrl Tab · Ctrl ⇧ Tab", "向前 / 向后切换首页、工具与设置"),
+        ("⌘/Ctrl 1 / 2 / 3", "直接切换到第 1 / 2 / 3 个工具"),
         ("⌘/Ctrl Enter", "DB：运行查询 ｜ VCS：提交（提交框聚焦时）"),
         ("⌘/Ctrl ⇧ Enter", "DB：运行光标处语句"),
         ("⌘/Ctrl T", "DB：新建查询标签 ｜ VCS：Pull"),

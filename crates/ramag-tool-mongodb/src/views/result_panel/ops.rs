@@ -1,6 +1,8 @@
 //! 结果区文档 DML：新增 / 删除 / 编辑。异步执行后 emit Refresh 重跑命令刷新结果。
 //! toast 经 pending_notification 在下次 render 推送（与 dbclient::result_panel 同款）
 
+use std::collections::HashSet;
+
 use gpui::{ClickEvent, Context, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _,
@@ -22,9 +24,9 @@ impl ResultPanel {
         };
         // 字段模板：当前结果首个文档的顶层字段（排除 _id，让 mongo 自动生成）
         let fields: Vec<String> = self
-            .result
+            .docs_arc
             .as_ref()
-            .and_then(|r| r.documents.first())
+            .and_then(|docs| docs.first())
             .and_then(|d| d.as_object())
             .map(|m| m.keys().filter(|k| k.as_str() != "_id").cloned().collect())
             .unwrap_or_default();
@@ -225,19 +227,31 @@ impl ResultPanel {
 
     /// 弹删除确认；确认后对勾选行按 _id 逐个 delete_one
     pub(crate) fn open_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(result) = self.result.as_ref() else {
+        let Some(documents) = self.docs_arc.as_ref() else {
             return;
         };
         let ids: Vec<Value> = self
             .selected_rows
             .iter()
-            .filter_map(|&i| result.documents.get(i))
+            .filter_map(|&i| documents.get(i))
             .filter_map(|d| d.get("_id").cloned())
             .collect();
         if ids.is_empty() {
             return self.notify_error("勾选的文档缺少 _id，无法删除".to_string(), cx);
         }
         let n = ids.len();
+        let hidden = self.filtered_row_indices(cx).as_ref().map_or(0, |visible| {
+            let visible: HashSet<usize> = visible.iter().copied().collect();
+            self.selected_rows
+                .iter()
+                .filter(|ri| !visible.contains(ri))
+                .count()
+        });
+        let hidden_hint = if hidden > 0 {
+            format!("；其中 {hidden} 个当前被筛选隐藏")
+        } else {
+            String::new()
+        };
         let coll = self.target_collection.clone().unwrap_or_default();
         let panel = cx.entity().clone();
         let title = SharedString::from(format!("删除 {n} 个文档？"));
@@ -245,6 +259,7 @@ impl ResultPanel {
             let panel_apply = panel.clone();
             let ids_apply = ids.clone();
             let coll_hint = coll.clone();
+            let hidden_hint = hidden_hint.clone();
             let cancel = Button::new("mongo-del-cancel")
                 .ghost()
                 .small()
@@ -266,7 +281,7 @@ impl ResultPanel {
                 .content(move |content, _, cx| {
                     let muted = cx.theme().muted_foreground;
                     content.child(div().text_sm().text_color(muted).child(SharedString::from(
-                        format!("将从「{coll_hint}」按 _id 逐个删除，操作不可撤销"),
+                        format!("将从「{coll_hint}」按 _id 逐个删除{hidden_hint}，操作不可撤销"),
                     )))
                 })
                 .footer(dialog_footer(cancel, apply))

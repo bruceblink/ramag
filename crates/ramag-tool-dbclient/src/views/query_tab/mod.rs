@@ -55,8 +55,6 @@ pub struct QueryTab {
     pub(super) pinned_target: Option<(String, String)>,
     /// 是否显示 SQL 编辑器
     pub(super) show_editor: bool,
-    /// 自动 LIMIT 注入档位：Some(上限行数) / None=关闭；工具条可切换
-    pub(super) auto_limit: Option<usize>,
     /// 分页状态：本次 run 命中"未手写 LIMIT 的单条 SELECT"时为 Some
     pub(super) pager: Option<paging::Pager>,
     /// 上次自动注入的 SQL（表树浏览 / 示例）。编辑器内容仍与之相等 = 用户未手改，
@@ -143,8 +141,6 @@ impl QueryTab {
             pending_notification: None,
             pinned_target: None,
             show_editor: true,
-            // 默认开启 LIMIT 自动注入（10,000）；用户可在工具条切换档位或关闭
-            auto_limit: Some(sql_utils::AUTO_LIMIT_DEFAULT),
             pager: None,
             last_injected_sql: None,
             _editor_sub: editor_sub,
@@ -187,12 +183,9 @@ impl QueryTab {
         self.last_injected_sql = Some(sql);
     }
 
-    /// 工具条切换自动 LIMIT 档位（Some(n) / None=关闭）；下次运行生效
+    /// 工具条切换全局自动 LIMIT 档位；所有已打开查询标签立即使用同一值。
     pub(super) fn set_auto_limit(&mut self, limit: Option<usize>, cx: &mut Context<Self>) {
-        if self.auto_limit != limit {
-            self.auto_limit = limit;
-            cx.notify();
-        }
+        ramag_ui::preferences::set_sql_auto_limit(limit, cx);
     }
 
     /// 由 QueryPanel 全局同步：是否展示顶部 SQL 编辑器

@@ -34,6 +34,9 @@ impl ClipboardView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("剪贴板设置"),
             )
+            .when(self.settings_saving, |view| {
+                view.child(div().text_xs().text_color(muted).child("保存中…"))
+            })
             // 设置降级（读取失败 / 损坏）：采集已 fail-closed 暂停，必须让用户知情
             .when(self.service.settings_degraded(), |view| {
                 view.child(div().text_xs().text_color(gpui::red()).child(
@@ -49,7 +52,7 @@ impl ClipboardView {
                     clipboard_hotkey(s.alternate_hotkey)
                 ),
                 s.enabled,
-                false,
+                self.settings_saving,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
@@ -81,7 +84,7 @@ impl ClipboardView {
                     clipboard_hotkey(false)
                 ),
                 s.alternate_hotkey,
-                !s.enabled,
+                self.settings_saving || !s.enabled,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
@@ -94,7 +97,7 @@ impl ClipboardView {
                 "采集图片",
                 "记录复制的图片（占用磁盘较多）",
                 s.capture_images,
-                !s.enabled,
+                self.settings_saving || !s.enabled,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
@@ -107,7 +110,7 @@ impl ClipboardView {
                 "自动粘贴",
                 auto_paste_description(),
                 s.auto_paste,
-                !s.enabled,
+                self.settings_saving || !s.enabled,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
@@ -145,6 +148,7 @@ impl ClipboardView {
                             .ghost()
                             .small()
                             .label("恢复记录")
+                            .disabled(self.settings_saving)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.unblacklist_source(&source_id_for_click, cx);
                             })),

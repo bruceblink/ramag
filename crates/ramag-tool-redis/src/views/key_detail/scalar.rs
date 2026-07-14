@@ -74,6 +74,7 @@ pub(super) fn render_scalar(
 
     // 编辑入口仅对 Text 类型开放（Bytes 二进制不支持文本编辑）：双击内容区打开编辑窗口
     let edit_target: Option<(String, String)> = match v {
+        _ if panel.is_read_only() => None,
         RedisValue::Text(s) => Some((key.to_string(), s.clone())),
         _ => None,
     };

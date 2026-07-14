@@ -209,11 +209,8 @@ impl DbClientView {
         let Some(storage) = ramag_ui::theme::storage_from_cx(cx) else {
             return;
         };
-        let ids: Vec<ramag_domain::entities::ConnectionId> = self
-            .sessions
-            .iter()
-            .map(|s| s.config.id.clone())
-            .collect();
+        let ids: Vec<ramag_domain::entities::ConnectionId> =
+            self.sessions.iter().map(|s| s.config.id.clone()).collect();
         let active = self
             .active_session
             .and_then(|i| self.sessions.get(i))
@@ -310,7 +307,12 @@ impl DbClientView {
 
     /// 配置更新后的一键重连：丢弃 stale 标记，用槽内新配置重建会话
     /// （手写草稿按连接 id 持久化，新会话创建时自动恢复）
-    pub(super) fn reconnect_slot(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn reconnect_slot(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(slot) = self.sessions.get_mut(idx) else {
             return;
         };
@@ -365,6 +367,16 @@ impl DbClientView {
             .update(cx, |p, cx| p.prefetch_version(&conn_id, cx));
         self.persist_open_sessions(cx);
         cx.notify();
+    }
+
+    /// 首页快捷入口：打开指定已保存连接；若已打开则切换到现有标签。
+    pub fn open_connection(
+        &mut self,
+        config: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_session(config, window, cx);
     }
 
     /// 关闭某个 Session Tab

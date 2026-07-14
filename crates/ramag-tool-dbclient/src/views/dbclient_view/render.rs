@@ -239,31 +239,33 @@ impl Render for DbClientView {
 
         // stale 槽显示"配置已更新"面板（暂停查询与写入，等待用户一键重连）
         let center_view: gpui::AnyElement = match &self.center {
-            CenterMode::Session => match active.and_then(|i| self.sessions.get(i).map(|s| (i, s))) {
-                Some((idx, slot)) if slot.stale => self
-                    .render_stale_panel(idx, &slot.config.name, cx)
-                    .into_any_element(),
-                Some((_, slot)) => match &slot.entity {
-                    Some(entity) => {
-                        let view: AnyView = entity.to_any_view();
+            CenterMode::Session => {
+                match active.and_then(|i| self.sessions.get(i).map(|s| (i, s))) {
+                    Some((idx, slot)) if slot.stale => self
+                        .render_stale_panel(idx, &slot.config.name, cx)
+                        .into_any_element(),
+                    Some((_, slot)) => match &slot.entity {
+                        Some(entity) => {
+                            let view: AnyView = entity.to_any_view();
+                            div().size_full().child(view).into_any_element()
+                        }
+                        // 兜底：实体缺失（本帧顶部已尝试补建），显示占位避免空白
+                        None => div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(muted_fg)
+                            .child("正在打开连接…")
+                            .into_any_element(),
+                    },
+                    None => {
+                        let view: AnyView = self.picker.clone().into();
                         div().size_full().child(view).into_any_element()
                     }
-                    // 兜底：实体缺失（本帧顶部已尝试补建），显示占位避免空白
-                    None => div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_xs()
-                        .text_color(muted_fg)
-                        .child("正在打开连接…")
-                        .into_any_element(),
-                },
-                None => {
-                    let view: AnyView = self.picker.clone().into();
-                    div().size_full().child(view).into_any_element()
                 }
-            },
+            }
             CenterMode::ConnectionPicker => {
                 let view: AnyView = self.picker.clone().into();
                 div().size_full().child(view).into_any_element()

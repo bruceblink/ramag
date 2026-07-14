@@ -1,6 +1,7 @@
 //! 结果集导出：CSV（基于扁平表格）/ JSON（原始文档）。
 //! rfd 保存框阻塞，放 std::thread 跑，结果经 oneshot 回主线程（与 dbclient 同款）。
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use futures::channel::oneshot;
@@ -14,10 +15,10 @@ impl ResultPanel {
     /// 导出当前结果，范围三档与表格所见一致：勾选行 >「当前视图（筛选/排序后）」> 全部。
     /// CSV 按可见列投影；JSON 按范围行导原始文档（文档本身不裁字段）
     pub(crate) fn export_documents(&mut self, as_csv: bool, cx: &mut Context<Self>) {
-        let Some(result) = self.result.as_ref() else {
+        let Some(documents) = self.docs_arc.as_ref() else {
             return self.notify_error("无可导出的结果".to_string(), cx);
         };
-        if result.documents.is_empty() {
+        if documents.is_empty() {
             return self.notify_error("结果为空，无需导出".to_string(), cx);
         }
         let Some(table) = self.table.as_ref() else {
@@ -34,7 +35,19 @@ impl ResultPanel {
                 .filter(|i| *i < table.rows.len())
                 .collect();
             let n = v.len();
-            (v, format!("选中 {n} 行"))
+            let hidden = filtered.as_ref().map_or(0, |visible| {
+                let visible: HashSet<usize> = visible.iter().copied().collect();
+                self.selected_rows
+                    .iter()
+                    .filter(|ri| !visible.contains(ri))
+                    .count()
+            });
+            let scope = if hidden > 0 {
+                format!("选中 {n} 行，其中 {hidden} 行当前隐藏")
+            } else {
+                format!("选中 {n} 行")
+            };
+            (v, scope)
         } else if let Some(v) = filtered {
             let n = v.len();
             (v, format!("当前视图（筛选后）{n} 行"))
@@ -75,10 +88,8 @@ impl ResultPanel {
         } else {
             // JSON 按范围行导原始文档。注：钻取视图下表格行与原始文档非一一对应，
             // 此时可能取不到对应文档（导出为空则提示改用 CSV）
-            let docs: Vec<&serde_json::Value> = rows
-                .iter()
-                .filter_map(|&i| result.documents.get(i))
-                .collect();
+            let docs: Vec<&serde_json::Value> =
+                rows.iter().filter_map(|&i| documents.get(i)).collect();
             if docs.is_empty() {
                 return self.notify_error(
                     "当前视图与原始文档不对应（钻取层），请改用 CSV 导出".to_string(),

@@ -3,7 +3,9 @@
 
 use async_trait::async_trait;
 
-use crate::entities::{ConnectionConfig, ConnectionId, RedisType, RedisValue, ScanResult};
+use crate::entities::{
+    ConnectionConfig, ConnectionId, RedisType, RedisValue, RedisValueLoad, ScanResult,
+};
 use crate::error::Result;
 
 #[async_trait]
@@ -39,6 +41,18 @@ pub trait KvDriver: Send + Sync {
     /// 按 TYPE dispatch 取完整 value（GET / LRANGE / HGETALL / SMEMBERS / ZRANGE WITHSCORES / XRANGE）
     /// key 不存在返回 [`RedisValue::Nil`]
     async fn get_value(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<RedisValue>;
+
+    /// 最多加载集合前 `limit` 项，并返回服务端总数；标量忽略 limit。
+    async fn get_value_limited(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        limit: usize,
+    ) -> Result<RedisValueLoad>;
+
+    /// 与后端只读保护使用同一分类器，供界面在发请求前禁用 / 拦截写命令。
+    fn is_write_command(&self, command: &str) -> bool;
 
     /// DEL。true=删除了 key，false=本就不存在
     async fn delete_key(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<bool>;

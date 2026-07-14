@@ -30,6 +30,12 @@ impl Render for ClipboardView {
         let muted = theme.muted_foreground;
         let visible = self.visible_items(cx);
         let count = visible.len();
+        let query_active = !self.search.read(cx).value().trim().is_empty();
+        let count_label = if query_active && self.search_truncated {
+            format!("显示 {count} 条 · 历史匹配至少 500 条，仅加载前 500 条")
+        } else {
+            format!("{count} 条")
+        };
         let focus = self.focus_handle.clone();
 
         v_flex()
@@ -69,7 +75,7 @@ impl Render for ClipboardView {
                                     .border_color(border)
                                     .text_xs()
                                     .text_color(muted)
-                                    .child(format!("{count} 条")),
+                                    .child(count_label),
                             ),
                     )
                     .child(
@@ -119,6 +125,7 @@ impl ClipboardView {
                             .small()
                             .icon(icons::settings())
                             .selected(self.show_settings)
+                            .tooltip("剪贴板设置")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.show_settings = !this.show_settings;
                                 cx.notify();
@@ -139,31 +146,15 @@ impl ClipboardView {
 
     /// 类型筛选 chips：全部 + 各 ClipKind
     fn render_filter_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let accent = theme.accent;
-        let muted = theme.muted_foreground;
-        let secondary = theme.secondary;
-
         let mut row = h_flex().items_center().gap(px(4.0));
-        let chip = |label: SharedString, active: bool| {
-            let mut tint = accent;
-            tint.a = 0.15;
-            div()
-                .px(px(8.0))
-                .py(px(3.0))
-                .rounded_md()
-                .text_xs()
-                .when(active, |d| d.bg(tint).text_color(accent))
-                .when(!active, |d| d.bg(secondary).text_color(muted))
-                .child(label)
-        };
 
         // 全部
         row = row.child(
-            div()
-                .id("filter-all")
-                .cursor_pointer()
-                .child(chip("全部".into(), self.filter.is_none()))
+            Button::new("filter-all")
+                .ghost()
+                .xsmall()
+                .label("全部")
+                .selected(self.filter.is_none())
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.filter = None;
                     // 切换筛选回到列表浏览，关闭设置面板
@@ -174,10 +165,11 @@ impl ClipboardView {
         for &kind in ClipKind::all() {
             let active = self.filter == Some(kind);
             row = row.child(
-                div()
-                    .id(SharedString::from(format!("filter-{}", kind.label())))
-                    .cursor_pointer()
-                    .child(chip(kind.label().into(), active))
+                Button::new(SharedString::from(format!("filter-{}", kind.label())))
+                    .ghost()
+                    .xsmall()
+                    .label(kind.label())
+                    .selected(active)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.filter = Some(kind);
                         this.show_settings = false;

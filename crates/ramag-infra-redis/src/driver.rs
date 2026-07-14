@@ -1,7 +1,9 @@
 //! RedisDriver。实现 KvDriver。每个方法：clone config + pool 句柄 → run_in_tokio → 取 mgr 发命令 → 解码 → 映射错
 
 use async_trait::async_trait;
-use ramag_domain::entities::{ConnectionConfig, KeyMeta, RedisType, RedisValue, ScanResult};
+use ramag_domain::entities::{
+    ConnectionConfig, KeyMeta, RedisType, RedisValue, RedisValueLoad, ScanResult,
+};
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
 use redis::aio::ConnectionManager;
@@ -48,6 +50,10 @@ fn ensure_writable(config: &ConnectionConfig, op: &str) -> Result<()> {
 impl KvDriver for RedisDriver {
     fn name(&self) -> &'static str {
         "redis"
+    }
+
+    fn is_write_command(&self, command: &str) -> bool {
+        is_write_command(command)
     }
 
     async fn test_connection(&self, config: &ConnectionConfig) -> Result<()> {
@@ -148,9 +154,23 @@ impl KvDriver for RedisDriver {
     }
 
     async fn get_value(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<RedisValue> {
+        Ok(self
+            .get_value_limited(config, db, key, DEFAULT_COLLECTION_LIMIT)
+            .await?
+            .value)
+    }
+
+    async fn get_value_limited(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        limit: usize,
+    ) -> Result<RedisValueLoad> {
         let config = config.clone();
         let pools = self.pools.clone_handle();
         let key = key.to_owned();
+        let limit = limit.max(1);
         run_in_tokio(async move {
             let mut mgr = pools.get_or_create(&config, db).await?;
             // 先 TYPE 再按类型 dispatch
@@ -161,15 +181,17 @@ impl KvDriver for RedisDriver {
                 .map_err(map_redis_error)?;
             let kind = RedisType::parse(&t);
             debug!(?key, ?kind, "get_value dispatch");
-            match kind {
+            let total = fetch_collection_len(&mut mgr, &key, kind).await?;
+            let value = match kind {
                 RedisType::None => Ok(RedisValue::Nil),
                 RedisType::String => fetch_string(&mut mgr, &key).await,
-                RedisType::List => fetch_list(&mut mgr, &key).await,
-                RedisType::Hash => fetch_hash(&mut mgr, &key).await,
-                RedisType::Set => fetch_set(&mut mgr, &key).await,
-                RedisType::ZSet => fetch_zset(&mut mgr, &key).await,
-                RedisType::Stream => fetch_stream(&mut mgr, &key).await,
-            }
+                RedisType::List => fetch_list(&mut mgr, &key, limit).await,
+                RedisType::Hash => fetch_hash(&mut mgr, &key, limit).await,
+                RedisType::Set => fetch_set(&mut mgr, &key, limit).await,
+                RedisType::ZSet => fetch_zset(&mut mgr, &key, limit).await,
+                RedisType::Stream => fetch_stream(&mut mgr, &key, limit).await,
+            }?;
+            Ok(RedisValueLoad { value, total })
         })
         .await
     }
@@ -301,7 +323,28 @@ fn parse_redis_version(info: &str) -> String {
 
 /// 集合类型单次加载成员上限：防百万成员 key 一次性拉全量撑爆内存 / 卡死服务端。
 /// 超过时只取前 N，UI 侧据 RedisValue 的成员数与实际长度差异提示「仅显示前 N」。
-const MAX_COLLECTION_MEMBERS: isize = 10_000;
+const DEFAULT_COLLECTION_LIMIT: usize = 10_000;
+
+async fn fetch_collection_len(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    kind: RedisType,
+) -> Result<Option<u64>> {
+    let command = match kind {
+        RedisType::List => "LLEN",
+        RedisType::Hash => "HLEN",
+        RedisType::Set => "SCARD",
+        RedisType::ZSet => "ZCARD",
+        RedisType::Stream => "XLEN",
+        RedisType::String | RedisType::None => return Ok(None),
+    };
+    let total: u64 = redis::cmd(command)
+        .arg(key)
+        .query_async(mgr)
+        .await
+        .map_err(map_redis_error)?;
+    Ok(Some(total))
+}
 
 async fn fetch_string(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
     let v: RV = redis::cmd("GET")
@@ -312,12 +355,12 @@ async fn fetch_string(mgr: &mut ConnectionManager, key: &str) -> Result<RedisVal
     Ok(decode_value(v))
 }
 
-async fn fetch_list(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
+async fn fetch_list(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
     // LRANGE 0 N-1 只取前 N，避免 `0 -1` 全量拉取
     let v: RV = redis::cmd("LRANGE")
         .arg(key)
         .arg(0)
-        .arg(MAX_COLLECTION_MEMBERS - 1)
+        .arg(limit.saturating_sub(1))
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
@@ -333,47 +376,72 @@ async fn fetch_list(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue
     Ok(RedisValue::List(elems))
 }
 
-async fn fetch_hash(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
-    // HSCAN 游标取前 N 对，替代可能拉全量的 HGETALL
-    let v: RV = redis::cmd("HSCAN")
-        .arg(key)
-        .arg(0)
-        .arg("COUNT")
-        .arg(MAX_COLLECTION_MEMBERS)
-        .query_async(mgr)
-        .await
-        .map_err(map_redis_error)?;
-    decode_hash_pairs(scan_payload(v, "HSCAN")?)
+async fn fetch_hash(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+    // COUNT 只是 hint，必须续扫游标，不能把第一批误当成完整结果。
+    let mut cursor = 0u64;
+    let mut pairs = Vec::with_capacity(limit.min(DEFAULT_COLLECTION_LIMIT));
+    loop {
+        let v: RV = redis::cmd("HSCAN")
+            .arg(key)
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(limit.saturating_sub(pairs.len()).max(1))
+            .query_async(&mut *mgr)
+            .await
+            .map_err(map_redis_error)?;
+        let (next, payload) = scan_parts(v, "HSCAN")?;
+        let RedisValue::Hash(batch) = decode_hash_pairs(payload)? else {
+            return Err(DomainError::QueryFailed("HSCAN 解码结果类型异常".into()));
+        };
+        pairs.extend(batch.into_iter().take(limit.saturating_sub(pairs.len())));
+        cursor = next;
+        if cursor == 0 || pairs.len() >= limit {
+            break;
+        }
+    }
+    Ok(RedisValue::Hash(pairs))
 }
 
-async fn fetch_set(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
-    // SSCAN 游标取前 N，替代可能拉全量的 SMEMBERS
-    let v: RV = redis::cmd("SSCAN")
-        .arg(key)
-        .arg(0)
-        .arg("COUNT")
-        .arg(MAX_COLLECTION_MEMBERS)
-        .query_async(mgr)
-        .await
-        .map_err(map_redis_error)?;
-    let elems = match scan_payload(v, "SSCAN")? {
-        RV::Array(a) => a.into_iter().map(decode_value).collect(),
-        RV::Nil => return Ok(RedisValue::Nil),
-        other => {
-            return Err(DomainError::QueryFailed(format!(
-                "SSCAN 应答非数组：{other:?}"
-            )));
+async fn fetch_set(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+    let mut cursor = 0u64;
+    let mut elems = Vec::with_capacity(limit.min(DEFAULT_COLLECTION_LIMIT));
+    loop {
+        let v: RV = redis::cmd("SSCAN")
+            .arg(key)
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(limit.saturating_sub(elems.len()).max(1))
+            .query_async(&mut *mgr)
+            .await
+            .map_err(map_redis_error)?;
+        let (next, payload) = scan_parts(v, "SSCAN")?;
+        match payload {
+            RV::Array(a) => elems.extend(
+                a.into_iter()
+                    .map(decode_value)
+                    .take(limit.saturating_sub(elems.len())),
+            ),
+            RV::Nil => {}
+            other => {
+                return Err(DomainError::QueryFailed(format!(
+                    "SSCAN 应答非数组：{other:?}"
+                )));
+            }
         }
-    };
+        cursor = next;
+        if cursor == 0 || elems.len() >= limit {
+            break;
+        }
+    }
     Ok(RedisValue::Set(elems))
 }
 
-async fn fetch_zset(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
+async fn fetch_zset(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
     // ZRANGE 0 N-1 只取前 N（按 score 升序），避免 `0 -1` 全量拉取
     let v: RV = redis::cmd("ZRANGE")
         .arg(key)
         .arg(0)
-        .arg(MAX_COLLECTION_MEMBERS - 1)
+        .arg(limit.saturating_sub(1))
         .arg("WITHSCORES")
         .query_async(mgr)
         .await
@@ -381,14 +449,14 @@ async fn fetch_zset(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue
     decode_zset_with_scores(v)
 }
 
-async fn fetch_stream(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
+async fn fetch_stream(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
     // XRANGE - + COUNT N 只取前 N 条
     let v: RV = redis::cmd("XRANGE")
         .arg(key)
         .arg("-")
         .arg("+")
         .arg("COUNT")
-        .arg(MAX_COLLECTION_MEMBERS)
+        .arg(limit)
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
@@ -396,14 +464,34 @@ async fn fetch_stream(mgr: &mut ConnectionManager, key: &str) -> Result<RedisVal
 }
 
 /// SCAN 系列（HSCAN/SSCAN）应答 `Array([cursor, Array([...])])`，取出成员数组部分
-fn scan_payload(v: RV, cmd: &str) -> Result<RV> {
+fn scan_parts(v: RV, cmd: &str) -> Result<(u64, RV)> {
     match v {
-        RV::Array(mut a) if a.len() == 2 => Ok(a.pop().unwrap_or(RV::Nil)),
-        RV::Nil => Ok(RV::Nil),
+        RV::Array(mut a) if a.len() == 2 => {
+            let payload = a.pop().unwrap_or(RV::Nil);
+            let cursor = parse_cursor(a.pop().unwrap_or(RV::Nil), cmd)?;
+            Ok((cursor, payload))
+        }
+        RV::Nil => Ok((0, RV::Nil)),
         other => Err(DomainError::QueryFailed(format!(
             "{cmd} 应答格式异常：{other:?}"
         ))),
     }
+}
+
+fn parse_cursor(value: RV, cmd: &str) -> Result<u64> {
+    let text = match value {
+        RV::BulkString(bytes) => String::from_utf8(bytes)
+            .map_err(|e| DomainError::QueryFailed(format!("{cmd} cursor 非 UTF-8：{e}")))?,
+        RV::SimpleString(s) => s,
+        RV::Int(i) if i >= 0 => return Ok(i as u64),
+        other => {
+            return Err(DomainError::QueryFailed(format!(
+                "{cmd} cursor 类型异常：{other:?}"
+            )));
+        }
+    };
+    text.parse::<u64>()
+        .map_err(|e| DomainError::QueryFailed(format!("{cmd} cursor 非数字：{e}")))
 }
 
 /// SCAN 应答 `Array([cursor_str, Array([key, ...])])`
@@ -499,5 +587,23 @@ mod tests {
         let r = parse_scan_response(v).unwrap();
         assert_eq!(r.cursor, 0);
         assert!(r.keys.is_empty());
+    }
+
+    #[test]
+    fn scan_parts_preserves_cursor_and_payload() {
+        let response = RV::Array(vec![
+            RV::BulkString(b"9".to_vec()),
+            RV::Array(vec![RV::BulkString(b"member".to_vec())]),
+        ]);
+
+        let (cursor, payload) = scan_parts(response, "SSCAN").unwrap();
+
+        assert_eq!(cursor, 9);
+        assert!(matches!(payload, RV::Array(values) if values.len() == 1));
+    }
+
+    #[test]
+    fn scan_cursor_rejects_negative_integer() {
+        assert!(parse_cursor(RV::Int(-1), "HSCAN").is_err());
     }
 }

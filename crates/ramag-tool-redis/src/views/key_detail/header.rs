@@ -2,7 +2,7 @@
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
-    IconName, Sizable as _,
+    Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -34,6 +34,7 @@ pub(super) fn render_header(
     // 借用而非 clone：header 只按 variant 判类型 / 取长度，不读容器内容。
     // 原来每帧深拷贝整个 value（大 Hash/ZSet 可达数 MB / 十万级元素）
     let value_ref = panel.value.as_ref();
+    let read_only = panel.is_read_only();
 
     // 元信息行（第二行）
     let mut info_row = h_flex()
@@ -60,29 +61,79 @@ pub(super) fn render_header(
         );
     }
 
-    // TTL 行：accent 颜色 + 可点击 → emit RequestEditTtl
-    info_row = info_row.child(
-        div()
-            .id("ttl-edit-trigger")
-            .text_color(accent)
-            .cursor_pointer()
-            .hover(|this| this.opacity(0.75))
-            .child(format!("TTL {ttl_label} ✎"))
-            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                cx.emit(KeyDetailEvent::RequestEditTtl(
-                    key_for_ttl.clone(),
-                    ttl_ms_for_event,
-                ));
-            })),
-    );
+    // TTL 读取失败与 key 内容分开呈现，并提供局部重试。
+    info_row = if panel.ttl_loading {
+        info_row.child(
+            Button::new("ttl-loading")
+                .ghost()
+                .xsmall()
+                .label("TTL 获取中…")
+                .disabled(true),
+        )
+    } else if let Some(error) = panel.ttl_error.as_ref() {
+        info_row.child(
+            Button::new("ttl-retry")
+                .ghost()
+                .xsmall()
+                .label("TTL 获取失败 · 重试")
+                .text_color(gpui::red())
+                .tooltip(error.clone())
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.reload_ttl(cx))),
+        )
+    } else {
+        info_row.child(
+            Button::new("ttl-edit-trigger")
+                .ghost()
+                .xsmall()
+                .label(format!("TTL {ttl_label} ✎"))
+                .text_color(accent)
+                .disabled(read_only)
+                .tooltip(if read_only {
+                    "生产连接为只读，不能修改 TTL"
+                } else {
+                    "编辑 TTL"
+                })
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    cx.emit(KeyDetailEvent::RequestEditTtl(
+                        key_for_ttl.clone(),
+                        ttl_ms_for_event,
+                    ));
+                })),
+        )
+    };
 
-    if let Some(n) = value_ref.and_then(|v| v.len()) {
-        info_row = info_row.child(div().child(format!("{n} 元素")));
+    if let Some(loaded) = value_ref.and_then(RedisValue::len) {
+        let label = match panel.collection_total {
+            Some(total) => format!("已加载 {loaded} / {total} 元素"),
+            None => format!("{loaded} 元素"),
+        };
+        info_row = info_row.child(div().child(label));
+        if panel.has_more() || panel.loading_more {
+            let remaining = panel
+                .collection_total
+                .unwrap_or(loaded as u64)
+                .saturating_sub(loaded as u64)
+                .min(super::COLLECTION_PAGE_SIZE as u64);
+            info_row = info_row.child(
+                Button::new("redis-load-more-members")
+                    .ghost()
+                    .xsmall()
+                    .label(if panel.loading_more {
+                        "加载中…".to_string()
+                    } else {
+                        format!("继续加载 {}", format_count(remaining))
+                    })
+                    .disabled(panel.loading_more)
+                    .tooltip("继续从服务端加载集合成员")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load_more(cx))),
+            );
+        }
     }
 
     info_row = info_row.child(render_size_chip(
         panel.key_size_bytes,
         panel.estimating_size,
+        panel.size_error.as_deref(),
         muted_fg,
         accent,
         cx,
@@ -121,30 +172,35 @@ pub(super) fn render_header(
             RedisValue::Hash(_) => header.child(add_btn(
                 "redis-hash-add-field",
                 "新增 Hash 字段",
+                read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddHashField(key_for_emit.clone()),
             )),
             RedisValue::List(_) => header.child(add_btn(
                 "redis-list-add-elem",
                 "新增 List 元素",
+                read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddListElement(key_for_emit.clone()),
             )),
             RedisValue::Set(_) => header.child(add_btn(
                 "redis-set-add-elem",
                 "新增 Set 元素",
+                read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddSetElement(key_for_emit.clone()),
             )),
             RedisValue::ZSet(_) => header.child(add_btn(
                 "redis-zset-add-elem",
                 "新增 ZSet 成员",
+                read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddZSetElement(key_for_emit.clone()),
             )),
             RedisValue::Stream(_) => header.child(add_btn(
                 "redis-stream-add-entry",
                 "新增 Stream 条目",
+                read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddStreamEntry(key_for_emit.clone()),
             )),
@@ -158,7 +214,12 @@ pub(super) fn render_header(
             .danger()
             .small()
             .icon(ramag_ui::icons::trash())
-            .tooltip("删除 Key")
+            .tooltip(if read_only {
+                "生产连接为只读，不能删除 Key"
+            } else {
+                "删除 Key"
+            })
+            .disabled(read_only)
             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                 cx.emit(KeyDetailEvent::RequestDeleteKey(key_for_del.clone()));
             })),
@@ -168,6 +229,7 @@ pub(super) fn render_header(
 fn add_btn<F>(
     id: &'static str,
     tooltip: &'static str,
+    disabled: bool,
     cx: &mut Context<KeyDetailPanel>,
     make_event: F,
 ) -> impl IntoElement + use<F>
@@ -178,10 +240,27 @@ where
         .outline()
         .small()
         .icon(IconName::Plus)
-        .tooltip(tooltip)
+        .tooltip(if disabled {
+            "生产连接为只读"
+        } else {
+            tooltip
+        })
+        .disabled(disabled)
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
             cx.emit(make_event());
         }))
+}
+
+fn format_count(count: u64) -> String {
+    let digits = count.to_string();
+    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            output.push(',');
+        }
+        output.push(ch);
+    }
+    output
 }
 
 /// MEMORY USAGE 显示 chip：未估算时显示 [字节数] 按钮 → 触发 estimate_size；
@@ -189,6 +268,7 @@ where
 fn render_size_chip(
     bytes: Option<u64>,
     estimating: bool,
+    error: Option<&str>,
     muted_fg: gpui::Hsla,
     accent: gpui::Hsla,
     cx: &mut Context<KeyDetailPanel>,
@@ -206,13 +286,22 @@ fn render_size_chip(
             .text_color(muted_fg)
             .child("估算中…")
             .into_any_element()
+    } else if let Some(message) = error {
+        Button::new("size-retry")
+            .ghost()
+            .xsmall()
+            .label("大小估算失败 · 重试")
+            .text_color(gpui::red())
+            .tooltip(message.to_string())
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.estimate_size(cx)))
+            .into_any_element()
     } else {
-        div()
-            .id("size-trigger")
+        Button::new("size-trigger")
+            .ghost()
+            .xsmall()
+            .label("估算大小")
             .text_color(accent)
-            .cursor_pointer()
-            .hover(|this| this.opacity(0.75))
-            .child("估算大小")
+            .tooltip("执行 MEMORY USAGE")
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.estimate_size(cx)))
             .into_any_element()
     }

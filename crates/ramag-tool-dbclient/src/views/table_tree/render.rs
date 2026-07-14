@@ -127,9 +127,32 @@ impl Render for TableTreePanel {
         } else {
             format!("数据库 ({visible_schemas}/{total_schemas})")
         };
-        // 库过多时搜索不自动补拉未加载 schema（防雪崩，见 ensure_search_coverage）——如实标注范围
-        if !self.current_filter(cx).is_empty() && total_schemas > 50 {
-            header_text.push_str(" · 库过多，搜索仅覆盖已展开的库");
+        let searchable_schemas = self
+            .schemas
+            .iter()
+            .filter(|schema| {
+                self.expanded
+                    .get(&schema.name)
+                    .is_some_and(|entry| !entry.loading && entry.error.is_none())
+            })
+            .count();
+        let failed_schemas = self
+            .schemas
+            .iter()
+            .filter(|schema| {
+                self.expanded
+                    .get(&schema.name)
+                    .is_some_and(|entry| entry.error.is_some())
+            })
+            .count();
+        let search_incomplete = has_filter && searchable_schemas < total_schemas;
+        if search_incomplete {
+            header_text.push_str(&format!(
+                " · 当前搜索范围 {searchable_schemas}/{total_schemas} 个库"
+            ));
+        }
+        if has_filter && failed_schemas > 0 {
+            header_text.push_str(&format!(" · {failed_schemas} 个库加载失败"));
         }
         let toggle_icon = if show_system {
             IconName::Eye
@@ -264,10 +287,51 @@ impl Render for TableTreePanel {
                     })),
             );
 
+        let can_retry_failed = failed_schemas > 0;
+        let header_bar =
+            if has_filter && search_incomplete && (total_schemas > 50 || can_retry_failed) {
+                if let Some(progress) = self.full_search {
+                    header_bar.child(
+                        Button::new("stop-full-schema-search")
+                            .small()
+                            .label(format!("停止 {}/{}", progress.completed, progress.total))
+                            .tooltip(format!(
+                                "停止加载其余库；已完成 {} 个，失败 {} 个",
+                                progress.completed, progress.failed
+                            ))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.cancel_full_search(cx);
+                            })),
+                    )
+                } else {
+                    let retry_only = failed_schemas > 0
+                        && searchable_schemas.saturating_add(failed_schemas) == total_schemas;
+                    header_bar.child(
+                        Button::new("search-all-schemas")
+                            .small()
+                            .label(if retry_only {
+                                "重试失败"
+                            } else {
+                                "搜索全部"
+                            })
+                            .tooltip(if retry_only {
+                                "重新加载搜索失败的库"
+                            } else {
+                                "逐个加载尚未覆盖的库；可随时停止"
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.load_all_tables_for_search(cx);
+                            })),
+                    )
+                }
+            } else {
+                header_bar
+            };
+
         for s in schemas {
             let name = s.name.clone();
             let exp = expanded_snapshot.get(&name);
-            let is_expanded = exp.is_some();
+            let is_expanded = self.open_schemas.contains(&name) || has_filter;
             let is_sys = is_system_schema(&name);
 
             tree_rows.push(TreeRow::Schema {
@@ -277,7 +341,7 @@ impl Render for TableTreePanel {
             });
 
             // 展开内容
-            if let Some((loading, tables, error)) = exp {
+            if is_expanded && let Some((loading, tables, error)) = exp {
                 if *loading {
                     tree_rows.push(TreeRow::SchemaPlaceholder {
                         text: "加载 tables…".into(),

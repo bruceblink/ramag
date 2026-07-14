@@ -9,7 +9,7 @@ use gpui::{
     UniformListScrollHandle, div, px, uniform_list,
 };
 use gpui_component::{
-    Sizable as _,
+    Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -63,11 +63,12 @@ pub(super) fn render_stream_block(
             uniform_list(
                 "stream-rows",
                 count,
-                panel.processor(move |_this, range: Range<usize>, _w, cx| {
+                panel.processor(move |this, range: Range<usize>, _w, cx| {
+                    let read_only = this.is_read_only();
                     range
                         .filter_map(|i| {
                             let row = rows_for_closure.get(i)?;
-                            Some(stream_row(row, &key, fg, muted_fg, border, cx))
+                            Some(stream_row(row, &key, read_only, fg, muted_fg, border, cx))
                         })
                         .collect()
                 }),
@@ -80,6 +81,7 @@ pub(super) fn render_stream_block(
 fn stream_row(
     row: &StreamRow,
     key: &str,
+    read_only: bool,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     border: gpui::Hsla,
@@ -116,7 +118,12 @@ fn stream_row(
                         .ghost()
                         .xsmall()
                         .icon(ramag_ui::icons::trash())
-                        .tooltip("删除该条目")
+                        .disabled(read_only)
+                        .tooltip(if read_only {
+                            "生产连接为只读"
+                        } else {
+                            "删除该条目"
+                        })
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                             cx.emit(KeyDetailEvent::RequestDeleteStreamEntry(
                                 key_for_del.clone(),

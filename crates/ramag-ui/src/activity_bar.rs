@@ -19,6 +19,7 @@ use crate::icons;
 pub enum NavTarget {
     Home,
     Tool(String),
+    Settings,
 }
 
 #[derive(Debug, Clone)]
@@ -128,7 +129,7 @@ impl Render for ActivityBar {
             ));
         }
 
-        // 底部：主题三态循环（浅色 → 深色 → 跟随系统 → …），图标示当前态、tooltip 说明点击后果 + 设置占位
+        // 底部：主题快捷切换 + 完整设置中心。
         container = container.child(div().flex_1());
         let (theme_icon, theme_tip) = if crate::theme::is_following_system(cx) {
             (IconName::Palette, "外观：跟随系统 · 点击切为 浅色")
@@ -155,8 +156,18 @@ impl Render for ActivityBar {
                 }
             },
         ));
-        // 注：设置中心尚未实现，不放 no-op 占位按钮（点了没反应比没有更困惑）；
-        // 落地后在此恢复 settings 入口
+        let settings_selected = matches!(selected, NavTarget::Settings);
+        container = container.child(activity_item(
+            "settings",
+            icons::settings(),
+            settings_selected,
+            accent,
+            transparent,
+            Some(SharedString::from("设置")),
+            cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.navigate(NavTarget::Settings, cx);
+            }),
+        ));
 
         container
     }
@@ -191,16 +202,7 @@ fn set_follow_system(window: &Window, app: &mut gpui::App) {
 
 /// 主题偏好落 redb（后台异步，失败仅告警不阻断 UI）
 fn persist_theme_pref(app: &mut gpui::App, value: &'static str) {
-    let Some(storage) = crate::theme::storage_from_cx(app) else {
-        return;
-    };
-    app.background_executor()
-        .spawn(async move {
-            if let Err(e) = storage.set_preference("theme_mode", value).await {
-                tracing::warn!(error = %e, "failed to persist theme");
-            }
-        })
-        .detach();
+    crate::preferences::persist_preference_latest("theme_mode", value.to_string(), app);
 }
 
 /// 选中时左侧 2px accent 竖条

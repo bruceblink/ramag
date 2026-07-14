@@ -7,7 +7,7 @@ use gpui::{
     div, px, uniform_list,
 };
 use gpui_component::{
-    Sizable as _,
+    Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -41,11 +41,13 @@ pub(super) fn render_set_block(
                     let Some(RedisValue::Set(items)) = &this.value else {
                         return Vec::new();
                     };
+                    let read_only = this.is_read_only();
                     range
                         .filter_map(|i| {
                             let item = items.get(i)?;
                             Some(
-                                set_row(&key, i, item, fg, muted_fg, border, cx).into_any_element(),
+                                set_row(&key, i, item, read_only, fg, muted_fg, border, cx)
+                                    .into_any_element(),
                             )
                         })
                         .collect()
@@ -56,10 +58,12 @@ pub(super) fn render_set_block(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn set_row(
     key: &str,
     i: usize,
     item: &RedisValue,
+    read_only: bool,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     border: gpui::Hsla,
@@ -67,9 +71,10 @@ fn set_row(
 ) -> impl IntoElement + use<> {
     let preview = item.display_preview(256);
     let raw_member = match item {
-        RedisValue::Text(s) => s.clone(),
-        other => other.display_preview(8192),
+        RedisValue::Text(s) => Some(s.clone()),
+        _ => None,
     };
+    let delete_disabled = read_only || raw_member.is_none();
     let key_for_emit = key.to_string();
     let del_id = SharedString::from(format!("set-del-{i}"));
     h_flex()
@@ -105,12 +110,21 @@ fn set_row(
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::trash())
-                .tooltip("删除该成员")
+                .disabled(delete_disabled)
+                .tooltip(if read_only {
+                    "生产连接为只读"
+                } else if raw_member.is_none() {
+                    "二进制成员暂不支持安全删除"
+                } else {
+                    "删除该成员"
+                })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    cx.emit(KeyDetailEvent::RequestDeleteSetElement(
-                        key_for_emit.clone(),
-                        raw_member.clone(),
-                    ));
+                    if let Some(member) = raw_member.clone() {
+                        cx.emit(KeyDetailEvent::RequestDeleteSetElement(
+                            key_for_emit.clone(),
+                            member,
+                        ));
+                    }
                 })),
         )
 }

@@ -1,7 +1,8 @@
 //! 单行渲染 + 类型徽标。`impl KeyTreePanel`，闭包内调 select_key / toggle_expanded
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
+    prelude::*, px,
 };
 use gpui_component::{
     h_flex,
@@ -87,7 +88,7 @@ impl KeyTreePanel {
         theme_bg: gpui::Hsla,
         theme_muted: gpui::Hsla,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> AnyElement {
         let is_namespace = row.is_namespace;
         // SCAN 装载的 key 不带类型（leaf_type=None），叶子判定必须用 is_key
         let is_leaf = row.is_key;
@@ -189,18 +190,24 @@ impl KeyTreePanel {
             row_el = row_el.hover(move |this| this.bg(row_hover));
         }
 
-        // 右键菜单：删除 key / 删除前缀（按节点身份组合；清空 DB 在工具栏「更多操作」）
-        let entity_for_menu = cx.entity().clone();
-        let path_for_menu = row.full_path.clone();
-        row_el.context_menu(move |menu: PopupMenu, _, _| {
-            super::ops::node_context_menu(
-                menu,
-                entity_for_menu.clone(),
-                path_for_menu.clone(),
-                is_leaf,
-                is_namespace,
-            )
-        })
+        // 生产连接不挂载写操作菜单，避免“点得动、提交后才报只读”的假可用状态。
+        if self.is_read_only() {
+            row_el.into_any_element()
+        } else {
+            let entity_for_menu = cx.entity().clone();
+            let path_for_menu = row.full_path.clone();
+            row_el
+                .context_menu(move |menu: PopupMenu, _, _| {
+                    super::ops::node_context_menu(
+                        menu,
+                        entity_for_menu.clone(),
+                        path_for_menu.clone(),
+                        is_leaf,
+                        is_namespace,
+                    )
+                })
+                .into_any_element()
+        }
     }
 }
 

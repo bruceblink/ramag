@@ -17,7 +17,7 @@ use gpui::{
     Styled, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -233,6 +233,10 @@ impl KeyTreePanel {
         }
         cx.notify();
     }
+
+    pub(super) fn is_read_only(&self) -> bool {
+        self.config.as_ref().is_some_and(|config| config.production)
+    }
 }
 
 impl Render for KeyTreePanel {
@@ -255,6 +259,7 @@ impl Render for KeyTreePanel {
         let visible = self.flatten_visible();
         let visible_leaf_count = visible.iter().filter(|r| r.is_key).count();
         let selected = self.selected.clone();
+        let read_only = self.is_read_only();
 
         // 状态栏：扫描中报进度；带服务端 MATCH 时标注模式，区别于「共 N（全库）」
         let pattern_note = self
@@ -344,7 +349,14 @@ impl Render for KeyTreePanel {
                                             });
                                         }
                                         Err(_) => {
-                                            tracing::warn!("invalid redis db input ignored");
+                                            entity.update(app, |this, cx| {
+                                                this.pending_notification = Some(
+                                                    gpui_component::notification::Notification::error(
+                                                        "DB 序号无效，请输入 0-255 的整数",
+                                                    ),
+                                                );
+                                                cx.notify();
+                                            });
                                         }
                                     },
                                     window,
@@ -378,6 +390,12 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
+                    .disabled(read_only)
+                    .tooltip(if read_only {
+                        "生产连接为只读，不能新建 Key"
+                    } else {
+                        "新建 Key"
+                    })
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(KeyTreeEvent::RequestCreate);
                     })),
@@ -442,6 +460,7 @@ impl Render for KeyTreePanel {
                     .xsmall()
                     .icon(ramag_ui::icons::ellipsis())
                     .tooltip("更多操作")
+                    .disabled(read_only)
                     .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                         ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
                     })

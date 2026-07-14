@@ -18,10 +18,12 @@ pub struct Shell {
     registry: Arc<ToolRegistry>,
     tool_views: HashMap<String, AnyView>,
     home_view: Option<AnyView>,
+    settings_view: Option<AnyView>,
     /// 首页的强类型句柄（同 crate）：菜单「重新查看快速上手」经此重开引导
     home_entity: Option<Entity<crate::home_view::HomeView>>,
     /// None=首页，Some(tool_id)=某工具
     selected: Option<String>,
+    settings_selected: bool,
     /// 窗口 bounds 持久化防抖代际：拖动 / 缩放高频回调，停顿后才落盘
     bounds_gen: u64,
 
@@ -75,8 +77,10 @@ impl Shell {
             registry: registry_for_title,
             tool_views: HashMap::new(),
             home_view: None,
+            settings_view: None,
             home_entity: None,
             selected: None,
+            settings_selected: false,
             bounds_gen: 0,
             _subscriptions: subs,
         }
@@ -85,6 +89,9 @@ impl Shell {
     /// 窗口标题：首页 `Ramag`，工具页 `Ramag — 工具名`。
     /// 保留可辨识标题（Windows 任务栏 / 窗口列表），不置空
     fn window_title(&self) -> String {
+        if self.settings_selected {
+            return "Ramag — 设置".to_string();
+        }
         match &self.selected {
             None => "Ramag".to_string(),
             Some(id) => self
@@ -162,6 +169,10 @@ impl Shell {
         self.home_view = Some(view);
     }
 
+    pub fn set_settings_view(&mut self, view: AnyView) {
+        self.settings_view = Some(view);
+    }
+
     /// 注入首页强类型句柄（同 crate）：菜单「重新查看快速上手」经此重开引导
     pub fn set_home_entity(&mut self, entity: Entity<crate::home_view::HomeView>) {
         self.home_entity = Some(entity);
@@ -169,6 +180,10 @@ impl Shell {
 
     pub fn register_tool_view(&mut self, tool_id: impl Into<String>, view: AnyView) {
         self.tool_views.insert(tool_id.into(), view);
+    }
+
+    pub fn retain_subscription(&mut self, subscription: Subscription) {
+        self._subscriptions.push(subscription);
     }
 
     /// 程序内导航
@@ -179,15 +194,19 @@ impl Shell {
     }
 
     fn handle_navigate(&mut self, target: NavTarget, window: &mut Window, cx: &mut Context<Self>) {
-        let new_selected = match target {
-            NavTarget::Home => None,
-            NavTarget::Tool(id) => Some(id),
+        let (new_selected, settings_selected) = match target {
+            NavTarget::Home => (None, false),
+            NavTarget::Tool(id) => (Some(id), false),
+            NavTarget::Settings => (None, true),
         };
 
-        if self.selected != new_selected {
+        if self.selected != new_selected || self.settings_selected != settings_selected {
             self.selected = new_selected;
+            self.settings_selected = settings_selected;
             // 记住停留位置：下次启动直接回到该工具（重启不回炉 Home）
-            persist_last_tool(self.selected.clone(), cx);
+            if !self.settings_selected {
+                persist_last_tool(self.selected.clone(), cx);
+            }
             cx.notify();
         }
         // 标题始终反映当前工具（含首帧 / 恢复到某工具），保留任务栏可辨识性
@@ -201,39 +220,39 @@ impl Shell {
         }
     }
 
-    /// 在「首页 + 各工具」区段间循环切换（Ctrl+Tab）：当前区段的下一个，末尾回到首页
-    fn cycle_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 在「首页 + 各工具 + 设置」间循环；`reverse=true` 时反向。
+    fn cycle_section(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
         let tools = self.registry.list();
-        // 区段序列：[Home, tool0, tool1, ...]，用 Option<usize> 表达（None=Home）
-        let cur = self
-            .selected
-            .as_ref()
-            .and_then(|id| tools.iter().position(|t| t.meta().id == *id));
-        let next = match cur {
-            None => tools.first().map(|_| 0),        // Home → 第一个工具
-            Some(i) if i + 1 < tools.len() => Some(i + 1), // 下一个工具
-            Some(_) => None,                          // 最后一个工具 → 回首页
+        let section_count = tools.len() + 2;
+        let current = if self.settings_selected {
+            section_count - 1
+        } else if let Some(id) = &self.selected {
+            tools
+                .iter()
+                .position(|tool| tool.meta().id == *id)
+                .map_or(0, |index| index + 1)
+        } else {
+            0
         };
-        match next {
-            Some(i) => self.select_tool_index(i, window, cx),
-            None => self.navigate_to(NavTarget::Home, window, cx),
+        let next = if reverse {
+            (current + section_count - 1) % section_count
+        } else {
+            (current + 1) % section_count
+        };
+        if next == 0 {
+            self.navigate_to(NavTarget::Home, window, cx);
+        } else if next == section_count - 1 {
+            self.navigate_to(NavTarget::Settings, window, cx);
+        } else {
+            self.select_tool_index(next - 1, window, cx);
         }
     }
 }
 
 /// 上次工具落 prefs（后台异步，失败仅告警）。Home 存空串
 fn persist_last_tool(selected: Option<String>, cx: &mut gpui::App) {
-    let Some(storage) = crate::theme::storage_from_cx(cx) else {
-        return;
-    };
     let value = selected.unwrap_or_default();
-    cx.background_executor()
-        .spawn(async move {
-            if let Err(e) = storage.set_preference("last_tool", &value).await {
-                tracing::warn!(error = %e, "persist last tool failed");
-            }
-        })
-        .detach();
+    crate::preferences::persist_preference_latest("last_tool", value, cx);
 }
 
 impl Render for Shell {
@@ -242,9 +261,13 @@ impl Render for Shell {
         let bg_color = cx.theme().background;
         let fg_color = cx.theme().foreground;
 
-        let content_view: Option<AnyView> = match &self.selected {
-            None => self.home_view.clone(),
-            Some(id) => self.tool_views.get(id).cloned(),
+        let content_view: Option<AnyView> = if self.settings_selected {
+            self.settings_view.clone()
+        } else {
+            match &self.selected {
+                None => self.home_view.clone(),
+                Some(id) => self.tool_views.get(id).cloned(),
+            }
         };
 
         // dialog / notification 浮层须由顶层 view 渲染
@@ -257,25 +280,40 @@ impl Render for Shell {
             .text_color(fg_color)
             .key_context("Shell")
             // 工具切换快捷键：Cmd/Ctrl+1/2/3 跳工具，Ctrl+Tab 循环区段
-            .on_action(cx.listener(|this, _: &crate::actions::SelectTool1, window, cx| {
-                this.select_tool_index(0, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::SelectTool2, window, cx| {
-                this.select_tool_index(1, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::SelectTool3, window, cx| {
-                this.select_tool_index(2, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::CycleSection, window, cx| {
-                this.cycle_section(window, cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::SelectTool1, window, cx| {
+                    this.select_tool_index(0, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::SelectTool2, window, cx| {
+                    this.select_tool_index(1, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::SelectTool3, window, cx| {
+                    this.select_tool_index(2, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::CycleSection, window, cx| {
+                    this.cycle_section(false, window, cx);
+                }),
+            )
+            .on_action(cx.listener(
+                |this, _: &crate::actions::CycleSectionReverse, window, cx| {
+                    this.cycle_section(true, window, cx);
+                },
+            ))
             // 菜单「重新查看快速上手」：切回首页并重开引导卡片
-            .on_action(cx.listener(|this, _: &crate::actions::ShowOnboarding, window, cx| {
-                this.navigate_to(NavTarget::Home, window, cx);
-                if let Some(home) = this.home_entity.clone() {
-                    home.update(cx, |h, cx| h.reshow_onboarding(cx));
-                }
-            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ShowOnboarding, window, cx| {
+                    this.navigate_to(NavTarget::Home, window, cx);
+                    if let Some(home) = this.home_entity.clone() {
+                        home.update(cx, |h, cx| h.reshow_onboarding(cx));
+                    }
+                }),
+            )
             .child(
                 h_flex()
                     .flex_1()
@@ -288,12 +326,14 @@ impl Render for Shell {
                             .min_w_0()
                             .when_some(content_view, |this, view| this.child(view))
                             .when(
-                                self.selected.is_some()
-                                    && self
-                                        .selected
-                                        .as_ref()
-                                        .and_then(|id| self.tool_views.get(id))
-                                        .is_none(),
+                                (self.settings_selected && self.settings_view.is_none())
+                                    || (!self.settings_selected
+                                        && self.selected.is_some()
+                                        && self
+                                            .selected
+                                            .as_ref()
+                                            .and_then(|id| self.tool_views.get(id))
+                                            .is_none()),
                                 |this| this.child(render_view_missing(cx)),
                             ),
                     ),

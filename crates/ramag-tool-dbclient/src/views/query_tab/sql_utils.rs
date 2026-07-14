@@ -2,12 +2,6 @@
 
 use std::time::Duration;
 
-/// 自动 LIMIT 注入的默认上限。用户已写 LIMIT 不被覆盖（见 `inject_limits`）
-pub(crate) const AUTO_LIMIT_DEFAULT: usize = 10_000;
-
-/// 工具条可选的自动 LIMIT 档位（另有"关闭"= None）
-pub(super) const AUTO_LIMIT_CHOICES: [usize; 3] = [1_000, 10_000, 50_000];
-
 /// 格式化运行中耗时：< 60s 显示 "X.Xs"，>= 60s 显示 "Mm Ss"
 pub(super) fn format_elapsed(d: Duration) -> String {
     let secs = d.as_secs_f64();
@@ -22,7 +16,7 @@ pub(super) fn format_elapsed(d: Duration) -> String {
 
 /// 给"裸 SELECT / SHOW / DESC"自动注入 LIMIT，避免误把全表拉回来。
 /// 多语句时按 `;` 切分逐条处理；PG 切分时识别 dollar-quoted 函数体内的 `;`。
-/// 已经有 `LIMIT` / `WITH` / 非 SELECT 的语句保持原样。
+/// 已经有顶层 `LIMIT` / 非查询语句保持原样。
 pub(crate) fn inject_limits(
     sql: &str,
     max_rows: usize,
@@ -34,7 +28,7 @@ pub(crate) fn inject_limits(
     }
     let mut out = String::with_capacity(sql.len() + 16 * stmts.len());
     for (i, stmt) in stmts.iter().enumerate() {
-        let s = inject_limit_one(stmt, max_rows);
+        let s = inject_limit_one(stmt, max_rows, driver);
         if i > 0 {
             out.push_str(";\n");
         }
@@ -47,7 +41,11 @@ pub(crate) fn inject_limits(
 }
 
 /// 单条语句 LIMIT 注入：仅 SELECT/WITH 类，且不含 LIMIT 时
-fn inject_limit_one(stmt: &str, max_rows: usize) -> String {
+fn inject_limit_one(
+    stmt: &str,
+    max_rows: usize,
+    driver: ramag_domain::entities::DriverKind,
+) -> String {
     let trimmed = stmt.trim();
     if trimmed.is_empty() {
         return stmt.to_string();
@@ -61,86 +59,42 @@ fn inject_limit_one(stmt: &str, max_rows: usize) -> String {
     if !(upper.starts_with("SELECT") || upper.starts_with("WITH")) {
         return stmt.to_string();
     }
-    let upper_full = trimmed.to_ascii_uppercase();
-    if has_top_level_keyword(&upper_full, "LIMIT") {
+    if has_top_level_keyword(trimmed, "LIMIT", driver) {
         return stmt.to_string();
     }
     let body = trimmed.trim_end_matches(';').trim_end();
     format!("{body} LIMIT {max_rows}")
 }
 
-/// 检测 SQL 中是否有顶层（不在括号子查询里）的关键字（如 LIMIT）
-/// 简化处理：跳过字符串/反引号/注释，扫描 keyword 边界
-pub(super) fn has_top_level_keyword(sql_upper: &str, keyword: &str) -> bool {
-    let bytes = sql_upper.as_bytes();
-    let kw = keyword.as_bytes();
-    let mut depth: i32 = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        match b {
-            b'\'' | b'"' | b'`' => {
-                let q = b;
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == q {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                i = (i + 2).min(bytes.len());
-            }
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                i += 1;
-            }
-            _ if depth == 0 && i + kw.len() <= bytes.len() && &bytes[i..i + kw.len()] == kw => {
-                let prev_ok = i == 0 || !is_ident(bytes[i - 1]);
-                let next_idx = i + kw.len();
-                let next_ok = next_idx >= bytes.len() || !is_ident(bytes[next_idx]);
-                if prev_ok && next_ok {
-                    return true;
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    false
+/// 检测 SQL 中是否有顶层（不在括号子查询里）的关键字。
+/// 词法扫描会跳过引号、注释与 PostgreSQL dollar-quoted 内容。
+pub(super) fn has_top_level_keyword(
+    sql: &str,
+    keyword: &str,
+    driver: ramag_domain::entities::DriverKind,
+) -> bool {
+    keyword_depths(sql, driver)
+        .iter()
+        .any(|(token, depth)| *depth == 0 && token == keyword)
 }
 
-fn is_ident(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// 跳过语句开头的行注释 / 块注释与空白，返回真正的语句体
-fn strip_leading_comments(stmt: &str) -> &str {
+/// 跳过语句开头的普通注释与空白，返回真正的语句体。
+/// MySQL 可执行注释不能被丢弃，否则会绕过高危语句检测。
+fn strip_leading_comments(stmt: &str, driver: ramag_domain::entities::DriverKind) -> &str {
     let mut s = stmt.trim_start();
     loop {
         if let Some(rest) = s.strip_prefix("--") {
             s = rest.split_once('\n').map(|(_, tail)| tail).unwrap_or("");
-        } else if let Some(rest) = s.strip_prefix("/*") {
-            s = rest.split_once("*/").map(|(_, tail)| tail).unwrap_or("");
+        } else if matches!(driver, ramag_domain::entities::DriverKind::Mysql) && s.starts_with('#')
+        {
+            s = s.split_once('\n').map(|(_, tail)| tail).unwrap_or("");
+        } else if s.starts_with("/*") && !is_mysql_executable_comment(s.as_bytes(), 0, driver) {
+            let end = block_comment_end(
+                s.as_bytes(),
+                0,
+                matches!(driver, ramag_domain::entities::DriverKind::Postgres),
+            );
+            s = &s[end..];
         } else {
             return s;
         }
@@ -157,24 +111,218 @@ pub(super) fn detect_dangerous_statements(
 ) -> Vec<String> {
     let mut risks = Vec::new();
     for stmt in split_sql_statements(sql, driver) {
-        let body = strip_leading_comments(&stmt);
+        let body = strip_leading_comments(&stmt, driver);
         if body.is_empty() {
             continue;
         }
-        let upper = body.to_ascii_uppercase();
-        let first = upper.split_whitespace().next().unwrap_or("");
-        let risk = match first {
-            "DELETE" if !has_top_level_keyword(&upper, "WHERE") => Some("DELETE 未带 WHERE（将删除整表数据）"),
-            "UPDATE" if !has_top_level_keyword(&upper, "WHERE") => Some("UPDATE 未带 WHERE（将改写整表数据）"),
-            "DROP" => Some("DROP（将删除表 / 库等对象，不可恢复）"),
-            "TRUNCATE" => Some("TRUNCATE（将清空整表数据，不可回滚）"),
-            _ => None,
+        let tokens = keyword_depths(body, driver);
+        let Some(first) = tokens.first().map(|(keyword, _)| keyword.as_str()) else {
+            continue;
+        };
+        let risk = if first == "WITH"
+            || (first == "EXPLAIN"
+                && matches!(driver, ramag_domain::entities::DriverKind::Postgres)
+                && postgres_explain_executes(&tokens))
+        {
+            detect_dangerous_tokens(&tokens)
+        } else {
+            match first {
+                "DELETE" if !has_top_level_keyword(body, "WHERE", driver) => {
+                    Some("DELETE 未带 WHERE（将删除整表数据）")
+                }
+                "UPDATE" if !has_top_level_keyword(body, "WHERE", driver) => {
+                    Some("UPDATE 未带 WHERE（将改写整表数据）")
+                }
+                "DROP" => Some("DROP（将删除表 / 库等对象，不可恢复）"),
+                "TRUNCATE" => Some("TRUNCATE（将清空整表数据，不可回滚）"),
+                _ => None,
+            }
         };
         if let Some(r) = risk {
             risks.push(format!("{r}：{}", make_short_title(body)));
         }
     }
     risks
+}
+
+/// 逐层检查写关键字。`WHERE` 必须与对应 DELETE/UPDATE 处于同一括号深度；
+/// 子查询中的 WHERE 不算保护条件。用于 CTE 与会实际执行语句的 EXPLAIN ANALYZE。
+fn detect_dangerous_tokens(tokens: &[(String, i32)]) -> Option<&'static str> {
+    for (index, (keyword, depth)) in tokens.iter().enumerate() {
+        let risk = match keyword.as_str() {
+            "DELETE" if !has_following_keyword_at_depth(tokens, index, *depth, "WHERE") => {
+                Some("DELETE 未带 WHERE（将删除整表数据）")
+            }
+            "UPDATE" if !has_following_keyword_at_depth(tokens, index, *depth, "WHERE") => {
+                Some("UPDATE 未带 WHERE（将改写整表数据）")
+            }
+            "DROP" => Some("DROP（将删除表 / 库等对象，不可恢复）"),
+            "TRUNCATE" => Some("TRUNCATE（将清空整表数据，不可回滚）"),
+            _ => None,
+        };
+        if risk.is_some() {
+            return risk;
+        }
+    }
+    None
+}
+
+/// PostgreSQL 只有 EXPLAIN ANALYZE 会真正执行目标语句。
+fn postgres_explain_executes(tokens: &[(String, i32)]) -> bool {
+    let statement_index =
+        tokens
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, (keyword, depth))| {
+                (*depth == 0
+                    && matches!(
+                        keyword.as_str(),
+                        "SELECT"
+                            | "WITH"
+                            | "INSERT"
+                            | "UPDATE"
+                            | "DELETE"
+                            | "MERGE"
+                            | "VALUES"
+                            | "TABLE"
+                    ))
+                .then_some(index)
+            });
+    let end = statement_index.unwrap_or(tokens.len());
+    tokens[1..end]
+        .iter()
+        .any(|(keyword, _)| keyword == "ANALYZE")
+}
+
+fn has_following_keyword_at_depth(
+    tokens: &[(String, i32)],
+    start: usize,
+    depth: i32,
+    expected: &str,
+) -> bool {
+    for (keyword, token_depth) in tokens.iter().skip(start + 1) {
+        if *token_depth < depth {
+            break;
+        }
+        if *token_depth == depth && keyword == expected {
+            return true;
+        }
+    }
+    false
+}
+
+/// 跳过字符串、标识符引号、注释与 PostgreSQL dollar-quoted 内容，返回关键字及括号深度。
+fn keyword_depths(sql: &str, driver: ramag_domain::entities::DriverKind) -> Vec<(String, i32)> {
+    let bytes = sql.as_bytes();
+    let mut tokens = Vec::new();
+    let mut depth = 0i32;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            quote @ (b'\'' | b'"' | b'`') => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == quote {
+                        if index + 1 < bytes.len() && bytes[index + 1] == quote {
+                            index += 2;
+                            continue;
+                        }
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            b'-' if index + 1 < bytes.len() && bytes[index + 1] == b'-' => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'#' if matches!(driver, ramag_domain::entities::DriverKind::Mysql) => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
+                if is_mysql_executable_comment(bytes, index, driver) {
+                    index += if bytes.get(index + 2) == Some(&b'!') {
+                        3
+                    } else {
+                        4
+                    };
+                } else {
+                    index = block_comment_end(
+                        bytes,
+                        index,
+                        matches!(driver, ramag_domain::entities::DriverKind::Postgres),
+                    );
+                }
+            }
+            b'$' if matches!(driver, ramag_domain::entities::DriverKind::Postgres) => {
+                if let Some(end) = ramag_infra_sql_shared::sql::scan_dollar_quoted(bytes, index) {
+                    index = end;
+                } else {
+                    index += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' => {
+                depth = (depth - 1).max(0);
+                index += 1;
+            }
+            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len()
+                    && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+                {
+                    index += 1;
+                }
+                tokens.push((sql[start..index].to_ascii_uppercase(), depth));
+            }
+            _ => index += 1,
+        }
+    }
+    tokens
+}
+
+fn is_mysql_executable_comment(
+    bytes: &[u8],
+    start: usize,
+    driver: ramag_domain::entities::DriverKind,
+) -> bool {
+    matches!(driver, ramag_domain::entities::DriverKind::Mysql)
+        && (bytes.get(start..start + 3) == Some(b"/*!".as_slice())
+            || bytes.get(start..start + 4) == Some(b"/*M!".as_slice()))
+}
+
+fn block_comment_end(bytes: &[u8], start: usize, nested: bool) -> usize {
+    let mut index = start + 2;
+    let mut depth = 1usize;
+    while index + 1 < bytes.len() {
+        if nested && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+            depth += 1;
+            index += 2;
+        } else if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+            depth -= 1;
+            index += 2;
+            if depth == 0 {
+                return index;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    bytes.len()
 }
 
 /// 多语句切分：复用 sql-shared 的实现，按 driver 选择是否识别 PG dollar-quoted
@@ -308,259 +456,4 @@ pub(super) fn make_short_title(sql: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn short_title_truncate() {
-        assert_eq!(make_short_title("SELECT 1"), "SELECT 1");
-        assert_eq!(
-            make_short_title("SELECT * FROM very_long_table_name_here"),
-            "SELECT * FROM very_long_tabl…"
-        );
-    }
-
-    #[test]
-    fn short_title_skips_blank_lines() {
-        let sql = "\n\n  -- comment\nSELECT 1";
-        assert_eq!(make_short_title(sql), "-- comment");
-    }
-
-    #[test]
-    fn short_title_empty() {
-        assert_eq!(make_short_title(""), "");
-        assert_eq!(make_short_title("   "), "");
-    }
-
-    /// EXPLAIN 包装策略：模拟 actions.rs::handle_explain 的 SQL 处理
-    fn wrap_explain(sql: &str) -> String {
-        let trimmed = sql.trim().trim_end_matches(';').trim().to_string();
-        if trimmed.is_empty() {
-            return String::new();
-        }
-        let upper = trimmed.to_ascii_uppercase();
-        if upper.starts_with("EXPLAIN ") || upper == "EXPLAIN" {
-            trimmed
-        } else {
-            format!("EXPLAIN {trimmed}")
-        }
-    }
-
-    #[test]
-    fn parse_mysql_line() {
-        assert_eq!(
-            parse_mysql_error_line("You have an error in your SQL syntax... near 'foo' at line 3"),
-            Some(3)
-        );
-        assert_eq!(parse_mysql_error_line("connection refused"), None);
-        assert_eq!(parse_mysql_error_line("error at line 12"), Some(12));
-    }
-
-    #[test]
-    fn parse_postgres_line() {
-        assert_eq!(
-            parse_mysql_error_line("syntax error at end of input\nLINE 5: SELECT *"),
-            Some(5)
-        );
-        assert_eq!(parse_mysql_error_line("LINE 1: SELECT * FORM t"), Some(1));
-    }
-
-    use ramag_domain::entities::DriverKind;
-
-    #[test]
-    fn inject_limit_plain_select() {
-        let s = inject_limits("SELECT * FROM t", 1000, DriverKind::Mysql);
-        assert_eq!(s, "SELECT * FROM t LIMIT 1000");
-    }
-
-    #[test]
-    fn inject_limit_skips_existing_limit() {
-        let s = inject_limits("SELECT * FROM t LIMIT 10", 1000, DriverKind::Mysql);
-        assert_eq!(s, "SELECT * FROM t LIMIT 10");
-        let s = inject_limits("select * from t limit 10", 1000, DriverKind::Mysql);
-        assert_eq!(s, "select * from t limit 10");
-    }
-
-    #[test]
-    fn inject_limit_skips_non_select() {
-        assert_eq!(
-            inject_limits("UPDATE t SET a=1", 1000, DriverKind::Mysql),
-            "UPDATE t SET a=1"
-        );
-        assert_eq!(
-            inject_limits("SHOW TABLES", 1000, DriverKind::Mysql),
-            "SHOW TABLES"
-        );
-    }
-
-    #[test]
-    fn inject_limit_keeps_subquery_limit_alone() {
-        let s = inject_limits(
-            "SELECT * FROM (SELECT * FROM t LIMIT 10) x",
-            1000,
-            DriverKind::Mysql,
-        );
-        assert!(s.ends_with("LIMIT 1000"));
-    }
-
-    #[test]
-    fn inject_limit_strips_trailing_semicolon() {
-        let s = inject_limits("SELECT * FROM t;", 1000, DriverKind::Mysql);
-        assert_eq!(s, "SELECT * FROM t LIMIT 1000;");
-    }
-
-    #[test]
-    fn inject_limit_postgres_dollar_quoted_function_body_not_split() {
-        let sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
-        let s = inject_limits(sql, 1000, DriverKind::Postgres);
-        assert_eq!(s, sql);
-    }
-
-    #[test]
-    fn extract_stmt_postgres_dollar_quoted_keeps_function_body_intact() {
-        let sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql; SELECT 2";
-        let pg = Some(DriverKind::Postgres);
-        let stmt = extract_statement_at_cursor(sql, 45, pg);
-        assert!(stmt.contains("CREATE FUNCTION"));
-        assert!(stmt.contains("END"));
-    }
-
-    #[test]
-    fn extract_stmt_postgres_dollar_quoted_picks_next_statement() {
-        let sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql; SELECT 2";
-        let pg = Some(DriverKind::Postgres);
-        let stmt = extract_statement_at_cursor(sql, sql.len() - 1, pg).trim();
-        assert_eq!(stmt, "SELECT 2");
-    }
-
-    #[test]
-    fn extract_stmt_single() {
-        assert_eq!(
-            extract_statement_at_cursor("SELECT 1", 5, None).trim(),
-            "SELECT 1"
-        );
-    }
-
-    #[test]
-    fn extract_stmt_multi_picks_by_cursor() {
-        let sql = "SELECT 1; SELECT 2; SELECT 3";
-        assert_eq!(extract_statement_at_cursor(sql, 3, None).trim(), "SELECT 1");
-        assert_eq!(
-            extract_statement_at_cursor(sql, 12, None).trim(),
-            "SELECT 2"
-        );
-        assert_eq!(
-            extract_statement_at_cursor(sql, 25, None).trim(),
-            "SELECT 3"
-        );
-    }
-
-    #[test]
-    fn extract_stmt_ignores_semicolon_in_string() {
-        let sql = "SELECT 'a;b'; SELECT 2";
-        assert_eq!(
-            extract_statement_at_cursor(sql, 5, None).trim(),
-            "SELECT 'a;b'"
-        );
-        assert_eq!(
-            extract_statement_at_cursor(sql, 18, None).trim(),
-            "SELECT 2"
-        );
-    }
-
-    #[test]
-    fn extract_stmt_ignores_semicolon_in_comment() {
-        let sql = "SELECT 1 -- comment ;\n; SELECT 2";
-        let first = extract_statement_at_cursor(sql, 5, None);
-        assert!(first.contains("SELECT 1"));
-        assert!(!first.contains("SELECT 2"));
-        assert_eq!(
-            extract_statement_at_cursor(sql, 26, None).trim(),
-            "SELECT 2"
-        );
-    }
-
-    #[test]
-    fn explain_wraps_plain_select() {
-        assert_eq!(wrap_explain("SELECT 1"), "EXPLAIN SELECT 1");
-        assert_eq!(
-            wrap_explain("SELECT * FROM t WHERE id=1;"),
-            "EXPLAIN SELECT * FROM t WHERE id=1"
-        );
-    }
-
-    #[test]
-    fn explain_does_not_double_wrap() {
-        assert_eq!(wrap_explain("EXPLAIN SELECT 1"), "EXPLAIN SELECT 1");
-        assert_eq!(wrap_explain("explain  SELECT 1"), "explain  SELECT 1");
-    }
-
-    #[test]
-    fn explain_strips_trailing_semicolons() {
-        assert_eq!(wrap_explain("SELECT 1;;;"), "EXPLAIN SELECT 1");
-    }
-
-    #[test]
-    fn dangerous_detects_delete_update_without_where() {
-        let risks = detect_dangerous_statements("DELETE FROM t", DriverKind::Mysql);
-        assert_eq!(risks.len(), 1);
-        assert!(risks[0].contains("DELETE"));
-        let risks = detect_dangerous_statements("update t set a=1", DriverKind::Mysql);
-        assert_eq!(risks.len(), 1);
-        assert!(risks[0].contains("UPDATE"));
-    }
-
-    #[test]
-    fn dangerous_allows_where_and_plain_statements() {
-        assert!(detect_dangerous_statements("DELETE FROM t WHERE id=1", DriverKind::Mysql).is_empty());
-        assert!(detect_dangerous_statements("UPDATE t SET a=1 WHERE id=1", DriverKind::Mysql).is_empty());
-        assert!(detect_dangerous_statements("SELECT * FROM t", DriverKind::Mysql).is_empty());
-        assert!(detect_dangerous_statements("INSERT INTO t VALUES (1)", DriverKind::Mysql).is_empty());
-    }
-
-    #[test]
-    fn dangerous_detects_drop_truncate() {
-        assert_eq!(
-            detect_dangerous_statements("DROP TABLE t", DriverKind::Mysql).len(),
-            1
-        );
-        assert_eq!(
-            detect_dangerous_statements("TRUNCATE TABLE t", DriverKind::Postgres).len(),
-            1
-        );
-    }
-
-    #[test]
-    fn dangerous_skips_leading_comments_and_multi_statements() {
-        // 注释开头不能骗过检测；多语句逐条检测
-        let sql = "-- 清理\nDELETE FROM t;\nSELECT 1;\n/* x */ TRUNCATE t2";
-        let risks = detect_dangerous_statements(sql, DriverKind::Mysql);
-        assert_eq!(risks.len(), 2);
-    }
-
-    #[test]
-    fn dangerous_where_with_subquery_counts_as_top_level() {
-        let risks =
-            detect_dangerous_statements("DELETE FROM t WHERE id IN (SELECT 1)", DriverKind::Mysql);
-        assert!(risks.is_empty());
-    }
-
-    #[test]
-    fn sqlformat_works() {
-        let opts = sqlformat::FormatOptions {
-            indent: sqlformat::Indent::Spaces(2),
-            uppercase: Some(true),
-            lines_between_queries: 1,
-            ignore_case_convert: None,
-        };
-        let formatted = sqlformat::format(
-            "select id,name from users where id=1 order by name",
-            &sqlformat::QueryParams::None,
-            &opts,
-        );
-        assert!(formatted.contains("SELECT"));
-        assert!(formatted.contains("FROM"));
-        assert!(formatted.contains("WHERE"));
-        assert!(formatted.lines().count() >= 3);
-    }
-}
+mod tests;

@@ -7,7 +7,7 @@ use gpui::{
     div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    Sizable as _,
+    Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -41,11 +41,12 @@ pub(super) fn render_hash_block(
                     let Some(RedisValue::Hash(pairs)) = &this.value else {
                         return Vec::new();
                     };
+                    let read_only = this.is_read_only();
                     range
                         .filter_map(|idx| {
                             let (f, v) = pairs.get(idx)?;
                             Some(
-                                hash_row(&key, idx, f, v, fg, muted_fg, border, cx)
+                                hash_row(&key, idx, f, v, read_only, fg, muted_fg, border, cx)
                                     .into_any_element(),
                             )
                         })
@@ -63,6 +64,7 @@ fn hash_row(
     idx: usize,
     field: &str,
     value: &RedisValue,
+    read_only: bool,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     border: gpui::Hsla,
@@ -70,9 +72,13 @@ fn hash_row(
 ) -> impl IntoElement + use<> {
     let field_name = field.to_string();
     let value_preview = value.display_preview(256);
+    // HSCAN 的字段名目前以 UTF-8 字符串展示；出现替换字符表明原始字节已无法
+    // 安全往返，禁用编辑/删除以避免将损坏后的文本当作真实字段名。
+    let field_is_lossy = field.contains('\u{fffd}');
     // 仅文本值可编辑：二进制值显示的是 `[N bytes]` 摘要，若允许编辑会把真实二进制
     // 覆盖成摘要串（静默毁数据），故非文本值只读（双击不打开编辑窗）
-    let editable = matches!(value, RedisValue::Text(_));
+    let editable = matches!(value, RedisValue::Text(_)) && !read_only && !field_is_lossy;
+    let delete_disabled = read_only || field_is_lossy;
     let value_for_edit = match value {
         RedisValue::Text(s) => s.clone(),
         other => other.display_preview(8192),
@@ -132,7 +138,14 @@ fn hash_row(
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::trash())
-                .tooltip("删除该字段")
+                .disabled(delete_disabled)
+                .tooltip(if read_only {
+                    "生产连接为只读"
+                } else if field_is_lossy {
+                    "二进制字段名暂不支持安全删除"
+                } else {
+                    "删除该字段"
+                })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     cx.emit(KeyDetailEvent::RequestDeleteHashField(
                         key_for_del.clone(),

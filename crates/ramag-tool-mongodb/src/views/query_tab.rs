@@ -4,6 +4,8 @@
 //!   `{"find": "users", "filter": {...}, "limit": 10000}` / `{"aggregate": "...", "pipeline": [...], "cursor": {}}` / `{"count": "users", "query": {...}}`
 //! 运行后若返回带 `cursor.firstBatch`，自动展开为文档列表；否则把整个返回当单文档展示
 
+mod command;
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -25,6 +27,10 @@ use tracing::{info, warn};
 
 use crate::actions::{FormatMongoJson, RunMongoQuery};
 use crate::views::result_panel::{ResultEvent, ResultPanel};
+use command::{
+    command_response_kind, dangerous_command_reason, default_command_template, extract_collection,
+    parse_run_command_response, truncate_chars,
+};
 
 pub struct MongoQueryTab {
     pub(crate) service: Arc<MongoService>,
@@ -91,9 +97,14 @@ impl MongoQueryTab {
             r.set_context(service.clone(), config.clone(), database.clone());
         });
         // 结果区 DML 成功后请求刷新：重跑当前命令
-        let refresh_sub = cx.subscribe(&result, |this, _, _e: &ResultEvent, cx| {
-            this.run(cx);
-        });
+        let refresh_sub = cx.subscribe_in(
+            &result,
+            window,
+            |this, _, event: &ResultEvent, window, cx| match event {
+                ResultEvent::Refresh => this.request_run(window, cx),
+                ResultEvent::Cancel => this.cancel_if_running(cx),
+            },
+        );
         let editor_sub = cx.subscribe(&editor, |_this: &mut Self, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
                 cx.emit(MongoQueryTabEvent::DraftChanged);
@@ -270,8 +281,8 @@ impl MongoQueryTab {
         cx.notify();
     }
 
-    /// 运行：编辑器内容解析为 JSON 命令 → run_command → 智能解包 cursor.firstBatch
-    pub fn run(&mut self, cx: &mut Context<Self>) {
+    /// 解析并校验命令；高危操作先展示目标与风险，确认后才进入真正执行路径。
+    pub fn request_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             return;
         }
@@ -291,6 +302,49 @@ impl MongoQueryTab {
             });
             return;
         }
+        if let Some(reason) = dangerous_command_reason(&cmd) {
+            let command_preview =
+                serde_json::to_string_pretty(&cmd).unwrap_or_else(|_| text.clone());
+            let command_preview = truncate_chars(&command_preview, 1_000);
+            let description = format!(
+                "连接：{}\n数据库：{}\n风险：{reason}\n\n命令：\n{command_preview}\n\n确认继续执行吗？",
+                self.config.name, self.database
+            );
+            let confirmed_database = self.database.clone();
+            let entity = cx.entity();
+            ramag_ui::open_confirm(
+                "执行 MongoDB 高危命令？",
+                description,
+                "执行",
+                true,
+                move |_window, app| {
+                    entity.update(app, |this, cx| {
+                        if this.database != confirmed_database
+                            || this.editor.read(cx).value() != text
+                        {
+                            this.pending_notification = Some(
+                                Notification::warning("数据库或命令已变更，已取消执行；请重新确认")
+                                    .autohide(true),
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        this.run_parsed(text.clone(), cmd.clone(), cx)
+                    });
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        self.run_parsed(text, cmd, cx);
+    }
+
+    /// 真正执行已解析、已确认（如需要）的命令。
+    fn run_parsed(&mut self, text: String, cmd: Value, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
         // 提取命令目标 collection + 同步当前 db，一并注入结果区作为增删改上下文。
         // self.database 切库 / 切 collection 时已更新，必须同步给结果区；否则写操作沿用 tab
         // 初始库，filter 匹配不到文档（matched 0）→ 更新 / 删除「不生效」
@@ -305,6 +359,7 @@ impl MongoQueryTab {
         let svc = self.service.clone();
         let conf = self.config.clone();
         let db = self.database.clone();
+        let response_kind = command_response_kind(&cmd);
         let cmd_text = text.clone();
         self.running = true;
         // 代际推进 + 记录本次运行的 db（回包时比对，防运行期间切库导致串台）
@@ -321,7 +376,7 @@ impl MongoQueryTab {
             let outcome = svc.run_command(&conf, &db, cmd).await;
             let elapsed_ms = start.elapsed().as_millis() as u64;
             let qr: ramag_domain::error::Result<MongoQueryResult> = match outcome {
-                Ok(resp) => Ok(parse_run_command_response(resp, elapsed_ms)),
+                Ok(resp) => Ok(parse_run_command_response(resp, elapsed_ms, response_kind)),
                 Err(e) => Err(e),
             };
             // 写历史在同 task 顺序执行，避免 DomainError 不实现 Clone 的借用难题
@@ -431,7 +486,9 @@ impl Render for MongoQueryTab {
             .bg(bg)
             .text_color(fg)
             .key_context("MongoQueryTab")
-            .on_action(cx.listener(|this, _: &RunMongoQuery, _, cx| this.run(cx)))
+            .on_action(
+                cx.listener(|this, _: &RunMongoQuery, window, cx| this.request_run(window, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &FormatMongoJson, window, cx| this.format_json(window, cx)),
             )
@@ -451,99 +508,5 @@ impl Render for MongoQueryTab {
                 )
             })
             .child(div().flex_1().min_h_0().child(self.result.clone()))
-    }
-}
-
-/// 从 runCommand JSON 提取目标 collection（find/aggregate/insert 等命令名的字符串值）
-fn extract_collection(cmd: &Value) -> Option<String> {
-    const CMD_KEYS: &[&str] = &[
-        "find",
-        "aggregate",
-        "count",
-        "distinct",
-        "insert",
-        "update",
-        "delete",
-        "findAndModify",
-    ];
-    for key in CMD_KEYS {
-        if let Some(c) = cmd.get(*key).and_then(|v| v.as_str()) {
-            return Some(c.to_string());
-        }
-    }
-    None
-}
-
-/// 默认编辑器模板（无 collection 时显示）
-fn default_command_template() -> String {
-    "{\n  \"ping\": 1\n}".to_string()
-}
-
-/// 解析 run_command 返回：智能识别 cursor.firstBatch / 普通文档 / 错误结构
-fn parse_run_command_response(response: Value, elapsed_ms: u64) -> MongoQueryResult {
-    // infra 层塞的截断标记（游标超上限只取前 N），提取后据此提示用户
-    let truncated = response
-        .get("__ramag_truncated")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    // 优先：cursor.firstBatch（find / aggregate / listCollections / listIndexes）
-    if let Some(batch) = response
-        .get("cursor")
-        .and_then(|c| c.get("firstBatch"))
-        .and_then(|b| b.as_array())
-        .cloned()
-    {
-        return MongoQueryResult::read_maybe_truncated(batch, elapsed_ms, truncated);
-    }
-    // 次优：count 返回 `n`
-    if let Some(n) = response.get("n").and_then(|v| v.as_u64()) {
-        return MongoQueryResult {
-            documents: vec![response.clone()],
-            affected: n,
-            elapsed_ms,
-            summary: format!("count={n}, {elapsed_ms}ms"),
-            truncated: false,
-        };
-    }
-    // 写命令：insert/update/delete 直接看 n / nModified
-    if let Some(modified) = response.get("nModified").and_then(|v| v.as_u64()) {
-        return MongoQueryResult::write(modified, elapsed_ms, "update");
-    }
-    // 兜底：整个 response 当单文档
-    MongoQueryResult::read(vec![response], elapsed_ms)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn parse_cursor_firstbatch() {
-        let resp = json!({
-            "cursor": {
-                "firstBatch": [{"a": 1}, {"a": 2}],
-                "id": 0,
-                "ns": "db.coll"
-            },
-            "ok": 1.0
-        });
-        let r = parse_run_command_response(resp, 10);
-        assert_eq!(r.documents.len(), 2);
-    }
-
-    #[test]
-    fn parse_count_returns_n() {
-        let resp = json!({"n": 42, "ok": 1.0});
-        let r = parse_run_command_response(resp, 10);
-        assert_eq!(r.affected, 42);
-        assert!(r.summary.contains("count=42"));
-    }
-
-    #[test]
-    fn parse_unknown_falls_back_to_single_doc() {
-        let resp = json!({"ok": 1.0, "value": "x"});
-        let r = parse_run_command_response(resp, 5);
-        assert_eq!(r.documents.len(), 1);
     }
 }

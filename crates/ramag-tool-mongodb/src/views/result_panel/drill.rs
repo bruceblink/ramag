@@ -1,26 +1,22 @@
 //! 嵌套数据原地下钻：双击嵌套单元格 → 把该值当新结果集，复用大列表渲染；面包屑导航返回。
 //! 下钻层只读（内嵌数据非独立 collection，编辑需回写父文档，暂不支持）。
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement, Point,
-    SharedString, Styled, Window, div, prelude::*, px,
+    Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement, Point, SharedString,
+    Styled, Window, div, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, h_flex};
-use ramag_domain::entities::MongoQueryResult;
 use serde_json::Value;
 
-use super::FlatTable;
 use super::ResultPanel;
 use super::cell::{Cell, cell_for_value};
-use super::flatten::{Column, build_flat_table_with};
 
 /// 下钻栈一层：label 用于面包屑显示，documents 为该层文档
 pub(crate) struct DrillLevel {
     pub label: String,
-    pub documents: Vec<Value>,
+    pub documents: Arc<Vec<Value>>,
     /// 顶层文档 _id（回写定位用，一路继承；顶层与无 _id 时为 None）
     pub parent_id: Option<Value>,
     /// 从根到本层的 dotted 路径前缀（如 "project" / "project.sub"；顶层为空）
@@ -59,7 +55,7 @@ impl ResultPanel {
     }
 
     /// 重置下钻栈为顶层（新查询时由 set_result 调）
-    pub(crate) fn reset_drill(&mut self, label: String, documents: Vec<Value>) {
+    pub(crate) fn reset_drill(&mut self, label: String, documents: Arc<Vec<Value>>) {
         self.drill_stack = vec![DrillLevel {
             label,
             documents,
@@ -83,11 +79,11 @@ impl ResultPanel {
     ) {
         // 对象下钻可回写（顶层 _id + dotted path 定位）；数组下钻丢了元素下标，保持只读
         let editable = matches!(value, Value::Object(_));
-        let documents = match value {
+        let documents = Arc::new(match value {
             Value::Array(arr) => arr,
             Value::Object(_) => vec![value],
             _ => return,
-        };
+        });
         let top = self.drill_stack.last();
         // 顶层 _id 一路继承；首次下钻栈顶是顶层文档，用其行 _id
         let parent_id = top.and_then(|l| l.parent_id.clone()).or(row_id);
@@ -123,20 +119,20 @@ impl ResultPanel {
         self.apply_top_level(window, cx);
     }
 
-    /// 栈顶 documents → 当前显示：重算表格 + 合成 result + 同步补全源 + 清过滤 + 滚动归零
+    /// 栈顶 documents → 当前显示：同步文档 + 重算表格 + 清过滤 + 滚动归零
     fn apply_top_level(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let docs = self
             .drill_stack
             .last()
             .map(|l| l.documents.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|| Arc::new(Vec::new()));
         self.selected_rows.clear();
         // 换层清空过滤（新层新列，旧过滤无意义）→ 展开路径随之清空
         self.column_filter
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.row_filter
             .update(cx, |s, cx| s.set_value("", window, cx));
-        self.result = Some(MongoQueryResult::read(docs, 0));
+        self.docs_arc = Some(docs);
         // 重建基础表 + 补全源（过滤已清空）
         self.rebuild_table();
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
@@ -195,221 +191,5 @@ impl ResultPanel {
         } else {
             bar.child(div().text_color(muted).child(SharedString::from("只读")))
         }
-    }
-
-    /// 输入对象/数组路径 → 钻进去（逐段穿透数组）：终值 object 一行 / array 元素逐行，裸字段。
-    /// 返回 (钻取文档, 钻取表, 路径)；非钻取路径返回 None
-    pub(crate) fn try_drill_path(
-        &self,
-        cx: &App,
-    ) -> Option<(Arc<Vec<Value>>, Arc<FlatTable>, String)> {
-        let path = self.parse_column_filter(cx).drill_path?;
-        let level = self.drill_stack.last()?;
-        let docs = &level.documents;
-        const MAX_ELEMS: usize = 5000;
-        // 逐段穿透并携带每行的 (对象名, id) 祖先链：从当前层已有祖先起步。
-        // node_label = 正被穿过的那层对象名（首层 = 当前 drill 层名，之后 = 上一路径段）
-        let base: Vec<(String, Cell)> = level.ancestors.clone();
-        let mut node_label = level.label.clone();
-        let mut current: Vec<(Vec<(String, Cell)>, &Value)> =
-            docs.iter().map(|d| (base.clone(), d)).collect();
-        for seg in path.split('.') {
-            let mut next: Vec<(Vec<(String, Cell)>, &Value)> = Vec::new();
-            for entry in &current {
-                let anc = &entry.0;
-                let v: &Value = entry.1;
-                match v {
-                    Value::Object(m) => {
-                        let mut a = anc.clone();
-                        a.push((node_label.clone(), id_cell_of(m)));
-                        if let Some(c) = m.get(seg) {
-                            next.push((a, c));
-                        }
-                    }
-                    Value::Array(arr) => {
-                        for el in arr {
-                            if let Value::Object(m) = el {
-                                let mut a = anc.clone();
-                                a.push((node_label.clone(), id_cell_of(m)));
-                                if let Some(c) = m.get(seg) {
-                                    next.push((a, c));
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            node_label = seg.to_string();
-            current = next;
-        }
-        // 终值：array → 元素逐行；object → 一行；标量跳过。祖先链随行一并带出
-        let mut rows: Vec<(Vec<(String, Cell)>, Value)> = Vec::new();
-        for (anc, v) in current {
-            if rows.len() >= MAX_ELEMS {
-                break;
-            }
-            match v {
-                Value::Array(arr) => {
-                    for el in arr {
-                        rows.push((anc.clone(), el.clone()));
-                        if rows.len() >= MAX_ELEMS {
-                            break;
-                        }
-                    }
-                }
-                Value::Object(_) => rows.push((anc, v.clone())),
-                _ => {}
-            }
-        }
-        if rows.is_empty() {
-            return None;
-        }
-        let flat: Vec<Value> = rows.iter().map(|(_, v)| v.clone()).collect();
-        let anc_rows: Vec<Vec<(String, Cell)>> = rows.into_iter().map(|(a, _)| a).collect();
-        let mut ft = build_flat_table_with(&flat, &BTreeSet::new());
-        prepend_ancestor_columns(&mut ft, &anc_rows);
-        Some((Arc::new(flat), Arc::new(ft), path))
-    }
-}
-
-/// 取对象的标识 id 作 cell：优先 `_id`，否则 `id`；都无则空 cell
-fn id_cell_of(m: &serde_json::Map<String, Value>) -> Cell {
-    if let Some(v) = m.get("_id").or_else(|| m.get("id")) {
-        cell_for_value(v)
-    } else {
-        Cell {
-            text: String::new(),
-            kind: "null",
-        }
-    }
-}
-
-/// 给钻取表加「祖先」前导列：每层一列、根→深保序，列名即对象名；整列为空的层（中间无 id 的对象）丢弃
-fn prepend_ancestor_columns(ft: &mut FlatTable, anc_rows: &[Vec<(String, Cell)>]) {
-    let depth = anc_rows.iter().map(|a| a.len()).max().unwrap_or(0);
-    if depth == 0 {
-        return;
-    }
-    let empty = Cell {
-        text: String::new(),
-        kind: "null",
-    };
-    let mut lead_cols: Vec<Column> = Vec::new();
-    let mut keep: Vec<usize> = Vec::new();
-    for layer in 0..depth {
-        let nonempty = anc_rows.iter().any(|a| {
-            a.get(layer)
-                .map(|(_, c)| !c.text.is_empty())
-                .unwrap_or(false)
-        });
-        if !nonempty {
-            continue;
-        }
-        // 该层对象名（各行一致，取首个出现的）作列名
-        let label = anc_rows
-            .iter()
-            .find_map(|a| a.get(layer))
-            .map(|(l, _)| l.clone())
-            .unwrap_or_default();
-        let kind = anc_rows
-            .iter()
-            .filter_map(|a| a.get(layer))
-            .find(|(_, c)| c.kind != "null")
-            .map(|(_, c)| c.kind)
-            .unwrap_or("text");
-        lead_cols.push(Column { path: label, kind });
-        keep.push(layer);
-    }
-    if lead_cols.is_empty() {
-        return;
-    }
-    let lead_rows: Vec<Vec<Cell>> = anc_rows
-        .iter()
-        .map(|a| {
-            keep.iter()
-                .map(|&l| {
-                    a.get(l)
-                        .map(|(_, c)| c.clone())
-                        .unwrap_or_else(|| empty.clone())
-                })
-                .collect()
-        })
-        .collect();
-    ft.prepend_lead(lead_cols, lead_rows);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn obj(v: Value) -> serde_json::Map<String, Value> {
-        match v {
-            Value::Object(m) => m,
-            _ => unreachable!("expect object"),
-        }
-    }
-
-    #[test]
-    fn id_cell_prefers_id_then_id_field() {
-        // _id（$oid 包装）优先，解出裸 id
-        let c = id_cell_of(&obj(
-            json!({"_id": {"$oid": "507f1f77bcf86cd799439011"}, "x": 1}),
-        ));
-        assert_eq!(c.text, "507f1f77bcf86cd799439011");
-        // 无 _id 时退回 id 字段
-        assert_eq!(id_cell_of(&obj(json!({"id": "uuid-123"}))).text, "uuid-123");
-        // 都没有 → 空
-        assert!(id_cell_of(&obj(json!({"x": 1}))).text.is_empty());
-    }
-
-    #[test]
-    fn ancestor_columns_use_object_name_and_drop_empty_layer() {
-        let mut ft = build_flat_table_with(
-            &[json!({"a": 1}), json!({"a": 2})],
-            &std::collections::BTreeSet::new(),
-        );
-        // 层0 对象名 "root" 都有 id；层1 "mid" 全空（中间无 id）→ 应丢弃层1
-        let anc_rows = vec![
-            vec![
-                (
-                    "root".to_string(),
-                    Cell {
-                        text: "t1".to_string(),
-                        kind: "text",
-                    },
-                ),
-                (
-                    "mid".to_string(),
-                    Cell {
-                        text: String::new(),
-                        kind: "null",
-                    },
-                ),
-            ],
-            vec![
-                (
-                    "root".to_string(),
-                    Cell {
-                        text: "t2".to_string(),
-                        kind: "text",
-                    },
-                ),
-                (
-                    "mid".to_string(),
-                    Cell {
-                        text: String::new(),
-                        kind: "null",
-                    },
-                ),
-            ],
-        ];
-        prepend_ancestor_columns(&mut ft, &anc_rows);
-        // 列名即对象名（不是 ‹父N›）；空层 "mid" 被丢弃
-        assert_eq!(ft.columns[0].path, "root");
-        assert!(!ft.columns.iter().any(|c| c.path == "mid"));
-        assert_eq!(ft.rows[0][0].text, "t1");
-        assert_eq!(ft.rows[1][0].text, "t2");
     }
 }

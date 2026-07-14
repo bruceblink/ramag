@@ -17,7 +17,7 @@ use gpui::{
     Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState, MoveDown, MoveUp},
@@ -26,6 +26,7 @@ use gpui_component::{
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
 
 /// 单条命令 + 应答历史
@@ -73,10 +74,10 @@ impl CliConsole {
         let subs = vec![cx.subscribe_in(
             &input,
             window,
-            |this: &mut Self, _, e: &InputEvent, window, cx| {
-                if matches!(e, InputEvent::PressEnter { .. }) {
-                    this.handle_submit(window, cx);
-                }
+            |this: &mut Self, _, e: &InputEvent, window, cx| match e {
+                InputEvent::PressEnter { .. } => this.handle_submit(window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
             },
         )];
         Self {
@@ -124,6 +125,21 @@ impl CliConsole {
                 return;
             }
         };
+        if self.config.production
+            && argv
+                .first()
+                .is_some_and(|command| self.service.is_write_command(command))
+        {
+            self.history.push(Entry {
+                command: raw,
+                db: self.db,
+                outcome: Outcome::Err(format!("(error) {READ_ONLY_MESSAGE}")),
+                elapsed_ms: 0,
+            });
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            cx.notify();
+            return;
+        }
         // 命令行本地拦截两类会破坏复用连接的命令，就地报错不发后端：
         // - SELECT：改变底层连接 DB 却仍缓存为原 db，后续命令打错库（引导用 DB 选择器）
         // - MONITOR/SUBSCRIBE 等：会把连接卡在特殊接收模式，不可逆
@@ -284,6 +300,12 @@ impl Render for CliConsole {
         let bg = theme.background;
         let secondary_bg = theme.secondary;
         let accent = theme.primary;
+        let input_value = self.input.read(cx).value().trim().to_string();
+        let read_only_write = self.config.production
+            && format::tokenize(&input_value)
+                .ok()
+                .and_then(|argv| argv.into_iter().next())
+                .is_some_and(|command| self.service.is_write_command(&command));
 
         let toolbar = h_flex()
             .w_full()
@@ -299,6 +321,14 @@ impl Render for CliConsole {
                 self.db,
                 self.history.len()
             )))
+            .when(self.config.production, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::red())
+                        .child("只读：写命令已禁用"),
+                )
+            })
             .child(div().flex_1())
             .child(
                 Button::new("cli-clear")
@@ -336,7 +366,12 @@ impl Render for CliConsole {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .tooltip("执行 (Enter)")
+                    .disabled(read_only_write)
+                    .tooltip(if read_only_write {
+                        "生产连接为只读，不能执行写命令"
+                    } else {
+                        "执行 (Enter)"
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.handle_submit(window, cx)
                     })),

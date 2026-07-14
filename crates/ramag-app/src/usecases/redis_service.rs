@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, DriverKind, KeyMeta, RedisType, RedisValue, ScanResult,
+    ConnectionConfig, ConnectionId, DriverKind, KeyMeta, RedisType, RedisValue, RedisValueLoad,
+    ScanResult,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{KvDriver, Storage};
@@ -143,6 +144,24 @@ impl RedisService {
             self.driver.evict_pool(&config.id),
             self.driver.get_value(config, db, key).await
         )
+    }
+
+    pub async fn get_value_limited(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        limit: usize,
+    ) -> Result<RedisValueLoad> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.get_value_limited(config, db, key, limit).await
+        )
+    }
+
+    pub fn is_write_command(&self, command: &str) -> bool {
+        self.driver.is_write_command(command)
     }
 
     pub async fn delete_key(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<bool> {

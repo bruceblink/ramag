@@ -6495,6 +6495,7 @@ dependencies = [
 name = "ramag-ui"
 version = "0.0.1"
 dependencies = [
+ "futures",
  "gpui",
  "gpui-component",
  "gpui-component-assets",

@@ -355,7 +355,10 @@ mod tests {
 
     #[test]
     fn derive_identity_falls_back_to_non_null_unique() {
-        let cols = vec![make_col("email", false, false), make_col("name", true, false)];
+        let cols = vec![
+            make_col("email", false, false),
+            make_col("name", true, false),
+        ];
         let indexes = vec![make_index("uq_email", true, false, &["email"])];
         let ident = derive_row_identity(&cols, &indexes).unwrap();
         assert_eq!(ident.columns, vec!["email".to_string()]);

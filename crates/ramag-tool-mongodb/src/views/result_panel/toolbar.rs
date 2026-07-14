@@ -129,10 +129,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
         })
         .child({
             let entity = cx.entity().clone();
-            let has_data = panel
-                .result
-                .as_ref()
-                .is_some_and(|r| !r.documents.is_empty());
+            let has_data = panel.docs_arc.as_ref().is_some_and(|docs| !docs.is_empty());
             Button::new("mongo-export")
                 .ghost()
                 .small()
@@ -150,14 +147,21 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                     }))
                 })
         })
-        .child(
-            // 运行：与 dbclient 同位（结果区工具栏最右）、同图标（Play）、同快捷键（⌘↵）；
-            // 点击 emit Refresh，由 query_tab 订阅后重跑当前命令
+        .child(if panel.running {
+            Button::new("mongo-cancel-result")
+                .danger()
+                .small()
+                .icon(IconName::CircleX)
+                .label("停止等待")
+                .tooltip("停止客户端等待；服务器端操作可能仍在执行")
+                .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Cancel)))
+        } else {
+            // 运行：与 dbclient 同位（结果区工具栏最右）、同快捷键（⌘↵）。
             Button::new("mongo-run-result")
                 .primary()
                 .small()
                 .icon(IconName::Play)
                 .tooltip(format!("{} 运行", primary_shortcut("Enter")))
-                .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Refresh))),
-        )
+                .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Refresh)))
+        })
 }

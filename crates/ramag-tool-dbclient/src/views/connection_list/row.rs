@@ -191,9 +191,15 @@ pub(super) fn connection_row(
             },
         ))
         // 版本 / 地址 / 账号：按密度隐藏，窄窗口下让位给名称与操作
-        .when(show_version, |row| row.child(secondary_col(120.0, version_text)))
-        .when(show_address, |row| row.child(secondary_col(150.0, address_text)))
-        .when(show_account, |row| row.child(secondary_col(150.0, account_text)))
+        .when(show_version, |row| {
+            row.child(secondary_col(120.0, version_text))
+        })
+        .when(show_address, |row| {
+            row.child(secondary_col(150.0, address_text))
+        })
+        .when(show_account, |row| {
+            row.child(secondary_col(150.0, account_text))
+        })
         // 操作按钮（编辑 / 删除）：图标按钮 + tooltip
         // mouse_down 拦截避免点击事件冒泡到父行触发"打开连接"
         .child(

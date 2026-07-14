@@ -4,6 +4,7 @@ mod hash_block;
 mod header;
 mod helpers;
 mod list_block;
+mod ops;
 mod scalar;
 mod set_block;
 mod stream_block;
@@ -16,15 +17,17 @@ use gpui::{
     UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, WindowExt as _, notification::Notification, scroll::ScrollableElement as _, v_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, button::Button, notification::Notification,
+    scroll::ScrollableElement as _, v_flex,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, RedisValue};
-use tracing::{error, info};
 
-use helpers::{futures_join, render_value};
+use helpers::render_value;
 
 use crate::views::value_display::ViewMode;
+
+const COLLECTION_PAGE_SIZE: usize = 10_000;
 
 #[derive(Debug, Clone)]
 pub enum KeyDetailEvent {
@@ -87,6 +90,9 @@ pub struct KeyDetailPanel {
     pub(super) value: Option<RedisValue>,
     /// TTL 毫秒（-1 永久 / -2 不存在 / >=0 剩余）
     pub(super) ttl_ms: Option<i64>,
+    pub(super) ttl_loading: bool,
+    /// PTTL 局部错误；值加载成功时不应因 TTL 失败隐藏整个 key。
+    pub(super) ttl_error: Option<String>,
     /// 加载状态
     loading: bool,
     error: Option<String>,
@@ -95,6 +101,12 @@ pub struct KeyDetailPanel {
     /// 单 Key 字节估算（MEMORY USAGE，需用户主动点击触发）
     pub(super) key_size_bytes: Option<u64>,
     pub(super) estimating_size: bool,
+    /// MEMORY USAGE 的局部错误；不得覆盖已成功加载的 key 内容。
+    pub(super) size_error: Option<String>,
+    /// 集合服务端总数；None 表示标量或尚未加载。
+    pub(super) collection_total: Option<u64>,
+    collection_limit: usize,
+    pub(super) loading_more: bool,
     /// 标量值视图模式：None=按内容自动（JSON 美化 / Raw），Some=用户手动选定
     value_view_mode: Option<ViewMode>,
     /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 内容文本, gzip 提示)。避免每帧重复
@@ -125,10 +137,16 @@ impl KeyDetailPanel {
             key: None,
             value: None,
             ttl_ms: None,
+            ttl_loading: false,
+            ttl_error: None,
             loading: false,
             error: None,
             pending_notification: None,
             key_size_bytes: None,
+            size_error: None,
+            collection_total: None,
+            collection_limit: COLLECTION_PAGE_SIZE,
+            loading_more: false,
             value_view_mode: None,
             scalar_cache: std::cell::RefCell::new(None),
             focus_handle: cx.focus_handle(),
@@ -148,93 +166,19 @@ impl KeyDetailPanel {
         self.key = None;
         self.value = None;
         self.ttl_ms = None;
+        self.ttl_loading = false;
+        self.ttl_error = None;
+        self.loading = false;
         self.error = None;
         self.key_size_bytes = None;
+        self.estimating_size = false;
+        self.size_error = None;
+        self.collection_total = None;
+        self.collection_limit = COLLECTION_PAGE_SIZE;
+        self.loading_more = false;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
         cx.notify();
-    }
-
-    /// 加载某 key 的值（由 Session 在收到 KeyTreeEvent::Selected 时调用）
-    pub fn load_key(&mut self, key: String, cx: &mut Context<Self>) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
-        self.key = Some(key.clone());
-        self.value = None;
-        self.ttl_ms = None;
-        self.loading = true;
-        self.error = None;
-        self.key_size_bytes = None;
-        self.value_view_mode = None;
-        *self.scalar_cache.borrow_mut() = None;
-        cx.notify();
-
-        let svc = self.service.clone();
-        let db = self.db;
-        cx.spawn(async move |this, cx| {
-            // 并发拉值 + TTL
-            let (value_res, ttl_res) = futures_join(
-                svc.get_value(&config, db, &key),
-                svc.key_ttl(&config, db, &key),
-            )
-            .await;
-            let _ = this.update(cx, |this, cx| {
-                // 请求身份校验：用户可能已点开别的 key / 切了 db，
-                // 慢的旧回包不得覆盖新详情（大 value 场景极易触发）
-                if this.key.as_deref() != Some(key.as_str()) || this.db != db {
-                    return;
-                }
-                this.loading = false;
-                match value_res {
-                    Ok(v) => this.value = Some(v),
-                    Err(e) => {
-                        error!(error = %e, "load key value failed");
-                        this.error = Some(format!("加载值失败：{e}"));
-                    }
-                }
-                this.ttl_ms = ttl_res.ok();
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// 删除 Hash 中的某个字段（HDEL key field）→ 完成后重载详情
-    pub fn delete_hash_field(&mut self, field: String, cx: &mut Context<Self>) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
-        let Some(key) = self.key.clone() else {
-            return;
-        };
-        let svc = self.service.clone();
-        let db = self.db;
-        let key_for_reload = key.clone();
-        let argv = vec!["HDEL".to_string(), key, field.clone()];
-        cx.spawn(async move |this, cx| {
-            let result = svc.execute_command(&config, db, argv).await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(_) => {
-                    info!(?field, "hash field deleted");
-                    this.load_key(key_for_reload, cx);
-                }
-                Err(e) => {
-                    error!(error = %e, "delete hash field failed");
-                    this.pending_notification =
-                        Some(Notification::error(e.write_hint("删除字段失败")).autohide(true));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// 公开重载方法（外部如 Session 在弹窗保存后调用）
-    pub fn reload_current(&mut self, cx: &mut Context<Self>) {
-        if let Some(k) = self.key.clone() {
-            self.load_key(k, cx);
-        }
     }
 
     /// 当前正在展示的 key 名（None = 未选中任何 key）
@@ -247,10 +191,16 @@ impl KeyDetailPanel {
         self.key = None;
         self.value = None;
         self.ttl_ms = None;
+        self.ttl_loading = false;
+        self.ttl_error = None;
         self.loading = false;
         self.error = None;
         self.key_size_bytes = None;
         self.estimating_size = false;
+        self.size_error = None;
+        self.collection_total = None;
+        self.collection_limit = COLLECTION_PAGE_SIZE;
+        self.loading_more = false;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
         cx.notify();
@@ -268,154 +218,6 @@ impl KeyDetailPanel {
             self.value_view_mode = Some(mode);
             cx.notify();
         }
-    }
-
-    /// `MEMORY USAGE` 写入 self.key_size_bytes，由 header 估算按钮调用
-    pub(super) fn estimate_size(&mut self, cx: &mut Context<Self>) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
-        let Some(key) = self.key.clone() else {
-            return;
-        };
-        self.estimating_size = true;
-        cx.notify();
-
-        let svc = self.service.clone();
-        let db = self.db;
-        cx.spawn(async move |this, cx| {
-            let argv = vec!["MEMORY".into(), "USAGE".into(), key.clone()];
-            let result = svc.execute_command(&config, db, argv).await;
-            let _ = this.update(cx, |this, cx| {
-                // 估算期间已切 key / 切 db：丢弃旧回包，避免把 A 的大小标在 B 上
-                if this.key.as_deref() != Some(key.as_str()) || this.db != db {
-                    return;
-                }
-                this.estimating_size = false;
-                match result {
-                    Ok(RedisValue::Int(n)) if n >= 0 => {
-                        this.key_size_bytes = Some(n as u64);
-                        info!(?key, n, "memory usage ok");
-                    }
-                    Ok(RedisValue::Nil) => {
-                        this.key_size_bytes = None;
-                        info!(?key, "memory usage nil (key gone)");
-                    }
-                    Ok(other) => {
-                        error!(?other, "memory usage unexpected response");
-                        this.error = Some("MEMORY USAGE 应答异常（可能服务端不支持）".to_string());
-                    }
-                    Err(e) => {
-                        error!(error = %e, "memory usage failed");
-                        this.error = Some(format!("MEMORY USAGE 失败：{e}"));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// 通用容器单元素删除：发命令成功后重载详情
-    fn delete_element(
-        &mut self,
-        argv: Vec<String>,
-        log_label: &'static str,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
-        let Some(key) = self.key.clone() else {
-            return;
-        };
-        let svc = self.service.clone();
-        let db = self.db;
-        cx.spawn(async move |this, cx| {
-            let result = svc.execute_command(&config, db, argv).await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(_) => {
-                    info!(label = log_label, "element deleted");
-                    this.load_key(key, cx);
-                }
-                Err(e) => {
-                    error!(error = %e, label = log_label, "delete element failed");
-                    this.pending_notification =
-                        Some(Notification::error(e.write_hint("删除元素失败")).autohide(true));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// 删除 List 中的某个值（LREM key 1 value）
-    pub fn delete_list_element(&mut self, value: String, cx: &mut Context<Self>) {
-        let key = match &self.key {
-            Some(k) => k.clone(),
-            None => return,
-        };
-        self.delete_element(vec!["LREM".into(), key, "1".into(), value], "lrem", cx);
-    }
-
-    /// 删除 Set 中的某个成员（SREM key member）
-    pub fn delete_set_element(&mut self, member: String, cx: &mut Context<Self>) {
-        let key = match &self.key {
-            Some(k) => k.clone(),
-            None => return,
-        };
-        self.delete_element(vec!["SREM".into(), key, member], "srem", cx);
-    }
-
-    /// 删除 Stream 中的某条 entry（XDEL key entry_id）
-    pub fn delete_stream_entry(&mut self, entry_id: String, cx: &mut Context<Self>) {
-        let key = match &self.key {
-            Some(k) => k.clone(),
-            None => return,
-        };
-        self.delete_element(vec!["XDEL".into(), key, entry_id], "xdel", cx);
-    }
-
-    /// 删除 ZSet 中的某个成员（ZREM key member）
-    pub fn delete_zset_member(&mut self, member: String, cx: &mut Context<Self>) {
-        let key = match &self.key {
-            Some(k) => k.clone(),
-            None => return,
-        };
-        self.delete_element(vec!["ZREM".into(), key, member], "zrem", cx);
-    }
-
-    /// 真正发 DEL 命令删除当前 key（由上层 Session 在二次确认通过后调用）
-    pub fn delete_key_now(&mut self, cx: &mut Context<Self>) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
-        let Some(key) = self.key.clone() else {
-            return;
-        };
-        let svc = self.service.clone();
-        let db = self.db;
-        cx.spawn(async move |this, cx| {
-            let result = svc.delete_key(&config, db, &key).await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(_) => {
-                    info!(?key, "key deleted");
-                    let removed_key = key.clone();
-                    this.key = None;
-                    this.value = None;
-                    this.ttl_ms = None;
-                    cx.emit(KeyDetailEvent::Deleted(removed_key));
-                    cx.notify();
-                }
-                Err(e) => {
-                    error!(error = %e, "delete key failed");
-                    this.pending_notification =
-                        Some(Notification::error(e.write_hint("删除失败")).autohide(true));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 }
 
@@ -464,12 +266,22 @@ impl Render for KeyDetailPanel {
                 false,
             )
         } else if let Some(err) = self.error.clone() {
+            let key_for_retry = key.clone();
             (
-                div()
+                v_flex()
                     .p(px(14.0))
-                    .text_sm()
-                    .text_color(gpui::red())
-                    .child(err)
+                    .gap_2()
+                    .items_start()
+                    .child(div().text_sm().text_color(gpui::red()).child(err))
+                    .child(
+                        Button::new("redis-key-load-retry")
+                            .outline()
+                            .small()
+                            .label("重试")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.load_key(key_for_retry.clone(), cx);
+                            })),
+                    )
                     .into_any_element(),
                 false,
             )

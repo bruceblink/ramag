@@ -93,7 +93,8 @@ impl Render for QueryTab {
         });
 
         // 自动 LIMIT 档位展示与切换入口（点击弹下拉）
-        let auto_limit_label: gpui::SharedString = match self.auto_limit {
+        let auto_limit = ramag_ui::preferences::sql_auto_limit(cx);
+        let auto_limit_label: gpui::SharedString = match auto_limit {
             Some(n) => format!("自动限制 {}", format_thousands(n)).into(),
             None => "自动限制已关闭".into(),
         };
@@ -236,15 +237,20 @@ impl Render for QueryTab {
                             .tooltip("未写 LIMIT 的 SELECT 自动补上限，防止误拉全表；点击切换档位")
                             .dropdown_menu(move |menu, _, _| {
                                 let mut m = menu;
-                                for n in super::sql_utils::AUTO_LIMIT_CHOICES {
+                                for n in ramag_ui::preferences::SQL_AUTO_LIMIT_CHOICES {
                                     let e = entity.clone();
-                                    m = m.item(PopupMenuItem::new(format!(
-                                        "自动限制 {}",
-                                        format_thousands(n)
-                                    ))
-                                    .on_click(move |_, _, app| {
-                                        e.update(app, |this, cx| this.set_auto_limit(Some(n), cx));
-                                    }));
+                                    m =
+                                        m.item(
+                                            PopupMenuItem::new(format!(
+                                                "自动限制 {}",
+                                                format_thousands(n)
+                                            ))
+                                            .on_click(move |_, _, app| {
+                                                e.update(app, |this, cx| {
+                                                    this.set_auto_limit(Some(n), cx)
+                                                });
+                                            }),
+                                        );
                                 }
                                 let e = entity.clone();
                                 m.item(PopupMenuItem::new("关闭自动限制").on_click(
@@ -290,12 +296,12 @@ impl Render for QueryTab {
                     })
                     .child({
                         let can_insert = insert_reason.is_none() && !has_pending_insert;
-                        let insert_tip: gpui::SharedString = match (insert_reason, has_pending_insert)
-                        {
-                            (Some(reason), _) => format!("新增行（{reason}）").into(),
-                            (None, true) => "新增行（已在草稿中，先提交或取消）".into(),
-                            (None, false) => "新增行".into(),
-                        };
+                        let insert_tip: gpui::SharedString =
+                            match (insert_reason, has_pending_insert) {
+                                (Some(reason), _) => format!("新增行（{reason}）").into(),
+                                (None, true) => "新增行（已在草稿中，先提交或取消）".into(),
+                                (None, false) => "新增行".into(),
+                            };
                         Button::new("toolbar-insert")
                             .ghost()
                             .small()
@@ -372,9 +378,9 @@ impl Render for QueryTab {
                             .disabled(!has_selected || modify_reason.is_some())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let panel_ref = this.result.read(cx);
-                                let multi = panel_ref.delete_preview_multi();
+                                let multi = panel_ref.delete_preview_multi(cx);
                                 let single = if multi.is_none() {
-                                    panel_ref.delete_preview()
+                                    panel_ref.delete_preview(cx)
                                 } else {
                                     None
                                 };

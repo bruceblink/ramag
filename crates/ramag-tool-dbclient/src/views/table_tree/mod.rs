@@ -4,7 +4,7 @@ mod ops;
 mod render;
 mod row;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, EventEmitter, UniformListScrollHandle, Window};
@@ -22,7 +22,12 @@ pub struct TableTreePanel {
     pub(super) loading_schemas: bool,
     pub(super) schemas: Vec<Schema>,
     pub(super) error: Option<String>,
+    /// 已加载的 schema 表缓存。是否展开由 `open_schemas` 单独记录，避免搜索加载后清空
+    /// 关键字时把所有 schema 一次性展开。
     pub(super) expanded: HashMap<String, SchemaTables>,
+    pub(super) open_schemas: HashSet<String>,
+    pub(super) full_search: Option<FullSearchProgress>,
+    pub(super) full_search_generation: u64,
     /// 已展开的表 → 列状态（key 为 "schema.table"）
     pub(super) table_columns: HashMap<String, TableColumns>,
     pub(super) selected: Option<(String, String)>,
@@ -48,6 +53,14 @@ pub(super) struct SchemaTables {
     pub(super) loading: bool,
     pub(super) tables: Vec<ramag_domain::entities::Table>,
     pub(super) error: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FullSearchProgress {
+    pub(super) completed: usize,
+    pub(super) total: usize,
+    pub(super) failed: usize,
+    pub(super) generation: u64,
 }
 
 #[derive(Default)]
@@ -110,6 +123,9 @@ impl TableTreePanel {
             schemas: Vec::new(),
             error: None,
             expanded: HashMap::new(),
+            open_schemas: HashSet::new(),
+            full_search: None,
+            full_search_generation: 0,
             table_columns: HashMap::new(),
             selected: None,
             show_system: false,
@@ -153,6 +169,8 @@ impl TableTreePanel {
             return;
         }
         self.expanded.clear();
+        self.open_schemas.clear();
+        self.cancel_full_search(cx);
         self.table_columns.clear();
         self.selected = None;
         self.error = None;
@@ -171,6 +189,8 @@ impl TableTreePanel {
         self.connection = conn;
         self.schemas.clear();
         self.expanded.clear();
+        self.open_schemas.clear();
+        self.cancel_full_search(cx);
         self.table_columns.clear();
         self.selected = None;
         self.error = None;
@@ -223,6 +243,7 @@ impl TableTreePanel {
     fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
         const AUTO_LOAD_MAX_SCHEMAS: usize = 50;
         if self.search.read(cx).value().trim().is_empty() {
+            self.cancel_full_search(cx);
             return;
         }
         if self.schemas.len() > AUTO_LOAD_MAX_SCHEMAS {
@@ -246,11 +267,120 @@ impl TableTreePanel {
             schema: schema_name.clone(),
         });
 
-        if self.expanded.remove(&schema_name).is_some() {
+        if !self.open_schemas.insert(schema_name.clone()) {
+            self.open_schemas.remove(&schema_name);
             cx.notify();
             return;
         }
-        self.load_tables_for(schema_name, cx);
+        let needs_load = self
+            .expanded
+            .get(&schema_name)
+            .is_none_or(|entry| entry.error.is_some());
+        if needs_load {
+            self.load_tables_for(schema_name, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// schema 很多时由用户显式触发完整搜索。顺序加载用于限制数据库并发；取消会让当前
+    /// 请求完成后停止，且不再把过期结果写回已切换的连接。
+    pub(super) fn load_all_tables_for_search(&mut self, cx: &mut Context<Self>) {
+        if self.full_search.is_some() || self.search.read(cx).value().trim().is_empty() {
+            return;
+        }
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        let missing: Vec<String> = self
+            .schemas
+            .iter()
+            .map(|schema| schema.name.clone())
+            .filter(|name| {
+                self.expanded
+                    .get(name)
+                    .is_none_or(|entry| entry.error.is_some())
+            })
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+
+        self.full_search_generation = self.full_search_generation.wrapping_add(1);
+        let generation = self.full_search_generation;
+        self.full_search = Some(FullSearchProgress {
+            completed: 0,
+            total: missing.len(),
+            failed: 0,
+            generation,
+        });
+        cx.notify();
+
+        let service = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            for schema in missing {
+                let result = service.list_tables(&conn, &schema).await;
+                let should_continue = this
+                    .update(cx, |this, cx| {
+                        let is_current = this.connection.as_ref().map(|current| &current.id)
+                            == Some(&conn.id)
+                            && this
+                                .full_search
+                                .is_some_and(|progress| progress.generation == generation);
+                        if !is_current {
+                            return false;
+                        }
+
+                        let entry = this.expanded.entry(schema.clone()).or_default();
+                        entry.loading = false;
+                        match result {
+                            Ok(tables) => {
+                                let names = tables.iter().map(|table| table.name.clone()).collect();
+                                let views = tables
+                                    .iter()
+                                    .filter(|table| table.is_view)
+                                    .map(|table| table.name.clone())
+                                    .collect();
+                                let mut cache = this.schema_cache.write();
+                                cache.tables.insert(schema.clone(), names);
+                                cache.views.insert(schema.clone(), views);
+                                entry.tables = tables;
+                                entry.error = None;
+                            }
+                            Err(err) => {
+                                error!(error = %err, schema = %schema, "list tables for full search failed");
+                                entry.error = Some(err.to_string());
+                                if let Some(progress) = this.full_search.as_mut() {
+                                    progress.failed += 1;
+                                }
+                            }
+                        }
+
+                        let mut done = false;
+                        if let Some(progress) = this.full_search.as_mut() {
+                            progress.completed += 1;
+                            done = progress.completed == progress.total;
+                        }
+                        if done {
+                            this.full_search = None;
+                        }
+                        cx.notify();
+                        !done
+                    })
+                    .unwrap_or(false);
+                if !should_continue {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn cancel_full_search(&mut self, cx: &mut Context<Self>) {
+        if self.full_search.take().is_some() {
+            self.full_search_generation = self.full_search_generation.wrapping_add(1);
+            cx.notify();
+        }
     }
 
     /// （重新）拉取某 schema 的表列表；entry 不存在则插入（展开态保持不变）

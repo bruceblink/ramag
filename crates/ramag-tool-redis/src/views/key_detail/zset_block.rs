@@ -7,7 +7,7 @@ use gpui::{
     div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    Sizable as _,
+    Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -41,11 +41,12 @@ pub(super) fn render_zset_block(
                     let Some(RedisValue::ZSet(pairs)) = &this.value else {
                         return Vec::new();
                     };
+                    let read_only = this.is_read_only();
                     range
                         .filter_map(|i| {
                             let (m, score) = pairs.get(i)?;
                             Some(
-                                zset_row(&key, i, m, *score, fg, muted_fg, border, cx)
+                                zset_row(&key, i, m, *score, read_only, fg, muted_fg, border, cx)
                                     .into_any_element(),
                             )
                         })
@@ -63,6 +64,7 @@ fn zset_row(
     i: usize,
     member: &RedisValue,
     score: f64,
+    read_only: bool,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     border: gpui::Hsla,
@@ -71,18 +73,19 @@ fn zset_row(
     let preview = member.display_preview(256);
     // 仅文本成员可改 score：二进制成员显示 `[N bytes]` 摘要，用它做 ZADD 会新增一个
     // 名为摘要串的垃圾成员而非更新原成员（原成员 score 不变），故二进制成员只读
-    let editable = matches!(member, RedisValue::Text(_));
+    let editable = matches!(member, RedisValue::Text(_)) && !read_only;
     let raw_member = match member {
-        RedisValue::Text(s) => s.clone(),
-        other => other.display_preview(8192),
+        RedisValue::Text(s) => Some(s.clone()),
+        _ => None,
     };
     // 整数 score 显 "234"；小数显 "1.5"（去尾随零）
     let score_str = pretty_score(score);
     let score_for_edit = score_str.clone();
     let key_for_edit = key.to_string();
     let key_for_del = key.to_string();
-    let raw_for_edit = raw_member.clone();
+    let raw_for_edit = raw_member.clone().unwrap_or_default();
     let raw_for_del = raw_member.clone();
+    let delete_disabled = read_only || raw_member.is_none();
     let row_id = SharedString::from(format!("zset-row-{i}"));
     let del_id = SharedString::from(format!("zset-del-{i}"));
     h_flex()
@@ -133,12 +136,21 @@ fn zset_row(
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::trash())
-                .tooltip("删除该成员")
+                .disabled(delete_disabled)
+                .tooltip(if read_only {
+                    "生产连接为只读"
+                } else if raw_member.is_none() {
+                    "二进制成员暂不支持安全删除"
+                } else {
+                    "删除该成员"
+                })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    cx.emit(KeyDetailEvent::RequestDeleteZSetMember(
-                        key_for_del.clone(),
-                        raw_for_del.clone(),
-                    ));
+                    if let Some(member) = raw_for_del.clone() {
+                        cx.emit(KeyDetailEvent::RequestDeleteZSetMember(
+                            key_for_del.clone(),
+                            member,
+                        ));
+                    }
                 })),
         )
 }

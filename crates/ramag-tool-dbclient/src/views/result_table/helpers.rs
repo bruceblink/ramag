@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::input::InputState;
-use ramag_domain::entities::{Row, Value};
+use ramag_domain::entities::{QueryResult, Value};
 
 use crate::views::result_panel::ResultPanel;
 
@@ -13,8 +13,8 @@ pub(super) fn estimate_col_width(
     ci: usize,
     columns: &[String],
     column_types: &[String],
-    // (源行下标, 行数据)：宽度估算只用行数据，忽略源下标
-    rows: &[(usize, Row)],
+    result: &QueryResult,
+    row_indices: &[usize],
 ) -> gpui::Pixels {
     const MIN_W: f32 = 100.0;
     const MAX_W: f32 = 380.0;
@@ -32,7 +32,10 @@ pub(super) fn estimate_col_width(
 
     let mut max_chars = header_chars;
     // display_preview(60) 与渲染保持一致：被截断成 60 的内容自然不会撑爆 380 上限
-    for (_, row) in rows.iter().take(100) {
+    for &ri in row_indices.iter().take(100) {
+        let Some(row) = result.rows.get(ri) else {
+            continue;
+        };
         if let Some(v) = row.values.get(ci) {
             let chars = v.display_preview(60).chars().count();
             if chars > max_chars {
@@ -85,10 +88,17 @@ pub(super) fn render_col_resize_handle(ci: usize, cx: &mut Context<ResultPanel>)
         .into_any_element()
 }
 
-pub(super) fn detect_numeric_column(ci: usize, rows: &[(usize, Row)]) -> bool {
+pub(super) fn detect_numeric_column(
+    ci: usize,
+    result: &QueryResult,
+    row_indices: &[usize],
+) -> bool {
     let mut has_num = false;
     let mut all_num = true;
-    for (_, row) in rows.iter().take(20) {
+    for &ri in row_indices.iter().take(20) {
+        let Some(row) = result.rows.get(ri) else {
+            continue;
+        };
         if let Some(v) = row.values.get(ci) {
             match v {
                 Value::Null => {}

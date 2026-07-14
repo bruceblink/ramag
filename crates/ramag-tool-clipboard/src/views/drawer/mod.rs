@@ -35,6 +35,7 @@ pub struct ClipboardDrawer {
     items: Vec<ClipItem>,
     /// 后台全量存储搜索结果（覆盖缓存窗口之外的历史；与主视图同款）
     search_results: Vec<ClipItem>,
+    search_truncated: bool,
     /// 全量搜索去抖代际：输入变化即自增，旧回包据此丢弃
     search_gen: u64,
     /// 过滤后可见列表上的选中下标
@@ -89,32 +90,23 @@ impl ClipboardDrawer {
 
         // 同步从缓存取最近窗口快照：首帧即满内容，无异步 list 的"先空后填"
         let items = service.cached_snapshot();
-        let view = Self {
+        Self {
             service: service.clone(),
             items,
             search_results: Vec::new(),
+            search_truncated: false,
             search_gen: 0,
             selected: 0,
             search,
             activation_target,
-            auto_paste: true,
+            auto_paste: service.auto_paste(),
             pending_notification: None,
             pasting: false,
             scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             img_cache: crate::views::image_cache::ImageCache::new(),
             _subscriptions: subs,
-        };
-        // 仅异步补 auto_paste 设置；列表已在构造时由缓存同步填充
-        cx.spawn(async move |this, cx| {
-            let settings = service.load_settings().await;
-            let _ = this.update(cx, |this, cx| {
-                this.auto_paste = settings.auto_paste;
-                cx.notify();
-            });
-        })
-        .detach();
-        view
+        }
     }
 
     pub(super) fn service(&self) -> &Arc<ClipboardService> {
@@ -160,13 +152,19 @@ impl ClipboardDrawer {
     /// 有搜索词时：缓存即时匹配层在前，后台全量结果去重补后（与主视图同款），
     /// 让缓存窗口之外的旧记录也能被搜到
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<ClipItem> {
+        self.visible_items_with_status(cx).0
+    }
+
+    fn visible_items_with_status(&self, cx: &gpui::App) -> (Vec<ClipItem>, bool) {
         let q = self.search.read(cx).value().to_string();
         if q.trim().is_empty() {
-            return filter_items(&self.items, "", None)
+            let mut items = filter_items(&self.items, "", None)
                 .into_iter()
-                .take(DRAWER_LIMIT)
                 .cloned()
-                .collect();
+                .collect::<Vec<_>>();
+            let truncated = items.len() > DRAWER_LIMIT;
+            items.truncate(DRAWER_LIMIT);
+            return (items, truncated);
         }
         let mut seen = std::collections::HashSet::new();
         let mut out: Vec<ClipItem> = Vec::new();
@@ -179,7 +177,9 @@ impl ClipboardDrawer {
                 out.push(it.clone());
             }
         }
-        out.into_iter().take(DRAWER_LIMIT).collect()
+        let truncated = out.len() > DRAWER_LIMIT || self.search_truncated;
+        out.truncate(DRAWER_LIMIT);
+        (out, truncated)
     }
 
     /// 搜索框变化：去抖后台全量搜索，补充缓存窗口之外的匹配（与主视图 schedule_search 同款）
@@ -189,6 +189,7 @@ impl ClipboardDrawer {
         let query = self.search.read(cx).value().to_string();
         if query.trim().is_empty() {
             self.search_results.clear();
+            self.search_truncated = false;
             return;
         }
         let svc = self.service.clone();
@@ -200,16 +201,21 @@ impl ClipboardDrawer {
             {
                 return;
             }
-            let result = svc.search(&query, DRAWER_SEARCH_LIMIT).await;
+            let result = svc.search(&query, DRAWER_SEARCH_LIMIT + 1).await;
             let _ = this.update(cx, |this, cx| {
                 if this.search_gen != generation {
                     return;
                 }
                 match result {
-                    Ok(items) => this.search_results = items,
+                    Ok(mut items) => {
+                        this.search_truncated = items.len() > DRAWER_SEARCH_LIMIT;
+                        items.truncate(DRAWER_SEARCH_LIMIT);
+                        this.search_results = items;
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "drawer full search failed");
                         this.search_results.clear();
+                        this.search_truncated = false;
                         this.pending_notification = Some(Notification::warning(format!(
                             "全量搜索失败（仅显示最近缓存）：{e}"
                         )));
@@ -306,7 +312,7 @@ impl ClipboardDrawer {
     }
 
     /// 顶部工具栏：仿 Paste 居中搜索框
-    fn render_topbar(&self) -> impl IntoElement {
+    fn render_topbar(&self, truncated: bool) -> impl IntoElement {
         h_flex()
             .w_full()
             .flex_none()
@@ -320,6 +326,9 @@ impl ClipboardDrawer {
                     .max_w_full()
                     .child(Input::new(&self.search).small()),
             )
+            .when(truncated, |bar| {
+                bar.child(div().text_xs().child("仅显示前 60 条"))
+            })
     }
 }
 
@@ -335,14 +344,14 @@ impl Render for ClipboardDrawer {
         let muted = cx.theme().muted_foreground;
         let focus = self.focus_handle.clone();
 
-        let visible = self.visible_items(cx);
+        let (visible, truncated) = self.visible_items_with_status(cx);
         // 过滤后列表变短时把选中夹回范围内
         if self.selected >= visible.len() {
             self.selected = visible.len().saturating_sub(1);
         }
         let empty = visible.is_empty();
 
-        let topbar = self.render_topbar().into_any_element();
+        let topbar = self.render_topbar(truncated).into_any_element();
         // for 循环（非 map 闭包）：render_card 需 &mut Context，闭包会触发借用逃逸
         let mut cards = Vec::with_capacity(visible.len());
         for (ix, item) in visible.iter().enumerate() {

@@ -213,12 +213,13 @@ impl RedisSessionPanel {
                     this.confirm_delete_op(
                         "删除 List 元素？".into(),
                         format!(
-                            "将删除序号 {idx_v} 的元素「{value_label}」（按值首匹配，仅删 1 个），\
-                             此操作不可撤销。"
+                            "将精确删除序号 {idx_v} 的元素「{value_label}」。\
+                             若列表已变化则自动取消；此操作不可撤销。"
                         ),
                         Rc::new(move |_w, app| {
                             let value = value.clone();
-                            panel_for_run.update(app, |p, cx| p.delete_list_element(value, cx));
+                            panel_for_run
+                                .update(app, |p, cx| p.delete_list_element(value, idx_v, cx));
                         }),
                         window,
                         cx,

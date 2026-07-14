@@ -16,7 +16,6 @@ pub(super) fn render_row(
     checkbox: gpui::AnyElement,
     row_num_width: gpui::Pixels,
     row_idx_in_view: usize,
-    row_idx_in_data: usize,
     cells: &[Cell],
     visible_cols: &[usize],
     columns: &[Column],
@@ -50,7 +49,7 @@ pub(super) fn render_row(
         .flex()
         .items_center()
         .justify_end()
-        .child(SharedString::from((row_idx_in_data + 1).to_string()));
+        .child(SharedString::from((row_idx_in_view + 1).to_string()));
 
     let mut row = h_flex()
         .id(SharedString::from(format!("mongo-row-{row_idx_in_view}")))

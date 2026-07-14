@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled,
@@ -23,17 +24,17 @@ use gpui_component::{
     h_flex, v_flex,
 };
 
-use ramag_domain::entities::{QueryResult, Row};
+use ramag_domain::entities::QueryResult;
 
 use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
 
 /// 帧级数据：本次 render_table 计算一次，供 uniform_list closure 共享访问
 /// 用 Rc 包装才能在 'static + Fn 闭包内 capture（不能 borrow 栈局部变量）
 struct TableRowFrame {
+    result: Arc<QueryResult>,
     columns: Vec<String>,
-    /// (源行下标, 行数据)：源下标定位原始 result.rows，用于 DML / 复制 / 编辑；
-    /// 显示序号仅用于渲染定位，绝不能拿去索引原始行
-    display_rows: Vec<(usize, Row)>,
+    /// 排序 + 过滤后的源行下标；行数据始终从共享 result 读取，不在每帧复制。
+    display_indices: Vec<usize>,
     visible_col_indices: Vec<usize>,
     col_widths: Vec<gpui::Pixels>,
     right_align: Vec<bool>,
@@ -52,8 +53,8 @@ struct TableRowFrame {
 pub(crate) struct DisplayView {
     /// 可见列的原始下标（列过滤后）
     pub(crate) visible_col_indices: Vec<usize>,
-    /// (原始行下标, 行)：排序 + 行过滤后的显示序
-    pub(crate) display_rows: Vec<(usize, Row)>,
+    /// 原始行下标：排序 + 行过滤后的显示序
+    pub(crate) display_indices: Vec<usize>,
     /// 是否因 MAX_ROWS_DISPLAY 截断
     pub(crate) truncated: bool,
     /// 列过滤是否激活
@@ -78,17 +79,13 @@ pub(crate) fn compute_display_view(
     result: &QueryResult,
     cx: &gpui::App,
 ) -> DisplayView {
-    let mut display_rows = result
-        .rows
-        .iter()
-        .take(MAX_ROWS_DISPLAY)
-        .cloned()
-        .enumerate()
-        .collect::<Vec<(usize, Row)>>();
+    let mut display_indices = (0..result.rows.len().min(MAX_ROWS_DISPLAY)).collect::<Vec<_>>();
     let truncated = result.rows.len() > MAX_ROWS_DISPLAY;
 
     if let Some((sort_col, dir)) = panel.sort_by() {
-        display_rows.sort_by(|(_, a), (_, b)| {
+        display_indices.sort_by(|&a, &b| {
+            let a = &result.rows[a];
+            let b = &result.rows[b];
             let av = a.values.get(sort_col);
             let bv = b.values.get(sort_col);
             let ord = compare_values(av, bv);
@@ -122,11 +119,12 @@ pub(crate) fn compute_display_view(
     } else {
         (0..result.columns.len()).collect()
     };
-    let pre_filter_count = display_rows.len();
+    let pre_filter_count = display_indices.len();
     let row_filtering = !row_filter.is_empty();
     if row_filtering {
         let scoped_indices = visible_col_indices.clone();
-        display_rows.retain(|(_, row)| {
+        display_indices.retain(|&source_idx| {
+            let row = &result.rows[source_idx];
             scoped_indices.iter().any(|&ci| {
                 row.values
                     .get(ci)
@@ -142,7 +140,7 @@ pub(crate) fn compute_display_view(
 
     DisplayView {
         visible_col_indices,
-        display_rows,
+        display_indices,
         truncated,
         cols_filtered,
         row_filtering,
@@ -157,8 +155,8 @@ pub(crate) fn compute_display_view(
 pub(super) fn render_table(
     panel: &ResultPanel,
     // 借用而非按值：避免每帧深拷贝整个结果集（大结果集卡顿主因）。
-    // 需要 own 的 display_rows / columns 在内部按需 clone，仅拷渲染必需部分
-    result: &QueryResult,
+    // Arc 共享结果集；本帧只生成排序 / 过滤索引与少量列元数据。
+    result: &Arc<QueryResult>,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     secondary_bg: gpui::Hsla,
@@ -177,7 +175,7 @@ pub(super) fn render_table(
     let view = compute_display_view(panel, result, cx);
     let DisplayView {
         visible_col_indices,
-        display_rows,
+        display_indices,
         truncated,
         cols_filtered,
         row_filtering,
@@ -185,7 +183,7 @@ pub(super) fn render_table(
     } = view;
     let total_cols = columns.len();
     let visible_cols_count = visible_col_indices.len();
-    let visible_count = display_rows.len();
+    let visible_count = display_indices.len();
 
     // DML/DDL：没有列，只显示 affected_rows
     if columns.is_empty() {
@@ -215,9 +213,9 @@ pub(super) fn render_table(
     // 列宽 / 行号宽 / 总宽
     let col_widths: Vec<gpui::Pixels> = (0..columns.len())
         .map(|ci| {
-            panel
-                .col_width_override(ci)
-                .unwrap_or_else(|| estimate_col_width(ci, &columns, &column_types, &display_rows))
+            panel.col_width_override(ci).unwrap_or_else(|| {
+                estimate_col_width(ci, &columns, &column_types, result, &display_indices)
+            })
         })
         .collect();
     let row_num_width = px((total_rows.to_string().len() as f32 * 9.0 + 16.0).clamp(40.0, 70.0));
@@ -231,7 +229,7 @@ pub(super) fn render_table(
     let mono_font = cx.theme().mono_font_family.clone();
     // 数值列检测：扫前 20 行，全是 Int/Float（允许 Null）→ 右对齐
     let right_align: Vec<bool> = (0..columns.len())
-        .map(|ci| detect_numeric_column(ci, &display_rows))
+        .map(|ci| detect_numeric_column(ci, result, &display_indices))
         .collect();
 
     let current_sort = panel.sort_by();
@@ -261,12 +259,16 @@ pub(super) fn render_table(
         .into_any_element();
 
     let selected_rows_set = panel.selected_rows().clone();
-    let visible_count_total = display_rows.len();
-    let all_selected = visible_count_total > 0 && selected_rows_set.len() == visible_count_total;
+    let visible_row_indices = display_indices.clone();
+    let all_selected = !visible_row_indices.is_empty()
+        && visible_row_indices
+            .iter()
+            .all(|source_idx| selected_rows_set.contains(source_idx));
     let panel_entity = cx.entity();
 
     let checkbox_header = {
         let panel = panel_entity.clone();
+        let visible_row_indices = visible_row_indices.clone();
         div()
             .w(checkbox_col_width)
             .h_full()
@@ -284,7 +286,7 @@ pub(super) fn render_table(
                             .checked(all_selected)
                             .on_click(move |_: &bool, _, app| {
                                 panel.update(app, |this, cx| {
-                                    this.toggle_all_rows(visible_count_total, cx);
+                                    this.toggle_visible_rows(&visible_row_indices, cx);
                                 });
                             }),
                     ),
@@ -306,8 +308,9 @@ pub(super) fn render_table(
 
     // 不变数据装进 frame，Rc 共享给 closure 满足 'static + Fn
     let frame = Rc::new(TableRowFrame {
+        result: result.clone(),
         columns: columns.clone(),
-        display_rows: display_rows.clone(),
+        display_indices,
         visible_col_indices: visible_col_indices.clone(),
         col_widths: col_widths.clone(),
         right_align,
@@ -323,7 +326,7 @@ pub(super) fn render_table(
     });
 
     let has_pending = panel.pending_insert().is_some();
-    let row_count = frame.display_rows.len() + if has_pending { 1 } else { 0 };
+    let row_count = frame.display_indices.len() + if has_pending { 1 } else { 0 };
 
     let frame_for_rows = frame.clone();
     let body = uniform_list(
@@ -332,7 +335,7 @@ pub(super) fn render_table(
         cx.processor(move |this, range: Range<usize>, _w, cx| {
             range
                 .map(|i| {
-                    if i < frame_for_rows.display_rows.len() {
+                    if i < frame_for_rows.display_indices.len() {
                         render_data_row(this, &frame_for_rows, i, cx)
                     } else {
                         render_pending_row(this, &frame_for_rows, cx)
@@ -352,7 +355,30 @@ pub(super) fn render_table(
         let col_name = columns.get(ci)?.clone();
         let val = result.rows.get(ri)?.values.get(ci)?;
         let preview = val.display_preview(40);
-        Some(format!("· [{}, {}] = {}", ri + 1, col_name, preview))
+        let hidden_note = if visible_row_indices.contains(&ri) {
+            ""
+        } else {
+            "（当前隐藏）"
+        };
+        Some(format!(
+            "· [{}, {}] = {}{hidden_note}",
+            ri + 1,
+            col_name,
+            preview
+        ))
+    });
+    let selected_count = selected_rows_set.len();
+    let visible_selected = visible_row_indices
+        .iter()
+        .filter(|ri| selected_rows_set.contains(ri))
+        .count();
+    let hidden_selected = selected_count.saturating_sub(visible_selected);
+    let selected_scope = (selected_count > 0).then(|| {
+        if hidden_selected > 0 {
+            format!("· 已选 {selected_count} 行，其中 {hidden_selected} 行当前隐藏")
+        } else {
+            format!("· 已选 {selected_count} 行")
+        }
     });
 
     let status_bar = h_flex()
@@ -383,6 +409,7 @@ pub(super) fn render_table(
             (false, false) => div().child(format!("{total_rows} 行")),
         })
         .child(div().child(format!("· 耗时 {elapsed} ms")))
+        .when_some(selected_scope, |this, scope| this.child(div().child(scope)))
         .when_some(selected_info, |this, info| {
             this.child(div().overflow_hidden().text_ellipsis().child(info))
         })

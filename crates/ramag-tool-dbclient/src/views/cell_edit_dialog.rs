@@ -105,7 +105,9 @@ pub(super) fn open(
                         .text_xs()
                         .text_color(muted_fg)
                         .pb(px(6.0))
-                        .child(format!("确认后将提交 UPDATE 到数据库（按{locate_label}定位单行）"))
+                        .child(format!(
+                            "确认后将提交 UPDATE 到数据库（按{locate_label}定位单行）"
+                        ))
                         .into_any_element(),
                 };
                 content.child(

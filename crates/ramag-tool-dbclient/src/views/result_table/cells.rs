@@ -107,9 +107,10 @@ pub(super) fn render_data_row(
     idx: usize,
     cx: &mut Context<ResultPanel>,
 ) -> AnyElement {
-    // display_rows[idx] = (源行下标, 行数据)：渲染用行数据，选中/DML 存源下标
-    let (source_idx, row) = &frame.display_rows[idx];
-    let source_idx = *source_idx;
+    let source_idx = frame.display_indices[idx];
+    let Some(row) = frame.result.rows.get(source_idx) else {
+        return div().into_any_element();
+    };
     let bg = if idx.is_multiple_of(2) {
         frame.muted_bg.opacity(0.0)
     } else {

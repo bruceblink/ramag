@@ -28,5 +28,5 @@ pub use mongo::{
 };
 pub use query::{Query, QueryResult, Row, Value, Warning};
 pub use redis_keyspace::{KeyMeta, RedisType, ScanResult};
-pub use redis_value::{RedisValue, StreamEntry};
+pub use redis_value::{RedisValue, RedisValueLoad, StreamEntry};
 pub use schema::{Column, ColumnKind, ColumnType, ForeignKey, Index, Schema, Table};
