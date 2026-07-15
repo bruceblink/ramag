@@ -289,15 +289,12 @@ impl VcsView {
                 match result {
                     Ok(commits) => {
                         let got = commits.len();
-                        if skip == 0 {
-                            this.set_history_commits(commits);
+                        let limit_reached = if skip == 0 {
+                            this.set_history_commits(commits)
                         } else {
-                            // 分页追加低频，重建 Vec 换取 Rc 共享 + lane 缓存一致性
-                            let mut all = (*this.history_commits).clone();
-                            all.extend(commits);
-                            this.set_history_commits(all);
-                        }
-                        this.history_has_more = got >= HISTORY_PAGE_SIZE;
+                            this.append_history_commits(commits)
+                        };
+                        this.history_has_more = got >= HISTORY_PAGE_SIZE && !limit_reached;
                     }
                     Err(e) => {
                         error!(error = %e, "vcs: load history failed");

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use futures::lock::Mutex;
 use gpui::{App, Global};
 use parking_lot::RwLock;
+use ramag_domain::traits::Storage;
 
 pub const SQL_AUTO_LIMIT_PREF: &str = "sql_auto_limit";
 pub const SQL_AUTO_LIMIT_DEFAULT: usize = 10_000;
@@ -71,6 +72,16 @@ pub fn persist_preference_latest(key: &'static str, value: String, cx: &mut App)
     let Some(storage) = crate::theme::storage_from_cx(cx) else {
         return;
     };
+    persist_preference_latest_with_storage(key, value, storage, cx);
+}
+
+/// 使用调用方持有的存储执行“同 key 仅最新值落盘”；适合本身已注入 Storage 的工具视图。
+pub fn persist_preference_latest_with_storage(
+    key: &'static str,
+    value: String,
+    storage: Arc<dyn Storage>,
+    cx: &mut App,
+) {
     let writer = if let Some(global) = cx.try_global::<PreferenceWriterGlobal>() {
         global.0.clone()
     } else {

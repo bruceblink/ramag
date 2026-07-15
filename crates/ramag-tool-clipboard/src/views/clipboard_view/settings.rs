@@ -8,6 +8,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
+use ramag_domain::entities::MAX_CLIPBOARD_BLACKLIST_ENTRIES;
 use ramag_ui::{
     open_confirm,
     platform::{auto_paste_description, clipboard_hotkey},
@@ -123,7 +124,10 @@ impl ClipboardView {
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("不记录的应用"),
+                    .child(format!(
+                        "不记录的应用（{}/{MAX_CLIPBOARD_BLACKLIST_ENTRIES}）",
+                        s.blacklist.len()
+                    )),
             )
             .when(s.blacklist.is_empty(), |view| {
                 view.child(div().text_xs().text_color(muted).child("尚未排除任何应用"))

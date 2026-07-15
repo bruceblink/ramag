@@ -108,6 +108,9 @@ impl VcsView {
                     } if existing_commit == &commit_id
                 )
         });
+        if existing.is_none() && !self.ensure_file_tab_capacity(cx) {
+            return;
+        }
         let idx = existing.unwrap_or_else(|| {
             self.file_tabs.push(super::helpers::FileTab {
                 path: path.clone(),
@@ -187,6 +190,7 @@ impl VcsView {
                             }) {
                                 tab.cached_diff = Some(d);
                             }
+                            this.prune_file_tab_payloads();
                         }
                         Err(e) => {
                             error!(error = %e, path = %path_for_diff, "vcs: commit diff failed");

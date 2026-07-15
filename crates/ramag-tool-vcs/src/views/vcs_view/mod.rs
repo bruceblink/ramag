@@ -116,7 +116,11 @@ pub struct VcsView {
     pub(super) view_mode: ViewMode,
     /// History 累积的 commit 列表（按页 append）。Rc 供 uniform_list 闭包零拷贝共享，
     /// 一律经 set_history_commits 写入（同步维护 lane 预计算）
-    pub(super) history_commits: std::rc::Rc<Vec<Commit>>,
+    pub(super) history_commits: std::rc::Rc<Vec<std::rc::Rc<Commit>>>,
+    /// history_commits 当前估算的堆负载，分页追加时 O(1) 延续预算。
+    pub(super) history_retained_bytes: usize,
+    /// 达到条数或正文内存上限；停止自动翻页并提示用搜索缩小范围。
+    pub(super) history_limit_reached: bool,
     /// history_commits 的 lane 图预计算（render 直接用，不每帧重算）
     pub(super) history_graph_rows: std::rc::Rc<Vec<super::commit_graph::CommitGraphRow>>,
     /// History 是否还可能有下一页（上次拉满 PAGE_SIZE 即认为有）
@@ -165,7 +169,7 @@ pub struct VcsView {
     /// 新建远程输入框：远程 URL
     pub(super) create_remote_url_input: Entity<InputState>,
     /// 当前在 commit 详情视图查看的 commit（None = 处于 history 列表态）
-    pub(super) viewing_commit: Option<Commit>,
+    pub(super) viewing_commit: Option<std::rc::Rc<Commit>>,
     /// 详情视图的文件列表（git diff-tree --name-status 解析）
     pub(super) commit_files: std::rc::Rc<Vec<FileStatus>>,
     /// 详情视图当前选中查看 diff 的文件
@@ -492,10 +496,29 @@ impl VcsView {
 
     /// 挂起一条成功 toast，待 Render 持有 Window 时推送（异步回调里拿不到 Window）
     /// history 列表统一写入口：同步重算 lane 图缓存，render 零重算零全量拷贝
-    pub(super) fn set_history_commits(&mut self, commits: Vec<Commit>) {
+    pub(super) fn set_history_commits(&mut self, commits: Vec<Commit>) -> bool {
+        let retained = super::history_retention::replace(commits);
+        self.history_retained_bytes = retained.retained_bytes;
+        self.history_limit_reached = retained.limit_reached;
         self.history_graph_rows =
-            std::rc::Rc::new(super::commit_graph::build_commit_lanes(&commits));
-        self.history_commits = std::rc::Rc::new(commits);
+            std::rc::Rc::new(super::commit_graph::build_commit_lanes(&retained.commits));
+        self.history_commits = std::rc::Rc::new(retained.commits);
+        self.history_limit_reached
+    }
+
+    /// 分页追加只复制 `Rc` 指针；旧提交的 subject/body 不再随页数反复深拷贝。
+    pub(super) fn append_history_commits(&mut self, commits: Vec<Commit>) -> bool {
+        let retained = super::history_retention::append(
+            &self.history_commits,
+            self.history_retained_bytes,
+            commits,
+        );
+        self.history_retained_bytes = retained.retained_bytes;
+        self.history_limit_reached = retained.limit_reached;
+        self.history_graph_rows =
+            std::rc::Rc::new(super::commit_graph::build_commit_lanes(&retained.commits));
+        self.history_commits = std::rc::Rc::new(retained.commits);
+        self.history_limit_reached
     }
 
     /// 写操作统一入口闸：已有操作进行中直接拒绝（防止并发 git 写争抢 index.lock），

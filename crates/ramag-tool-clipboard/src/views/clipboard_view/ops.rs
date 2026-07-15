@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::{Context, ScrollStrategy, Window};
 use gpui_component::notification::Notification;
 use ramag_domain::entities::{
-    ClipId, ClipItem, ClipboardSettings, blacklist_matches, normalize_blacklist_source,
+    ClipId, ClipItem, ClipboardSettings, MAX_CLIPBOARD_BLACKLIST_ENTRIES, blacklist_matches,
+    normalize_blacklist_source,
 };
 use tracing::error;
 
@@ -113,6 +114,16 @@ impl ClipboardView {
             .iter()
             .any(|id| blacklist_matches(id, &entry))
         {
+            return;
+        }
+        if self.settings.blacklist.len() >= MAX_CLIPBOARD_BLACKLIST_ENTRIES {
+            self.pending_notification = Some(
+                Notification::warning(format!(
+                    "不记录的应用已达上限（{MAX_CLIPBOARD_BLACKLIST_ENTRIES} 个）"
+                ))
+                .autohide(true),
+            );
+            cx.notify();
             return;
         }
         let mut settings = self.settings.clone();

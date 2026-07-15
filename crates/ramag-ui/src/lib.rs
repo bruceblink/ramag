@@ -25,7 +25,9 @@ pub use confirm_dialog::open_confirm;
 pub use prompt_dialog::open_prompt;
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget};
-pub use editor_workspace::{EditorDraftPref, EditorWorkspacePref};
+pub use editor_workspace::{
+    EditorDraftPref, EditorWorkspacePref, MAX_EDITOR_TABS, can_open_editor_tab,
+};
 pub use home_view::{HomeEvent, HomeView};
 pub use mutation_gate::{AsyncMutationGate, MutationToken};
 pub use resizable_persist::persist_resizable_sizes;

@@ -17,12 +17,13 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
+    notification::Notification,
     v_flex,
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::ConnectionConfig;
 use ramag_ui::{
-    CloseTab, icons,
+    CloseTab, MAX_EDITOR_TABS, can_open_editor_tab, icons,
     platform::{primary_shift_shortcut, primary_shortcut},
 };
 
@@ -141,8 +142,9 @@ impl MongoQueryPanel {
             .tabs
             .get(self.active)
             .is_some_and(|t| t.read(cx).has_user_draft(cx));
-        if self.tabs.is_empty() || has_draft {
-            self.add_tab(window, cx);
+        let needs_new_tab = self.tabs.is_empty() || has_draft;
+        if needs_new_tab && !self.add_tab(window, cx) {
+            return;
         }
         self.database = database.clone();
         let Some(tab) = self.tabs.get(self.active).cloned() else {
@@ -157,10 +159,24 @@ impl MongoQueryPanel {
         cx.notify();
     }
 
-    pub fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(conf) = self.connection.clone() else {
-            return;
+            window.push_notification(
+                Notification::warning("请先连接 MongoDB，再新建查询标签").autohide(true),
+                cx,
+            );
+            return false;
         };
+        if !can_open_editor_tab(self.tabs.len()) {
+            window.push_notification(
+                Notification::warning(format!(
+                    "查询标签已达上限（{MAX_EDITOR_TABS} 个），请先关闭不需要的标签"
+                ))
+                .autohide(true),
+                cx,
+            );
+            return false;
+        }
         // 找出未使用的最小编号（与 dbclient::QueryPanel 同款策略）
         let title = self.next_tab_title();
         let tab = self.build_tab(conf, window, cx);
@@ -177,6 +193,7 @@ impl MongoQueryPanel {
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
         cx.notify();
+        true
     }
 
     /// 「查询 N」自动编号：找最小未使用编号，关闭再新建会回收
@@ -342,8 +359,9 @@ impl MongoQueryPanel {
             .tabs
             .get(self.active)
             .is_some_and(|t| t.read(cx).has_user_draft(cx));
-        if self.tabs.is_empty() || has_draft {
-            self.add_tab(window, cx);
+        let needs_new_tab = self.tabs.is_empty() || has_draft;
+        if needs_new_tab && !self.add_tab(window, cx) {
+            return;
         }
         let Some(tab) = self.tabs.get(self.active).cloned() else {
             return;
@@ -399,6 +417,8 @@ impl Render for MongoQueryPanel {
         // Tab Bar 元素列表（一会儿放进可滚动容器）；
         // 只有 1 个 Tab 时不渲染关闭按钮（与 dbclient::QueryPanel 一致：保证至少一个 Tab）
         let only_one = self.tabs.len() <= 1;
+        let can_add_tab = can_open_editor_tab(self.tabs.len());
+        let add_tab_disabled = self.connection.is_none() || !can_add_tab;
         let tab_items: Vec<gpui::AnyElement> = self
             .tabs
             .iter()
@@ -468,7 +488,9 @@ impl Render for MongoQueryPanel {
             .bg(theme.background)
             .key_context("MongoQueryPanel")
             .on_action(
-                cx.listener(|this, _: &NewMongoQueryTab, window, cx| this.add_tab(window, cx)),
+                cx.listener(|this, _: &NewMongoQueryTab, window, cx| {
+                    this.add_tab(window, cx);
+                }),
             )
             // 草稿落盘失败常驻警示：用户以为可跨重启恢复，静默失败等于丢稿
             .when_some(self.draft_persist_error.clone(), |panel, err| {
@@ -549,7 +571,14 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
-                                        .tooltip(format!("新建查询 ({})", primary_shortcut("T")))
+                                        .tooltip(if self.connection.is_none() {
+                                            "请先连接 MongoDB".to_string()
+                                        } else if can_add_tab {
+                                            format!("新建查询 ({})", primary_shortcut("T"))
+                                        } else {
+                                            format!("查询标签已达上限（{MAX_EDITOR_TABS} 个）")
+                                        })
+                                        .disabled(add_tab_disabled)
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 this.add_tab(window, cx);

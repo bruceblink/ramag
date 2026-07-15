@@ -20,11 +20,15 @@ const LANE_WIDTH: f32 = 14.0;
 
 /// commit 时间倒序 → lane 分配。线性近似：active 维护各 lane 待入 commit，
 /// 当前 commit 占其位、空位复用、新 lane 增长；first parent 替换占位，已存在则合并；其余 parent 起新 lane
-pub(super) fn build_commit_lanes(commits: &[Commit]) -> Vec<CommitGraphRow> {
+pub(super) fn build_commit_lanes<T>(commits: &[T]) -> Vec<CommitGraphRow>
+where
+    T: std::borrow::Borrow<Commit>,
+{
     let mut active: Vec<Option<CommitId>> = Vec::new();
     let mut rows: Vec<CommitGraphRow> = Vec::with_capacity(commits.len());
 
-    for c in commits {
+    for commit in commits {
+        let c = commit.borrow();
         let mut lane_idx = active.iter().position(|x| x.as_ref() == Some(&c.id));
         if lane_idx.is_none() {
             lane_idx = match active.iter().position(Option::is_none) {

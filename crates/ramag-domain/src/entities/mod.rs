@@ -12,8 +12,8 @@ pub mod schema;
 
 pub use clipboard::{
     CapturedClip, ClipId, ClipItem, ClipKind, ClipSearchResult, ClipSource, ClipboardSettings,
-    blacklist_matches, classify_text, fnv1a_hash, is_safe_http_url, make_preview,
-    normalize_blacklist_source, parse_hex_color,
+    MAX_CLIPBOARD_BLACKLIST_ENTRIES, MAX_CLIPBOARD_ITEM_BYTES, blacklist_matches, classify_text,
+    fnv1a_hash, is_safe_http_url, make_preview, normalize_blacklist_source, parse_hex_color,
 };
 pub use connection::{ConnectionConfig, ConnectionId, DriverKind, TlsVerify};
 pub use git::{

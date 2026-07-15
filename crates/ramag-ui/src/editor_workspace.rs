@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 防止损坏的偏好数据一次恢复过多编辑器。
-const MAX_DRAFTS: usize = 32;
+/// 单个数据库会话允许的查询编辑器上限；同时约束运行时实体数量与恢复数量。
+pub const MAX_EDITOR_TABS: usize = 32;
 /// 单条草稿最大 4 MiB；正常 SQL / Mongo 命令远小于此值。
 const MAX_DRAFT_BYTES: usize = 4 * 1024 * 1024;
 /// 一个连接全部草稿最大 16 MiB。
@@ -34,9 +34,9 @@ impl EditorWorkspacePref {
     pub fn parse(json: &str) -> Result<Self, String> {
         let mut pref: Self =
             serde_json::from_str(json).map_err(|e| format!("草稿数据格式无效：{e}"))?;
-        if pref.drafts.len() > MAX_DRAFTS {
+        if pref.drafts.len() > MAX_EDITOR_TABS {
             return Err(format!(
-                "草稿标签过多：{} > {MAX_DRAFTS}",
+                "草稿标签过多：{} > {MAX_EDITOR_TABS}",
                 pref.drafts.len()
             ));
         }
@@ -56,6 +56,11 @@ impl EditorWorkspacePref {
     }
 }
 
+/// 运行时能否继续创建查询编辑器；与持久化恢复共用同一资源边界。
+pub fn can_open_editor_tab(current: usize) -> bool {
+    current < MAX_EDITOR_TABS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,7 +77,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_too_many_tabs() {
-        let drafts = (0..=MAX_DRAFTS)
+        let drafts = (0..=MAX_EDITOR_TABS)
             .map(|i| EditorDraftPref {
                 title: format!("查询 {i}"),
                 text: "select 1".into(),
@@ -81,5 +86,12 @@ mod tests {
             .collect();
         let json = serde_json::to_string(&EditorWorkspacePref::new(0, drafts));
         assert!(json.is_ok_and(|json| EditorWorkspacePref::parse(&json).is_err()));
+    }
+
+    #[test]
+    fn runtime_tab_limit_has_explicit_boundary() {
+        assert!(can_open_editor_tab(MAX_EDITOR_TABS - 1));
+        assert!(!can_open_editor_tab(MAX_EDITOR_TABS));
+        assert!(!can_open_editor_tab(MAX_EDITOR_TABS + 1));
     }
 }

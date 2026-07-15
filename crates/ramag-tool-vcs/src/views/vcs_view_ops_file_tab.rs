@@ -4,9 +4,18 @@ use gpui::Context;
 use ramag_domain::entities::{DiffKind, DiffLine, DiffLineKind, FileChangeKind, FileDiff, Hunk};
 use tracing::error;
 
-use super::helpers::{FileTab, FileTabSource, GroupKind};
+use super::helpers::{FileContentSnapshot, FileTab, FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
 use super::vcs_view_ops_repo::{RawFileContent, read_raw_file_content};
+
+/// 单仓库文件标签上限；标签可携带大 diff / 文件快照，必须同时约束 UI 与元数据数量。
+const MAX_FILE_TABS: usize = 32;
+/// 当前仓库所有文件标签的正文缓存预算；活动标签始终保留，非活动标签按最近打开顺序保留。
+const FILE_TAB_CACHE_BYTE_BUDGET: usize = 96 * 1024 * 1024;
+
+fn can_open_file_tab(current: usize) -> bool {
+    current < MAX_FILE_TABS
+}
 
 impl VcsView {
     /// 选中文件查看 diff（Changes 模式）：tab 已存在则复用并优先展示缓存；否则新开 tab + 异步拉
@@ -14,6 +23,13 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
+        let existing = self
+            .file_tabs
+            .iter()
+            .position(|t| t.path == path && t.source == FileTabSource::Changes(kind));
+        if existing.is_none() && !self.ensure_file_tab_capacity(cx) {
+            return;
+        }
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         let request_seq = self.diff_request_seq;
         // 视觉复位仅在真正换文件时执行：外部改动触发的静默刷新会对同一文件重走
@@ -39,11 +55,6 @@ impl VcsView {
             self.commit_file_diff = None;
             self.loading_commit_files = false;
         }
-        // 检查 tab 是否已存在
-        let existing = self
-            .file_tabs
-            .iter()
-            .position(|t| t.path == path && t.source == FileTabSource::Changes(kind));
         if let Some(idx) = existing {
             self.active_file_tab_idx = Some(idx);
             self.selected_file = Some((path.clone(), kind));
@@ -120,6 +131,7 @@ impl VcsView {
                             }) {
                                 tab.cached_diff = Some(d);
                             }
+                            this.prune_file_tab_payloads();
                         }
                         Err(e) => {
                             error!(error = %e, path = %path_for_diff, "vcs: diff failed");
@@ -206,6 +218,7 @@ impl VcsView {
                         }) {
                             tab.cached_diff = Some(d.clone());
                         }
+                        this.prune_file_tab_payloads();
                         let is_selected = this
                             .selected_file
                             .as_ref()
@@ -263,6 +276,112 @@ impl VcsView {
             }
         }
     }
+
+    /// 新标签创建闸门；命中已有标签的路径不调用，因此上限不会妨碍切回旧标签。
+    pub(super) fn ensure_file_tab_capacity(&mut self, cx: &mut Context<Self>) -> bool {
+        if can_open_file_tab(self.file_tabs.len()) {
+            return true;
+        }
+        self.pending_notification = Some(
+            gpui_component::notification::Notification::warning(format!(
+                "文件标签已达上限（{MAX_FILE_TABS} 个），请先关闭不需要的标签"
+            ))
+            .autohide(true),
+        );
+        cx.notify();
+        false
+    }
+
+    /// 丢弃超出预算的非活动标签正文；标签本身保留，切回时会按既有流程重新加载。
+    pub(super) fn prune_file_tab_payloads(&mut self) {
+        prune_file_tab_payloads_to_budget(
+            &mut self.file_tabs,
+            self.active_file_tab_idx,
+            FILE_TAB_CACHE_BYTE_BUDGET,
+        );
+    }
+}
+
+fn prune_file_tab_payloads_to_budget(tabs: &mut [FileTab], active: Option<usize>, budget: usize) {
+    let mut retained = active
+        .and_then(|index| tabs.get(index))
+        .map_or(0, file_tab_payload_bytes);
+
+    // 文件标签按打开顺序追加；从末尾开始保留，使较新的非活动标签更可能命中缓存。
+    for index in (0..tabs.len()).rev() {
+        if Some(index) == active {
+            continue;
+        }
+        let bytes = file_tab_payload_bytes(&tabs[index]);
+        if bytes == 0 {
+            continue;
+        }
+        let Some(next) = retained.checked_add(bytes) else {
+            clear_file_tab_payload(&mut tabs[index]);
+            continue;
+        };
+        if next > budget {
+            clear_file_tab_payload(&mut tabs[index]);
+        } else {
+            retained = next;
+        }
+    }
+}
+
+fn clear_file_tab_payload(tab: &mut FileTab) {
+    tab.cached_diff = None;
+    tab.cached_content = None;
+}
+
+fn file_tab_payload_bytes(tab: &FileTab) -> usize {
+    tab.cached_diff
+        .as_deref()
+        .map_or(0, file_diff_payload_bytes)
+        .saturating_add(
+            tab.cached_content
+                .as_ref()
+                .map_or(0, file_content_payload_bytes),
+        )
+}
+
+fn file_diff_payload_bytes(diff: &FileDiff) -> usize {
+    let mut total = std::mem::size_of::<FileDiff>()
+        .saturating_add(diff.path.capacity())
+        .saturating_add(diff.old_path.as_ref().map_or(0, String::capacity))
+        .saturating_add(
+            diff.hunks
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Hunk>()),
+        );
+    for hunk in &diff.hunks {
+        total = total
+            .saturating_add(hunk.heading.as_ref().map_or(0, String::capacity))
+            .saturating_add(
+                hunk.lines
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<DiffLine>()),
+            );
+        for line in &hunk.lines {
+            total = total.saturating_add(line.text.capacity());
+        }
+    }
+    total
+}
+
+fn file_content_payload_bytes(content: &FileContentSnapshot) -> usize {
+    let mut total = std::mem::size_of::<FileContentSnapshot>()
+        .saturating_add(content.path.capacity())
+        .saturating_add(
+            content
+                .lines
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>()),
+        )
+        .saturating_add(content.error.as_ref().map_or(0, String::capacity));
+    for line in content.lines.iter() {
+        total = total.saturating_add(line.capacity());
+    }
+    total
 }
 
 /// 文件内容 → 「全新增」伪 diff：单 hunk，每行 Add；二进制走 FileDiff.binary 占位；
@@ -345,5 +464,44 @@ mod tests {
     fn untracked_diff_truncated_sets_heading() {
         let d = build_untracked_diff(raw(vec!["x"], false, true));
         assert!(d.hunks[0].heading.as_deref().unwrap_or("").contains("截断"));
+    }
+
+    fn project_tab(path: &str, bytes: usize) -> FileTab {
+        FileTab {
+            path: path.to_string(),
+            source: FileTabSource::ProjectFiles,
+            cached_diff: None,
+            cached_content: Some(FileContentSnapshot {
+                path: path.to_string(),
+                lines: std::rc::Rc::new(vec!["x".repeat(bytes)]),
+                max_chars: bytes,
+                truncated: false,
+                binary: false,
+                error: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn file_tab_cache_keeps_active_and_newer_payloads_within_budget() {
+        let mut tabs = vec![
+            project_tab("old.rs", 128),
+            project_tab("active.rs", 128),
+            project_tab("new.rs", 128),
+        ];
+        let budget = file_tab_payload_bytes(&tabs[1]) + file_tab_payload_bytes(&tabs[2]);
+
+        prune_file_tab_payloads_to_budget(&mut tabs, Some(1), budget);
+
+        assert!(tabs[0].cached_content.is_none());
+        assert!(tabs[1].cached_content.is_some());
+        assert!(tabs[2].cached_content.is_some());
+    }
+
+    #[test]
+    fn file_tab_limit_boundary_is_explicit() {
+        assert!(can_open_file_tab(MAX_FILE_TABS - 1));
+        assert!(!can_open_file_tab(MAX_FILE_TABS));
+        assert!(!can_open_file_tab(MAX_FILE_TABS + 1));
     }
 }

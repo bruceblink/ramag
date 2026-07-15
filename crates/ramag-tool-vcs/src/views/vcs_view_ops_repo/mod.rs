@@ -10,6 +10,8 @@ use super::vcs_view::{RepoSessionState, VcsView};
 
 /// Project Files 点击文件后读盘上限（4MB）；超过截断后 UI 显示提示
 pub(super) const PF_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// 单窗口打开仓库标签上限；每个标签会保留会话元数据，并可能在驱动层持有仓库句柄。
+pub(super) const MAX_OPEN_REPOS: usize = 32;
 /// 仅保留最近访问仓库的轻量 UI 会话，避免长时间运行后路径与草稿无限累积。
 const REPO_SESSION_CACHE_LIMIT: usize = 32;
 
@@ -67,6 +69,9 @@ impl VcsView {
             self.notify_warning("当前 Git 写操作尚未完成，完成后再切换仓库", cx);
             return;
         }
+        if !self.ensure_open_repo_capacity(&path, cx) {
+            return;
+        }
         let driver = self.driver.clone();
         let pb = std::path::PathBuf::from(path);
         self.loading = true;
@@ -76,6 +81,20 @@ impl VcsView {
             open_repo_async(&this, driver, pb, cx).await;
         })
         .detach();
+    }
+
+    /// 新仓库标签创建闸门；已打开仓库始终允许切换。
+    pub(super) fn ensure_open_repo_capacity(&mut self, path: &str, cx: &mut Context<Self>) -> bool {
+        if self.open_repos.iter().any(|repo| repo.path == path)
+            || self.open_repos.len() < MAX_OPEN_REPOS
+        {
+            return true;
+        }
+        self.notify_warning(
+            format!("仓库标签已达上限（{MAX_OPEN_REPOS} 个），请先关闭不需要的标签"),
+            cx,
+        );
+        false
     }
 
     /// 从最近列表移除（不删磁盘）；按 path 找 RepoId 后调 storage.delete_repo
@@ -148,6 +167,13 @@ impl VcsView {
         else {
             return;
         };
+        let existing = self
+            .file_tabs
+            .iter()
+            .position(|t| t.path == path && t.source == FileTabSource::ProjectFiles);
+        if existing.is_none() && !self.ensure_file_tab_capacity(cx) {
+            return;
+        }
         // 点击 Project Files 文件 → 关掉 commit detail，避免主区残留 commit diff
         if self.viewing_commit.is_some() {
             self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
@@ -162,11 +188,7 @@ impl VcsView {
         if self.selected_pf_path.as_deref() != Some(path.as_str()) {
             self.reset_blame_context();
         }
-        let idx = if let Some(i) = self
-            .file_tabs
-            .iter()
-            .position(|t| t.path == path && t.source == FileTabSource::ProjectFiles)
-        {
+        let idx = if let Some(i) = existing {
             i
         } else {
             self.file_tabs.push(FileTab {
@@ -213,6 +235,7 @@ impl VcsView {
                 {
                     tab.cached_content = snapshot.clone();
                 }
+                this.prune_file_tab_payloads();
                 if this.selected_pf_path.as_deref() == Some(path.as_str()) {
                     this.loading_file_content = false;
                     this.current_file_content = snapshot;
@@ -456,6 +479,24 @@ pub(super) async fn open_repo_async(
             return;
         }
     };
+
+    let capacity_available = this
+        .update(cx, |this, cx| {
+            let available = this.ensure_open_repo_capacity(&repo_config.path, cx);
+            if !available {
+                this.loading = false;
+                this.loading_label = None;
+                cx.notify();
+            }
+            available
+        })
+        .unwrap_or(false);
+    if !capacity_available {
+        if let Err(error) = driver.close_repo(&repo_config.id).await {
+            tracing::warn!(error = %error, "close repo after tab limit rejection failed");
+        }
+        return;
+    }
 
     let id = repo_config.id.clone();
     let status_fut = driver.status(&id);

@@ -34,7 +34,6 @@ pub(in crate::views) fn render_commit_row(
 
     let entity = cx.entity().clone();
     let cid = c.id.0.clone();
-    let message_full = c.message_full();
 
     // refs chips（紧贴 subject 后）
     let mut refs_row = h_flex().gap(px(4.0)).flex_none();
@@ -126,13 +125,12 @@ pub(in crate::views) fn render_commit_row(
     row.context_menu({
         let entity = entity.clone();
         let cid = cid.clone();
-        let message_full = message_full.clone();
         move |menu: PopupMenu, _, _| {
             let (e1, c1) = (entity.clone(), cid.clone());
             let (e2, c2) = (entity.clone(), cid.clone());
             let (e3, c3) = (entity.clone(), cid.clone());
             let (e_sha, c_sha) = (entity.clone(), cid.clone());
-            let (e_msg, msg) = (entity.clone(), message_full.clone());
+            let (e_msg, c_msg) = (entity.clone(), cid.clone());
             menu.item(
                 PopupMenuItem::new("复制完整 SHA").on_click(move |_, _, app| {
                     app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
@@ -141,8 +139,19 @@ pub(in crate::views) fn render_commit_row(
             )
             .item(
                 PopupMenuItem::new("复制提交信息").on_click(move |_, _, app| {
-                    app.write_to_clipboard(gpui::ClipboardItem::new_string(msg.clone()));
-                    e_msg.update(app, |this, cx| this.notify_success("已复制提交信息", cx));
+                    e_msg.update(app, |this, cx| {
+                        let message = this
+                            .history_commits
+                            .iter()
+                            .find(|commit| commit.id.0 == c_msg)
+                            .map(|commit| commit.message_full());
+                        if let Some(message) = message {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
+                            this.notify_success("已复制提交信息", cx);
+                        } else {
+                            this.notify_warning("提交列表已刷新，请重新选择", cx);
+                        }
+                    });
                 }),
             )
             .separator()

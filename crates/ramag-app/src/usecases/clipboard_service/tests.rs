@@ -83,6 +83,20 @@ fn blacklist_survives_versioned_install_dir_upgrade() {
 }
 
 #[test]
+fn settings_parser_rejects_oversized_or_unbounded_payloads() {
+    let oversized = " ".repeat(MAX_SETTINGS_JSON_BYTES + 1);
+    assert!(parse_clipboard_settings(&oversized).is_err());
+
+    let settings = ClipboardSettings {
+        blacklist: vec!["app".to_string(); 257],
+        ..ClipboardSettings::default()
+    };
+    let json = serde_json::to_string(&settings);
+    assert!(json.is_ok_and(|json| parse_clipboard_settings(&json).is_err()));
+    assert!(serialize_clipboard_settings(&settings).is_err());
+}
+
+#[test]
 fn empty_and_oversize_text_skipped() {
     assert_eq!(
         decide_capture(&text_clip("   "), &settings(), None),

@@ -454,18 +454,19 @@ fn main() {
 /// 采集间隔。两平台统一轮询系统剪贴板序列号，仅在变化时读取内容。
 const CAPTURE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// App 级采集循环：仅在 changeCount 变化时加载设置 + 处理，避免每拍解密设置。
+/// App 级采集循环：启动预热一次设置；之后仅在 changeCount 变化时读取内存快照并处理。
 /// driver 读取在前台 executor 执行，满足 macOS AppKit 的主线程约束。
 fn spawn_clipboard_capture(service: Arc<ClipboardService>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last_count = service.driver().change_count();
+        service.load_settings().await;
         loop {
             cx.background_executor().timer(CAPTURE_INTERVAL).await;
             let count = service.driver().change_count();
             if count == last_count {
                 continue;
             }
-            let settings = service.load_settings().await;
+            let settings = service.capture_settings_snapshot().await;
             match service.capture_tick(&settings).await {
                 Ok(_) => last_count = count,
                 Err(e) => {

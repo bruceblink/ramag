@@ -3,6 +3,7 @@
 mod dialogs;
 mod render;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
@@ -117,6 +118,10 @@ pub struct DbClientView {
 
 /// 打开中的连接列表的偏好 key（JSON：{ids, active}；兼容旧版纯 id 数组）
 const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
+/// 单窗口连接会话上限；每个实体都可能持有连接池、元数据树、编辑器与后台订阅。
+const MAX_CONNECTION_SESSIONS: usize = 32;
+/// 恢复偏好只应包含少量 UUID；先限制原始 JSON，避免异常数据放大反序列化成本。
+const MAX_OPEN_SESSIONS_PREF_BYTES: usize = 64 * 1024;
 
 /// open sessions 偏好的落盘结构；`active` 记录上次激活的连接（重启回到原位）
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -126,14 +131,39 @@ struct OpenSessionsPref {
     active: Option<ramag_domain::entities::ConnectionId>,
 }
 
-/// 解析偏好：优先新结构，回退旧版纯数组（active 未知）
-fn parse_open_sessions(json: &str) -> Result<OpenSessionsPref, String> {
-    if let Ok(p) = serde_json::from_str::<OpenSessionsPref>(json) {
-        return Ok(p);
+/// 解析并归一化偏好：兼容旧版数组，去重并只保留前 N 个有效槽位。
+/// 返回值第二项表示输入包含重复、超限或失效 active，调用方应给用户提示。
+fn parse_open_sessions(json: &str) -> Result<(OpenSessionsPref, bool), String> {
+    if json.len() > MAX_OPEN_SESSIONS_PREF_BYTES {
+        return Err(format!("连接标签恢复数据过大：{} bytes", json.len()));
     }
-    serde_json::from_str(json)
-        .map(|ids| OpenSessionsPref { ids, active: None })
-        .map_err(|error| format!("解析连接标签恢复数据失败：{error}"))
+    let mut pref = if let Ok(pref) = serde_json::from_str::<OpenSessionsPref>(json) {
+        pref
+    } else {
+        let ids = serde_json::from_str(json)
+            .map_err(|error| format!("解析连接标签恢复数据失败：{error}"))?;
+        OpenSessionsPref { ids, active: None }
+    };
+
+    let original_len = pref.ids.len();
+    let mut seen = HashSet::with_capacity(original_len.min(MAX_CONNECTION_SESSIONS));
+    let mut ids = Vec::with_capacity(original_len.min(MAX_CONNECTION_SESSIONS));
+    for id in std::mem::take(&mut pref.ids) {
+        if seen.insert(id.clone()) && ids.len() < MAX_CONNECTION_SESSIONS {
+            ids.push(id);
+        }
+    }
+    let mut adjusted = ids.len() != original_len;
+    pref.ids = ids;
+    if pref
+        .active
+        .as_ref()
+        .is_some_and(|active| !pref.ids.contains(active))
+    {
+        pref.active = None;
+        adjusted = true;
+    }
+    Ok((pref, adjusted))
 }
 
 impl DbClientView {
@@ -161,9 +191,9 @@ impl DbClientView {
         if let Some(storage) = ramag_ui::theme::storage_from_cx(cx) {
             let svc = service.clone();
             cx.spawn(async move |this, cx| {
-                let pref = match storage.get_preference(OPEN_SESSIONS_PREF).await {
+                let (pref, adjusted) = match storage.get_preference(OPEN_SESSIONS_PREF).await {
                     Ok(Some(json)) => match parse_open_sessions(&json) {
-                        Ok(pref) => pref,
+                        Ok(parsed) => parsed,
                         Err(error) => {
                             tracing::warn!(error, "parse open sessions preference failed");
                             let _ = this.update(cx, |this, cx| {
@@ -219,6 +249,14 @@ impl DbClientView {
                 }
                 let _ = this.update(cx, |this, cx| {
                     this.pending_restore = Some((configs, pref.active));
+                    if adjusted {
+                        this.pending_notification = Some(
+                            gpui_component::notification::Notification::warning(format!(
+                                "上次连接标签包含重复或超限项，仅恢复前 {MAX_CONNECTION_SESSIONS} 个有效标签"
+                            ))
+                            .autohide(true),
+                        );
+                    }
                     cx.notify();
                 });
             })
@@ -241,11 +279,8 @@ impl DbClientView {
         }
     }
 
-    /// 把当前打开的连接 id 列表落 prefs（开 / 关 Session 时调；后台异步，失败仅日志）
+    /// 把当前打开的连接 id 列表落 prefs；同 key 串行且只保留最新快照，避免快速切换写乱序。
     fn persist_open_sessions(&self, cx: &mut Context<Self>) {
-        let Some(storage) = ramag_ui::theme::storage_from_cx(cx) else {
-            return;
-        };
         let ids: Vec<ramag_domain::entities::ConnectionId> =
             self.sessions.iter().map(|s| s.config.id.clone()).collect();
         let active = self
@@ -259,13 +294,7 @@ impl DbClientView {
                 return;
             }
         };
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = storage.set_preference(OPEN_SESSIONS_PREF, &json).await {
-                    tracing::warn!(error = %e, "persist open sessions failed");
-                }
-            })
-            .detach();
+        ramag_ui::preferences::persist_preference_latest(OPEN_SESSIONS_PREF, json, cx);
     }
 
     fn on_picker_event(
@@ -384,6 +413,17 @@ impl DbClientView {
             return;
         }
 
+        if self.sessions.len() >= MAX_CONNECTION_SESSIONS {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(format!(
+                    "连接标签已达上限（{MAX_CONNECTION_SESSIONS} 个），请先关闭不需要的标签"
+                ))
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
+
         // 在 config 被 move 进 session 之前先抓 id 用于版本探测
         let conn_id = config.id.clone();
         let entity = self.build_session_entity(config.clone(), window, cx);
@@ -490,12 +530,35 @@ mod preference_tests {
 
         assert!(matches!(
             parse_open_sessions(&modern),
-            Ok(pref) if pref.ids == vec![id.clone()] && pref.active == Some(id.clone())
+            Ok((pref, false)) if pref.ids == vec![id.clone()] && pref.active == Some(id.clone())
         ));
         assert!(matches!(
             parse_open_sessions(&legacy),
-            Ok(pref) if pref.ids == vec![id] && pref.active.is_none()
+            Ok((pref, false)) if pref.ids == vec![id] && pref.active.is_none()
         ));
         assert!(parse_open_sessions("not-json").is_err());
+    }
+
+    #[test]
+    fn open_sessions_parser_bounds_and_deduplicates_restore_data() {
+        let first = ramag_domain::entities::ConnectionId::new();
+        let mut ids = vec![first.clone(), first.clone()];
+        ids.extend(
+            (0..MAX_CONNECTION_SESSIONS).map(|_| ramag_domain::entities::ConnectionId::new()),
+        );
+        let json = serde_json::to_string(&OpenSessionsPref {
+            ids,
+            active: Some(first.clone()),
+        })
+        .unwrap_or_default();
+
+        assert!(matches!(
+            parse_open_sessions(&json),
+            Ok((pref, true))
+                if pref.ids.len() == MAX_CONNECTION_SESSIONS
+                    && pref.ids.first() == Some(&first)
+                    && pref.active == Some(first)
+        ));
+        assert!(parse_open_sessions(&" ".repeat(MAX_OPEN_SESSIONS_PREF_BYTES + 1)).is_err());
     }
 }

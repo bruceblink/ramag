@@ -67,6 +67,21 @@ pub struct Row {
     pub values: Vec<Value>,
 }
 
+impl Row {
+    /// 结果集常驻内存的保守估算；用于流式查询的客户端总预算。
+    pub fn retained_bytes(&self) -> u64 {
+        let mut bytes = std::mem::size_of::<Row>().saturating_add(
+            self.values
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Value>()),
+        );
+        for value in &self.values {
+            bytes = bytes.saturating_add(value_dynamic_bytes(value));
+        }
+        u64::try_from(bytes).unwrap_or(u64::MAX)
+    }
+}
+
 /// 单元格值。UI 按 variant 选渲染方式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
@@ -80,6 +95,43 @@ pub enum Value {
     DateTime(chrono::DateTime<chrono::Utc>),
     /// MySQL JSON 列、PG jsonb
     Json(serde_json::Value),
+}
+
+fn value_dynamic_bytes(value: &Value) -> usize {
+    match value {
+        Value::Text(text) => text.capacity(),
+        Value::Bytes(bytes) => bytes.capacity(),
+        Value::Json(value) => json_dynamic_bytes(value),
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::DateTime(_) => 0,
+    }
+}
+
+fn json_dynamic_bytes(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::String(text) => text.capacity(),
+        serde_json::Value::Array(values) => {
+            let mut bytes = values
+                .capacity()
+                .saturating_mul(std::mem::size_of::<serde_json::Value>());
+            for value in values {
+                bytes = bytes.saturating_add(json_dynamic_bytes(value));
+            }
+            bytes
+        }
+        serde_json::Value::Object(values) => {
+            // Map 的节点实现细节不公开；按键值结构再加三个指针的节点开销保守估算。
+            let entry_bytes = std::mem::size_of::<(String, serde_json::Value)>()
+                .saturating_add(3 * std::mem::size_of::<usize>());
+            let mut bytes = values.len().saturating_mul(entry_bytes);
+            for (key, value) in values {
+                bytes = bytes
+                    .saturating_add(key.capacity())
+                    .saturating_add(json_dynamic_bytes(value));
+            }
+            bytes
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+    }
 }
 
 impl Value {
@@ -346,5 +398,21 @@ mod tests {
         let s = v.to_clipboard_string();
         assert!(!s.contains("\n"));
         assert!(s.contains("\"a\":1"));
+    }
+
+    #[test]
+    fn row_retained_bytes_tracks_dynamic_payloads() {
+        let small = Row {
+            values: vec![Value::Text("a".into())],
+        };
+        let large = Row {
+            values: vec![
+                Value::Text("x".repeat(1024)),
+                Value::Bytes(vec![0; 2048]),
+                Value::Json(serde_json::json!({"items": ["y".repeat(512)]})),
+            ],
+        };
+
+        assert!(large.retained_bytes() > small.retained_bytes() + 3_000);
     }
 }

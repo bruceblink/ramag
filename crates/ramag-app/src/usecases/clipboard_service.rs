@@ -23,6 +23,8 @@ use pending_media::PendingMediaDeletes;
 
 /// 设置持久化 key（prefs 表，JSON）
 const SETTINGS_KEY: &str = "clipboard_settings";
+/// 剪贴设置远小于通用偏好 16 MiB 上限；先拒绝异常大 JSON，避免反序列化时无谓分配。
+const MAX_SETTINGS_JSON_BYTES: usize = 256 * 1024;
 
 /// 历史清理上限（固定策略，不开放设置）：最多 100 万条 / 360 天，超出在每次入库后清理最旧
 const MAX_ITEMS: u32 = 1_000_000;
@@ -205,7 +207,7 @@ impl ClipboardService {
         // 又把内存快照覆盖回旧值。
         let _guard = self.settings_save_lock.lock().await;
         let settings = match self.storage.get_preference(SETTINGS_KEY).await {
-            Ok(Some(json)) => match serde_json::from_str(&json) {
+            Ok(Some(json)) => match parse_clipboard_settings(&json) {
                 Ok(s) => {
                     self.settings_degraded.store(false, Ordering::Relaxed);
                     s
@@ -250,6 +252,7 @@ impl ClipboardService {
     }
 
     pub async fn save_settings(&self, settings: &ClipboardSettings) -> Result<()> {
+        let json = serialize_clipboard_settings(settings)?;
         let _guard = self.settings_save_lock.lock().await;
         // 先更新内存镜像（与 UI 乐观更新一致），热键循环最迟下一拍生效
         let prev_enabled = self
@@ -259,12 +262,7 @@ impl ClipboardService {
             .alternate_hotkey
             .swap(settings.alternate_hotkey, Ordering::Relaxed);
         let prev_auto_paste = self.auto_paste.swap(settings.auto_paste, Ordering::Relaxed);
-        let result = async {
-            let json = serde_json::to_string(settings)
-                .map_err(|e| DomainError::Storage(format!("序列化剪贴设置失败：{e}")))?;
-            self.storage.set_preference(SETTINGS_KEY, &json).await
-        }
-        .await;
+        let result = self.storage.set_preference(SETTINGS_KEY, &json).await;
         // 持久化失败回滚镜像：内存与落盘不一致会让「界面已关但仍在采集」类偏差跨拍存在
         if result.is_err() {
             self.capture_enabled.store(prev_enabled, Ordering::Relaxed);
@@ -295,6 +293,12 @@ impl ClipboardService {
                 return (snapshot, after);
             }
         }
+    }
+
+    /// 采集循环读取设置：等待在途保存完成后取内存镜像，不为每次剪贴变化重复访问磁盘。
+    pub async fn capture_settings_snapshot(&self) -> ClipboardSettings {
+        let _guard = self.settings_save_lock.lock().await;
+        self.settings_cache.read().clone()
     }
 
     pub fn settings_revision(&self) -> u64 {
@@ -584,6 +588,32 @@ impl ClipboardService {
     pub fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()> {
         self.driver.reveal_in_file_manager(paths)
     }
+}
+
+fn parse_clipboard_settings(json: &str) -> Result<ClipboardSettings> {
+    if json.len() > MAX_SETTINGS_JSON_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴设置数据过大：{} bytes",
+            json.len()
+        )));
+    }
+    let settings = serde_json::from_str::<ClipboardSettings>(json)
+        .map_err(|e| DomainError::InvalidConfig(format!("剪贴设置格式无效：{e}")))?;
+    settings.validate().map_err(DomainError::InvalidConfig)?;
+    Ok(settings)
+}
+
+fn serialize_clipboard_settings(settings: &ClipboardSettings) -> Result<String> {
+    settings.validate().map_err(DomainError::InvalidConfig)?;
+    let json = serde_json::to_string(settings)
+        .map_err(|e| DomainError::Storage(format!("序列化剪贴设置失败：{e}")))?;
+    if json.len() > MAX_SETTINGS_JSON_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴设置数据过大：{} bytes",
+            json.len()
+        )));
+    }
+    Ok(json)
 }
 
 /// 纯判定：是否记录该次采集（无 IO，便于测试）

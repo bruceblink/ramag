@@ -10,6 +10,7 @@ pub mod diff_split_cells;
 pub mod file_tree;
 pub mod helpers;
 pub mod history_panel;
+mod history_retention;
 pub mod ide_layout;
 pub mod pf_content;
 pub mod project_files;

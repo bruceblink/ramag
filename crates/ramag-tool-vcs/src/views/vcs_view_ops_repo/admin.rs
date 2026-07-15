@@ -1,14 +1,18 @@
 //! 仓库 storage 管理 + Clone / Init / 确认弹窗
 
+use std::collections::HashSet;
+
 use gpui::{Context, Window};
 use ramag_domain::entities::{RepoConfig, RepoId};
 use ramag_domain::error::{DomainError, Result};
 
 use super::super::vcs_view::VcsView;
-use super::open_repo_async;
+use super::{MAX_OPEN_REPOS, open_repo_async};
 
 /// 打开中的仓库 Tab 路径列表的偏好 key（JSON 数组，跨重启恢复用）
 const OPEN_REPOS_PREF: &str = "vcs_open_repos";
+const MAX_OPEN_REPOS_PREF_BYTES: usize = 256 * 1024;
+const MAX_OPEN_REPO_PATH_BYTES: usize = 32 * 1024;
 
 impl VcsView {
     /// 收藏 / 取消收藏最近仓库，并立即持久化。
@@ -91,6 +95,9 @@ impl VcsView {
         dest: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
+        if !self.ensure_open_repo_capacity(&dest.to_string_lossy(), cx) {
+            return;
+        }
         let driver = self.driver.clone();
         self.loading = true;
         let repo_hint = url
@@ -237,6 +244,9 @@ impl VcsView {
     /// 异步初始化空仓库（真正执行 git init），完成后打开 session。
     /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
     pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.ensure_open_repo_capacity(&path.to_string_lossy(), cx) {
+            return;
+        }
         let driver = self.driver.clone();
         self.loading = true;
         self.loading_label = Some(format!("正在初始化仓库 {}…", path.display()));
@@ -267,24 +277,32 @@ impl VcsView {
                 Err(_) => return,
             };
             let result = storage.list_repos().await;
-            let (open_paths, open_paths_error): (Vec<String>, Option<String>) =
-                match storage.get_preference(OPEN_REPOS_PREF).await {
-                    Ok(Some(json)) => match serde_json::from_str(&json) {
-                        Ok(paths) => (paths, None),
-                        Err(error) => {
-                            tracing::warn!(error = %error, "parse open repos preference failed");
-                            (Vec::new(), Some("已忽略损坏的仓库标签恢复数据".into()))
-                        }
-                    },
-                    Ok(None) => (Vec::new(), None),
+            let (open_paths, open_paths_error, open_paths_adjusted): (
+                Vec<String>,
+                Option<String>,
+                bool,
+            ) = match storage.get_preference(OPEN_REPOS_PREF).await {
+                Ok(Some(json)) => match parse_open_repo_paths(&json) {
+                    Ok((paths, adjusted)) => (paths, None, adjusted),
                     Err(error) => {
-                        tracing::warn!(error = %error, "load open repos preference failed");
+                        tracing::warn!(error = %error, "parse open repos preference failed");
                         (
                             Vec::new(),
-                            Some(format!("无法恢复上次打开的仓库标签：{error}")),
+                            Some("已忽略损坏的仓库标签恢复数据".into()),
+                            false,
                         )
                     }
-                };
+                },
+                Ok(None) => (Vec::new(), None, false),
+                Err(error) => {
+                    tracing::warn!(error = %error, "load open repos preference failed");
+                    (
+                        Vec::new(),
+                        Some(format!("无法恢复上次打开的仓库标签：{error}")),
+                        false,
+                    )
+                }
+            };
             let _ = this.update(cx, |this, cx| match result {
                 Ok(list) => {
                     // 按保存顺序恢复 Tab；已从 recent 移除的仓库自动跳过
@@ -296,6 +314,14 @@ impl VcsView {
                     this.repo_list_rows_cache.get_mut().take();
                     if let Some(error) = open_paths_error {
                         this.error = Some(error);
+                    }
+                    if open_paths_adjusted {
+                        this.pending_notification = Some(
+                            gpui_component::notification::Notification::warning(format!(
+                                "上次仓库标签包含重复或超限项，仅恢复前 {MAX_OPEN_REPOS} 个有效标签"
+                            ))
+                            .autohide(true),
+                        );
                     }
                     cx.notify();
                 }
@@ -309,7 +335,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 把当前打开的仓库 Tab 路径列表落 prefs（开 / 关 Tab 时调；后台异步，失败仅日志）
+    /// 把当前打开的仓库 Tab 路径列表落 prefs；同 key 串行且只保留最新快照。
     pub(crate) fn persist_open_repos(&self, cx: &mut Context<Self>) {
         let paths: Vec<String> = self.open_repos.iter().map(|r| r.path.clone()).collect();
         let json = match serde_json::to_string(&paths) {
@@ -319,15 +345,51 @@ impl VcsView {
                 return;
             }
         };
-        let storage = self.storage.clone();
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = storage.set_preference(OPEN_REPOS_PREF, &json).await {
-                    tracing::warn!(error = %e, "vcs: persist open repos failed");
-                }
-            })
-            .detach();
+        ramag_ui::preferences::persist_preference_latest_with_storage(
+            OPEN_REPOS_PREF,
+            json,
+            self.storage.clone(),
+            cx,
+        );
     }
+}
+
+fn parse_open_repo_paths(json: &str) -> Result<(Vec<String>, bool)> {
+    if json.len() > MAX_OPEN_REPOS_PREF_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "仓库标签恢复数据过大：{} bytes",
+            json.len()
+        )));
+    }
+    let paths = serde_json::from_str::<Vec<String>>(json)
+        .map_err(|error| DomainError::InvalidConfig(format!("仓库标签恢复数据无效：{error}")))?;
+    let original_len = paths.len();
+    let mut seen = HashSet::with_capacity(original_len.min(MAX_OPEN_REPOS));
+    let mut normalized = Vec::with_capacity(original_len.min(MAX_OPEN_REPOS));
+    let mut adjusted = false;
+    for path in paths {
+        if path.is_empty() {
+            adjusted = true;
+            continue;
+        }
+        if path.len() > MAX_OPEN_REPO_PATH_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "仓库标签路径过长：{} bytes",
+                path.len()
+            )));
+        }
+        if normalized.len() >= MAX_OPEN_REPOS {
+            adjusted = true;
+            break;
+        }
+        if seen.insert(path.clone()) {
+            normalized.push(path);
+        } else {
+            adjusted = true;
+        }
+    }
+    adjusted |= normalized.len() != original_len;
+    Ok((normalized, adjusted))
 }
 
 fn prepare_clone_destination(path: &std::path::Path) -> Result<()> {
@@ -408,7 +470,10 @@ fn remove_cancelled_clone_directory(path: &std::path::Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_clone_destination, remove_cancelled_clone_directory};
+    use super::{
+        MAX_OPEN_REPOS, MAX_OPEN_REPOS_PREF_BYTES, parse_open_repo_paths,
+        prepare_clone_destination, remove_cancelled_clone_directory,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn test_root(label: &str) -> std::path::PathBuf {
@@ -489,5 +554,20 @@ mod tests {
         std::fs::remove_file(target)?;
         std::fs::remove_dir(root)?;
         std::fs::remove_dir(outside)
+    }
+
+    #[test]
+    fn open_repo_paths_are_bounded_and_deduplicated() {
+        let mut paths = vec!["/repo/0".to_string(), "/repo/0".to_string()];
+        paths.extend((1..=MAX_OPEN_REPOS).map(|index| format!("/repo/{index}")));
+        let json = serde_json::to_string(&paths).unwrap_or_default();
+
+        assert!(matches!(
+            parse_open_repo_paths(&json),
+            Ok((paths, true))
+                if paths.len() == MAX_OPEN_REPOS
+                    && paths.first().is_some_and(|path| path == "/repo/0")
+        ));
+        assert!(parse_open_repo_paths(&" ".repeat(MAX_OPEN_REPOS_PREF_BYTES + 1)).is_err());
     }
 }

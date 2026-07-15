@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use futures::TryStreamExt as _;
 use ramag_domain::entities::{
     Column, ConnectionConfig, ForeignKey, Index, Query, QueryResult, Row, Schema, Table, Value,
     Warning,
@@ -23,6 +24,10 @@ use crate::sql::{
 
 /// 单次查询保留的警告上限，包含可能的截断提示。
 pub const MAX_QUERY_WARNINGS: usize = 1_000;
+/// 即使用户关闭自动 LIMIT，客户端也不会无限保留结果行。
+const MAX_QUERY_RESULT_ROWS: usize = 100_000;
+/// 结果行估算的常驻内存硬上限；列定义与单个在途驱动行不计入。
+const MAX_QUERY_RESULT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// SQL 类 driver 抽象。`Db` 绑到 sqlx Database（MySql/Postgres/Sqlite 等）。
 /// where 子句的 HRTB GAT 是 sqlx 0.8 必备，sqlx 内置 Database 自动满足
@@ -367,7 +372,7 @@ where
         };
         let effective_sql: &str = injected.as_deref().unwrap_or(stmt.as_str());
 
-        let r = if is_select {
+        let mut r = if is_select {
             run_select::<B>(b, &mut *conn, effective_sql).await?
         } else {
             run_dml::<B>(b, &mut *conn, effective_sql).await?
@@ -375,6 +380,7 @@ where
         if !is_select {
             total_affected = total_affected.saturating_add(r.affected_rows);
         }
+        append_warnings_bounded(&mut accumulated_warnings, std::mem::take(&mut r.warnings));
         append_warnings_bounded(&mut accumulated_warnings, b.fetch_warnings(&mut conn).await);
         if i == last_idx {
             last_result = r;
@@ -438,23 +444,66 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
-    let rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| map_err(b, e))?;
+    let mut columns = Vec::new();
+    let mut column_types = Vec::new();
+    let mut domain_rows = Vec::new();
+    let mut retained_bytes = 0u64;
+    let mut limit_reached = None;
+    let mut saw_row = false;
 
-    let (columns, column_types) = if let Some(first) = rows.first() {
-        b.extract_columns(first)
-    } else {
-        b.extract_columns_fallback(conn, sql)
+    {
+        let mut rows = sqlx::query(sql).fetch(&mut *conn);
+        while let Some(row) = rows.try_next().await.map_err(|e| map_err(b, e))? {
+            if !saw_row {
+                (columns, column_types) = b.extract_columns(&row);
+                saw_row = true;
+            }
+            if domain_rows.len() >= MAX_QUERY_RESULT_ROWS {
+                limit_reached = Some(QueryResultLimit::Rows);
+                break;
+            }
+            let row = Row {
+                values: b.decode_row(&row)?,
+            };
+            if let Err(limit) = try_push_query_row(
+                &mut domain_rows,
+                &mut retained_bytes,
+                row,
+                MAX_QUERY_RESULT_ROWS,
+                MAX_QUERY_RESULT_BYTES,
+            ) {
+                limit_reached = Some(limit);
+                break;
+            }
+        }
+    }
+
+    if !saw_row {
+        (columns, column_types) = b
+            .extract_columns_fallback(conn, sql)
             .await
-            .unwrap_or_default()
-    };
+            .unwrap_or_default();
+    }
 
-    let domain_rows: Vec<Row> = rows
-        .iter()
-        .map(|row| b.decode_row(row).map(|values| Row { values }))
-        .collect::<Result<Vec<_>>>()?;
+    let warnings = limit_reached
+        .map(|limit| {
+            let boundary = match limit {
+                QueryResultLimit::Rows => format!("{MAX_QUERY_RESULT_ROWS} 行"),
+                QueryResultLimit::Bytes => format!(
+                    "{} MiB 常驻内存",
+                    MAX_QUERY_RESULT_BYTES / (1024 * 1024)
+                ),
+            };
+            vec![Warning {
+                level: "Client".into(),
+                code: 0,
+                message: format!(
+                    "查询结果超过客户端安全上限（{boundary}），仅保留前 {} 行；请增加 WHERE 或 LIMIT 缩小范围",
+                    domain_rows.len()
+                ),
+            }]
+        })
+        .unwrap_or_default();
 
     Ok(QueryResult {
         columns,
@@ -462,8 +511,35 @@ where
         rows: domain_rows,
         affected_rows: 0,
         elapsed_ms: 0,
-        warnings: Vec::new(),
+        warnings,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryResultLimit {
+    Rows,
+    Bytes,
+}
+
+fn try_push_query_row(
+    rows: &mut Vec<Row>,
+    retained_bytes: &mut u64,
+    row: Row,
+    max_rows: usize,
+    max_bytes: u64,
+) -> std::result::Result<(), QueryResultLimit> {
+    if rows.len() >= max_rows {
+        return Err(QueryResultLimit::Rows);
+    }
+    let next_bytes = retained_bytes
+        .checked_add(row.retained_bytes())
+        .ok_or(QueryResultLimit::Bytes)?;
+    if next_bytes > max_bytes {
+        return Err(QueryResultLimit::Bytes);
+    }
+    rows.push(row);
+    *retained_bytes = next_bytes;
+    Ok(())
 }
 
 async fn run_dml<B>(
@@ -493,8 +569,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_QUERY_WARNINGS, append_warnings_bounded};
-    use ramag_domain::entities::Warning;
+    use super::{
+        MAX_QUERY_WARNINGS, QueryResultLimit, append_warnings_bounded, try_push_query_row,
+    };
+    use ramag_domain::entities::{Row, Value, Warning};
 
     fn warnings(count: usize) -> Vec<Warning> {
         (0..count)
@@ -534,5 +612,38 @@ mod tests {
                 .last()
                 .is_some_and(|warning| warning.message.contains("仅保留前"))
         );
+    }
+
+    #[test]
+    fn query_row_budget_enforces_count_and_bytes() {
+        let row = || Row {
+            values: vec![Value::Text("x".repeat(128))],
+        };
+        let one_row_bytes = row().retained_bytes();
+        let mut rows = Vec::new();
+        let mut retained_bytes = 0;
+
+        assert_eq!(
+            try_push_query_row(&mut rows, &mut retained_bytes, row(), 1, u64::MAX),
+            Ok(())
+        );
+        assert_eq!(
+            try_push_query_row(&mut rows, &mut retained_bytes, row(), 1, u64::MAX),
+            Err(QueryResultLimit::Rows)
+        );
+
+        rows.clear();
+        retained_bytes = 0;
+        assert_eq!(
+            try_push_query_row(
+                &mut rows,
+                &mut retained_bytes,
+                row(),
+                usize::MAX,
+                one_row_bytes - 1,
+            ),
+            Err(QueryResultLimit::Bytes)
+        );
+        assert!(rows.is_empty());
     }
 }

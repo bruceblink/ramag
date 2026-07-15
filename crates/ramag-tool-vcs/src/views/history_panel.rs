@@ -443,7 +443,7 @@ impl VcsView {
         // 有更多时加一行哨兵行：滚到底自动触发下一页加载
         let total_rows = count + usize::from(has_more);
         // Rc 共享：commits + graph_rows 喂给 uniform_list 闭包（不每帧 clone 整个 Vec）
-        let commits_rc: Rc<Vec<Commit>> = self.history_commits.clone();
+        let commits_rc: Rc<Vec<Rc<Commit>>> = self.history_commits.clone();
         let graph_rc: Rc<Vec<CommitGraphRow>> = self.history_graph_rows.clone();
 
         let body = uniform_list(
@@ -506,7 +506,17 @@ impl VcsView {
         .track_scroll(&self.history_scroll)
         .flex_1();
 
-        let footer: AnyElement = if !has_more {
+        let footer: AnyElement = if self.history_limit_reached {
+            div()
+                .flex_none()
+                .py(px(8.0))
+                .flex()
+                .justify_center()
+                .text_xs()
+                .text_color(muted_fg)
+                .child("— 已达到历史显示上限，请使用搜索或文件过滤缩小范围 —")
+                .into_any_element()
+        } else if !has_more {
             div()
                 .flex_none()
                 .py(px(8.0))

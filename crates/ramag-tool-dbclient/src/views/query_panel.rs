@@ -12,17 +12,18 @@ use gpui::{
 
 use crate::actions::NewQueryTab;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
+    notification::Notification,
     v_flex,
 };
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::ConnectionConfig;
 use ramag_ui::{
-    CloseTab,
+    CloseTab, MAX_EDITOR_TABS, can_open_editor_tab,
     platform::{primary_shift_shortcut, primary_shortcut},
 };
 
@@ -137,7 +138,17 @@ impl QueryPanel {
         v
     }
 
-    fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !can_open_editor_tab(self.tabs.len()) {
+            window.push_notification(
+                Notification::warning(format!(
+                    "查询标签已达上限（{MAX_EDITOR_TABS} 个），请先关闭不需要的标签"
+                ))
+                .autohide(true),
+                cx,
+            );
+            return false;
+        }
         // 找出未使用的最小编号（这样关闭"查询 1"再新建会重新得到"查询 1"）
         let title = {
             let mut n = 1usize;
@@ -166,6 +177,7 @@ impl QueryPanel {
             .set_offset(Point::new(px(-99999.0), px(0.0)));
         self.schedule_draft_persist(cx);
         cx.notify();
+        true
     }
 
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -273,8 +285,8 @@ impl QueryPanel {
             .tabs
             .get(self.active)
             .is_some_and(|t| t.read(cx).has_user_draft(cx));
-        if has_draft {
-            self.add_tab(window, cx);
+        if has_draft && !self.add_tab(window, cx) {
+            return;
         }
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
@@ -298,7 +310,9 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_tab(window, cx);
+        if !self.add_tab(window, cx) {
+            return;
+        }
         self.prefill_active_sql_and_run(sql, window, cx);
     }
 
@@ -317,8 +331,8 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_has_draft(cx) {
-            self.add_tab(window, cx);
+        if self.active_has_draft(cx) && !self.add_tab(window, cx) {
+            return;
         }
         if let Some(tab) = self.tabs.get(self.active).cloned() {
             tab.update(cx, |t, cx| t.insert_example(sql, window, cx));
@@ -329,8 +343,9 @@ impl QueryPanel {
     /// 把 SQL 填入当前活动 Tab 的编辑器并聚焦（不执行）。
     /// 有手写草稿时另开 Tab，不覆盖；面板恒保持至少一个 Tab，空列表仅是兜底防御
     fn fill_active_sql(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.is_empty() || self.active_has_draft(cx) {
-            self.add_tab(window, cx);
+        let needs_new_tab = self.tabs.is_empty() || self.active_has_draft(cx);
+        if needs_new_tab && !self.add_tab(window, cx) {
+            return;
         }
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
@@ -369,6 +384,7 @@ impl Render for QueryPanel {
             })
             .collect();
         let only_one = titles.len() <= 1;
+        let can_add_tab = can_open_editor_tab(self.tabs.len());
 
         // 当前主区视图：始终是 active Tab
         let current_view: Option<AnyView> = self.tabs.get(active).map(|t| t.clone().into());
@@ -502,7 +518,12 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
-                                        .tooltip(format!("新建查询 ({})", primary_shortcut("T")))
+                                        .tooltip(if can_add_tab {
+                                            format!("新建查询 ({})", primary_shortcut("T"))
+                                        } else {
+                                            format!("查询标签已达上限（{MAX_EDITOR_TABS} 个）")
+                                        })
+                                        .disabled(!can_add_tab)
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 this.add_tab(window, cx);

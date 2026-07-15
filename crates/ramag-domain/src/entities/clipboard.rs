@@ -128,6 +128,13 @@ pub struct ClipSearchResult {
     pub truncated: bool,
 }
 
+/// 单条剪贴内容允许的最大持久化体积；避免异常设置放大采集时的内存与磁盘占用。
+pub const MAX_CLIPBOARD_ITEM_BYTES: u64 = 64 * 1024 * 1024;
+/// 来源黑名单条目上限；正常应用数量远低于此值，边界用于约束匹配与设置渲染成本。
+pub const MAX_CLIPBOARD_BLACKLIST_ENTRIES: usize = 256;
+const MAX_CLIPBOARD_BLACKLIST_ENTRY_BYTES: usize = 1024;
+const MAX_CLIPBOARD_BLACKLIST_TOTAL_BYTES: usize = 64 * 1024;
+
 /// 采集与展示设置（prefs KV 以 JSON 持久化）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipboardSettings {
@@ -144,6 +151,42 @@ pub struct ClipboardSettings {
     /// serde 默认：旧版持久化 JSON 缺此字段时不整体回退默认设置
     #[serde(default)]
     pub alternate_hotkey: bool,
+}
+
+impl ClipboardSettings {
+    /// 校验影响采集资源消耗的设置；持久化输入不可信，载入与保存都必须经过此边界。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_item_bytes > MAX_CLIPBOARD_ITEM_BYTES {
+            return Err(format!(
+                "单条剪贴内容上限过大：{} > {MAX_CLIPBOARD_ITEM_BYTES}",
+                self.max_item_bytes
+            ));
+        }
+        if self.blacklist.len() > MAX_CLIPBOARD_BLACKLIST_ENTRIES {
+            return Err(format!(
+                "来源黑名单条目过多：{} > {MAX_CLIPBOARD_BLACKLIST_ENTRIES}",
+                self.blacklist.len()
+            ));
+        }
+
+        let mut total_bytes = 0usize;
+        for entry in &self.blacklist {
+            if entry.trim().is_empty() {
+                return Err("来源黑名单包含空条目".to_string());
+            }
+            if entry.len() > MAX_CLIPBOARD_BLACKLIST_ENTRY_BYTES {
+                return Err(format!("来源黑名单单条过长：{} bytes", entry.len()));
+            }
+            if entry.chars().any(char::is_control) {
+                return Err("来源黑名单包含控制字符".to_string());
+            }
+            total_bytes = total_bytes.saturating_add(entry.len());
+        }
+        if total_bytes > MAX_CLIPBOARD_BLACKLIST_TOTAL_BYTES {
+            return Err(format!("来源黑名单总量过大：{total_bytes} bytes"));
+        }
+        Ok(())
+    }
 }
 
 impl Default for ClipboardSettings {
@@ -368,6 +411,35 @@ mod tests {
         assert!(!parsed.enabled);
         assert_eq!(parsed.blacklist, vec!["com.example.app".to_string()]);
         assert!(!parsed.alternate_hotkey);
+    }
+
+    #[test]
+    fn settings_validation_bounds_resource_fields() {
+        assert!(ClipboardSettings::default().validate().is_ok());
+
+        let oversized_item = ClipboardSettings {
+            max_item_bytes: MAX_CLIPBOARD_ITEM_BYTES + 1,
+            ..ClipboardSettings::default()
+        };
+        assert!(oversized_item.validate().is_err());
+
+        let too_many_sources = ClipboardSettings {
+            blacklist: vec!["app".to_string(); MAX_CLIPBOARD_BLACKLIST_ENTRIES + 1],
+            ..ClipboardSettings::default()
+        };
+        assert!(too_many_sources.validate().is_err());
+
+        let oversized_source_total = ClipboardSettings {
+            blacklist: vec!["x".repeat(300); MAX_CLIPBOARD_BLACKLIST_ENTRIES],
+            ..ClipboardSettings::default()
+        };
+        assert!(oversized_source_total.validate().is_err());
+
+        let invalid_source = ClipboardSettings {
+            blacklist: vec!["bad\nsource".to_string()],
+            ..ClipboardSettings::default()
+        };
+        assert!(invalid_source.validate().is_err());
     }
 
     #[test]
