@@ -15,7 +15,7 @@ use super::{
 
 impl ConnectionFormPanel {
     /// 「从 URI 填充」：解析 mongodb:// 地址回填表单各字段。
-    /// 解析失败复用测试结论区显示红字；副本集多主机仅取首个
+    /// 解析失败复用测试结论区显示红字；副本集多主机明确拒绝，避免静默改变拓扑。
     pub(super) fn apply_mongo_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.mongo_uri.read(cx).value().trim().to_string();
         if raw.is_empty() {
@@ -161,14 +161,7 @@ impl ConnectionFormPanel {
         };
         let ssh_port = {
             let v = self.ssh_port.read(cx).value().trim().to_string();
-            if v.is_empty() {
-                None
-            } else {
-                Some(
-                    v.parse::<u16>()
-                        .map_err(|_| "SSH 端口必须是 1-65535 的数字".to_string())?,
-                )
-            }
+            parse_optional_ssh_port(&v)?
         };
         // SSH 与 TLS 允许同开（分别保护跳板段与后段链路）；经隧道后主机名校验必败，
         // driver 层自动降级验证等级（MySQL/PG Full→Ca；Redis/Mongo 仅加密），表单有提示
@@ -376,5 +369,32 @@ impl ConnectionFormPanel {
             window,
             cx,
         );
+    }
+}
+
+fn parse_optional_ssh_port(raw: &str) -> Result<Option<u16>, String> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let port = raw
+        .parse::<u16>()
+        .map_err(|_| "SSH 端口必须是 1-65535 的数字".to_string())?;
+    if port == 0 {
+        return Err("SSH 端口必须是 1-65535 的数字".into());
+    }
+    Ok(Some(port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_optional_ssh_port;
+
+    #[test]
+    fn ssh_port_rejects_zero_and_out_of_range() {
+        assert_eq!(parse_optional_ssh_port(""), Ok(None));
+        assert_eq!(parse_optional_ssh_port("22"), Ok(Some(22)));
+        assert!(parse_optional_ssh_port("0").is_err());
+        assert!(parse_optional_ssh_port("65536").is_err());
+        assert!(parse_optional_ssh_port("abc").is_err());
     }
 }

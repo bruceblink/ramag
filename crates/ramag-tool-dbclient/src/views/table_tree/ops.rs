@@ -13,10 +13,13 @@ use super::TableTreePanel;
 enum AfterDdl {
     /// 树结构无变化（清空表）
     None,
-    /// 重拉单个 schema 的表列表（删除表 / 视图）
-    ReloadSchema(String),
-    /// 整树重拉（删除库）
-    FullRefresh,
+    /// 成功后清理旧表状态，并重拉单个 schema 的表列表。
+    ReloadSchema {
+        schema: String,
+        invalidated_table: String,
+    },
+    /// 成功后清理失效的活动 schema，并重拉整棵树。
+    FullRefresh { invalidated_schema: String },
 }
 
 // ===== 右键菜单构造（row.rs 调用） =====
@@ -204,16 +207,15 @@ impl TableTreePanel {
         let Some(driver) = self.connection.as_ref().map(|c| c.driver) else {
             return;
         };
-        if self.selected.as_ref() == Some(&(schema.clone(), table.clone())) {
-            self.selected = None;
-        }
-        self.table_columns.remove(&format!("{schema}.{table}"));
         let sql = ddl_drop_table(driver, &schema, &table, is_view);
         let label = if is_view { "视图" } else { "表" };
         self.exec_ddl(
             sql,
             format!("已删除{label} {schema}.{table}"),
-            AfterDdl::ReloadSchema(schema),
+            AfterDdl::ReloadSchema {
+                schema,
+                invalidated_table: table,
+            },
             cx,
         );
     }
@@ -232,15 +234,14 @@ impl TableTreePanel {
         let Some(driver) = self.connection.as_ref().map(|c| c.driver) else {
             return;
         };
-        if self.selected.as_ref() == Some(&(schema.clone(), old.clone())) {
-            self.selected = None;
-        }
-        self.table_columns.remove(&format!("{schema}.{old}"));
         let sql = ddl_rename_table(driver, &schema, &old, &new, is_view);
         self.exec_ddl(
             sql,
             format!("已重命名为 {schema}.{new}"),
-            AfterDdl::ReloadSchema(schema),
+            AfterDdl::ReloadSchema {
+                schema,
+                invalidated_table: old,
+            },
             cx,
         );
     }
@@ -253,27 +254,34 @@ impl TableTreePanel {
         let Some(driver) = self.connection.as_ref().map(|c| c.driver) else {
             return;
         };
-        if self.active_schema.as_deref() == Some(old.as_str()) {
-            self.active_schema = None;
-        }
         let sql = format!(
             "ALTER SCHEMA {} RENAME TO {}",
             driver.quote_identifier(&old),
             driver.quote_identifier(&new)
         );
-        self.exec_ddl(sql, format!("已重命名为 {new}"), AfterDdl::FullRefresh, cx);
+        self.exec_ddl(
+            sql,
+            format!("已重命名为 {new}"),
+            AfterDdl::FullRefresh {
+                invalidated_schema: old,
+            },
+            cx,
+        );
     }
 
     pub(super) fn drop_schema(&mut self, schema: String, cx: &mut Context<Self>) {
         let Some(driver) = self.connection.as_ref().map(|c| c.driver) else {
             return;
         };
-        // 让 refresh 后的 load_schemas 自动激活默认库并广播
-        if self.active_schema.as_deref() == Some(schema.as_str()) {
-            self.active_schema = None;
-        }
         let sql = ddl_drop_schema(driver, &schema);
-        self.exec_ddl(sql, format!("已删除 {schema}"), AfterDdl::FullRefresh, cx);
+        self.exec_ddl(
+            sql,
+            format!("已删除 {schema}"),
+            AfterDdl::FullRefresh {
+                invalidated_schema: schema,
+            },
+            cx,
+        );
     }
 
     /// 统一执行入口：成功按 after 刷新树，失败 toast 错误；均写查询历史
@@ -293,18 +301,59 @@ impl TableTreePanel {
                 .execute_with_history(&conn, &Query::new(sql.clone()))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if this.connection.as_ref().map(|current| &current.id) != Some(&conn.id) {
+                    this.pending_notification = Some(match &result {
+                        Ok(_) => Notification::success(format!(
+                            "{success_msg}（原连接「{}」；当前树未自动刷新）",
+                            conn.name
+                        ))
+                        .autohide(true),
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                connection = %conn.name,
+                                sql = %sql,
+                                "tree ddl failed after connection changed"
+                            );
+                            Notification::error(
+                                error.write_hint(&format!("原连接「{}」执行失败", conn.name)),
+                            )
+                            .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(_) => {
                         this.pending_notification =
                             Some(Notification::success(success_msg).autohide(true));
                         match after {
                             AfterDdl::None => {}
-                            AfterDdl::ReloadSchema(s) => {
-                                if this.expanded.contains_key(&s) {
-                                    this.load_tables_for(s, cx);
+                            AfterDdl::ReloadSchema {
+                                schema,
+                                invalidated_table,
+                            } => {
+                                clear_invalidated_table_state(
+                                    &mut this.selected,
+                                    &mut this.table_columns,
+                                    &schema,
+                                    &invalidated_table,
+                                );
+                                this.invalidate_tree_rows();
+                                if this.expanded.contains_key(&schema) {
+                                    this.load_tables_for(schema, cx);
                                 }
                             }
-                            AfterDdl::FullRefresh => this.refresh(cx),
+                            AfterDdl::FullRefresh { invalidated_schema } => {
+                                if this.active_schema.as_deref()
+                                    == Some(invalidated_schema.as_str())
+                                {
+                                    // 让 refresh 后的 load_schemas 自动激活默认 schema 并广播。
+                                    this.active_schema = None;
+                                }
+                                this.refresh(cx);
+                            }
                         }
                     }
                     Err(e) => {
@@ -318,6 +367,23 @@ impl TableTreePanel {
         })
         .detach();
     }
+}
+
+fn clear_invalidated_table_state(
+    selected: &mut Option<(String, String)>,
+    table_columns: &mut std::collections::HashMap<String, super::TableColumns>,
+    schema: &str,
+    table: &str,
+) {
+    if selected
+        .as_ref()
+        .is_some_and(|(selected_schema, selected_table)| {
+            selected_schema == schema && selected_table == table
+        })
+    {
+        *selected = None;
+    }
+    table_columns.remove(&format!("{schema}.{table}"));
 }
 
 // ===== DDL 语句生成（纯函数） =====
@@ -371,6 +437,7 @@ fn ddl_drop_schema(driver: DriverKind, schema: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn truncate_quotes_by_dialect() {
@@ -431,5 +498,26 @@ mod tests {
             ddl_rename_table(DriverKind::Postgres, "public", "v1", "v2", true),
             "ALTER VIEW \"public\".\"v1\" RENAME TO \"v2\""
         );
+    }
+
+    #[test]
+    fn successful_table_ddl_clears_only_invalidated_local_state() {
+        let mut selected = Some(("public".to_string(), "users".to_string()));
+        let mut columns = HashMap::from([
+            (
+                "public.users".to_string(),
+                super::super::TableColumns::default(),
+            ),
+            (
+                "public.posts".to_string(),
+                super::super::TableColumns::default(),
+            ),
+        ]);
+
+        clear_invalidated_table_state(&mut selected, &mut columns, "public", "users");
+
+        assert!(selected.is_none());
+        assert!(!columns.contains_key("public.users"));
+        assert!(columns.contains_key("public.posts"));
     }
 }

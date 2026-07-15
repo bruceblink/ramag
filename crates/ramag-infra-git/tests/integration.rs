@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use futures::executor::block_on;
+use futures::future::join_all;
 use ramag_domain::entities::{
     BranchKind, CommitId, DiffKind, DiffLineKind, FileChangeKind, LogOptions, RepoId, ResetKind,
 };
@@ -60,6 +61,36 @@ fn current_branch(driver: &GitDriverImpl, id: &RepoId) -> String {
         .find(|b| b.is_head)
         .map(|b| b.name.clone())
         .expect("应有 HEAD 分支")
+}
+
+#[test]
+fn close_repo_releases_handle_and_allows_clean_reopen() {
+    let (driver, id, tmp) = setup();
+
+    block_on(driver.close_repo(&id)).unwrap();
+    assert!(block_on(driver.status(&id)).is_err());
+
+    let reopened = block_on(driver.open_repo(tmp.path())).unwrap();
+    assert_ne!(reopened.id, id);
+    assert!(block_on(driver.status(&reopened.id)).is_ok());
+}
+
+#[test]
+fn concurrent_open_repo_reuses_one_handle() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let initializer = GitDriverImpl::new();
+    block_on(initializer.init_repo(tmp.path())).unwrap();
+    drop(initializer);
+
+    let driver = GitDriverImpl::new();
+    let opened = block_on(join_all((0..32).map(|_| driver.open_repo(tmp.path()))))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let first_id = &opened[0].id;
+    assert!(opened.iter().all(|config| &config.id == first_id));
+    assert!(block_on(driver.status(first_id)).is_ok());
 }
 
 #[test]
@@ -435,6 +466,10 @@ fn merge_conflict_can_continue_without_editor() {
         has_conflict || st.operation.is_some(),
         "冲突 merge 后应检测到冲突文件或进行中操作"
     );
+    let content = block_on(driver.get_conflict_content(&id, "a.txt")).unwrap();
+    assert!(content.base.join("\n").contains("base"));
+    assert!(content.ours.join("\n").contains("main-change"));
+    assert!(content.theirs.join("\n").contains("feature-change"));
     block_on(driver.use_ours(&id, &["a.txt".to_string()])).unwrap();
     block_on(driver.merge_continue(&id)).expect("解决冲突后 merge --continue 应成功且不打开编辑器");
     let status = block_on(driver.status(&id)).unwrap();

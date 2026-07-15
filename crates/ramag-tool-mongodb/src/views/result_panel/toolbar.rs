@@ -102,6 +102,8 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .icon(IconName::Plus)
                 .tooltip(if can {
                     "新增文档"
+                } else if panel.doc_dml_busy {
+                    "新增文档（上一写操作尚未完成）"
                 } else if production {
                     "新增文档（生产连接 · 只读）"
                 } else {
@@ -111,14 +113,21 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_insert_dialog(window, cx)))
         })
         .child({
-            let can_del =
-                panel.can_write() && !panel.selected_rows.is_empty() && !panel.is_drilled();
+            let can_del = panel.can_write()
+                && !panel.selected_rows.is_empty()
+                && !panel.is_drilled()
+                && !panel.row_view_building
+                && panel.row_view_error.is_none();
             Button::new("mongo-delete")
                 .ghost()
                 .small()
                 .icon(IconName::Minus)
                 .tooltip(if can_del {
                     "删除选中文档"
+                } else if panel.row_view_building {
+                    "删除选中文档（正在筛选 / 排序）"
+                } else if panel.doc_dml_busy {
+                    "删除选中文档（上一写操作尚未完成）"
                 } else if production {
                     "删除选中文档（生产连接 · 只读）"
                 } else {
@@ -134,8 +143,22 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::download())
-                .tooltip("导出")
-                .disabled(!has_data)
+                .tooltip(if panel.exporting {
+                    "导出进行中"
+                } else if panel.row_view_building {
+                    "导出（正在筛选 / 排序）"
+                } else if panel.row_view_error.is_some() {
+                    "导出（当前行视图构建失败）"
+                } else {
+                    "导出"
+                })
+                .disabled(
+                    !has_data
+                        || panel.table_building
+                        || panel.row_view_building
+                        || panel.row_view_error.is_some()
+                        || panel.exporting,
+                )
                 .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
                     let e_json = entity.clone();
                     let e_csv = entity.clone();

@@ -2,33 +2,35 @@
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use ramag_domain::entities::{ColumnKind, ColumnType, Value};
+use ramag_domain::error::{DomainError, Result};
 use sqlx::Column as _;
 use sqlx::TypeInfo as _;
 use sqlx::mysql::{MySqlColumn, MySqlRow};
 use sqlx::{Row, ValueRef};
 
-pub fn decode_row(row: &MySqlRow) -> Vec<Value> {
+pub fn decode_row(row: &MySqlRow) -> Result<Vec<Value>> {
     row.columns()
         .iter()
         .map(|col| decode_column(row, col))
         .collect()
 }
 
-fn decode_column(row: &MySqlRow, col: &MySqlColumn) -> Value {
+fn decode_column(row: &MySqlRow, col: &MySqlColumn) -> Result<Value> {
     let type_name = col.type_info().name();
     let idx = col.ordinal();
 
-    if let Ok(raw) = row.try_get_raw(idx)
-        && raw.is_null()
-    {
-        return Value::Null;
+    let raw = row.try_get_raw(idx).map_err(|error| {
+        DomainError::QueryFailed(format!(
+            "读取列「{}」({type_name}) 原始值失败：{error}",
+            col.name()
+        ))
+    })?;
+    if raw.is_null() {
+        return Ok(Value::Null);
     }
 
     match type_name {
-        "BOOLEAN" => row
-            .try_get::<bool, _>(idx)
-            .map(Value::Bool)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "BOOLEAN" => decode_as::<bool, _>(row, col, Value::Bool),
 
         "TINYINT" => decode_int::<i8>(row, idx),
         "TINYINT UNSIGNED" => decode_int::<u8>(row, idx),
@@ -39,90 +41,87 @@ fn decode_column(row: &MySqlRow, col: &MySqlColumn) -> Value {
         "INT" | "INTEGER" => decode_int::<i32>(row, idx),
         "INT UNSIGNED" | "INTEGER UNSIGNED" => decode_int::<u32>(row, idx),
         "BIGINT" => decode_int::<i64>(row, idx),
-        "BIGINT UNSIGNED" => row
-            .try_get::<u64, _>(idx)
-            .map(|v| {
+        "BIGINT UNSIGNED" => match row.try_get::<u64, _>(idx) {
+            Ok(value) => Ok({
                 // u64 超 i64::MAX 时用 Text 保值
-                if v > i64::MAX as u64 {
-                    Value::Text(v.to_string())
+                if value > i64::MAX as u64 {
+                    Value::Text(value.to_string())
                 } else {
-                    Value::Int(v as i64)
+                    Value::Int(value as i64)
                 }
-            })
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+            }),
+            Err(error) => fallback_text(row, col, error),
+        },
 
-        "FLOAT" => row
-            .try_get::<f32, _>(idx)
-            .map(|v| Value::Float(v as f64))
-            .unwrap_or_else(|_| fallback_text(row, idx)),
-        "DOUBLE" => row
-            .try_get::<f64, _>(idx)
-            .map(Value::Float)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "FLOAT" => decode_as::<f32, _>(row, col, |value| Value::Float(value as f64)),
+        "DOUBLE" => decode_as::<f64, _>(row, col, Value::Float),
 
         // DECIMAL：字符串保精度
-        "DECIMAL" | "NUMERIC" => row
-            .try_get::<String, _>(idx)
-            .map(Value::Text)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "DECIMAL" | "NUMERIC" => decode_as::<String, _>(row, col, Value::Text),
 
-        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => row
-            .try_get::<String, _>(idx)
-            .map(Value::Text)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => {
+            decode_as::<String, _>(row, col, Value::Text)
+        }
 
-        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BIT" => row
-            .try_get::<Vec<u8>, _>(idx)
-            .map(Value::Bytes)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BIT" => {
+            decode_as::<Vec<u8>, _>(row, col, Value::Bytes)
+        }
 
-        "DATETIME" => row
-            .try_get::<NaiveDateTime, _>(idx)
-            .map(|nd| Value::DateTime(DateTime::<Utc>::from_naive_utc_and_offset(nd, Utc)))
-            .unwrap_or_else(|_| fallback_text(row, idx)),
-        "TIMESTAMP" => row
-            .try_get::<DateTime<Utc>, _>(idx)
-            .map(Value::DateTime)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
-        "DATE" => row
-            .try_get::<NaiveDate, _>(idx)
-            .map(|d| Value::Text(d.format("%Y-%m-%d").to_string()))
-            .unwrap_or_else(|_| fallback_text(row, idx)),
-        "TIME" => row
-            .try_get::<NaiveTime, _>(idx)
-            .map(|t| Value::Text(t.format("%H:%M:%S").to_string()))
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "DATETIME" => decode_as::<NaiveDateTime, _>(row, col, |value| {
+            Value::DateTime(DateTime::<Utc>::from_naive_utc_and_offset(value, Utc))
+        }),
+        "TIMESTAMP" => decode_as::<DateTime<Utc>, _>(row, col, Value::DateTime),
+        "DATE" => decode_as::<NaiveDate, _>(row, col, |value| {
+            Value::Text(value.format("%Y-%m-%d").to_string())
+        }),
+        "TIME" => decode_as::<NaiveTime, _>(row, col, |value| {
+            Value::Text(value.format("%H:%M:%S").to_string())
+        }),
         "YEAR" => decode_int::<u16>(row, idx),
 
-        "JSON" => row
-            .try_get::<serde_json::Value, _>(idx)
-            .map(Value::Json)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "JSON" => decode_as::<serde_json::Value, _>(row, col, Value::Json),
 
         // ENUM/SET 内部存字符串
-        "ENUM" | "SET" => row
-            .try_get::<String, _>(idx)
-            .map(Value::Text)
-            .unwrap_or_else(|_| fallback_text(row, idx)),
+        "ENUM" | "SET" => decode_as::<String, _>(row, col, Value::Text),
 
-        _ => fallback_text(row, idx),
+        _ => fallback_text(row, col, format!("不支持的 MySQL 类型 {type_name}")),
     }
 }
 
-fn decode_int<T>(row: &MySqlRow, idx: usize) -> Value
+fn decode_as<T, F>(row: &MySqlRow, col: &MySqlColumn, convert: F) -> Result<Value>
+where
+    T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql>,
+    F: FnOnce(T) -> Value,
+{
+    match row.try_get::<T, _>(col.ordinal()) {
+        Ok(value) => Ok(convert(value)),
+        Err(error) => fallback_text(row, col, error),
+    }
+}
+
+fn decode_int<T>(row: &MySqlRow, idx: usize) -> Result<Value>
 where
     T: for<'r> sqlx::Decode<'r, sqlx::MySql> + sqlx::Type<sqlx::MySql> + Into<i64>,
 {
-    row.try_get::<T, _>(idx)
-        .map(|v| Value::Int(v.into()))
-        .unwrap_or_else(|_| fallback_text(row, idx))
+    let col = &row.columns()[idx];
+    decode_as::<T, _>(row, col, |value| Value::Int(value.into()))
 }
 
-/// 当字符串读，再失败 Null
-fn fallback_text(row: &MySqlRow, idx: usize) -> Value {
-    row.try_get::<String, _>(idx)
+/// 类型解码失败后尝试读取原始文本；两种方式都失败则显式中止查询，不能伪装成 NULL。
+fn fallback_text(
+    row: &MySqlRow,
+    col: &MySqlColumn,
+    primary_error: impl std::fmt::Display,
+) -> Result<Value> {
+    row.try_get::<String, _>(col.ordinal())
         .map(Value::Text)
-        .unwrap_or(Value::Null)
+        .map_err(|fallback_error| {
+            DomainError::QueryFailed(format!(
+                "解码列「{}」({}) 失败：{primary_error}；文本兜底失败：{fallback_error}",
+                col.name(),
+                col.type_info().name()
+            ))
+        })
 }
 
 /// 把 INFORMATION_SCHEMA.COLUMNS 的 (data_type, column_type) 映射到 ColumnKind

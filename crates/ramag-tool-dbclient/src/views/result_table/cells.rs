@@ -117,7 +117,6 @@ pub(super) fn render_data_row(
         frame.muted_bg.opacity(0.35)
     };
     let selected = panel.selected_cell();
-    let selected_rows_set = panel.selected_rows().clone();
     let panel_entity = cx.entity();
 
     // 数据 cell
@@ -125,9 +124,10 @@ pub(super) fn render_data_row(
         .visible_col_indices
         .iter()
         .map(|&ci| {
-            let val = row.values.get(ci).cloned().unwrap_or(Value::Null);
-            let display = val.display_preview(60);
-            let is_null = matches!(val, Value::Null);
+            let value = row.values.get(ci);
+            let display =
+                value.map_or_else(|| "NULL".to_string(), |value| value.display_preview(60));
+            let is_null = value.is_none_or(|value| matches!(value, Value::Null));
             // 选中态按源下标比对（selected_cell 存的是源行下标）
             let is_selected = selected == Some((source_idx, ci));
             let is_right = *frame.right_align.get(ci).unwrap_or(&false);
@@ -200,9 +200,9 @@ pub(super) fn render_data_row(
 
     // 多选 checkbox：选中集按源下标存（供 DML 定位真实行）
     let row_checkbox_cell = {
-        let panel = panel_entity.clone();
         let row_idx = source_idx;
-        let is_row_selected = selected_rows_set.contains(&source_idx);
+        let is_row_selected = panel.selected_rows().contains(&source_idx);
+        let panel = panel_entity.clone();
         div()
             .w(frame.checkbox_col_width)
             .h_full()
@@ -273,8 +273,8 @@ pub(super) fn render_pending_row(
         .child(SharedString::from("+"))
         .into_any_element();
     let mut input_cells: Vec<AnyElement> = Vec::with_capacity(frame.visible_col_indices.len());
-    for &ci in &frame.visible_col_indices {
-        let col_name_at = &frame.columns[ci];
+    for &ci in frame.visible_col_indices.iter() {
+        let col_name_at = &frame.result.columns[ci];
         let cw = frame.col_widths[ci];
         let input = pending
             .columns

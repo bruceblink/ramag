@@ -89,13 +89,43 @@ fn open_fallback_log(
 
 fn try_open_log_file(dir: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
     std::fs::create_dir_all(dir)?;
+    set_private_dir_permissions(dir)?;
     let path = dir.join("ramag.log");
     rotate_if_oversized(&path)?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(&path)?;
+    set_private_file_permissions(&path)?;
     Ok((path, file))
+}
+
+#[cfg(unix)]
+fn set_private_dir_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn rotate_if_oversized(path: &Path) -> std::io::Result<()> {
@@ -124,7 +154,7 @@ fn rotate_if_oversized_at(path: &Path, max_bytes: u64) -> std::io::Result<()> {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::rotate_if_oversized_at;
+    use super::{rotate_if_oversized_at, try_open_log_file};
 
     #[test]
     fn oversized_log_is_rotated_once() -> std::io::Result<()> {
@@ -140,6 +170,30 @@ mod tests {
         rotate_if_oversized_at(&path, 4)?;
         assert!(!path.exists());
         assert_eq!(std::fs::read(path.with_extension("log.old"))?, b"12345");
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_directory_and_file_are_private() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-log-permission-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let (path, file) = try_open_log_file(&dir)?;
+        drop(file);
+        assert_eq!(std::fs::metadata(&dir)?.permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::metadata(&path)?.permissions().mode() & 0o777,
+            0o600
+        );
         std::fs::remove_dir_all(dir)?;
         Ok(())
     }

@@ -13,6 +13,8 @@ use serde_json::Value;
 use super::ResultPanel;
 use super::cell::{Cell, cell_for_value};
 
+const MAX_DRILL_DOCUMENTS: usize = 50_000;
+
 /// 下钻栈一层：label 用于面包屑显示，documents 为该层文档
 pub(crate) struct DrillLevel {
     pub label: String,
@@ -79,6 +81,16 @@ impl ResultPanel {
     ) {
         // 对象下钻可回写（顶层 _id + dotted path 定位）；数组下钻丢了元素下标，保持只读
         let editable = matches!(value, Value::Object(_));
+        if matches!(&value, Value::Array(items) if items.len() > MAX_DRILL_DOCUMENTS) {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(format!(
+                    "数组包含超过 {MAX_DRILL_DOCUMENTS} 个元素，请先在查询中缩小范围"
+                ))
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
         let documents = Arc::new(match value {
             Value::Array(arr) => arr,
             Value::Object(_) => vec![value],
@@ -134,7 +146,7 @@ impl ResultPanel {
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.docs_arc = Some(docs);
         // 重建基础表 + 补全源（过滤已清空）
-        self.rebuild_table();
+        self.schedule_table_rebuild(cx);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
         cx.notify();
     }

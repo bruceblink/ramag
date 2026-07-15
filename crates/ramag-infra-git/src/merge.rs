@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ramag_domain::error::Result;
 
-use crate::git_cmd::run_git_bytes;
+use crate::git_cmd::{run_git_bytes, validate_name_arg};
 
 /// no_ff=强制 merge commit；ff_only=必须 ff 否则失败
 pub fn start(
@@ -14,6 +14,7 @@ pub fn start(
     ff_only: bool,
     message: Option<&str>,
 ) -> Result<()> {
+    validate_name_arg(branch, "合并分支名")?;
     let mut args: Vec<&str> = vec!["merge"];
     if no_ff {
         args.push("--no-ff");

@@ -37,6 +37,8 @@ pub struct QueryTab {
     pub(super) result: Entity<ResultPanel>,
     /// 是否在执行中
     pub(super) running: bool,
+    /// SQL 格式化防重入；CPU 工作在共享有界 worker 中执行。
+    pub(super) formatting: bool,
     /// 当前正在跑的任务句柄（drop 后取消异步任务）
     pub(super) current_task: Option<Task<()>>,
     /// 取消句柄：driver 在 acquire 后写入 mysql 后端 thread id（0 = 未拿到）
@@ -132,6 +134,7 @@ impl QueryTab {
             editor,
             result,
             running: false,
+            formatting: false,
             current_task: None,
             cancel_handle: None,
             query_start: None,

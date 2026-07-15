@@ -42,7 +42,7 @@ pub trait KvDriver: Send + Sync {
     /// key 不存在返回 [`RedisValue::Nil`]
     async fn get_value(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<RedisValue>;
 
-    /// 最多加载集合前 `limit` 项，并返回服务端总数；标量忽略 limit。
+    /// 最多加载集合前 `limit` 项，并返回服务端总数；String 由实现按字节上限加载前缀。
     async fn get_value_limited(
         &self,
         config: &ConnectionConfig,

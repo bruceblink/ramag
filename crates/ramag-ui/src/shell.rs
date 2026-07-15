@@ -42,9 +42,23 @@ pub struct WindowBoundsPref {
 
 impl WindowBoundsPref {
     pub const PREF_KEY: &'static str = "window_bounds";
+    const MAX_ABS_COORDINATE: f32 = 1_000_000.0;
+    const MAX_SIZE: f32 = 1_000_000.0;
 
-    pub fn parse(json: &str) -> Option<Self> {
-        serde_json::from_str(json).ok()
+    pub fn parse(json: &str) -> Result<Self, String> {
+        let pref: Self =
+            serde_json::from_str(json).map_err(|error| format!("窗口位置数据格式无效：{error}"))?;
+        if !pref.x.is_finite() || !pref.y.is_finite() || !pref.w.is_finite() || !pref.h.is_finite()
+        {
+            return Err("窗口位置与尺寸必须为有限数值".into());
+        }
+        if pref.x.abs() > Self::MAX_ABS_COORDINATE || pref.y.abs() > Self::MAX_ABS_COORDINATE {
+            return Err("窗口坐标超出安全范围".into());
+        }
+        if pref.w <= 0.0 || pref.h <= 0.0 || pref.w > Self::MAX_SIZE || pref.h > Self::MAX_SIZE {
+            return Err("窗口尺寸超出安全范围".into());
+        }
+        Ok(pref)
     }
 }
 
@@ -124,12 +138,20 @@ impl Shell {
             }
             // 最大化态：读回已存普通尺寸，仅翻 maximized 位（没有存过则记当前值兜底）
             let pref = if maximized {
-                let existing = storage
-                    .get_preference(WindowBoundsPref::PREF_KEY)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|j| WindowBoundsPref::parse(&j));
+                let existing = match storage.get_preference(WindowBoundsPref::PREF_KEY).await {
+                    Ok(Some(json)) => match WindowBoundsPref::parse(&json) {
+                        Ok(pref) => Some(pref),
+                        Err(error) => {
+                            tracing::warn!(error, "ignore invalid saved window bounds");
+                            None
+                        }
+                    },
+                    Ok(None) => None,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "load window bounds before maximize failed");
+                        None
+                    }
+                };
                 match existing {
                     Some(mut p) => {
                         p.maximized = true;
@@ -152,8 +174,12 @@ impl Shell {
                     maximized: false,
                 }
             };
-            let Ok(json) = serde_json::to_string(&pref) else {
-                return;
+            let json = match serde_json::to_string(&pref) {
+                Ok(json) => json,
+                Err(error) => {
+                    tracing::warn!(error = %error, "serialize window bounds failed");
+                    return;
+                }
             };
             if let Err(e) = storage
                 .set_preference(WindowBoundsPref::PREF_KEY, &json)
@@ -357,4 +383,29 @@ fn render_view_missing(cx: &Context<Shell>) -> impl IntoElement {
                 .text_color(theme.muted_foreground)
                 .child("请检查 ramag-bin/main.rs 是否调用了 register_tool_view"),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WindowBoundsPref;
+
+    #[test]
+    fn window_bounds_reject_invalid_values() {
+        assert!(
+            WindowBoundsPref::parse(
+                r#"{"x":10.0,"y":20.0,"w":1200.0,"h":780.0,"maximized":false}"#
+            )
+            .is_ok()
+        );
+        assert!(
+            WindowBoundsPref::parse(r#"{"x":10.0,"y":20.0,"w":-1.0,"h":780.0,"maximized":false}"#)
+                .is_err()
+        );
+        assert!(
+            WindowBoundsPref::parse(
+                r#"{"x":1000001.0,"y":20.0,"w":1200.0,"h":780.0,"maximized":false}"#
+            )
+            .is_err()
+        );
+    }
 }

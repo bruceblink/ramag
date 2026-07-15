@@ -5,9 +5,10 @@ use std::path::Path;
 use ramag_domain::entities::ResetKind;
 use ramag_domain::error::Result;
 
-use crate::git_cmd::run_git_bytes;
+use crate::git_cmd::{run_git_bytes, validate_positional_arg};
 
 pub fn reset(repo_path: &Path, target: &str, kind: ResetKind) -> Result<()> {
+    validate_positional_arg(target, "reset 目标")?;
     let flag = match kind {
         ResetKind::Soft => "--soft",
         ResetKind::Mixed => "--mixed",
@@ -18,6 +19,7 @@ pub fn reset(repo_path: &Path, target: &str, kind: ResetKind) -> Result<()> {
 
 /// 生成反向 commit 撤销指定 commit
 pub fn revert(repo_path: &Path, commit: &str) -> Result<()> {
+    validate_positional_arg(commit, "revert commit")?;
     // --no-edit 避免弹编辑器
     run_git_bytes(repo_path, &["revert", "--no-edit", commit]).map(|_| ())
 }

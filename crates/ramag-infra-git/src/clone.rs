@@ -16,7 +16,7 @@ pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
     run_git_bytes(
         dest.parent().unwrap_or(Path::new(".")),
-        &["clone", url, dest_str],
+        &["clone", "--", url, dest_str],
     )
     .map(|_| ())
 }
@@ -37,7 +37,7 @@ pub fn clone_repo_streaming(
     let dir = dest.parent().unwrap_or(Path::new("."));
     run_git_streaming(
         dir,
-        &["clone", "--progress", url, dest_str],
+        &["clone", "--progress", "--", url, dest_str],
         cancel,
         progress,
     )
@@ -49,5 +49,9 @@ pub fn init_repo(path: &Path) -> Result<()> {
         .to_str()
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
     // git init 在目标目录内运行（不存在则自动创建）
-    run_git_bytes(path.parent().unwrap_or(Path::new(".")), &["init", path_str]).map(|_| ())
+    run_git_bytes(
+        path.parent().unwrap_or(Path::new(".")),
+        &["init", "--", path_str],
+    )
+    .map(|_| ())
 }

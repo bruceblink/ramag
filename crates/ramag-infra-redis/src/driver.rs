@@ -18,6 +18,10 @@ use crate::value::{
     decode_hash_pairs, decode_stream_entries, decode_value, decode_zset_with_scores,
 };
 
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RESPONSE_NODES: usize = 100_000;
+const MAX_RESPONSE_DEPTH: usize = 64;
+
 pub struct RedisDriver {
     pools: PoolCache,
 }
@@ -181,10 +185,10 @@ impl KvDriver for RedisDriver {
                 .map_err(map_redis_error)?;
             let kind = RedisType::parse(&t);
             debug!(?key, ?kind, "get_value dispatch");
-            let total = fetch_collection_len(&mut mgr, &key, kind).await?;
+            let total = fetch_value_len(&mut mgr, &key, kind).await?;
             let value = match kind {
                 RedisType::None => Ok(RedisValue::Nil),
-                RedisType::String => fetch_string(&mut mgr, &key).await,
+                RedisType::String => fetch_string(&mut mgr, &key, total.unwrap_or_default()).await,
                 RedisType::List => fetch_list(&mut mgr, &key, limit).await,
                 RedisType::Hash => fetch_hash(&mut mgr, &key, limit).await,
                 RedisType::Set => fetch_set(&mut mgr, &key, limit).await,
@@ -263,6 +267,7 @@ impl KvDriver for RedisDriver {
                 cmd.arg(a);
             }
             let v: RV = cmd.query_async(&mut mgr).await.map_err(map_redis_error)?;
+            ensure_response_budget(&v, "Redis 命令")?;
             Ok(decode_value(v))
         })
         .await
@@ -307,8 +312,16 @@ async fn run_info(mgr: &mut ConnectionManager, sections: &[&str]) -> Result<Stri
     for s in sections {
         cmd.arg(*s);
     }
-    let s: String = cmd.query_async(mgr).await.map_err(map_redis_error)?;
-    Ok(s)
+    let value: RV = cmd.query_async(mgr).await.map_err(map_redis_error)?;
+    ensure_response_budget(&value, "INFO")?;
+    match value {
+        RV::BulkString(bytes) => String::from_utf8(bytes)
+            .map_err(|error| DomainError::QueryFailed(format!("INFO 应答非 UTF-8：{error}"))),
+        RV::SimpleString(text) => Ok(text),
+        other => Err(DomainError::QueryFailed(format!(
+            "INFO 应答类型异常：{other:?}"
+        ))),
+    }
 }
 
 /// 从 INFO server 文本提取 redis_version
@@ -324,8 +337,10 @@ fn parse_redis_version(info: &str) -> String {
 /// 集合类型单次加载成员上限：防百万成员 key 一次性拉全量撑爆内存 / 卡死服务端。
 /// 超过时只取前 N，UI 侧据 RedisValue 的成员数与实际长度差异提示「仅显示前 N」。
 const DEFAULT_COLLECTION_LIMIT: usize = 10_000;
+/// 详情渲染同样只保留 4 MiB；从服务端直接按此前缀读取，避免先拉取超大 String。
+const MAX_STRING_BYTES: u64 = 4 * 1024 * 1024;
 
-async fn fetch_collection_len(
+async fn fetch_value_len(
     mgr: &mut ConnectionManager,
     key: &str,
     kind: RedisType,
@@ -336,7 +351,8 @@ async fn fetch_collection_len(
         RedisType::Set => "SCARD",
         RedisType::ZSet => "ZCARD",
         RedisType::Stream => "XLEN",
-        RedisType::String | RedisType::None => return Ok(None),
+        RedisType::String => "STRLEN",
+        RedisType::None => return Ok(None),
     };
     let total: u64 = redis::cmd(command)
         .arg(key)
@@ -346,13 +362,39 @@ async fn fetch_collection_len(
     Ok(Some(total))
 }
 
-async fn fetch_string(mgr: &mut ConnectionManager, key: &str) -> Result<RedisValue> {
-    let v: RV = redis::cmd("GET")
+async fn fetch_string(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    total_bytes: u64,
+) -> Result<RedisValue> {
+    let v: RV = redis::cmd("GETRANGE")
         .arg(key)
+        .arg(0)
+        .arg(MAX_STRING_BYTES.saturating_sub(1))
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
-    Ok(decode_value(v))
+    ensure_response_budget(&v, "GETRANGE")?;
+    Ok(decode_string_prefix(v, total_bytes > MAX_STRING_BYTES))
+}
+
+fn decode_string_prefix(value: RV, truncated: bool) -> RedisValue {
+    let RV::BulkString(bytes) = value else {
+        return decode_value(value);
+    };
+    match String::from_utf8(bytes) {
+        Ok(text) => RedisValue::Text(text),
+        Err(error) if truncated && error.utf8_error().error_len().is_none() => {
+            let valid_up_to = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid_up_to);
+            match String::from_utf8(bytes) {
+                Ok(text) => RedisValue::Text(text),
+                Err(error) => RedisValue::Bytes(error.into_bytes()),
+            }
+        }
+        Err(error) => RedisValue::Bytes(error.into_bytes()),
+    }
 }
 
 async fn fetch_list(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
@@ -364,6 +406,7 @@ async fn fetch_list(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Res
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
+    ensure_response_budget(&v, "LRANGE")?;
     let elems = match v {
         RV::Array(a) => a.into_iter().map(decode_value).collect(),
         RV::Nil => return Ok(RedisValue::Nil),
@@ -389,6 +432,7 @@ async fn fetch_hash(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Res
             .query_async(&mut *mgr)
             .await
             .map_err(map_redis_error)?;
+        ensure_response_budget(&v, "HSCAN")?;
         let (next, payload) = scan_parts(v, "HSCAN")?;
         let RedisValue::Hash(batch) = decode_hash_pairs(payload)? else {
             return Err(DomainError::QueryFailed("HSCAN 解码结果类型异常".into()));
@@ -414,6 +458,7 @@ async fn fetch_set(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Resu
             .query_async(&mut *mgr)
             .await
             .map_err(map_redis_error)?;
+        ensure_response_budget(&v, "SSCAN")?;
         let (next, payload) = scan_parts(v, "SSCAN")?;
         match payload {
             RV::Array(a) => elems.extend(
@@ -446,6 +491,7 @@ async fn fetch_zset(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Res
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
+    ensure_response_budget(&v, "ZRANGE")?;
     decode_zset_with_scores(v)
 }
 
@@ -460,6 +506,7 @@ async fn fetch_stream(mgr: &mut ConnectionManager, key: &str, limit: usize) -> R
         .query_async(mgr)
         .await
         .map_err(map_redis_error)?;
+    ensure_response_budget(&v, "XRANGE")?;
     decode_stream_entries(v)
 }
 
@@ -496,38 +543,8 @@ fn parse_cursor(value: RV, cmd: &str) -> Result<u64> {
 
 /// SCAN 应答 `Array([cursor_str, Array([key, ...])])`
 fn parse_scan_response(v: RV) -> Result<ScanResult> {
-    let mut top = match v {
-        RV::Array(a) => a,
-        other => {
-            return Err(DomainError::QueryFailed(format!(
-                "SCAN 应答非数组：{other:?}"
-            )));
-        }
-    };
-    if top.len() != 2 {
-        return Err(DomainError::QueryFailed(format!(
-            "SCAN 应答应有 2 元素，实得 {}",
-            top.len()
-        )));
-    }
-    let keys_raw = top.remove(1);
-    let cursor_raw = top.remove(0);
-
-    let cursor = match cursor_raw {
-        RV::BulkString(bytes) => std::str::from_utf8(&bytes)
-            .map_err(|e| DomainError::QueryFailed(format!("SCAN cursor 非 utf-8：{e}")))?
-            .parse::<u64>()
-            .map_err(|e| DomainError::QueryFailed(format!("SCAN cursor 非数字：{e}")))?,
-        RV::SimpleString(s) => s
-            .parse::<u64>()
-            .map_err(|e| DomainError::QueryFailed(format!("SCAN cursor 非数字：{e}")))?,
-        RV::Int(i) => i as u64,
-        other => {
-            return Err(DomainError::QueryFailed(format!(
-                "SCAN cursor 类型异常：{other:?}"
-            )));
-        }
-    };
+    ensure_response_budget(&v, "SCAN")?;
+    let (cursor, keys_raw) = scan_parts(v, "SCAN")?;
 
     let key_arr = match keys_raw {
         RV::Array(a) => a,
@@ -538,16 +555,112 @@ fn parse_scan_response(v: RV) -> Result<ScanResult> {
         }
     };
 
-    let keys: Vec<KeyMeta> = key_arr
+    let keys = key_arr
         .into_iter()
-        .filter_map(|v| match decode_value(v) {
-            RedisValue::Text(s) => Some(KeyMeta::bare(s)),
-            RedisValue::Bytes(b) => Some(KeyMeta::bare(String::from_utf8_lossy(&b).into_owned())),
-            _ => None,
+        .map(|value| {
+            let key = match value {
+                RV::BulkString(bytes) => String::from_utf8(bytes).map_err(|error| {
+                    DomainError::QueryFailed(format!(
+                        "SCAN 返回了非 UTF-8 键，当前版本无法安全操作该键：{error}"
+                    ))
+                })?,
+                RV::SimpleString(key) => key,
+                other => {
+                    return Err(DomainError::QueryFailed(format!(
+                        "SCAN 键类型异常：{other:?}"
+                    )));
+                }
+            };
+            Ok(KeyMeta::bare(key))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(ScanResult { cursor, keys })
+}
+
+#[derive(Clone, Copy)]
+struct ResponseLimits {
+    bytes: usize,
+    nodes: usize,
+    depth: usize,
+}
+
+struct ResponseBudget {
+    limits: ResponseLimits,
+    bytes: usize,
+    nodes: usize,
+}
+
+impl ResponseBudget {
+    fn visit(&mut self, value: &RV, depth: usize) -> bool {
+        if depth > self.limits.depth || self.nodes >= self.limits.nodes {
+            return false;
+        }
+        self.nodes += 1;
+        match value {
+            RV::BulkString(bytes) => self.add_bytes(bytes.len()),
+            RV::SimpleString(text) | RV::VerbatimString { text, .. } => self.add_bytes(text.len()),
+            RV::Array(values) | RV::Set(values) | RV::Push { data: values, .. } => values
+                .iter()
+                .all(|value| self.visit(value, depth.saturating_add(1))),
+            RV::Map(pairs) => pairs.iter().all(|(key, value)| {
+                self.visit(key, depth.saturating_add(1))
+                    && self.visit(value, depth.saturating_add(1))
+            }),
+            RV::Attribute { data, attributes } => {
+                self.visit(data, depth.saturating_add(1))
+                    && attributes.iter().all(|(key, value)| {
+                        self.visit(key, depth.saturating_add(1))
+                            && self.visit(value, depth.saturating_add(1))
+                    })
+            }
+            // 十进制字符串长度小于二进制位数，以 bits 作保守上界避免 to_string 分配。
+            RV::BigNumber(number) => {
+                self.add_bytes(usize::try_from(number.bits()).unwrap_or(usize::MAX))
+            }
+            RV::Nil
+            | RV::Int(_)
+            | RV::Okay
+            | RV::Double(_)
+            | RV::Boolean(_)
+            | RV::ServerError(_) => true,
+        }
+    }
+
+    fn add_bytes(&mut self, bytes: usize) -> bool {
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.bytes <= self.limits.bytes
+    }
+}
+
+fn ensure_response_budget(value: &RV, label: &str) -> Result<()> {
+    ensure_response_with_limits(
+        value,
+        label,
+        ResponseLimits {
+            bytes: MAX_RESPONSE_BYTES,
+            nodes: MAX_RESPONSE_NODES,
+            depth: MAX_RESPONSE_DEPTH,
+        },
+    )
+}
+
+fn ensure_response_with_limits(value: &RV, label: &str, limits: ResponseLimits) -> Result<()> {
+    let mut budget = ResponseBudget {
+        limits,
+        bytes: 0,
+        nodes: 0,
+    };
+    if budget.visit(value, 0) {
+        Ok(())
+    } else {
+        Err(DomainError::QueryFailed(format!(
+            "{label} 应答超过安全上限（{} MiB、{} 个节点或 {} 层嵌套），请缩小命令范围",
+            limits.bytes / 1024 / 1024,
+            limits.nodes,
+            limits.depth
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -605,5 +718,61 @@ mod tests {
     #[test]
     fn scan_cursor_rejects_negative_integer() {
         assert!(parse_cursor(RV::Int(-1), "HSCAN").is_err());
+        assert!(parse_scan_response(RV::Array(vec![RV::Int(-1), RV::Array(vec![])])).is_err());
+    }
+
+    #[test]
+    fn scan_rejects_keys_that_cannot_be_addressed_safely() {
+        let binary_key = RV::Array(vec![
+            RV::BulkString(b"0".to_vec()),
+            RV::Array(vec![RV::BulkString(vec![0xff])]),
+        ]);
+        assert!(parse_scan_response(binary_key).is_err());
+
+        let invalid_type = RV::Array(vec![
+            RV::BulkString(b"0".to_vec()),
+            RV::Array(vec![RV::Int(42)]),
+        ]);
+        assert!(parse_scan_response(invalid_type).is_err());
+    }
+
+    #[test]
+    fn truncated_string_drops_only_incomplete_utf8_tail() {
+        let value = decode_string_prefix(RV::BulkString(vec![b'a', 0xe4, 0xb8]), true);
+        assert!(matches!(value, RedisValue::Text(text) if text == "a"));
+
+        let binary = decode_string_prefix(RV::BulkString(vec![0xff, 0xfe]), true);
+        assert!(matches!(binary, RedisValue::Bytes(bytes) if bytes == vec![0xff, 0xfe]));
+    }
+
+    #[test]
+    fn response_budget_rejects_bytes_nodes_and_depth() {
+        let limits = ResponseLimits {
+            bytes: 3,
+            nodes: 3,
+            depth: 2,
+        };
+        assert!(
+            ensure_response_with_limits(&RV::BulkString(b"abc".to_vec()), "test", limits).is_ok()
+        );
+        assert!(
+            ensure_response_with_limits(&RV::BulkString(b"abcd".to_vec()), "test", limits).is_err()
+        );
+        assert!(
+            ensure_response_with_limits(
+                &RV::Array(vec![RV::Int(1), RV::Int(2), RV::Int(3)]),
+                "test",
+                limits
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_response_with_limits(
+                &RV::Array(vec![RV::Array(vec![RV::Array(vec![RV::Nil])])]),
+                "test",
+                limits
+            )
+            .is_err()
+        );
     }
 }

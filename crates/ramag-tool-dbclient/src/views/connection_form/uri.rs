@@ -35,7 +35,7 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
     // 切出 path（database）
     let (authority, database) = match main.split_once('/') {
         Some((a, d)) => (a, {
-            let d = percent_decode(d);
+            let d = percent_decode(d)?;
             if d.is_empty() { None } else { Some(d) }
         }),
         None => (main, None),
@@ -47,8 +47,8 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
     };
     let (username, password) = match userinfo {
         Some(u) => match u.split_once(':') {
-            Some((name, pass)) => (percent_decode(name), percent_decode(pass)),
-            None => (percent_decode(u), String::new()),
+            Some((name, pass)) => (percent_decode(name)?, percent_decode(pass)?),
+            None => (percent_decode(u)?, String::new()),
         },
         None => (String::new(), String::new()),
     };
@@ -58,13 +58,7 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
             "URI 含多个主机（副本集拓扑），本表单仅支持单主机直连；请填写要直连的那台节点".into(),
         );
     }
-    let (host, port) = match hostport.rsplit_once(':') {
-        Some((h, p)) => {
-            let port: u16 = p.parse().map_err(|_| format!("端口不是有效数字：{p}"))?;
-            (h.to_string(), Some(port))
-        }
-        None => (hostport.to_string(), None),
-    };
+    let (host, port) = parse_host_port(hostport)?;
     if host.is_empty() {
         return Err("URI 缺少主机地址".into());
     }
@@ -81,12 +75,18 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
             };
             match k.to_ascii_lowercase().as_str() {
                 "authsource" => {
-                    let v = percent_decode(v);
+                    let v = percent_decode(v)?;
                     if !v.is_empty() {
                         auth_source = Some(v);
                     }
                 }
-                "tls" | "ssl" => tls = v.eq_ignore_ascii_case("true"),
+                "tls" | "ssl" => {
+                    tls = match v.to_ascii_lowercase().as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err(format!("URI 参数「{k}」须为 true 或 false")),
+                    }
+                }
                 "replicaset" | "readpreference" | "directconnection" | "loadbalanced" => {
                     return Err(format!(
                         "URI 参数「{k}」影响连接拓扑，本表单不支持；请移除后重试（将单主机直连）"
@@ -108,27 +108,84 @@ pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
     })
 }
 
+fn parse_host_port(hostport: &str) -> Result<(String, Option<u16>), String> {
+    if let Some(bracketed) = hostport.strip_prefix('[') {
+        let close = bracketed
+            .find(']')
+            .ok_or_else(|| "IPv6 主机缺少右方括号 ]".to_string())?;
+        let host = &bracketed[..close];
+        if host.is_empty() {
+            return Err("URI 缺少主机地址".into());
+        }
+        let suffix = &bracketed[close + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            Some(parse_port(port)?)
+        } else {
+            return Err("IPv6 主机右方括号后只能跟 :port".into());
+        };
+        return Ok((host.to_string(), port));
+    }
+
+    if hostport.matches(':').count() > 1 {
+        return Err("IPv6 地址须使用方括号，例如 mongodb://[::1]:27017".into());
+    }
+    match hostport.rsplit_once(':') {
+        Some((host, port)) => Ok((host.to_string(), Some(parse_port(port)?))),
+        None => Ok((hostport.to_string(), None)),
+    }
+}
+
+fn parse_port(raw: &str) -> Result<u16, String> {
+    let port = raw
+        .parse::<u16>()
+        .map_err(|_| format!("端口不是有效数字：{raw}"))?;
+    if port == 0 {
+        return Err("端口须为 1 - 65535".into());
+    }
+    Ok(port)
+}
+
 /// 最简 percent 解码（%XX → 字节）；URI 中用户名/密码常见转义（@ : / 等）
-fn percent_decode(s: &str) -> String {
+fn percent_decode(s: &str) -> Result<String, String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len() + 1
-            && let (Some(h), Some(l)) = (
-                bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16)),
-                bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16)),
-            )
-        {
-            out.push((h * 16 + l) as u8);
+        if bytes[i] == b'%' {
+            let encoded = bytes
+                .get(i + 1..i + 3)
+                .ok_or_else(|| format!("百分号编码不完整：{}", &s[i..]))?;
+            let high = hex_value(encoded[0]).ok_or_else(|| {
+                format!(
+                    "百分号编码无效：%{}{}",
+                    encoded[0] as char, encoded[1] as char
+                )
+            })?;
+            let low = hex_value(encoded[1]).ok_or_else(|| {
+                format!(
+                    "百分号编码无效：%{}{}",
+                    encoded[0] as char, encoded[1] as char
+                )
+            })?;
+            out.push((high << 4) | low);
             i += 3;
         } else {
             out.push(bytes[i]);
             i += 1;
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8(out).map_err(|error| format!("百分号解码结果不是有效 UTF-8：{error}"))
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +237,24 @@ mod tests {
     fn bad_scheme_and_port_rejected() {
         assert!(parse_mongo_uri("mysql://x").is_err());
         assert!(parse_mongo_uri("mongodb://host:notaport").is_err());
+        assert!(parse_mongo_uri("mongodb://host:0").is_err());
         assert!(parse_mongo_uri("mongodb://").is_err());
+    }
+
+    #[test]
+    fn ipv6_requires_brackets_and_is_unwrapped() {
+        let parts = parse_mongo_uri("mongodb://[::1]:27018/admin").unwrap();
+        assert_eq!(parts.host, "::1");
+        assert_eq!(parts.port, Some(27018));
+        assert!(parse_mongo_uri("mongodb://::1").is_err());
+        assert!(parse_mongo_uri("mongodb://[::1").is_err());
+    }
+
+    #[test]
+    fn malformed_percent_encoding_and_tls_are_rejected() {
+        assert!(parse_mongo_uri("mongodb://user:%4@host").is_err());
+        assert!(parse_mongo_uri("mongodb://user:%GG@host").is_err());
+        assert!(parse_mongo_uri("mongodb://user:%FF@host").is_err());
+        assert!(parse_mongo_uri("mongodb://host/?tls=yes").is_err());
     }
 }

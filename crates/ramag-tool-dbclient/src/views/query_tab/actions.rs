@@ -372,26 +372,63 @@ impl QueryTab {
 
     /// 格式化当前编辑器的 SQL（替换原内容）
     pub(crate) fn handle_format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.formatting {
+            self.pending_notification =
+                Some(Notification::info("SQL 格式化正在进行").autohide(true));
+            cx.notify();
+            return;
+        }
         let sql = self.current_sql(cx);
         if sql.trim().is_empty() {
             return;
         }
-        let opts = sqlformat::FormatOptions {
-            indent: sqlformat::Indent::Spaces(2),
-            uppercase: Some(true),
-            lines_between_queries: 1,
-            ignore_case_convert: None,
-        };
-        let formatted = sqlformat::format(&sql, &sqlformat::QueryParams::None, &opts);
-        if formatted == sql {
-            return;
-        }
-        self.editor.update(cx, |state, cx| {
-            state.set_value(formatted, window, cx);
-        });
-        self.prefetch_columns_for_used_tables(cx);
-        cx.emit(super::QueryTabEvent::DraftChanged);
+        self.formatting = true;
         cx.notify();
+        let source_sql = sql.clone();
+        cx.spawn_in(window, async move |this, async_cx| {
+            let formatted = ramag_app::run_blocking(move || {
+                let opts = sqlformat::FormatOptions {
+                    indent: sqlformat::Indent::Spaces(2),
+                    uppercase: Some(true),
+                    lines_between_queries: 1,
+                    ignore_case_convert: None,
+                };
+                Ok(sqlformat::format(
+                    &sql,
+                    &sqlformat::QueryParams::None,
+                    &opts,
+                ))
+            })
+            .await;
+            let _ = this.update_in(async_cx, move |this, window, cx| {
+                this.formatting = false;
+                if this.current_sql(cx) != source_sql {
+                    this.pending_notification = Some(
+                        Notification::warning("SQL 已在格式化期间发生变化，未覆盖新内容")
+                            .autohide(true),
+                    );
+                    cx.notify();
+                    return;
+                }
+                match formatted {
+                    Ok(formatted) if formatted != source_sql => {
+                        this.editor.update(cx, |state, cx| {
+                            state.set_value(formatted, window, cx);
+                        });
+                        this.prefetch_columns_for_used_tables(cx);
+                        cx.emit(super::QueryTabEvent::DraftChanged);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        this.pending_notification = Some(
+                            Notification::error(format!("SQL 格式化失败：{error}")).autohide(true),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 报错后在编辑器对应行加红波浪线 + 错误消息（hover 显示）

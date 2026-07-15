@@ -13,12 +13,25 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
-use ramag_domain::entities::ReflogEntry;
+use ramag_domain::entities::{ReflogEntry, contains_case_insensitive};
 
 use super::vcs_view::VcsView;
 
 /// 每行高度（与 commit 行 28px 对齐，视觉一致）
 const ROW_HEIGHT: f32 = 28.0;
+
+pub(super) struct ReflogRowsCacheEntry {
+    entries: Rc<Vec<ReflogEntry>>,
+    query_lower: String,
+    indices: Rc<Vec<usize>>,
+}
+
+impl ReflogRowsCacheEntry {
+    fn get(&self, entries: &Rc<Vec<ReflogEntry>>, query_lower: &str) -> Option<Rc<Vec<usize>>> {
+        (Rc::ptr_eq(&self.entries, entries) && self.query_lower == query_lower)
+            .then(|| self.indices.clone())
+    }
+}
 
 impl VcsView {
     /// reflog 视图主入口
@@ -35,31 +48,19 @@ impl VcsView {
         }
 
         // 搜索框在 reflog 模式做客户端即时过滤（commit 模式才是 git 侧搜索）
-        let query = self
+        let query_lower = self
             .history_search_input
             .read(cx)
             .value()
             .trim()
             .to_lowercase();
-        let filtered: Vec<ReflogEntry> = self
-            .reflog_entries
-            .iter()
-            .filter(|e| {
-                query.is_empty()
-                    || e.subject.to_lowercase().contains(&query)
-                    || e.action.to_lowercase().contains(&query)
-                    || e.selector.to_lowercase().contains(&query)
-                    || e.commit.0.starts_with(&query)
-            })
-            .cloned()
-            .collect();
-        if filtered.is_empty() {
+        let entries_rc = self.reflog_entries.clone();
+        let indices_rc = self.filtered_reflog_indices(entries_rc.clone(), &query_lower);
+        if indices_rc.is_empty() {
             return center("没有匹配的 reflog 记录", muted_fg);
         }
-        // Rc 共享 reflog 数据给闭包，避免每帧 clone 整个 Vec
-        let entries_rc: Rc<Vec<ReflogEntry>> = Rc::new(filtered);
         // 行数按过滤后取；底部统计仍显示总数
-        let visible_count = entries_rc.len();
+        let visible_count = indices_rc.len();
         let busy = self.busy;
         let mono = theme.mono_font_family.clone();
         let fg = theme.foreground;
@@ -70,15 +71,17 @@ impl VcsView {
             visible_count,
             cx.processor({
                 let entries_rc = entries_rc.clone();
+                let indices_rc = indices_rc.clone();
                 let mono = mono.clone();
                 move |_this, range: Range<usize>, _w, cx| {
                     let muted_fg = cx.theme().muted_foreground;
                     let hover_bg = cx.theme().muted;
                     range
                         .map(|i| {
+                            let entry_index = indices_rc[i];
                             render_reflog_row(
                                 i,
-                                &entries_rc[i],
+                                &entries_rc[entry_index],
                                 busy,
                                 fg,
                                 muted_fg,
@@ -109,6 +112,46 @@ impl VcsView {
             .child(body)
             .into_any_element()
     }
+
+    fn filtered_reflog_indices(
+        &self,
+        entries: Rc<Vec<ReflogEntry>>,
+        query_lower: &str,
+    ) -> Rc<Vec<usize>> {
+        {
+            let cache = self.reflog_rows_cache.borrow();
+            if let Some(indices) = cache
+                .as_ref()
+                .and_then(|entry| entry.get(&entries, query_lower))
+            {
+                return indices;
+            }
+        }
+
+        let indices: Rc<Vec<usize>> = Rc::new(
+            entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    matches_reflog_query(entry, query_lower).then_some(index)
+                })
+                .collect(),
+        );
+        self.reflog_rows_cache.replace(Some(ReflogRowsCacheEntry {
+            entries,
+            query_lower: query_lower.to_string(),
+            indices: indices.clone(),
+        }));
+        indices
+    }
+}
+
+fn matches_reflog_query(entry: &ReflogEntry, query_lower: &str) -> bool {
+    query_lower.is_empty()
+        || contains_case_insensitive(&entry.subject, query_lower)
+        || contains_case_insensitive(&entry.action, query_lower)
+        || contains_case_insensitive(&entry.selector, query_lower)
+        || entry.commit.0.starts_with(query_lower)
 }
 
 /// 单条 reflog 行渲染（在 uniform_list closure 内调）
@@ -221,4 +264,55 @@ fn center(msg: &'static str, muted_fg: gpui::Hsla) -> AnyElement {
         .text_color(muted_fg)
         .child(msg)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use ramag_domain::entities::CommitId;
+
+    use super::*;
+
+    fn reflog_entry() -> ReflogEntry {
+        ReflogEntry {
+            commit: CommitId("abcdef123456".into()),
+            selector: "HEAD@{0}".into(),
+            action: "checkout".into(),
+            subject: "修复 ÜBER 问题".into(),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn reflog_query_matches_fields_without_ascii_body_allocations() {
+        let entry = reflog_entry();
+
+        assert!(matches_reflog_query(&entry, "über"));
+        assert!(matches_reflog_query(&entry, "checkout"));
+        assert!(matches_reflog_query(&entry, "abcdef"));
+        assert!(!matches_reflog_query(&entry, "missing"));
+    }
+
+    #[test]
+    fn reflog_cache_requires_same_source_and_query() {
+        let entries = Rc::new(vec![reflog_entry()]);
+        let indices = Rc::new(vec![0]);
+        let cache = ReflogRowsCacheEntry {
+            entries: entries.clone(),
+            query_lower: "checkout".into(),
+            indices: indices.clone(),
+        };
+
+        let cached = cache.get(&entries, "checkout");
+        assert!(
+            cached
+                .as_ref()
+                .is_some_and(|value| Rc::ptr_eq(value, &indices))
+        );
+        assert!(cache.get(&entries, "commit").is_none());
+        assert!(
+            cache
+                .get(&Rc::new(entries.as_ref().clone()), "checkout")
+                .is_none()
+        );
+    }
 }

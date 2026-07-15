@@ -365,6 +365,7 @@ impl Render for ConnectionFormPanel {
                                     .ghost()
                                     .small()
                                     .label("取消")
+                                    .disabled(self.saving)
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.handle_cancel(window, cx);
                                     })),
@@ -378,6 +379,7 @@ impl Render for ConnectionFormPanel {
                                     } else {
                                         "保存"
                                     })
+                                    .disabled(self.saving)
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         if !this.saving {
                                             this.handle_save(cx);

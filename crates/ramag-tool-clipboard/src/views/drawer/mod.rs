@@ -5,6 +5,7 @@
 mod card;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent, ParentElement, Render,
@@ -32,12 +33,14 @@ const DRAWER_SEARCH_LIMIT: usize = 200;
 pub struct ClipboardDrawer {
     service: Arc<ClipboardService>,
     /// 最近窗口缓存快照（即时过滤层）
-    items: Vec<ClipItem>,
+    items: Vec<Arc<ClipItem>>,
     /// 后台全量存储搜索结果（覆盖缓存窗口之外的历史；与主视图同款）
-    search_results: Vec<ClipItem>,
+    search_results: Vec<Arc<ClipItem>>,
     search_truncated: bool,
     /// 全量搜索去抖代际：输入变化即自增，旧回包据此丢弃
     search_gen: u64,
+    /// 当前全量搜索取消标记；新输入或抽屉关闭时终止旧扫描。
+    search_cancel: Arc<AtomicBool>,
     /// 过滤后可见列表上的选中下标
     selected: usize,
     search: Entity<InputState>,
@@ -57,6 +60,12 @@ pub struct ClipboardDrawer {
 impl Focusable for ClipboardDrawer {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+impl Drop for ClipboardDrawer {
+    fn drop(&mut self) {
+        self.search_cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -96,6 +105,7 @@ impl ClipboardDrawer {
             search_results: Vec::new(),
             search_truncated: false,
             search_gen: 0,
+            search_cancel: Arc::new(AtomicBool::new(false)),
             selected: 0,
             search,
             activation_target,
@@ -116,7 +126,7 @@ impl ClipboardDrawer {
     /// 取缩略图解密内存图片；缓存命中同步返回，miss 异步解密填充后 notify
     pub(super) fn thumb_image(
         &self,
-        item: &ClipItem,
+        item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> Option<std::sync::Arc<gpui::Image>> {
         let path = item
@@ -128,16 +138,16 @@ impl ClipboardDrawer {
         }
         if self.img_cache.begin_load(&path) {
             let svc = self.service.clone();
-            let item = item.clone();
             cx.spawn(async move |this, cx| {
-                let loaded = svc.load_thumb(&item).await;
+                let loaded = svc.load_thumb(item.as_ref()).await;
                 let _ = this.update(cx, |this, cx| match loaded {
                     Ok(Some(bytes)) => {
+                        let encoded_bytes = bytes.len();
                         let image = std::sync::Arc::new(gpui::Image::from_bytes(
                             gpui::ImageFormat::Png,
                             bytes,
                         ));
-                        this.img_cache.insert(path, image);
+                        this.img_cache.insert(path, image, encoded_bytes);
                         cx.notify();
                     }
                     _ => this.img_cache.fail(&path),
@@ -151,12 +161,13 @@ impl ClipboardDrawer {
     /// 按搜索框内容过滤 + 截断的可见列表（渲染 / 选中 / 粘贴共用同一份）。
     /// 有搜索词时：缓存即时匹配层在前，后台全量结果去重补后（与主视图同款），
     /// 让缓存窗口之外的旧记录也能被搜到
-    pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<ClipItem> {
+    pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<Arc<ClipItem>> {
         self.visible_items_with_status(cx).0
     }
 
-    fn visible_items_with_status(&self, cx: &gpui::App) -> (Vec<ClipItem>, bool) {
-        let q = self.search.read(cx).value().to_string();
+    fn visible_items_with_status(&self, cx: &gpui::App) -> (Vec<Arc<ClipItem>>, bool) {
+        let search = self.search.read(cx);
+        let q = search.value();
         if q.trim().is_empty() {
             let mut items = filter_items(&self.items, "", None)
                 .into_iter()
@@ -167,7 +178,7 @@ impl ClipboardDrawer {
             return (items, truncated);
         }
         let mut seen = std::collections::HashSet::new();
-        let mut out: Vec<ClipItem> = Vec::new();
+        let mut out: Vec<Arc<ClipItem>> = Vec::new();
         for it in filter_items(&self.items, &q, None) {
             seen.insert(it.id.clone());
             out.push(it.clone());
@@ -187,11 +198,14 @@ impl ClipboardDrawer {
         self.search_gen = self.search_gen.wrapping_add(1);
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
+        self.search_cancel.store(true, Ordering::Relaxed);
         if query.trim().is_empty() {
             self.search_results.clear();
             self.search_truncated = false;
             return;
         }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.search_cancel = cancelled.clone();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
@@ -201,16 +215,17 @@ impl ClipboardDrawer {
             {
                 return;
             }
-            let result = svc.search(&query, DRAWER_SEARCH_LIMIT + 1).await;
+            let result = svc
+                .search_cancellable(&query, DRAWER_SEARCH_LIMIT, cancelled)
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if this.search_gen != generation {
                     return;
                 }
                 match result {
-                    Ok(mut items) => {
-                        this.search_truncated = items.len() > DRAWER_SEARCH_LIMIT;
-                        items.truncate(DRAWER_SEARCH_LIMIT);
-                        this.search_results = items;
+                    Ok(result) => {
+                        this.search_truncated = result.truncated;
+                        this.search_results = result.items.into_iter().map(Arc::new).collect();
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "drawer full search failed");
@@ -244,9 +259,9 @@ impl ClipboardDrawer {
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let result = if auto {
-                svc.paste_to_app(&item, target.as_deref()).await
+                svc.paste_to_app(item.as_ref(), target.as_deref()).await
             } else {
-                svc.copy_to_clipboard(&item).await
+                svc.copy_to_clipboard(item.as_ref()).await
             };
             match result {
                 Ok(()) => {
@@ -355,7 +370,7 @@ impl Render for ClipboardDrawer {
         // for 循环（非 map 闭包）：render_card 需 &mut Context，闭包会触发借用逃逸
         let mut cards = Vec::with_capacity(visible.len());
         for (ix, item) in visible.iter().enumerate() {
-            cards.push(self.render_card(ix, item, cx).into_any_element());
+            cards.push(self.render_card(ix, item.clone(), cx).into_any_element());
         }
 
         v_flex()

@@ -128,6 +128,36 @@ async fn string_get_set_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn oversized_string_load_is_bounded_and_reports_total_bytes() {
+    const STRING_PREFIX_LIMIT: usize = 4 * 1024 * 1024;
+
+    let config = require_env!();
+    let driver = RedisDriver::new();
+    cleanup(&driver, &config).await;
+    let value = format!("{}界", "a".repeat(STRING_PREFIX_LIMIT - 1));
+    let total = value.len() as u64;
+
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec!["SET".into(), "large-text".into(), value],
+        )
+        .await
+        .unwrap();
+
+    let load = driver
+        .get_value_limited(&config, TEST_DB, "large-text", 100)
+        .await
+        .unwrap();
+    assert_eq!(load.total, Some(total));
+    assert!(load.has_more());
+    assert!(matches!(load.value, RedisValue::Text(text) if text.len() == STRING_PREFIX_LIMIT - 1));
+
+    cleanup(&driver, &config).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hash_value_returns_pairs() {
     let config = require_env!();
     let driver = RedisDriver::new();

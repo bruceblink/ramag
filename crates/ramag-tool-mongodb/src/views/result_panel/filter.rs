@@ -1,6 +1,7 @@
 //! 结果区「过滤列 / 过滤行」解析：列/行子串匹配（纯函数，可独立测试）
 
 use super::flatten::FlatTable;
+use ramag_domain::entities::contains_case_insensitive;
 
 /// 过滤列框解析结果
 pub(crate) struct ParsedFilter {
@@ -14,7 +15,7 @@ pub(crate) fn classify_filter(raw: &str) -> ParsedFilter {
     ParsedFilter {
         filters: raw
             .split(',')
-            .map(|token| token.trim().to_ascii_lowercase())
+            .map(|token| token.trim().to_lowercase())
             .filter(|token| !token.is_empty())
             .collect(),
     }
@@ -31,8 +32,9 @@ pub(crate) fn column_indices_for(table: &FlatTable, filters: &[String]) -> Optio
         .iter()
         .enumerate()
         .filter(|(_, c)| {
-            let lower = c.path.to_ascii_lowercase();
-            filters.iter().any(|f| lower.contains(f))
+            filters
+                .iter()
+                .any(|filter| contains_case_insensitive(&c.path, filter))
         })
         .map(|(i, _)| i)
         .collect();
@@ -41,7 +43,7 @@ pub(crate) fn column_indices_for(table: &FlatTable, filters: &[String]) -> Optio
 
 /// 行过滤：任意单元格子串包含 query（大小写不敏感）→ 行索引；空 query 返回 None（全显示）
 pub(crate) fn row_indices_for(table: &FlatTable, query: &str) -> Option<Vec<usize>> {
-    let q = query.trim().to_ascii_lowercase();
+    let q = query.trim().to_lowercase();
     if q.is_empty() {
         return None;
     }
@@ -49,7 +51,10 @@ pub(crate) fn row_indices_for(table: &FlatTable, query: &str) -> Option<Vec<usiz
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| row.iter().any(|c| c.text.to_ascii_lowercase().contains(&q)))
+        .filter(|(_, row)| {
+            row.iter()
+                .any(|cell| contains_case_insensitive(&cell.text, &q))
+        })
         .map(|(i, _)| i)
         .collect();
     Some(indices)
@@ -57,8 +62,9 @@ pub(crate) fn row_indices_for(table: &FlatTable, query: &str) -> Option<Vec<usiz
 
 #[cfg(test)]
 mod tests {
+    use super::super::cell::Cell;
     use super::super::flatten::{Column, FlatTable};
-    use super::{classify_filter, column_indices_for};
+    use super::{classify_filter, column_indices_for, row_indices_for};
 
     #[test]
     fn all_tokens_are_column_filters() {
@@ -76,6 +82,7 @@ mod tests {
                 })
                 .collect(),
             rows: vec![],
+            ..Default::default()
         }
     }
 
@@ -92,5 +99,30 @@ mod tests {
             column_indices_for(&t, &["missing".to_string()]),
             Some(vec![])
         );
+    }
+
+    #[test]
+    fn row_filter_is_case_insensitive_for_ascii_and_unicode() {
+        let table = FlatTable {
+            columns: vec![Column {
+                path: "name".into(),
+                kind: "text",
+            }],
+            total_columns: 1,
+            rows: vec![
+                vec![Cell {
+                    text: "前缀 Hello 世界".into(),
+                    kind: "text",
+                }],
+                vec![Cell {
+                    text: "ÜBER".into(),
+                    kind: "text",
+                }],
+            ],
+        };
+
+        assert_eq!(row_indices_for(&table, "hello"), Some(vec![0]));
+        assert_eq!(row_indices_for(&table, "über"), Some(vec![1]));
+        assert!(row_indices_for(&table, "").is_none());
     }
 }

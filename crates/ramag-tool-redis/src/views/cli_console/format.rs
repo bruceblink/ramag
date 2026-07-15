@@ -59,14 +59,25 @@ fn parse_double_quoted(chars: &mut Chars, out: &mut String) -> Result<(), String
                 Some('x') => {
                     let h1 = chars.next().ok_or("\\x 需两位十六进制")?;
                     let h2 = chars.next().ok_or("\\x 需两位十六进制")?;
-                    let byte = u8::from_str_radix(&format!("{h1}{h2}"), 16)
-                        .map_err(|_| "\\x 后须为两位十六进制".to_string())?;
+                    let high =
+                        hex_nibble(h1).ok_or_else(|| "\\x 后须为两位十六进制".to_string())?;
+                    let low = hex_nibble(h2).ok_or_else(|| "\\x 后须为两位十六进制".to_string())?;
+                    let byte = (high << 4) | low;
                     out.push(byte as char);
                 }
                 Some(other) => out.push(other),
             },
             Some(c) => out.push(c),
         }
+    }
+}
+
+fn hex_nibble(ch: char) -> Option<u8> {
+    match ch {
+        '0'..='9' => Some(ch as u8 - b'0'),
+        'a'..='f' => Some(ch as u8 - b'a' + 10),
+        'A'..='F' => Some(ch as u8 - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -88,117 +99,269 @@ fn parse_single_quoted(chars: &mut Chars, out: &mut String) -> Result<(), String
 /// RedisValue → 多行文本（仿 redis-cli），每行相对本层左对齐；嵌套由父层缩进。
 /// 标量返回单行；聚合用 `N)` 编号并递归缩进。
 pub fn lines_of(v: &RedisValue) -> Vec<String> {
+    lines_of_inner(v, 0)
+}
+
+const MAX_FORMAT_BYTES: usize = 1024 * 1024;
+const MAX_FORMAT_LINES: usize = 2_000;
+const MAX_FORMAT_DEPTH: usize = 16;
+const MAX_SCALAR_INPUT_BYTES: usize = 256 * 1024;
+const TRUNCATION_LINE: &str = "… 响应过大，后续内容已截断";
+
+struct LineBuffer {
+    lines: Vec<String>,
+    bytes: usize,
+    truncated: bool,
+}
+
+impl LineBuffer {
+    fn new() -> Self {
+        Self {
+            lines: Vec::new(),
+            bytes: 0,
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, line: String) -> bool {
+        if self.truncated || self.lines.len() >= MAX_FORMAT_LINES {
+            self.truncated = true;
+            return false;
+        }
+        let cost = line.len().saturating_add(1);
+        if cost > MAX_FORMAT_BYTES.saturating_sub(self.bytes) {
+            let marker_cost = TRUNCATION_LINE.len().saturating_add(1);
+            let available = MAX_FORMAT_BYTES
+                .saturating_sub(self.bytes)
+                .saturating_sub(marker_cost)
+                .saturating_sub('…'.len_utf8());
+            let prefix = utf8_prefix(&line, available);
+            if !prefix.is_empty() {
+                let partial = format!("{prefix}…");
+                self.bytes = self.bytes.saturating_add(partial.len() + 1);
+                self.lines.push(partial);
+            }
+            self.truncated = true;
+            return false;
+        }
+        self.bytes += cost;
+        self.lines.push(line);
+        true
+    }
+
+    fn can_continue(&self) -> bool {
+        !self.truncated
+    }
+
+    fn finish(mut self) -> Vec<String> {
+        if self.truncated {
+            let marker_cost = TRUNCATION_LINE.len() + 1;
+            while self.lines.len() >= MAX_FORMAT_LINES
+                || self.bytes.saturating_add(marker_cost) > MAX_FORMAT_BYTES
+            {
+                let Some(line) = self.lines.pop() else {
+                    break;
+                };
+                self.bytes = self.bytes.saturating_sub(line.len() + 1);
+            }
+            if self.lines.len() < MAX_FORMAT_LINES
+                && self.bytes.saturating_add(marker_cost) <= MAX_FORMAT_BYTES
+            {
+                self.lines.push(TRUNCATION_LINE.into());
+            }
+        }
+        self.lines
+    }
+}
+
+fn lines_of_inner(v: &RedisValue, depth: usize) -> Vec<String> {
+    if depth >= MAX_FORMAT_DEPTH {
+        return vec!["… 嵌套层级过深，已停止展开".into()];
+    }
     match v {
         RedisValue::Nil => vec!["(nil)".into()],
         RedisValue::Text(s) => text_lines(s),
         RedisValue::Int(i) => vec![format!("(integer) {i}")],
         RedisValue::Float(f) => vec![format!("(double) {f}")],
         RedisValue::Bool(b) => vec![format!("(boolean) {b}")],
-        RedisValue::Bytes(b) => vec![format!("\"{}\"", escape_bytes(b))],
+        RedisValue::Bytes(b) => bytes_lines(b),
         RedisValue::List(items) | RedisValue::Set(items) | RedisValue::Array(items) => {
-            seq_lines(items)
+            seq_lines(items, depth)
         }
-        RedisValue::Hash(pairs) => hash_lines(pairs),
-        RedisValue::ZSet(pairs) => zset_lines(pairs),
+        RedisValue::Hash(pairs) => hash_lines(pairs, depth),
+        RedisValue::ZSet(pairs) => zset_lines(pairs, depth),
         RedisValue::Stream(entries) => stream_lines(entries),
     }
 }
 
 /// String 值：内容是 JSON（含被字符串编码的 JSON）则多行美化，否则原样加引号
 fn text_lines(s: &str) -> Vec<String> {
-    if matches!(value_display::auto_view_mode(s.as_bytes()), ViewMode::Json) {
-        return value_display::render_text(s, ViewMode::Json)
-            .lines()
-            .map(str::to_string)
-            .collect();
+    let (preview, truncated) = text_prefix(s, MAX_SCALAR_INPUT_BYTES);
+    let mut out = LineBuffer::new();
+    if matches!(
+        value_display::auto_view_mode(preview.as_bytes()),
+        ViewMode::Json
+    ) {
+        for line in value_display::render_text(preview, ViewMode::Json).lines() {
+            if !out.push(line.to_string()) {
+                break;
+            }
+        }
+    } else {
+        out.push(format!("\"{}\"", escape_str(preview)));
     }
-    vec![format!("\"{}\"", escape_str(s))]
+    out.truncated |= truncated;
+    out.finish()
+}
+
+fn bytes_lines(bytes: &[u8]) -> Vec<String> {
+    let shown = &bytes[..bytes.len().min(MAX_SCALAR_INPUT_BYTES)];
+    let mut out = LineBuffer::new();
+    out.push(format!("\"{}\"", escape_bytes(shown)));
+    out.truncated |= shown.len() < bytes.len();
+    out.finish()
 }
 
 /// 把子节点多行接到 `head` 之后：首行带 head，续行补等宽缩进
-fn append_indented(out: &mut Vec<String>, head: &str, child: Vec<String>) {
+fn append_indented(out: &mut LineBuffer, head: &str, child: Vec<String>) {
     let pad = " ".repeat(head.len());
     for (j, line) in child.into_iter().enumerate() {
-        if j == 0 {
-            out.push(format!("{head}{line}"));
+        let line = if j == 0 {
+            format!("{head}{line}")
         } else {
-            out.push(format!("{pad}{line}"));
+            format!("{pad}{line}")
+        };
+        if !out.push(line) {
+            break;
         }
     }
 }
 
-fn seq_lines(items: &[RedisValue]) -> Vec<String> {
+fn seq_lines(items: &[RedisValue], depth: usize) -> Vec<String> {
     if items.is_empty() {
         return vec!["(empty)".into()];
     }
-    let mut out = Vec::new();
+    let mut out = LineBuffer::new();
     for (i, x) in items.iter().enumerate() {
-        append_indented(&mut out, &format!("{}) ", i + 1), lines_of(x));
+        if !out.can_continue() {
+            break;
+        }
+        append_indented(
+            &mut out,
+            &format!("{}) ", i + 1),
+            lines_of_inner(x, depth + 1),
+        );
     }
-    out
+    out.finish()
 }
 
-fn hash_lines(pairs: &[(String, RedisValue)]) -> Vec<String> {
+fn hash_lines(pairs: &[(String, RedisValue)], depth: usize) -> Vec<String> {
     if pairs.is_empty() {
         return vec!["(empty)".into()];
     }
-    let mut out = Vec::new();
+    let mut out = LineBuffer::new();
     for (i, (k, val)) in pairs.iter().enumerate() {
-        let vlines = lines_of(val);
-        let key = format!("\"{}\" => ", escape_str(k));
+        if !out.can_continue() {
+            break;
+        }
+        let vlines = lines_of_inner(val, depth + 1);
+        let (key, key_truncated) = text_prefix(k, MAX_SCALAR_INPUT_BYTES);
+        let key = format!(
+            "\"{}{}\" => ",
+            escape_str(key),
+            if key_truncated { "…" } else { "" }
+        );
         let head = format!("{}) ", i + 1);
         if vlines.len() == 1 {
             out.push(format!("{head}{key}{}", vlines[0]));
         } else {
             // 聚合值：键名独占一行，值整体降一层缩进
-            out.push(format!("{head}{key}"));
+            if !out.push(format!("{head}{key}")) {
+                break;
+            }
             let pad = " ".repeat(head.len());
             for line in vlines {
-                out.push(format!("{pad}{line}"));
+                if !out.push(format!("{pad}{line}")) {
+                    break;
+                }
             }
         }
     }
-    out
+    out.finish()
 }
 
-fn zset_lines(pairs: &[(RedisValue, f64)]) -> Vec<String> {
+fn zset_lines(pairs: &[(RedisValue, f64)], depth: usize) -> Vec<String> {
     if pairs.is_empty() {
         return vec!["(empty)".into()];
     }
-    let mut out = Vec::new();
+    let mut out = LineBuffer::new();
     for (i, (m, score)) in pairs.iter().enumerate() {
+        if !out.can_continue() {
+            break;
+        }
         let head = format!("{}) ", i + 1);
         let pad = " ".repeat(head.len());
-        for (j, line) in lines_of(m).into_iter().enumerate() {
-            if j == 0 {
-                out.push(format!("{head}{line} (score {score})"));
+        for (j, line) in lines_of_inner(m, depth + 1).into_iter().enumerate() {
+            let line = if j == 0 {
+                format!("{head}{line} (score {score})")
             } else {
-                out.push(format!("{pad}{line}"));
+                format!("{pad}{line}")
+            };
+            if !out.push(line) {
+                break;
             }
         }
     }
-    out
+    out.finish()
 }
 
 fn stream_lines(entries: &[StreamEntry]) -> Vec<String> {
     if entries.is_empty() {
         return vec!["(empty)".into()];
     }
-    let mut out = Vec::new();
+    let mut out = LineBuffer::new();
     for (i, e) in entries.iter().enumerate() {
+        if !out.can_continue() {
+            break;
+        }
         let head = format!("{}) ", i + 1);
         let pad = " ".repeat(head.len());
-        out.push(format!("{head}{}", e.id));
+        let (id, id_truncated) = text_prefix(&e.id, MAX_SCALAR_INPUT_BYTES);
+        if !out.push(format!("{head}{id}{}", if id_truncated { "…" } else { "" })) {
+            break;
+        }
         for (j, (k, v)) in e.fields.iter().enumerate() {
-            out.push(format!(
-                "{pad}{}) \"{}\" => \"{}\"",
-                j + 1,
-                escape_str(k),
-                escape_str(v)
-            ));
+            let (key, key_truncated) = text_prefix(k, MAX_SCALAR_INPUT_BYTES);
+            let (value, value_truncated) = text_prefix(v, MAX_SCALAR_INPUT_BYTES);
+            let mut key = escape_str(key);
+            let mut value = escape_str(value);
+            if key_truncated {
+                key.push('…');
+            }
+            if value_truncated {
+                value.push('…');
+            }
+            if !out.push(format!("{pad}{}) \"{}\" => \"{}\"", j + 1, key, value)) {
+                break;
+            }
         }
     }
-    out
+    out.finish()
+}
+
+fn text_prefix(text: &str, limit: usize) -> (&str, bool) {
+    if text.len() <= limit {
+        return (text, false);
+    }
+    (utf8_prefix(text, limit), true)
+}
+
+fn utf8_prefix(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    &text[..end]
 }
 
 /// 显示用转义：引号/反斜杠/控制符转义，可打印字符原样
@@ -269,6 +432,15 @@ mod tests {
     }
 
     #[test]
+    fn tokenize_hex_escape_without_temporary_string() {
+        assert_eq!(
+            tokenize(r#"SET key "\x41\x7a\x2F""#).unwrap(),
+            vec!["SET", "key", "Az/"]
+        );
+        assert!(tokenize(r#"SET key "\xG0""#).is_err());
+    }
+
+    #[test]
     fn format_scalars() {
         assert_eq!(lines_of(&RedisValue::Nil), vec!["(nil)"]);
         assert_eq!(lines_of(&RedisValue::Int(42)), vec!["(integer) 42"]);
@@ -311,5 +483,24 @@ mod tests {
     #[test]
     fn format_empty() {
         assert_eq!(lines_of(&RedisValue::Array(vec![])), vec!["(empty)"]);
+    }
+
+    #[test]
+    fn formatting_is_bounded_by_size_depth_and_lines() {
+        let huge = RedisValue::Bytes(vec![0xff; MAX_SCALAR_INPUT_BYTES + 1]);
+        let output = lines_of(&huge).join("\n");
+        assert!(output.len() <= MAX_FORMAT_BYTES);
+        assert!(output.contains(TRUNCATION_LINE));
+
+        let many = RedisValue::Array(vec![RedisValue::Int(1); MAX_FORMAT_LINES + 1]);
+        let lines = lines_of(&many);
+        assert!(lines.len() <= MAX_FORMAT_LINES);
+        assert_eq!(lines.last().map(String::as_str), Some(TRUNCATION_LINE));
+
+        let mut deep = RedisValue::Nil;
+        for _ in 0..=MAX_FORMAT_DEPTH {
+            deep = RedisValue::Array(vec![deep]);
+        }
+        assert!(lines_of(&deep).join("\n").contains("嵌套层级过深"));
     }
 }

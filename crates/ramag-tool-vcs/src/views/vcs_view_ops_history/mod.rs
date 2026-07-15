@@ -48,8 +48,7 @@ impl VcsView {
             .find(|c| c.id.0 == commit_id)
             .cloned();
         self.viewing_commit = commit;
-        self.commit_files = Vec::new();
-        self.commit_files_collapsed.clear();
+        self.reset_commit_files_tree();
         self.selected_commit_file = None;
         self.commit_file_diff = None;
         self.loading_commit_files = true;
@@ -66,7 +65,8 @@ impl VcsView {
                 match result {
                     Ok(files) => {
                         // 默认不选中任何文件，等用户主动点击
-                        this.commit_files = files;
+                        this.commit_files = std::rc::Rc::new(files);
+                        this.commit_files_rows_cache.get_mut().take();
                     }
                     Err(e) => {
                         error!(error = %e, %commit_id, "vcs: list_commit_files failed");
@@ -209,8 +209,7 @@ impl VcsView {
     pub(crate) fn close_commit_detail(&mut self, cx: &mut Context<Self>) {
         self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
         self.viewing_commit = None;
-        self.commit_files = Vec::new();
-        self.commit_files_collapsed.clear();
+        self.reset_commit_files_tree();
         self.selected_commit_file = None;
         self.commit_file_diff = None;
         self.loading_commit_files = false;

@@ -7,6 +7,7 @@ mod render;
 
 pub use export::ExportFormat;
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -66,8 +67,14 @@ pub struct ResultPanel {
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
     /// DML（增删改）防重入闸：spawn 前置位、回包复位；置位期间再次提交被 dml_conn 拦下
     pub(super) dml_busy: bool,
+    /// 导出防重入闸；后台任务完成（含取消/失败）后复位。
+    pub(super) exporting: bool,
     /// 当前排序列与方向：单击列头切换 None→Asc→Desc→None
     pub(super) sort_by: Option<(usize, SortDir)>,
+    /// 结果内容代次：状态切换或本地增删改后递增，用于派生视图缓存和异步回包校验。
+    pub(super) result_revision: u64,
+    /// 排序、筛选及列布局的派生缓存；选择单元格等无关重渲染可直接复用。
+    pub(super) display_view_cache: RefCell<Option<crate::views::result_table::DisplayViewCache>>,
     /// 列过滤输入框：逗号分隔多列名（命中即显示该列）
     pub(super) column_filter_input: Entity<InputState>,
     /// 行过滤输入框：单一关键字
@@ -117,7 +124,10 @@ impl ResultPanel {
             source_sql: None,
             col_width_overrides: Vec::new(),
             dml_busy: false,
+            exporting: false,
             sort_by: None,
+            result_revision: 0,
+            display_view_cache: RefCell::new(None),
             column_filter_input,
             row_filter_input,
             cell_edit_input: None,
@@ -200,10 +210,11 @@ impl ResultPanel {
             cx.notify();
             return;
         }
-        self.apply_insert_async(values, cx);
-        // 提交后立即退出草稿模式（apply 是异步的，结果通过 toast 反馈）
-        self.pending_insert = None;
-        cx.notify();
+        if self.apply_insert_async(values, cx) {
+            // 请求已成功发起后退出草稿模式；前置校验失败时保留用户输入。
+            self.pending_insert = None;
+            cx.notify();
+        }
     }
 
     /// 上游（QueryTab.run）注入精确目标表，避免 SQL parse 误差
@@ -240,6 +251,9 @@ impl ResultPanel {
 
     /// 行内新增被禁用的原因；None = 可新增（INSERT 不依赖行定位键）
     pub(crate) fn insert_block_reason(&self) -> Option<&'static str> {
+        if self.dml_busy {
+            return Some("上一写操作尚未完成");
+        }
         let Some(conn) = &self.connection else {
             return Some("未注入连接");
         };
@@ -253,6 +267,10 @@ impl ResultPanel {
             return Some("视图不可写入");
         }
         None
+    }
+
+    pub(super) fn dml_busy(&self) -> bool {
+        self.dml_busy
     }
 
     /// 行内修改 / 删除被禁用的原因；None = 允许（比新增额外要求行定位键）
@@ -390,6 +408,7 @@ impl ResultPanel {
             }
         }
         self.state = state;
+        self.mark_result_changed();
         // 数据集变更后清除选中、排序、列宽覆盖、新增草稿
         self.selected_cell = None;
         self.selected_rows.clear();
@@ -412,7 +431,14 @@ impl ResultPanel {
             *self.column_completion_source.write() = qr.columns.clone();
         }
         self.state = state;
+        self.mark_result_changed();
         cx.notify();
+    }
+
+    /// 标记结果数据已变化，并丢弃所有依赖旧行内容的派生缓存。
+    pub(super) fn mark_result_changed(&mut self) {
+        self.result_revision = self.result_revision.wrapping_add(1);
+        self.display_view_cache.get_mut().take();
     }
 
     pub(super) fn selected_rows(&self) -> &BTreeSet<usize> {

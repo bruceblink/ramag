@@ -3,8 +3,10 @@
 
 //! 应用层：Use Cases + ToolRegistry。依赖 domain trait，不持具体实现
 
+mod blocking;
 pub mod tool_registry;
 pub mod usecases;
 
+pub use blocking::run_blocking;
 pub use tool_registry::ToolRegistry;
 pub use usecases::{ClipboardService, ConnectionService, HotkeyState, MongoService, RedisService};

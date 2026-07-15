@@ -132,9 +132,10 @@ impl ClipboardView {
         }
     }
 
-    /// 当前过滤+排序后的可见条目（clone 出 owned 列表供渲染与键盘导航共用）
-    pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<ClipItem> {
-        let query = self.search.read(cx).value().to_string();
+    /// 当前过滤+排序后的可见条目（仅 clone Arc，正文由缓存共享）。
+    pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<Arc<ClipItem>> {
+        let search = self.search.read(cx);
+        let query = search.value();
         if query.trim().is_empty() {
             return filter_items(&self.items, "", self.filter)
                 .into_iter()
@@ -143,7 +144,7 @@ impl ClipboardView {
         }
         // 即时层：缓存窗口匹配（输入即显示）；补充层：后台全量结果（去重，缓存优先）
         let mut seen = std::collections::HashSet::new();
-        let mut out: Vec<ClipItem> = Vec::new();
+        let mut out: Vec<Arc<ClipItem>> = Vec::new();
         for it in filter_items(&self.items, &query, self.filter) {
             seen.insert(it.id.clone());
             out.push(it.clone());
@@ -161,11 +162,14 @@ impl ClipboardView {
         self.search_gen = self.search_gen.wrapping_add(1);
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
+        self.search_cancel.store(true, Ordering::Relaxed);
         if query.trim().is_empty() {
             self.search_results.clear();
             self.search_truncated = false;
             return;
         }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.search_cancel = cancelled.clone();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
@@ -177,16 +181,17 @@ impl ClipboardView {
                 return;
             }
             // 搜索失败必须明示（解密 / 存储错误），不得伪装成「无结果」
-            let result = svc.search(&query, SEARCH_LIMIT + 1).await;
+            let result = svc
+                .search_cancellable(&query, SEARCH_LIMIT, cancelled)
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if this.search_gen != generation {
                     return;
                 }
                 match result {
-                    Ok(mut items) => {
-                        this.search_truncated = items.len() > SEARCH_LIMIT;
-                        items.truncate(SEARCH_LIMIT);
-                        this.search_results = items;
+                    Ok(result) => {
+                        this.search_truncated = result.truncated;
+                        this.search_results = result.items.into_iter().map(Arc::new).collect();
                     }
                     Err(e) => {
                         error!(error = %e, "clip full search failed");
@@ -203,10 +208,10 @@ impl ClipboardView {
         .detach();
     }
 
-    pub(super) fn copy_clip(&mut self, item: ClipItem, cx: &mut Context<Self>) {
+    pub(super) fn copy_clip(&mut self, item: Arc<ClipItem>, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let result = svc.copy_to_clipboard(&item).await;
+            let result = svc.copy_to_clipboard(item.as_ref()).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
@@ -223,10 +228,10 @@ impl ClipboardView {
         .detach();
     }
 
-    pub(super) fn copy_plain(&mut self, item: ClipItem, cx: &mut Context<Self>) {
+    pub(super) fn copy_plain(&mut self, item: Arc<ClipItem>, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let result = svc.copy_as_plain_text(&item).await;
+            let result = svc.copy_as_plain_text(item.as_ref()).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
@@ -261,12 +266,12 @@ impl ClipboardView {
         }
     }
 
-    pub(super) fn delete_clip(&mut self, item: ClipItem, cx: &mut Context<Self>) {
+    pub(super) fn delete_clip(&mut self, item: Arc<ClipItem>, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         let has_media = item.image_path.is_some() || item.thumb_path.is_some();
         let item_id = item.id.clone();
         cx.spawn(async move |this, cx| {
-            let result = svc.delete(&item).await;
+            let result = svc.delete(item.as_ref()).await;
             let cleanup_token = result.as_ref().ok().copied().flatten();
             let _ = this.update(cx, |this, cx| {
                 match result {
@@ -310,7 +315,7 @@ impl ClipboardView {
                                         // 先收起 toast，再异步回存并刷新列表
                                         notif.update(app, |n, cx| n.dismiss(window, cx));
                                         app.spawn(async move |cx| {
-                                            let r = svc.restore(item).await;
+                                            let r = svc.restore(item.as_ref().clone()).await;
                                             view.update(cx, |this, cx| {
                                                 if let Err(e) = r {
                                                     error!(error = %e, "restore clip failed");
@@ -332,7 +337,7 @@ impl ClipboardView {
             });
             if let Some(token) = cleanup_token {
                 cx.background_executor().timer(MEDIA_UNDO_GRACE).await;
-                if let Err(e) = svc.finalize_deleted_media(&item_id, token) {
+                if let Err(e) = svc.finalize_deleted_media(&item_id, token).await {
                     error!(error = %e, "cleanup deleted clip media failed");
                 }
             }
@@ -400,7 +405,7 @@ impl ClipboardView {
         }
     }
 
-    pub(super) fn selected_item(&self, _cx: &gpui::App) -> Option<ClipItem> {
+    pub(super) fn selected_item(&self, _cx: &gpui::App) -> Option<Arc<ClipItem>> {
         let sel = self.selected.as_ref()?;
         // 先查缓存窗口，再查搜索结果——选中的可能是"仅搜索命中"（窗口外）的旧记录，
         // 否则详情空白、回车复制 / 删除静默失效
@@ -425,7 +430,7 @@ impl ClipboardView {
 
     pub(super) fn image_for(
         &self,
-        item: &ClipItem,
+        item: Arc<ClipItem>,
         thumb: bool,
         cx: &mut Context<Self>,
     ) -> Option<std::sync::Arc<gpui::Image>> {
@@ -441,20 +446,20 @@ impl ClipboardView {
         }
         if self.img_cache.begin_load(&path) {
             let svc = self.service.clone();
-            let item = item.clone();
             cx.spawn(async move |this, cx| {
                 let loaded = if thumb {
-                    svc.load_thumb(&item).await
+                    svc.load_thumb(item.as_ref()).await
                 } else {
-                    svc.load_image(&item).await
+                    svc.load_image(item.as_ref()).await
                 };
                 let _ = this.update(cx, |this, cx| match loaded {
                     Ok(Some(bytes)) => {
+                        let encoded_bytes = bytes.len();
                         let image = std::sync::Arc::new(gpui::Image::from_bytes(
                             gpui::ImageFormat::Png,
                             bytes,
                         ));
-                        this.img_cache.insert(path, image);
+                        this.img_cache.insert(path, image, encoded_bytes);
                         cx.notify();
                     }
                     _ => this.img_cache.fail(&path),

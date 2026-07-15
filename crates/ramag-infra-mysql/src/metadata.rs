@@ -3,6 +3,7 @@
 
 use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
 use ramag_domain::error::Result;
+use ramag_infra_sql_shared::{METADATA_FETCH_LIMIT, ensure_metadata_item_limit};
 use sqlx::MySqlPool;
 use tracing::debug;
 
@@ -21,11 +22,14 @@ pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
             CONVERT(DEFAULT_COLLATION_NAME USING utf8mb4)
         FROM information_schema.SCHEMATA
         ORDER BY SCHEMA_NAME
+        LIMIT ?
         "#,
     )
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_mysql_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "Schema")?;
 
     Ok(rows
         .into_iter()
@@ -50,12 +54,15 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'SYSTEM VIEW')
         ORDER BY TABLE_TYPE, TABLE_NAME
+        LIMIT ?
         "#,
     )
     .bind(schema)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_mysql_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "表与视图")?;
 
     Ok(rows
         .into_iter()
@@ -99,13 +106,16 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
             ORDER BY ORDINAL_POSITION
+            LIMIT ?
             "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_mysql_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "列")?;
 
     Ok(rows
         .into_iter()
@@ -138,13 +148,16 @@ pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result
         FROM information_schema.STATISTICS
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
         ORDER BY INDEX_NAME, SEQ_IN_INDEX
+        LIMIT ?
         "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_mysql_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "索引列")?;
 
     let mut grouped: std::collections::BTreeMap<String, Index> = std::collections::BTreeMap::new();
     for (idx_name, non_unique, _seq, col_name) in rows {
@@ -188,13 +201,16 @@ pub async fn list_foreign_keys(
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
           AND REFERENCED_TABLE_NAME IS NOT NULL
         ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
+        LIMIT ?
         "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_mysql_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "外键列")?;
 
     let mut grouped: std::collections::BTreeMap<String, ForeignKey> =
         std::collections::BTreeMap::new();

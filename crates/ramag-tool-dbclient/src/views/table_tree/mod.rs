@@ -4,6 +4,7 @@ mod ops;
 mod render;
 mod row;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use ramag_app::ConnectionService;
 use ramag_domain::entities::{Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema};
 use tracing::error;
 
+use self::row::TreeRowsCacheEntry;
 use crate::sql_completion::{SchemaCache, is_system_schema};
 
 pub struct TableTreePanel {
@@ -28,6 +30,10 @@ pub struct TableTreePanel {
     pub(super) open_schemas: HashSet<String>,
     pub(super) full_search: Option<FullSearchProgress>,
     pub(super) full_search_generation: u64,
+    /// 元数据请求代次；刷新或切换连接后丢弃旧异步结果。
+    pub(super) metadata_generation: u64,
+    pub(super) table_request_generation: u64,
+    pub(super) column_request_generation: u64,
     /// 已展开的表 → 列状态（key 为 "schema.table"）
     pub(super) table_columns: HashMap<String, TableColumns>,
     pub(super) selected: Option<(String, String)>,
@@ -43,6 +49,9 @@ pub struct TableTreePanel {
     pub(super) active_schema: Option<String>,
     /// 树体虚拟列表滚动句柄
     pub(super) uniform_scroll: UniformListScrollHandle,
+    /// 扁平树行只依赖元数据、展开状态、系统库开关与搜索词，普通重渲染直接复用。
+    tree_revision: u64,
+    tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
@@ -53,6 +62,7 @@ pub(super) struct SchemaTables {
     pub(super) loading: bool,
     pub(super) tables: Vec<ramag_domain::entities::Table>,
     pub(super) error: Option<String>,
+    pub(super) request_generation: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +80,7 @@ pub(super) struct TableColumns {
     pub(super) indexes: Vec<Index>,
     pub(super) foreign_keys: Vec<ForeignKey>,
     pub(super) error: Option<String>,
+    pub(super) request_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +137,9 @@ impl TableTreePanel {
             open_schemas: HashSet::new(),
             full_search: None,
             full_search_generation: 0,
+            metadata_generation: 0,
+            table_request_generation: 0,
+            column_request_generation: 0,
             table_columns: HashMap::new(),
             selected: None,
             show_system: false,
@@ -135,6 +149,8 @@ impl TableTreePanel {
             editor_visible: false,
             active_schema: None,
             uniform_scroll: UniformListScrollHandle::new(),
+            tree_revision: 0,
+            tree_rows_cache: RefCell::new(None),
             pending_notification: None,
             _subscriptions: subs,
         }
@@ -149,17 +165,20 @@ impl TableTreePanel {
     }
 
     pub(super) fn current_filter(&self, cx: &gpui::App) -> String {
-        self.search
-            .read(cx)
-            .value()
-            .to_string()
-            .to_ascii_lowercase()
+        self.search.read(cx).value().trim().to_lowercase()
+    }
+
+    /// 仅失效派生行缓存，不改变业务状态。
+    pub(super) fn invalidate_tree_rows(&mut self) {
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        self.tree_rows_cache.get_mut().take();
     }
 
     pub(super) fn toggle_show_system(&mut self, cx: &mut Context<Self>) {
         self.show_system = !self.show_system;
         // 同步到共享 cache：DB 下拉根据此值决定是否展示系统库
         self.schema_cache.write().show_system = self.show_system;
+        self.invalidate_tree_rows();
         cx.notify();
     }
 
@@ -174,6 +193,7 @@ impl TableTreePanel {
         self.table_columns.clear();
         self.selected = None;
         self.error = None;
+        self.invalidate_tree_rows();
         self.load_schemas(cx);
     }
 
@@ -194,9 +214,12 @@ impl TableTreePanel {
         self.table_columns.clear();
         self.selected = None;
         self.error = None;
+        self.invalidate_tree_rows();
         if self.connection.is_some() {
             self.load_schemas(cx);
         } else {
+            self.metadata_generation = self.metadata_generation.wrapping_add(1);
+            self.loading_schemas = false;
             cx.notify();
         }
     }
@@ -205,14 +228,22 @@ impl TableTreePanel {
         let Some(conn) = self.connection.clone() else {
             return;
         };
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        let metadata_generation = self.metadata_generation;
         self.loading_schemas = true;
         self.error = None;
+        self.invalidate_tree_rows();
         cx.notify();
 
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.list_schemas(&conn).await;
             let _ = this.update(cx, |this, cx| {
+                let is_current = this.metadata_generation == metadata_generation
+                    && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id);
+                if !is_current {
+                    return;
+                }
                 this.loading_schemas = false;
                 match result {
                     Ok(schemas) => {
@@ -220,6 +251,7 @@ impl TableTreePanel {
                         let names: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
                         this.schema_cache.write().all_schemas = names;
                         this.schemas = schemas;
+                        this.invalidate_tree_rows();
                         // 首次加载完成后自动激活默认 schema
                         if this.active_schema.is_none()
                             && let Some(default_name) = pick_default_schema(&conn, &this.schemas)
@@ -269,6 +301,7 @@ impl TableTreePanel {
 
         if !self.open_schemas.insert(schema_name.clone()) {
             self.open_schemas.remove(&schema_name);
+            self.invalidate_tree_rows();
             cx.notify();
             return;
         }
@@ -279,6 +312,7 @@ impl TableTreePanel {
         if needs_load {
             self.load_tables_for(schema_name, cx);
         } else {
+            self.invalidate_tree_rows();
             cx.notify();
         }
     }
@@ -364,6 +398,7 @@ impl TableTreePanel {
                         if done {
                             this.full_search = None;
                         }
+                        this.invalidate_tree_rows();
                         cx.notify();
                         !done
                     })
@@ -385,9 +420,13 @@ impl TableTreePanel {
 
     /// （重新）拉取某 schema 的表列表；entry 不存在则插入（展开态保持不变）
     pub(super) fn load_tables_for(&mut self, schema_name: String, cx: &mut Context<Self>) {
+        self.table_request_generation = self.table_request_generation.wrapping_add(1);
+        let request_generation = self.table_request_generation;
         let entry = self.expanded.entry(schema_name.clone()).or_default();
         entry.loading = true;
         entry.error = None;
+        entry.request_generation = request_generation;
+        self.invalidate_tree_rows();
         cx.notify();
 
         let Some(conn) = self.connection.clone() else {
@@ -395,11 +434,19 @@ impl TableTreePanel {
         };
         let svc = self.service.clone();
         let schema_for_async = schema_name.clone();
+        let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
             let result = svc.list_tables(&conn, &schema_for_async).await;
             let _ = this.update(cx, |this, cx| {
-                let entry = this.expanded.entry(schema_for_async.clone()).or_default();
-                entry.loading = false;
+                let is_current = this.metadata_generation == metadata_generation
+                    && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id)
+                    && this
+                        .expanded
+                        .get(&schema_for_async)
+                        .is_some_and(|entry| entry.request_generation == request_generation);
+                if !is_current {
+                    return;
+                }
                 match result {
                     Ok(tables) => {
                         let names: Vec<String> = tables.iter().map(|t| t.name.clone()).collect();
@@ -413,13 +460,23 @@ impl TableTreePanel {
                             cache.tables.insert(schema_for_async.clone(), names);
                             cache.views.insert(schema_for_async.clone(), view_set);
                         }
+                        let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
+                            return;
+                        };
+                        entry.loading = false;
                         entry.tables = tables;
+                        entry.error = None;
                     }
                     Err(e) => {
                         error!(error = %e, schema = %schema_for_async, "list tables failed");
+                        let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
+                            return;
+                        };
+                        entry.loading = false;
                         entry.error = Some(e.to_string());
                     }
                 }
+                this.invalidate_tree_rows();
                 cx.notify();
             });
         })
@@ -467,17 +524,22 @@ impl TableTreePanel {
     ) {
         let key = format!("{schema}.{table}");
         if self.table_columns.remove(&key).is_some() {
+            self.invalidate_tree_rows();
             cx.notify();
             return;
         }
 
+        self.column_request_generation = self.column_request_generation.wrapping_add(1);
+        let request_generation = self.column_request_generation;
         self.table_columns.insert(
             key.clone(),
             TableColumns {
                 loading: true,
+                request_generation,
                 ..Default::default()
             },
         );
+        self.invalidate_tree_rows();
         cx.notify();
 
         let Some(conn) = self.connection.clone() else {
@@ -486,6 +548,7 @@ impl TableTreePanel {
         let svc = self.service.clone();
         let schema_async = schema.clone();
         let table_async = table.clone();
+        let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
             // 三类元数据并发拉，索引/外键失败只 warn 不阻塞列结构
             let cols_fut = svc.list_columns(&conn, &schema_async, &table_async);
@@ -493,10 +556,17 @@ impl TableTreePanel {
             let fk_fut = svc.list_foreign_keys(&conn, &schema_async, &table_async);
             let (cols_res, idx_res, fk_res) = futures::join!(cols_fut, idx_fut, fk_fut);
             let _ = this.update(cx, |this, cx| {
-                let entry = this
-                    .table_columns
-                    .entry(key.clone())
-                    .or_insert_with(TableColumns::default);
+                let is_current = this.metadata_generation == metadata_generation
+                    && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id)
+                    && this.table_columns.get(&key).is_some_and(|entry| {
+                        entry.request_generation == request_generation
+                    });
+                if !is_current {
+                    return;
+                }
+                let Some(entry) = this.table_columns.get_mut(&key) else {
+                    return;
+                };
                 entry.loading = false;
                 match cols_res {
                     Ok(cols) => {
@@ -525,6 +595,7 @@ impl TableTreePanel {
                         tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "list foreign keys failed (non-fatal)");
                     }
                 }
+                this.invalidate_tree_rows();
                 cx.notify();
             });
         })

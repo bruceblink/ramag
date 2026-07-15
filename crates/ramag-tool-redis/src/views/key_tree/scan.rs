@@ -9,6 +9,8 @@ use super::{KEYS_PAGE_SIZE, KeyTreePanel};
 
 /// 单批 SCAN 的 COUNT hint
 const SCAN_BATCH: u32 = 500;
+/// 单次刷新/继续最多发出的批次数；到达后保留 cursor，防异常游标或超大库导致无限请求。
+const MAX_SCAN_BATCHES_PER_PAGE: usize = 2_000;
 /// 分批加载期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次
 const REBUILD_STEP: usize = 2_000;
 /// 输入停顿后自动把过滤词下推到服务端，避免旧 MATCH 子集造成假“无结果”。
@@ -22,17 +24,18 @@ impl KeyTreePanel {
         };
         self.scan_generation += 1;
         self.loading = true;
+        self.has_loaded = false;
         self.error = None;
         self.keys.clear();
         self.seen_keys.clear();
-        self.tree.clear();
+        self.clear_tree();
         self.last_rebuilt_count = 0;
         self.truncated = false;
         self.resume_cursor = Some(0);
         self.scan_target = KEYS_PAGE_SIZE;
         cx.notify();
         let generation = self.scan_generation;
-        self.scan_next_batch(config, 0, generation, cx);
+        self.scan_next_batch(config, 0, generation, MAX_SCAN_BATCHES_PER_PAGE, cx);
     }
 
     /// 停止扫描：换代终止续扫，保留并展示已加载部分（如实标注未扫完）
@@ -106,7 +109,7 @@ impl KeyTreePanel {
         self.error = None;
         let generation = self.scan_generation;
         cx.notify();
-        self.scan_next_batch(config, cursor, generation, cx);
+        self.scan_next_batch(config, cursor, generation, MAX_SCAN_BATCHES_PER_PAGE, cx);
     }
 
     /// 扫一批：回包三重校验通过则追加，按需节流重建 Trie 并续扫，扫完 / 达上限收尾
@@ -115,6 +118,7 @@ impl KeyTreePanel {
         config: ConnectionConfig,
         cursor: u64,
         generation: u64,
+        batches_left: usize,
         cx: &mut Context<Self>,
     ) {
         let svc = self.service.clone();
@@ -133,6 +137,7 @@ impl KeyTreePanel {
                 }
                 match result {
                     Ok(r) => {
+                        this.has_loaded = true;
                         // SCAN 弱一致：同一 key 可能跨批重复返回，按 key 名去重追加
                         for meta in r.keys {
                             if this.seen_keys.insert(meta.key.clone()) {
@@ -142,11 +147,15 @@ impl KeyTreePanel {
                         let done = r.cursor == 0;
                         this.resume_cursor = (!done).then_some(r.cursor);
                         let capped = this.keys.len() >= this.scan_target;
-                        if done || capped {
+                        let batch_budget_exhausted = batches_left <= 1;
+                        if scan_page_finished(done, capped, batches_left) {
                             this.loading = false;
-                            this.truncated = capped && !done;
+                            this.truncated = !done && (capped || batch_budget_exhausted);
                             this.rebuild_tree();
-                            info!(count = this.keys.len(), db, capped, "redis scan completed");
+                            info!(
+                                count = this.keys.len(),
+                                db, capped, batch_budget_exhausted, "redis scan completed"
+                            );
                         } else {
                             // 首批立即出树给首屏反馈，此后每积累 REBUILD_STEP 才重建一次
                             if this.last_rebuilt_count == 0
@@ -154,7 +163,13 @@ impl KeyTreePanel {
                             {
                                 this.rebuild_tree();
                             }
-                            this.scan_next_batch(config, r.cursor, generation, cx);
+                            this.scan_next_batch(
+                                config,
+                                r.cursor,
+                                generation,
+                                batches_left - 1,
+                                cx,
+                            );
                         }
                     }
                     Err(e) => {
@@ -163,7 +178,7 @@ impl KeyTreePanel {
                         if this.keys.is_empty() {
                             this.error = Some(format!("加载失败：{e}"));
                             this.seen_keys.clear();
-                            this.tree.clear();
+                            this.clear_tree();
                             this.resume_cursor = None;
                         } else {
                             // 后续页失败时保留已经可用的数据，并从失败批次的输入 cursor 重试。
@@ -199,9 +214,13 @@ fn next_scan_target(loaded: usize) -> usize {
     loaded.saturating_add(KEYS_PAGE_SIZE)
 }
 
+fn scan_page_finished(done: bool, key_cap_reached: bool, batches_left: usize) -> bool {
+    done || key_cap_reached || batches_left <= 1
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{next_scan_target, server_match_pattern};
+    use super::{next_scan_target, scan_page_finished, server_match_pattern};
 
     #[test]
     fn plain_search_becomes_contains_match() {
@@ -214,5 +233,13 @@ mod tests {
     fn load_more_adds_one_page_without_overflow() {
         assert_eq!(next_scan_target(5_123), 10_123);
         assert_eq!(next_scan_target(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn scan_page_stops_at_cursor_key_or_batch_boundary() {
+        assert!(scan_page_finished(true, false, 10));
+        assert!(scan_page_finished(false, true, 10));
+        assert!(scan_page_finished(false, false, 1));
+        assert!(!scan_page_finished(false, false, 2));
     }
 }

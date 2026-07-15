@@ -1,7 +1,8 @@
-//! 结果集导出 CSV/JSON/Markdown：序列化→rfd 保存→oneshot 回主线程→pending_notification→toast。
+//! 结果集导出 CSV/JSON/Markdown：rfd 选路径→受限工作池序列化/写入→回主线程 toast。
 //! selected_rows 非空只导勾选行，否则全部
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::Context;
 use gpui_component::notification::Notification;
@@ -27,8 +28,14 @@ enum ExportOutcome {
 impl ResultPanel {
     /// 导出为 CSV / JSON / Markdown
     pub fn export(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+        if self.exporting {
+            self.pending_notification =
+                Some(Notification::info("已有导出任务正在进行").autohide(true));
+            cx.notify();
+            return;
+        }
         let base = match &self.state {
-            ResultState::Ok(r) => r,
+            ResultState::Ok(r) => r.clone(),
             _ => {
                 self.pending_notification =
                     Some(Notification::warning("无可导出的结果").autohide(true));
@@ -44,26 +51,25 @@ impl ResultPanel {
         }
 
         // 导出范围三档：勾选行 > 当前视图（有排序/过滤时，所见即所导）> 原始全量
-        let (result, scope_label) = if !self.selected_rows.is_empty() {
-            let mut filtered = base.as_ref().clone();
-            let selected = self.selected_rows.clone();
-            filtered.rows = base
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| selected.contains(i))
-                .map(|(_, r)| r.clone())
-                .collect();
-            if filtered.rows.is_empty() {
+        let (row_indices, column_indices, scope_label) = if !self.selected_rows.is_empty() {
+            let selected = Arc::new(
+                self.selected_rows
+                    .iter()
+                    .copied()
+                    .filter(|index| *index < base.rows.len())
+                    .collect::<Vec<_>>(),
+            );
+            if selected.is_empty() {
                 self.pending_notification =
                     Some(Notification::warning("勾选的行越界，无内容可导出").autohide(true));
                 cx.notify();
                 return;
             }
-            let n = filtered.rows.len();
-            let visible = crate::views::result_table::compute_display_view(self, base, cx)
+            let n = selected.len();
+            let visible = crate::views::result_table::compute_display_view(self, &base, cx)
                 .display_indices
-                .into_iter()
+                .iter()
+                .copied()
                 .collect::<std::collections::BTreeSet<_>>();
             let hidden = self
                 .selected_rows
@@ -75,57 +81,30 @@ impl ResultPanel {
             } else {
                 format!("选中 {n} 行")
             };
-            (filtered, scope)
+            (Some(selected), None, scope)
         } else {
-            let view = crate::views::result_table::compute_display_view(self, base, cx);
+            let view = crate::views::result_table::compute_display_view(self, &base, cx);
             if view.differs_from_raw(self) {
-                // 视图与原始不同：按可见列投影 + 视图行序导出，与表格所见一致
-                let cols = &view.visible_col_indices;
-                let mut projected = base.as_ref().clone();
-                projected.columns = cols.iter().map(|&i| base.columns[i].clone()).collect();
-                projected.column_types = if base.column_types.is_empty() {
-                    Vec::new()
-                } else {
-                    cols.iter()
-                        .filter_map(|&i| base.column_types.get(i).cloned())
-                        .collect()
-                };
-                projected.rows = view
-                    .display_indices
-                    .iter()
-                    .filter_map(|&source_idx| base.rows.get(source_idx))
-                    .map(|row| ramag_domain::entities::Row {
-                        values: cols
-                            .iter()
-                            .map(|&i| {
-                                row.values
-                                    .get(i)
-                                    .cloned()
-                                    .unwrap_or(ramag_domain::entities::Value::Null)
-                            })
-                            .collect(),
-                    })
-                    .collect();
-                if projected.rows.is_empty() {
+                // 视图与原始不同：仅传共享索引，后台按可见列和显示行序流式投影。
+                if view.display_indices.is_empty() {
                     self.pending_notification =
                         Some(Notification::warning("当前筛选下无行可导出").autohide(true));
                     cx.notify();
                     return;
                 }
-                let n = projected.rows.len();
-                (projected, format!("当前视图（筛选/排序后）{n} 行"))
-            } else {
+                let n = view.display_indices.len();
                 (
-                    base.as_ref().clone(),
-                    format!("全部 {} 行", base.rows.len()),
+                    Some(view.display_indices),
+                    Some(view.visible_col_indices),
+                    format!("当前视图（筛选/排序后）{n} 行"),
                 )
+            } else {
+                (None, None, format!("全部 {} 行", base.rows.len()))
             }
         };
 
-        // 数据序列化（主线程毫秒级）
-        let (content, default_name, ext) = match format {
+        let (default_name, ext) = match format {
             ExportFormat::Csv => (
-                export::to_csv(&result),
                 format!(
                     "ramag-export-{}.csv",
                     chrono::Local::now().format("%Y%m%d-%H%M%S")
@@ -133,7 +112,6 @@ impl ResultPanel {
                 "csv",
             ),
             ExportFormat::Json => (
-                export::to_json(&result),
                 format!(
                     "ramag-export-{}.json",
                     chrono::Local::now().format("%Y%m%d-%H%M%S")
@@ -141,7 +119,6 @@ impl ResultPanel {
                 "json",
             ),
             ExportFormat::Markdown => (
-                export::to_markdown(&result),
                 format!(
                     "ramag-export-{}.md",
                     chrono::Local::now().format("%Y%m%d-%H%M%S")
@@ -150,26 +127,47 @@ impl ResultPanel {
             ),
         };
 
-        // 异步：用 std::thread + futures::oneshot 把结果送回主线程（不依赖 tokio）
-        let (tx, rx) = futures::channel::oneshot::channel::<ExportOutcome>();
-        std::thread::spawn(move || {
-            let path = rfd::FileDialog::new()
-                .set_file_name(&default_name)
-                .add_filter(ext, &[ext])
-                .save_file();
-            let outcome = match path {
-                None => ExportOutcome::Cancelled,
-                Some(p) => match std::fs::write(&p, content) {
-                    Ok(_) => ExportOutcome::Saved(p),
-                    Err(e) => ExportOutcome::Failed(e.to_string()),
-                },
-            };
-            let _ = tx.send(outcome);
-        });
-
+        // 保存框与序列化放入共享有界 worker；防重入避免重复弹框和无限创建线程。
+        self.exporting = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
-            let outcome = rx.await.unwrap_or(ExportOutcome::Cancelled);
+            let outcome = ramag_app::run_blocking(move || {
+                let path = rfd::FileDialog::new()
+                    .set_file_name(&default_name)
+                    .add_filter(ext, &[ext])
+                    .save_file();
+                Ok(match path {
+                    None => ExportOutcome::Cancelled,
+                    Some(p) => {
+                        let rows = row_indices.as_deref().map(Vec::as_slice);
+                        let columns = column_indices.as_deref().map(Vec::as_slice);
+                        let write_result = export::write_atomic_with(&p, |writer| match format {
+                            ExportFormat::Csv => {
+                                export::write_csv_view(writer, &base, rows, columns)
+                            }
+                            ExportFormat::Json => {
+                                export::write_json_view(writer, &base, rows, columns)
+                            }
+                            ExportFormat::Markdown => {
+                                export::write_markdown_view(writer, &base, rows, columns)
+                            }
+                        });
+                        match write_result {
+                            Ok(_) => ExportOutcome::Saved(p),
+                            Err(e) => ExportOutcome::Failed(format!(
+                                "写入导出文件 {} 失败：{e}",
+                                p.display()
+                            )),
+                        }
+                    }
+                })
+            })
+            .await
+            .unwrap_or_else(|error| {
+                ExportOutcome::Failed(format!("导出后台任务无法执行：{error}"))
+            });
             let _ = this.update(cx, |this, cx| {
+                this.exporting = false;
                 let n = match outcome {
                     ExportOutcome::Saved(p) => {
                         info!(path = %p.display(), scope = %scope_label, "exported");

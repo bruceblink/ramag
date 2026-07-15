@@ -30,29 +30,26 @@ pub(super) enum Row {
 pub(super) fn build_tree(files: &[FileStatus]) -> BTreeMap<String, Node> {
     let mut root: BTreeMap<String, Node> = BTreeMap::new();
     for (idx, f) in files.iter().enumerate() {
-        let parts: Vec<&str> = f.path.split('/').collect();
-        if parts.is_empty() {
-            continue;
-        }
-        insert_path(&mut root, &parts, idx);
+        insert_path(&mut root, &f.path, idx);
     }
     root
 }
 
-fn insert_path(map: &mut BTreeMap<String, Node>, parts: &[&str], idx: usize) {
-    if parts.is_empty() {
-        return;
-    }
-    if parts.len() == 1 {
-        map.insert(parts[0].to_string(), Node::File { idx });
-        return;
-    }
-    let dir = parts[0];
-    let entry = map
-        .entry(dir.to_string())
-        .or_insert_with(|| Node::Dir(BTreeMap::new()));
-    if let Node::Dir(children) = entry {
-        insert_path(children, &parts[1..], idx);
+fn insert_path(map: &mut BTreeMap<String, Node>, path: &str, idx: usize) {
+    let mut parts = path.split('/').peekable();
+    let mut current = map;
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            current.insert(part.to_string(), Node::File { idx });
+            return;
+        }
+        let entry = current
+            .entry(part.to_string())
+            .or_insert_with(|| Node::Dir(BTreeMap::new()));
+        let Node::Dir(children) = entry else {
+            return;
+        };
+        current = children;
     }
 }
 
@@ -115,4 +112,33 @@ fn count_files(map: &BTreeMap<String, Node>) -> usize {
         }
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use ramag_domain::entities::FileChangeKind;
+
+    use super::*;
+
+    #[test]
+    fn deeply_nested_path_is_compacted_without_recursive_insertion() {
+        let path = (0..512)
+            .map(|index| format!("d{index}"))
+            .chain(std::iter::once("file.rs".to_string()))
+            .collect::<Vec<_>>()
+            .join("/");
+        let files = vec![FileStatus {
+            path,
+            old_path: None,
+            staged: Some(FileChangeKind::Added),
+            unstaged: None,
+        }];
+
+        let tree = build_tree(&files);
+        let mut rows = Vec::new();
+        flatten(&tree, 0, "", &HashSet::new(), &mut rows);
+
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(rows[1], Row::File { idx: 0, .. }));
+    }
 }

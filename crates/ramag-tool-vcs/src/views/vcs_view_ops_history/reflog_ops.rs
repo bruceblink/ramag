@@ -36,7 +36,10 @@ impl VcsView {
                 }
                 this.loading_reflog = false;
                 match result {
-                    Ok(entries) => this.reflog_entries = entries,
+                    Ok(entries) => {
+                        this.reflog_entries = std::rc::Rc::new(entries);
+                        this.reflog_rows_cache.get_mut().take();
+                    }
                     Err(e) => {
                         error!(error = %e, "vcs: list_reflog failed");
                         this.error = Some(format!("加载 reflog 失败：{e}"));
@@ -63,12 +66,17 @@ impl VcsView {
         }
         cx.spawn(async move |this, cx| {
             let result = driver.checkout(&repo, &commit).await;
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
             // detached HEAD 后分支的 is_head 标记会变，同步刷新
-            let new_local = driver
-                .list_branches(&repo, ramag_domain::entities::BranchKind::Local)
-                .await
-                .ok();
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver
+                    .list_branches(&repo, ramag_domain::entities::BranchKind::Local)
+                    .await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;

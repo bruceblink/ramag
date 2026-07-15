@@ -132,6 +132,48 @@ fn files_take_priority_over_text() {
 }
 
 #[test]
+fn file_payload_helpers_preserve_joined_representation() {
+    let files = vec!["/tmp/a".to_string(), "目录/文件".to_string(), String::new()];
+    let joined = files.join("\n");
+
+    assert_eq!(file_payload_len(&files), joined.len() as u64);
+    assert_eq!(file_payload_hash(&files), fnv1a_hash(joined.as_bytes()));
+    assert_eq!(
+        reverse_file_payload_hash(&files),
+        reverse_fnv1a_hash(joined.as_bytes())
+    );
+}
+
+#[test]
+fn cache_keeps_recent_contiguous_prefix_within_byte_budget() {
+    let make_item = |text: &str| {
+        Arc::new(ClipItem {
+            id: ClipId::new(),
+            kind: ClipKind::Text,
+            text: Some(text.into()),
+            rtf: None,
+            image_path: None,
+            thumb_path: None,
+            image_dims: None,
+            files: Vec::new(),
+            preview: text.into(),
+            source: None,
+            byte_size: text.len() as u64,
+            content_hash: hash_hex(text.as_bytes()),
+            created_at: Utc::now(),
+            last_used_at: Utc::now(),
+        })
+    };
+    let mut cache = vec![make_item("newest"), make_item("mid"), make_item("old")];
+
+    truncate_cache(&mut cache, 500, 9);
+
+    assert_eq!(cache.len(), 2);
+    assert_eq!(cache[0].text.as_deref(), Some("newest"));
+    assert_eq!(cache[1].text.as_deref(), Some("mid"));
+}
+
+#[test]
 fn rich_text_counts_towards_size_limit() {
     let clip = CapturedClip {
         text: Some("a".into()),
@@ -206,7 +248,7 @@ fn pending_media_delete_can_restore_or_expire_once() {
     let first_token = pending.stage(restored_id.clone(), vec!["a.img".into(), "a.thumb".into()]);
     assert_eq!(
         pending.take_for_restore(&restored_id),
-        Some(vec!["a.img".into(), "a.thumb".into()])
+        Some((first_token, vec!["a.img".into(), "a.thumb".into()]))
     );
     assert_eq!(pending.expire(&restored_id, first_token), None);
 
@@ -218,4 +260,92 @@ fn pending_media_delete_can_restore_or_expire_once() {
         Some(vec!["b.img".into()])
     );
     assert_eq!(pending.take_for_restore(&restored_id), None);
+}
+
+#[test]
+fn failed_restore_keeps_original_cleanup_token_valid() {
+    let pending = PendingMediaDeletes::default();
+    let id = ClipId::new();
+    let token = pending.stage(id.clone(), vec!["image.img".into()]);
+    let (taken_token, paths) = pending.take_for_restore(&id).unwrap_or((0, Vec::new()));
+
+    pending.put_back(id.clone(), taken_token, paths);
+
+    assert_eq!(taken_token, token);
+    assert_eq!(pending.expire(&id, token), Some(vec!["image.img".into()]));
+}
+
+#[test]
+fn touching_item_preserves_rich_text_payload() {
+    let created_at = Utc::now() - chrono::Duration::minutes(1);
+    let item = ClipItem {
+        id: ClipId::new(),
+        kind: ClipKind::Text,
+        text: Some("rich text".into()),
+        rtf: Some(b"{\\rtf1 rich text}".to_vec()),
+        image_path: None,
+        thumb_path: None,
+        image_dims: None,
+        files: Vec::new(),
+        preview: "rich text".into(),
+        source: None,
+        byte_size: 24,
+        content_hash: "hash".into(),
+        created_at,
+        last_used_at: created_at,
+    };
+    let now = Utc::now();
+
+    let touched = touch_item(&item, now);
+
+    assert_eq!(touched.last_used_at, now);
+    assert_eq!(touched.created_at, item.created_at);
+    assert_eq!(touched.text, item.text);
+    assert_eq!(touched.rtf, item.rtf);
+    assert_eq!(touched.content_hash, item.content_hash);
+}
+
+#[test]
+fn collision_hash_is_stable_and_separate_from_primary_hash() {
+    let clip = text_clip("collision payload");
+    let text = clip.text.as_deref().unwrap_or_default();
+    let primary = hash_hex(text.as_bytes());
+
+    let first = collision_hash(&clip, &primary);
+    let second = collision_hash(&clip, &primary);
+
+    assert_eq!(first, second);
+    assert!(first.starts_with(&format!("{primary}-")));
+    assert_ne!(first, primary);
+}
+
+#[test]
+fn inline_payload_match_rejects_same_hash_with_different_content() {
+    let existing = ClipItem {
+        id: ClipId::new(),
+        kind: ClipKind::Text,
+        text: Some("first".into()),
+        rtf: None,
+        image_path: None,
+        thumb_path: None,
+        image_dims: None,
+        files: Vec::new(),
+        preview: "first".into(),
+        source: None,
+        byte_size: 5,
+        content_hash: "same-hash".into(),
+        created_at: Utc::now(),
+        last_used_at: Utc::now(),
+    };
+
+    assert!(inline_payload_matches(
+        &existing,
+        &text_clip("first"),
+        ClipKind::Text
+    ));
+    assert!(!inline_payload_matches(
+        &existing,
+        &text_clip("second"),
+        ClipKind::Text
+    ));
 }

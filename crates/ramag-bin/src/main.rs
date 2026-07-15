@@ -9,6 +9,7 @@ mod single_instance;
 mod tray;
 mod window_layout;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
@@ -103,7 +104,14 @@ fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let mut cmd = std::process::Command::new("xdg-open");
     cmd.arg(dir);
-    cmd.spawn().map(|_| ())
+    let status = cmd.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "系统文件管理器退出状态：{status}"
+        )))
+    }
 }
 
 /// 诊断信息文本：版本 + 平台 + 日志路径（复制 / 关于弹窗共用）
@@ -191,9 +199,15 @@ fn main() {
     let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
 
     // 主题偏好。None / "system" 跟随系统，"dark"/"light" 用户固定
-    let initial_pref = read_theme_preference(&storage);
+    let startup_preferences = read_preferences(
+        &storage,
+        &["theme_mode", ramag_ui::preferences::SQL_AUTO_LIMIT_PREF],
+    );
+    let initial_pref = startup_preferences.get("theme_mode").cloned();
     let initial_sql_limit = ramag_ui::preferences::parse_sql_auto_limit(
-        read_preference(&storage, ramag_ui::preferences::SQL_AUTO_LIMIT_PREF).as_deref(),
+        startup_preferences
+            .get(ramag_ui::preferences::SQL_AUTO_LIMIT_PREF)
+            .map(String::as_str),
     );
 
     let registry = build_tool_registry();
@@ -373,12 +387,28 @@ fn main() {
         });
         // 打开日志目录：在系统文件管理器中定位日志文件所在目录
         let log_path_for_open = log_path.clone();
-        cx.on_action(move |_: &OpenLogDir, _cx: &mut App| {
-            if let Some(dir) = log_path_for_open.as_ref().and_then(|p| p.parent())
-                && let Err(e) = open_path_in_file_manager(dir)
-            {
-                tracing::warn!(error = %e, "open log dir failed");
-            }
+        cx.on_action(move |_: &OpenLogDir, cx: &mut App| {
+            let Some(dir) = log_path_for_open
+                .as_ref()
+                .and_then(|path| path.parent())
+                .map(std::path::Path::to_path_buf)
+            else {
+                return;
+            };
+            cx.spawn(async move |_| {
+                let result = ramag_app::run_blocking(move || {
+                    open_path_in_file_manager(&dir).map_err(|error| {
+                        ramag_domain::error::DomainError::Other(format!(
+                            "打开日志目录失败：{error}"
+                        ))
+                    })
+                })
+                .await;
+                if let Err(error) = result {
+                    tracing::warn!(error = %error, "open log dir failed");
+                }
+            })
+            .detach();
         });
 
         cx.set_menus(vec![
@@ -596,12 +626,26 @@ fn open_drawer_window(
 
 /// init / on_reopen / 托盘唤起共用；成功后把窗口句柄记入 MainWindowGlobal
 fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
+    let window_preferences = read_preferences(
+        &deps.storage,
+        &["last_tool", ramag_ui::WindowBoundsPref::PREF_KEY],
+    );
     // 恢复上次停留的工具（重启不回炉 Home）；registry 校验防 pref 残留失效 id
-    let last_tool = read_preference(&deps.storage, "last_tool").filter(|t| !t.is_empty());
+    let last_tool = window_preferences
+        .get("last_tool")
+        .filter(|tool| !tool.is_empty())
+        .cloned();
     // 恢复上次窗口位置尺寸；无记录默认最大化（centered 作取消最大化的复位 bounds）。
     // 尺寸下限对齐 window_min_size，防坏数据 / 换显示器造出不可用窗口
-    let saved_bounds = read_preference(&deps.storage, ramag_ui::WindowBoundsPref::PREF_KEY)
-        .and_then(|j| ramag_ui::WindowBoundsPref::parse(&j));
+    let saved_bounds = window_preferences
+        .get(ramag_ui::WindowBoundsPref::PREF_KEY)
+        .and_then(|json| match ramag_ui::WindowBoundsPref::parse(json) {
+            Ok(pref) => Some(pref),
+            Err(error) => {
+                warn!(error, "ignore invalid saved window bounds");
+                None
+            }
+        });
     let AppDeps {
         registry,
         conn_service,
@@ -920,23 +964,38 @@ fn open_about_dialog(
     });
 }
 
-/// 启动期同步读取单个偏好（起临时 runtime，仅启动阶段一次性使用）；失败返回 None 并留日志
-fn read_preference(storage: &Arc<dyn Storage>, key: &'static str) -> Option<String> {
-    let storage = storage.clone();
-    let runtime = match tokio::runtime::Runtime::new() {
+/// 启动期同步批量读取偏好。current-thread runtime 不创建后台工作线程；同一批 key 共用一次初始化。
+fn read_preferences(
+    storage: &Arc<dyn Storage>,
+    keys: &[&'static str],
+) -> HashMap<&'static str, String> {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
-            warn!(error = %error, key, "create preference runtime failed");
-            return None;
+            warn!(error = %error, key_count = keys.len(), "create preference runtime failed");
+            return HashMap::new();
         }
     };
-    match runtime.block_on(async move { storage.get_preference(key).await }) {
-        Ok(preference) => preference,
-        Err(error) => {
-            warn!(error = %error, key, "read preference failed");
-            None
+    let mut preferences = HashMap::with_capacity(keys.len());
+    for &key in keys {
+        match runtime.block_on(storage.get_preference(key)) {
+            Ok(Some(value)) => {
+                preferences.insert(key, value);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(error = %error, key, "read preference failed");
+            }
         }
     }
+    preferences
+}
+
+fn read_preference(storage: &Arc<dyn Storage>, key: &'static str) -> Option<String> {
+    read_preferences(storage, &[key]).remove(key)
 }
 
 /// 读取失败时跟随系统主题

@@ -6197,6 +6197,7 @@ dependencies = [
  "image",
  "parking_lot",
  "ramag-domain",
+ "serde",
  "serde_json",
  "tracing",
 ]
@@ -6481,6 +6482,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "notify",
+ "ramag-app",
  "ramag-domain",
  "ramag-ui",
  "rfd",

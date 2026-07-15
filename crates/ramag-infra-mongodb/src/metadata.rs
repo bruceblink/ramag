@@ -5,15 +5,18 @@ use bson::{Bson, Document, doc};
 use futures::TryStreamExt;
 use mongodb::Client;
 use ramag_domain::entities::{MongoCollection, MongoCollectionStats, MongoDatabase, MongoIndex};
-use ramag_domain::error::Result;
+use ramag_domain::error::{DomainError, Result};
 
 use crate::errors::map_mongo_error;
+
+const MAX_METADATA_ITEMS: usize = 50_000;
 
 pub async fn list_databases(client: &Client) -> Result<Vec<MongoDatabase>> {
     let names = client
         .list_database_names()
         .await
         .map_err(map_mongo_error)?;
+    ensure_metadata_item_limit(names.len(), "数据库")?;
     Ok(names
         .into_iter()
         .map(|name| MongoDatabase {
@@ -30,6 +33,7 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
     let mut cursor = database.list_collections().await.map_err(map_mongo_error)?;
     let mut out = Vec::new();
     while let Some(spec) = cursor.try_next().await.map_err(map_mongo_error)? {
+        ensure_metadata_item_limit(out.len().saturating_add(1), "集合")?;
         let is_view = matches!(spec.collection_type, mongodb::results::CollectionType::View);
         out.push(MongoCollection {
             name: spec.name,
@@ -40,6 +44,15 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
     // listCollections 返回服务端顺序，按集合名字典序排，左侧列表稳定有序（与 SQL 的 ORDER BY 一致）
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+fn ensure_metadata_item_limit(item_count: usize, label: &str) -> Result<()> {
+    if item_count > MAX_METADATA_ITEMS {
+        return Err(DomainError::QueryFailed(format!(
+            "{label}数量超过 {MAX_METADATA_ITEMS} 条安全上限，请缩小数据库范围"
+        )));
+    }
+    Ok(())
 }
 
 pub async fn list_indexes(client: &Client, db: &str, coll: &str) -> Result<Vec<MongoIndex>> {
@@ -91,7 +104,7 @@ pub async fn collection_stats(
     let size_bytes = number_field_u64(&raw, "size");
     let avg_obj_size = number_field_u64(&raw, "avgObjSize");
     let storage_size = number_field_u64(&raw, "storageSize");
-    let index_count = number_field_u64(&raw, "nindexes") as u32;
+    let index_count = u32::try_from(number_field_u64(&raw, "nindexes")).unwrap_or(u32::MAX);
 
     Ok(MongoCollectionStats {
         count,
@@ -119,8 +132,15 @@ fn parse_index_keys(keys: &Document) -> Vec<(String, i32)> {
         .map(|(k, v)| {
             let dir = match v {
                 Bson::Int32(i) => *i,
-                Bson::Int64(i) => *i as i32,
-                Bson::Double(d) => *d as i32,
+                Bson::Int64(i) => i32::try_from(*i).unwrap_or(0),
+                Bson::Double(d)
+                    if d.is_finite()
+                        && d.fract() == 0.0
+                        && *d >= i32::MIN as f64
+                        && *d <= i32::MAX as f64 =>
+                {
+                    *d as i32
+                }
                 _ => 0,
             };
             (k.clone(), dir)
@@ -149,5 +169,25 @@ mod tests {
         d.insert("title", Bson::String("text".into()));
         let keys = parse_index_keys(&d);
         assert_eq!(keys[0], ("title".into(), 0));
+    }
+
+    #[test]
+    fn parse_keys_does_not_wrap_out_of_range_numbers() {
+        let mut d = Document::new();
+        d.insert("large", Bson::Int64(i64::from(i32::MAX) + 1));
+        d.insert("fractional", Bson::Double(1.5));
+        d.insert("infinite", Bson::Double(f64::INFINITY));
+
+        let keys = parse_index_keys(&d);
+
+        assert_eq!(keys[0], ("large".into(), 0));
+        assert_eq!(keys[1], ("fractional".into(), 0));
+        assert_eq!(keys[2], ("infinite".into(), 0));
+    }
+
+    #[test]
+    fn metadata_limit_allows_boundary_and_rejects_overflow() {
+        assert!(ensure_metadata_item_limit(MAX_METADATA_ITEMS, "集合").is_ok());
+        assert!(ensure_metadata_item_limit(MAX_METADATA_ITEMS + 1, "集合").is_err());
     }
 }

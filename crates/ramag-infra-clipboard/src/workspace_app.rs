@@ -3,11 +3,14 @@
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSArray;
 use objc::{class, msg_send, sel, sel_impl};
+use tracing::warn;
 
 use ramag_domain::entities::ClipSource;
 use ramag_domain::error::{DomainError, Result};
 
 use crate::pasteboard::{ns_string, tiff_to_png, to_rust_string};
+
+const MAX_FINDER_SELECTION: usize = 256;
 
 pub(crate) fn frontmost_app() -> Option<ClipSource> {
     unsafe {
@@ -64,14 +67,70 @@ pub(crate) fn reveal_in_finder(paths: &[String]) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
+    let requested_count = paths.len();
+    let selected = limited_finder_paths(paths)?;
     unsafe {
-        let urls: Vec<id> = paths
-            .iter()
-            .map(|p| msg_send![class!(NSURL), fileURLWithPath: ns_string(p)])
-            .collect();
+        let mut urls = Vec::with_capacity(selected.len());
+        for path in selected {
+            let url: id = msg_send![class!(NSURL), fileURLWithPath: ns_string(path)];
+            if url == nil {
+                return Err(DomainError::InvalidConfig(format!(
+                    "无法解析 Finder 文件路径：{path}"
+                )));
+            }
+            urls.push(url);
+        }
         let arr = NSArray::arrayWithObjects(nil, &urls);
         let ws: id = msg_send![class!(NSWorkspace), sharedWorkspace];
         let _: () = msg_send![ws, activateFileViewerSelectingURLs: arr];
+    }
+    if selected.len() < requested_count {
+        Err(DomainError::Other(format!(
+            "文件较多，已在 Finder 中显示前 {} 个（最多 {MAX_FINDER_SELECTION} 个项目）",
+            selected.len()
+        )))
+    } else {
         Ok(())
+    }
+}
+
+fn limited_finder_paths(paths: &[String]) -> Result<&[String]> {
+    let selected = &paths[..paths.len().min(MAX_FINDER_SELECTION)];
+    if selected.iter().any(|path| path.contains('\0')) {
+        return Err(DomainError::InvalidConfig(
+            "文件路径包含 NUL 字符，无法在 Finder 中显示".into(),
+        ));
+    }
+    if selected.len() < paths.len() {
+        warn!(
+            count = paths.len(),
+            shown = selected.len(),
+            "limit finder selection for clipboard file list"
+        );
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finder_selection_is_bounded() {
+        let paths: Vec<String> = (0..(MAX_FINDER_SELECTION + 1))
+            .map(|index| format!("/tmp/{index}"))
+            .collect();
+
+        assert_eq!(
+            limited_finder_paths(&paths).unwrap().len(),
+            MAX_FINDER_SELECTION
+        );
+    }
+
+    #[test]
+    fn finder_selection_rejects_nul_path() {
+        let paths = vec!["/tmp/a\0b".to_string()];
+
+        assert!(limited_finder_paths(&paths).is_err());
     }
 }

@@ -19,7 +19,6 @@ pub fn stage(repo_path: &Path, patch: &str) -> Result<()> {
         ],
         patch,
     )
-    .map(|_| ())
 }
 
 /// reverse 模式撤回，不影响工作区
@@ -37,7 +36,6 @@ pub fn unstage(repo_path: &Path, patch: &str) -> Result<()> {
         ],
         patch,
     )
-    .map(|_| ())
 }
 
 /// hunk 级回滚到 HEAD（不走暂存区）。失败常见于工作区改动与 patch 上下文不匹配
@@ -54,5 +52,4 @@ pub fn discard(repo_path: &Path, patch: &str) -> Result<()> {
         ],
         patch,
     )
-    .map(|_| ())
 }

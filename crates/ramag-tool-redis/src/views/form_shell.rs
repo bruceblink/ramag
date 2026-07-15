@@ -4,7 +4,7 @@ use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
 };
 use gpui_component::{
-    Sizable as _,
+    Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -70,6 +70,7 @@ pub fn form_footer<V: 'static>(
                         .ghost()
                         .small()
                         .label("取消")
+                        .disabled(state.is_submitting())
                         .on_click(cx.listener(on_cancel)),
                 )
                 .child(
@@ -77,6 +78,7 @@ pub fn form_footer<V: 'static>(
                         .primary()
                         .small()
                         .label(save_text)
+                        .disabled(state.is_submitting())
                         .on_click(cx.listener(on_save)),
                 ),
         )

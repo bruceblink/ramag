@@ -13,7 +13,9 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
-use ramag_domain::entities::{FileChangeKind, FileStatus};
+use ramag_domain::entities::{
+    FileChangeKind, FileStatus, WorkingTreeStatus, contains_case_insensitive,
+};
 
 use super::helpers::{FileOp, GroupKind, code_letter_color, code_to_letter, file_op_button};
 use super::vcs_view::VcsView;
@@ -26,9 +28,8 @@ const ROW_H: f32 = 28.0;
 enum ChangeRow {
     Header {
         title: &'static str,
-        color: gpui::Hsla,
         kind: GroupKind,
-        paths: Vec<String>,
+        paths: Rc<Vec<String>>,
     },
     Dir {
         display_name: String,
@@ -44,15 +45,34 @@ enum ChangeRow {
     },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct WorkspaceRowsCacheKey {
+    files_identity: usize,
+    files_len: usize,
+    collapsed_version: u64,
+    query: String,
+}
+
+/// Changes 面板扁平行缓存；不依赖主题和选中态，可跨普通重渲染复用。
+pub(super) struct WorkspaceRowsCacheEntry {
+    key: WorkspaceRowsCacheKey,
+    rows: Rc<Vec<ChangeRow>>,
+}
+
+impl WorkspaceRowsCacheEntry {
+    fn get(&self, key: &WorkspaceRowsCacheKey) -> Option<Rc<Vec<ChangeRow>>> {
+        (self.key == *key).then(|| self.rows.clone())
+    }
+}
+
 impl VcsView {
     /// 工作区文件分组：4 组扁平为单 uniform_list（分组表头行 + 目录 / 文件行）
     pub(super) fn render_file_groups(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
-        let accent = theme.accent;
-        let danger = theme.danger;
 
         let Some(status) = &self.status else {
+            self.changes_rows_cache.borrow_mut().take();
             return div().into_any_element();
         };
 
@@ -63,32 +83,23 @@ impl VcsView {
             .value()
             .trim()
             .to_lowercase();
-        let path_match = |p: &str| query.is_empty() || p.to_lowercase().contains(&query);
+        let key = WorkspaceRowsCacheKey {
+            files_identity: status.files.as_ptr() as usize,
+            files_len: status.files.len(),
+            collapsed_version: self.changes_collapsed_dirs_version,
+            query: query.clone(),
+        };
+        let rows_rc = {
+            let cache = self.changes_rows_cache.borrow();
+            if let Some(rows) = cache.as_ref().and_then(|entry| entry.get(&key)) {
+                rows
+            } else {
+                drop(cache);
+                self.rebuild_workspace_rows(status, &query, key)
+            }
+        };
 
-        let mut staged: Vec<FileStatus> = Vec::new();
-        let mut unstaged: Vec<FileStatus> = Vec::new();
-        let mut untracked: Vec<FileStatus> = Vec::new();
-        let mut conflicted: Vec<FileStatus> = Vec::new();
-        for f in &status.files {
-            if !path_match(&f.path) {
-                continue;
-            }
-            if f.is_conflicted() {
-                conflicted.push(f.clone());
-                continue;
-            }
-            if f.staged.is_some() {
-                staged.push(f.clone());
-            }
-            match f.unstaged {
-                Some(FileChangeKind::Untracked) => untracked.push(f.clone()),
-                Some(_) => unstaged.push(f.clone()),
-                None => {}
-            }
-        }
-
-        if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() && conflicted.is_empty()
-        {
+        if rows_rc.is_empty() {
             let msg = if query.is_empty() {
                 "✓ 工作区干净，无任何变更"
             } else {
@@ -102,28 +113,6 @@ impl VcsView {
                 .child(msg)
                 .into_any_element();
         }
-
-        // 4 组按固定顺序扁平为一个行序列
-        let warm_orange = gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0);
-        let mut rows: Vec<ChangeRow> = Vec::new();
-        self.append_change_group("冲突", danger, GroupKind::Conflict, conflicted, &mut rows);
-        self.append_change_group("已暂存", accent, GroupKind::Staged, staged, &mut rows);
-        self.append_change_group(
-            "未暂存",
-            warm_orange,
-            GroupKind::Unstaged,
-            unstaged,
-            &mut rows,
-        );
-        self.append_change_group(
-            "未跟踪",
-            muted_fg,
-            GroupKind::Untracked,
-            untracked,
-            &mut rows,
-        );
-
-        let rows_rc: Rc<Vec<ChangeRow>> = Rc::new(rows);
         let total = rows_rc.len();
         let body = uniform_list(
             "vcs-changes-rows",
@@ -148,11 +137,54 @@ impl VcsView {
             .into_any_element()
     }
 
+    /// 缓存 miss 时才做路径过滤、四组克隆与目录树扁平化。
+    fn rebuild_workspace_rows(
+        &self,
+        status: &WorkingTreeStatus,
+        query: &str,
+        key: WorkspaceRowsCacheKey,
+    ) -> Rc<Vec<ChangeRow>> {
+        let path_match = |path: &str| contains_case_insensitive(path, query);
+        let mut staged: Vec<FileStatus> = Vec::new();
+        let mut unstaged: Vec<FileStatus> = Vec::new();
+        let mut untracked: Vec<FileStatus> = Vec::new();
+        let mut conflicted: Vec<FileStatus> = Vec::new();
+        for file in &status.files {
+            if !path_match(&file.path) {
+                continue;
+            }
+            if file.is_conflicted() {
+                conflicted.push(file.clone());
+                continue;
+            }
+            if file.staged.is_some() {
+                staged.push(file.clone());
+            }
+            match file.unstaged {
+                Some(FileChangeKind::Untracked) => untracked.push(file.clone()),
+                Some(_) => unstaged.push(file.clone()),
+                None => {}
+            }
+        }
+
+        let mut rows: Vec<ChangeRow> = Vec::new();
+        self.append_change_group("冲突", GroupKind::Conflict, conflicted, &mut rows);
+        self.append_change_group("已暂存", GroupKind::Staged, staged, &mut rows);
+        self.append_change_group("未暂存", GroupKind::Unstaged, unstaged, &mut rows);
+        self.append_change_group("未跟踪", GroupKind::Untracked, untracked, &mut rows);
+
+        let rows = Rc::new(rows);
+        *self.changes_rows_cache.borrow_mut() = Some(WorkspaceRowsCacheEntry {
+            key,
+            rows: rows.clone(),
+        });
+        rows
+    }
+
     /// 把一组文件（build_tree → flatten）追加成 Header + Dir/File 行
     fn append_change_group(
         &self,
         title: &'static str,
-        color: gpui::Hsla,
         kind: GroupKind,
         files: Vec<FileStatus>,
         out: &mut Vec<ChangeRow>,
@@ -160,13 +192,8 @@ impl VcsView {
         if files.is_empty() {
             return;
         }
-        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-        out.push(ChangeRow::Header {
-            title,
-            color,
-            kind,
-            paths,
-        });
+        let paths = Rc::new(files.iter().map(|f| f.path.clone()).collect());
+        out.push(ChangeRow::Header { title, kind, paths });
         let tree = super::file_tree::build_tree(&files);
         let mut trows: Vec<super::file_tree::Row> = Vec::with_capacity(files.len() * 2);
         super::file_tree::flatten(&tree, 0, "", &self.changes_collapsed_dirs, &mut trows);
@@ -197,12 +224,9 @@ impl VcsView {
     /// uniform_list 单行分发：表头 / 目录 / 文件
     fn render_change_row(&self, i: usize, row: &ChangeRow, cx: &mut Context<Self>) -> AnyElement {
         match row {
-            ChangeRow::Header {
-                title,
-                color,
-                kind,
-                paths,
-            } => self.render_change_header_row(title, *color, *kind, paths, cx),
+            ChangeRow::Header { title, kind, paths } => {
+                self.render_change_header_row(title, *kind, paths, cx)
+            }
             ChangeRow::Dir {
                 display_name,
                 dir_path,
@@ -232,9 +256,8 @@ impl VcsView {
     fn render_change_header_row(
         &self,
         title: &'static str,
-        badge_color: gpui::Hsla,
         kind: GroupKind,
-        paths: &[String],
+        paths: &Rc<Vec<String>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -242,6 +265,12 @@ impl VcsView {
         let border = theme.border;
         let busy = self.busy;
         let count = paths.len();
+        let badge_color = match kind {
+            GroupKind::Conflict => theme.danger,
+            GroupKind::Staged => theme.accent,
+            GroupKind::Unstaged => gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0),
+            GroupKind::Untracked => muted_fg,
+        };
         let mut badge_bg = badge_color;
         badge_bg.a = 0.14;
 
@@ -254,7 +283,7 @@ impl VcsView {
                     "全部暂存",
                     FileOp::Stage,
                     IconName::Plus,
-                    paths.to_vec(),
+                    paths.clone(),
                     busy,
                     cx,
                 ))
@@ -265,7 +294,7 @@ impl VcsView {
                 "全部取消暂存",
                 FileOp::Unstage,
                 IconName::Minus,
-                paths.to_vec(),
+                paths.clone(),
                 busy,
                 cx,
             )),
@@ -372,6 +401,8 @@ impl VcsView {
         if !self.changes_collapsed_dirs.remove(&dir_path) {
             self.changes_collapsed_dirs.insert(dir_path);
         }
+        self.changes_collapsed_dirs_version = self.changes_collapsed_dirs_version.wrapping_add(1);
+        self.changes_rows_cache.get_mut().take();
         cx.notify();
     }
 
@@ -540,7 +571,7 @@ fn bulk_op_button(
     label: &'static str,
     op: FileOp,
     icon: IconName,
-    paths: Vec<String>,
+    paths: Rc<Vec<String>>,
     busy: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
@@ -552,7 +583,41 @@ fn bulk_op_button(
         .label(label)
         .disabled(busy)
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.run_file_op(op, paths.clone(), cx);
+            this.run_file_op(op, paths.as_ref().clone(), cx);
         }))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_rows_cache_requires_all_inputs_to_match() {
+        let rows = Rc::new(Vec::new());
+        let key = WorkspaceRowsCacheKey {
+            files_identity: 17,
+            files_len: 3,
+            collapsed_version: 2,
+            query: "src".into(),
+        };
+        let cache = WorkspaceRowsCacheEntry {
+            key: key.clone(),
+            rows: rows.clone(),
+        };
+
+        let cached = cache.get(&key);
+        assert!(cached.is_some());
+        if let Some(cached) = cached {
+            assert!(Rc::ptr_eq(&cached, &rows));
+        }
+
+        let mut changed = key.clone();
+        changed.query = "tests".into();
+        assert!(cache.get(&changed).is_none());
+
+        changed = key;
+        changed.collapsed_version += 1;
+        assert!(cache.get(&changed).is_none());
+    }
 }

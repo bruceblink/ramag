@@ -390,11 +390,12 @@ impl RedisSessionPanel {
 /// 截断弹窗中要展示的字符串到指定字符数（按 char 计，避免破坏 utf-8 边界）
 /// 超长加省略号，便于在「删除 X」对话框里清晰展示目标
 pub(super) fn truncate_for_dialog(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
+    let mut chars = s.chars();
+    let mut prefix: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        prefix.push('…');
     }
-    let prefix: String = s.chars().take(max_chars).collect();
-    format!("{prefix}…")
+    prefix
 }
 
 #[cfg(test)]

@@ -64,7 +64,7 @@ impl SqlBackend for MysqlDriver {
         pool::build_pool(config).await
     }
 
-    fn decode_row(&self, row: &MySqlRow) -> Vec<Value> {
+    fn decode_row(&self, row: &MySqlRow) -> Result<Vec<Value>> {
         types::decode_row(row)
     }
 

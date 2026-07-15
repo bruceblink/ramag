@@ -1,15 +1,17 @@
 //! 仓库管理页：1080px 居中、整行点击=打开、行内按钮独立 emit。空态主按钮「选择本地仓库」
 
+use std::ops::Range;
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled,
-    div, prelude::*, px,
+    div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    scroll::ScrollableElement as _,
     v_flex,
 };
 
@@ -72,12 +74,25 @@ impl VcsView {
         )
     }
 }
-use ramag_domain::entities::RepoConfig;
+use ramag_domain::entities::{RepoConfig, contains_case_insensitive};
 
 use super::vcs_view::VcsView;
 
 /// 内容区最大宽度（与 dbclient connection_list 保持一致）
 const CONTENT_MAX_W: f32 = 1080.0;
+
+pub(super) struct RepoListRowsCacheEntry {
+    repos: Rc<Vec<RepoConfig>>,
+    query_lower: String,
+    indices: Rc<Vec<usize>>,
+}
+
+impl RepoListRowsCacheEntry {
+    fn get(&self, repos: &Rc<Vec<RepoConfig>>, query_lower: &str) -> Option<Rc<Vec<usize>>> {
+        (Rc::ptr_eq(&self.repos, repos) && self.query_lower == query_lower)
+            .then(|| self.indices.clone())
+    }
+}
 
 impl VcsView {
     /// 仓库管理页主入口（active_view == RepoList 时由 Render 路由调用）
@@ -99,25 +114,10 @@ impl VcsView {
             .value()
             .trim()
             .to_lowercase();
-        let total = self.recent_repos.len();
-        let mut filtered: Vec<&RepoConfig> = if query.is_empty() {
-            self.recent_repos.iter().collect()
-        } else {
-            self.recent_repos
-                .iter()
-                .filter(|r| {
-                    r.name.to_lowercase().contains(&query) || r.path.to_lowercase().contains(&query)
-                })
-                .collect()
-        };
-        // 收藏优先，其余按最近打开时间倒序（未打开过的按名字排在最后）
-        filtered.sort_by(|a, b| {
-            b.favorite
-                .cmp(&a.favorite)
-                .then_with(|| b.last_opened_at.cmp(&a.last_opened_at))
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        let visible_count = filtered.len();
+        let repos_rc = self.recent_repos.clone();
+        let filtered_indices = self.filtered_repo_indices(repos_rc.clone(), &query);
+        let total = repos_rc.len();
+        let visible_count = filtered_indices.len();
 
         let header_inner = h_flex()
             .w_full()
@@ -203,24 +203,42 @@ impl VcsView {
                 )
                 .into_any_element()
         } else {
-            let mut rows: Vec<AnyElement> = Vec::with_capacity(visible_count);
-            for (idx, r) in filtered.into_iter().enumerate() {
-                rows.push(
-                    repo_row(idx, r, busy, border, row_hover, accent, fg, muted_fg, cx)
-                        .into_any_element(),
-                );
-            }
-            v_flex()
+            let rows = uniform_list(
+                "vcs-repo-list-rows",
+                visible_count,
+                cx.processor({
+                    let repos_rc = repos_rc.clone();
+                    let filtered_indices = filtered_indices.clone();
+                    move |_this, range: Range<usize>, _window, cx| {
+                        range
+                            .map(|row_index| {
+                                let repo_index = filtered_indices[row_index];
+                                h_flex()
+                                    .w_full()
+                                    .justify_center()
+                                    .px(px(24.0))
+                                    .child(div().w_full().max_w(px(CONTENT_MAX_W)).child(repo_row(
+                                        row_index,
+                                        &repos_rc[repo_index],
+                                        busy,
+                                        border,
+                                        row_hover,
+                                        accent,
+                                        fg,
+                                        muted_fg,
+                                        cx,
+                                    )))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                }),
+            )
+            .size_full();
+            div()
                 .size_full()
-                .overflow_y_scrollbar()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_center()
-                        .px(px(24.0))
-                        .py(px(10.0))
-                        .child(v_flex().w_full().max_w(px(CONTENT_MAX_W)).children(rows)),
-                )
+                .py(px(10.0))
+                .child(rows)
                 .into_any_element()
         };
 
@@ -234,6 +252,44 @@ impl VcsView {
             })
             .child(body)
             .into_any_element()
+    }
+
+    fn filtered_repo_indices(
+        &self,
+        repos: Rc<Vec<RepoConfig>>,
+        query_lower: &str,
+    ) -> Rc<Vec<usize>> {
+        {
+            let cache = self.repo_list_rows_cache.borrow();
+            if let Some(indices) = cache
+                .as_ref()
+                .and_then(|entry| entry.get(&repos, query_lower))
+            {
+                return indices;
+            }
+        }
+
+        let mut indices: Vec<usize> = (0..repos.len())
+            .filter(|&index| repo_matches_query(&repos[index], query_lower))
+            .collect();
+        // 收藏优先，其余按最近打开时间倒序（未打开过的按名字排在最后）。
+        indices.sort_by(|&left, &right| {
+            let left = &repos[left];
+            let right = &repos[right];
+            right
+                .favorite
+                .cmp(&left.favorite)
+                .then_with(|| right.last_opened_at.cmp(&left.last_opened_at))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let indices = Rc::new(indices);
+        self.repo_list_rows_cache
+            .replace(Some(RepoListRowsCacheEntry {
+                repos,
+                query_lower: query_lower.to_string(),
+                indices: indices.clone(),
+            }));
+        indices
     }
 
     /// Clone 面板（`show_clone_panel = true` 时在 header 下方内联展示）
@@ -318,6 +374,12 @@ impl VcsView {
             )
             .into_any_element()
     }
+}
+
+fn repo_matches_query(repo: &RepoConfig, query_lower: &str) -> bool {
+    query_lower.is_empty()
+        || contains_case_insensitive(&repo.name, query_lower)
+        || contains_case_insensitive(&repo.path, query_lower)
 }
 
 /// 同时兼容 URL、scp 风格地址和 Windows 本地路径，并拒绝空目录名。
@@ -515,7 +577,9 @@ fn empty_state(
 
 #[cfg(test)]
 mod tests {
-    use super::clone_repo_name;
+    use super::{RepoListRowsCacheEntry, clone_repo_name, repo_matches_query};
+    use ramag_domain::entities::RepoConfig;
+    use std::rc::Rc;
 
     #[test]
     fn clone_name_supports_urls_and_windows_paths() {
@@ -530,5 +594,39 @@ mod tests {
         );
         assert_eq!(clone_repo_name("https://example.com/"), None);
         assert_eq!(clone_repo_name("/"), None);
+    }
+
+    #[test]
+    fn repo_search_matches_unicode_without_lowercasing_each_field() {
+        let mut repo = RepoConfig::from_path("/tmp/Über-project");
+        repo.name = "数据工具".into();
+
+        assert!(repo_matches_query(&repo, "über"));
+        assert!(repo_matches_query(&repo, "工具"));
+        assert!(!repo_matches_query(&repo, "missing"));
+    }
+
+    #[test]
+    fn repo_list_cache_requires_same_source_and_query() {
+        let repos = Rc::new(vec![RepoConfig::from_path("/tmp/repo")]);
+        let indices = Rc::new(vec![0]);
+        let cache = RepoListRowsCacheEntry {
+            repos: repos.clone(),
+            query_lower: "repo".into(),
+            indices: indices.clone(),
+        };
+
+        let cached = cache.get(&repos, "repo");
+        assert!(
+            cached
+                .as_ref()
+                .is_some_and(|value| Rc::ptr_eq(value, &indices))
+        );
+        assert!(cache.get(&repos, "other").is_none());
+        assert!(
+            cache
+                .get(&Rc::new(repos.as_ref().clone()), "repo")
+                .is_none()
+        );
     }
 }

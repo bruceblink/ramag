@@ -1,10 +1,13 @@
 //! 扁平 key 按 `:` 建 Trie 多层命名空间树
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use ramag_domain::entities::{KeyMeta, RedisType};
 
 use super::NAMESPACE_SEP;
+
+/// UI 命名空间最大深度；更深的合法 key 将剩余后缀折叠到最后一层，完整 key 不变。
+const MAX_NAMESPACE_DEPTH: usize = 64;
 
 /// 树节点：可同时是命名空间（有子节点）和叶子（对应实际 key）
 #[derive(Debug, Clone)]
@@ -40,86 +43,69 @@ pub(super) struct VisibleRow {
     pub(super) is_expanded: bool,
 }
 
+#[derive(Default)]
+struct NodeBuilder {
+    full_path: String,
+    children: BTreeMap<String, NodeBuilder>,
+    is_key: bool,
+    leaf_type: Option<RedisType>,
+}
+
 pub(super) fn build_tree(keys: &[KeyMeta]) -> Vec<TreeNode> {
-    let mut roots: Vec<TreeNode> = Vec::new();
-    for k in keys {
-        let parts: Vec<&str> = k.key.split(NAMESPACE_SEP).collect();
-        if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+    let mut roots: BTreeMap<String, NodeBuilder> = BTreeMap::new();
+    for key in keys {
+        if key.key.is_empty() || key.key.split(NAMESPACE_SEP).any(str::is_empty) {
             // 跳过空 key 或形如 "::" 的异常路径
             continue;
         }
-        insert_path(&mut roots, &parts, 0, k.key.clone(), k.key_type);
+        let mut siblings = &mut roots;
+        let mut full_path = String::new();
+        let mut parts = key
+            .key
+            .splitn(MAX_NAMESPACE_DEPTH, NAMESPACE_SEP)
+            .peekable();
+        while let Some(part) = parts.next() {
+            if !full_path.is_empty() {
+                full_path.push(NAMESPACE_SEP);
+            }
+            full_path.push_str(part);
+            let is_last = parts.peek().is_none();
+            let node = siblings
+                .entry(part.to_string())
+                .or_insert_with(|| NodeBuilder {
+                    full_path: full_path.clone(),
+                    ..NodeBuilder::default()
+                });
+            if is_last {
+                node.is_key = true;
+                node.leaf_type = key.key_type;
+            }
+            siblings = &mut node.children;
+        }
     }
-    sort_recursive(&mut roots);
-    roots
+    finish_nodes(roots)
 }
 
-fn insert_path(
-    nodes: &mut Vec<TreeNode>,
-    parts: &[&str],
-    idx: usize,
-    full_key: String,
-    kind: Option<RedisType>,
-) {
-    let part = parts[idx];
-    let is_last = idx == parts.len() - 1;
-    let path_so_far = parts[..=idx].join(":");
-
-    if let Some(p) = nodes.iter().position(|n| n.label == part) {
-        if is_last {
-            nodes[p].is_key = true;
-            nodes[p].leaf_type = kind;
-            nodes[p].full_path = full_key;
-        } else {
-            insert_path(&mut nodes[p].children, parts, idx + 1, full_key, kind);
-        }
-    } else {
-        let mut new_node = TreeNode {
-            label: part.to_string(),
-            full_path: path_so_far,
-            children: Vec::new(),
-            is_key: false,
-            leaf_type: None,
+fn finish_nodes(builders: BTreeMap<String, NodeBuilder>) -> Vec<TreeNode> {
+    let mut namespaces = Vec::new();
+    let mut leaves = Vec::new();
+    for (label, builder) in builders {
+        let children = finish_nodes(builder.children);
+        let node = TreeNode {
+            label,
+            full_path: builder.full_path,
+            is_key: builder.is_key,
+            leaf_type: builder.leaf_type,
+            children,
         };
-        if is_last {
-            new_node.full_path = full_key;
-            new_node.is_key = true;
-            new_node.leaf_type = kind;
+        if node.is_namespace() {
+            namespaces.push(node);
         } else {
-            insert_path(&mut new_node.children, parts, idx + 1, full_key, kind);
-        }
-        nodes.push(new_node);
-    }
-}
-
-fn sort_recursive(nodes: &mut [TreeNode]) {
-    nodes.sort_by(|a, b| {
-        // 命名空间在前，叶子在后；同类按 label 升序
-        match (a.is_namespace(), b.is_namespace()) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.label.cmp(&b.label),
-        }
-    });
-    for n in nodes {
-        sort_recursive(&mut n.children);
-    }
-}
-
-/// 在搜索模式下：判断节点的子树里是否有匹配 query 的叶子
-pub(super) fn has_match_descendant(node: &TreeNode, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    if node.is_key && node.full_path.to_lowercase().contains(query) {
-        return true;
-    }
-    for c in &node.children {
-        if c.full_path.to_lowercase().contains(query) || has_match_descendant(c, query) {
-            return true;
+            leaves.push(node);
         }
     }
-    false
+    namespaces.extend(leaves);
+    namespaces
 }
 
 pub(super) fn collect_namespace_paths(node: &TreeNode, out: &mut HashSet<String>) {
@@ -176,19 +162,11 @@ mod tests {
         let keys = vec![
             meta("good:key", RedisType::String),
             meta("::bad", RedisType::String),
+            meta("bad::key", RedisType::String),
         ];
         let tree = build_tree(&keys);
         let labels: Vec<_> = tree.iter().map(|n| n.label.as_str()).collect();
         assert_eq!(labels, vec!["good"]);
-    }
-
-    #[test]
-    fn search_descendant_match() {
-        let keys = vec![meta("user:1:profile", RedisType::Hash)];
-        let tree = build_tree(&keys);
-        assert!(has_match_descendant(&tree[0], "profile"));
-        assert!(has_match_descendant(&tree[0], "1"));
-        assert!(!has_match_descendant(&tree[0], "session"));
     }
 
     /// SCAN 装载的 bare key（key_type=None）必须仍被识别为叶子：
@@ -204,11 +182,6 @@ mod tests {
             root_111.leaf_type.is_none(),
             "未查询类型时 leaf_type 保持 None"
         );
-        assert!(
-            has_match_descendant(root_111, "111"),
-            "搜索应能命中 bare key"
-        );
-
         let user = tree
             .iter()
             .find(|n| n.label == "user")
@@ -232,5 +205,27 @@ mod tests {
         assert!(paths.contains("a:b"));
         assert!(!paths.contains("a:b:c"));
         assert!(!paths.contains("a:d"));
+    }
+
+    #[test]
+    fn deeply_namespaced_key_is_folded_without_losing_full_key() {
+        let key = (0..100)
+            .map(|index| format!("n{index}"))
+            .collect::<Vec<_>>()
+            .join(":");
+        let tree = build_tree(&[KeyMeta::bare(key.clone())]);
+
+        let mut depth = 0;
+        let mut node = &tree[0];
+        loop {
+            depth += 1;
+            if node.children.is_empty() {
+                break;
+            }
+            node = &node.children[0];
+        }
+        assert_eq!(depth, MAX_NAMESPACE_DEPTH);
+        assert_eq!(node.full_path, key);
+        assert!(node.is_key);
     }
 }

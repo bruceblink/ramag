@@ -1,8 +1,6 @@
 //! TableTreePanel Render：DB picker + 搜索 + 工具按钮 + uniform_list 行级虚拟化 + status bar
 
-use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, Styled, Window, div, px, uniform_list,
@@ -15,10 +13,9 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
-use ramag_domain::entities::{DriverKind, Schema};
+use ramag_domain::entities::DriverKind;
 use ramag_ui::platform::primary_shortcut;
 
-use super::row::TreeRow;
 use super::{TableTreePanel, TreeEvent};
 use crate::sql_completion::is_system_schema;
 
@@ -76,75 +73,20 @@ impl Render for TableTreePanel {
                 .into_any_element();
         }
 
-        // 快照状态：按 show_system + 搜索过滤
+        // 派生树行按元数据代次、系统库开关和搜索词缓存。
         let show_system = self.show_system;
         let filter = self.current_filter(cx);
         let has_filter = !filter.is_empty();
-
-        let mut schemas: Vec<Schema> = self
-            .schemas
-            .iter()
-            .filter(|s| show_system || !is_system_schema(&s.name))
-            .filter(|s| {
-                if !has_filter {
-                    return true;
-                }
-                if s.name.to_ascii_lowercase().contains(&filter) {
-                    return true;
-                }
-                if let Some(entry) = self.expanded.get(&s.name)
-                    && entry
-                        .tables
-                        .iter()
-                        .any(|t| t.name.to_ascii_lowercase().contains(&filter))
-                {
-                    return true;
-                }
-                false
-            })
-            .cloned()
-            .collect();
-        schemas.sort_by(|a, b| {
-            let a_sys = is_system_schema(&a.name);
-            let b_sys = is_system_schema(&b.name);
-            a_sys.cmp(&b_sys).then_with(|| a.name.cmp(&b.name))
-        });
-        let expanded_snapshot: HashMap<
-            String,
-            (bool, Vec<ramag_domain::entities::Table>, Option<String>),
-        > = self
-            .expanded
-            .iter()
-            .map(|(k, v)| (k.clone(), (v.loading, v.tables.clone(), v.error.clone())))
-            .collect();
-        let selected = self.selected.clone();
-
-        let mut tree_rows: Vec<TreeRow> = Vec::with_capacity(schemas.len() * 4);
+        let tree_view = self.tree_rows_view(&filter);
         let total_schemas = self.schemas.len();
-        let visible_schemas = schemas.len();
+        let visible_schemas = tree_view.visible_schemas;
         let mut header_text = if total_schemas == visible_schemas {
             format!("数据库 ({total_schemas})")
         } else {
             format!("数据库 ({visible_schemas}/{total_schemas})")
         };
-        let searchable_schemas = self
-            .schemas
-            .iter()
-            .filter(|schema| {
-                self.expanded
-                    .get(&schema.name)
-                    .is_some_and(|entry| !entry.loading && entry.error.is_none())
-            })
-            .count();
-        let failed_schemas = self
-            .schemas
-            .iter()
-            .filter(|schema| {
-                self.expanded
-                    .get(&schema.name)
-                    .is_some_and(|entry| entry.error.is_some())
-            })
-            .count();
+        let searchable_schemas = tree_view.searchable_schemas;
+        let failed_schemas = tree_view.failed_schemas;
         let search_incomplete = has_filter && searchable_schemas < total_schemas;
         if search_incomplete {
             header_text.push_str(&format!(
@@ -328,129 +270,8 @@ impl Render for TableTreePanel {
                 header_bar
             };
 
-        for s in schemas {
-            let name = s.name.clone();
-            let exp = expanded_snapshot.get(&name);
-            let is_expanded = self.open_schemas.contains(&name) || has_filter;
-            let is_sys = is_system_schema(&name);
-
-            tree_rows.push(TreeRow::Schema {
-                name: name.clone(),
-                is_expanded,
-                is_system: is_sys,
-            });
-
-            // 展开内容
-            if is_expanded && let Some((loading, tables, error)) = exp {
-                if *loading {
-                    tree_rows.push(TreeRow::SchemaPlaceholder {
-                        text: "加载 tables…".into(),
-                        is_error: false,
-                    });
-                } else if let Some(e) = error.clone() {
-                    tree_rows.push(TreeRow::SchemaPlaceholder {
-                        text: e,
-                        is_error: true,
-                    });
-                } else if tables.is_empty() {
-                    tree_rows.push(TreeRow::SchemaPlaceholder {
-                        text: "（空）".into(),
-                        is_error: false,
-                    });
-                } else {
-                    // 按 TABLE_TYPE 分组渲染：基础表在前、视图在后
-                    let total_tables = tables.iter().filter(|t| !t.is_view).count();
-                    let total_views = tables.iter().filter(|t| t.is_view).count();
-                    let show_group_header = total_tables > 0 && total_views > 0;
-                    let mut last_was_view: Option<bool> = None;
-                    for t in tables.iter() {
-                        if has_filter
-                            && !name.to_ascii_lowercase().contains(&filter)
-                            && !t.name.to_ascii_lowercase().contains(&filter)
-                        {
-                            continue;
-                        }
-                        if show_group_header && last_was_view != Some(t.is_view) {
-                            let label = if t.is_view {
-                                format!("视图 ({total_views})")
-                            } else {
-                                format!("表 ({total_tables})")
-                            };
-                            tree_rows.push(TreeRow::GroupHeader { text: label });
-                            last_was_view = Some(t.is_view);
-                        }
-                        let cols_key = format!("{}.{}", name, t.name);
-                        let cols_state = self.table_columns.get(&cols_key);
-                        let is_cols_expanded = cols_state.is_some();
-                        let is_sel = selected.as_ref() == Some(&(name.clone(), t.name.clone()));
-                        tree_rows.push(TreeRow::Table {
-                            schema: name.clone(),
-                            name: t.name.clone(),
-                            is_view: t.is_view,
-                            is_cols_expanded,
-                            is_selected: is_sel,
-                        });
-
-                        if let Some(cs) = cols_state {
-                            if cs.loading {
-                                tree_rows.push(TreeRow::TablePlaceholder {
-                                    text: "加载列结构…".into(),
-                                    is_error: false,
-                                });
-                            } else if let Some(err) = cs.error.as_ref() {
-                                tree_rows.push(TreeRow::TablePlaceholder {
-                                    text: format!("加载失败：{err}"),
-                                    is_error: true,
-                                });
-                            } else {
-                                for col in cs.columns.iter() {
-                                    tree_rows.push(TreeRow::Column { col: col.clone() });
-                                }
-                                if !cs.indexes.is_empty() {
-                                    tree_rows.push(TreeRow::SectionLabel {
-                                        text: format!("索引 ({})", cs.indexes.len()),
-                                    });
-                                    for ix in cs.indexes.iter() {
-                                        let prefix = if ix.primary {
-                                            "🔑 PK"
-                                        } else if ix.unique {
-                                            "★ UQ"
-                                        } else {
-                                            "·"
-                                        };
-                                        let line = format!(
-                                            "{prefix}  {}({})",
-                                            ix.name,
-                                            ix.columns.join(", ")
-                                        );
-                                        tree_rows.push(TreeRow::DetailLine { text: line });
-                                    }
-                                }
-                                if !cs.foreign_keys.is_empty() {
-                                    tree_rows.push(TreeRow::SectionLabel {
-                                        text: format!("外键 ({})", cs.foreign_keys.len()),
-                                    });
-                                    for fk in cs.foreign_keys.iter() {
-                                        let line = format!(
-                                            "↗ {} ({}) → {}.{}({})",
-                                            fk.name,
-                                            fk.columns.join(", "),
-                                            fk.ref_schema,
-                                            fk.ref_table,
-                                            fk.ref_columns.join(", ")
-                                        );
-                                        tree_rows.push(TreeRow::DetailLine { text: line });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // uniform_list 行级虚拟化：仅渲染屏幕可见行
-        let tree_rows_rc: Rc<Vec<TreeRow>> = Rc::new(tree_rows);
+        let tree_rows_rc = tree_view.rows;
         let body = uniform_list(
             "mysql-tree-rows",
             tree_rows_rc.len(),

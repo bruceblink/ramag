@@ -20,6 +20,25 @@ use super::file_tree::{Row, build_tree, flatten};
 use super::helpers::{code_letter_color, code_to_letter};
 use super::vcs_view::VcsView;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CommitFilesRowsCacheKey {
+    files_identity: usize,
+    files_len: usize,
+    collapsed_version: u64,
+}
+
+/// Commit 文件树扁平行缓存；选中文件等普通重渲染不再重建整棵目录树。
+pub(super) struct CommitFilesRowsCacheEntry {
+    key: CommitFilesRowsCacheKey,
+    rows: Rc<Vec<Row>>,
+}
+
+impl CommitFilesRowsCacheEntry {
+    fn get(&self, key: &CommitFilesRowsCacheKey) -> Option<Rc<Vec<Row>>> {
+        (self.key == *key).then(|| self.rows.clone())
+    }
+}
+
 impl VcsView {
     /// Commit 详情面板：close 按钮 + 简略 metadata + 文件树
     pub(super) fn render_commit_detail_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -38,7 +57,42 @@ impl VcsView {
         if !self.commit_files_collapsed.remove(&dir_path) {
             self.commit_files_collapsed.insert(dir_path);
         }
+        self.commit_files_collapsed_version = self.commit_files_collapsed_version.wrapping_add(1);
+        self.commit_files_rows_cache.get_mut().take();
         cx.notify();
+    }
+
+    /// 清空 commit 文件树及派生缓存；调用方自行处理请求代次和其它详情状态。
+    pub(super) fn reset_commit_files_tree(&mut self) {
+        self.commit_files = Rc::new(Vec::new());
+        self.commit_files_collapsed.clear();
+        self.commit_files_collapsed_version = self.commit_files_collapsed_version.wrapping_add(1);
+        self.commit_files_rows_cache.get_mut().take();
+    }
+
+    fn commit_files_rows(&self) -> Rc<Vec<Row>> {
+        let key = CommitFilesRowsCacheKey {
+            files_identity: Rc::as_ptr(&self.commit_files) as usize,
+            files_len: self.commit_files.len(),
+            collapsed_version: self.commit_files_collapsed_version,
+        };
+        {
+            let cache = self.commit_files_rows_cache.borrow();
+            if let Some(rows) = cache.as_ref().and_then(|entry| entry.get(&key)) {
+                return rows;
+            }
+        }
+
+        let tree = build_tree(&self.commit_files);
+        let mut rows = Vec::with_capacity(self.commit_files.len().saturating_mul(2));
+        flatten(&tree, 0, "", &self.commit_files_collapsed, &mut rows);
+        let rows = Rc::new(rows);
+        self.commit_files_rows_cache
+            .replace(Some(CommitFilesRowsCacheEntry {
+                key,
+                rows: rows.clone(),
+            }));
+        rows
     }
 }
 
@@ -193,11 +247,8 @@ fn render_files_tree(
         .map(|c| c.id.0.clone())
         .unwrap_or_default();
 
-    let tree = build_tree(&view.commit_files);
-    let mut rows: Vec<Row> = Vec::with_capacity(view.commit_files.len() * 2);
-    flatten(&tree, 0, "", &view.commit_files_collapsed, &mut rows);
-    let rows_rc: Rc<Vec<Row>> = Rc::new(rows);
-    let files_rc: Rc<Vec<FileStatus>> = Rc::new(view.commit_files.clone());
+    let rows_rc = view.commit_files_rows();
+    let files_rc = view.commit_files.clone();
     let total = rows_rc.len();
     let scroll = view.commit_files_scroll.clone();
     let commit_id_rc: Rc<String> = Rc::new(commit_id);
@@ -210,14 +261,13 @@ fn render_files_tree(
             let files_rc = files_rc.clone();
             let commit_id_rc = commit_id_rc.clone();
             move |this, range: Range<usize>, _w, cx| {
-                let selected = this.selected_commit_file.clone();
                 range
                     .map(|i| {
                         render_tree_row(
                             i,
                             &rows_rc[i],
                             &files_rc,
-                            &selected,
+                            &this.selected_commit_file,
                             commit_id_rc.as_str(),
                             fg,
                             muted_fg,
@@ -359,5 +409,36 @@ fn render_tree_row(
             }
             row.into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_rows_cache_requires_matching_files_and_collapse_version() {
+        let rows = Rc::new(vec![Row::File { idx: 0, depth: 0 }]);
+        let key = CommitFilesRowsCacheKey {
+            files_identity: 7,
+            files_len: 1,
+            collapsed_version: 2,
+        };
+        let cache = CommitFilesRowsCacheEntry {
+            key,
+            rows: rows.clone(),
+        };
+
+        let cached = cache.get(&key);
+        assert!(
+            cached
+                .as_ref()
+                .is_some_and(|cached| Rc::ptr_eq(cached, &rows))
+        );
+        let changed = CommitFilesRowsCacheKey {
+            collapsed_version: 3,
+            ..key
+        };
+        assert!(cache.get(&changed).is_none());
     }
 }

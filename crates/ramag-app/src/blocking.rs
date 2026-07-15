@@ -1,5 +1,5 @@
-//! 同步 Git 操作的固定工作线程池。避免状态刷新、diff 等高频调用反复创建 OS 线程，
-//! 同时为 clone / fetch 等慢任务提供明确并发上限。
+//! 应用层 CPU / 文件 I/O 的固定工作线程池。剪贴板缩略图与媒体读写共用，
+//! 避免在 GPUI 前台 executor 阻塞，也避免每次操作新建 OS 线程。
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -28,9 +28,9 @@ impl WorkerPool {
         for index in 0..workers {
             let receiver = receiver.clone();
             std::thread::Builder::new()
-                .name(format!("ramag-git-{index}"))
+                .name(format!("ramag-app-worker-{index}"))
                 .spawn(move || worker_loop(receiver))
-                .map_err(|error| format!("启动 Git worker 失败：{error}"))?;
+                .map_err(|error| format!("启动 app worker 失败：{error}"))?;
         }
         Ok(Self { sender })
     }
@@ -39,10 +39,10 @@ impl WorkerPool {
         match self.sender.try_send(job) {
             Ok(()) => Ok(()),
             Err(mpsc::TrySendError::Full(_)) => {
-                Err(DomainError::Other("Git worker 队列繁忙，请稍后重试".into()))
+                Err(DomainError::Other("app worker 队列繁忙，请稍后重试".into()))
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                Err(DomainError::Other("Git worker pool 已停止".into()))
+                Err(DomainError::Other("app worker pool 已停止".into()))
             }
         }
     }
@@ -53,7 +53,7 @@ fn worker_loop(receiver: Arc<Mutex<mpsc::Receiver<Job>>>) {
         let job = match receiver.lock() {
             Ok(receiver) => receiver.recv(),
             Err(_) => {
-                tracing::warn!("git worker queue lock poisoned");
+                tracing::warn!("app worker queue lock poisoned");
                 return;
             }
         };
@@ -72,7 +72,7 @@ fn pool() -> Result<&'static WorkerPool> {
     }
 }
 
-/// 把同步 Git 操作提交到共享线程池，结果经 oneshot 回传。
+/// 在线程数受控的共享 worker 中执行 CPU / 文件 I/O，避免 UI 工具按任务新建线程。
 pub async fn run_blocking<F, T>(operation: F) -> Result<T>
 where
     F: FnOnce() -> Result<T> + Send + 'static,
@@ -81,12 +81,12 @@ where
     let (sender, receiver) = oneshot::channel();
     pool()?.execute(Box::new(move || {
         let result = catch_unwind(AssertUnwindSafe(operation))
-            .unwrap_or_else(|_| Err(DomainError::Other("Git worker 任务发生 panic".into())));
+            .unwrap_or_else(|_| Err(DomainError::Other("app worker 任务发生 panic".into())));
         let _ = sender.send(result);
     }))?;
     receiver
         .await
-        .unwrap_or_else(|_| Err(DomainError::Other("Git worker 任务异常退出".into())))
+        .unwrap_or_else(|_| Err(DomainError::Other("app worker 任务异常退出".into())))
 }
 
 #[cfg(test)]
@@ -117,7 +117,11 @@ mod tests {
 
             assert!(!names.is_empty());
             assert!(names.len() <= 4);
-            assert!(names.iter().all(|name| name.starts_with("ramag-git-")));
+            assert!(
+                names
+                    .iter()
+                    .all(|name| name.starts_with("ramag-app-worker-"))
+            );
             Ok(())
         })
     }

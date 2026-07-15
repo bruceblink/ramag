@@ -1,9 +1,11 @@
 //! Windows 系统托盘：关窗后应用常驻（剪贴板采集不停），托盘图标可唤回主窗口或退出。
 //! Shell_NotifyIcon 的回调消息必须投递到创建图标的窗口，故专用线程建隐藏窗口跑消息泵，
-//! 事件经 mpsc channel 转出，由 main.rs 计时器轮询消费（与全局热键同款模式）。
+//! 事件经原子位图合并，由 main.rs 计时器轮询消费；重复点击不会堆积无界队列。
 
 use std::mem::size_of;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
 use tracing::{info, warn};
@@ -29,6 +31,8 @@ const TRAY_CALLBACK: u32 = WM_APP + 1;
 const TRAY_ICON_ID: u32 = 1;
 const MENU_CMD_OPEN: u32 = 1;
 const MENU_CMD_QUIT: u32 = 2;
+const EVENT_OPEN: u8 = 1;
+const EVENT_QUIT: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrayEvent {
@@ -40,7 +44,7 @@ pub(crate) enum TrayEvent {
 
 /// 托盘句柄：Drop 时向隐藏窗口投 WM_CLOSE，令消息泵删图标并退出，再 join 回收
 pub(crate) struct TrayIcon {
-    rx: Receiver<TrayEvent>,
+    events: Arc<AtomicU8>,
     hwnd: isize,
     thread: Option<JoinHandle<()>>,
 }
@@ -48,11 +52,12 @@ pub(crate) struct TrayIcon {
 impl TrayIcon {
     /// 安装托盘图标。失败返回 None（调用方回退「关最后窗口即退出」）
     pub(crate) fn install() -> Option<Self> {
-        let (tx, rx) = channel::<TrayEvent>();
-        let (ready_tx, ready_rx) = channel::<Option<isize>>();
+        let events = Arc::new(AtomicU8::new(0));
+        let thread_events = events.clone();
+        let (ready_tx, ready_rx) = sync_channel::<Option<isize>>(1);
         let thread = match std::thread::Builder::new()
             .name("ramag-tray".into())
-            .spawn(move || tray_thread(tx, ready_tx))
+            .spawn(move || tray_thread(thread_events, ready_tx))
         {
             Ok(thread) => thread,
             Err(error) => {
@@ -64,7 +69,7 @@ impl TrayIcon {
             Ok(Some(hwnd)) => {
                 info!("tray icon installed");
                 Some(Self {
-                    rx,
+                    events,
                     hwnd,
                     thread: Some(thread),
                 })
@@ -83,7 +88,14 @@ impl TrayIcon {
 
     /// 非阻塞取一条托盘事件
     pub(crate) fn poll(&self) -> Option<TrayEvent> {
-        self.rx.try_recv().ok()
+        let events = self.events.swap(0, Ordering::AcqRel);
+        if events & EVENT_QUIT != 0 {
+            Some(TrayEvent::Quit)
+        } else if events & EVENT_OPEN != 0 {
+            Some(TrayEvent::Open)
+        } else {
+            None
+        }
     }
 }
 
@@ -113,9 +125,9 @@ fn join_thread(thread: JoinHandle<()>) {
     }
 }
 
-/// 托盘线程：注册窗口类 → 建隐藏窗口（携带 Sender）→ 挂托盘图标 → 消息泵
-fn tray_thread(tx: Sender<TrayEvent>, ready_tx: Sender<Option<isize>>) {
-    let hwnd = match create_tray_window(tx) {
+/// 托盘线程：注册窗口类 → 建隐藏窗口（携带事件位图）→ 挂托盘图标 → 消息泵
+fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
+    let hwnd = match create_tray_window(events) {
         Ok(hwnd) => hwnd,
         Err(reason) => {
             warn!(reason, "create tray window failed");
@@ -162,8 +174,8 @@ fn pump_messages() {
     }
 }
 
-/// 注册窗口类并创建隐藏窗口；Sender 经 lpCreateParams 交给 WndProc（WM_DESTROY 回收）
-fn create_tray_window(tx: Sender<TrayEvent>) -> Result<HWND, &'static str> {
+/// 注册窗口类并创建隐藏窗口；事件位图经 lpCreateParams 交给 WndProc（WM_DESTROY 回收）
+fn create_tray_window(events: Arc<AtomicU8>) -> Result<HWND, &'static str> {
     unsafe {
         let instance = GetModuleHandleW(None).map_err(|_| "GetModuleHandleW failed")?;
         let class = WNDCLASSW {
@@ -175,7 +187,7 @@ fn create_tray_window(tx: Sender<TrayEvent>) -> Result<HWND, &'static str> {
         // 返回 0 且类已存在（进程内重装）可容忍，交给 CreateWindowExW 判定
         let _ = RegisterClassW(&class);
 
-        let tx_ptr = Box::into_raw(Box::new(tx));
+        let events_ptr = Box::into_raw(Box::new(events));
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("RamagTrayWindow"),
@@ -188,10 +200,10 @@ fn create_tray_window(tx: Sender<TrayEvent>) -> Result<HWND, &'static str> {
             None,
             None,
             instance,
-            Some(tx_ptr.cast()),
+            Some(events_ptr.cast()),
         );
         if hwnd.0 == 0 {
-            drop(Box::from_raw(tx_ptr));
+            drop(Box::from_raw(events_ptr));
             return Err("CreateWindowExW failed");
         }
         Ok(hwnd)
@@ -266,11 +278,13 @@ fn show_tray_menu(hwnd: HWND) -> Option<u32> {
 }
 
 fn send_event(hwnd: HWND, event: TrayEvent) {
-    let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Sender<TrayEvent>;
-    if let Some(tx) = unsafe { ptr.as_ref() }
-        && tx.send(event).is_err()
-    {
-        warn!("tray event receiver dropped");
+    let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Arc<AtomicU8>;
+    if let Some(events) = unsafe { ptr.as_ref() } {
+        let bit = match event {
+            TrayEvent::Open => EVENT_OPEN,
+            TrayEvent::Quit => EVENT_QUIT,
+        };
+        events.fetch_or(bit, Ordering::Release);
     }
 }
 
@@ -282,7 +296,7 @@ unsafe extern "system" fn tray_wndproc(
 ) -> LRESULT {
     match msg {
         WM_NCCREATE => {
-            // lpCreateParams 是 Box<Sender>，存入窗口 userdata 供回调取用
+            // lpCreateParams 是 Box<Arc<AtomicU8>>，存入窗口 userdata 供回调取用
             let create = lparam.0 as *const CREATESTRUCTW;
             if let Some(create) = unsafe { create.as_ref() } {
                 unsafe {
@@ -313,8 +327,8 @@ unsafe extern "system" fn tray_wndproc(
             unsafe {
                 // 图标未挂载时删除失败无害（幂等）
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
-                // 回收 Sender，阻断后续事件发送
-                let ptr = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Sender<TrayEvent>;
+                // 回收事件位图句柄，阻断后续事件发送
+                let ptr = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Arc<AtomicU8>;
                 if !ptr.is_null() {
                     drop(Box::from_raw(ptr));
                 }

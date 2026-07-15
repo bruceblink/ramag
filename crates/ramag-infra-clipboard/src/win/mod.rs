@@ -7,7 +7,6 @@ mod clipboard_owner;
 mod hotkey;
 mod shell;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -22,13 +21,13 @@ use ramag_domain::entities::{CapturedClip, ClipSource};
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::ClipboardDriver;
 
-use crate::media;
+use crate::{icon_cache::IconCache, media};
 
 pub struct WinClipboardDriver {
     /// 最近一次本应用写回产生的序列号，采集循环据此跳过自写回
     own_change: AtomicI64,
     media: media::MediaStore,
-    icon_cache: Mutex<HashMap<String, Option<Arc<Vec<u8>>>>>,
+    icon_cache: Mutex<IconCache>,
     last_source: Mutex<Option<ClipSource>>,
 }
 
@@ -37,7 +36,7 @@ impl WinClipboardDriver {
         Self {
             own_change: AtomicI64::new(-1),
             media: media::MediaStore::new(),
-            icon_cache: Mutex::new(HashMap::new()),
+            icon_cache: Mutex::new(IconCache::default()),
             last_source: Mutex::new(None),
         }
     }
@@ -101,12 +100,13 @@ impl ClipboardDriver for WinClipboardDriver {
     }
 
     fn app_icon_png(&self, bundle_id: &str) -> Option<Arc<Vec<u8>>> {
-        let mut cache = self.icon_cache.lock();
-        if let Some(hit) = cache.get(bundle_id) {
-            return hit.clone();
+        if let Some(hit) = self.icon_cache.lock().get(bundle_id) {
+            return hit;
         }
         let icon = app::app_icon_png(bundle_id).map(Arc::new);
-        cache.insert(bundle_id.to_string(), icon.clone());
+        self.icon_cache
+            .lock()
+            .insert(bundle_id.to_string(), icon.clone());
         icon
     }
 

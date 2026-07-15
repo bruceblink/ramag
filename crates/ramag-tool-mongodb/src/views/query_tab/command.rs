@@ -86,11 +86,12 @@ pub(super) fn dangerous_command_reason(command: &Value) -> Option<String> {
 }
 
 pub(super) fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        text.to_string()
-    } else {
-        format!("{}…", text.chars().take(max_chars).collect::<String>())
+    let mut chars = text.chars();
+    let mut preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        preview.push('…');
     }
+    preview
 }
 
 pub(super) fn default_command_template() -> String {

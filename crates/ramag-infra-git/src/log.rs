@@ -4,15 +4,22 @@
 use std::path::Path;
 
 use ramag_domain::entities::{Commit, CommitId, LogOptions, Signature};
-use ramag_domain::error::Result;
+use ramag_domain::error::{DomainError, Result};
 
-use crate::git_cmd::{run_git_bytes, run_git_text};
+use crate::git_cmd::{
+    ensure_git_list_room, ensure_git_message_size, run_git_probe, run_git_text,
+    validate_positional_arg,
+};
 
 const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%P%x1f%D%x1f%s%x1f%b%x1e";
 
 pub fn run_log(repo_path: &Path, opts: &LogOptions) -> Result<Vec<Commit>> {
+    if let Some(start) = &opts.start {
+        validate_positional_arg(start, "日志起点")?;
+    }
     // 新初始化仓库没有 HEAD；这是正常空态，不应把 git log 的 fatal 暴露给用户。
-    if opts.start.is_none() && run_git_bytes(repo_path, &["rev-parse", "--verify", "HEAD"]).is_err()
+    if opts.start.is_none()
+        && !run_git_probe(repo_path, &["rev-parse", "--verify", "--quiet", "HEAD"])?
     {
         return Ok(Vec::new());
     }
@@ -43,46 +50,70 @@ pub fn run_log(repo_path: &Path, opts: &LogOptions) -> Result<Vec<Commit>> {
     }
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = run_git_text(repo_path, &args_ref)?;
-    Ok(parse_log_output(&out))
+    parse_log_output(&out)
 }
 
-fn parse_log_output(text: &str) -> Vec<Commit> {
-    text.split('\x1e')
-        .filter_map(|r| {
-            let trimmed = r.trim_start_matches('\n');
-            if trimmed.is_empty() {
-                None
-            } else {
-                parse_record(trimmed)
-            }
-        })
-        .collect()
+fn parse_log_output(text: &str) -> Result<Vec<Commit>> {
+    let mut commits = Vec::new();
+    for (index, record) in text.split('\x1e').enumerate() {
+        let trimmed = record.trim_start_matches('\n');
+        if trimmed.is_empty() {
+            continue;
+        }
+        ensure_git_list_room(commits.len(), "Git 日志列表")?;
+        ensure_git_message_size(trimmed.as_bytes(), "Git 日志记录", index + 1)?;
+        let commit = parse_record(trimmed).map_err(|reason| {
+            DomainError::QueryFailed(format!(
+                "解析 Git 日志第 {} 条记录失败：{reason}",
+                index + 1
+            ))
+        })?;
+        commits.push(commit);
+    }
+    Ok(commits)
 }
 
-fn parse_record(record: &str) -> Option<Commit> {
+fn parse_record(record: &str) -> std::result::Result<Commit, String> {
     let mut fields = record.splitn(11, '\x1f');
-    let hash = fields.next()?.trim();
-    let author_name = fields.next()?;
-    let author_email = fields.next()?;
-    let author_ts = fields.next()?.parse::<i64>().ok()?;
-    let committer_name = fields.next()?;
-    let committer_email = fields.next()?;
-    let committer_ts = fields.next()?.parse::<i64>().ok()?;
-    let parents_str = fields.next()?;
+    let hash = fields.next().ok_or("缺少 commit id")?.trim();
+    if hash.is_empty() {
+        return Err("commit id 为空".into());
+    }
+    let author_name = fields.next().ok_or("缺少作者名")?;
+    let author_email = fields.next().ok_or("缺少作者邮箱")?;
+    let author_ts = fields
+        .next()
+        .ok_or("缺少作者时间")?
+        .parse::<i64>()
+        .map_err(|error| format!("作者时间非整数：{error}"))?;
+    let committer_name = fields.next().ok_or("缺少提交者名")?;
+    let committer_email = fields.next().ok_or("缺少提交者邮箱")?;
+    let committer_ts = fields
+        .next()
+        .ok_or("缺少提交时间")?
+        .parse::<i64>()
+        .map_err(|error| format!("提交时间非整数：{error}"))?;
+    let parents_str = fields.next().ok_or("缺少父提交字段")?;
     // %D：decorate refs（"HEAD -> main, origin/main, tag: v1.0"），逗号分隔
     let refs: Vec<String> = fields
-        .next()?
+        .next()
+        .ok_or("缺少引用字段")?
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect();
-    let subject = fields.next()?.to_string();
+    let subject = fields.next().ok_or("缺少提交主题")?.to_string();
     let body = fields
         .next()
-        .unwrap_or("")
+        .ok_or("缺少提交正文字段")?
         .trim_end_matches('\n')
         .to_string();
+
+    let author_timestamp = chrono::DateTime::from_timestamp(author_ts, 0)
+        .ok_or_else(|| format!("作者时间超出支持范围：{author_ts}"))?;
+    let committer_timestamp = chrono::DateTime::from_timestamp(committer_ts, 0)
+        .ok_or_else(|| format!("提交时间超出支持范围：{committer_ts}"))?;
 
     let parents = parents_str
         .split_whitespace()
@@ -90,18 +121,18 @@ fn parse_record(record: &str) -> Option<Commit> {
         .map(|p| CommitId(p.to_string()))
         .collect();
 
-    Some(Commit {
+    Ok(Commit {
         id: CommitId(hash.to_string()),
         parents,
         author: Signature {
             name: author_name.to_string(),
             email: author_email.to_string(),
-            timestamp: chrono::DateTime::from_timestamp(author_ts, 0).unwrap_or_default(),
+            timestamp: author_timestamp,
         },
         committer: Signature {
             name: committer_name.to_string(),
             email: committer_email.to_string(),
-            timestamp: chrono::DateTime::from_timestamp(committer_ts, 0).unwrap_or_default(),
+            timestamp: committer_timestamp,
         },
         subject,
         body,
@@ -114,9 +145,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_two_records() {
+    fn parses_two_records() -> Result<()> {
         let raw = "abc123\x1fAlice\x1falice@x.com\x1f1700000000\x1fAlice\x1falice@x.com\x1f1700000000\x1f\x1fHEAD -> main, tag: v1.0\x1ffirst commit\x1f\x1edef456\x1fBob\x1fbob@x.com\x1f1700001000\x1fBob\x1fbob@x.com\x1f1700001000\x1fabc123\x1f\x1ffix bug\x1ffull body\x1e";
-        let commits = parse_log_output(raw);
+        let commits = parse_log_output(raw)?;
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id.0, "abc123");
         assert_eq!(commits[0].subject, "first commit");
@@ -126,10 +157,26 @@ mod tests {
         assert_eq!(commits[1].parents[0].0, "abc123");
         assert_eq!(commits[1].body, "full body");
         assert!(commits[1].refs.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn empty_input() {
-        assert_eq!(parse_log_output("").len(), 0);
+    fn empty_input() -> Result<()> {
+        assert_eq!(parse_log_output("")?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_record_is_reported() {
+        let raw = "abc123\x1fAlice\x1falice@x.com\x1fnot-a-time\x1e";
+        assert!(parse_log_output(raw).is_err());
+    }
+
+    #[test]
+    fn non_repository_error_is_not_treated_as_empty_history()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        assert!(run_log(temp.path(), &LogOptions::default()).is_err());
+        Ok(())
     }
 }

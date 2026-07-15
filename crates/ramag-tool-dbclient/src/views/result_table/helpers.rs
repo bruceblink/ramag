@@ -151,6 +151,29 @@ pub(super) fn open_cell_editor(
 
 /// 比较两个 Value：Null 视为最小，同型按值比较，跨型用字符串兜底
 pub(super) fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    compare_values_inner(a, b, |left, right| {
+        display_sort_key(left).cmp(&display_sort_key(right))
+    })
+}
+
+/// 预计算展示排序键后比较，避免 JSON / 混合类型在 O(N log N) 比较中反复序列化。
+pub(super) fn compare_values_with_display_keys(
+    a: Option<&Value>,
+    b: Option<&Value>,
+    a_key: Option<&str>,
+    b_key: Option<&str>,
+) -> std::cmp::Ordering {
+    compare_values_inner(a, b, |left, right| match (a_key, b_key) {
+        (Some(left), Some(right)) => left.cmp(right),
+        _ => compare_values(Some(left), Some(right)),
+    })
+}
+
+fn compare_values_inner(
+    a: Option<&Value>,
+    b: Option<&Value>,
+    fallback: impl FnOnce(&Value, &Value) -> std::cmp::Ordering,
+) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
         (None, None) => Ordering::Equal,
@@ -172,10 +195,50 @@ pub(super) fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::
             (Value::Text(a), Value::Text(b)) => a.cmp(b),
             (Value::DateTime(a), Value::DateTime(b)) => a.cmp(b),
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
-            _ => x
-                .display_preview(usize::MAX)
-                .cmp(&y.display_preview(usize::MAX)),
+            _ => fallback(x, y),
         },
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DirectSortKind {
+    Bool,
+    Numeric,
+    Text,
+    Bytes,
+    DateTime,
+}
+
+/// 同列只有直接可比类型时无需展示键；JSON 或混合类型才预计算一次完整字符串。
+pub(super) fn needs_display_sort_keys<'a>(
+    values: impl IntoIterator<Item = Option<&'a Value>>,
+) -> bool {
+    let mut kind = None;
+    for value in values.into_iter().flatten() {
+        let current = match value {
+            Value::Null => continue,
+            Value::Bool(_) => DirectSortKind::Bool,
+            Value::Int(_) | Value::Float(_) => DirectSortKind::Numeric,
+            Value::Text(_) => DirectSortKind::Text,
+            Value::Bytes(_) => DirectSortKind::Bytes,
+            Value::DateTime(_) => DirectSortKind::DateTime,
+            Value::Json(_) => return true,
+        };
+        if kind.is_some_and(|previous| previous != current) {
+            return true;
+        }
+        kind = Some(current);
+    }
+    false
+}
+
+/// 与 `display_preview(usize::MAX)` 等价，但避免 Text / JSON 先完整复制再二次复制。
+pub(super) fn display_sort_key(value: &Value) -> String {
+    match value {
+        Value::Text(text) if text.contains(['\n', '\r']) => text.replace(['\n', '\r'], " "),
+        Value::Text(text) => text.clone(),
+        Value::Json(json) => json.to_string(),
+        other => other.display_preview(usize::MAX),
     }
 }
 

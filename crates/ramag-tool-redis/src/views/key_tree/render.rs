@@ -1,5 +1,7 @@
 //! 单行渲染 + 类型徽标。`impl KeyTreePanel`，闭包内调 select_key / toggle_expanded
 
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px,
@@ -8,58 +10,38 @@ use gpui_component::{
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
-use ramag_domain::entities::RedisType;
+use ramag_domain::entities::{RedisType, contains_case_insensitive};
 
-use super::tree::{TreeNode, VisibleRow, collect_namespace_paths, has_match_descendant};
-use super::{INDENT_PX, KeyTreePanel};
+use super::tree::{TreeNode, VisibleRow, collect_namespace_paths};
+use super::{INDENT_PX, KeyTreePanel, VisibleRowsCacheEntry, VisibleRowsCacheKey};
 
 impl KeyTreePanel {
-    fn matches_query(&self, key: &str) -> bool {
-        self.query.is_empty() || key.to_lowercase().contains(&self.query)
-    }
-
-    /// 把树扁平化为可见行列表（owned 结构，避免与 cx.listener 借用冲突）
-    pub(super) fn flatten_visible(&self) -> Vec<VisibleRow> {
-        let mut out = Vec::new();
-        let in_search = !self.query.is_empty();
-        for node in &self.tree {
-            self.collect_visible(node, 0, in_search, &mut out);
-        }
-        out
-    }
-
-    fn collect_visible(
-        &self,
-        node: &TreeNode,
-        depth: usize,
-        in_search: bool,
-        out: &mut Vec<VisibleRow>,
-    ) {
-        let leaf_match = node.is_key && self.matches_query(&node.full_path);
-        let descendant_match = node.is_namespace() && has_match_descendant(node, &self.query);
-        if in_search && !leaf_match && !descendant_match {
-            return;
-        }
-        let is_namespace = node.is_namespace();
-        let is_expanded = if in_search {
-            descendant_match
-        } else {
-            self.expanded.contains(&node.full_path)
+    /// 当前可见行与叶子数；选中态等普通重渲染直接复用，不重复克隆整棵树。
+    pub(super) fn visible_rows(&self) -> (Rc<Vec<VisibleRow>>, usize) {
+        let key = VisibleRowsCacheKey {
+            tree_revision: self.tree_revision,
+            expanded_revision: self.expanded_revision,
+            query: self.query.clone(),
         };
-        out.push(VisibleRow {
-            depth,
-            label: node.label.clone(),
-            full_path: node.full_path.clone(),
-            is_key: node.is_key,
-            leaf_type: node.leaf_type,
-            is_namespace,
-            is_expanded,
-        });
-        if is_namespace && is_expanded {
-            for child in &node.children {
-                self.collect_visible(child, depth + 1, in_search, out);
+        {
+            let cache = self.visible_rows_cache.borrow();
+            if let Some(cached) = cache.as_ref().and_then(|entry| entry.get(&key)) {
+                return cached;
             }
         }
+
+        let rows = Rc::new(flatten_visible_rows(
+            &self.tree,
+            &self.expanded,
+            &self.query,
+        ));
+        let leaf_count = rows.iter().filter(|row| row.is_key).count();
+        self.visible_rows_cache.replace(Some(VisibleRowsCacheEntry {
+            key,
+            rows: rows.clone(),
+            leaf_count,
+        }));
+        (rows, leaf_count)
     }
 
     pub(super) fn expand_all(&mut self, cx: &mut Context<Self>) {
@@ -67,11 +49,15 @@ impl KeyTreePanel {
         for node in &self.tree {
             collect_namespace_paths(node, &mut self.expanded);
         }
+        self.expanded_revision = self.expanded_revision.wrapping_add(1);
+        self.visible_rows_cache.get_mut().take();
         cx.notify();
     }
 
     pub(super) fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.expanded.clear();
+        self.expanded_revision = self.expanded_revision.wrapping_add(1);
+        self.visible_rows_cache.get_mut().take();
         cx.notify();
     }
 
@@ -211,6 +197,78 @@ impl KeyTreePanel {
     }
 }
 
+/// 把 Trie 扁平化为可见行。搜索模式走单次后序判定，避免每层重复扫描整棵子树。
+fn flatten_visible_rows(
+    tree: &[TreeNode],
+    expanded: &std::collections::HashSet<String>,
+    query: &str,
+) -> Vec<VisibleRow> {
+    let mut rows = Vec::new();
+    if query.is_empty() {
+        for node in tree {
+            collect_expanded_rows(node, 0, expanded, &mut rows);
+        }
+    } else {
+        for node in tree {
+            collect_search_rows(node, 0, query, &mut rows);
+        }
+    }
+    rows
+}
+
+fn collect_expanded_rows(
+    node: &TreeNode,
+    depth: usize,
+    expanded: &std::collections::HashSet<String>,
+    rows: &mut Vec<VisibleRow>,
+) {
+    let is_namespace = node.is_namespace();
+    let is_expanded = is_namespace && expanded.contains(&node.full_path);
+    rows.push(visible_row(node, depth, is_expanded));
+    if is_expanded {
+        for child in &node.children {
+            collect_expanded_rows(child, depth + 1, expanded, rows);
+        }
+    }
+}
+
+/// 返回当前节点子树是否含匹配 key；命中时已按父节点在前的顺序写入 rows。
+fn collect_search_rows(
+    node: &TreeNode,
+    depth: usize,
+    query: &str,
+    rows: &mut Vec<VisibleRow>,
+) -> bool {
+    let row_index = rows.len();
+    rows.push(visible_row(node, depth, false));
+
+    let self_matches = node.is_key && contains_case_insensitive(&node.full_path, query);
+    let mut descendant_matches = false;
+    for child in &node.children {
+        descendant_matches |= collect_search_rows(child, depth + 1, query, rows);
+    }
+
+    if self_matches || descendant_matches {
+        rows[row_index].is_expanded = node.is_namespace();
+        true
+    } else {
+        rows.truncate(row_index);
+        false
+    }
+}
+
+fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool) -> VisibleRow {
+    VisibleRow {
+        depth,
+        label: node.label.clone(),
+        full_path: node.full_path.clone(),
+        is_key: node.is_key,
+        leaf_type: node.leaf_type,
+        is_namespace: node.is_namespace(),
+        is_expanded,
+    }
+}
+
 /// 不同类型用不同色块（与 RedisInsight / zedis 配色靠拢）
 ///
 /// 接受一个 fallback（None 类型 / theme.muted 等场景）避免依赖完整 theme 引用
@@ -224,5 +282,38 @@ fn type_color_solid(kind: RedisType, fallback: gpui::Hsla) -> gpui::Hsla {
         RedisType::ZSet => hsla(20.0 / 360.0, 0.7, 0.55, 1.0),
         RedisType::Stream => hsla(330.0 / 360.0, 0.55, 0.55, 1.0),
         RedisType::None => fallback,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::KeyMeta;
+
+    #[test]
+    fn search_flatten_visits_each_matching_branch_once() {
+        let keys = vec![
+            KeyMeta::bare("user:1:profile"),
+            KeyMeta::bare("user:2:settings"),
+            KeyMeta::bare("session:abc"),
+        ];
+        let tree = super::super::tree::build_tree(&keys);
+        let rows = flatten_visible_rows(&tree, &std::collections::HashSet::new(), "profile");
+        let paths: Vec<&str> = rows.iter().map(|row| row.full_path.as_str()).collect();
+
+        assert_eq!(paths, vec!["user", "user:1", "user:1:profile"]);
+        assert!(rows[0].is_expanded);
+        assert!(rows[1].is_expanded);
+        assert!(!rows[2].is_expanded);
+    }
+
+    #[test]
+    fn search_flatten_keeps_bare_key_without_type() {
+        let tree = super::super::tree::build_tree(&[KeyMeta::bare("111")]);
+        let rows = flatten_visible_rows(&tree, &std::collections::HashSet::new(), "111");
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_key);
+        assert!(rows[0].leaf_type.is_none());
     }
 }

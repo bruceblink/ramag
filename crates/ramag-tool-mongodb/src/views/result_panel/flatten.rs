@@ -12,6 +12,10 @@ use serde_json::Value;
 
 use super::cell::{Cell, cell_for_value, extjson_cell};
 
+const MAX_TABLE_COLUMNS: usize = 512;
+const MAX_TABLE_CELLS: usize = 2_000_000;
+const MAX_COMPLETION_PATHS: usize = 10_000;
+
 /// 单列元信息
 #[derive(Debug, Clone)]
 pub struct Column {
@@ -25,6 +29,8 @@ pub struct Column {
 #[derive(Debug, Clone, Default)]
 pub struct FlatTable {
     pub columns: Vec<Column>,
+    /// 截断前发现的联合列总数；大于 columns.len() 表示表格矩阵按资源预算裁剪。
+    pub total_columns: usize,
     /// 每行 = 列对齐的 cell 字符串（缺字段填空字符串，kind=null）
     pub rows: Vec<Vec<Cell>>,
 }
@@ -32,11 +38,18 @@ pub struct FlatTable {
 impl FlatTable {
     /// 在最左插入前导列（下钻时展示祖先文档 id）。`lead_rows[i]` 与第 i 行对齐、
     /// 长度与 `lead` 一致；行数不足处补空。lead 为空则不动
-    pub fn prepend_lead(&mut self, lead: Vec<Column>, lead_rows: Vec<Vec<Cell>>) {
+    pub fn prepend_lead(&mut self, mut lead: Vec<Column>, lead_rows: Vec<Vec<Cell>>) {
         if lead.is_empty() {
             return;
         }
-        let n = lead.len();
+        let discovered = lead.len();
+        self.total_columns = self.total_columns.saturating_add(discovered);
+        let n = self.lead_capacity().min(discovered);
+        if n == 0 {
+            return;
+        }
+        // 预算不足时保留更接近当前层的祖先列。
+        lead.drain(..discovered - n);
         let empty = Cell {
             text: String::new(),
             kind: "null",
@@ -46,10 +59,39 @@ impl FlatTable {
         self.columns = cols;
         for (i, row) in self.rows.iter_mut().enumerate() {
             let mut head = lead_rows.get(i).cloned().unwrap_or_default();
+            if head.len() > n {
+                head.drain(..head.len() - n);
+            }
             head.resize(n, empty.clone());
             head.append(row);
             *row = head;
         }
+    }
+
+    /// 下钻层的祖先值对所有行相同；直接逐行写入，避免先构造完整 `lead_rows` 中间矩阵。
+    pub fn prepend_constant_lead(&mut self, lead: Vec<(Column, Cell)>) {
+        if lead.is_empty() {
+            return;
+        }
+        let discovered = lead.len();
+        self.total_columns = self.total_columns.saturating_add(discovered);
+        let n = self.lead_capacity().min(discovered);
+        if n == 0 {
+            return;
+        }
+        let kept = lead.into_iter().skip(discovered - n);
+        let (mut columns, cells): (Vec<_>, Vec<_>) = kept.unzip();
+        columns.append(&mut self.columns);
+        self.columns = columns;
+        for row in &mut self.rows {
+            let mut head = cells.clone();
+            head.append(row);
+            *row = head;
+        }
+    }
+
+    fn lead_capacity(&self) -> usize {
+        table_column_limit(self.rows.len()).saturating_sub(self.columns.len())
     }
 }
 
@@ -92,6 +134,8 @@ pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> Fla
         _ => std::cmp::Ordering::Equal,
     });
 
+    let total_columns = col_order.len();
+    col_order.truncate(table_column_limit(docs.len()));
     let columns: Vec<Column> = col_order
         .iter()
         .map(|p| Column {
@@ -106,20 +150,25 @@ pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> Fla
         kind: "null",
     };
     let rows: Vec<Vec<Cell>> = flat_rows
-        .iter()
-        .map(|row| {
+        .into_iter()
+        .map(|mut row| {
             columns
                 .iter()
-                .map(|c| {
-                    row.get(&c.path)
-                        .cloned()
-                        .unwrap_or_else(|| empty_cell.clone())
-                })
+                .map(|c| row.remove(&c.path).unwrap_or_else(|| empty_cell.clone()))
                 .collect()
         })
         .collect();
 
-    FlatTable { columns, rows }
+    FlatTable {
+        columns,
+        total_columns,
+        rows,
+    }
+}
+
+fn table_column_limit(row_count: usize) -> usize {
+    let cell_limited = MAX_TABLE_CELLS / row_count.max(1);
+    MAX_TABLE_COLUMNS.min(cell_limited.max(1))
 }
 
 /// 扁平化单文档：默认只解析第一层；expanded 含某对象路径则递归展开成 dotted-path 子列
@@ -178,6 +227,9 @@ fn collect_into(
     out: &mut BTreeSet<String>,
 ) {
     for (k, vv) in map {
+        if out.len() >= MAX_COMPLETION_PATHS {
+            return;
+        }
         let path = if prefix.is_empty() {
             k.clone()
         } else {
@@ -213,6 +265,20 @@ mod tests {
         assert_eq!(t.columns.len(), 2);
         let a = t.columns.iter().find(|c| c.path == "a").unwrap();
         assert_eq!(a.kind, "int");
+    }
+
+    #[test]
+    fn sparse_column_matrix_is_bounded() {
+        let docs: Vec<_> = (0..(MAX_TABLE_COLUMNS + 1))
+            .map(|index| json!({(format!("field_{index}")): index}))
+            .collect();
+
+        let table = build_flat_table(&docs);
+
+        assert_eq!(table.total_columns, MAX_TABLE_COLUMNS + 1);
+        assert_eq!(table.columns.len(), MAX_TABLE_COLUMNS);
+        assert_eq!(table.rows.len(), docs.len());
+        assert_eq!(table_column_limit(50_000), 40);
     }
 
     #[test]
@@ -460,5 +526,38 @@ mod tests {
         assert_eq!(t.rows[1][0].text, "p2");
         // 每行列数 = 前导 1 + 原 1
         assert_eq!(t.rows[0].len(), t.columns.len());
+    }
+
+    #[test]
+    fn constant_lead_shares_column_and_cell_budget() {
+        let empty = Cell {
+            text: String::new(),
+            kind: "null",
+        };
+        let mut table = FlatTable {
+            columns: (0..MAX_TABLE_COLUMNS)
+                .map(|index| Column {
+                    path: format!("c{index}"),
+                    kind: "text",
+                })
+                .collect(),
+            total_columns: MAX_TABLE_COLUMNS,
+            rows: vec![vec![empty; MAX_TABLE_COLUMNS]],
+        };
+
+        table.prepend_constant_lead(vec![(
+            Column {
+                path: "parent".into(),
+                kind: "text",
+            },
+            Cell {
+                text: "id".into(),
+                kind: "text",
+            },
+        )]);
+
+        assert_eq!(table.columns.len(), MAX_TABLE_COLUMNS);
+        assert_eq!(table.rows[0].len(), MAX_TABLE_COLUMNS);
+        assert_eq!(table.total_columns, MAX_TABLE_COLUMNS + 1);
     }
 }

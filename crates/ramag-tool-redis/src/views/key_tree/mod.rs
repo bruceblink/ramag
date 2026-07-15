@@ -7,6 +7,7 @@ mod render;
 mod scan;
 mod tree;
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
@@ -29,6 +30,25 @@ use ramag_domain::entities::{ConnectionConfig, KeyMeta};
 use ramag_ui::platform::primary_shortcut;
 
 use tree::{TreeNode, VisibleRow, build_tree};
+
+#[derive(Clone, PartialEq, Eq)]
+struct VisibleRowsCacheKey {
+    tree_revision: u64,
+    expanded_revision: u64,
+    query: String,
+}
+
+struct VisibleRowsCacheEntry {
+    key: VisibleRowsCacheKey,
+    rows: Rc<Vec<VisibleRow>>,
+    leaf_count: usize,
+}
+
+impl VisibleRowsCacheEntry {
+    fn get(&self, key: &VisibleRowsCacheKey) -> Option<(Rc<Vec<VisibleRow>>, usize)> {
+        (self.key == *key).then(|| (self.rows.clone(), self.leaf_count))
+    }
+}
 
 /// 每次追加加载的 key 数（防止首次进入大库即占用过多内存）
 const KEYS_PAGE_SIZE: usize = 5_000;
@@ -77,7 +97,13 @@ pub struct KeyTreePanel {
     tree: Vec<TreeNode>,
     /// 已展开的命名空间路径集合（按 full_path 索引）
     expanded: HashSet<String>,
+    /// Trie 内容与展开状态代次；可见行缓存只依赖这两者和查询词。
+    tree_revision: u64,
+    expanded_revision: u64,
+    visible_rows_cache: RefCell<Option<VisibleRowsCacheEntry>>,
     loading: bool,
+    /// 至少收到过一批有效 SCAN 回包；空数据库也算已加载，避免 Tab 激活时反复重扫。
+    has_loaded: bool,
     error: Option<String>,
     /// 客户端搜索框 / 关键字（小写）
     search: Entity<InputState>,
@@ -140,7 +166,11 @@ impl KeyTreePanel {
             seen_keys: HashSet::new(),
             tree: Vec::new(),
             expanded: HashSet::new(),
+            tree_revision: 0,
+            expanded_revision: 0,
+            visible_rows_cache: RefCell::new(None),
             loading: false,
+            has_loaded: false,
             error: None,
             search,
             query: String::new(),
@@ -172,8 +202,9 @@ impl KeyTreePanel {
         self.error = None;
         self.keys.clear();
         self.seen_keys.clear();
-        self.tree.clear();
+        self.clear_tree();
         self.expanded.clear();
+        self.expanded_revision = self.expanded_revision.wrapping_add(1);
         self.truncated = false;
         self.resume_cursor = None;
         self.scan_target = KEYS_PAGE_SIZE;
@@ -181,6 +212,7 @@ impl KeyTreePanel {
         // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，这里清 loading
         // 让新目标的 refresh 不被防重入拒绝
         self.loading = false;
+        self.has_loaded = false;
         if self.config.is_some() {
             self.refresh(cx);
         } else {
@@ -196,7 +228,7 @@ impl KeyTreePanel {
     /// 会话 Tab 被（重新）激活时调用：仅当从未成功加载（无 key 且非加载中）才 SCAN，
     /// 避免每次切 Tab 都重置展开/选中。首次加载失败留下的空状态会在下次激活时自动重试
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
-        if self.config.is_some() && self.keys.is_empty() && !self.loading {
+        if should_ensure_loaded(self.config.is_some(), self.has_loaded, self.loading) {
             self.refresh(cx);
         }
     }
@@ -212,6 +244,14 @@ impl KeyTreePanel {
                 }
             }
         }
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        self.visible_rows_cache.get_mut().take();
+    }
+
+    fn clear_tree(&mut self) {
+        self.tree.clear();
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        self.visible_rows_cache.get_mut().take();
     }
 
     fn select_key(&mut self, key: String, cx: &mut Context<Self>) {
@@ -231,12 +271,22 @@ impl KeyTreePanel {
         if !self.expanded.remove(&path) {
             self.expanded.insert(path);
         }
+        self.expanded_revision = self.expanded_revision.wrapping_add(1);
+        self.visible_rows_cache.get_mut().take();
         cx.notify();
     }
 
     pub(super) fn is_read_only(&self) -> bool {
         self.config.as_ref().is_some_and(|config| config.production)
     }
+
+    pub(super) fn operation_context_matches(&self, config: &ConnectionConfig, db: u8) -> bool {
+        self.db == db && self.config.as_ref().map(|current| &current.id) == Some(&config.id)
+    }
+}
+
+fn should_ensure_loaded(configured: bool, has_loaded: bool, loading: bool) -> bool {
+    configured && !has_loaded && !loading
 }
 
 impl Render for KeyTreePanel {
@@ -256,8 +306,7 @@ impl Render for KeyTreePanel {
 
         let total = self.keys.len();
         let in_search = !self.query.is_empty();
-        let visible = self.flatten_visible();
-        let visible_leaf_count = visible.iter().filter(|r| r.is_key).count();
+        let (visible_rc, visible_leaf_count) = self.visible_rows();
         let selected = self.selected.clone();
         let read_only = self.is_read_only();
 
@@ -469,8 +518,7 @@ impl Render for KeyTreePanel {
         let theme_bg = theme.background;
         let theme_muted = theme.muted;
 
-        // 树形渲染：扁平化为 Vec<VisibleRow>，喂给 uniform_list 行级虚拟化
-        let visible_rc: Rc<Vec<VisibleRow>> = Rc::new(visible);
+        // 树形渲染：缓存后的扁平行喂给 uniform_list 行级虚拟化
         let row_count = visible_rc.len();
 
         let empty_hint =
@@ -578,5 +626,45 @@ impl Render for KeyTreePanel {
             .child(header)
             .child(body)
             .child(status_bar)
+    }
+}
+
+#[cfg(test)]
+mod load_state_tests {
+    use super::{VisibleRowsCacheEntry, VisibleRowsCacheKey, should_ensure_loaded};
+    use std::rc::Rc;
+
+    #[test]
+    fn empty_but_successful_scan_is_not_reloaded_on_activation() {
+        assert!(should_ensure_loaded(true, false, false));
+        assert!(!should_ensure_loaded(true, true, false));
+        assert!(!should_ensure_loaded(true, false, true));
+        assert!(!should_ensure_loaded(false, false, false));
+    }
+
+    #[test]
+    fn visible_rows_cache_is_scoped_to_tree_expansion_and_query() {
+        let rows = Rc::new(Vec::new());
+        let key = VisibleRowsCacheKey {
+            tree_revision: 4,
+            expanded_revision: 2,
+            query: "user".into(),
+        };
+        let cache = VisibleRowsCacheEntry {
+            key: key.clone(),
+            rows: rows.clone(),
+            leaf_count: 3,
+        };
+
+        let cached = cache.get(&key);
+        assert!(cached.is_some());
+        if let Some((cached_rows, leaf_count)) = cached {
+            assert!(Rc::ptr_eq(&cached_rows, &rows));
+            assert_eq!(leaf_count, 3);
+        }
+
+        let mut changed = key;
+        changed.expanded_revision += 1;
+        assert!(cache.get(&changed).is_none());
     }
 }

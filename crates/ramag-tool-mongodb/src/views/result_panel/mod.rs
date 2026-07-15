@@ -37,6 +37,8 @@ use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for}
 
 /// 过滤列补全收集的最大嵌套深度（支持 consume.detail.x 这类多层）
 const PATH_COMPLETION_DEPTH: usize = 5;
+/// 行过滤输入停顿后再扫描，避免每次按键都排一个最多 200 万单元格的任务。
+const ROW_VIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
 
 pub struct ResultPanel {
     pub(crate) result: Option<MongoQueryResult>,
@@ -46,6 +48,10 @@ pub struct ResultPanel {
     pub(crate) running: bool,
     /// 扁平化表格视图（result 变化时重算）
     pub(crate) table: Option<Arc<FlatTable>>,
+    /// 表格扁平化正在共享 worker 中执行。
+    pub(crate) table_building: bool,
+    /// 表格构建代际；新结果/下钻会使旧任务回包失效。
+    table_build_seq: u64,
     /// 工具栏：过滤列名（逗号分隔多列）
     pub(crate) column_filter: Entity<InputState>,
     /// 工具栏：过滤行（子串包含；任意单元格匹配即保留）
@@ -66,6 +72,8 @@ pub struct ResultPanel {
     pub(crate) pending_notification: Option<gpui_component::notification::Notification>,
     /// 文档 DML（插入 / 编辑弹框）忙碌闸：提交中防重入；失败保留弹框与输入
     pub(super) doc_dml_busy: bool,
+    /// 导出防重入闸；后台任务完成（含取消/失败）后复位。
+    pub(super) exporting: bool,
     /// DML 成功后待关闭弹框（render 持 Window 时消费）——成功才关，失败留着改
     pub(super) pending_close_dialog: bool,
     /// 勾选的行（按 documents 索引）；删除文档用
@@ -74,6 +82,14 @@ pub struct ResultPanel {
     pub(crate) drill_stack: Vec<drill::DrillLevel>,
     /// 当前排序列 path + 方向；用 path 而非索引，钻取换表后失配自动失效
     pub(crate) sort_by: Option<(String, SortDir)>,
+    /// 行过滤 + 排序派生结果；选择/弹框等重渲染时复用，避免反复扫描整张矩阵。
+    row_view_cache: Option<RowViewCache>,
+    /// 行过滤 / 排序正在受限工作池计算；依赖当前视图的操作在此期间禁用。
+    pub(crate) row_view_building: bool,
+    /// 行视图请求代次；输入、排序或表格变化后递增，旧回包不得覆盖新条件。
+    row_view_request_seq: u64,
+    /// 后台行视图构建失败时显式展示，修改条件或重建表格会清除。
+    pub(crate) row_view_error: Option<String>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -90,6 +106,36 @@ pub enum ResultEvent {
 pub(crate) enum SortDir {
     Asc,
     Desc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowViewKey {
+    generation: u64,
+    query: String,
+    sort_by: Option<(String, SortDir)>,
+}
+
+struct RowViewCache {
+    key: RowViewKey,
+    indices: Arc<Vec<usize>>,
+}
+
+fn build_row_view_indices(table: &FlatTable, key: &RowViewKey) -> Arc<Vec<usize>> {
+    let mut indices =
+        row_indices_for(table, &key.query).unwrap_or_else(|| (0..table.rows.len()).collect());
+    if let Some((sort_path, direction)) = &key.sort_by
+        && let Some(column_index) = table
+            .columns
+            .iter()
+            .position(|column| column.path == *sort_path)
+    {
+        let numeric = matches!(
+            table.columns[column_index].kind,
+            "int" | "long" | "double" | "decimal"
+        );
+        table::sort_row_indices(table, column_index, numeric, *direction, &mut indices);
+    }
+    Arc::new(indices)
 }
 
 impl EventEmitter<ResultEvent> for ResultPanel {}
@@ -115,7 +161,11 @@ impl ResultPanel {
                 // 基础表不变；补全源在 rebuild 时已就绪，仅重渲染
                 cx.notify();
             }),
-            cx.subscribe(&row_filter, |_this, _, _e: &InputEvent, cx| cx.notify()),
+            cx.subscribe(&row_filter, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.schedule_row_view(true, cx);
+                }
+            }),
         ];
 
         Self {
@@ -124,6 +174,8 @@ impl ResultPanel {
             error: None,
             running: false,
             table: None,
+            table_building: false,
+            table_build_seq: 0,
             column_filter,
             row_filter,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -135,10 +187,15 @@ impl ResultPanel {
             target_collection: None,
             pending_notification: None,
             doc_dml_busy: false,
+            exporting: false,
             pending_close_dialog: false,
             selected_rows: BTreeSet::new(),
             drill_stack: Vec::new(),
             sort_by: None,
+            row_view_cache: None,
+            row_view_building: false,
+            row_view_request_seq: 0,
+            row_view_error: None,
             _subscriptions: subs,
         }
     }
@@ -198,6 +255,19 @@ impl ResultPanel {
             && self.config.is_some()
             && self.target_collection.is_some()
             && !self.is_production()
+            && !self.doc_dml_busy
+    }
+
+    /// 异步 DML 回包只允许刷新发起时的连接、库与 collection。
+    pub(super) fn dml_context_matches(
+        &self,
+        config: &ConnectionConfig,
+        database: &str,
+        collection: &str,
+    ) -> bool {
+        self.config.as_ref().map(|current| &current.id) == Some(&config.id)
+            && self.database == database
+            && self.target_collection.as_deref() == Some(collection)
     }
 
     /// 切换某行勾选（按 documents 索引）
@@ -231,7 +301,7 @@ impl ResultPanel {
             Some((p, SortDir::Desc)) if p == path => None,
             _ => Some((path, SortDir::Asc)),
         };
-        cx.notify();
+        self.schedule_row_view(false, cx);
     }
 
     pub fn set_running(&mut self, cx: &mut Context<Self>) {
@@ -264,12 +334,15 @@ impl ResultPanel {
         self.running = false;
         // 切结果时把横滚归位最左（与 dbclient::result_table 同款），避免新表格沿用旧的横滚 X 位置
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
-        // 建基础表 + 刷新补全源
-        self.rebuild_table();
+        // 建基础表 + 刷新补全源（最多 200 万单元格，必须离开 UI 线程）。
+        self.schedule_table_rebuild(cx);
         cx.notify();
     }
 
     pub fn set_error(&mut self, err: String, cx: &mut Context<Self>) {
+        self.table_build_seq = self.table_build_seq.wrapping_add(1);
+        self.table_building = false;
+        self.invalidate_row_view();
         self.error = Some(err);
         self.running = false;
         cx.notify();
@@ -281,34 +354,65 @@ impl ResultPanel {
         classify_filter(&raw)
     }
 
-    /// 重建基础表格（不钻取）与补全源；钻取/投影在 render 时按过滤框派生
-    pub(crate) fn rebuild_table(&mut self) {
+    /// 后台重建基础表格（不钻取）与补全源；钻取/投影在 render 时按过滤框派生。
+    pub(crate) fn schedule_table_rebuild(&mut self, cx: &mut Context<Self>) {
         let level = self.drill_stack.last();
         let docs = level
             .map(|l| l.documents.clone())
             .unwrap_or_else(|| Arc::new(Vec::new()));
         let ancestors = level.map(|l| l.ancestors.clone()).unwrap_or_default();
-        self.table = if docs.is_empty() {
-            None
-        } else {
-            let mut ft = flatten::build_flat_table_with(docs.as_slice(), &BTreeSet::new());
-            // 下钻层：祖先链为常量（该层所有行同一父），作前导列，根→深保序，列名即对象名
-            if !ancestors.is_empty() {
-                let lead_cols: Vec<flatten::Column> = ancestors
-                    .iter()
-                    .map(|(label, c)| flatten::Column {
-                        path: label.clone(),
-                        kind: if c.kind == "null" { "text" } else { c.kind },
-                    })
-                    .collect();
-                let lead_cells: Vec<_> = ancestors.iter().map(|(_, c)| c.clone()).collect();
-                let lead_rows = vec![lead_cells; ft.rows.len()];
-                ft.prepend_lead(lead_cols, lead_rows);
-            }
-            Some(Arc::new(ft))
-        };
-        *self.column_completion_source.write() =
-            flatten::collect_paths(docs.as_slice(), PATH_COMPLETION_DEPTH);
+        self.table_build_seq = self.table_build_seq.wrapping_add(1);
+        let request_seq = self.table_build_seq;
+        self.table = None;
+        self.invalidate_row_view();
+        self.table_building = !docs.is_empty();
+        self.column_completion_source.write().clear();
+        if docs.is_empty() {
+            return;
+        }
+
+        cx.spawn(async move |this, cx| {
+            let built = ramag_app::run_blocking(move || {
+                let mut ft = flatten::build_flat_table_with(docs.as_slice(), &BTreeSet::new());
+                // 下钻层：祖先链为常量（该层所有行同一父），作前导列，根→深保序，列名即对象名
+                if !ancestors.is_empty() {
+                    let lead = ancestors
+                        .into_iter()
+                        .map(|(label, cell)| {
+                            let kind = if cell.kind == "null" {
+                                "text"
+                            } else {
+                                cell.kind
+                            };
+                            (flatten::Column { path: label, kind }, cell)
+                        })
+                        .collect();
+                    ft.prepend_constant_lead(lead);
+                }
+                let completions = flatten::collect_paths(docs.as_slice(), PATH_COMPLETION_DEPTH);
+                Ok((Arc::new(ft), completions))
+            })
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.table_build_seq != request_seq {
+                    return;
+                }
+                this.table_building = false;
+                match built {
+                    Ok((table, completions)) => {
+                        this.table = Some(table);
+                        *this.column_completion_source.write() = completions;
+                        this.schedule_row_view(false, cx);
+                    }
+                    Err(error) => {
+                        this.invalidate_row_view();
+                        this.error = Some(format!("构建 MongoDB 结果表格失败：{error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 当前过滤后的列索引（None 表示全选）；用所有 token 子串匹配（unwind 锚不匹配子列、自然不影响）
@@ -316,10 +420,95 @@ impl ResultPanel {
         column_indices_for(self.table.as_ref()?, &self.parse_column_filter(cx).filters)
     }
 
-    /// 当前过滤后的行索引；空过滤串等价 None
-    pub(crate) fn filtered_row_indices(&self, cx: &gpui::App) -> Option<Vec<usize>> {
-        let raw = self.row_filter.read(cx).value().to_string();
-        row_indices_for(self.table.as_ref()?, &raw)
+    /// 当前行过滤 + 排序后的索引；None 表示后台尚未按当前条件构建完成。
+    pub(crate) fn display_row_indices(&self, cx: &gpui::App) -> Option<(Arc<Vec<usize>>, bool)> {
+        let query = self.row_filter.read(cx).value().trim().to_string();
+        let filtered = !query.is_empty();
+        let key = RowViewKey {
+            generation: self.table_build_seq,
+            query,
+            sort_by: self.sort_by.clone(),
+        };
+        self.row_view_cache
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map(|cache| (cache.indices.clone(), filtered))
+    }
+
+    fn invalidate_row_view(&mut self) {
+        self.row_view_request_seq = self.row_view_request_seq.wrapping_add(1);
+        self.row_view_cache = None;
+        self.row_view_building = false;
+        self.row_view_error = None;
+    }
+
+    /// 去抖后在共享受限工作池扫描 / 排序 FlatTable；旧条件回包按双代次丢弃。
+    fn schedule_row_view(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let Some(table) = self.table.clone() else {
+            self.invalidate_row_view();
+            cx.notify();
+            return;
+        };
+        let key = RowViewKey {
+            generation: self.table_build_seq,
+            query: self.row_filter.read(cx).value().trim().to_string(),
+            sort_by: self.sort_by.clone(),
+        };
+        if self
+            .row_view_cache
+            .as_ref()
+            .is_some_and(|cache| cache.key == key)
+        {
+            self.row_view_building = false;
+            self.row_view_error = None;
+            cx.notify();
+            return;
+        }
+
+        self.row_view_request_seq = self.row_view_request_seq.wrapping_add(1);
+        let request_seq = self.row_view_request_seq;
+        self.row_view_cache = None;
+        self.row_view_building = true;
+        self.row_view_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(ROW_VIEW_DEBOUNCE).await;
+            }
+            let current = this
+                .update(cx, |this, _| {
+                    this.row_view_request_seq == request_seq
+                        && this.table_build_seq == key.generation
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+
+            let worker_key = key.clone();
+            let built =
+                ramag_app::run_blocking(move || Ok(build_row_view_indices(&table, &worker_key)))
+                    .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.row_view_request_seq != request_seq
+                    || this.table_build_seq != key.generation
+                {
+                    return;
+                }
+                this.row_view_building = false;
+                match built {
+                    Ok(indices) => {
+                        this.row_view_cache = Some(RowViewCache { key, indices });
+                    }
+                    Err(error) => {
+                        this.row_view_error = Some(format!("构建行视图失败：{error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 双击单元格 → 弹该单元格内容详情（与 MySQL dbclient::cell_edit_dialog 同款交互）。
@@ -332,7 +521,10 @@ impl ResultPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let display = if text.starts_with('{') || text.starts_with('[') {
+        const MAX_DIALOG_PRETTY_BYTES: usize = 1024 * 1024;
+        let display = if text.len() <= MAX_DIALOG_PRETTY_BYTES
+            && (text.starts_with('{') || text.starts_with('['))
+        {
             serde_json::from_str::<Value>(&text)
                 .ok()
                 .and_then(|v| serde_json::to_string_pretty(&v).ok())
@@ -417,7 +609,9 @@ impl Render for ResultPanel {
         };
         let total_docs = self.docs_arc.as_ref().map_or(0, |docs| docs.len());
         let Some(table_arc) = self.table.clone() else {
-            let hint = if affected > 0 {
+            let hint = if self.table_building {
+                format!("正在构建表格视图…（{total_docs} 条文档）")
+            } else if affected > 0 {
                 format!("已执行写操作，影响 {affected} 条")
             } else if self.is_drilled() {
                 "（空）".to_string()
@@ -433,19 +627,34 @@ impl Render for ResultPanel {
         };
 
         let col_indices = self.filtered_column_indices(cx);
-        let row_indices = self.filtered_row_indices(cx);
-        let filtered_rows = row_indices.as_ref().map(|v| v.len()).unwrap_or(total_docs);
-        let visible_selected = row_indices
-            .as_ref()
-            .map_or(self.selected_rows.len(), |rows| {
-                rows.iter()
-                    .filter(|ri| self.selected_rows.contains(ri))
-                    .count()
-            });
+        let Some((row_indices, rows_filtered)) = self.display_row_indices(cx) else {
+            let hint = if self.row_view_building {
+                format!("正在筛选 / 排序…（{total_docs} 行）")
+            } else if let Some(error) = &self.row_view_error {
+                error.clone()
+            } else {
+                "正在准备行视图…".to_string()
+            };
+            let mut root = v_flex().size_full().bg(bg).child(toolbar::render(self, cx));
+            if self.is_drilled() {
+                root = root.child(self.render_breadcrumb(cx));
+            }
+            return root.child(empty_hint(hint, muted)).into_any_element();
+        };
+        let filtered_rows = row_indices.len();
+        let visible_selected = if rows_filtered {
+            row_indices
+                .iter()
+                .filter(|ri| self.selected_rows.contains(ri))
+                .count()
+        } else {
+            self.selected_rows.len()
+        };
         let hidden_selected = self.selected_rows.len().saturating_sub(visible_selected);
         let total_cols = self.table.as_ref().map(|t| t.columns.len()).unwrap_or(0);
+        let discovered_cols = table_arc.total_columns;
         let visible_cols_count = col_indices.as_ref().map(|v| v.len()).unwrap_or(total_cols);
-        let mut summary = match (row_indices.is_some(), col_indices.is_some()) {
+        let mut summary = match (rows_filtered, col_indices.is_some()) {
             (true, true) => format!(
                 "命中 {visible_cols_count} / {total_cols} 列 · {filtered_rows} / {total_docs} 行 · 耗时 {elapsed}ms"
             ),
@@ -487,6 +696,23 @@ impl Render for ResultPanel {
                     .text_color(warn)
                     .child(format!(
                         "⚠ 结果较大，仅加载前 {total_docs} 条；统计、排序、过滤与导出均基于这部分数据。请用 filter / limit 精确查询"
+                    )),
+            );
+        }
+        if discovered_cols > total_cols {
+            let warn = cx.theme().warning;
+            let mut warn_bg = warn;
+            warn_bg.a = 0.14;
+            root = root.child(
+                div()
+                    .w_full()
+                    .px(px(12.0))
+                    .py(px(5.0))
+                    .bg(warn_bg)
+                    .text_xs()
+                    .text_color(warn)
+                    .child(format!(
+                        "⚠ 字段较多，表格仅展示前 {total_cols} / {discovered_cols} 列；完整文档详情仍保留，表格筛选与 CSV 导出基于已展示列。"
                     )),
             );
         }
@@ -551,4 +777,73 @@ fn error_hint(text: String, color: gpui::Hsla) -> gpui::Stateful<gpui::Div> {
         .text_xs()
         .text_color(color)
         .child(SharedString::from(text))
+}
+
+#[cfg(test)]
+mod row_view_tests {
+    use super::cell::Cell;
+    use super::flatten::Column;
+    use super::*;
+
+    fn table() -> FlatTable {
+        FlatTable {
+            columns: vec![
+                Column {
+                    path: "name".into(),
+                    kind: "text",
+                },
+                Column {
+                    path: "n".into(),
+                    kind: "int",
+                },
+            ],
+            total_columns: 2,
+            rows: [("Bob", "10"), ("Alice", "2"), ("Bobby", "1")]
+                .into_iter()
+                .map(|(name, number)| {
+                    vec![
+                        Cell {
+                            text: name.into(),
+                            kind: "text",
+                        },
+                        Cell {
+                            text: number.into(),
+                            kind: "int",
+                        },
+                    ]
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn row_view_combines_filter_and_numeric_sort() {
+        let key = RowViewKey {
+            generation: 1,
+            query: "bo".into(),
+            sort_by: Some(("n".into(), SortDir::Desc)),
+        };
+
+        let indices = build_row_view_indices(&table(), &key);
+
+        assert_eq!(indices.as_slice(), &[0, 2]);
+    }
+
+    #[test]
+    fn row_view_cache_key_changes_with_generation() {
+        let key = RowViewKey {
+            generation: 2,
+            query: String::new(),
+            sort_by: None,
+        };
+        let cache = RowViewCache {
+            key: key.clone(),
+            indices: Arc::new(vec![0, 1]),
+        };
+        assert_eq!(cache.key, key);
+
+        let mut stale = key;
+        stale.generation += 1;
+        assert_ne!(cache.key, stale);
+    }
 }

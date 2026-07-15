@@ -31,18 +31,18 @@ pub enum RedisValue {
     Array(Vec<RedisValue>),
 }
 
-/// Redis key 的受控加载结果。集合值可只加载前 N 项，`total` 保存服务端基数，
+/// Redis key 的受控加载结果。集合值按元素、String 按字节限制；`total` 保存服务端总量，
 /// 让界面明确区分“已完整加载”和“当前只展示一部分”。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisValueLoad {
     pub value: RedisValue,
-    /// 标量为 None；List/Hash/Set/ZSet/Stream 为服务端当前元素总数。
+    /// String 为服务端字节数；List/Hash/Set/ZSet/Stream 为服务端当前元素总数。
     pub total: Option<u64>,
 }
 
 impl RedisValueLoad {
     pub fn loaded_len(&self) -> Option<usize> {
-        self.value.len()
+        self.value.len().or_else(|| self.value.scalar_byte_len())
     }
 
     pub fn has_more(&self) -> bool {
@@ -78,6 +78,15 @@ impl RedisValue {
         }
     }
 
+    /// String/Bytes 当前已加载字节数；其它类型返回 None。
+    pub fn scalar_byte_len(&self) -> Option<usize> {
+        match self {
+            RedisValue::Text(value) => Some(value.len()),
+            RedisValue::Bytes(value) => Some(value.len()),
+            _ => None,
+        }
+    }
+
     /// 标量固定返回 false
     pub fn is_empty(&self) -> bool {
         self.len().is_some_and(|n| n == 0)
@@ -103,12 +112,12 @@ impl RedisValue {
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len).collect();
-        format!("{truncated}…")
+    let mut chars = s.chars();
+    let mut preview: String = chars.by_ref().take(max_len).collect();
+    if chars.next().is_some() {
+        preview.push('…');
     }
+    preview
 }
 
 /// 单行预览清洗：换行符（\n / \r）替换为空格。
@@ -175,6 +184,17 @@ mod tests {
         };
 
         assert_eq!(load.loaded_len(), Some(1));
+        assert!(load.has_more());
+    }
+
+    #[test]
+    fn value_load_reports_partial_string_bytes() {
+        let load = RedisValueLoad {
+            value: RedisValue::Text("hello".into()),
+            total: Some(10),
+        };
+
+        assert_eq!(load.loaded_len(), Some(5));
         assert!(load.has_more());
     }
 }

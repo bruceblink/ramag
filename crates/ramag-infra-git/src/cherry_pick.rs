@@ -4,9 +4,10 @@ use std::path::Path;
 
 use ramag_domain::error::Result;
 
-use crate::git_cmd::run_git_bytes;
+use crate::git_cmd::{run_git_bytes, validate_positional_arg};
 
 pub fn start(repo_path: &Path, commit: &str) -> Result<()> {
+    validate_positional_arg(commit, "cherry-pick commit")?;
     run_git_bytes(repo_path, &["cherry-pick", commit]).map(|_| ())
 }
 

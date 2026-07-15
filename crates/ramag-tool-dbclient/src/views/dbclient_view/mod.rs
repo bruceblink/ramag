@@ -127,14 +127,13 @@ struct OpenSessionsPref {
 }
 
 /// 解析偏好：优先新结构，回退旧版纯数组（active 未知）
-fn parse_open_sessions(json: &str) -> OpenSessionsPref {
+fn parse_open_sessions(json: &str) -> Result<OpenSessionsPref, String> {
     if let Ok(p) = serde_json::from_str::<OpenSessionsPref>(json) {
-        return p;
+        return Ok(p);
     }
-    OpenSessionsPref {
-        ids: serde_json::from_str(json).unwrap_or_default(),
-        active: None,
-    }
+    serde_json::from_str(json)
+        .map(|ids| OpenSessionsPref { ids, active: None })
+        .map_err(|error| format!("解析连接标签恢复数据失败：{error}"))
 }
 
 impl DbClientView {
@@ -163,14 +162,52 @@ impl DbClientView {
             let svc = service.clone();
             cx.spawn(async move |this, cx| {
                 let pref = match storage.get_preference(OPEN_SESSIONS_PREF).await {
-                    Ok(Some(json)) => parse_open_sessions(&json),
-                    _ => return,
+                    Ok(Some(json)) => match parse_open_sessions(&json) {
+                        Ok(pref) => pref,
+                        Err(error) => {
+                            tracing::warn!(error, "parse open sessions preference failed");
+                            let _ = this.update(cx, |this, cx| {
+                                this.pending_notification = Some(
+                                    gpui_component::notification::Notification::warning(
+                                        "已忽略损坏的连接标签恢复数据",
+                                    ),
+                                );
+                                cx.notify();
+                            });
+                            return;
+                        }
+                    },
+                    Ok(None) => return,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "load open sessions preference failed");
+                        let _ = this.update(cx, |this, cx| {
+                            this.pending_notification = Some(
+                                gpui_component::notification::Notification::warning(format!(
+                                    "无法恢复上次打开的连接标签：{error}"
+                                )),
+                            );
+                            cx.notify();
+                        });
+                        return;
+                    }
                 };
                 if pref.ids.is_empty() {
                     return;
                 }
-                let Ok(all) = svc.list().await else {
-                    return;
+                let all = match svc.list().await {
+                    Ok(all) => all,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "load connections for session restore failed");
+                        let _ = this.update(cx, |this, cx| {
+                            this.pending_notification = Some(
+                                gpui_component::notification::Notification::warning(format!(
+                                    "无法恢复连接标签：{error}"
+                                )),
+                            );
+                            cx.notify();
+                        });
+                        return;
+                    }
                 };
                 let configs: Vec<ConnectionConfig> = pref
                     .ids
@@ -434,5 +471,31 @@ impl DbClientView {
         // 刷新一下列表
         self.picker.update(cx, |p, cx| p.refresh(cx));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+
+    #[test]
+    fn open_sessions_parser_accepts_new_and_legacy_formats() {
+        let id = ramag_domain::entities::ConnectionId::new();
+        let modern = serde_json::to_string(&OpenSessionsPref {
+            ids: vec![id.clone()],
+            active: Some(id.clone()),
+        })
+        .unwrap_or_default();
+        let legacy = serde_json::to_string(&vec![id.clone()]).unwrap_or_default();
+
+        assert!(matches!(
+            parse_open_sessions(&modern),
+            Ok(pref) if pref.ids == vec![id.clone()] && pref.active == Some(id.clone())
+        ));
+        assert!(matches!(
+            parse_open_sessions(&legacy),
+            Ok(pref) if pref.ids == vec![id] && pref.active.is_none()
+        ));
+        assert!(parse_open_sessions("not-json").is_err());
     }
 }

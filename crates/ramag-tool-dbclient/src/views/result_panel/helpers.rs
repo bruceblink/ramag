@@ -10,6 +10,40 @@ pub(crate) struct PendingInsert {
     pub inputs: Vec<Entity<InputState>>,
 }
 
+pub(super) struct BatchDeleteNotice {
+    pub message: String,
+    pub persistent: bool,
+}
+
+/// 批量删除成功路径的用户提示。异常影响多行或结果集已切换时必须持久展示。
+pub(super) fn batch_delete_notice(
+    successful_requests: usize,
+    affected_rows: u64,
+    not_matched: usize,
+    anomalous_affected: Option<u64>,
+    strategy: &str,
+    same_result: bool,
+) -> BatchDeleteNotice {
+    let mut message = if let Some(anomalous) = anomalous_affected {
+        format!(
+            "已执行 {successful_requests} 个删除请求，共影响 {affected_rows} 行；其中一次 DELETE 异常影响 {anomalous} 行（{strategy}匹配），已停止后续删除，请重新查询核对"
+        )
+    } else {
+        let mut message = format!("已删除 {affected_rows} 行（{strategy}匹配）");
+        if not_matched > 0 {
+            message.push_str(&format!("，{not_matched} 行未匹配"));
+        }
+        message
+    };
+    if !same_result {
+        message.push_str("；当前结果已变化，请重新查询核对");
+    }
+    BatchDeleteNotice {
+        message,
+        persistent: anomalous_affected.is_some() || !same_result,
+    }
+}
+
 /// 用户输入 → Value。Ok(Some)=有值、Ok(None)=留空且有 default 走 DB DEFAULT、Err=非法
 pub(super) fn parse_value_for_kind(
     kind: ColumnKind,
@@ -454,5 +488,24 @@ mod tests {
     fn build_new_value_null_with_text() {
         let v = build_new_value_for_old(&Value::Null, "hello");
         assert_eq!(lit(&v), "'hello'");
+    }
+
+    #[test]
+    fn batch_delete_notice_reports_misses_and_stale_results() {
+        let notice = batch_delete_notice(2, 2, 1, None, "主键", false);
+
+        assert!(notice.message.contains("2 行"));
+        assert!(notice.message.contains("1 行未匹配"));
+        assert!(notice.message.contains("当前结果已变化"));
+        assert!(notice.persistent);
+    }
+
+    #[test]
+    fn batch_delete_notice_stops_on_multi_row_anomaly() {
+        let notice = batch_delete_notice(3, 5, 0, Some(3), "唯一键", true);
+
+        assert!(notice.message.contains("异常影响 3 行"));
+        assert!(notice.message.contains("已停止后续删除"));
+        assert!(notice.persistent);
     }
 }

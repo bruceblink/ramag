@@ -32,6 +32,8 @@ use command::{
     parse_run_command_response, truncate_chars,
 };
 
+const MAX_CONFIRM_PRETTY_BYTES: usize = 64 * 1024;
+
 pub struct MongoQueryTab {
     pub(crate) service: Arc<MongoService>,
     pub(crate) config: ConnectionConfig,
@@ -46,6 +48,8 @@ pub struct MongoQueryTab {
     /// 结果展示
     pub(crate) result: Entity<ResultPanel>,
     pub(crate) running: bool,
+    /// JSON 格式化防重入；CPU 工作在共享有界 worker 中执行。
+    formatting: bool,
     /// 当前 UI 等待任务；drop 后停止等待与历史追加，旧后端回包也无法再触碰标签。
     current_task: Option<Task<()>>,
     /// 运行代际号：切库 / 切 collection / 重新运行都自增，慢查询旧回包据此丢弃，
@@ -120,6 +124,7 @@ impl MongoQueryTab {
             show_editor: false,
             result,
             running: false,
+            formatting: false,
             current_task: None,
             run_seq: 0,
             pending_notification: None,
@@ -303,9 +308,16 @@ impl MongoQueryTab {
             return;
         }
         if let Some(reason) = dangerous_command_reason(&cmd) {
-            let command_preview =
-                serde_json::to_string_pretty(&cmd).unwrap_or_else(|_| text.clone());
-            let command_preview = truncate_chars(&command_preview, 1_000);
+            let command_preview = if text.len() <= MAX_CONFIRM_PRETTY_BYTES {
+                let pretty = serde_json::to_string_pretty(&cmd).unwrap_or_else(|_| text.clone());
+                truncate_chars(&pretty, 1_000)
+            } else {
+                format!(
+                    "{}\n\n（命令超过 {} KiB，仅展示原文前缀）",
+                    truncate_chars(&text, 1_000),
+                    MAX_CONFIRM_PRETTY_BYTES / 1024
+                )
+            };
             let description = format!(
                 "连接：{}\n数据库：{}\n风险：{reason}\n\n命令：\n{command_preview}\n\n确认继续执行吗？",
                 self.config.name, self.database
@@ -448,23 +460,56 @@ impl MongoQueryTab {
 
     /// 格式化编辑器 JSON
     pub fn format_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.editor.read(cx).value().to_string();
-        let parsed: Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                self.result.update(cx, |p, cx| {
-                    p.set_error(format!("格式化失败（JSON 无效）：{e}"), cx);
-                });
-                return;
-            }
-        };
-        if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
-            self.editor.update(cx, |s, cx| {
-                s.set_value(pretty, window, cx);
-            });
-            cx.emit(MongoQueryTabEvent::DraftChanged);
+        if self.formatting {
+            self.pending_notification =
+                Some(Notification::info("JSON 格式化正在进行").autohide(true));
             cx.notify();
+            return;
         }
+        let text = self.editor.read(cx).value().to_string();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.formatting = true;
+        cx.notify();
+        let source_text = text.clone();
+        cx.spawn_in(window, async move |this, async_cx| {
+            let formatted = ramag_app::run_blocking(move || {
+                let parsed: Value = serde_json::from_str(&text).map_err(|error| {
+                    DomainError::InvalidConfig(format!("格式化失败（JSON 无效）：{error}"))
+                })?;
+                serde_json::to_string_pretty(&parsed)
+                    .map_err(|error| DomainError::Other(format!("生成格式化 JSON 失败：{error}")))
+            })
+            .await;
+            let _ = this.update_in(async_cx, move |this, window, cx| {
+                this.formatting = false;
+                if this.editor.read(cx).value() != source_text {
+                    this.pending_notification = Some(
+                        Notification::warning("JSON 已在格式化期间发生变化，未覆盖新内容")
+                            .autohide(true),
+                    );
+                    cx.notify();
+                    return;
+                }
+                match formatted {
+                    Ok(pretty) if pretty != source_text => {
+                        this.editor.update(cx, |state, cx| {
+                            state.set_value(pretty, window, cx);
+                        });
+                        cx.emit(MongoQueryTabEvent::DraftChanged);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        this.result.update(cx, |panel, cx| {
+                            panel.set_error(error.to_string(), cx);
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 

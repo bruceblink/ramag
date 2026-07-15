@@ -2,7 +2,7 @@
 //! RegisterHotKey 的 WM_HOTKEY 投递到注册线程的消息队列，故需一条专属线程跑消息泵，
 //! 事件经 mpsc channel 转出，由 main.rs 计时器轮询消费（与 macOS 侧同款模式）。
 
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
 use tracing::{info, warn};
@@ -35,9 +35,9 @@ impl HotkeyListener {
         } else {
             "ctrl-shift-v"
         };
-        let (tx, rx) = channel::<()>();
+        let (tx, rx) = sync_channel::<()>(1);
         // 用于把线程 id / 注册结果回传主线程
-        let (ready_tx, ready_rx) = channel::<Option<u32>>();
+        let (ready_tx, ready_rx) = sync_channel::<Option<u32>>(1);
 
         let handle = match std::thread::Builder::new()
             .name("ramag-hotkey".into())
@@ -83,7 +83,7 @@ impl HotkeyListener {
 }
 
 /// 热键线程：注册 → 回传结果 → 消息泵；收到 WM_HOTKEY 转发信号，收到 WM_QUIT 退出并注销
-fn hotkey_thread(alternate: bool, tx: Sender<()>, ready_tx: Sender<Option<u32>>) {
+fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Option<u32>>) {
     unsafe {
         let thread_id = GetCurrentThreadId();
         // 显式创建消息队列，确保主线程收到 ready 后可可靠投递 WM_QUIT。
@@ -93,7 +93,9 @@ fn hotkey_thread(alternate: bool, tx: Sender<()>, ready_tx: Sender<Option<u32>>)
         let modifiers = MOD_CONTROL | second | MOD_NOREPEAT;
         if let Err(error) = RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32) {
             warn!(error = %error, "RegisterHotKey failed");
-            let _ = ready_tx.send(None);
+            if ready_tx.send(None).is_err() {
+                warn!("hotkey initialization receiver dropped after registration failure");
+            }
             return;
         }
         if ready_tx.send(Some(thread_id)).is_err() {
@@ -116,7 +118,11 @@ fn hotkey_thread(alternate: bool, tx: Sender<()>, ready_tx: Sender<Option<u32>>)
                 break;
             }
             if msg.message == WM_HOTKEY {
-                let _ = tx.send(());
+                // 容量为 1：已有待处理信号时合并重复按键，避免 UI 忙时无界积压。
+                match tx.try_send(()) {
+                    Ok(()) | Err(TrySendError::Full(())) => {}
+                    Err(TrySendError::Disconnected(())) => break,
+                }
             }
         }
         if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {

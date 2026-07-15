@@ -32,9 +32,9 @@ impl VcsView {
         }
         // 点击 Changes 文件 → 关掉 commit detail，避免主区残留 commit diff
         if self.viewing_commit.is_some() {
+            self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
             self.viewing_commit = None;
-            self.commit_files.clear();
-            self.commit_files_collapsed.clear();
+            self.reset_commit_files_tree();
             self.selected_commit_file = None;
             self.commit_file_diff = None;
             self.loading_commit_files = false;
@@ -180,23 +180,26 @@ impl VcsView {
             return;
         };
         let repo_id = repo.id.clone();
-        let abs_path = std::path::PathBuf::from(&repo.path).join(&path);
+        let repo_root = std::path::PathBuf::from(&repo.path);
         cx.spawn(async move |this, cx| {
-            let (tx, rx) = futures::channel::oneshot::channel();
-            let rel_for_thread = path.clone();
-            std::thread::spawn(move || {
-                let raw = read_raw_file_content(&abs_path, &rel_for_thread);
-                let _ = tx.send(raw);
-            });
-            let raw = rx.await.ok();
+            let rel_for_worker = path.clone();
+            let result = ramag_app::run_blocking(move || {
+                let raw = read_raw_file_content(&repo_root, &rel_for_worker);
+                match raw.error.clone() {
+                    Some(error) => Err(ramag_domain::error::DomainError::Other(error)),
+                    None => Ok(build_untracked_diff(raw)),
+                }
+            })
+            .await
+            .map_err(|e| e.to_string());
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo_id) || this.diff_request_seq != request_seq {
                     return;
                 }
                 this.loading_diff = false;
-                match raw {
-                    Some(raw) if raw.error.is_none() => {
-                        let d = std::rc::Rc::new(build_untracked_diff(raw));
+                match result {
+                    Ok(diff) => {
+                        let d = std::rc::Rc::new(diff);
                         if let Some(tab) = this.file_tabs.iter_mut().find(|t| {
                             t.path == path
                                 && t.source == FileTabSource::Changes(GroupKind::Untracked)
@@ -211,20 +214,12 @@ impl VcsView {
                             this.current_diff = Some(d);
                         }
                     }
-                    Some(raw) => {
-                        let msg = raw.error.unwrap_or_else(|| "未知错误".into());
+                    Err(msg) => {
                         error!(error = %msg, path = %path, "vcs: read untracked file failed");
                         if this.selected_file.as_ref()
                             == Some(&(path.clone(), GroupKind::Untracked))
                         {
                             this.error = Some(format!("读取文件失败：{msg}"));
-                        }
-                    }
-                    None => {
-                        if this.selected_file.as_ref()
-                            == Some(&(path.clone(), GroupKind::Untracked))
-                        {
-                            this.error = Some("读取文件失败：内部通道中断".into());
                         }
                     }
                 }
@@ -317,6 +312,7 @@ mod tests {
         RawFileContent {
             path: "new.rs".into(),
             lines: lines.into_iter().map(str::to_owned).collect(),
+            max_chars: 0,
             truncated,
             binary,
             error: None,

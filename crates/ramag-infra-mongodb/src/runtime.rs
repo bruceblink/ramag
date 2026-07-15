@@ -1,43 +1,40 @@
 //! MongoDB 专用 tokio runtime（与 SQL / Redis runtime 独立，避免长查询互相挤占）。
-//! 桥接形态同 redis::runtime / sql-shared::runtime
+//! 桥接任务通过 JoinHandle 显式回传业务错误或 panic。
 
 use std::future::Future;
 
-use futures::channel::oneshot;
 use once_cell::sync::OnceCell;
 use tokio::runtime::{Builder, Runtime};
 
-static TOKIO_RUNTIME: OnceCell<Runtime> = OnceCell::new();
+use ramag_domain::error::{DomainError, Result};
 
-/// 惰性初始化。`expect`：runtime 构建失败 = 资源耗尽（不可恢复）
-#[allow(clippy::expect_used)]
-pub fn tokio_runtime() -> &'static Runtime {
-    TOKIO_RUNTIME.get_or_init(|| {
+static TOKIO_RUNTIME: OnceCell<std::result::Result<Runtime, String>> = OnceCell::new();
+
+/// 惰性初始化；构建失败转为领域错误，不终止进程。
+pub fn tokio_runtime() -> Result<&'static Runtime> {
+    match TOKIO_RUNTIME.get_or_init(|| {
         Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("ramag-mongo-tokio")
             .enable_all()
             .build()
-            .expect("failed to build mongodb tokio runtime")
-    })
+            .map_err(|error| format!("创建 MongoDB Tokio runtime 失败：{error}"))
+    }) {
+        Ok(runtime) => Ok(runtime),
+        Err(error) => Err(DomainError::Other(error.clone())),
+    }
 }
 
-/// 在 tokio runtime 跑 future，结果经 oneshot 送回。`expect`：sender drop = spawn 内 panic
-#[allow(clippy::expect_used)]
-pub async fn run_in_tokio<F, T>(fut: F) -> T
+/// 在 tokio runtime 跑 future；任务 panic / 被取消时转为显式错误。
+pub async fn run_in_tokio<F, T>(future: F) -> Result<T>
 where
-    F: Future<Output = T> + Send + 'static,
+    F: Future<Output = Result<T>> + Send + 'static,
     T: Send + 'static,
 {
-    let (tx, rx) = oneshot::channel();
-
-    tokio_runtime().spawn(async move {
-        let result = fut.await;
-        let _ = tx.send(result);
-    });
-
-    rx.await
-        .expect("mongodb tokio task dropped before sending result")
+    tokio_runtime()?
+        .spawn(future)
+        .await
+        .map_err(|error| DomainError::Other(format!("MongoDB Tokio task 异常退出：{error}")))?
 }
 
 #[cfg(test)]
@@ -45,15 +42,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokio_runtime_singleton() {
-        let r1 = tokio_runtime();
-        let r2 = tokio_runtime();
+    fn tokio_runtime_singleton() -> Result<()> {
+        let r1 = tokio_runtime()?;
+        let r2 = tokio_runtime()?;
         assert!(std::ptr::eq(r1, r2));
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn run_in_tokio_basic() {
-        let v = run_in_tokio(async { 42i32 }).await;
-        assert_eq!(v, 42);
+    #[test]
+    fn run_in_tokio_basic() {
+        let value = futures::executor::block_on(run_in_tokio(async { Ok(42i32) }));
+        assert!(matches!(value, Ok(42)));
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn task_panic_is_returned_as_error() {
+        let result = futures::executor::block_on(run_in_tokio::<_, ()>(async {
+            panic!("test panic");
+        }));
+        assert!(matches!(result, Err(DomainError::Other(message)) if message.contains("panic")));
     }
 }

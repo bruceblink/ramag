@@ -1,32 +1,48 @@
 //! 纯函数：列表过滤 + 相对时间格式化（便于测试，不依赖 GPUI）
 
 use chrono::{DateTime, Utc};
-use ramag_domain::entities::{ClipItem, ClipKind};
+use ramag_domain::entities::{ClipItem, ClipKind, contains_case_insensitive};
 
 /// 过滤 + 排序：按 last_used_at desc。
 /// 搜索匹配 preview / text（大小写不敏感）；kind=None 不限类型
-pub fn filter_items<'a>(
-    items: &'a [ClipItem],
-    query: &str,
-    kind: Option<ClipKind>,
-) -> Vec<&'a ClipItem> {
+pub fn filter_items<'a, T>(items: &'a [T], query: &str, kind: Option<ClipKind>) -> Vec<&'a T>
+where
+    T: std::borrow::Borrow<ClipItem>,
+{
     let q = query.trim().to_lowercase();
-    let mut out: Vec<&ClipItem> = items
+    let mut out: Vec<&T> = items
         .iter()
-        .filter(|i| kind.is_none_or(|k| i.kind == k))
-        .filter(|i| q.is_empty() || matches_query(i, &q))
+        .filter(|item| {
+            let clip = <T as std::borrow::Borrow<ClipItem>>::borrow(*item);
+            kind.is_none_or(|expected| clip.kind == expected)
+        })
+        .filter(|item| {
+            let clip = <T as std::borrow::Borrow<ClipItem>>::borrow(*item);
+            q.is_empty() || matches_query(clip, &q)
+        })
         .collect();
-    out.sort_by_key(|i| std::cmp::Reverse(i.last_used_at));
+    // service 缓存与存储搜索结果都已是最近优先；普通渲染无需再做 O(n log n) 排序。
+    // 保留乱序输入兼容，仅在确实发现逆序对时排序。
+    let out_of_order = out.windows(2).any(|pair| {
+        let left = <T as std::borrow::Borrow<ClipItem>>::borrow(pair[0]);
+        let right = <T as std::borrow::Borrow<ClipItem>>::borrow(pair[1]);
+        left.last_used_at < right.last_used_at
+    });
+    if out_of_order {
+        out.sort_by_key(|item| {
+            std::cmp::Reverse(<T as std::borrow::Borrow<ClipItem>>::borrow(*item).last_used_at)
+        });
+    }
     out
 }
 
 fn matches_query(item: &ClipItem, q_lower: &str) -> bool {
-    if item.preview.to_lowercase().contains(q_lower) {
+    if contains_case_insensitive(&item.preview, q_lower) {
         return true;
     }
     item.text
         .as_deref()
-        .is_some_and(|t| t.to_lowercase().contains(q_lower))
+        .is_some_and(|text| contains_case_insensitive(text, q_lower))
 }
 
 /// 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期
@@ -43,6 +59,8 @@ pub fn relative_time(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use chrono::Duration;
     use ramag_domain::entities::{ClipId, fnv1a_hash};
@@ -89,6 +107,14 @@ mod tests {
         assert_eq!(filter_items(&items, "", Some(ClipKind::Link)).len(), 1);
         assert_eq!(filter_items(&items, "HELLO", None).len(), 1);
         assert_eq!(filter_items(&items, "zzz", None).len(), 0);
+    }
+
+    #[test]
+    fn filter_keeps_shared_clip_payloads() {
+        let item = Arc::new(clip("large shared text", ClipKind::Text, 1));
+        let items = vec![item.clone()];
+        let filtered = filter_items(&items, "shared", None);
+        assert!(Arc::ptr_eq(filtered[0], &item));
     }
 
     #[test]

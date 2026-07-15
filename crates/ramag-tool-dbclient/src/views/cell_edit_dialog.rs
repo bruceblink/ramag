@@ -76,11 +76,16 @@ pub(super) fn open(
                 let input = input_btn.clone();
                 move |_: &ClickEvent, window, app| {
                     let new_val = input.read(app).value().to_string();
-                    panel.update(app, |this, cx_inner| {
-                        this.apply_cell_update_async(ri, ci, new_val, cx_inner);
-                        this.set_cell_edit_input(None);
+                    let started = panel.update(app, |this, cx_inner| {
+                        let started = this.apply_cell_update_async(ri, ci, new_val, cx_inner);
+                        if started {
+                            this.set_cell_edit_input(None);
+                        }
+                        started
                     });
-                    window.close_dialog(app);
+                    if started {
+                        window.close_dialog(app);
+                    }
                 }
             });
 

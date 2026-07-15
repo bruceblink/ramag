@@ -13,8 +13,8 @@ mod zset_block;
 use std::sync::Arc;
 
 use gpui::{
-    Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled,
-    UniformListScrollHandle, Window, div, prelude::*, px,
+    Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
+    SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _, button::Button, notification::Notification,
@@ -112,8 +112,14 @@ pub struct KeyDetailPanel {
     /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 内容文本, gzip 提示)。避免每帧重复
     /// 解压 + JSON 解析 + pretty（大 String 值这些都在主线程）。key/value/view_mode 变化失效
     #[allow(clippy::type_complexity)]
-    pub(super) scalar_cache:
-        std::cell::RefCell<Option<(Option<ViewMode>, ViewMode, String, Option<String>)>>,
+    pub(super) scalar_cache: std::cell::RefCell<
+        Option<(
+            Option<ViewMode>,
+            ViewMode,
+            SharedString,
+            Option<SharedString>,
+        )>,
+    >,
     /// Session 调 focus_panel 聚焦后，cmd-w 等 action 走焦点链路由到 Session
     focus_handle: FocusHandle,
     /// 容器值（hash/list/set/zset/stream）uniform_list 行级虚拟化的滚动句柄

@@ -6,11 +6,32 @@ use ramag_domain::entities::{BranchKind, FileChangeKind, FileStatus};
 use super::helpers::{FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
 
+/// 写操作后的辅助刷新允许保留旧 UI 数据，但失败必须留有可定位日志。
+pub(super) fn best_effort_refresh<T>(
+    result: ramag_domain::error::Result<T>,
+    resource: &'static str,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(error = %error, resource, "vcs post-operation refresh failed");
+            None
+        }
+    }
+}
+
 impl VcsView {
     /// 静默刷新工作区：status + 本地/远程分支 + 当前 Files 视图数据。
     /// 不显示整屏 loading；完成后对齐 Changes tabs（外部改动 / 终端 git 操作后界面自动跟上）
     pub(super) fn refresh_workspace_silent(&mut self, cx: &mut Context<Self>) {
+        if !begin_workspace_refresh(
+            &mut self.workspace_refresh_in_flight,
+            &mut self.workspace_refresh_pending,
+        ) {
+            return;
+        }
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
+            self.workspace_refresh_in_flight = false;
             return;
         };
         self.status_request_seq = self.status_request_seq.wrapping_add(1);
@@ -23,7 +44,15 @@ impl VcsView {
             let (status, local, remote) =
                 futures::future::join3(status_fut, local_fut, remote_fut).await;
             let _ = this.update(cx, |this, cx| {
+                this.workspace_refresh_in_flight = false;
+                let rerun = std::mem::take(&mut this.workspace_refresh_pending)
+                    && this.repo.is_some()
+                    && !this.loading
+                    && !this.busy;
                 if !this.is_current_repo(&repo) || this.status_request_seq != request_seq {
+                    if rerun {
+                        this.refresh_workspace_silent(cx);
+                    }
                     return;
                 }
                 // 文件状态指纹没变 → 跳过 tabs 对齐和 diff 重拉，避免窗口激活白闪一次
@@ -76,6 +105,9 @@ impl VcsView {
                     }
                 }
                 cx.notify();
+                if rerun {
+                    this.refresh_workspace_silent(cx);
+                }
             });
         })
         .detach();
@@ -89,9 +121,12 @@ impl VcsView {
             return;
         };
         let root = std::path::PathBuf::from(&repo.path);
-        let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+        // futures mpsc 每个 sender 自带一个保留槽；容量 0 + 单 sender 即最多积压一个刷新信号。
+        let (tx, mut rx) = futures::channel::mpsc::channel::<()>(0);
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(tx));
+        let tx_for_watcher = tx.clone();
         match crate::watcher::RepoWatcher::start(root, move || {
-            let _ = tx.unbounded_send(());
+            enqueue_workspace_refresh(&tx_for_watcher);
         }) {
             Ok(w) => {
                 self.fs_watcher = Some(w);
@@ -203,6 +238,33 @@ impl VcsView {
             }
         }
         cx.notify();
+    }
+}
+
+fn begin_workspace_refresh(in_flight: &mut bool, pending: &mut bool) -> bool {
+    if *in_flight {
+        *pending = true;
+        false
+    } else {
+        *in_flight = true;
+        true
+    }
+}
+
+fn enqueue_workspace_refresh(sender: &std::sync::Mutex<futures::channel::mpsc::Sender<()>>) {
+    let mut sender = match sender.lock() {
+        Ok(sender) => sender,
+        Err(_) => {
+            tracing::warn!("vcs workspace refresh channel lock poisoned");
+            return;
+        }
+    };
+    match sender.try_send(()) {
+        Ok(()) => {}
+        Err(error) if error.is_full() || error.is_disconnected() => {}
+        Err(error) => {
+            tracing::warn!(error = %error, "vcs workspace refresh enqueue failed");
+        }
     }
 }
 
@@ -330,5 +392,29 @@ mod tests {
             redirect_group_kind(&f, GroupKind::Unstaged),
             GroupKind::Conflict
         );
+    }
+
+    #[test]
+    fn workspace_refresh_signals_are_coalesced() {
+        let (tx, mut rx) = futures::channel::mpsc::channel(0);
+        let tx = std::sync::Mutex::new(tx);
+
+        enqueue_workspace_refresh(&tx);
+        enqueue_workspace_refresh(&tx);
+
+        assert_eq!(rx.try_recv(), Ok(()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn in_flight_workspace_refresh_keeps_only_one_pending_run() {
+        let mut in_flight = false;
+        let mut pending = false;
+
+        assert!(begin_workspace_refresh(&mut in_flight, &mut pending));
+        assert!(!begin_workspace_refresh(&mut in_flight, &mut pending));
+        assert!(!begin_workspace_refresh(&mut in_flight, &mut pending));
+        assert!(in_flight);
+        assert!(pending);
     }
 }

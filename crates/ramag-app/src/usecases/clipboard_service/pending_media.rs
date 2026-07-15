@@ -27,8 +27,19 @@ impl PendingMediaDeletes {
         token
     }
 
-    pub(super) fn take_for_restore(&self, id: &ClipId) -> Option<Vec<String>> {
-        self.items.lock().remove(id).map(|pending| pending.paths)
+    pub(super) fn take_for_restore(&self, id: &ClipId) -> Option<(u64, Vec<String>)> {
+        self.items
+            .lock()
+            .remove(id)
+            .map(|pending| (pending.token, pending.paths))
+    }
+
+    /// 回存失败时恢复原代际，使已在运行的原计时器仍能按期清理。
+    pub(super) fn put_back(&self, id: ClipId, token: u64, paths: Vec<String>) {
+        self.items
+            .lock()
+            .entry(id)
+            .or_insert(PendingMediaDelete { token, paths });
     }
 
     pub(super) fn expire(&self, id: &ClipId, token: u64) -> Option<Vec<String>> {

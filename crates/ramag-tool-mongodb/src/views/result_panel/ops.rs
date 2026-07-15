@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use gpui::{ClickEvent, Context, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -19,6 +19,9 @@ use super::{ResultEvent, ResultPanel};
 impl ResultPanel {
     /// 弹「新增文档」：按当前结果的字段逐项填写（对齐 dbclient 按列填）；确认后 insert_one
     pub(crate) fn open_insert_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc_dml_busy {
+            return self.notify_error("上一写操作尚未完成".to_string(), cx);
+        }
         let Some(coll) = self.target_collection.clone() else {
             return;
         };
@@ -47,19 +50,26 @@ impl ResultPanel {
             .collect();
         let panel = cx.entity().clone();
         let title = SharedString::from(format!("新增文档 → {coll}"));
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, app| {
+            let panel_cancel = panel.clone();
+            let panel_on_cancel = panel.clone();
             let panel_apply = panel.clone();
             let inputs_apply = inputs.clone();
             let inputs_content = inputs.clone();
+            let dml_busy = panel.read(app).doc_dml_busy;
             let cancel = Button::new("mongo-insert-cancel")
                 .ghost()
                 .small()
                 .label("取消")
-                .on_click(move |_: &ClickEvent, window, app| window.close_dialog(app));
+                .disabled(dml_busy)
+                .on_click(move |_: &ClickEvent, window, app| {
+                    close_dialog_if_dml_idle(&panel_cancel, window, app);
+                });
             let apply = Button::new("mongo-insert-apply")
                 .primary()
                 .small()
                 .label("插入")
+                .disabled(dml_busy)
                 .on_click(move |_: &ClickEvent, _window, app| {
                     let pairs: Vec<(String, String)> = inputs_apply
                         .iter()
@@ -70,6 +80,8 @@ impl ResultPanel {
                 });
             dialog
                 .title(title.clone())
+                .close_button(false)
+                .on_cancel(move |_, _, app| dml_dialog_can_close(&panel_on_cancel, app))
                 .width(px(520.0))
                 .margin_top(px(100.0))
                 .content(move |content, _, cx| {
@@ -130,19 +142,26 @@ impl ResultPanel {
         input.update(cx, |s, c| s.focus(window, c));
         let panel = cx.entity().clone();
         let title = SharedString::from(format!("新增文档 → {coll}"));
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, app| {
+            let panel_cancel = panel.clone();
+            let panel_on_cancel = panel.clone();
             let panel_apply = panel.clone();
             let input_apply = input.clone();
             let input_content = input.clone();
+            let dml_busy = panel.read(app).doc_dml_busy;
             let cancel = Button::new("mongo-rawinsert-cancel")
                 .ghost()
                 .small()
                 .label("取消")
-                .on_click(move |_: &ClickEvent, window, app| window.close_dialog(app));
+                .disabled(dml_busy)
+                .on_click(move |_: &ClickEvent, window, app| {
+                    close_dialog_if_dml_idle(&panel_cancel, window, app);
+                });
             let apply = Button::new("mongo-rawinsert-apply")
                 .primary()
                 .small()
                 .label("插入")
+                .disabled(dml_busy)
                 .on_click(move |_: &ClickEvent, _window, app| {
                     let raw = input_apply.read(app).value().to_string();
                     // 不立即关弹框：成功经 pending_close_dialog 关闭，解析失败保留输入
@@ -150,6 +169,8 @@ impl ResultPanel {
                 });
             dialog
                 .title(title.clone())
+                .close_button(false)
+                .on_cancel(move |_, _, app| dml_dialog_can_close(&panel_on_cancel, app))
                 .width(px(520.0))
                 .margin_top(px(100.0))
                 .content(move |content, _, cx| {
@@ -196,10 +217,25 @@ impl ResultPanel {
         };
         let db = self.database.clone();
         self.doc_dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let r = svc.insert_one(&conf, &db, &coll, doc).await;
             let _ = this.update(cx, |this, cx| {
                 this.doc_dml_busy = false;
+                if !this.dml_context_matches(&conf, &db, &coll) {
+                    this.pending_notification = Some(match r {
+                        Ok(id) => Notification::success(format!(
+                            "已在原上下文 {db}.{coll} 插入文档 _id={id}；当前视图未自动刷新"
+                        ))
+                        .autohide(true),
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("原上下文 {db}.{coll} 插入失败")),
+                        )
+                        .autohide(true),
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(id) => {
                         this.pending_close_dialog = true;
@@ -227,6 +263,15 @@ impl ResultPanel {
 
     /// 弹删除确认；确认后对勾选行按 _id 逐个 delete_one
     pub(crate) fn open_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc_dml_busy {
+            return self.notify_error("上一写操作尚未完成".to_string(), cx);
+        }
+        if self.row_view_building {
+            return self.notify_error("正在筛选 / 排序，请完成后再删除".to_string(), cx);
+        }
+        if let Some(error) = &self.row_view_error {
+            return self.notify_error(format!("当前行视图不可用：{error}"), cx);
+        }
         let Some(documents) = self.docs_arc.as_ref() else {
             return;
         };
@@ -240,13 +285,18 @@ impl ResultPanel {
             return self.notify_error("勾选的文档缺少 _id，无法删除".to_string(), cx);
         }
         let n = ids.len();
-        let hidden = self.filtered_row_indices(cx).as_ref().map_or(0, |visible| {
+        let Some((visible, rows_filtered)) = self.display_row_indices(cx) else {
+            return self.notify_error("当前行视图尚未准备完成".to_string(), cx);
+        };
+        let hidden = if rows_filtered {
             let visible: HashSet<usize> = visible.iter().copied().collect();
             self.selected_rows
                 .iter()
                 .filter(|ri| !visible.contains(ri))
                 .count()
-        });
+        } else {
+            0
+        };
         let hidden_hint = if hidden > 0 {
             format!("；其中 {hidden} 个当前被筛选隐藏")
         } else {
@@ -271,8 +321,10 @@ impl ResultPanel {
                 .label("删除")
                 .on_click(move |_: &ClickEvent, window, app| {
                     let ids = ids_apply.clone();
-                    panel_apply.update(app, |this, cx| this.do_delete_async(ids, cx));
-                    window.close_dialog(app);
+                    let started = panel_apply.update(app, |this, cx| this.do_delete_async(ids, cx));
+                    if started {
+                        window.close_dialog(app);
+                    }
                 });
             dialog
                 .title(title.clone())
@@ -289,15 +341,23 @@ impl ResultPanel {
     }
 
     /// 异步逐个 delete_one；完成后 emit Refresh
-    fn do_delete_async(&mut self, ids: Vec<Value>, cx: &mut Context<Self>) {
+    fn do_delete_async(&mut self, ids: Vec<Value>, cx: &mut Context<Self>) -> bool {
+        if self.doc_dml_busy {
+            self.pending_notification =
+                Some(Notification::warning("提交执行中，请稍候").autohide(true));
+            cx.notify();
+            return false;
+        }
         let (Some(svc), Some(conf), Some(coll)) = (
             self.service.clone(),
             self.config.clone(),
             self.target_collection.clone(),
         ) else {
-            return;
+            return false;
         };
         let db = self.database.clone();
+        self.doc_dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let mut ok = 0usize;
             let mut failed: Option<ramag_domain::error::DomainError> = None;
@@ -312,6 +372,22 @@ impl ResultPanel {
                 }
             }
             let _ = this.update(cx, |this, cx| {
+                this.doc_dml_busy = false;
+                if !this.dml_context_matches(&conf, &db, &coll) {
+                    this.pending_notification =
+                        Some(match failed {
+                            Some(error) => Notification::error(error.write_hint(&format!(
+                                "原上下文 {db}.{coll} 删除失败（已删 {ok} 个）"
+                            )))
+                            .autohide(true),
+                            None => Notification::success(format!(
+                                "已在原上下文 {db}.{coll} 删除 {ok} 个文档；当前视图未自动刷新"
+                            ))
+                            .autohide(true),
+                        });
+                    cx.notify();
+                    return;
+                }
                 match failed {
                     Some(e) => {
                         this.pending_notification = Some(
@@ -330,7 +406,31 @@ impl ResultPanel {
             });
         })
         .detach();
+        true
     }
+}
+
+pub(super) fn dml_dialog_can_close(panel: &Entity<ResultPanel>, app: &mut gpui::App) -> bool {
+    if panel.read(app).doc_dml_busy {
+        panel.update(app, |this, cx| {
+            this.pending_notification =
+                Some(Notification::warning("提交执行中，完成后才能关闭").autohide(true));
+            cx.notify();
+        });
+        return false;
+    }
+    true
+}
+
+pub(super) fn close_dialog_if_dml_idle(
+    panel: &Entity<ResultPanel>,
+    window: &mut Window,
+    app: &mut gpui::App,
+) {
+    if !dml_dialog_can_close(panel, app) {
+        return;
+    }
+    window.close_dialog(app);
 }
 
 /// 弹窗底部按钮条：右对齐「取消 + 主操作」，两个 dialog 共用同款布局

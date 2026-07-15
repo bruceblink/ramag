@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, MongoCollection, MongoDatabase, MongoDocument,
-    MongoQueryResult, QueryRecord,
+    MongoQueryResult, QueryHistoryPage, QueryRecord,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{DocDriver, Storage};
@@ -14,6 +14,8 @@ pub struct MongoService {
     driver: Arc<dyn DocDriver>,
     storage: Arc<dyn Storage>,
 }
+
+const HISTORY_INLINE_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
 
 impl MongoService {
     pub fn new(driver: Arc<dyn DocDriver>, storage: Arc<dyn Storage>) -> Self {
@@ -141,8 +143,10 @@ impl MongoService {
         &self,
         connection_id: Option<&ConnectionId>,
         limit: usize,
-    ) -> Result<Vec<QueryRecord>> {
-        self.storage.list_history(connection_id, limit).await
+    ) -> Result<QueryHistoryPage> {
+        self.storage
+            .list_history_bounded(connection_id, limit, HISTORY_INLINE_BYTE_BUDGET)
+            .await
     }
 
     /// 删除单条历史

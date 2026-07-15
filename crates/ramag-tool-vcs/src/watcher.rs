@@ -12,7 +12,20 @@ const DEBOUNCE: Duration = Duration::from_millis(800);
 
 /// 监听句柄：drop 即停止监听，防抖线程随通道关闭自动退出
 pub(crate) struct RepoWatcher {
-    _watcher: RecommendedWatcher,
+    watcher: Option<RecommendedWatcher>,
+    debounce_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for RepoWatcher {
+    fn drop(&mut self) {
+        // 先释放 notify watcher，使其回调中的 sender 关闭，再等待防抖线程退出。
+        self.watcher.take();
+        if let Some(thread) = self.debounce_thread.take()
+            && thread.join().is_err()
+        {
+            tracing::warn!("vcs fs debounce thread panicked");
+        }
+    }
 }
 
 impl RepoWatcher {
@@ -21,32 +34,54 @@ impl RepoWatcher {
         repo_root: PathBuf,
         on_change: impl Fn() + Send + 'static,
     ) -> notify::Result<Self> {
-        let (tx, rx) = mpsc::channel::<()>();
+        // 容量 1 即可表达“有变更待处理”；事件风暴中的重复信号直接合并，避免无界排队。
+        let (tx, rx) = mpsc::sync_channel::<()>(1);
         let root_for_filter = repo_root.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                let Ok(event) = res else { return };
+                let event = match res {
+                    Ok(event) => event,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "vcs fs watcher event failed");
+                        return;
+                    }
+                };
                 if event.paths.iter().any(|p| is_relevant(&root_for_filter, p)) {
-                    let _ = tx.send(());
+                    enqueue_change(&tx);
                 }
             })?;
         watcher.watch(&repo_root, RecursiveMode::Recursive)?;
 
-        std::thread::spawn(move || {
-            // 首个事件到达后，持续吸收事件直到静默满 DEBOUNCE，合并为一次回调
-            while rx.recv().is_ok() {
-                loop {
-                    match rx.recv_timeout(DEBOUNCE) {
-                        Ok(()) => continue,
-                        Err(mpsc::RecvTimeoutError::Timeout) => break,
-                        // watcher 已 drop：线程退出
-                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        let debounce_thread = std::thread::Builder::new()
+            .name("ramag-vcs-fs-debounce".into())
+            .spawn(move || {
+                // 首个事件到达后，持续吸收事件直到静默满 DEBOUNCE，合并为一次回调
+                while rx.recv().is_ok() {
+                    loop {
+                        match rx.recv_timeout(DEBOUNCE) {
+                            Ok(()) => continue,
+                            Err(mpsc::RecvTimeoutError::Timeout) => break,
+                            // watcher 已 drop：线程退出
+                            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
                     }
+                    on_change();
                 }
-                on_change();
-            }
-        });
-        Ok(Self { _watcher: watcher })
+            })
+            .map_err(notify::Error::io)?;
+        Ok(Self {
+            watcher: Some(watcher),
+            debounce_thread: Some(debounce_thread),
+        })
+    }
+}
+
+fn enqueue_change(sender: &mpsc::SyncSender<()>) {
+    match sender.try_send(()) {
+        Ok(()) | Err(mpsc::TrySendError::Full(())) => {}
+        Err(mpsc::TrySendError::Disconnected(())) => {
+            // watcher 正在释放，接收端已退出，无需上报噪声。
+        }
     }
 }
 
@@ -110,5 +145,14 @@ mod tests {
         assert!(!rel("/repo/.git/COMMIT_EDITMSG"));
         assert!(!rel("/repo/.git/index.lock"));
         assert!(!rel("/repo/.git/config"));
+    }
+
+    #[test]
+    fn duplicate_change_signals_are_coalesced() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        enqueue_change(&tx);
+        enqueue_change(&tx);
+
+        assert_eq!(rx.try_iter().count(), 1);
     }
 }

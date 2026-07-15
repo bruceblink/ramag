@@ -11,7 +11,8 @@ use tracing::error;
 use super::ResultPanel;
 use super::ResultState;
 use super::helpers::{
-    RowIdentity, build_identity_where, build_new_value, dml_row_limit, escape_new_value_for_old,
+    RowIdentity, batch_delete_notice, build_identity_where, build_new_value, dml_row_limit,
+    escape_new_value_for_old,
 };
 
 impl ResultPanel {
@@ -116,7 +117,8 @@ impl ResultPanel {
         }
         let visible = crate::views::result_table::compute_display_view(self, result, cx)
             .display_indices
-            .into_iter()
+            .iter()
+            .copied()
             .collect::<std::collections::BTreeSet<_>>();
         let hidden = indices.iter().filter(|ri| !visible.contains(ri)).count();
         let hidden_note = if hidden > 0 {
@@ -137,15 +139,15 @@ impl ResultPanel {
         &mut self,
         indices: Vec<usize>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(identity) = self.guard_modify("删除", cx) else {
-            return;
+            return false;
         };
         let Some((svc, conn)) = self.dml_conn("删除", cx) else {
-            return;
+            return false;
         };
         let ResultState::Ok(result) = &self.state else {
-            return;
+            return false;
         };
         let table_ref = match self.current_table_ref() {
             Some(t) => t,
@@ -154,7 +156,7 @@ impl ResultPanel {
                     Notification::error("无法识别目标表，请从表树打开单表后再删除").autohide(true),
                 );
                 cx.notify();
-                return;
+                return false;
             }
         };
 
@@ -173,24 +175,36 @@ impl ResultPanel {
                         .autohide(true),
                 );
                 cx.notify();
-                return;
+                return false;
             };
             let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
             plans.push((ri, sql));
         }
         if plans.is_empty() {
-            return;
+            return false;
         }
 
+        let result_revision = self.result_revision;
         self.dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let mut deleted: Vec<usize> = Vec::new();
+            let mut affected_rows = 0u64;
+            let mut not_matched = 0usize;
+            let mut anomalous_affected = None;
             let mut last_err: Option<ramag_domain::error::DomainError> = None;
             for (ri, sql) in plans {
                 let q = Query::new(sql);
                 match svc.execute_with_history(&conn, &q).await {
-                    Ok(qr) if qr.affected_rows > 0 => deleted.push(ri),
-                    Ok(_) => {}
+                    Ok(qr) if qr.affected_rows > 0 => {
+                        affected_rows = affected_rows.saturating_add(qr.affected_rows);
+                        deleted.push(ri);
+                        if qr.affected_rows > 1 {
+                            anomalous_affected = Some(qr.affected_rows);
+                            break;
+                        }
+                    }
+                    Ok(_) => not_matched += 1,
                     Err(e) => {
                         error!(error = %e, "delete row failed (in batch)");
                         last_err = Some(e);
@@ -200,29 +214,57 @@ impl ResultPanel {
             }
             let _ = this.update(cx, |this, cx| {
                 this.dml_busy = false;
-                if let ResultState::Ok(r) = &mut this.state {
-                    let r = Arc::make_mut(r);
-                    let mut to_remove = deleted.clone();
-                    to_remove.sort_by(|a, b| b.cmp(a));
-                    for ri in to_remove {
-                        if ri < r.rows.len() {
-                            r.rows.remove(ri);
+                let same_result = this.result_revision == result_revision;
+                let mut result_changed = false;
+                if same_result {
+                    if let ResultState::Ok(r) = &mut this.state {
+                        let r = Arc::make_mut(r);
+                        let before = r.rows.len();
+                        let mut to_remove = deleted.clone();
+                        to_remove.sort_by(|a, b| b.cmp(a));
+                        for ri in to_remove {
+                            if ri < r.rows.len() {
+                                r.rows.remove(ri);
+                            }
                         }
+                        result_changed = r.rows.len() != before;
                     }
+                    this.selected_rows.clear();
+                    this.selected_cell = None;
                 }
-                this.selected_rows.clear();
-                this.selected_cell = None;
+                if result_changed {
+                    this.mark_result_changed();
+                }
                 this.pending_notification = Some(if let Some(e) = last_err {
-                    Notification::error(e.write_hint(&format!("已删除 {} 行后出错", deleted.len())))
-                        .autohide(true)
+                    let stale_note = if same_result {
+                        ""
+                    } else {
+                        "；当前结果已变化"
+                    };
+                    Notification::error(e.write_hint(&format!(
+                        "已影响 {affected_rows} 行、{not_matched} 行未匹配后出错{stale_note}"
+                    )))
+                    .autohide(true)
                 } else {
-                    Notification::success(format!("已删除 {} 行（{strategy}匹配）", deleted.len()))
-                        .autohide(true)
+                    let notice = batch_delete_notice(
+                        deleted.len(),
+                        affected_rows,
+                        not_matched,
+                        anomalous_affected,
+                        &strategy,
+                        same_result,
+                    );
+                    if notice.persistent {
+                        Notification::warning(notice.message).autohide(false)
+                    } else {
+                        Notification::success(notice.message).autohide(true)
+                    }
                 });
                 cx.notify();
             });
         })
         .detach();
+        true
     }
 
     /// 新增行弹框确认后调用：异步执行 INSERT，成功后本地 rows.push
@@ -230,19 +272,19 @@ impl ResultPanel {
         &mut self,
         values: Vec<(String, Value)>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if values.is_empty() {
-            return;
+            return false;
         }
         // 兜底草稿行提交时条件已变化（如手改 SQL / 配置转生产只读）
         if let Some(reason) = self.insert_block_reason() {
             self.pending_notification =
                 Some(Notification::warning(format!("无法新增：{reason}")).autohide(true));
             cx.notify();
-            return;
+            return false;
         }
         let Some((svc, conn)) = self.dml_conn("新增", cx) else {
-            return;
+            return false;
         };
         let table_ref = match self.current_table_ref() {
             Some(t) => t,
@@ -251,7 +293,7 @@ impl ResultPanel {
                     Notification::error("无法识别目标表，请从表树打开单表后再新增").autohide(true),
                 );
                 cx.notify();
-                return;
+                return false;
             }
         };
 
@@ -284,7 +326,9 @@ impl ResultPanel {
             _ => None,
         };
 
+        let result_revision = self.result_revision;
         self.dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
             let _ = this.update(cx, |this, cx| {
@@ -297,16 +341,29 @@ impl ResultPanel {
                                     .autohide(true),
                             );
                         } else {
-                            if let (ResultState::Ok(r), Some(vs)) =
-                                (&mut this.state, new_row_values)
+                            let same_result = this.result_revision == result_revision;
+                            let mut result_changed = false;
+                            if same_result
+                                && let (ResultState::Ok(r), Some(vs)) =
+                                    (&mut this.state, new_row_values)
                             {
                                 let r = Arc::make_mut(r);
                                 r.rows.push(ramag_domain::entities::Row { values: vs });
+                                result_changed = true;
                             }
-                            this.pending_notification = Some(
+                            if result_changed {
+                                this.mark_result_changed();
+                            }
+                            this.pending_notification = Some(if same_result {
                                 Notification::success(format!("已新增 {} 行", qr.affected_rows))
-                                    .autohide(true),
-                            );
+                                    .autohide(true)
+                            } else {
+                                Notification::warning(format!(
+                                    "已新增 {} 行；当前结果已变化，请重新查询核对",
+                                    qr.affected_rows
+                                ))
+                                .autohide(false)
+                            });
                         }
                     }
                     Err(e) => {
@@ -319,21 +376,22 @@ impl ResultPanel {
             });
         })
         .detach();
+        true
     }
 
     /// 二次确认后真执行 DELETE：异步发到 DB，成功后本地移除该行
-    pub(crate) fn execute_delete_row_async(&mut self, ri: usize, cx: &mut Context<Self>) {
+    pub(crate) fn execute_delete_row_async(&mut self, ri: usize, cx: &mut Context<Self>) -> bool {
         let Some(identity) = self.guard_modify("删除", cx) else {
-            return;
+            return false;
         };
         let Some((svc, conn)) = self.dml_conn("删除", cx) else {
-            return;
+            return false;
         };
         let ResultState::Ok(result) = &self.state else {
-            return;
+            return false;
         };
         let Some(row) = result.rows.get(ri).cloned() else {
-            return;
+            return false;
         };
 
         let table_ref = match self.current_table_ref() {
@@ -343,7 +401,7 @@ impl ResultPanel {
                     Notification::error("无法识别目标表，请从表树打开单表后再删除").autohide(true),
                 );
                 cx.notify();
-                return;
+                return false;
             }
         };
 
@@ -354,13 +412,15 @@ impl ResultPanel {
                     .autohide(true),
             );
             cx.notify();
-            return;
+            return false;
         };
         let limit_clause = dml_row_limit(conn.driver);
         let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
         let q = Query::new(sql);
 
+        let result_revision = self.result_revision;
         self.dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
             let _ = this.update(cx, |this, cx| {
@@ -375,20 +435,40 @@ impl ResultPanel {
                                 .autohide(true),
                             );
                         } else {
-                            if let ResultState::Ok(r) = &mut this.state
+                            let same_result = this.result_revision == result_revision;
+                            let mut result_changed = false;
+                            if same_result
+                                && let ResultState::Ok(r) = &mut this.state
                             {
                                 let r = Arc::make_mut(r);
                                 if ri < r.rows.len() {
                                     r.rows.remove(ri);
+                                    result_changed = true;
                                 }
                             }
-                            this.selected_cell = None;
+                            if result_changed {
+                                this.selected_cell = None;
+                                this.mark_result_changed();
+                            }
                             // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
                             // 本地只移除了一行，DB 实际删了多行——数据已不一致，必须显式告警
                             if qr.affected_rows > 1 {
+                                let stale_note = if same_result {
+                                    ""
+                                } else {
+                                    "；当前结果已变化"
+                                };
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），定位键可能已失效，请重新查询核对",
+                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），定位键可能已失效{stale_note}，请重新查询核对",
+                                        qr.affected_rows,
+                                    ))
+                                    .autohide(false),
+                                );
+                            } else if !same_result {
+                                this.pending_notification = Some(
+                                    Notification::warning(format!(
+                                        "已删除 {} 行（{strategy}匹配）；当前结果已变化，请重新查询核对",
                                         qr.affected_rows
                                     ))
                                     .autohide(false),
@@ -414,6 +494,7 @@ impl ResultPanel {
             });
         })
         .detach();
+        true
     }
 
     /// 单元格编辑弹框「确认修改」：异步执行 UPDATE，成功后同步本地 cell
@@ -423,24 +504,24 @@ impl ResultPanel {
         ci: usize,
         new_text: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(identity) = self.guard_modify("修改", cx) else {
-            return;
+            return false;
         };
         let Some((svc, conn)) = self.dml_conn("修改", cx) else {
-            return;
+            return false;
         };
         let ResultState::Ok(result) = &self.state else {
-            return;
+            return false;
         };
         let Some(row) = result.rows.get(ri).cloned() else {
-            return;
+            return false;
         };
         let Some(col_name) = result.columns.get(ci).cloned() else {
-            return;
+            return false;
         };
         let Some(cell_val) = row.values.get(ci).cloned() else {
-            return;
+            return false;
         };
 
         let table_ref = match self.current_table_ref() {
@@ -450,7 +531,7 @@ impl ResultPanel {
                     Notification::error("无法识别目标表，请从表树打开单表后再编辑").autohide(true),
                 );
                 cx.notify();
-                return;
+                return false;
             }
         };
 
@@ -462,7 +543,7 @@ impl ResultPanel {
                     .autohide(true),
             );
             cx.notify();
-            return;
+            return false;
         };
         let new_literal = escape_new_value_for_old(&cell_val, &new_text, driver);
         let limit_clause = dml_row_limit(driver);
@@ -473,7 +554,9 @@ impl ResultPanel {
         let new_cell_val = build_new_value(&cell_val, &new_text);
         let q = Query::new(sql);
 
+        let result_revision = self.result_revision;
         self.dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
             let _ = this.update(cx, |this, cx| {
@@ -486,21 +569,41 @@ impl ResultPanel {
                                     .autohide(true),
                             );
                         } else {
-                            if let ResultState::Ok(r) = &mut this.state
+                            let same_result = this.result_revision == result_revision;
+                            let mut result_changed = false;
+                            if same_result
+                                && let ResultState::Ok(r) = &mut this.state
                             {
                                 let r = Arc::make_mut(r);
                                 if let Some(row) = r.rows.get_mut(ri)
                                     && let Some(slot) = row.values.get_mut(ci)
                                 {
                                     *slot = new_cell_val;
+                                    result_changed = true;
                                 }
+                            }
+                            if result_changed {
+                                this.mark_result_changed();
                             }
                             // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
                             // 意味着可能误改了其它行，必须显式告警而非当成功
                             if qr.affected_rows > 1 {
+                                let stale_note = if same_result {
+                                    ""
+                                } else {
+                                    "；当前结果已变化"
+                                };
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），定位键可能已失效，请核对数据",
+                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），定位键可能已失效{stale_note}，请重新查询核对",
+                                        qr.affected_rows,
+                                    ))
+                                    .autohide(false),
+                                );
+                            } else if !same_result {
+                                this.pending_notification = Some(
+                                    Notification::warning(format!(
+                                        "已更新 {} 行（{strategy}匹配）；当前结果已变化，请重新查询核对",
                                         qr.affected_rows
                                     ))
                                     .autohide(false),
@@ -526,5 +629,6 @@ impl ResultPanel {
             });
         })
         .detach();
+        true
     }
 }

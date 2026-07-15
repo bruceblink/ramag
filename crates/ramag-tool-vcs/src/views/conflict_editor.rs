@@ -47,9 +47,10 @@ impl VcsView {
             return div().into_any_element();
         };
 
+        let content = content.clone();
         let path = content.path.clone();
-        let ours = content.ours.clone();
-        let theirs = content.theirs.clone();
+        let ours_len = content.ours.len();
+        let theirs_len = content.theirs.len();
         let (ours_label, theirs_label) =
             conflict_side_labels(self.status.as_ref().and_then(|status| status.operation));
 
@@ -137,78 +138,79 @@ impl VcsView {
                     }),
             );
 
-        let body =
-            h_flex()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .border_r_1()
-                        .border_color(border)
-                        .child(
-                            h_flex()
-                                .flex_none()
-                                .w_full()
-                                .px(px(10.0))
-                                .py(px(3.0))
-                                .bg(ours_hdr_bg)
-                                .border_b_1()
-                                .border_color(border)
-                                .items_center()
-                                .gap(px(4.0))
-                                .child(Icon::new(IconName::ArrowLeft).xsmall().text_color(accent))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(accent)
-                                        .child(format!("{ours_label}（ours）— {} 行", ours.len())),
-                                ),
-                        )
-                        .child(div().flex_1().min_h_0().child(lines_panel_virtual(
-                            ours,
-                            mono.clone(),
-                            fg,
-                            muted_fg,
-                            self.conflict_ours_scroll.clone(),
-                            "vcs-conflict-ours",
-                            cx,
-                        ))),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .child(
-                            h_flex()
-                                .flex_none()
-                                .w_full()
-                                .px(px(10.0))
-                                .py(px(3.0))
-                                .bg(theirs_hdr_bg)
-                                .border_b_1()
-                                .border_color(border)
-                                .items_center()
-                                .gap(px(4.0))
-                                .child(Icon::new(IconName::ArrowRight).xsmall().text_color(danger))
-                                .child(div().text_xs().text_color(danger).child(format!(
-                                    "{theirs_label}（theirs）— {} 行",
-                                    theirs.len()
-                                ))),
-                        )
-                        .child(div().flex_1().min_h_0().child(lines_panel_virtual(
-                            theirs,
-                            mono,
-                            fg,
-                            muted_fg,
-                            self.conflict_theirs_scroll.clone(),
-                            "vcs-conflict-theirs",
-                            cx,
-                        ))),
-                );
+        let body = h_flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .border_r_1()
+                    .border_color(border)
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .w_full()
+                            .px(px(10.0))
+                            .py(px(3.0))
+                            .bg(ours_hdr_bg)
+                            .border_b_1()
+                            .border_color(border)
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(Icon::new(IconName::ArrowLeft).xsmall().text_color(accent))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(accent)
+                                    .child(format!("{ours_label}（ours）— {ours_len} 行")),
+                            ),
+                    )
+                    .child(div().flex_1().min_h_0().child(lines_panel_virtual(
+                        content.clone(),
+                        ConflictSide::Ours,
+                        mono.clone(),
+                        fg,
+                        muted_fg,
+                        self.conflict_ours_scroll.clone(),
+                        cx,
+                    ))),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .w_full()
+                            .px(px(10.0))
+                            .py(px(3.0))
+                            .bg(theirs_hdr_bg)
+                            .border_b_1()
+                            .border_color(border)
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(Icon::new(IconName::ArrowRight).xsmall().text_color(danger))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(danger)
+                                    .child(format!("{theirs_label}（theirs）— {} 行", theirs_len)),
+                            ),
+                    )
+                    .child(div().flex_1().min_h_0().child(lines_panel_virtual(
+                        content,
+                        ConflictSide::Theirs,
+                        mono,
+                        fg,
+                        muted_fg,
+                        self.conflict_theirs_scroll.clone(),
+                        cx,
+                    ))),
+            );
 
         v_flex()
             .size_full()
@@ -224,30 +226,29 @@ impl VcsView {
 const CONFLICT_ROW_H: f32 = 18.0;
 
 fn lines_panel_virtual(
-    lines: Vec<String>,
+    content: Rc<ramag_domain::entities::ConflictContent>,
+    side: ConflictSide,
     mono: SharedString,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     scroll: UniformListScrollHandle,
-    list_id: &'static str,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    let lines_rc: Rc<Vec<String>> = Rc::new(lines);
-    let total = lines_rc.len();
+    let total = side.lines(&content).len();
     if total == 0 {
         return div().into_any_element();
     }
     uniform_list(
-        list_id,
+        side.list_id(),
         total,
         cx.processor({
-            let lines_rc = lines_rc.clone();
+            let content = content.clone();
             let mono = mono.clone();
             move |_this, range: Range<usize>, _w, _cx| {
                 range
                     .map(|i| {
                         let gutter = format!("{:>4}", i + 1);
-                        let line = &lines_rc[i];
+                        let line = &side.lines(&content)[i];
                         h_flex()
                             .w_full()
                             .h(px(CONFLICT_ROW_H))
@@ -286,4 +287,26 @@ fn lines_panel_virtual(
     .h_full()
     .flex_1()
     .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+enum ConflictSide {
+    Ours,
+    Theirs,
+}
+
+impl ConflictSide {
+    fn list_id(self) -> &'static str {
+        match self {
+            Self::Ours => "vcs-conflict-ours",
+            Self::Theirs => "vcs-conflict-theirs",
+        }
+    }
+
+    fn lines(self, content: &ramag_domain::entities::ConflictContent) -> &[String] {
+        match self {
+            Self::Ours => &content.ours,
+            Self::Theirs => &content.theirs,
+        }
+    }
 }

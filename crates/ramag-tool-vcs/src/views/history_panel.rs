@@ -23,6 +23,33 @@ use super::helpers::render_commit_row;
 use super::sidebar::{LeftRow, SidebarSection};
 use super::vcs_view::VcsView;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HistoryLeftRowsCacheKey {
+    local_identity: usize,
+    local_len: usize,
+    remote_identity: usize,
+    remote_len: usize,
+    tags_identity: usize,
+    tags_len: usize,
+    remotes_identity: usize,
+    remotes_len: usize,
+    collapsed_local: bool,
+    collapsed_remote: bool,
+    collapsed_tag: bool,
+    collapsed_remote_repos: bool,
+}
+
+pub(super) struct HistoryLeftRowsCacheEntry {
+    key: HistoryLeftRowsCacheKey,
+    rows: Rc<Vec<LeftRow>>,
+}
+
+impl HistoryLeftRowsCacheEntry {
+    fn get(&self, key: &HistoryLeftRowsCacheKey) -> Option<Rc<Vec<LeftRow>>> {
+        (self.key == *key).then(|| self.rows.clone())
+    }
+}
+
 impl VcsView {
     /// 历史视图：commit list / 详情视图（点击 commit 行后）/ reflog（搜索行按钮 toggle 后）
     pub(super) fn render_history_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -230,6 +257,56 @@ impl VcsView {
 
     /// 左栏：本地/远程分支 + Tag 三段合并为单个 uniform_list（段表头 + 行 + 新建输入，28px 等高）
     fn render_history_left_pane(&self, _border: gpui::Hsla, cx: &mut Context<Self>) -> AnyElement {
+        let rows_rc = self.history_left_rows();
+        let total = rows_rc.len();
+        let body = uniform_list(
+            "vcs-history-left-rows",
+            total,
+            cx.processor({
+                let rows_rc = rows_rc.clone();
+                move |this, range: Range<usize>, _w, cx| {
+                    range
+                        .map(|i| this.render_left_row(&rows_rc[i], cx))
+                        .collect::<Vec<_>>()
+                }
+            }),
+        )
+        .track_scroll(&self.history_left_scroll)
+        .flex_1();
+
+        // size_full + min_h_0：在外层定高区内拿到确定高度，uniform_list 自带虚拟滚动
+        v_flex()
+            .id("vcs-history-left-pane")
+            .size_full()
+            .min_h_0()
+            .px(px(8.0))
+            .py(px(6.0))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn history_left_rows(&self) -> Rc<Vec<LeftRow>> {
+        let key = HistoryLeftRowsCacheKey {
+            local_identity: self.local_branches.as_ptr() as usize,
+            local_len: self.local_branches.len(),
+            remote_identity: self.remote_branches.as_ptr() as usize,
+            remote_len: self.remote_branches.len(),
+            tags_identity: self.tags.as_ptr() as usize,
+            tags_len: self.tags.len(),
+            remotes_identity: self.remotes.as_ptr() as usize,
+            remotes_len: self.remotes.len(),
+            collapsed_local: self.collapsed_local,
+            collapsed_remote: self.collapsed_remote,
+            collapsed_tag: self.collapsed_tag,
+            collapsed_remote_repos: self.collapsed_remote_repos,
+        };
+        {
+            let cache = self.history_left_rows_cache.borrow();
+            if let Some(rows) = cache.as_ref().and_then(|entry| entry.get(&key)) {
+                return rows;
+            }
+        }
+
         let mut rows: Vec<LeftRow> = Vec::new();
 
         // 本地分支段：表头 + 行 + 底部新建
@@ -313,32 +390,13 @@ impl VcsView {
             rows.push(LeftRow::CreateTag);
         }
 
-        let rows_rc: Rc<Vec<LeftRow>> = Rc::new(rows);
-        let total = rows_rc.len();
-        let body = uniform_list(
-            "vcs-history-left-rows",
-            total,
-            cx.processor({
-                let rows_rc = rows_rc.clone();
-                move |this, range: Range<usize>, _w, cx| {
-                    range
-                        .map(|i| this.render_left_row(&rows_rc[i], cx))
-                        .collect::<Vec<_>>()
-                }
-            }),
-        )
-        .track_scroll(&self.history_left_scroll)
-        .flex_1();
-
-        // size_full + min_h_0：在外层定高区内拿到确定高度，uniform_list 自带虚拟滚动
-        v_flex()
-            .id("vcs-history-left-pane")
-            .size_full()
-            .min_h_0()
-            .px(px(8.0))
-            .py(px(6.0))
-            .child(body)
-            .into_any_element()
+        let rows = Rc::new(rows);
+        self.history_left_rows_cache
+            .replace(Some(HistoryLeftRowsCacheEntry {
+                key,
+                rows: rows.clone(),
+            }));
+        rows
     }
 
     /// 中栏：计数 + 列头 + uniform_list 虚拟化 + 加载更多。列头 / count / footer 在外层非虚拟
@@ -483,4 +541,44 @@ fn center_msg(msg: &'static str, muted_fg: gpui::Hsla) -> AnyElement {
         .text_color(muted_fg)
         .child(msg)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_key(collapsed_local: bool) -> HistoryLeftRowsCacheKey {
+        HistoryLeftRowsCacheKey {
+            local_identity: 1,
+            local_len: 2,
+            remote_identity: 3,
+            remote_len: 4,
+            tags_identity: 5,
+            tags_len: 6,
+            remotes_identity: 7,
+            remotes_len: 8,
+            collapsed_local,
+            collapsed_remote: true,
+            collapsed_tag: true,
+            collapsed_remote_repos: true,
+        }
+    }
+
+    #[test]
+    fn history_left_rows_cache_requires_exact_source_and_ui_state() {
+        let key = cache_key(false);
+        let rows = Rc::new(Vec::new());
+        let entry = HistoryLeftRowsCacheEntry {
+            key,
+            rows: rows.clone(),
+        };
+
+        let cached = entry.get(&key);
+        assert!(
+            cached
+                .as_ref()
+                .is_some_and(|value| Rc::ptr_eq(value, &rows))
+        );
+        assert!(entry.get(&cache_key(true)).is_none());
+    }
 }

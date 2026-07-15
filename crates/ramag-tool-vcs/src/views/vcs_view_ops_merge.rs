@@ -30,7 +30,7 @@ impl VcsView {
                 }
                 this.loading_conflict = false;
                 match result {
-                    Ok(content) => this.conflict_content = Some(content),
+                    Ok(content) => this.conflict_content = Some(std::rc::Rc::new(content)),
                     Err(e) => {
                         error!(error = %e, path = %path_clone, "vcs: get conflict content failed");
                         this.error = Some(format!("加载冲突内容失败：{e}"));
@@ -91,7 +91,10 @@ impl VcsView {
         }
         cx.spawn(async move |this, cx| {
             let result = driver.cherry_pick(&repo, &commit_id).await;
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -141,7 +144,10 @@ impl VcsView {
                 ConflictOp::UseTheirs => driver.use_theirs(&repo, &paths).await,
                 ConflictOp::MarkResolved => driver.stage(&repo, &paths).await,
             };
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -224,8 +230,14 @@ impl VcsView {
                 ))),
             };
             // 操作后刷新 status + branches（merge 完会切回干净状态，分支 ahead/behind 也变了）
-            let new_status = driver.status(&repo).await.ok();
-            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -324,8 +336,14 @@ impl VcsView {
             let result = driver
                 .interactive_rebase_execute(&repo, &onto, &todos)
                 .await;
-            let new_status = driver.status(&repo).await.ok();
-            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;

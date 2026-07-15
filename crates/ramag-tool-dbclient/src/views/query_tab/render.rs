@@ -421,14 +421,18 @@ impl Render for QueryTab {
                                             let indices = on_ok_indices.clone();
                                             let single = on_ok_single;
                                             move |_: &ClickEvent, window, app| {
-                                                result.update(app, |r, cx| {
+                                                let started = result.update(app, |r, cx| {
                                                     if let Some(ids) = indices.clone() {
-                                                        r.execute_delete_rows_async(ids, cx);
+                                                        r.execute_delete_rows_async(ids, cx)
                                                     } else if let Some(ri) = single {
-                                                        r.execute_delete_row_async(ri, cx);
+                                                        r.execute_delete_row_async(ri, cx)
+                                                    } else {
+                                                        false
                                                     }
                                                 });
-                                                window.close_dialog(app);
+                                                if started {
+                                                    window.close_dialog(app);
+                                                }
                                             }
                                         });
                                     dialog

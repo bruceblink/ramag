@@ -3,9 +3,9 @@
 mod ops;
 mod row;
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -24,7 +24,7 @@ use gpui_component::{
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoCollection, MongoDatabase};
 use ramag_ui::platform::primary_shortcut;
-use row::TreeRow;
+use row::TreeRowsCacheEntry;
 use tracing::{error, info};
 
 pub struct CollectionTreePanel {
@@ -35,8 +35,12 @@ pub struct CollectionTreePanel {
     /// 加载中标记
     loading: bool,
     error: Option<String>,
-    /// 已展开的 db → collection 列表（None=未展开，Some(vec)=已加载）
+    /// 已加载的 db → collection 缓存；用户展开态单独存放，避免搜索加载后永久展开全部库。
     expanded: HashMap<String, ExpandedState>,
+    open_databases: HashSet<String>,
+    /// 元数据请求代次；刷新或切换连接后丢弃旧异步结果。
+    metadata_generation: u64,
+    collection_request_generation: u64,
     /// 当前选中（database, collection）
     selected: Option<(String, String)>,
     /// 当前激活的 database（用户点 db 行或 collection 行时更新；顶部 header 显示）
@@ -49,6 +53,8 @@ pub struct CollectionTreePanel {
     editor_visible: bool,
     /// 树体行虚拟化滚动句柄（与 dbclient::table_tree 同款）
     uniform_scroll: UniformListScrollHandle,
+    tree_revision: u64,
+    tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     /// 切连接后是否待自动展开默认库（仅首次加载消费一次，refresh 不重复展开）
     auto_expand_pending: bool,
     /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
@@ -83,6 +89,7 @@ struct ExpandedState {
     loading: bool,
     collections: Vec<MongoCollection>,
     error: Option<String>,
+    request_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,12 +139,17 @@ impl CollectionTreePanel {
             loading: false,
             error: None,
             expanded: HashMap::new(),
+            open_databases: HashSet::new(),
+            metadata_generation: 0,
+            collection_request_generation: 0,
             selected: None,
             active_db: None,
             search,
             show_system: false,
             editor_visible: false,
             uniform_scroll: UniformListScrollHandle::new(),
+            tree_revision: 0,
+            tree_rows_cache: RefCell::new(None),
             auto_expand_pending: false,
             pending_notification: None,
             _subscriptions: subs,
@@ -146,7 +158,13 @@ impl CollectionTreePanel {
 
     fn toggle_show_system(&mut self, cx: &mut Context<Self>) {
         self.show_system = !self.show_system;
+        self.invalidate_tree_rows();
         cx.notify();
+    }
+
+    fn invalidate_tree_rows(&mut self) {
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        self.tree_rows_cache.get_mut().take();
     }
 
     /// 父级（query_panel）切完编辑器后回填新可见态，让按钮图标朝向匹配
@@ -166,12 +184,17 @@ impl CollectionTreePanel {
         self.connection = conn;
         self.databases.clear();
         self.expanded.clear();
+        self.open_databases.clear();
         self.selected = None;
         self.error = None;
+        self.invalidate_tree_rows();
         // 切连接后首次加载完 db 列表时自动展开默认库（仅一次）
         self.auto_expand_pending = self.connection.is_some();
         if self.connection.is_some() {
             self.refresh_databases(cx);
+        } else {
+            self.metadata_generation = self.metadata_generation.wrapping_add(1);
+            self.loading = false;
         }
         cx.notify();
     }
@@ -202,13 +225,21 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
+        self.metadata_generation = self.metadata_generation.wrapping_add(1);
+        let metadata_generation = self.metadata_generation;
         let svc = self.service.clone();
         self.loading = true;
         self.error = None;
+        self.invalidate_tree_rows();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let r = svc.list_databases(&conf).await;
             let _ = this.update(cx, |this, cx| {
+                let is_current = this.metadata_generation == metadata_generation
+                    && this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
+                if !is_current {
+                    return;
+                }
                 this.loading = false;
                 match r {
                     Ok(mut dbs) => {
@@ -242,6 +273,7 @@ impl CollectionTreePanel {
                         this.error = Some(e.to_string());
                     }
                 }
+                this.invalidate_tree_rows();
                 cx.notify();
             });
         })
@@ -265,7 +297,6 @@ impl CollectionTreePanel {
             .filter(|n| !self.expanded.contains_key(n))
             .collect();
         for db in missing {
-            self.expanded.insert(db.clone(), ExpandedState::default());
             self.load_collections(db, cx);
         }
     }
@@ -273,14 +304,22 @@ impl CollectionTreePanel {
     fn toggle_database(&mut self, db: &str, cx: &mut Context<Self>) {
         // 同时记录"当前激活 db"用于顶部展示，并 emit 给查询面板
         self.active_db = Some(db.to_string());
-        if self.expanded.contains_key(db) {
-            self.expanded.remove(db);
+        if !self.open_databases.insert(db.to_string()) {
+            self.open_databases.remove(db);
+            self.invalidate_tree_rows();
             cx.notify();
             return;
         }
-        self.expanded
-            .insert(db.to_string(), ExpandedState::default());
-        self.load_collections(db.to_string(), cx);
+        let needs_load = self
+            .expanded
+            .get(db)
+            .is_none_or(|state| state.error.is_some());
+        if needs_load {
+            self.load_collections(db.to_string(), cx);
+        } else {
+            self.invalidate_tree_rows();
+            cx.notify();
+        }
         cx.emit(TreeEvent::DatabaseActivated {
             database: db.to_string(),
         });
@@ -290,29 +329,45 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
-        if let Some(state) = self.expanded.get_mut(&db) {
-            state.loading = true;
-            state.error = None;
-        }
+        self.collection_request_generation = self.collection_request_generation.wrapping_add(1);
+        let request_generation = self.collection_request_generation;
+        let state = self.expanded.entry(db.clone()).or_default();
+        state.loading = true;
+        state.error = None;
+        state.request_generation = request_generation;
+        self.invalidate_tree_rows();
         cx.notify();
         let svc = self.service.clone();
         let db_for_async = db.clone();
+        let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
             let r = svc.list_collections(&conf, &db_for_async).await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(state) = this.expanded.get_mut(&db_for_async) {
-                    state.loading = false;
-                    match r {
-                        Ok(cs) => {
-                            info!(db = %db_for_async, count = cs.len(), "mongo collections loaded");
-                            state.collections = cs;
-                        }
-                        Err(e) => {
-                            error!(error = %e, db = %db_for_async, "mongo list_collections failed");
-                            state.error = Some(e.to_string());
-                        }
+                let is_current = this.metadata_generation == metadata_generation
+                    && this.connection.as_ref().map(|current| &current.id) == Some(&conf.id)
+                    && this
+                        .expanded
+                        .get(&db_for_async)
+                        .is_some_and(|state| state.request_generation == request_generation);
+                if !is_current {
+                    return;
+                }
+                let Some(state) = this.expanded.get_mut(&db_for_async) else {
+                    return;
+                };
+                state.loading = false;
+                match r {
+                    Ok(cs) => {
+                        info!(db = %db_for_async, count = cs.len(), "mongo collections loaded");
+                        state.collections = cs;
+                        state.error = None;
+                    }
+                    Err(e) => {
+                        error!(error = %e, db = %db_for_async, "mongo list_collections failed");
+                        state.error = Some(e.to_string());
                     }
                 }
+                this.invalidate_tree_rows();
                 cx.notify();
             });
         })
@@ -332,20 +387,22 @@ impl CollectionTreePanel {
     /// picker 选库：激活 + 确保展开 + 通知（不像 toggle_database 会把已展开的库收起）
     fn select_database(&mut self, db: String, cx: &mut Context<Self>) {
         self.active_db = Some(db.clone());
-        if !self.expanded.contains_key(&db) {
-            self.expanded.insert(db.clone(), ExpandedState::default());
+        let opened = self.open_databases.insert(db.clone());
+        let needs_load = self
+            .expanded
+            .get(&db)
+            .is_none_or(|state| state.error.is_some());
+        if needs_load {
             self.load_collections(db.clone(), cx);
+        } else if opened {
+            self.invalidate_tree_rows();
         }
         cx.emit(TreeEvent::DatabaseActivated { database: db });
         cx.notify();
     }
 
     fn current_filter(&self, cx: &gpui::App) -> String {
-        self.search
-            .read(cx)
-            .value()
-            .to_string()
-            .to_ascii_lowercase()
+        self.search.read(cx).value().trim().to_lowercase()
     }
 }
 
@@ -472,7 +529,8 @@ impl Render for CollectionTreePanel {
             );
 
         // 扁平化树行 → uniform_list 行虚拟化（仿 dbclient::table_tree）
-        let tree_rows: Rc<Vec<TreeRow>> = Rc::new(self.build_tree_rows(&filter));
+        let tree_view = self.tree_rows_view(&filter);
+        let tree_rows = tree_view.rows;
         let body = uniform_list(
             "mongo-tree-rows",
             tree_rows.len(),
@@ -492,31 +550,7 @@ impl Render for CollectionTreePanel {
 
         // 底部状态栏：「数据库 (可见数/总数)」，与 dbclient::table_tree:403-413 同款
         let total_dbs = self.databases.len();
-        let visible_dbs = self
-            .databases
-            .iter()
-            .filter(|db| {
-                if !self.show_system && is_system_db(&db.name) {
-                    return false;
-                }
-                if filter.is_empty() {
-                    return true;
-                }
-                let name_lc = db.name.to_ascii_lowercase();
-                if name_lc.contains(&filter) {
-                    return true;
-                }
-                // 也算"已展开 db 下任一 collection 名匹配"
-                self.expanded
-                    .get(&db.name)
-                    .map(|s| {
-                        s.collections
-                            .iter()
-                            .any(|c| c.name.to_ascii_lowercase().contains(&filter))
-                    })
-                    .unwrap_or(false)
-            })
-            .count();
+        let visible_dbs = tree_view.visible_databases;
         let mut footer_text = if total_dbs == visible_dbs {
             format!("数据库 ({total_dbs})")
         } else {

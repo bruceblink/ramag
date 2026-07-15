@@ -130,6 +130,34 @@ impl CollectionTreePanel {
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
             let _ = this.update(cx, |this, cx| {
+                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                    this.pending_notification = Some(match &r {
+                        Ok(reply) => {
+                            let n = reply.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
+                            Notification::success(format!(
+                                "已在原连接「{}」清空 {db}.{coll}，删除 {n} 个文档；当前树未自动刷新",
+                                conf.name
+                            ))
+                            .autohide(true)
+                        }
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                connection = %conf.name,
+                                db = %db,
+                                coll = %coll,
+                                "clear collection failed after connection changed"
+                            );
+                            Notification::error(error.write_hint(&format!(
+                                "原连接「{}」清空失败",
+                                conf.name
+                            )))
+                            .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(reply) => {
                         let n = reply.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -164,13 +192,6 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
-        if self
-            .selected
-            .as_ref()
-            .is_some_and(|(d, c)| d == &db && c == &old)
-        {
-            self.selected = None;
-        }
         let svc = self.service.clone();
         let cmd = json!({
             "renameCollection": format!("{db}.{old}"),
@@ -179,8 +200,34 @@ impl CollectionTreePanel {
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, "admin", cmd).await;
             let _ = this.update(cx, |this, cx| {
+                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                    this.pending_notification = Some(match &r {
+                        Ok(_) => Notification::success(format!(
+                            "已在原连接「{}」完成重命名 {db}.{old} → {db}.{new}；当前树未自动刷新",
+                            conf.name
+                        ))
+                        .autohide(true),
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                connection = %conf.name,
+                                db = %db,
+                                coll = %old,
+                                "rename collection failed after connection changed"
+                            );
+                            Notification::error(error.write_hint(&format!(
+                                "原连接「{}」重命名失败",
+                                conf.name
+                            )))
+                            .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(_) => {
+                        clear_selected_collection(&mut this.selected, &db, &old);
                         this.pending_notification = Some(
                             Notification::success(format!("已重命名为 {db}.{new}"))
                                 .autohide(true),
@@ -208,20 +255,39 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
-        if self
-            .selected
-            .as_ref()
-            .is_some_and(|(d, c)| d == &db && c == &coll)
-        {
-            self.selected = None;
-        }
         let svc = self.service.clone();
         let cmd = json!({"drop": coll.clone()});
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
             let _ = this.update(cx, |this, cx| {
+                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                    this.pending_notification = Some(match &r {
+                        Ok(_) => Notification::success(format!(
+                            "已在原连接「{}」删除 {db}.{coll}；当前树未自动刷新",
+                            conf.name
+                        ))
+                        .autohide(true),
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                connection = %conf.name,
+                                db = %db,
+                                coll = %coll,
+                                "drop collection failed after connection changed"
+                            );
+                            Notification::error(error.write_hint(&format!(
+                                "原连接「{}」删除集合失败",
+                                conf.name
+                            )))
+                            .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(_) => {
+                        clear_selected_collection(&mut this.selected, &db, &coll);
                         this.pending_notification = Some(
                             Notification::success(format!("已删除 {db}.{coll}")).autohide(true),
                         );
@@ -252,9 +318,34 @@ impl CollectionTreePanel {
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
             let _ = this.update(cx, |this, cx| {
+                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                    this.pending_notification = Some(match &r {
+                        Ok(_) => Notification::success(format!(
+                            "已在原连接「{}」删除数据库 {db}；当前树未自动刷新",
+                            conf.name
+                        ))
+                        .autohide(true),
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                connection = %conf.name,
+                                db = %db,
+                                "drop database failed after connection changed"
+                            );
+                            Notification::error(
+                                error.write_hint(&format!("原连接「{}」删除数据库失败", conf.name)),
+                            )
+                            .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(_) => {
                         this.expanded.remove(&db);
+                        this.open_databases.remove(&db);
+                        this.invalidate_tree_rows();
                         if this.active_db.as_deref() == Some(db.as_str()) {
                             this.active_db = None;
                         }
@@ -276,5 +367,35 @@ impl CollectionTreePanel {
             });
         })
         .detach();
+    }
+}
+
+fn clear_selected_collection(selected: &mut Option<(String, String)>, db: &str, coll: &str) {
+    if selected
+        .as_ref()
+        .is_some_and(|(selected_db, selected_coll)| selected_db == db && selected_coll == coll)
+    {
+        *selected = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clear_selected_collection;
+
+    #[test]
+    fn successful_collection_ddl_preserves_unrelated_selection() {
+        let mut selected = Some(("app".to_string(), "users".to_string()));
+
+        clear_selected_collection(&mut selected, "app", "posts");
+        assert_eq!(
+            selected
+                .as_ref()
+                .map(|(db, collection)| (db.as_str(), collection.as_str())),
+            Some(("app", "users"))
+        );
+
+        clear_selected_collection(&mut selected, "app", "users");
+        assert!(selected.is_none());
     }
 }

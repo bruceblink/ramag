@@ -22,7 +22,7 @@ impl ClipboardDrawer {
     pub(super) fn render_card(
         &self,
         ix: usize,
-        item: &ClipItem,
+        item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         // 临时借用取 owned 颜色，释放 theme 借用（card_body 需 &mut cx 解密图片）
@@ -34,12 +34,14 @@ impl ClipboardDrawer {
         let blue = gpui::hsla(212.0 / 360.0, 1.0, 0.52, 1.0);
         // 图片缩略图解密（&mut cx）提前算，避免与后续不可变借用冲突
         let thumb = if matches!(item.kind, ClipKind::Image) {
-            self.thumb_image(item, cx)
+            self.thumb_image(item.clone(), cx)
         } else {
             None
         };
-        let header = self.card_header(item, header_bg, cx).into_any_element();
-        let body = card_body(item, thumb);
+        let header = self
+            .card_header(item.as_ref(), header_bg, cx)
+            .into_any_element();
+        let body = card_body(item.as_ref(), thumb);
 
         v_flex()
             .id(SharedString::from(format!("drawer-card-{}", item.id)))
@@ -62,7 +64,7 @@ impl ClipboardDrawer {
             }))
             .child(header)
             .child(body)
-            .child(card_footer(item, muted))
+            .child(card_footer(item.as_ref(), muted))
     }
 
     /// 标题条：左上类型名 + 时间，右上来源应用图标
@@ -103,8 +105,18 @@ impl ClipboardDrawer {
     /// 来源应用图标（内存 PNG → gpui Image，按 bundle_id 缓存）
     fn source_icon(&self, item: &ClipItem, _cx: &Context<Self>) -> Option<gpui::AnyElement> {
         let bundle = item.source.as_ref().map(|s| s.bundle_id.as_str())?;
-        let png = self.service().app_icon(bundle)?;
-        let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.as_ref().clone()));
+        let cache_key = format!("app-icon:{bundle}");
+        let image = match self.img_cache.peek(&cache_key) {
+            Some(image) => image,
+            None => {
+                let png = self.service().app_icon(bundle)?;
+                let encoded_bytes = png.len();
+                let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.as_ref().clone()));
+                self.img_cache
+                    .insert(cache_key, image.clone(), encoded_bytes);
+                image
+            }
+        };
         Some(
             img(ImageSource::Image(image))
                 .size(px(34.0))

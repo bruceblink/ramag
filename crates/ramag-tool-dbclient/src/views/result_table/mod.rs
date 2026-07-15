@@ -18,13 +18,13 @@ trait RestrictScrollExt: Styled + Sized {
 }
 impl<T: Styled> RestrictScrollExt for T {}
 use gpui_component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex, v_flex,
 };
 
-use ramag_domain::entities::QueryResult;
+use ramag_domain::entities::{QueryResult, Value, contains_case_insensitive};
 
 use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
 
@@ -32,12 +32,11 @@ use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
 /// 用 Rc 包装才能在 'static + Fn 闭包内 capture（不能 borrow 栈局部变量）
 struct TableRowFrame {
     result: Arc<QueryResult>,
-    columns: Vec<String>,
     /// 排序 + 过滤后的源行下标；行数据始终从共享 result 读取，不在每帧复制。
-    display_indices: Vec<usize>,
-    visible_col_indices: Vec<usize>,
+    display_indices: Arc<Vec<usize>>,
+    visible_col_indices: Arc<Vec<usize>>,
     col_widths: Vec<gpui::Pixels>,
-    right_align: Vec<bool>,
+    right_align: Arc<Vec<bool>>,
     row_num_width: gpui::Pixels,
     checkbox_col_width: gpui::Pixels,
     total_content_width: gpui::Pixels,
@@ -50,11 +49,16 @@ struct TableRowFrame {
 }
 
 /// 表格当前视图（排序 + 列/行过滤后的所见内容）；渲染与导出共用，保证所见即所导
+#[derive(Clone)]
 pub(crate) struct DisplayView {
     /// 可见列的原始下标（列过滤后）
-    pub(crate) visible_col_indices: Vec<usize>,
+    pub(crate) visible_col_indices: Arc<Vec<usize>>,
     /// 原始行下标：排序 + 行过滤后的显示序
-    pub(crate) display_indices: Vec<usize>,
+    pub(crate) display_indices: Arc<Vec<usize>>,
+    /// 基于当前显示行样本估算的默认列宽；手动覆盖在渲染时叠加。
+    default_col_widths: Arc<Vec<gpui::Pixels>>,
+    /// 基于当前显示行样本识别的数值列。
+    right_align: Arc<Vec<bool>>,
     /// 是否因 MAX_ROWS_DISPLAY 截断
     pub(crate) truncated: bool,
     /// 列过滤是否激活
@@ -63,6 +67,27 @@ pub(crate) struct DisplayView {
     pub(crate) row_filtering: bool,
     /// 行过滤前的行数（显示"过滤 N/M"用）
     pub(crate) pre_filter_count: usize,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DisplayViewCacheKey {
+    result_identity: usize,
+    result_revision: u64,
+    sort_by: Option<(usize, SortDir)>,
+    column_filter: String,
+    row_filter_lower: String,
+}
+
+/// SQL 结果表派生视图缓存。内容不持有 QueryResult，避免延长旧结果的生命周期。
+pub(crate) struct DisplayViewCache {
+    key: DisplayViewCacheKey,
+    view: DisplayView,
+}
+
+impl DisplayViewCache {
+    fn get(&self, key: &DisplayViewCacheKey) -> Option<DisplayView> {
+        (self.key == *key).then(|| self.view.clone())
+    }
 }
 
 impl DisplayView {
@@ -79,16 +104,77 @@ pub(crate) fn compute_display_view(
     result: &QueryResult,
     cx: &gpui::App,
 ) -> DisplayView {
+    let column_filter = panel.column_filter_text(cx);
+    let row_filter_lower = panel.row_filter_text(cx).to_lowercase();
+    let key = DisplayViewCacheKey {
+        result_identity: result as *const QueryResult as usize,
+        result_revision: panel.result_revision,
+        sort_by: panel.sort_by(),
+        column_filter: column_filter.clone(),
+        row_filter_lower: row_filter_lower.clone(),
+    };
+    if let Some(view) = panel
+        .display_view_cache
+        .borrow()
+        .as_ref()
+        .and_then(|cache| cache.get(&key))
+    {
+        return view;
+    }
+
+    let view = build_display_view(result, panel.sort_by(), &column_filter, &row_filter_lower);
+    panel.display_view_cache.replace(Some(DisplayViewCache {
+        key,
+        view: view.clone(),
+    }));
+    view
+}
+
+fn build_display_view(
+    result: &QueryResult,
+    sort_by: Option<(usize, SortDir)>,
+    column_filter: &str,
+    row_filter_lower: &str,
+) -> DisplayView {
     let mut display_indices = (0..result.rows.len().min(MAX_ROWS_DISPLAY)).collect::<Vec<_>>();
     let truncated = result.rows.len() > MAX_ROWS_DISPLAY;
 
-    if let Some((sort_col, dir)) = panel.sort_by() {
-        display_indices.sort_by(|&a, &b| {
-            let a = &result.rows[a];
-            let b = &result.rows[b];
+    if let Some((sort_col, dir)) = sort_by {
+        let needs_display_keys =
+            needs_display_sort_keys(display_indices.iter().map(|&row_index| {
+                result
+                    .rows
+                    .get(row_index)
+                    .and_then(|row| row.values.get(sort_col))
+            }));
+        let display_keys = needs_display_keys.then(|| {
+            display_indices
+                .iter()
+                .map(|&row_index| {
+                    result
+                        .rows
+                        .get(row_index)
+                        .and_then(|row| row.values.get(sort_col))
+                        .and_then(|value| {
+                            (!matches!(value, Value::Null)).then(|| display_sort_key(value))
+                        })
+                })
+                .collect::<Vec<_>>()
+        });
+        display_indices.sort_by(|&a_index, &b_index| {
+            let a = &result.rows[a_index];
+            let b = &result.rows[b_index];
             let av = a.values.get(sort_col);
             let bv = b.values.get(sort_col);
-            let ord = compare_values(av, bv);
+            let a_key = display_keys
+                .as_ref()
+                .and_then(|keys| keys.get(a_index))
+                .and_then(|key| key.as_deref());
+            let b_key = display_keys
+                .as_ref()
+                .and_then(|keys| keys.get(b_index))
+                .and_then(|key| key.as_deref());
+            let ord = compare_values_with_display_keys(av, bv, a_key, b_key);
             if matches!(dir, SortDir::Desc) {
                 ord.reverse()
             } else {
@@ -97,9 +183,7 @@ pub(crate) fn compute_display_view(
         });
     }
 
-    let col_filter = panel.column_filter_text(cx);
-    let row_filter = panel.row_filter_text(cx).to_lowercase();
-    let col_tokens: Vec<String> = col_filter
+    let col_tokens: Vec<String> = column_filter
         .split(',')
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty())
@@ -110,9 +194,10 @@ pub(crate) fn compute_display_view(
             .columns
             .iter()
             .enumerate()
-            .filter(|(_, c)| {
-                let lc = c.to_lowercase();
-                col_tokens.iter().any(|t| lc.contains(t))
+            .filter(|(_, column)| {
+                col_tokens
+                    .iter()
+                    .any(|token| contains_case_insensitive(column, token))
             })
             .map(|(i, _)| i)
             .collect()
@@ -120,27 +205,39 @@ pub(crate) fn compute_display_view(
         (0..result.columns.len()).collect()
     };
     let pre_filter_count = display_indices.len();
-    let row_filtering = !row_filter.is_empty();
+    let row_filtering = !row_filter_lower.is_empty();
     if row_filtering {
-        let scoped_indices = visible_col_indices.clone();
         display_indices.retain(|&source_idx| {
             let row = &result.rows[source_idx];
-            scoped_indices.iter().any(|&ci| {
+            visible_col_indices.iter().any(|&ci| {
                 row.values
                     .get(ci)
-                    .map(|v| {
-                        v.display_preview(usize::MAX)
-                            .to_lowercase()
-                            .contains(&row_filter)
-                    })
+                    .map(|value| value.contains_query_lower(row_filter_lower))
                     .unwrap_or(false)
             })
         });
     }
 
+    let default_col_widths = (0..result.columns.len())
+        .map(|ci| {
+            estimate_col_width(
+                ci,
+                &result.columns,
+                &result.column_types,
+                result,
+                &display_indices,
+            )
+        })
+        .collect();
+    let right_align = (0..result.columns.len())
+        .map(|ci| detect_numeric_column(ci, result, &display_indices))
+        .collect();
+
     DisplayView {
-        visible_col_indices,
-        display_indices,
+        visible_col_indices: Arc::new(visible_col_indices),
+        display_indices: Arc::new(display_indices),
+        default_col_widths: Arc::new(default_col_widths),
+        right_align: Arc::new(right_align),
         truncated,
         cols_filtered,
         row_filtering,
@@ -165,8 +262,8 @@ pub(super) fn render_table(
     accent: gpui::Hsla,
     cx: &mut Context<ResultPanel>,
 ) -> AnyElement {
-    let columns = result.columns.clone();
-    let column_types = result.column_types.clone();
+    let columns = &result.columns;
+    let column_types = &result.column_types;
     let total_rows = result.rows.len();
     let affected = result.affected_rows;
     let elapsed = result.elapsed_ms;
@@ -176,6 +273,8 @@ pub(super) fn render_table(
     let DisplayView {
         visible_col_indices,
         display_indices,
+        default_col_widths,
+        right_align,
         truncated,
         cols_filtered,
         row_filtering,
@@ -211,12 +310,10 @@ pub(super) fn render_table(
     // 用户能看到列头与列类型，避免"查无结果"占位遮蔽元信息
 
     // 列宽 / 行号宽 / 总宽
-    let col_widths: Vec<gpui::Pixels> = (0..columns.len())
-        .map(|ci| {
-            panel.col_width_override(ci).unwrap_or_else(|| {
-                estimate_col_width(ci, &columns, &column_types, result, &display_indices)
-            })
-        })
+    let col_widths: Vec<gpui::Pixels> = default_col_widths
+        .iter()
+        .enumerate()
+        .map(|(ci, &default_width)| panel.col_width_override(ci).unwrap_or(default_width))
         .collect();
     let row_num_width = px((total_rows.to_string().len() as f32 * 9.0 + 16.0).clamp(40.0, 70.0));
     let checkbox_col_width = px(32.0);
@@ -227,19 +324,14 @@ pub(super) fn render_table(
 
     // 数据 cell 用 mono 字体（长 ID / 时间戳纵向对齐）；表头不用
     let mono_font = cx.theme().mono_font_family.clone();
-    // 数值列检测：扫前 20 行，全是 Int/Float（允许 Null）→ 右对齐
-    let right_align: Vec<bool> = (0..columns.len())
-        .map(|ci| detect_numeric_column(ci, result, &display_indices))
-        .collect();
-
     let current_sort = panel.sort_by();
     let header_cells: Vec<AnyElement> = visible_col_indices
         .iter()
         .map(|&ci| {
             render_header_cell(
                 ci,
-                &columns,
-                &column_types,
+                columns,
+                column_types,
                 &col_widths,
                 current_sort,
                 fg,
@@ -258,7 +350,7 @@ pub(super) fn render_table(
         .border_color(border)
         .into_any_element();
 
-    let selected_rows_set = panel.selected_rows().clone();
+    let selected_rows_set = panel.selected_rows();
     let visible_row_indices = display_indices.clone();
     let all_selected = !visible_row_indices.is_empty()
         && visible_row_indices
@@ -309,7 +401,6 @@ pub(super) fn render_table(
     // 不变数据装进 frame，Rc 共享给 closure 满足 'static + Fn
     let frame = Rc::new(TableRowFrame {
         result: result.clone(),
-        columns: columns.clone(),
         display_indices,
         visible_col_indices: visible_col_indices.clone(),
         col_widths: col_widths.clone(),
@@ -326,6 +417,7 @@ pub(super) fn render_table(
     });
 
     let has_pending = panel.pending_insert().is_some();
+    let dml_busy = panel.dml_busy();
     let row_count = frame.display_indices.len() + if has_pending { 1 } else { 0 };
 
     let frame_for_rows = frame.clone();
@@ -422,6 +514,7 @@ pub(super) fn render_table(
                         .ghost()
                         .small()
                         .label("取消")
+                        .disabled(dml_busy)
                         .on_click(move |_, _, app| {
                             panel_for_cancel.update(app, |r, cx| r.cancel_insert(cx));
                         }),
@@ -430,7 +523,8 @@ pub(super) fn render_table(
                     Button::new("insert-submit-bar")
                         .primary()
                         .small()
-                        .label("提交")
+                        .label(if dml_busy { "提交中…" } else { "提交" })
+                        .disabled(dml_busy)
                         .on_click(move |_, _, app| {
                             panel_for_submit.update(app, |r, cx| r.submit_insert(cx));
                         }),
@@ -475,4 +569,108 @@ mod cells;
 mod helpers;
 
 use cells::{render_data_row, render_header_cell, render_pending_row};
-use helpers::{compare_values, detect_numeric_column, estimate_col_width};
+use helpers::{
+    compare_values_with_display_keys, detect_numeric_column, display_sort_key, estimate_col_width,
+    needs_display_sort_keys,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::{Row, Value};
+
+    fn sample_result() -> QueryResult {
+        QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            column_types: vec!["BIGINT".into(), "TEXT".into()],
+            rows: vec![
+                Row {
+                    values: vec![Value::Int(2), Value::Text("Beta".into())],
+                },
+                Row {
+                    values: vec![Value::Int(1), Value::Text("alpha".into())],
+                },
+                Row {
+                    values: vec![Value::Int(3), Value::Text("Gamma".into())],
+                },
+            ],
+            affected_rows: 0,
+            elapsed_ms: 1,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn display_view_keeps_source_indices_after_sort_and_filter() {
+        let result = sample_result();
+        let sorted = build_display_view(&result, Some((0, SortDir::Asc)), "", "");
+        assert_eq!(sorted.display_indices.as_slice(), &[1, 0, 2]);
+
+        let filtered = build_display_view(&result, Some((0, SortDir::Desc)), "name", "bet");
+        assert_eq!(filtered.visible_col_indices.as_slice(), &[1]);
+        assert_eq!(filtered.display_indices.as_slice(), &[0]);
+        assert!(filtered.cols_filtered);
+        assert!(filtered.row_filtering);
+    }
+
+    #[test]
+    fn display_view_cache_reuses_only_matching_revision_and_inputs() {
+        let view = build_display_view(&sample_result(), None, "", "");
+        let key = DisplayViewCacheKey {
+            result_identity: 7,
+            result_revision: 3,
+            sort_by: None,
+            column_filter: String::new(),
+            row_filter_lower: String::new(),
+        };
+        let cache = DisplayViewCache {
+            key: key.clone(),
+            view,
+        };
+
+        let cached = cache.get(&key).expect("same cache key should hit");
+        assert!(Arc::ptr_eq(
+            &cached.display_indices,
+            &cache.view.display_indices
+        ));
+
+        let mut stale = key;
+        stale.result_revision += 1;
+        assert!(cache.get(&stale).is_none());
+    }
+
+    #[test]
+    fn cached_display_keys_preserve_mixed_and_json_sort_order() {
+        let values = [
+            Value::Json(serde_json::json!({"z": [3, 2, 1]})),
+            Value::Text("plain".into()),
+            Value::Bool(true),
+        ];
+        assert!(helpers::needs_display_sort_keys(values.iter().map(Some)));
+
+        let keys: Vec<String> = values.iter().map(helpers::display_sort_key).collect();
+        for (left_index, left) in values.iter().enumerate() {
+            for (right_index, right) in values.iter().enumerate() {
+                assert_eq!(
+                    helpers::compare_values(Some(left), Some(right)),
+                    helpers::compare_values_with_display_keys(
+                        Some(left),
+                        Some(right),
+                        Some(&keys[left_index]),
+                        Some(&keys[right_index]),
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn column_filter_matches_unicode_case_insensitively() {
+        let mut result = sample_result();
+        result.columns[1] = "ÜBERblick".into();
+
+        let view = build_display_view(&result, None, "über", "");
+
+        assert_eq!(view.visible_col_indices.as_slice(), &[1]);
+    }
+}

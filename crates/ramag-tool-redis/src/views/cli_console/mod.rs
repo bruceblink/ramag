@@ -9,6 +9,7 @@ mod complete;
 mod danger;
 mod format;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -31,9 +32,11 @@ use tracing::{error, info};
 
 /// 单条命令 + 应答历史
 struct Entry {
+    id: u64,
     command: String,
     db: u8,
     outcome: Outcome,
+    display_lines: usize,
     elapsed_ms: u128,
 }
 
@@ -43,14 +46,24 @@ enum Outcome {
     Err(String),
 }
 
+const MAX_COMMAND_BYTES: usize = 64 * 1024;
+const MAX_TRANSCRIPT_ENTRIES: usize = 100;
+const MAX_TRANSCRIPT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_TRANSCRIPT_LINES: usize = 5_000;
+const MAX_COMMAND_HISTORY_ENTRIES: usize = 500;
+const MAX_COMMAND_HISTORY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PENDING_COMMANDS: usize = 8;
+
 pub struct CliConsole {
     service: Arc<RedisService>,
     config: ConnectionConfig,
     db: u8,
     history: Vec<Entry>,
+    next_entry_id: u64,
     input: Entity<InputState>,
     /// 已提交命令的输入历史（旧→新），供 ↑/↓ 召回；与上方应答历史 history 是两回事
-    cmd_history: Vec<String>,
+    cmd_history: VecDeque<String>,
+    cmd_history_bytes: usize,
     /// 当前 ↑/↓ 浏览位置：None = 停在实时输入行，Some(i) = 正显示 cmd_history[i]
     history_cursor: Option<usize>,
     _subscriptions: Vec<Subscription>,
@@ -85,8 +98,10 @@ impl CliConsole {
             config,
             db,
             history: Vec::new(),
+            next_entry_id: 0,
             input,
-            cmd_history: Vec::new(),
+            cmd_history: VecDeque::new(),
+            cmd_history_bytes: 0,
             history_cursor: None,
             _subscriptions: subs,
         }
@@ -103,8 +118,29 @@ impl CliConsole {
     }
 
     fn handle_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw_len = self.input.read(cx).value().trim().len();
+        if raw_len == 0 {
+            return;
+        }
+        if raw_len > MAX_COMMAND_BYTES {
+            let command = {
+                let input = self.input.read(cx);
+                command_preview(input.value().trim(), 200)
+            };
+            self.push_entry(
+                command,
+                Outcome::Err(format!(
+                    "(error) 命令超过 {} KiB 上限，请改用专用编辑器或脚本",
+                    MAX_COMMAND_BYTES / 1024
+                )),
+                0,
+            );
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            cx.notify();
+            return;
+        }
         let raw = self.input.read(cx).value().trim().to_string();
-        if raw.is_empty() {
+        if self.reject_if_command_queue_full(&raw, cx) {
             return;
         }
         // 记录到输入历史（含被拦截 / 解析失败的命令，便于 ↑ 召回后修正）
@@ -114,12 +150,7 @@ impl CliConsole {
             Ok(a) if a.is_empty() => return,
             Ok(a) => a,
             Err(msg) => {
-                self.history.push(Entry {
-                    command: raw,
-                    db: self.db,
-                    outcome: Outcome::Err(format!("(error) 解析失败：{msg}")),
-                    elapsed_ms: 0,
-                });
+                self.push_entry(raw, Outcome::Err(format!("(error) 解析失败：{msg}")), 0);
                 self.input.update(cx, |s, cx| s.set_value("", window, cx));
                 cx.notify();
                 return;
@@ -130,12 +161,7 @@ impl CliConsole {
                 .first()
                 .is_some_and(|command| self.service.is_write_command(command))
         {
-            self.history.push(Entry {
-                command: raw,
-                db: self.db,
-                outcome: Outcome::Err(format!("(error) {READ_ONLY_MESSAGE}")),
-                elapsed_ms: 0,
-            });
+            self.push_entry(raw, Outcome::Err(format!("(error) {READ_ONLY_MESSAGE}")), 0);
             self.input.update(cx, |s, cx| s.set_value("", window, cx));
             cx.notify();
             return;
@@ -157,12 +183,7 @@ impl CliConsole {
             }
         });
         if let Some(reason) = blocked_reason {
-            self.history.push(Entry {
-                command: raw,
-                db: self.db,
-                outcome: Outcome::Err(format!("(error) {reason}")),
-                elapsed_ms: 0,
-            });
+            self.push_entry(raw, Outcome::Err(format!("(error) {reason}")), 0);
             self.input.update(cx, |s, cx| s.set_value("", window, cx));
             cx.notify();
             return;
@@ -171,8 +192,9 @@ impl CliConsole {
         // 高危命令（FLUSHALL / SHUTDOWN / CONFIG SET / CLIENT KILL 等）先弹确认，
         // 明示连接名 + DB；取消则保留输入供修改
         if let Some(reason) = danger::dangerous_reason(&argv) {
+            let preview = command_preview(&raw, 4096);
             let desc = format!(
-                "目标：{} · DB {}\n命令：{raw}\n\n{reason}。确认继续吗？",
+                "目标：{} · DB {}\n命令：{preview}\n\n{reason}。确认继续吗？",
                 self.config.name, self.db
             );
             let entity = cx.entity();
@@ -201,13 +223,11 @@ impl CliConsole {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let idx = self.history.len();
-        self.history.push(Entry {
-            command: raw,
-            db: self.db,
-            outcome: Outcome::Pending,
-            elapsed_ms: 0,
-        });
+        // 高危命令确认框可能停留较久，实际执行前必须再次检查并发上限。
+        if self.reject_if_command_queue_full(&raw, cx) {
+            return;
+        }
+        let entry_id = self.push_entry(raw, Outcome::Pending, 0);
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
 
@@ -219,9 +239,9 @@ impl CliConsole {
             let result = svc.execute_command(&config, db, argv).await;
             let elapsed = start.elapsed().as_millis();
             let _ = this.update(cx, |this, cx| {
-                if let Some(entry) = this.history.get_mut(idx) {
+                if let Some(entry) = this.history.iter_mut().find(|entry| entry.id == entry_id) {
                     entry.elapsed_ms = elapsed;
-                    entry.outcome = match result {
+                    let outcome = match result {
                         Ok(v) => {
                             info!(elapsed_ms = elapsed, "cli command ok");
                             Outcome::Ok(format::lines_of(&v).join("\n"))
@@ -232,7 +252,10 @@ impl CliConsole {
                             Outcome::Err(format!("(error) {}", e.message()))
                         }
                     };
+                    entry.display_lines = outcome_line_count(&outcome);
+                    entry.outcome = outcome;
                 }
+                this.prune_transcript();
                 cx.notify();
             });
         })
@@ -240,20 +263,55 @@ impl CliConsole {
     }
 
     fn clear(&mut self, cx: &mut Context<Self>) {
-        self.history.clear();
+        clear_completed_entries(&mut self.history);
         cx.notify();
+    }
+
+    fn reject_if_command_queue_full(&mut self, command: &str, cx: &mut Context<Self>) -> bool {
+        if pending_command_count(&self.history) < MAX_PENDING_COMMANDS {
+            return false;
+        }
+        self.push_entry(
+            command_preview(command, 200),
+            Outcome::Err(format!(
+                "(error) 同时最多执行 {MAX_PENDING_COMMANDS} 条命令，请等待已有命令完成"
+            )),
+            0,
+        );
+        cx.notify();
+        true
+    }
+
+    fn push_entry(&mut self, command: String, outcome: Outcome, elapsed_ms: u128) -> u64 {
+        let id = self.next_entry_id;
+        self.next_entry_id = self.next_entry_id.wrapping_add(1);
+        let display_lines = outcome_line_count(&outcome);
+        self.history.push(Entry {
+            id,
+            command,
+            db: self.db,
+            outcome,
+            display_lines,
+            elapsed_ms,
+        });
+        self.prune_transcript();
+        id
+    }
+
+    fn prune_transcript(&mut self) {
+        prune_transcript_entries(&mut self.history);
     }
 
     /// 记录一条输入历史：跳过与上一条完全相同的（避免连按重复堆积），上限 500 条防无界增长；
     /// 记录后浏览位置复位到实时行
     fn record_history(&mut self, cmd: &str) {
-        if self.cmd_history.last().map(String::as_str) != Some(cmd) {
-            self.cmd_history.push(cmd.to_string());
-            const MAX: usize = 500;
-            if self.cmd_history.len() > MAX {
-                self.cmd_history.remove(0);
-            }
-        }
+        push_command_history(
+            &mut self.cmd_history,
+            &mut self.cmd_history_bytes,
+            cmd,
+            MAX_COMMAND_HISTORY_ENTRIES,
+            MAX_COMMAND_HISTORY_BYTES,
+        );
         self.history_cursor = None;
     }
 
@@ -300,12 +358,29 @@ impl Render for CliConsole {
         let bg = theme.background;
         let secondary_bg = theme.secondary;
         let accent = theme.primary;
-        let input_value = self.input.read(cx).value().trim().to_string();
-        let read_only_write = self.config.production
-            && format::tokenize(&input_value)
-                .ok()
-                .and_then(|argv| argv.into_iter().next())
-                .is_some_and(|command| self.service.is_write_command(&command));
+        let read_only_write = if self.config.production {
+            let input = self.input.read(cx);
+            let input_value = input.value();
+            let value = input_value.trim();
+            value.len() <= MAX_COMMAND_BYTES
+                && format::tokenize(value)
+                    .ok()
+                    .and_then(|argv| argv.into_iter().next())
+                    .is_some_and(|command| self.service.is_write_command(&command))
+        } else {
+            false
+        };
+        let pending_commands = pending_command_count(&self.history);
+        let command_queue_full = pending_commands >= MAX_PENDING_COMMANDS;
+        let history_label = if pending_commands == 0 {
+            format!("命令行 · DB {} · {} 条", self.db, self.history.len())
+        } else {
+            format!(
+                "命令行 · DB {} · {} 条 · {pending_commands} 执行中",
+                self.db,
+                self.history.len()
+            )
+        };
 
         let toolbar = h_flex()
             .w_full()
@@ -316,11 +391,7 @@ impl Render for CliConsole {
             .bg(secondary_bg)
             .gap(px(8.0))
             .items_center()
-            .child(div().text_xs().text_color(muted_fg).child(format!(
-                "命令行 · DB {} · {} 条",
-                self.db,
-                self.history.len()
-            )))
+            .child(div().text_xs().text_color(muted_fg).child(history_label))
             .when(self.config.production, |this| {
                 this.child(
                     div()
@@ -335,7 +406,11 @@ impl Render for CliConsole {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::trash())
-                    .tooltip("清空历史")
+                    .tooltip(if pending_commands > 0 {
+                        "清空已完成历史（执行中的命令会保留）"
+                    } else {
+                        "清空历史"
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 
@@ -346,8 +421,8 @@ impl Render for CliConsole {
             ));
         } else {
             // 最新在上：刚执行的命令结果紧贴输入框下方，无需滚动
-            for (i, entry) in self.history.iter().enumerate().rev() {
-                transcript = transcript.child(render_entry(i, entry, fg, muted_fg, accent, border));
+            for entry in self.history.iter().rev() {
+                transcript = transcript.child(render_entry(entry, fg, muted_fg, accent, border));
             }
         }
 
@@ -366,9 +441,11 @@ impl Render for CliConsole {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .disabled(read_only_write)
+                    .disabled(read_only_write || command_queue_full)
                     .tooltip(if read_only_write {
                         "生产连接为只读，不能执行写命令"
+                    } else if command_queue_full {
+                        "并发命令已达上限，请等待已有命令完成"
                     } else {
                         "执行 (Enter)"
                     })
@@ -412,7 +489,6 @@ impl Render for CliConsole {
 }
 
 fn render_entry(
-    idx: usize,
     entry: &Entry,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
@@ -445,7 +521,7 @@ fn render_entry(
         format!("DB {} · {} ms", entry.db, entry.elapsed_ms)
     };
     v_flex()
-        .id(SharedString::from(format!("cli-entry-{idx}")))
+        .id(SharedString::from(format!("cli-entry-{}", entry.id)))
         .w_full()
         .gap(px(4.0))
         .child(
@@ -474,6 +550,94 @@ fn render_entry(
                 .font_family("monospace")
                 .child(body),
         )
+}
+
+fn transcript_bytes(entries: &[Entry]) -> usize {
+    entries.iter().fold(0usize, |total, entry| {
+        total.saturating_add(transcript_entry_bytes(entry))
+    })
+}
+
+fn prune_transcript_entries(entries: &mut Vec<Entry>) {
+    let mut total_bytes = transcript_bytes(entries);
+    let mut total_lines = transcript_line_count(entries);
+    while entries.len() > MAX_TRANSCRIPT_ENTRIES
+        || total_bytes > MAX_TRANSCRIPT_BYTES
+        || total_lines > MAX_TRANSCRIPT_LINES
+    {
+        let Some(index) = entries
+            .iter()
+            .position(|entry| !matches!(entry.outcome, Outcome::Pending))
+        else {
+            break;
+        };
+        let removed = entries.remove(index);
+        total_bytes = total_bytes.saturating_sub(transcript_entry_bytes(&removed));
+        total_lines = total_lines.saturating_sub(removed.display_lines);
+    }
+}
+
+fn transcript_entry_bytes(entry: &Entry) -> usize {
+    let outcome_bytes = match &entry.outcome {
+        Outcome::Pending => 0,
+        Outcome::Ok(value) | Outcome::Err(value) => value.len(),
+    };
+    entry.command.len().saturating_add(outcome_bytes)
+}
+
+fn transcript_line_count(entries: &[Entry]) -> usize {
+    entries.iter().fold(0usize, |total, entry| {
+        total.saturating_add(entry.display_lines)
+    })
+}
+
+fn outcome_line_count(outcome: &Outcome) -> usize {
+    match outcome {
+        Outcome::Pending => 1,
+        Outcome::Ok(value) | Outcome::Err(value) => value.lines().count().max(1),
+    }
+}
+
+fn pending_command_count(entries: &[Entry]) -> usize {
+    entries
+        .iter()
+        .filter(|entry| matches!(entry.outcome, Outcome::Pending))
+        .count()
+}
+
+fn clear_completed_entries(entries: &mut Vec<Entry>) {
+    entries.retain(|entry| matches!(entry.outcome, Outcome::Pending));
+}
+
+fn push_command_history(
+    history: &mut VecDeque<String>,
+    total_bytes: &mut usize,
+    command: &str,
+    max_entries: usize,
+    max_bytes: usize,
+) {
+    if history.back().map(String::as_str) == Some(command) {
+        return;
+    }
+
+    *total_bytes = total_bytes.saturating_add(command.len());
+    history.push_back(command.to_string());
+    while history.len() > max_entries || *total_bytes > max_bytes {
+        let Some(removed) = history.pop_front() else {
+            *total_bytes = 0;
+            break;
+        };
+        *total_bytes = total_bytes.saturating_sub(removed.len());
+    }
+}
+
+fn command_preview(command: &str, max_chars: usize) -> String {
+    let mut chars = command.chars();
+    let mut preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        preview.push_str(&format!("…（共 {} bytes）", command.len()));
+    }
+    preview
 }
 
 /// 应答单行配色：按 redis-cli 类型标记粗判
@@ -509,7 +673,12 @@ fn next_cursor(len: usize, cur: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_cursor, prev_cursor};
+    use super::{
+        Entry, MAX_TRANSCRIPT_ENTRIES, MAX_TRANSCRIPT_LINES, Outcome, clear_completed_entries,
+        command_preview, next_cursor, outcome_line_count, pending_command_count, prev_cursor,
+        prune_transcript_entries, push_command_history, transcript_line_count,
+    };
+    use std::collections::VecDeque;
 
     #[test]
     fn prev_from_live_jumps_to_newest() {
@@ -534,5 +703,130 @@ mod tests {
         assert_eq!(next_cursor(3, 0), Some(1));
         assert_eq!(next_cursor(3, 1), Some(2));
         assert_eq!(next_cursor(3, 2), None); // 越过最新 → 回到实时行
+    }
+
+    #[test]
+    fn transcript_pruning_is_bounded_and_preserves_pending_entries() {
+        let mut entries: Vec<_> = (0..=MAX_TRANSCRIPT_ENTRIES)
+            .map(|id| Entry {
+                id: id as u64,
+                command: "PING".into(),
+                db: 0,
+                outcome: Outcome::Ok("PONG".into()),
+                display_lines: 1,
+                elapsed_ms: 1,
+            })
+            .collect();
+        entries[0].outcome = Outcome::Pending;
+
+        prune_transcript_entries(&mut entries);
+
+        assert_eq!(entries.len(), MAX_TRANSCRIPT_ENTRIES);
+        assert!(entries.iter().any(|entry| entry.id == 0));
+    }
+
+    #[test]
+    fn transcript_pruning_bounds_total_rendered_lines() {
+        let line_count = MAX_TRANSCRIPT_LINES / 2 + 1;
+        let payload = std::iter::repeat_n("x", line_count)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut entries: Vec<_> = (0..3)
+            .map(|id| Entry {
+                id,
+                command: "LRANGE queue 0 -1".into(),
+                db: 0,
+                display_lines: outcome_line_count(&Outcome::Ok(payload.clone())),
+                outcome: Outcome::Ok(payload.clone()),
+                elapsed_ms: 1,
+            })
+            .collect();
+
+        prune_transcript_entries(&mut entries);
+
+        assert!(transcript_line_count(&entries) <= MAX_TRANSCRIPT_LINES);
+        assert_eq!(entries.last().map(|entry| entry.id), Some(2));
+    }
+
+    #[test]
+    fn command_history_prunes_from_front_with_incremental_byte_count() {
+        let mut history = VecDeque::new();
+        let mut total_bytes = 0;
+
+        push_command_history(&mut history, &mut total_bytes, "GET a", 2, 11);
+        push_command_history(&mut history, &mut total_bytes, "GET b", 2, 11);
+        push_command_history(&mut history, &mut total_bytes, "GET c", 2, 11);
+
+        assert_eq!(history.into_iter().collect::<Vec<_>>(), ["GET b", "GET c"]);
+        assert_eq!(total_bytes, 10);
+    }
+
+    #[test]
+    fn command_history_skips_adjacent_duplicates() {
+        let mut history = VecDeque::new();
+        let mut total_bytes = 0;
+
+        push_command_history(&mut history, &mut total_bytes, "PING", 10, 100);
+        push_command_history(&mut history, &mut total_bytes, "PING", 10, 100);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(total_bytes, 4);
+    }
+
+    #[test]
+    fn pending_command_count_only_counts_in_flight_entries() {
+        let entries = vec![
+            Entry {
+                id: 1,
+                command: "PING".into(),
+                db: 0,
+                outcome: Outcome::Pending,
+                display_lines: 1,
+                elapsed_ms: 0,
+            },
+            Entry {
+                id: 2,
+                command: "GET a".into(),
+                db: 0,
+                outcome: Outcome::Ok("x".into()),
+                display_lines: 1,
+                elapsed_ms: 1,
+            },
+        ];
+
+        assert_eq!(pending_command_count(&entries), 1);
+    }
+
+    #[test]
+    fn clearing_transcript_preserves_in_flight_entries() {
+        let mut entries = vec![
+            Entry {
+                id: 1,
+                command: "BLPOP queue 10".into(),
+                db: 0,
+                outcome: Outcome::Pending,
+                display_lines: 1,
+                elapsed_ms: 0,
+            },
+            Entry {
+                id: 2,
+                command: "PING".into(),
+                db: 0,
+                outcome: Outcome::Ok("PONG".into()),
+                display_lines: 1,
+                elapsed_ms: 1,
+            },
+        ];
+
+        clear_completed_entries(&mut entries);
+
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(entries[0].outcome, Outcome::Pending));
+    }
+
+    #[test]
+    fn command_preview_is_unicode_safe_and_visible() {
+        assert_eq!(command_preview("你好世界", 2), "你好…（共 12 bytes）");
+        assert_eq!(command_preview("PING", 10), "PING");
     }
 }

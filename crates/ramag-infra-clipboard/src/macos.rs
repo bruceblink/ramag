@@ -6,7 +6,6 @@
 //! 与 Storage / Git 不同：方法全部为同步快调用且须在主线程（GPUI 前台 executor）使用，
 //! 不需要 tokio，也不需要 std::thread 桥接（除 CGEvent 延迟发送）
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -16,13 +15,13 @@ use ramag_domain::entities::{CapturedClip, ClipSource};
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::ClipboardDriver;
 
-use crate::{media, paste, pasteboard, workspace_app};
+use crate::{icon_cache::IconCache, media, paste, pasteboard, workspace_app};
 
 pub struct MacClipboardDriver {
     /// 最近一次本应用写回产生的 changeCount，采集循环据此跳过自写回
     own_change: AtomicI64,
     /// 应用图标 PNG 缓存（None 也缓存，避免反复对未安装应用做查找）
-    icon_cache: Mutex<HashMap<String, Option<Arc<Vec<u8>>>>>,
+    icon_cache: Mutex<IconCache>,
     media: media::MediaStore,
 }
 
@@ -30,7 +29,7 @@ impl MacClipboardDriver {
     pub fn new() -> Self {
         Self {
             own_change: AtomicI64::new(-1),
-            icon_cache: Mutex::new(HashMap::new()),
+            icon_cache: Mutex::new(IconCache::default()),
             media: media::MediaStore::new(),
         }
     }
@@ -78,12 +77,13 @@ impl ClipboardDriver for MacClipboardDriver {
     }
 
     fn app_icon_png(&self, bundle_id: &str) -> Option<Arc<Vec<u8>>> {
-        let mut cache = self.icon_cache.lock();
-        if let Some(hit) = cache.get(bundle_id) {
-            return hit.clone();
+        if let Some(hit) = self.icon_cache.lock().get(bundle_id) {
+            return hit;
         }
         let icon = workspace_app::app_icon_png(bundle_id).map(Arc::new);
-        cache.insert(bundle_id.to_string(), icon.clone());
+        self.icon_cache
+            .lock()
+            .insert(bundle_id.to_string(), icon.clone());
         icon
     }
 
@@ -115,13 +115,13 @@ impl ClipboardDriver for MacClipboardDriver {
                 "需在「系统设置 › 隐私与安全性 › 辅助功能」勾选 Ramag 后才能自动粘贴；内容已复制，可手动 cmd-V".into(),
             ));
         }
-        if let Some(bid) = bundle_id {
-            // 激活失败不视为错误：目标可能已在前台
-            let _ = paste::activate_app(bid);
-        }
+        let bid = bundle_id
+            .ok_or_else(|| DomainError::NotFound("未记录到原应用，内容已复制到剪贴板".into()))?;
+        let target_pid = paste::activate_app(bid).ok_or_else(|| {
+            DomainError::NotFound("原应用已关闭或无法激活，内容已复制到剪贴板".into())
+        })?;
         // 抽屉用 Floating 抢前台做中文输入，粘贴需先切回原应用，故延迟略大
-        paste::post_cmd_v_delayed(220);
-        Ok(())
+        paste::post_cmd_v_delayed(220, target_pid)
     }
 
     fn open_url(&self, url: &str) -> Result<()> {

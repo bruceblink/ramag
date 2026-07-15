@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ramag_domain::entities::{
-    Column, ConnectionConfig, ConnectionId, DriverKind, ForeignKey, Index, Query, QueryRecord,
-    QueryResult, Schema, Table,
+    Column, ConnectionConfig, ConnectionId, DriverKind, ForeignKey, Index, Query, QueryHistoryPage,
+    QueryRecord, QueryResult, Schema, Table,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{CancelHandle, Driver, Storage};
@@ -15,6 +15,8 @@ pub struct ConnectionService {
     drivers: HashMap<DriverKind, Arc<dyn Driver>>,
     storage: Arc<dyn Storage>,
 }
+
+const HISTORY_INLINE_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
 
 impl ConnectionService {
     pub fn new(drivers: HashMap<DriverKind, Arc<dyn Driver>>, storage: Arc<dyn Storage>) -> Self {
@@ -210,8 +212,10 @@ impl ConnectionService {
         &self,
         connection_id: Option<&ConnectionId>,
         limit: usize,
-    ) -> Result<Vec<QueryRecord>> {
-        self.storage.list_history(connection_id, limit).await
+    ) -> Result<QueryHistoryPage> {
+        self.storage
+            .list_history_bounded(connection_id, limit, HISTORY_INLINE_BYTE_BUDGET)
+            .await
     }
 
     /// 删除单条查询历史（历史中心行删除按钮用）

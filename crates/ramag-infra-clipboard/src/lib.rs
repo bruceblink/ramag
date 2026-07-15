@@ -11,6 +11,7 @@
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[path = "win/dib.rs"]
 mod dib;
+mod icon_cache;
 mod media;
 
 #[cfg(target_os = "macos")]

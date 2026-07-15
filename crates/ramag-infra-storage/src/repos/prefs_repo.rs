@@ -6,6 +6,10 @@ use redb::{Database, ReadableDatabase as _, TableDefinition};
 
 use ramag_domain::error::{DomainError, Result};
 
+use crate::repos::bounded_json;
+
+const MAX_PREFERENCE_BYTES: usize = 16 * 1024 * 1024;
+
 pub(crate) const PREFERENCES_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("preferences");
 
@@ -13,18 +17,25 @@ pub(crate) fn get(db: Arc<Database>, key: String) -> Result<Option<String>> {
     let read_txn = db
         .begin_read()
         .map_err(|e| DomainError::Storage(format!("启动读事务失败：{e}")))?;
-    let table = match read_txn.open_table(PREFERENCES_TABLE) {
-        Ok(t) => t,
-        Err(_) => return Ok(None),
-    };
-    let v = table
+    let table = read_txn
+        .open_table(PREFERENCES_TABLE)
+        .map_err(|e| DomainError::Storage(format!("打开 preferences 表失败：{e}")))?;
+    let value = table
         .get(key.as_str())
-        .map_err(|e| DomainError::Storage(format!("读偏好失败：{e}")))?
-        .map(|g| g.value().to_string());
-    Ok(v)
+        .map_err(|e| DomainError::Storage(format!("读偏好失败：{e}")))?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    bounded_json::ensure_len(
+        value.value().len(),
+        MAX_PREFERENCE_BYTES,
+        &format!("偏好 {key}"),
+    )?;
+    Ok(Some(value.value().to_string()))
 }
 
 pub(crate) fn set(db: Arc<Database>, key: String, value: String) -> Result<()> {
+    bounded_json::ensure_len(value.len(), MAX_PREFERENCE_BYTES, &format!("偏好 {key}"))?;
     let write_txn = db
         .begin_write()
         .map_err(|e| DomainError::Storage(format!("启动写事务失败：{e}")))?;

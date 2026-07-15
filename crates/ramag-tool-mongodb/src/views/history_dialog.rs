@@ -2,22 +2,24 @@
 //! 搜索 / 复制 / 填入编辑器 / 重跑 / 删除 / 清空；入口在 MongoQueryPanel 工具条
 
 use std::sync::Arc;
+use std::{ops::Range, rc::Rc};
 
 use gpui::{
     AnyElement, ClickEvent, ClipboardItem, Context, EventEmitter, Hsla, IntoElement, ParentElement,
-    Render, SharedString, Styled, Window, div, prelude::*, px,
+    Render, SharedString, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     notification::Notification,
-    scroll::ScrollableElement as _,
     v_flex,
 };
 use ramag_app::MongoService;
-use ramag_domain::entities::{ConnectionId, QueryRecord, QueryRecordId, QueryStatus};
+use ramag_domain::entities::{
+    ConnectionId, QueryRecord, QueryRecordId, QueryStatus, compact_text_preview,
+};
 use tracing::error;
 
 /// 单次最多加载条数
@@ -41,9 +43,13 @@ pub enum MongoHistoryEvent {
 pub struct MongoHistoryList {
     service: Arc<MongoService>,
     connection_id: ConnectionId,
-    records: Vec<QueryRecord>,
+    records: Vec<Arc<QueryRecord>>,
+    history_truncated: bool,
     loading: bool,
-    error: Option<String>,
+    /// 删除 / 清空串行执行，避免重复点击与旧加载结果在清空后回写。
+    mutating: bool,
+    load_error: Option<String>,
+    mutation_error: Option<String>,
     search: gpui::Entity<InputState>,
 }
 
@@ -69,8 +75,11 @@ impl MongoHistoryList {
             service,
             connection_id,
             records: Vec::new(),
+            history_truncated: false,
             loading: true,
-            error: None,
+            mutating: false,
+            load_error: None,
+            mutation_error: None,
             search,
         };
         this.load(cx);
@@ -79,7 +88,7 @@ impl MongoHistoryList {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
-        self.error = None;
+        self.load_error = None;
         let svc = self.service.clone();
         let conn_id = self.connection_id.clone();
         cx.spawn(async move |this, cx| {
@@ -87,10 +96,13 @@ impl MongoHistoryList {
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(rs) => this.records = rs,
+                    Ok(page) => {
+                        this.history_truncated = page.truncated;
+                        this.records = page.records.into_iter().map(Arc::new).collect();
+                    }
                     Err(e) => {
                         error!(error = %e, "load mongo history failed");
-                        this.error = Some(e.to_string());
+                        this.load_error = Some(e.to_string());
                     }
                 }
                 cx.notify();
@@ -100,15 +112,19 @@ impl MongoHistoryList {
     }
 
     fn delete_record(&mut self, id: QueryRecordId, cx: &mut Context<Self>) {
+        if !self.begin_mutation(cx) {
+            return;
+        }
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let r = svc.delete_history(&id).await;
             let _ = this.update(cx, |this, cx| {
+                this.mutating = false;
                 match r {
                     Ok(()) => this.records.retain(|rec| rec.id != id),
                     Err(e) => {
                         error!(error = %e, "delete mongo history failed");
-                        this.error = Some(format!("删除失败：{e}"));
+                        this.mutation_error = Some(format!("删除失败：{e}"));
                     }
                 }
                 cx.notify();
@@ -118,16 +134,23 @@ impl MongoHistoryList {
     }
 
     fn clear_all(&mut self, cx: &mut Context<Self>) {
+        if !self.begin_mutation(cx) {
+            return;
+        }
         let svc = self.service.clone();
         let conn_id = self.connection_id.clone();
         cx.spawn(async move |this, cx| {
             let r = svc.clear_history(Some(&conn_id)).await;
             let _ = this.update(cx, |this, cx| {
+                this.mutating = false;
                 match r {
-                    Ok(()) => this.records.clear(),
+                    Ok(()) => {
+                        this.records.clear();
+                        this.history_truncated = false;
+                    }
                     Err(e) => {
                         error!(error = %e, "clear mongo history failed");
-                        this.error = Some(format!("清空失败：{e}"));
+                        this.mutation_error = Some(format!("清空失败：{e}"));
                     }
                 }
                 cx.notify();
@@ -136,7 +159,17 @@ impl MongoHistoryList {
         .detach();
     }
 
-    fn render_row(&self, ix: usize, rec: QueryRecord, cx: &mut Context<Self>) -> AnyElement {
+    fn begin_mutation(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.loading || self.mutating {
+            return false;
+        }
+        self.mutating = true;
+        self.mutation_error = None;
+        cx.notify();
+        true
+    }
+
+    fn render_row(&self, ix: usize, rec: Arc<QueryRecord>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let fg = theme.foreground;
         let muted_fg = theme.muted_foreground;
@@ -159,13 +192,13 @@ impl MongoHistoryList {
             QueryStatus::Failed => format!(
                 "{} · 失败：{}",
                 when_text,
-                compact_truncate(rec.error.as_deref().unwrap_or("未知错误"), ERROR_MAX_CHARS)
+                compact_text_preview(rec.error.as_deref().unwrap_or("未知错误"), ERROR_MAX_CHARS,)
             ),
         };
-        let cmd_copy = rec.sql.clone();
-        let cmd_run = rec.sql.clone();
-        let rec_id = rec.id.clone();
-        let cmd_fill = rec.sql;
+        let rec_for_copy = rec.clone();
+        let rec_for_fill = rec.clone();
+        let rec_for_run = rec.clone();
+        let rec_for_delete = rec;
 
         h_flex()
             .id(SharedString::from(format!("mhist-row-{ix}")))
@@ -216,7 +249,9 @@ impl MongoHistoryList {
                             .xsmall()
                             .label("复制")
                             .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(cmd_copy.clone()));
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    rec_for_copy.sql.clone(),
+                                ));
                                 window.push_notification(
                                     Notification::success("已复制命令").autohide(true),
                                     cx,
@@ -229,7 +264,7 @@ impl MongoHistoryList {
                             .xsmall()
                             .label("填入编辑器")
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                cx.emit(MongoHistoryEvent::FillEditor(cmd_fill.clone()));
+                                cx.emit(MongoHistoryEvent::FillEditor(rec_for_fill.sql.clone()));
                             })),
                     )
                     .child(
@@ -239,7 +274,7 @@ impl MongoHistoryList {
                             .label("重跑")
                             .tooltip("填入编辑器并立即执行（失败记录亦可重试）")
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                cx.emit(MongoHistoryEvent::RunCommand(cmd_run.clone()));
+                                cx.emit(MongoHistoryEvent::RunCommand(rec_for_run.sql.clone()));
                             })),
                     )
                     .child(
@@ -247,8 +282,9 @@ impl MongoHistoryList {
                             .ghost()
                             .xsmall()
                             .label("删除")
+                            .disabled(self.mutating)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.delete_record(rec_id.clone(), cx);
+                                this.delete_record(rec_for_delete.id.clone(), cx);
                             })),
                     ),
             )
@@ -261,19 +297,14 @@ impl Render for MongoHistoryList {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let danger = theme.danger;
+        let warning = theme.warning;
         let border = theme.border;
 
         let query = self.search.read(cx).value().trim().to_lowercase();
-        let filtered: Vec<QueryRecord> = self
+        let filtered: Vec<Arc<QueryRecord>> = self
             .records
             .iter()
-            .filter(|r| {
-                query.is_empty()
-                    || r.sql.to_lowercase().contains(&query)
-                    || r.error
-                        .as_deref()
-                        .is_some_and(|e| e.to_lowercase().contains(&query))
-            })
+            .filter(|record| record.matches_query_lower(&query))
             .cloned()
             .collect();
 
@@ -295,12 +326,24 @@ impl Render for MongoHistoryList {
                 filtered.len(),
                 self.records.len()
             )))
+            .when(self.history_truncated, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(warning)
+                        .child("结果按 32 MiB 内存预算截断"),
+                )
+            })
+            .when(self.mutating, |this| {
+                this.child(div().text_xs().text_color(muted_fg).child("正在更新…"))
+            })
             .child(
                 Button::new("mhist-clear-all")
                     .ghost()
                     .xsmall()
                     .label("清空")
                     .tooltip("清空当前连接的全部查询历史")
+                    .disabled(self.loading || self.mutating || self.records.is_empty())
                     .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                         let entity = cx.entity();
                         ramag_ui::open_confirm(
@@ -319,28 +362,44 @@ impl Render for MongoHistoryList {
 
         let body: AnyElement = if self.loading {
             centered_hint("加载中…", muted_fg)
-        } else if let Some(e) = &self.error {
+        } else if let Some(e) = &self.load_error {
             centered_hint(format!("加载失败：{e}"), danger)
         } else if self.records.is_empty() {
             centered_hint("暂无查询历史", muted_fg)
         } else if filtered.is_empty() {
             centered_hint(format!("没有匹配「{query}」的历史"), muted_fg)
         } else {
-            let mut rows: Vec<AnyElement> = Vec::with_capacity(filtered.len());
-            for (ix, rec) in filtered.into_iter().enumerate() {
-                rows.push(self.render_row(ix, rec, cx));
-            }
-            div()
-                .size_full()
-                .overflow_y_scrollbar()
-                .child(v_flex().w_full().children(rows))
-                .into_any_element()
+            let records = Rc::new(filtered);
+            let rows = uniform_list(
+                "mongo-history-rows",
+                records.len(),
+                cx.processor({
+                    let records = records.clone();
+                    move |this, range: Range<usize>, _window, cx| {
+                        range
+                            .map(|index| this.render_row(index, records[index].clone(), cx))
+                            .collect::<Vec<_>>()
+                    }
+                }),
+            )
+            .size_full();
+            div().size_full().child(rows).into_any_element()
         };
 
         v_flex()
             .w_full()
             .h(px(LIST_HEIGHT))
             .child(toolbar)
+            .when_some(self.mutation_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .w_full()
+                        .py(px(6.0))
+                        .text_xs()
+                        .text_color(danger)
+                        .child(error),
+                )
+            })
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -354,15 +413,4 @@ fn centered_hint(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
         .text_color(color)
         .child(text.into())
         .into_any_element()
-}
-
-/// 压平空白并按字符数截断（多字节安全）
-fn compact_truncate(s: &str, max_chars: usize) -> String {
-    let normalized: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.chars().count() <= max_chars {
-        normalized
-    } else {
-        let truncated: String = normalized.chars().take(max_chars).collect();
-        format!("{truncated}…")
-    }
 }

@@ -64,7 +64,10 @@ impl VcsView {
                 GroupKind::Unstaged => driver.discard_patch(&repo, &patch).await,
                 _ => unreachable!("已在前置分支拦截"),
             };
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -121,7 +124,10 @@ impl VcsView {
         }
         cx.spawn(async move |this, cx| {
             let result = driver.stage_patch(&repo, &patch).await;
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;

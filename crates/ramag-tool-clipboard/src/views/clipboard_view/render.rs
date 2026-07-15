@@ -182,7 +182,7 @@ impl ClipboardView {
 
     fn render_list(
         &self,
-        visible: Vec<ramag_domain::entities::ClipItem>,
+        visible: Vec<std::sync::Arc<ramag_domain::entities::ClipItem>>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         if visible.is_empty() {
@@ -215,7 +215,7 @@ impl ClipboardView {
             range
                 .map(|ix| {
                     entity.update(cx, |this, cx| {
-                        this.render_card(&visible[ix], cx).into_any_element()
+                        this.render_card(visible[ix].clone(), cx).into_any_element()
                     })
                 })
                 .collect::<Vec<_>>()

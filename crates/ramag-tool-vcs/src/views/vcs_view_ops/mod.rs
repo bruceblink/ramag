@@ -58,8 +58,14 @@ impl VcsView {
                 BranchOp::Merge(name) => driver.merge(&repo, name, true, false, None).await,
                 BranchOp::Rebase(name) => driver.rebase(&repo, name).await,
             };
-            let new_status = driver.status(&repo).await.ok();
-            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -182,19 +188,26 @@ impl VcsView {
             let head_msg = driver
                 .log(&repo, opts)
                 .await
-                .ok()
-                .and_then(|commits| commits.first().map(|c| c.message_full()));
+                .map(|commits| commits.first().map(|c| c.message_full()));
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) || !this.commit_amend {
                     return;
                 }
-                // 异步期间用户已输入内容则不覆盖
-                if let Some(msg) = head_msg
-                    && this.commit_input.read(cx).value().trim().is_empty()
-                {
-                    this.pending_commit_text = Some(msg.into());
-                    cx.notify();
+                match head_msg {
+                    // 异步期间用户已输入内容则不覆盖
+                    Ok(Some(msg)) if this.commit_input.read(cx).value().trim().is_empty() => {
+                        this.pending_commit_text = Some(msg.into());
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        this.error = Some("无法读取 HEAD 提交消息：历史记录为空".into());
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "vcs: load amend message failed");
+                        this.error = Some(format!("加载上次提交消息失败：{error}"));
+                    }
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -331,7 +344,10 @@ impl VcsView {
         cx.spawn(async move |this, cx| {
             let result = driver.commit(&repo, &message, amend, sign).await;
             let new_status = if result.is_ok() {
-                driver.status(&repo).await.ok()
+                crate::views::vcs_view_ops_sync::best_effort_refresh(
+                    driver.status(&repo).await,
+                    "workspace status",
+                )
             } else {
                 None
             };
@@ -414,7 +430,10 @@ impl VcsView {
                 FileOp::Discard => driver.discard(&repo, &paths).await,
             };
             let new_status = if result.is_ok() {
-                driver.status(&repo).await.ok()
+                crate::views::vcs_view_ops_sync::best_effort_refresh(
+                    driver.status(&repo).await,
+                    "workspace status",
+                )
             } else {
                 None
             };

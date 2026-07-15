@@ -3,7 +3,7 @@
 //! 与采集循环同款模式，不引入第三方 global-hotkey 依赖
 
 use std::ffi::c_void;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use tracing::{info, warn};
 
@@ -69,9 +69,12 @@ extern "C" fn hotkey_handler(
     user_data: *mut c_void,
 ) -> OsStatus {
     if !user_data.is_null() {
-        // user_data 指向 Sender 裸指针，仅借用不接管（注销时由 Drop 回收）
-        let tx = unsafe { &*(user_data as *const Sender<()>) };
-        let _ = tx.send(());
+        // user_data 指向 SyncSender 裸指针，仅借用不接管（注销时由 Drop 回收）
+        let tx = unsafe { &*(user_data as *const SyncSender<()>) };
+        // 容量为 1：已有待处理信号时合并重复按键，避免主线程繁忙期间无界积压。
+        match tx.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) | Err(TrySendError::Disconnected(())) => {}
+        }
     }
     0
 }
@@ -96,7 +99,7 @@ impl HotkeyListener {
         } else {
             (CMD_KEY | SHIFT_KEY, "cmd-shift-v")
         };
-        let (tx, rx) = channel::<()>();
+        let (tx, rx) = sync_channel::<()>(1);
         // Sender 转裸指针交给 Carbon 回调；句柄存活期间常驻，注销时由 Drop 回收
         let tx_ptr = Box::into_raw(Box::new(tx)) as *mut c_void;
 
@@ -111,7 +114,7 @@ impl HotkeyListener {
                 InstallEventHandler(target, hotkey_handler, 1, &spec, tx_ptr, &mut handler_ref);
             if status != 0 {
                 warn!(status, "InstallEventHandler failed");
-                drop(Box::from_raw(tx_ptr as *mut Sender<()>));
+                drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
                 return None;
             }
 
@@ -123,9 +126,16 @@ impl HotkeyListener {
             let status = RegisterEventHotKey(KEY_V, modifiers, hot_id, target, 0, &mut hotkey_ref);
             if status != 0 {
                 warn!(status, combo, "RegisterEventHotKey failed");
-                // 注册失败：回收已装的 handler 与 Sender，避免悬挂 handler 与内存泄漏
-                RemoveEventHandler(handler_ref);
-                drop(Box::from_raw(tx_ptr as *mut Sender<()>));
+                // 注册失败后须先移除 handler；若移除失败，保留 Sender 避免回调悬空。
+                let remove_status = RemoveEventHandler(handler_ref);
+                if remove_status == 0 {
+                    drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
+                } else {
+                    warn!(
+                        status = remove_status,
+                        "RemoveEventHandler failed after hotkey registration failure; leaking callback sender for safety"
+                    );
+                }
                 return None;
             }
             info!(combo, "global clipboard hotkey registered");
@@ -153,11 +163,54 @@ impl Drop for HotkeyListener {
     /// 注销热键 → 移除 handler → 回收 Sender。须与注册同在主线程，避免与事件分发竞争。
     /// 先移除 handler 阻断后续回调，再释放其借用的 Sender
     fn drop(&mut self) {
-        unsafe {
-            UnregisterEventHotKey(self.hotkey_ref as EventHotKeyRef);
-            RemoveEventHandler(self.handler_ref as EventHandlerRef);
-            drop(Box::from_raw(self.tx_ptr as *mut Sender<()>));
+        let cleaned = unsafe {
+            let unregister_status = UnregisterEventHotKey(self.hotkey_ref as EventHotKeyRef);
+            if unregister_status != 0 {
+                warn!(status = unregister_status, "UnregisterEventHotKey failed");
+            }
+            let remove_status = RemoveEventHandler(self.handler_ref as EventHandlerRef);
+            if remove_status == 0 {
+                drop(Box::from_raw(self.tx_ptr as *mut SyncSender<()>));
+            } else {
+                // handler 仍可能被 Carbon 调用，不能释放其借用的 Sender。
+                warn!(
+                    status = remove_status,
+                    "RemoveEventHandler failed; leaking callback sender for safety"
+                );
+            }
+            unregister_status == 0 && remove_status == 0
+        };
+        if cleaned {
+            info!(combo = self.combo, "global clipboard hotkey unregistered");
         }
-        info!(combo = self.combo, "global clipboard hotkey unregistered");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_hotkey_events_are_coalesced() {
+        let (tx, rx) = sync_channel(1);
+        let user_data = (&tx as *const SyncSender<()>).cast_mut().cast::<c_void>();
+
+        hotkey_handler(std::ptr::null_mut(), std::ptr::null_mut(), user_data);
+        hotkey_handler(std::ptr::null_mut(), std::ptr::null_mut(), user_data);
+
+        assert_eq!(rx.try_recv(), Ok(()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn disconnected_hotkey_receiver_is_safe() {
+        let (tx, rx) = sync_channel(1);
+        drop(rx);
+        let user_data = (&tx as *const SyncSender<()>).cast_mut().cast::<c_void>();
+
+        assert_eq!(
+            hotkey_handler(std::ptr::null_mut(), std::ptr::null_mut(), user_data),
+            0
+        );
     }
 }

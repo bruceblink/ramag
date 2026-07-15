@@ -1,5 +1,8 @@
 //! 树行扁平化 + 渲染（与 dbclient::table_tree::row 同款）。所有 TreeRow 变体高度统一 28px
 
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
 };
@@ -7,8 +10,9 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _, h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
+use ramag_domain::entities::{MongoDatabase, contains_case_insensitive};
 
-use super::{CollectionTreePanel, is_system_db};
+use super::{CollectionTreePanel, ExpandedState, is_system_db};
 
 #[derive(Clone)]
 pub(super) enum TreeRow {
@@ -25,7 +29,6 @@ pub(super) enum TreeRow {
         db: String,
         name: String,
         is_view: bool,
-        is_selected: bool,
     },
     /// 全局占位：加载 / 错误 / 空
     GlobalPlaceholder {
@@ -34,7 +37,61 @@ pub(super) enum TreeRow {
     },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct TreeRowsCacheKey {
+    tree_revision: u64,
+    show_system: bool,
+    filter: String,
+}
+
+#[derive(Clone)]
+pub(super) struct TreeRowsView {
+    pub(super) rows: Rc<Vec<TreeRow>>,
+    pub(super) visible_databases: usize,
+}
+
+pub(super) struct TreeRowsCacheEntry {
+    key: TreeRowsCacheKey,
+    view: TreeRowsView,
+}
+
+impl TreeRowsCacheEntry {
+    fn get(&self, key: &TreeRowsCacheKey) -> Option<TreeRowsView> {
+        (self.key == *key).then(|| self.view.clone())
+    }
+}
+
 impl CollectionTreePanel {
+    /// 当前扁平树行；选中集合、编辑器显隐等普通重渲染直接复用。
+    pub(super) fn tree_rows_view(&self, filter: &str) -> TreeRowsView {
+        let key = TreeRowsCacheKey {
+            tree_revision: self.tree_revision,
+            show_system: self.show_system,
+            filter: filter.to_string(),
+        };
+        {
+            let cache = self.tree_rows_cache.borrow();
+            if let Some(view) = cache.as_ref().and_then(|entry| entry.get(&key)) {
+                return view;
+            }
+        }
+
+        let view = build_tree_rows(
+            &self.databases,
+            &self.expanded,
+            &self.open_databases,
+            self.loading,
+            self.error.as_deref(),
+            self.show_system,
+            filter,
+        );
+        self.tree_rows_cache.replace(Some(TreeRowsCacheEntry {
+            key,
+            view: view.clone(),
+        }));
+        view
+    }
+
     /// 单行渲染（在 uniform_list 闭包内被调）；与 dbclient::table_tree::row 同款 28px 固定高度
     pub(super) fn render_tree_row(&self, row: &TreeRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
@@ -101,19 +158,19 @@ impl CollectionTreePanel {
                 .text_color(if *is_error { danger } else { muted_fg })
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
-            TreeRow::Collection {
-                db,
-                name,
-                is_view,
-                is_selected,
-            } => {
+            TreeRow::Collection { db, name, is_view } => {
+                let selected =
+                    self.selected
+                        .as_ref()
+                        .is_some_and(|(selected_db, selected_collection)| {
+                            selected_db == db && selected_collection == name
+                        });
                 let db_for_click = db.clone();
                 let name_for_click = name.clone();
                 let db_for_menu = db.clone();
                 let name_for_menu = name.clone();
                 let is_view_for_menu = *is_view;
                 let entity_for_menu = cx.entity().clone();
-                let selected = *is_selected;
                 let mut row = h_flex()
                     .id(SharedString::from(format!("mongo-coll-row-{db}-{name}")))
                     .h(px(28.0))
@@ -177,87 +234,145 @@ impl CollectionTreePanel {
                 .into_any_element(),
         }
     }
+}
 
-    /// 扁平化所有可见行（系统库过滤 + 搜索过滤）→ uniform_list 用
-    pub(super) fn build_tree_rows(&self, filter: &str) -> Vec<TreeRow> {
-        let mut rows: Vec<TreeRow> = Vec::with_capacity(self.databases.len() * 2);
-        if self.loading && self.databases.is_empty() {
-            rows.push(TreeRow::GlobalPlaceholder {
-                text: "加载中…".to_string(),
+#[allow(clippy::too_many_arguments)]
+fn build_tree_rows(
+    databases: &[MongoDatabase],
+    expanded: &HashMap<String, ExpandedState>,
+    open_databases: &HashSet<String>,
+    loading: bool,
+    error: Option<&str>,
+    show_system: bool,
+    filter: &str,
+) -> TreeRowsView {
+    let mut rows = Vec::with_capacity(databases.len().saturating_mul(2));
+    if loading && databases.is_empty() {
+        rows.push(TreeRow::GlobalPlaceholder {
+            text: "加载中…".into(),
+            is_error: false,
+        });
+    }
+    if let Some(error) = error {
+        rows.push(TreeRow::GlobalPlaceholder {
+            text: error.to_string(),
+            is_error: true,
+        });
+    }
+    if !loading && databases.is_empty() && error.is_none() {
+        rows.push(TreeRow::GlobalPlaceholder {
+            text: "（无数据库）".into(),
+            is_error: false,
+        });
+    }
+
+    let has_filter = !filter.is_empty();
+    let mut visible_databases = 0;
+    for database in databases {
+        let name = &database.name;
+        if !show_system && is_system_db(name) {
+            continue;
+        }
+        let state = expanded.get(name);
+        let database_matches = contains_case_insensitive(name, filter);
+        let collection_matches = state.is_some_and(|state| {
+            state
+                .collections
+                .iter()
+                .any(|collection| contains_case_insensitive(&collection.name, filter))
+        });
+        if has_filter && !database_matches && !collection_matches {
+            continue;
+        }
+
+        visible_databases += 1;
+        let is_expanded = open_databases.contains(name) || (has_filter && state.is_some());
+        rows.push(TreeRow::Database {
+            name: name.clone(),
+            is_expanded,
+        });
+        let Some(state) = state.filter(|_| is_expanded) else {
+            continue;
+        };
+
+        if state.loading {
+            rows.push(TreeRow::DbPlaceholder {
+                text: "加载中…".into(),
                 is_error: false,
             });
         }
-        if let Some(err) = &self.error {
-            rows.push(TreeRow::GlobalPlaceholder {
-                text: err.clone(),
+        if let Some(error) = &state.error {
+            rows.push(TreeRow::DbPlaceholder {
+                text: error.clone(),
                 is_error: true,
             });
         }
-        if !self.loading && self.databases.is_empty() && self.error.is_none() {
-            rows.push(TreeRow::GlobalPlaceholder {
-                text: "（无数据库）".to_string(),
+        if !state.loading && state.error.is_none() && state.collections.is_empty() {
+            rows.push(TreeRow::DbPlaceholder {
+                text: "（空）".into(),
                 is_error: false,
             });
         }
-
-        for db in &self.databases {
-            let name = &db.name;
-            let name_lc = name.to_ascii_lowercase();
-            if !self.show_system && is_system_db(name) {
+        for collection in &state.collections {
+            if has_filter
+                && !database_matches
+                && !contains_case_insensitive(&collection.name, filter)
+            {
                 continue;
             }
-            let exp_state = self.expanded.get(name);
-            let is_expanded = exp_state.is_some();
-
-            let coll_match = exp_state
-                .map(|s| {
-                    s.collections
-                        .iter()
-                        .any(|c| c.name.to_ascii_lowercase().contains(filter))
-                })
-                .unwrap_or(false);
-            if !filter.is_empty() && !name_lc.contains(filter) && !coll_match {
-                continue;
-            }
-
-            rows.push(TreeRow::Database {
-                name: name.clone(),
-                is_expanded,
+            rows.push(TreeRow::Collection {
+                db: name.clone(),
+                name: collection.name.clone(),
+                is_view: collection.is_view,
             });
-
-            if let Some(state) = exp_state {
-                if state.loading {
-                    rows.push(TreeRow::DbPlaceholder {
-                        text: "加载中…".to_string(),
-                        is_error: false,
-                    });
-                }
-                if let Some(err) = &state.error {
-                    rows.push(TreeRow::DbPlaceholder {
-                        text: err.clone(),
-                        is_error: true,
-                    });
-                }
-                for c in &state.collections {
-                    if !filter.is_empty()
-                        && !c.name.to_ascii_lowercase().contains(filter)
-                        && !name_lc.contains(filter)
-                    {
-                        continue;
-                    }
-                    let selected = self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|(d, cc)| d == name && cc == &c.name);
-                    rows.push(TreeRow::Collection {
-                        db: name.clone(),
-                        name: c.name.clone(),
-                        is_view: c.is_view,
-                        is_selected: selected,
-                    });
-                }
-            }
         }
-        rows
+    }
+
+    TreeRowsView {
+        rows: Rc::new(rows),
+        visible_databases,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ramag_domain::entities::MongoCollection;
+
+    use super::*;
+
+    #[test]
+    fn search_loaded_cache_does_not_leave_database_open_after_filter_clears() {
+        let databases = vec![MongoDatabase {
+            name: "main".into(),
+            size_on_disk: None,
+            empty: false,
+        }];
+        let expanded = HashMap::from([(
+            "main".into(),
+            ExpandedState {
+                collections: vec![MongoCollection {
+                    name: "ÜBERblick".into(),
+                    database: "main".into(),
+                    is_view: false,
+                }],
+                ..Default::default()
+            },
+        )]);
+        let open = HashSet::new();
+
+        let searching = build_tree_rows(&databases, &expanded, &open, false, None, false, "über");
+        assert!(searching.rows.iter().any(|row| {
+            matches!(row, TreeRow::Collection { name, .. } if name == "ÜBERblick")
+        }));
+
+        let cleared = build_tree_rows(&databases, &expanded, &open, false, None, false, "");
+        assert_eq!(cleared.rows.len(), 1);
+        assert!(matches!(
+            &cleared.rows[0],
+            TreeRow::Database {
+                is_expanded: false,
+                ..
+            }
+        ));
     }
 }

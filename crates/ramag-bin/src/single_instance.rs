@@ -1,8 +1,8 @@
 //! Windows 单实例：命名互斥体判定首实例；后启进程经命名事件请求首实例唤起主窗口后退出。
 //! `Local\` 前缀按登录会话隔离（多用户 / RDP 各自独立单实例）。
-//! 等待线程与内核对象随进程退出由系统回收，不做显式清理。
+//! 守卫与等待线程退出时显式关闭内核句柄，激活事件经容量 1 通道合并重复请求。
 
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 
 use tracing::{info, warn};
 use windows::Win32::Foundation::{
@@ -24,12 +24,20 @@ pub(crate) enum InstanceRole {
 /// 首实例守卫：互斥体句柄随进程生命周期持有；rx 为 None 表示激活监听建立失败
 /// （仅失去"双开时被唤起"能力，不影响其余功能）
 pub(crate) struct PrimaryGuard {
-    _mutex: HANDLE,
+    mutex: HANDLE,
     rx: Option<Receiver<()>>,
 }
 
 // HANDLE 是进程内有效的内核句柄值，跨线程传递安全；守卫仅在主线程使用
 unsafe impl Send for PrimaryGuard {}
+
+impl Drop for PrimaryGuard {
+    fn drop(&mut self) {
+        if !self.mutex.is_invalid() {
+            close_handle(self.mutex, "close single-instance mutex failed");
+        }
+    }
+}
 
 impl PrimaryGuard {
     /// 非阻塞取激活请求（drain 后返回是否发生过）
@@ -53,20 +61,18 @@ pub(crate) fn acquire() -> InstanceRole {
             // 互斥体创建失败极罕见；宁可放行双开也不拒绝启动
             warn!(error = %error, "create single-instance mutex failed; continuing without it");
             return InstanceRole::Primary(PrimaryGuard {
-                _mutex: HANDLE::default(),
+                mutex: HANDLE::default(),
                 rx: None,
             });
         }
     };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        unsafe {
-            let _ = CloseHandle(mutex);
-        }
+        close_handle(mutex, "close secondary-instance mutex failed");
         notify_primary();
         return InstanceRole::Secondary;
     }
     InstanceRole::Primary(PrimaryGuard {
-        _mutex: mutex,
+        mutex,
         rx: spawn_activation_listener(),
     })
 }
@@ -80,7 +86,8 @@ fn spawn_activation_listener() -> Option<Receiver<()>> {
             return None;
         }
     };
-    let (tx, rx) = channel::<()>();
+    // 主线程只关心“至少发生过一次”，容量 1 可合并连续激活，避免异常事件洪泛积压内存。
+    let (tx, rx) = sync_channel::<()>(1);
     let raw_event = event.0;
     let spawned = std::thread::Builder::new()
         .name("ramag-single-instance".into())
@@ -91,18 +98,18 @@ fn spawn_activation_listener() -> Option<Receiver<()>> {
                     warn!("wait activation event failed; listener stopped");
                     break;
                 }
-                if tx.send(()).is_err() {
-                    break;
+                match tx.try_send(()) {
+                    Ok(()) | Err(TrySendError::Full(())) => {}
+                    Err(TrySendError::Disconnected(())) => break,
                 }
             }
+            close_handle(event, "close activation event failed");
         });
     match spawned {
         Ok(_) => Some(rx),
         Err(error) => {
             warn!(error = %error, "start activation listener thread failed");
-            unsafe {
-                let _ = CloseHandle(event);
-            }
+            close_handle(event, "close unused activation event failed");
             None
         }
     }
@@ -117,12 +124,16 @@ fn notify_primary() {
             } else {
                 info!("existing instance notified to reveal its window");
             }
-            unsafe {
-                let _ = CloseHandle(event);
-            }
+            close_handle(event, "close activation notification event failed");
         }
         Err(error) => {
             warn!(error = %error, "open activation event failed; exiting without notify");
         }
+    }
+}
+
+fn close_handle(handle: HANDLE, message: &'static str) {
+    if let Err(error) = unsafe { CloseHandle(handle) } {
+        warn!(error = %error, "{message}");
     }
 }

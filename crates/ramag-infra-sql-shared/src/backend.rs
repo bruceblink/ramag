@@ -21,6 +21,9 @@ use crate::sql::{
     is_write_statement, split_statements, sql_has_no_limit_marker,
 };
 
+/// 单次查询保留的警告上限，包含可能的截断提示。
+pub const MAX_QUERY_WARNINGS: usize = 1_000;
+
 /// SQL 类 driver 抽象。`Db` 绑到 sqlx Database（MySql/Postgres/Sqlite 等）。
 /// where 子句的 HRTB GAT 是 sqlx 0.8 必备，sqlx 内置 Database 自动满足
 #[async_trait]
@@ -57,7 +60,7 @@ where
 
     // 行解码
 
-    fn decode_row(&self, row: &<Self::Db as Database>::Row) -> Vec<Value>;
+    fn decode_row(&self, row: &<Self::Db as Database>::Row) -> Result<Vec<Value>>;
 
     /// 列名 + 列类型名
     fn extract_columns(&self, row: &<Self::Db as Database>::Row) -> (Vec<String>, Vec<String>);
@@ -130,11 +133,24 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
-    if let Some(p) = b.cache().get(&config.id) {
+    // 在等待建池锁前固定请求代际；若期间配置被 evict，本次旧请求可完成，
+    // 但不得命中新配置的池，也不得把旧池重新写回缓存。
+    let generation = b.cache().generation(&config.id);
+    if let Some(p) = b.cache().get(&config.id, generation) {
+        return Ok(p);
+    }
+    let build_lock = b.cache().build_lock(&config.id, generation);
+    let _guard = build_lock.lock().await;
+    if b.cache().generation(&config.id) != generation {
+        return b.build_pool(config).await;
+    }
+    // 等锁期间其它请求可能已完成建池。
+    if let Some(p) = b.cache().get(&config.id, generation) {
         return Ok(p);
     }
     let pool = b.build_pool(config).await?;
-    b.cache().insert(config.id.clone(), pool.clone());
+    b.cache()
+        .insert(config.id.clone(), generation, pool.clone());
     Ok(pool)
 }
 
@@ -359,10 +375,7 @@ where
         if !is_select {
             total_affected = total_affected.saturating_add(r.affected_rows);
         }
-        let stmt_warnings = b.fetch_warnings(&mut conn).await;
-        if !stmt_warnings.is_empty() {
-            accumulated_warnings.extend(stmt_warnings);
-        }
+        append_warnings_bounded(&mut accumulated_warnings, b.fetch_warnings(&mut conn).await);
         if i == last_idx {
             last_result = r;
         }
@@ -386,6 +399,32 @@ where
         warnings: accumulated_warnings,
         ..last_result
     })
+}
+
+fn append_warnings_bounded(accumulated: &mut Vec<Warning>, incoming: Vec<Warning>) {
+    if incoming.is_empty() {
+        return;
+    }
+    let remaining = MAX_QUERY_WARNINGS.saturating_sub(accumulated.len());
+    if incoming.len() <= remaining {
+        accumulated.extend(incoming);
+        return;
+    }
+
+    // 为明确的截断提示预留一格；若此前恰好装满，则替换最后一条。
+    if remaining == 0 {
+        accumulated.pop();
+    } else {
+        accumulated.extend(incoming.into_iter().take(remaining.saturating_sub(1)));
+    }
+    accumulated.push(Warning {
+        level: "Client".into(),
+        code: 0,
+        message: format!(
+            "警告数量超过 {MAX_QUERY_WARNINGS} 条，仅保留前 {} 条以控制资源占用",
+            MAX_QUERY_WARNINGS - 1
+        ),
+    });
 }
 
 async fn run_select<B>(
@@ -414,10 +453,8 @@ where
 
     let domain_rows: Vec<Row> = rows
         .iter()
-        .map(|r| Row {
-            values: b.decode_row(r),
-        })
-        .collect();
+        .map(|row| b.decode_row(row).map(|values| Row { values }))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(QueryResult {
         columns,
@@ -452,4 +489,50 @@ where
         elapsed_ms: 0,
         warnings: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_QUERY_WARNINGS, append_warnings_bounded};
+    use ramag_domain::entities::Warning;
+
+    fn warnings(count: usize) -> Vec<Warning> {
+        (0..count)
+            .map(|index| Warning {
+                level: "Warning".into(),
+                code: index as u32,
+                message: format!("warning {index}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn warning_budget_keeps_exact_boundary() {
+        let mut accumulated = Vec::new();
+        append_warnings_bounded(&mut accumulated, warnings(MAX_QUERY_WARNINGS));
+
+        assert_eq!(accumulated.len(), MAX_QUERY_WARNINGS);
+        assert_ne!(
+            accumulated.last().map(|warning| warning.level.as_str()),
+            Some("Client")
+        );
+    }
+
+    #[test]
+    fn warning_budget_replaces_tail_with_truncation_marker() {
+        let mut accumulated = warnings(MAX_QUERY_WARNINGS);
+        append_warnings_bounded(&mut accumulated, warnings(1));
+
+        assert_eq!(accumulated.len(), MAX_QUERY_WARNINGS);
+        assert_eq!(
+            accumulated.last().map(|warning| warning.level.as_str()),
+            Some("Client")
+        );
+        assert_eq!(accumulated.last().map(|warning| warning.code), Some(0));
+        assert!(
+            accumulated
+                .last()
+                .is_some_and(|warning| warning.message.contains("仅保留前"))
+        );
+    }
 }

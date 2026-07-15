@@ -128,6 +128,14 @@ pub(super) fn render_header(
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load_more(cx))),
             );
         }
+    } else if let Some(loaded) = value_ref.and_then(RedisValue::scalar_byte_len) {
+        let label = match panel.collection_total {
+            Some(total) if (loaded as u64) < total => {
+                format!("已加载 {loaded} / {total} bytes")
+            }
+            _ => format!("{loaded} bytes"),
+        };
+        info_row = info_row.child(div().child(label));
     }
 
     info_row = info_row.child(render_size_chip(

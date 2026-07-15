@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 ramag-domain = { workspace = true }
+ramag-app = { workspace = true }
 ramag-ui = { workspace = true }
 
 # GPUI 渲染

@@ -1,5 +1,7 @@
 //! 单张剪贴卡片渲染：类型角标 + 预览 + 来源 + 时间 + 复制/删除按钮
 
+use std::sync::Arc;
+
 use chrono::Utc;
 use gpui::{
     ClickEvent, Context, Hsla, IntoElement, ParentElement, SharedString, Styled, div, img,
@@ -15,7 +17,11 @@ use super::ClipboardView;
 use crate::views::helpers::relative_time;
 
 impl ClipboardView {
-    pub(super) fn render_card(&self, item: &ClipItem, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_card(
+        &self,
+        item: Arc<ClipItem>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // 临时借用取 owned 颜色，释放 theme 借用，否则与 card_preview 的 &mut cx 冲突
         let accent = cx.theme().accent;
         let muted = cx.theme().muted_foreground;
@@ -30,7 +36,7 @@ impl ClipboardView {
         let id = item.id.clone();
         let row_id = SharedString::from(format!("clip-card-{}", item.id));
 
-        let preview = self.card_preview(item, cx);
+        let preview = self.card_preview(item.clone(), cx);
         let source = item
             .source
             .as_ref()
@@ -126,7 +132,7 @@ impl ClipboardView {
     }
 
     /// 卡片中部预览：颜色显示色卡，图片显示缩略图，其余显示文本
-    fn card_preview(&self, item: &ClipItem, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn card_preview(&self, item: Arc<ClipItem>, cx: &mut Context<Self>) -> gpui::AnyElement {
         match item.kind {
             ClipKind::Color => {
                 let swatch = item
@@ -147,7 +153,7 @@ impl ClipboardView {
                     .child(item.preview.clone())
                     .into_any_element()
             }
-            ClipKind::Image => match self.image_for(item, true, cx) {
+            ClipKind::Image => match self.image_for(item.clone(), true, cx) {
                 Some(image) => img(image).max_h(px(28.0)).into_any_element(),
                 None => div().child(item.preview.clone()).into_any_element(),
             },

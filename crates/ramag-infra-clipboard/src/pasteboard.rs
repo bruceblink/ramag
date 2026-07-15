@@ -10,6 +10,7 @@ use cocoa::appkit::{
 use cocoa::base::{id, nil};
 use cocoa::foundation::{NSArray, NSData, NSString};
 use objc::{class, msg_send, sel, sel_impl};
+use tracing::warn;
 
 use ramag_domain::entities::CapturedClip;
 use ramag_domain::error::{DomainError, Result};
@@ -19,6 +20,10 @@ const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
 const TRANSIENT_TYPE: &str = "org.nspasteboard.TransientType";
 /// NSPasteboardTypeRTF
 const RTF_TYPE: &str = "public.rtf";
+const MAX_PASTEBOARD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FILE_PATHS: usize = 10_000;
+const MAX_IMAGE_DIMENSION: u64 = 16_384;
+const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 
 /// autorelease 交主 RunLoop 池回收
 pub(crate) unsafe fn ns_string(s: &str) -> id {
@@ -33,6 +38,11 @@ pub(crate) unsafe fn to_rust_string(ns: id) -> Option<String> {
         return None;
     }
     unsafe {
+        // NSUTF8StringEncoding = 4；先查长度，避免 CStr → String 无界分配。
+        let utf8_len: usize = msg_send![ns, lengthOfBytesUsingEncoding: 4u64];
+        if utf8_len > MAX_PASTEBOARD_BYTES {
+            return None;
+        }
         let ptr = NSString::UTF8String(ns);
         if ptr.is_null() {
             return None;
@@ -46,7 +56,10 @@ unsafe fn data_to_vec(data: id) -> Option<Vec<u8>> {
         return None;
     }
     unsafe {
-        let len = NSData::length(data) as usize;
+        let len = usize::try_from(NSData::length(data)).ok()?;
+        if len > MAX_PASTEBOARD_BYTES {
+            return None;
+        }
         let bytes = NSData::bytes(data);
         if bytes.is_null() || len == 0 {
             return None;
@@ -102,15 +115,28 @@ pub(crate) unsafe fn tiff_to_png(tiff: id) -> Option<(Vec<u8>, (u32, u32))> {
         return None;
     }
     unsafe {
+        let encoded_len = usize::try_from(NSData::length(tiff)).ok()?;
+        if encoded_len > MAX_PASTEBOARD_BYTES {
+            return None;
+        }
         let rep: id = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff];
         if rep == nil {
             return None;
         }
         let w: i64 = msg_send![rep, pixelsWide];
         let h: i64 = msg_send![rep, pixelsHigh];
+        let (width, height) = (u64::try_from(w).ok()?, u64::try_from(h).ok()?);
+        if width == 0
+            || height == 0
+            || width > MAX_IMAGE_DIMENSION
+            || height > MAX_IMAGE_DIMENSION
+            || width.saturating_mul(height) > MAX_IMAGE_PIXELS
+        {
+            return None;
+        }
         let png: id = msg_send![rep, representationUsingType: 4u64 properties: nil];
         let bytes = data_to_vec(png)?;
-        Some((bytes, (w.max(0) as u32, h.max(0) as u32)))
+        Some((bytes, (width as u32, height as u32)))
     }
 }
 
@@ -131,11 +157,23 @@ pub(crate) fn read() -> Result<Option<CapturedClip>> {
         let plist: id = pb.propertyListForType(NSFilenamesPboardType);
         if plist != nil {
             let count = NSArray::count(plist);
+            if count > MAX_FILE_PATHS as u64 {
+                warn!(count, "clipboard file list exceeds safety limit");
+                return Ok(None);
+            }
+            let mut total_path_bytes = 0usize;
             for i in 0..count {
                 let item = NSArray::objectAtIndex(plist, i);
-                if let Some(p) = to_rust_string(item) {
-                    cap.files.push(p);
+                let Some(path) = to_rust_string(item) else {
+                    warn!("clipboard file path exceeds safety limit");
+                    return Ok(None);
+                };
+                total_path_bytes = total_path_bytes.saturating_add(path.len());
+                if total_path_bytes > MAX_PASTEBOARD_BYTES {
+                    warn!("clipboard file paths exceed safety limit");
+                    return Ok(None);
                 }
+                cap.files.push(path);
             }
         }
         if !cap.files.is_empty() {
@@ -170,6 +208,13 @@ pub(crate) fn read() -> Result<Option<CapturedClip>> {
 
 /// 写文本（可带 RTF）。返回写后 changeCount（自写回抑制用）
 pub(crate) fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
+    let total_bytes = text.len().saturating_add(rtf.map_or(0, <[u8]>::len));
+    if total_bytes > MAX_PASTEBOARD_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴文本与 RTF 总量超过 {} MiB 上限",
+            MAX_PASTEBOARD_BYTES / 1024 / 1024
+        )));
+    }
     unsafe {
         let pb = general();
         let _: i64 = pb.clearContents();
@@ -178,13 +223,27 @@ pub(crate) fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
             return Err(DomainError::Other("写文本到剪贴板失败".into()));
         }
         if let Some(bytes) = rtf {
-            let _: bool = msg_send![pb, setData: ns_data(bytes) forType: ns_string(RTF_TYPE)];
+            let ok: bool = msg_send![pb, setData: ns_data(bytes) forType: ns_string(RTF_TYPE)];
+            if !ok {
+                warn!("write optional RTF clipboard format failed");
+            }
         }
         Ok(pb.changeCount())
     }
 }
 
 pub(crate) fn write_image_png(png: &[u8]) -> Result<i64> {
+    let (width, height) =
+        png_dims(png).ok_or_else(|| DomainError::InvalidConfig("PNG 图片格式无效".into()))?;
+    if png.len() > MAX_PASTEBOARD_BYTES
+        || u64::from(width) > MAX_IMAGE_DIMENSION
+        || u64::from(height) > MAX_IMAGE_DIMENSION
+        || u64::from(width).saturating_mul(u64::from(height)) > MAX_IMAGE_PIXELS
+    {
+        return Err(DomainError::InvalidConfig(
+            "PNG 图片内容或尺寸超过安全上限".into(),
+        ));
+    }
     unsafe {
         let pb = general();
         let _: i64 = pb.clearContents();
@@ -197,6 +256,7 @@ pub(crate) fn write_image_png(png: &[u8]) -> Result<i64> {
 }
 
 pub(crate) fn write_files(paths: &[String]) -> Result<i64> {
+    validate_file_write(paths)?;
     unsafe {
         let pb = general();
         let ns_paths: Vec<id> = paths.iter().map(|p| ns_string(p)).collect();
@@ -211,9 +271,33 @@ pub(crate) fn write_files(paths: &[String]) -> Result<i64> {
     }
 }
 
+fn validate_file_write(paths: &[String]) -> Result<()> {
+    if paths.is_empty() || paths.len() > MAX_FILE_PATHS {
+        return Err(DomainError::InvalidConfig(
+            "文件列表为空或文件数量过多".into(),
+        ));
+    }
+    let mut total_bytes = 0usize;
+    for path in paths {
+        if path.is_empty() || path.contains('\0') {
+            return Err(DomainError::InvalidConfig(
+                "文件路径为空或包含 NUL 字符".into(),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(path.len());
+    }
+    if total_bytes > MAX_PASTEBOARD_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "文件路径总量超过 {} MiB 上限",
+            MAX_PASTEBOARD_BYTES / 1024 / 1024
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::png_dims;
+    use super::{MAX_FILE_PATHS, png_dims, validate_file_write};
 
     #[test]
     fn png_header_dims() {
@@ -225,5 +309,14 @@ mod tests {
         png.extend_from_slice(&600u32.to_be_bytes());
         assert_eq!(png_dims(&png), Some((800, 600)));
         assert_eq!(png_dims(b"not a png"), None);
+    }
+
+    #[test]
+    fn file_write_rejects_invalid_or_excessive_lists() {
+        assert!(validate_file_write(&[]).is_err());
+        assert!(validate_file_write(&["/tmp/a\0b".into()]).is_err());
+        let too_many = vec!["/tmp/a".to_string(); MAX_FILE_PATHS + 1];
+        assert!(validate_file_write(&too_many).is_err());
+        assert!(validate_file_write(&["/tmp/a".into()]).is_ok());
     }
 }

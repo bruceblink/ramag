@@ -19,7 +19,7 @@ pub(super) fn render_row(
     cells: &[Cell],
     visible_cols: &[usize],
     columns: &[Column],
-    doc: serde_json::Value,
+    doc: &serde_json::Value,
     fg: Hsla,
     muted: Hsla,
     border: Hsla,

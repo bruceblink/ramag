@@ -19,6 +19,7 @@ impl Render for VcsView {
         // Clone 取消后的半成品目录：弹确认交用户决定删除或保留（删除是不可逆文件操作，
         // 只对本次 clone 创建的目录发起，绝不触碰既有目录）
         if let Some(dir) = self.pending_clone_cleanup.take() {
+            let view = cx.entity();
             cx.defer_in(window, move |_, window, cx| {
                 let display = dir.display().to_string();
                 ramag_ui::open_confirm(
@@ -27,15 +28,9 @@ impl Render for VcsView {
                     "删除",
                     true,
                     move |_, app| {
-                        app.background_executor()
-                            .spawn(async move {
-                                if let Err(e) = std::fs::remove_dir_all(&dir) {
-                                    tracing::warn!(error = %e, dir = %dir.display(), "cleanup cancelled clone failed");
-                                } else {
-                                    tracing::info!(dir = %dir.display(), "cancelled clone dir removed");
-                                }
-                            })
-                            .detach();
+                        view.update(app, |this, cx| {
+                            this.cleanup_cancelled_clone_dir_async(dir, cx);
+                        });
                     },
                     window,
                     cx,
@@ -98,7 +93,14 @@ impl Render for VcsView {
             let clone_line = self
                 .clone_progress
                 .as_ref()
-                .and_then(|p| p.lock().ok().map(|s| s.clone()))
+                .and_then(|progress| match progress.try_lock() {
+                    Ok(text) => Some(text.clone()),
+                    Err(std::sync::TryLockError::WouldBlock) => None,
+                    Err(std::sync::TryLockError::Poisoned(error)) => {
+                        tracing::warn!("vcs clone progress lock poisoned");
+                        Some(error.into_inner().clone())
+                    }
+                })
                 .filter(|s| !s.is_empty());
             let cancel_btn = self.clone_cancel.clone().map(|cancel| {
                 gpui_component::button::Button::new("vcs-clone-cancel")

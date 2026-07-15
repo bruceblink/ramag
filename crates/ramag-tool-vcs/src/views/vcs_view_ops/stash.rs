@@ -120,7 +120,13 @@ impl VcsView {
             };
             // 操作后刷新 stashes + status
             let new_stashes = driver.list_stashes(&repo).await;
+            if let Err(error) = &new_stashes {
+                tracing::warn!(error = %error, "vcs: stash list refresh failed");
+            }
             let new_status = driver.status(&repo).await;
+            if let Err(error) = &new_status {
+                tracing::warn!(error = %error, "vcs: workspace status refresh failed after stash");
+            }
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;

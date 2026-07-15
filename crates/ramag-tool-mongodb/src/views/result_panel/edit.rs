@@ -3,7 +3,7 @@
 
 use gpui::{ClickEvent, Context, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -34,21 +34,28 @@ impl ResultPanel {
         input.update(cx, |s, c| s.focus(window, c));
         let panel = cx.entity().clone();
         let title = SharedString::from(format!("编辑字段 {path}"));
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, app| {
+            let panel_cancel = panel.clone();
+            let panel_on_cancel = panel.clone();
             let panel_apply = panel.clone();
             let input_apply = input.clone();
             let input_content = input.clone();
             let id_apply = id.clone();
             let path_apply = path.clone();
+            let dml_busy = panel.read(app).doc_dml_busy;
             let cancel = Button::new("mongo-edit-cancel")
                 .ghost()
                 .small()
                 .label("取消")
-                .on_click(move |_: &ClickEvent, window, app| window.close_dialog(app));
+                .disabled(dml_busy)
+                .on_click(move |_: &ClickEvent, window, app| {
+                    super::ops::close_dialog_if_dml_idle(&panel_cancel, window, app);
+                });
             let apply = Button::new("mongo-edit-apply")
                 .primary()
                 .small()
                 .label("保存")
+                .disabled(dml_busy)
                 .on_click(move |_: &ClickEvent, _window, app| {
                     let raw = input_apply.read(app).value().to_string();
                     let id = id_apply.clone();
@@ -60,6 +67,8 @@ impl ResultPanel {
                 });
             dialog
                 .title(title.clone())
+                .close_button(false)
+                .on_cancel(move |_, _, app| super::ops::dml_dialog_can_close(&panel_on_cancel, app))
                 .width(px(520.0))
                 .margin_top(px(150.0))
                 .content(move |content, _, cx| {
@@ -121,10 +130,30 @@ impl ResultPanel {
         update.insert("$set".to_string(), Value::Object(set));
         let update = Value::Object(update);
         self.doc_dml_busy = true;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let r = svc.update_one(&conf, &db, &coll, &filter, &update).await;
             let _ = this.update(cx, |this, cx| {
                 this.doc_dml_busy = false;
+                if !this.dml_context_matches(&conf, &db, &coll) {
+                    this.pending_notification = Some(match r {
+                        Ok(res) if res.affected == 0 => Notification::warning(format!(
+                            "原上下文 {db}.{coll} 未匹配到文档；当前上下文已切换"
+                        ))
+                        .autohide(true),
+                        Ok(res) => Notification::success(format!(
+                            "已在原上下文 {db}.{coll} 更新 {} 条文档；当前视图未自动刷新",
+                            res.affected
+                        ))
+                        .autohide(true),
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("原上下文 {db}.{coll} 更新失败")),
+                        )
+                        .autohide(true),
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(res) if res.affected == 0 => {
                         // 未命中不关弹框：用户可核对 _id / 库后再试

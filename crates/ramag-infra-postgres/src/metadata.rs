@@ -2,6 +2,7 @@
 
 use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
 use ramag_domain::error::Result;
+use ramag_infra_sql_shared::{METADATA_FETCH_LIMIT, ensure_metadata_item_limit};
 use sqlx::PgPool;
 use tracing::debug;
 
@@ -17,11 +18,14 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
         SELECT schema_name, default_character_set_name
         FROM information_schema.schemata
         ORDER BY schema_name
+        LIMIT $1
         "#,
     )
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "Schema")?;
 
     Ok(rows
         .into_iter()
@@ -59,12 +63,15 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
         LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = mv.matviewname
         WHERE mv.schemaname = $1
         ORDER BY 2, 1
+        LIMIT $2
         "#,
     )
     .bind(schema)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "表与视图")?;
 
     Ok(rows
         .into_iter()
@@ -110,13 +117,16 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
         LEFT JOIN pg_class pgc ON pgc.relnamespace = n.oid AND pgc.relname = c.table_name
         WHERE c.table_schema = $1 AND c.table_name = $2
         ORDER BY c.ordinal_position
+        LIMIT $3
         "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "列")?;
 
     // 主键列另查一次 key_column_usage + table_constraints
     let pk_cols: Vec<(String,)> = sqlx::query_as(
@@ -128,13 +138,16 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
          AND tc.table_schema = kcu.table_schema
         WHERE tc.constraint_type = 'PRIMARY KEY'
           AND tc.table_schema = $1 AND tc.table_name = $2
+        LIMIT $3
         "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(pk_cols.len(), "主键列")?;
     let pk_names: std::collections::HashSet<String> = pk_cols.into_iter().map(|(n,)| n).collect();
 
     Ok(rows
@@ -185,13 +198,16 @@ pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
         WHERE n.nspname = $1 AND t.relname = $2
         GROUP BY i.relname, ix.indisunique, ix.indisprimary
         ORDER BY ix.indisprimary DESC, i.relname
+        LIMIT $3
         "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "索引")?;
 
     Ok(rows
         .into_iter()
@@ -229,13 +245,16 @@ pub async fn list_foreign_keys(
         WHERE tc.constraint_type = 'FOREIGN KEY'
           AND tc.table_schema = $1 AND tc.table_name = $2
         ORDER BY tc.constraint_name, kcu.ordinal_position
+        LIMIT $3
         "#,
     )
     .bind(schema)
     .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
     .fetch_all(pool)
     .await
     .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "外键列")?;
 
     let mut grouped: std::collections::BTreeMap<String, ForeignKey> =
         std::collections::BTreeMap::new();

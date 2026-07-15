@@ -3,21 +3,21 @@
 //! 由 QueryPanel 经 `window.open_dialog` 装载本视图并订阅 `HistoryEvent`
 
 use std::sync::Arc;
+use std::{ops::Range, rc::Rc};
 
 use gpui::{
     AnyElement, ClickEvent, ClipboardItem, Context, EventEmitter, Hsla, IntoElement, ParentElement,
-    Render, SharedString, Styled, Window, div, prelude::*, px,
+    Render, SharedString, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     notification::Notification,
-    scroll::ScrollableElement as _,
     v_flex,
 };
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{ConnectionId, QueryRecord, QueryStatus};
+use ramag_domain::entities::{ConnectionId, QueryRecord, QueryStatus, compact_text_preview};
 use tracing::error;
 
 /// 单次最多加载条数
@@ -42,9 +42,13 @@ pub struct HistoryList {
     service: Arc<ConnectionService>,
     /// 只看当前连接的历史（list_history 原生支持按 ConnectionId 过滤）
     connection_id: ConnectionId,
-    records: Vec<QueryRecord>,
+    records: Vec<Arc<QueryRecord>>,
+    history_truncated: bool,
     loading: bool,
-    error: Option<String>,
+    /// 删除 / 清空串行执行，避免重复点击与旧加载结果在清空后回写。
+    mutating: bool,
+    load_error: Option<String>,
+    mutation_error: Option<String>,
     /// 关键字过滤（客户端 contains，大小写不敏感）
     search: gpui::Entity<gpui_component::input::InputState>,
 }
@@ -72,8 +76,11 @@ impl HistoryList {
             service,
             connection_id,
             records: Vec::new(),
+            history_truncated: false,
             loading: true,
-            error: None,
+            mutating: false,
+            load_error: None,
+            mutation_error: None,
             search,
         };
         this.load(cx);
@@ -82,15 +89,19 @@ impl HistoryList {
 
     /// 删除单条：storage 删除成功后本地移除（失败 toast 留在弹框上方不可见——用错误行呈现）
     fn delete_record(&mut self, id: ramag_domain::entities::QueryRecordId, cx: &mut Context<Self>) {
+        if !self.begin_mutation(cx) {
+            return;
+        }
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let r = svc.delete_history(&id).await;
             let _ = this.update(cx, |this, cx| {
+                this.mutating = false;
                 match r {
                     Ok(()) => this.records.retain(|rec| rec.id != id),
                     Err(e) => {
                         error!(error = %e, "delete history failed");
-                        this.error = Some(format!("删除失败：{e}"));
+                        this.mutation_error = Some(format!("删除失败：{e}"));
                     }
                 }
                 cx.notify();
@@ -101,16 +112,23 @@ impl HistoryList {
 
     /// 清空当前连接全部历史（调用方已确认）
     fn clear_all(&mut self, cx: &mut Context<Self>) {
+        if !self.begin_mutation(cx) {
+            return;
+        }
         let svc = self.service.clone();
         let conn_id = self.connection_id.clone();
         cx.spawn(async move |this, cx| {
             let r = svc.clear_history(Some(&conn_id)).await;
             let _ = this.update(cx, |this, cx| {
+                this.mutating = false;
                 match r {
-                    Ok(()) => this.records.clear(),
+                    Ok(()) => {
+                        this.records.clear();
+                        this.history_truncated = false;
+                    }
                     Err(e) => {
                         error!(error = %e, "clear history failed");
-                        this.error = Some(format!("清空失败：{e}"));
+                        this.mutation_error = Some(format!("清空失败：{e}"));
                     }
                 }
                 cx.notify();
@@ -119,10 +137,20 @@ impl HistoryList {
         .detach();
     }
 
+    fn begin_mutation(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.loading || self.mutating {
+            return false;
+        }
+        self.mutating = true;
+        self.mutation_error = None;
+        cx.notify();
+        true
+    }
+
     /// 异步拉取历史。必须走 service（内部已处理 storage 的线程桥接），视图层不碰底层
     fn load(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
-        self.error = None;
+        self.load_error = None;
         let svc = self.service.clone();
         let conn_id = self.connection_id.clone();
         cx.spawn(async move |this, cx| {
@@ -130,10 +158,13 @@ impl HistoryList {
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(rs) => this.records = rs,
+                    Ok(page) => {
+                        this.history_truncated = page.truncated;
+                        this.records = page.records.into_iter().map(Arc::new).collect();
+                    }
                     Err(e) => {
                         error!(error = %e, "load query history failed");
-                        this.error = Some(e.to_string());
+                        this.load_error = Some(e.to_string());
                     }
                 }
                 cx.notify();
@@ -143,7 +174,7 @@ impl HistoryList {
     }
 
     /// 单行：状态点 + SQL 预览 + 元信息（时间 / 行数 / 耗时或失败原因）+ 行操作
-    fn render_row(&self, ix: usize, rec: QueryRecord, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(&self, ix: usize, rec: Arc<QueryRecord>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let fg = theme.foreground;
         let muted_fg = theme.muted_foreground;
@@ -167,13 +198,13 @@ impl HistoryList {
             QueryStatus::Failed => format!(
                 "{} · 失败：{}",
                 when_text,
-                compact_truncate(rec.error.as_deref().unwrap_or("未知错误"), ERROR_MAX_CHARS)
+                compact_text_preview(rec.error.as_deref().unwrap_or("未知错误"), ERROR_MAX_CHARS,)
             ),
         };
-        let sql_for_copy = rec.sql.clone();
-        let sql_for_run = rec.sql.clone();
-        let rec_id = rec.id.clone();
-        let sql_for_fill = rec.sql;
+        let rec_for_copy = rec.clone();
+        let rec_for_fill = rec.clone();
+        let rec_for_run = rec.clone();
+        let rec_for_delete = rec;
 
         h_flex()
             .id(SharedString::from(format!("hist-row-{ix}")))
@@ -229,7 +260,7 @@ impl HistoryList {
                             .tooltip("复制 SQL 到剪贴板")
                             .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
-                                    sql_for_copy.clone(),
+                                    rec_for_copy.sql.clone(),
                                 ));
                                 window.push_notification(
                                     Notification::success("已复制 SQL").autohide(true),
@@ -244,7 +275,7 @@ impl HistoryList {
                             .label("填入编辑器")
                             .tooltip("填入当前查询 Tab 的编辑器（不执行）")
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                cx.emit(HistoryEvent::FillEditor(sql_for_fill.clone()));
+                                cx.emit(HistoryEvent::FillEditor(rec_for_fill.sql.clone()));
                             })),
                     )
                     .child(
@@ -254,7 +285,7 @@ impl HistoryList {
                             .label("重跑")
                             .tooltip("填入编辑器并立即执行（失败记录亦可重试）")
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                                cx.emit(HistoryEvent::RunSql(sql_for_run.clone()));
+                                cx.emit(HistoryEvent::RunSql(rec_for_run.sql.clone()));
                             })),
                     )
                     .child(
@@ -263,8 +294,9 @@ impl HistoryList {
                             .xsmall()
                             .label("删除")
                             .tooltip("删除这条历史记录")
+                            .disabled(self.mutating)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.delete_record(rec_id.clone(), cx);
+                                this.delete_record(rec_for_delete.id.clone(), cx);
                             })),
                     ),
             )
@@ -277,20 +309,15 @@ impl Render for HistoryList {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let danger = theme.danger;
+        let warning = theme.warning;
         let border = theme.border;
 
         // 关键字过滤（SQL 与错误文案都参与匹配）
         let query = self.search.read(cx).value().trim().to_lowercase();
-        let filtered: Vec<QueryRecord> = self
+        let filtered: Vec<Arc<QueryRecord>> = self
             .records
             .iter()
-            .filter(|r| {
-                query.is_empty()
-                    || r.sql.to_lowercase().contains(&query)
-                    || r.error
-                        .as_deref()
-                        .is_some_and(|e| e.to_lowercase().contains(&query))
-            })
+            .filter(|record| record.matches_query_lower(&query))
             .cloned()
             .collect();
 
@@ -312,12 +339,24 @@ impl Render for HistoryList {
                 filtered.len(),
                 self.records.len()
             )))
+            .when(self.history_truncated, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(warning)
+                        .child("结果按 32 MiB 内存预算截断"),
+                )
+            })
+            .when(self.mutating, |this| {
+                this.child(div().text_xs().text_color(muted_fg).child("正在更新…"))
+            })
             .child(
                 Button::new("hist-clear-all")
                     .ghost()
                     .xsmall()
                     .label("清空")
                     .tooltip("清空当前连接的全部查询历史")
+                    .disabled(self.loading || self.mutating || self.records.is_empty())
                     .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                         let entity = cx.entity();
                         ramag_ui::open_confirm(
@@ -336,22 +375,28 @@ impl Render for HistoryList {
 
         let body: AnyElement = if self.loading {
             centered_hint("加载中…", muted_fg)
-        } else if let Some(e) = &self.error {
+        } else if let Some(e) = &self.load_error {
             centered_hint(format!("加载失败：{e}"), danger)
         } else if self.records.is_empty() {
             centered_hint("暂无查询历史", muted_fg)
         } else if filtered.is_empty() {
             centered_hint(format!("没有匹配「{query}」的历史"), muted_fg)
         } else {
-            let mut rows: Vec<AnyElement> = Vec::with_capacity(filtered.len());
-            for (ix, rec) in filtered.into_iter().enumerate() {
-                rows.push(self.render_row(ix, rec, cx));
-            }
-            div()
-                .size_full()
-                .overflow_y_scrollbar()
-                .child(v_flex().w_full().children(rows))
-                .into_any_element()
+            let records = Rc::new(filtered);
+            let rows = uniform_list(
+                "query-history-rows",
+                records.len(),
+                cx.processor({
+                    let records = records.clone();
+                    move |this, range: Range<usize>, _window, cx| {
+                        range
+                            .map(|index| this.render_row(index, records[index].clone(), cx))
+                            .collect::<Vec<_>>()
+                    }
+                }),
+            )
+            .size_full();
+            div().size_full().child(rows).into_any_element()
         };
         let _ = window;
 
@@ -360,6 +405,16 @@ impl Render for HistoryList {
             .w_full()
             .h(px(LIST_HEIGHT))
             .child(toolbar)
+            .when_some(self.mutation_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .w_full()
+                        .py(px(6.0))
+                        .text_xs()
+                        .text_color(danger)
+                        .child(error),
+                )
+            })
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -374,37 +429,4 @@ fn centered_hint(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
         .text_color(color)
         .child(text.into())
         .into_any_element()
-}
-
-/// 压平空白并按字符数截断（多字节安全），超长补省略号
-fn compact_truncate(s: &str, max_chars: usize) -> String {
-    let normalized: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.chars().count() <= max_chars {
-        normalized
-    } else {
-        let truncated: String = normalized.chars().take(max_chars).collect();
-        format!("{truncated}…")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::compact_truncate;
-
-    #[test]
-    fn short_text_passes_through() {
-        assert_eq!(compact_truncate("SELECT 1;", 20), "SELECT 1;");
-    }
-
-    #[test]
-    fn long_text_cut_by_chars_with_ellipsis() {
-        assert_eq!(compact_truncate("abcdef", 3), "abc…");
-        // 多字节字符按字符数截断，不得 panic
-        assert_eq!(compact_truncate("数据库查询失败", 3), "数据库…");
-    }
-
-    #[test]
-    fn whitespace_is_flattened() {
-        assert_eq!(compact_truncate("a\n  b\t c", 20), "a b c");
-    }
 }

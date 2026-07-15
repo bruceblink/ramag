@@ -19,6 +19,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 
 # 导出工具用
+serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 

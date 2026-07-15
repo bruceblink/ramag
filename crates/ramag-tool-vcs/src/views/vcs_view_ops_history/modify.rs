@@ -22,7 +22,10 @@ impl VcsView {
         }
         cx.spawn(async move |this, cx| {
             let result = driver.revert(&repo, &commit_id).await;
-            let new_status = driver.status(&repo).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -69,8 +72,14 @@ impl VcsView {
         }
         cx.spawn(async move |this, cx| {
             let result = driver.reset(&repo, &target, kind).await;
-            let new_status = driver.status(&repo).await.ok();
-            let new_local = driver.list_branches(&repo, BranchKind::Local).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -124,11 +133,14 @@ impl VcsView {
                 Ok(()) => (true, driver.checkout(&repo, &target).await),
                 Err(e) => (false, Err(e)),
             };
-            let new_status = driver.status(&repo).await.ok();
-            let new_local = driver
-                .list_branches(&repo, BranchKind::Local)
-                .await
-                .ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -208,30 +220,35 @@ impl VcsView {
             // 仅 checkout 成功后永久删除；按唯一 marker 重新定位，避免外部进程新增 stash
             // 导致 index 0 指向别人的条目。
             let drop_result = if checkout_result.is_ok() {
-                let temporary_idx = driver
-                    .list_stashes(&repo)
-                    .await
-                    .ok()
-                    .and_then(|stashes| {
-                        stashes
-                            .iter()
-                            .find(|stash| stash.message.contains(&marker))
-                            .map(|stash| stash.id.0)
-                    });
+                let temporary_idx = driver.list_stashes(&repo).await.map(|stashes| {
+                    stashes
+                        .iter()
+                        .find(|stash| stash.message.contains(&marker))
+                        .map(|stash| stash.id.0)
+                });
                 Some(match temporary_idx {
-                    Some(idx) => driver.stash_drop(&repo, idx).await,
-                    None => Err(ramag_domain::error::DomainError::Other(
+                    Ok(Some(idx)) => driver.stash_drop(&repo, idx).await,
+                    Ok(None) => Err(ramag_domain::error::DomainError::Other(
                         "未找到 Ramag 创建的临时 stash，已保留全部 stash 以避免误删".into(),
                     )),
+                    Err(error) => {
+                        tracing::error!(error = %error, "vcs: list temporary stash failed");
+                        Err(ramag_domain::error::DomainError::Other(format!(
+                            "无法读取 Stash 列表，为避免误删已保留临时备份：{error}"
+                        )))
+                    }
                 })
             } else {
                 None
             };
-            let new_status = driver.status(&repo).await.ok();
-            let new_local = driver
-                .list_branches(&repo, BranchKind::Local)
-                .await
-                .ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;

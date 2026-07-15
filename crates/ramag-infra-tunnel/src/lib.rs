@@ -4,30 +4,75 @@
 //! driver 只在建连处调 `ensure`，把 DB 目标地址换成 `127.0.0.1:本地端口`
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ramag_domain::entities::{ConnectionConfig, ConnectionId};
 use ramag_domain::error::{DomainError, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 /// 隧道就绪探测总时长（含 ssh 认证握手，密钥 / agent 场景通常 1-3s）
 const READY_TIMEOUT: Duration = Duration::from_secs(12);
 /// 就绪探测轮询间隔
 const PROBE_INTERVAL: Duration = Duration::from_millis(200);
+/// 建连失败时最多回传的 ssh stderr，防异常子进程输出导致无界内存与超长提示。
+const MAX_ERROR_OUTPUT_BYTES: usize = 16 * 1024;
 
 struct Tunnel {
     child: Child,
     local_port: u16,
     /// 参数指纹：target / ssh 端口 / 转发目的地任一变更即重建
     fingerprint: String,
+    /// 持续排空 ssh stderr，防止管道写满后反向阻塞隧道进程。
+    stderr_drain: Option<JoinHandle<()>>,
 }
 
-fn registry() -> &'static Mutex<HashMap<ConnectionId, Tunnel>> {
-    static TUNNELS: OnceLock<Mutex<HashMap<ConnectionId, Tunnel>>> = OnceLock::new();
+impl Tunnel {
+    fn stop(&mut self) {
+        match self.child.try_wait() {
+            Ok(None) => {
+                if let Err(error) = self.child.kill() {
+                    warn!(error = %error, "ssh tunnel kill failed");
+                }
+            }
+            Ok(Some(_)) => {}
+            Err(error) => {
+                warn!(error = %error, "ssh tunnel status check failed");
+                if let Err(kill_error) = self.child.kill() {
+                    warn!(error = %kill_error, "ssh tunnel kill after status error failed");
+                }
+            }
+        }
+        if let Err(error) = self.child.wait() {
+            warn!(error = %error, "ssh tunnel wait failed");
+        }
+        if let Some(drain) = self.stderr_drain.take()
+            && drain.join().is_err()
+        {
+            warn!("ssh stderr drain thread panicked");
+        }
+    }
+}
+
+type TunnelSlot = Arc<Mutex<Option<Tunnel>>>;
+
+fn registry() -> &'static Mutex<HashMap<ConnectionId, TunnelSlot>> {
+    static TUNNELS: OnceLock<Mutex<HashMap<ConnectionId, TunnelSlot>>> = OnceLock::new();
     TUNNELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn slot_for(id: &ConnectionId) -> Result<TunnelSlot> {
+    let mut map = registry()
+        .lock()
+        .map_err(|_| DomainError::QueryFailed("SSH 隧道注册表锁失效".into()))?;
+    Ok(map
+        .entry(id.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(None)))
+        .clone())
 }
 
 fn fingerprint(config: &ConnectionConfig) -> String {
@@ -53,23 +98,34 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
     };
 
     let want = fingerprint(config);
-    let mut map = registry()
+    // 全局锁只负责 ConnectionId → slot 索引；耗时握手仅锁当前连接，
+    // 不让一个慢跳板机拖住其它连接的 ensure / evict。
+    let slot = slot_for(&config.id)?;
+    let mut current = slot
         .lock()
-        .map_err(|_| DomainError::QueryFailed("SSH 隧道注册表锁失效".into()))?;
+        .map_err(|_| DomainError::QueryFailed("SSH 隧道连接锁失效".into()))?;
 
     // 命中：指纹一致且进程仍活着（try_wait None）
-    if let Some(t) = map.get_mut(&config.id) {
-        let alive = matches!(t.child.try_wait(), Ok(None));
-        if alive && t.fingerprint == want {
-            return Ok(Some(("127.0.0.1".into(), t.local_port)));
-        }
+    let reusable = current
+        .as_mut()
+        .is_some_and(|t| matches!(t.child.try_wait(), Ok(None)) && t.fingerprint == want);
+    if reusable && let Some(t) = current.as_ref() {
+        return Ok(Some(("127.0.0.1".into(), t.local_port)));
+    }
+    if let Some(mut stale) = current.take() {
         // 参数变了或进程已死：拆掉重建
-        let _ = t.child.kill();
-        let _ = t.child.wait();
-        map.remove(&config.id);
+        stale.stop();
         info!(connection_id = %config.id, "ssh tunnel rebuilt (stale or dead)");
     }
 
+    let tunnel = build_tunnel(config, target, want)?;
+    let local_port = tunnel.local_port;
+    *current = Some(tunnel);
+    info!(connection_id = %config.id, target, local_port, "ssh tunnel established");
+    Ok(Some(("127.0.0.1".into(), local_port)))
+}
+
+fn build_tunnel(config: &ConnectionConfig, target: &str, fingerprint: String) -> Result<Tunnel> {
     let local_port = pick_free_port()?;
     let forward = format!("127.0.0.1:{local_port}:{}:{}", config.host, config.port);
     let mut cmd = ssh_command();
@@ -82,8 +138,8 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
     if let Some(p) = config.ssh_port.filter(|p| *p != 22) {
         cmd.arg("-p").arg(p.to_string());
     }
-    cmd.arg(target)
-        .stdin(Stdio::null())
+    append_destination(&mut cmd, target);
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
@@ -97,16 +153,24 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
         if TcpStream::connect(("127.0.0.1", local_port)).is_ok() {
             break;
         }
-        if let Ok(Some(status)) = child.try_wait() {
-            let stderr = read_stderr(&mut child);
-            return Err(DomainError::QueryFailed(format!(
-                "SSH 隧道建立失败（exit {status}）：{}（GUI 无法输入密码，请配置密钥或 ssh-agent）",
-                stderr.trim()
-            )));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stderr = read_stderr(&mut child);
+                return Err(DomainError::QueryFailed(format!(
+                    "SSH 隧道建立失败（exit {status}）：{}（GUI 无法输入密码，请配置密钥或 ssh-agent）",
+                    stderr.trim()
+                )));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(&mut child);
+                return Err(DomainError::QueryFailed(format!(
+                    "检查 SSH 隧道进程失败：{error}"
+                )));
+            }
         }
         if start.elapsed() > READY_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_child(&mut child);
             return Err(DomainError::QueryFailed(
                 "SSH 隧道就绪超时：请检查跳板机地址与网络连通性".into(),
             ));
@@ -114,40 +178,71 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
         std::thread::sleep(PROBE_INTERVAL);
     }
 
-    info!(connection_id = %config.id, target, local_port, "ssh tunnel established");
-    map.insert(
-        config.id.clone(),
-        Tunnel {
-            child,
-            local_port,
-            fingerprint: want,
-        },
-    );
-    Ok(Some(("127.0.0.1".into(), local_port)))
+    let stderr_drain = match start_stderr_drain(&mut child, local_port) {
+        Ok(drain) => drain,
+        Err(error) => {
+            terminate_child(&mut child);
+            return Err(error);
+        }
+    };
+    Ok(Tunnel {
+        child,
+        local_port,
+        fingerprint,
+        stderr_drain: Some(stderr_drain),
+    })
+}
+
+fn append_destination(command: &mut Command, target: &str) {
+    // 防止以 `-o` 开头的目标被 OpenSSH 继续解析为选项（尤其是 ProxyCommand）。
+    command.arg("--").arg(target);
 }
 
 /// 关闭并移除该连接的隧道（driver evict_pool 时调，编辑配置后下次建连按新参数重建）
 pub fn evict(id: &ConnectionId) {
-    if let Ok(mut map) = registry().lock()
-        && let Some(mut t) = map.remove(id)
-    {
-        let _ = t.child.kill();
-        let _ = t.child.wait();
-        info!(connection_id = %id, "ssh tunnel closed");
+    let slot = match registry().lock() {
+        Ok(mut map) => map.remove(id),
+        Err(_) => {
+            warn!(connection_id = %id, "ssh tunnel registry lock poisoned during evict");
+            return;
+        }
+    };
+    if let Some(slot) = slot {
+        match slot.lock() {
+            Ok(mut current) => {
+                if let Some(mut tunnel) = current.take() {
+                    tunnel.stop();
+                    info!(connection_id = %id, "ssh tunnel closed");
+                }
+            }
+            Err(_) => warn!(connection_id = %id, "ssh tunnel slot lock poisoned during evict"),
+        }
     }
 }
 
 /// 关闭全部隧道（应用退出时调，避免残留孤儿 ssh 进程）
 pub fn shutdown_all() {
-    if let Ok(mut map) = registry().lock() {
-        let n = map.len();
-        for (_, mut t) in map.drain() {
-            let _ = t.child.kill();
-            let _ = t.child.wait();
+    let slots: Vec<TunnelSlot> = match registry().lock() {
+        Ok(mut map) => map.drain().map(|(_, slot)| slot).collect(),
+        Err(_) => {
+            warn!("ssh tunnel registry lock poisoned during shutdown");
+            return;
         }
-        if n > 0 {
-            info!(count = n, "all ssh tunnels closed");
+    };
+    let mut closed = 0usize;
+    for slot in slots {
+        match slot.lock() {
+            Ok(mut current) => {
+                if let Some(mut tunnel) = current.take() {
+                    tunnel.stop();
+                    closed += 1;
+                }
+            }
+            Err(_) => warn!("ssh tunnel slot lock poisoned during shutdown"),
         }
+    }
+    if closed > 0 {
+        info!(count = closed, "all ssh tunnels closed");
     }
 }
 
@@ -162,14 +257,48 @@ fn pick_free_port() -> Result<u16> {
     Ok(port)
 }
 
-fn read_stderr(child: &mut Child) -> String {
-    use std::io::Read;
-    let mut out = String::new();
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_string(&mut out);
+fn start_stderr_drain(child: &mut Child, local_port: u16) -> Result<JoinHandle<()>> {
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| DomainError::QueryFailed("无法读取 SSH 隧道错误输出".into()))?;
+    std::thread::Builder::new()
+        .name(format!("ramag-ssh-stderr-{local_port}"))
+        .spawn(move || {
+            if let Err(error) = std::io::copy(&mut stderr, &mut std::io::sink()) {
+                warn!(error = %error, local_port, "ssh stderr drain failed");
+            }
+        })
+        .map_err(|error| DomainError::QueryFailed(format!("启动 SSH 输出排空线程失败：{error}")))
+}
+
+fn terminate_child(child: &mut Child) {
+    if let Err(error) = child.kill() {
+        warn!(error = %error, "ssh tunnel kill failed during setup");
     }
-    if out.is_empty() {
-        out = "无输出".into();
+    if let Err(error) = child.wait() {
+        warn!(error = %error, "ssh tunnel wait failed during setup");
+    }
+}
+
+fn read_stderr(child: &mut Child) -> String {
+    let mut bytes = Vec::new();
+    if let Some(mut s) = child.stderr.take()
+        && let Err(error) = s
+            .by_ref()
+            .take((MAX_ERROR_OUTPUT_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+    {
+        return format!("读取 ssh 错误输出失败：{error}");
+    }
+    if bytes.is_empty() {
+        return "无输出".into();
+    }
+    let truncated = bytes.len() > MAX_ERROR_OUTPUT_BYTES;
+    bytes.truncate(MAX_ERROR_OUTPUT_BYTES);
+    let mut out = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        out.push_str("\n…输出已截断");
     }
     out
 }
@@ -216,5 +345,36 @@ mod tests {
     #[test]
     fn free_port_is_nonzero() {
         assert!(pick_free_port().unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn ssh_destination_cannot_be_interpreted_as_an_option() {
+        let mut command = Command::new("ssh");
+        append_destination(&mut command, "-oProxyCommand=unsafe");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                std::ffi::OsStr::new("--"),
+                std::ffi::OsStr::new("-oProxyCommand=unsafe")
+            ]
+        );
+    }
+
+    #[test]
+    fn slots_serialize_only_the_same_connection()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let first_id = ConnectionId::new();
+        let second_id = ConnectionId::new();
+        let first = slot_for(&first_id)?;
+        let first_again = slot_for(&first_id)?;
+        let second = slot_for(&second_id)?;
+
+        assert!(Arc::ptr_eq(&first, &first_again));
+        assert!(!Arc::ptr_eq(&first, &second));
+
+        evict(&first_id);
+        evict(&second_id);
+        Ok(())
     }
 }

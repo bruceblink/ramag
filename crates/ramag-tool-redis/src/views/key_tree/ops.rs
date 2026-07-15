@@ -135,6 +135,27 @@ impl KeyTreePanel {
             let argv = vec!["RENAMENX".to_string(), old.clone(), new.clone()];
             let r = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| {
+                if !this.operation_context_matches(&config, db) {
+                    this.pending_notification = Some(match &r {
+                        Ok(RedisValue::Int(1)) => Notification::success(format!(
+                            "已在原 DB {db} 完成重命名；当前树未自动刷新"
+                        ))
+                        .autohide(true),
+                        Ok(RedisValue::Int(_)) => {
+                            Notification::error("原 DB 中目标 key 已存在，未执行重命名")
+                                .autohide(true)
+                        }
+                        Ok(_) => {
+                            Notification::error("原 DB 重命名失败：服务端应答异常").autohide(true)
+                        }
+                        Err(error) => {
+                            Notification::error(error.write_hint(&format!("原 DB {db} 重命名失败")))
+                                .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(RedisValue::Int(1)) => {
                         if let Some(k) = this.keys.iter_mut().find(|k| k.key == old) {
@@ -185,6 +206,21 @@ impl KeyTreePanel {
         cx.spawn(async move |this, cx| {
             let r = svc.delete_key(&config, db, &key).await;
             let _ = this.update(cx, |this, cx| {
+                if !this.operation_context_matches(&config, db) {
+                    this.pending_notification = Some(match &r {
+                        Ok(_) => Notification::success(format!(
+                            "已在原 DB {db} 删除 key {}；当前树未自动刷新",
+                            truncate_label(&key, 60)
+                        ))
+                        .autohide(true),
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("原 DB {db} 删除 key 失败")),
+                        )
+                        .autohide(true),
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(_) => {
                         // 本地移除即可，无需整库重扫
@@ -224,6 +260,21 @@ impl KeyTreePanel {
         cx.spawn(async move |this, cx| {
             let result = delete_by_pattern(&svc, &config, db, &pattern).await;
             let _ = this.update(cx, |this, cx| {
+                if !this.operation_context_matches(&config, db) {
+                    this.pending_notification = Some(match &result {
+                        Ok(count) => Notification::success(format!(
+                            "已在原 DB {db} 删除前缀 {} 下 {count} 个 key；当前树未自动刷新",
+                            truncate_label(&prefix, 60)
+                        ))
+                        .autohide(true),
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("原 DB {db} 删除前缀失败")),
+                        )
+                        .autohide(true),
+                    });
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(n) => {
                         let sub_prefix = format!("{prefix}:");
@@ -269,6 +320,20 @@ impl KeyTreePanel {
                 .execute_command(&config, db, vec!["FLUSHDB".to_string()])
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if !this.operation_context_matches(&config, db) {
+                    this.pending_notification = Some(match &r {
+                        Ok(_) => {
+                            Notification::success(format!("已清空原 DB {db}；当前树未自动刷新"))
+                                .autohide(true)
+                        }
+                        Err(error) => {
+                            Notification::error(error.write_hint(&format!("清空原 DB {db} 失败")))
+                                .autohide(true)
+                        }
+                    });
+                    cx.notify();
+                    return;
+                }
                 match r {
                     Ok(_) => {
                         this.selected = None;
@@ -311,9 +376,8 @@ async fn delete_by_pattern(
             let mut argv = Vec::with_capacity(chunk.len() + 1);
             argv.push("DEL".to_string());
             argv.extend(chunk.iter().map(|k| k.key.clone()));
-            if let RedisValue::Int(n) = svc.execute_command(config, db, argv).await? {
-                total += n.max(0) as u64;
-            }
+            let reply = svc.execute_command(config, db, argv).await?;
+            total += parse_delete_count(reply)?;
         }
         // 单轮不足上限说明已扫到尾，无需再来一轮空扫
         if got < SCAN_BATCH {
@@ -321,6 +385,18 @@ async fn delete_by_pattern(
         }
     }
     Ok(total)
+}
+
+fn parse_delete_count(reply: RedisValue) -> Result<u64> {
+    match reply {
+        RedisValue::Int(count) if count >= 0 => Ok(count as u64),
+        RedisValue::Int(count) => Err(ramag_domain::error::DomainError::QueryFailed(format!(
+            "DEL 返回无效负数：{count}"
+        ))),
+        other => Err(ramag_domain::error::DomainError::QueryFailed(format!(
+            "DEL 返回了非整数应答：{other:?}"
+        ))),
+    }
 }
 
 /// 转义 Redis MATCH glob 特殊字符，避免前缀里的 `*?[]\` 误匹配别人的 key
@@ -337,12 +413,12 @@ fn escape_glob(s: &str) -> String {
 
 /// 确认弹窗 / toast 里的 key 名截断，防超长 key 撑爆对话框
 fn truncate_label(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let head: String = s.chars().take(max_chars).collect();
-        format!("{head}…")
+    let mut chars = s.chars();
+    let mut head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        head.push('…');
     }
+    head
 }
 
 #[cfg(test)]
@@ -361,5 +437,12 @@ mod tests {
     fn truncate_label_keeps_short_and_cuts_long() {
         assert_eq!(truncate_label("short", 10), "short");
         assert_eq!(truncate_label("数据库连接池", 3), "数据库…");
+    }
+
+    #[test]
+    fn delete_count_rejects_unexpected_reply() {
+        assert_eq!(parse_delete_count(RedisValue::Int(2)).ok(), Some(2));
+        assert!(parse_delete_count(RedisValue::Int(-1)).is_err());
+        assert!(parse_delete_count(RedisValue::Text("OK".into())).is_err());
     }
 }

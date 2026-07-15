@@ -7,25 +7,27 @@
 pub mod encryption;
 pub mod keyring;
 mod repos;
+mod worker_pool;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use async_trait::async_trait;
 use directories::ProjectDirs;
-use futures::channel::oneshot;
 use parking_lot::RwLock;
 use redb::{Database, ReadableDatabase as _, ReadableTableMetadata as _, TableError};
 use tracing::info;
 
 use ramag_domain::entities::{
-    ClipId, ClipItem, ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, RepoConfig,
-    RepoId,
+    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, QueryHistoryPage,
+    QueryRecord, QueryRecordId, RepoConfig, RepoId,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::Storage;
 
 use crate::encryption::Cipher;
+use crate::worker_pool::run as run_blocking;
 
 pub struct RedbStorage {
     db: Arc<Database>,
@@ -101,7 +103,23 @@ fn open_database(path: &Path) -> Result<Database> {
         std::fs::create_dir_all(parent)
             .map_err(|e| DomainError::Storage(format!("创建数据目录失败：{e}")))?;
     }
-    Database::create(path).map_err(|e| DomainError::Storage(format!("打开 redb 数据库失败：{e}")))
+    let database = Database::create(path)
+        .map_err(|e| DomainError::Storage(format!("打开 redb 数据库失败：{e}")))?;
+    set_private_file_permissions(path)
+        .map_err(|e| DomainError::Storage(format!("收紧 redb 数据库权限失败：{e}")))?;
+    Ok(database)
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// 连接密码和剪贴历史使用主密钥；只有这两张表存在记录时才禁止重建密钥。
@@ -128,21 +146,6 @@ fn database_has_encrypted_records(db: &Database) -> Result<bool> {
         }
     }
     Ok(false)
-}
-
-/// std::thread + oneshot 桥接同步代码，调用方任意 runtime 通用
-async fn run_blocking<F, T>(f: F) -> Result<T>
-where
-    F: FnOnce() -> Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let result = f();
-        let _ = tx.send(result);
-    });
-    rx.await
-        .unwrap_or_else(|_| Err(DomainError::Storage("storage worker 线程异常退出".into())))
 }
 
 #[async_trait]
@@ -206,6 +209,20 @@ impl Storage for RedbStorage {
         run_blocking(move || repos::history_repo::list(db, conn_filter, limit)).await
     }
 
+    async fn list_history_bounded(
+        &self,
+        connection_id: Option<&ConnectionId>,
+        limit: usize,
+        max_inline_bytes: u64,
+    ) -> Result<QueryHistoryPage> {
+        let db = self.db.clone();
+        let conn_filter = connection_id.cloned();
+        run_blocking(move || {
+            repos::history_repo::list_bounded(db, conn_filter, limit, max_inline_bytes)
+        })
+        .await
+    }
+
     async fn delete_history(&self, id: &QueryRecordId) -> Result<()> {
         let db = self.db.clone();
         let id = id.clone();
@@ -262,10 +279,29 @@ impl Storage for RedbStorage {
         run_blocking(move || repos::clip_repo::list(db, cipher)).await
     }
 
+    async fn clip_media_paths(&self) -> Result<Vec<String>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        run_blocking(move || repos::clip_repo::media_paths(db, cipher)).await
+    }
+
     async fn clip_list_recent(&self, limit: usize) -> Result<Vec<ClipItem>> {
         let db = self.db.clone();
         let cipher = self.cipher.clone();
         run_blocking(move || repos::clip_repo::list_recent(db, cipher, limit)).await
+    }
+
+    async fn clip_list_recent_bounded(
+        &self,
+        limit: usize,
+        max_inline_bytes: u64,
+    ) -> Result<Vec<ClipItem>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        run_blocking(move || {
+            repos::clip_repo::list_recent_bounded(db, cipher, limit, max_inline_bytes)
+        })
+        .await
     }
 
     async fn clip_search(&self, query: &str, limit: usize) -> Result<Vec<ClipItem>> {
@@ -273,6 +309,44 @@ impl Storage for RedbStorage {
         let cipher = self.cipher.clone();
         let query = query.to_string();
         run_blocking(move || repos::clip_repo::search(db, cipher, query, limit)).await
+    }
+
+    async fn clip_search_cancellable(
+        &self,
+        query: &str,
+        limit: usize,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Vec<ClipItem>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let query = query.to_string();
+        run_blocking(move || {
+            repos::clip_repo::search_cancellable(db, cipher, query, limit, cancelled)
+        })
+        .await
+    }
+
+    async fn clip_search_cancellable_bounded(
+        &self,
+        query: &str,
+        limit: usize,
+        max_inline_bytes: u64,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<ClipSearchResult> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let query = query.to_string();
+        run_blocking(move || {
+            repos::clip_repo::search_cancellable_bounded(
+                db,
+                cipher,
+                query,
+                limit,
+                max_inline_bytes,
+                cancelled,
+            )
+        })
+        .await
     }
 
     async fn clip_delete(&self, id: &ClipId) -> Result<()> {
@@ -314,6 +388,20 @@ mod tests {
         let key = [0x42u8; 32];
         let storage = RedbStorage::open_with_key(&path, &key).expect("打开测试 storage 失败");
         (storage, tmp)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (storage, _tmp) = make_test_storage();
+        let mode = std::fs::metadata(storage.path())
+            .expect("读取测试数据库权限失败")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[tokio::test]
@@ -432,6 +520,91 @@ mod tests {
         assert_eq!(got.host, "10.0.0.1");
     }
 
+    fn sample_history(connection_id: ConnectionId, sql: &str) -> QueryRecord {
+        QueryRecord::new_success(connection_id, "test", sql, 5, 1)
+    }
+
+    #[tokio::test]
+    async fn history_crud_and_connection_filter() {
+        let (storage, _tmp) = make_test_storage();
+        let first_connection = ConnectionId::new();
+        let second_connection = ConnectionId::new();
+        let mut first = sample_history(first_connection.clone(), "SELECT 1");
+        first.executed_at = Utc::now() - Duration::seconds(1);
+        let mut second = sample_history(second_connection.clone(), "SELECT 2");
+        second.executed_at = Utc::now();
+
+        storage.append_history(&first).await.unwrap();
+        storage.append_history(&second).await.unwrap();
+        assert_eq!(storage.list_history(None, 10).await.unwrap().len(), 2);
+        let newest = storage.list_history(None, 1).await.unwrap();
+        assert_eq!(newest[0].id, second.id);
+        assert!(storage.list_history(None, 0).await.unwrap().is_empty());
+
+        let filtered = storage
+            .list_history(Some(&first_connection), 10)
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, first.id);
+
+        let bounded = storage.list_history_bounded(None, 10, 8).await.unwrap();
+        assert_eq!(bounded.records.len(), 1);
+        assert!(bounded.truncated);
+
+        storage.delete_history(&first.id).await.unwrap();
+        assert_eq!(storage.list_history(None, 10).await.unwrap().len(), 1);
+        storage
+            .clear_history(Some(&second_connection))
+            .await
+            .unwrap();
+        assert!(storage.list_history(None, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn corrupted_history_is_reported_instead_of_silently_skipped() {
+        let (storage, _tmp) = make_test_storage();
+        {
+            let txn = storage.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(repos::history_repo::HISTORY_TABLE).unwrap();
+                table.insert("corrupt-key", "{not-json").unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        let list_error = storage.list_history(None, 10).await.unwrap_err();
+        assert!(list_error.to_string().contains("corrupt-key"));
+        assert!(
+            storage
+                .clear_history(Some(&ConnectionId::new()))
+                .await
+                .is_err()
+        );
+
+        // 全量清空无需解析内容，应能作为损坏数据的恢复路径。
+        storage.clear_history(None).await.unwrap();
+        assert!(storage.list_history(None, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn corrupted_repo_record_blocks_unsafe_deduplication() {
+        let (storage, _tmp) = make_test_storage();
+        {
+            let txn = storage.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(repos::repo_repo::REPOS_TABLE).unwrap();
+                table.insert("corrupt-repo", "{not-json").unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        let repo = RepoConfig::from_path("/tmp/example-repo");
+        let error = storage.save_repo(&repo).await.unwrap_err();
+        assert!(error.to_string().contains("corrupt-repo"));
+        assert!(storage.list_repos().await.is_err());
+    }
+
     use chrono::{Duration, Utc};
     use ramag_domain::entities::{ClipId, ClipKind};
 
@@ -495,6 +668,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clip_clear_recovers_from_corrupted_record() {
+        let (storage, _tmp) = make_test_storage();
+        let clip = sample_clip("corrupted", 0);
+        storage.clip_save(&clip).await.unwrap();
+        {
+            let txn = storage.db.begin_write().unwrap();
+            {
+                let mut clips = txn.open_table(repos::clip_repo::CLIPS_TABLE).unwrap();
+                clips
+                    .insert(clip.id.to_string().as_str(), "not-valid-ciphertext")
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        assert!(storage.clip_clear().await.is_ok());
+        assert!(storage.clip_list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn clip_media_paths_returns_only_referenced_files() {
+        let (storage, _tmp) = make_test_storage();
+        storage.clip_save(&sample_clip("text", 0)).await.unwrap();
+        let mut image = sample_clip("image", 0);
+        image.kind = ClipKind::Image;
+        image.text = None;
+        image.image_path = Some("full.img".into());
+        image.thumb_path = Some("thumb.img".into());
+        storage.clip_save(&image).await.unwrap();
+
+        let mut paths = storage.clip_media_paths().await.unwrap();
+        paths.sort();
+        assert_eq!(paths, vec!["full.img", "thumb.img"]);
+    }
+
+    #[tokio::test]
     async fn clip_prune_by_count_and_age() {
         let (storage, _tmp) = make_test_storage();
         storage
@@ -538,6 +747,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clip_list_recent_respects_inline_byte_budget() {
+        let (storage, _tmp) = make_test_storage();
+        storage.clip_save(&sample_clip("old", 3)).await.unwrap();
+        storage.clip_save(&sample_clip("mid", 2)).await.unwrap();
+        storage.clip_save(&sample_clip("newest", 0)).await.unwrap();
+
+        let one = storage.clip_list_recent_bounded(10, 5).await.unwrap();
+        assert_eq!(one.len(), 1, "最新一条自身超限时仍应可见");
+        assert_eq!(one[0].text.as_deref(), Some("newest"));
+
+        let two = storage.clip_list_recent_bounded(10, 9).await.unwrap();
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[1].text.as_deref(), Some("mid"));
+    }
+
+    #[tokio::test]
     async fn clip_update_refreshes_recency_without_dup() {
         let (storage, _tmp) = make_test_storage();
         let mut a = sample_clip("a", 5);
@@ -558,6 +783,94 @@ mod tests {
         assert_eq!(r.len(), 2, "更新不应产生重复条目");
         assert_eq!(r[0].text.as_deref(), Some("a"));
         assert_eq!(r[1].text.as_deref(), Some("b"));
+    }
+
+    #[tokio::test]
+    async fn clip_update_removes_stale_hash_mapping() {
+        let (storage, _tmp) = make_test_storage();
+        let mut clip = sample_clip("hash-change", 0);
+        let old_hash = clip.content_hash.clone();
+        storage.clip_save(&clip).await.unwrap();
+
+        clip.content_hash = "replacement-hash".into();
+        storage.clip_save(&clip).await.unwrap();
+
+        assert!(
+            storage
+                .clip_find_by_hash(&old_hash)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .clip_find_by_hash(&clip.content_hash)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            clip.id
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_hash_collision_does_not_remove_other_mapping() {
+        let (storage, _tmp) = make_test_storage();
+        let first = sample_clip("first", 1);
+        let mut second = sample_clip("second", 0);
+        second.content_hash = first.content_hash.clone();
+        storage.clip_save(&first).await.unwrap();
+        storage.clip_save(&second).await.unwrap();
+
+        storage.clip_delete(&first.id).await.unwrap();
+
+        assert_eq!(
+            storage
+                .clip_find_by_hash(&first.content_hash)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            second.id
+        );
+    }
+
+    #[tokio::test]
+    async fn dangling_clip_time_index_is_reported() {
+        let (storage, _tmp) = make_test_storage();
+        let clip = sample_clip("dangling", 0);
+        storage.clip_save(&clip).await.unwrap();
+        {
+            let txn = storage.db.begin_write().unwrap();
+            {
+                let mut clips = txn.open_table(repos::clip_repo::CLIPS_TABLE).unwrap();
+                clips.remove(clip.id.to_string().as_str()).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        let error = storage.clip_list_recent(10).await.unwrap_err();
+        assert!(error.to_string().contains("指向缺失条目"));
+    }
+
+    #[tokio::test]
+    async fn corrupted_clip_meta_blocks_unsafe_update() {
+        let (storage, _tmp) = make_test_storage();
+        let mut clip = sample_clip("corrupt-meta", 1);
+        storage.clip_save(&clip).await.unwrap();
+        {
+            let txn = storage.db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(repos::clip_repo::CLIP_UUID_META).unwrap();
+                meta.insert(clip.id.to_string().as_str(), "invalid-meta")
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        clip.last_used_at = Utc::now();
+        let error = storage.clip_save(&clip).await.unwrap_err();
+        assert!(error.to_string().contains("索引元数据"));
     }
 
     #[tokio::test]
@@ -608,6 +921,9 @@ mod tests {
         assert_eq!(r[0].text.as_deref(), Some("hello rust"));
         assert_eq!(r[1].text.as_deref(), Some("hello world"));
 
+        // ASCII 大小写不敏感匹配走无分配路径
+        assert_eq!(storage.clip_search("HELLO", 10).await.unwrap().len(), 2);
+
         // limit 早停
         let r = storage.clip_search("hello", 1).await.unwrap();
         assert_eq!(r.len(), 1);
@@ -616,5 +932,22 @@ mod tests {
         // 空 query / 无匹配 → 空
         assert!(storage.clip_search("", 10).await.unwrap().is_empty());
         assert!(storage.clip_search("zzz", 10).await.unwrap().is_empty());
+
+        let bounded = storage
+            .clip_search_cancellable_bounded("hello", 10, 10, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
+        assert_eq!(bounded.items.len(), 1);
+        assert!(bounded.truncated);
+
+        // 已取消的搜索不得继续扫描历史
+        let cancelled = Arc::new(AtomicBool::new(true));
+        assert!(
+            storage
+                .clip_search_cancellable("hello", 10, cancelled)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

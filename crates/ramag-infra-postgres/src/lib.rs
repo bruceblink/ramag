@@ -66,7 +66,7 @@ impl SqlBackend for PostgresDriver {
         pool::build_pool(config).await
     }
 
-    fn decode_row(&self, row: &PgRow) -> Vec<Value> {
+    fn decode_row(&self, row: &PgRow) -> Result<Vec<Value>> {
         types::decode_row(row)
     }
 

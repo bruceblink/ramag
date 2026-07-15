@@ -11,6 +11,11 @@ use ramag_domain::entities::{ConnectionConfig, ConnectionId};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::encryption::Cipher;
+use crate::repos::bounded_json;
+
+const MAX_CONNECTION_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_CONNECTION_RECORDS: usize = 2048;
+const MAX_CONNECTION_LIST_BYTES: usize = 64 * 1024 * 1024;
 
 /// key=ConnectionId UUID，value=`EncryptedConnection` JSON
 pub(crate) const CONNECTIONS_TABLE: TableDefinition<&str, &str> =
@@ -91,6 +96,17 @@ impl EncryptedConnection {
     }
 }
 
+fn decode_connection(key: &str, value: &str, cipher: &Cipher) -> Result<ConnectionConfig> {
+    bounded_json::ensure_len(
+        value.len(),
+        MAX_CONNECTION_RECORD_BYTES,
+        &format!("连接记录 {key}"),
+    )?;
+    let encrypted: EncryptedConnection = serde_json::from_str(value)
+        .map_err(|error| DomainError::Storage(format!("反序列化连接 {key} 失败：{error}")))?;
+    encrypted.into_plain(cipher)
+}
+
 pub(crate) fn list(
     db: Arc<Database>,
     cipher: Arc<RwLock<Cipher>>,
@@ -104,14 +120,22 @@ pub(crate) fn list(
 
     let cipher = cipher.read();
     let mut out = Vec::new();
+    let mut retained_bytes = 0usize;
     for entry in table
         .iter()
         .map_err(|e| DomainError::Storage(e.to_string()))?
     {
-        let (_, v) = entry.map_err(|e| DomainError::Storage(e.to_string()))?;
-        let enc: EncryptedConnection = serde_json::from_str(v.value())
-            .map_err(|e| DomainError::Storage(format!("反序列化连接失败：{e}")))?;
-        out.push(enc.into_plain(&cipher)?);
+        let (key, value) = entry.map_err(|e| DomainError::Storage(e.to_string()))?;
+        let (_, next_bytes) = bounded_json::next_collection_budget(
+            out.len(),
+            retained_bytes,
+            value.value().len(),
+            MAX_CONNECTION_RECORDS,
+            MAX_CONNECTION_LIST_BYTES,
+            "连接列表",
+        )?;
+        retained_bytes = next_bytes;
+        out.push(decode_connection(key.value(), value.value(), &cipher)?);
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     debug!(count = out.len(), "list_connections done");
@@ -136,9 +160,7 @@ pub(crate) fn get(
     {
         Some(v) => {
             let cipher = cipher.read();
-            let enc: EncryptedConnection = serde_json::from_str(v.value())
-                .map_err(|e| DomainError::Storage(format!("反序列化失败：{e}")))?;
-            Ok(Some(enc.into_plain(&cipher)?))
+            Ok(Some(decode_connection(&id, v.value(), &cipher)?))
         }
         None => Ok(None),
     }
@@ -151,8 +173,7 @@ pub(crate) fn save(
 ) -> Result<()> {
     let cipher = cipher.read();
     let enc = EncryptedConnection::from_plain(&config, &cipher)?;
-    let json = serde_json::to_string(&enc)
-        .map_err(|e| DomainError::Storage(format!("序列化失败：{e}")))?;
+    let json = bounded_json::serialize(&enc, MAX_CONNECTION_RECORD_BYTES, "连接记录")?;
     let id_str = config.id.to_string();
 
     let write_txn = db
@@ -162,6 +183,45 @@ pub(crate) fn save(
         let mut table = write_txn
             .open_table(CONNECTIONS_TABLE)
             .map_err(|e| DomainError::Storage(format!("打开表失败：{e}")))?;
+
+        let mut item_count = 0usize;
+        let mut total_bytes = 0usize;
+        let mut replaced_bytes = None;
+        for entry in table
+            .iter()
+            .map_err(|error| DomainError::Storage(format!("遍历连接记录失败：{error}")))?
+        {
+            let (key, value) = entry
+                .map_err(|error| DomainError::Storage(format!("读取连接记录失败：{error}")))?;
+            bounded_json::ensure_len(
+                value.value().len(),
+                MAX_CONNECTION_RECORD_BYTES,
+                &format!("连接记录 {}", key.value()),
+            )?;
+            (item_count, total_bytes) = bounded_json::next_collection_budget(
+                item_count,
+                total_bytes,
+                value.value().len(),
+                MAX_CONNECTION_RECORDS,
+                MAX_CONNECTION_LIST_BYTES,
+                "连接列表",
+            )?;
+            if key.value() == id_str {
+                replaced_bytes = Some(value.value().len());
+            }
+        }
+        let final_count = item_count.saturating_add(usize::from(replaced_bytes.is_none()));
+        let final_bytes = total_bytes
+            .saturating_sub(replaced_bytes.unwrap_or(0))
+            .checked_add(json.len())
+            .ok_or_else(|| DomainError::Storage("连接列表总数据大小溢出".into()))?;
+        bounded_json::ensure_collection_budget(
+            final_count,
+            final_bytes,
+            MAX_CONNECTION_RECORDS,
+            MAX_CONNECTION_LIST_BYTES,
+            "连接列表",
+        )?;
         table
             .insert(id_str.as_str(), json.as_str())
             .map_err(|e| DomainError::Storage(format!("写入失败：{e}")))?;

@@ -1,14 +1,22 @@
 //! Interactive rebase。plan：log onto..HEAD 全标 Pick；execute：用临时脚本作 GIT_SEQUENCE_EDITOR 注入 todo
 
+use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use ramag_domain::entities::{RebaseAction, RebaseTodo};
 use ramag_domain::error::{DomainError, Result};
 
-use crate::git_cmd::{command, run_git_text};
+use crate::git_cmd::{
+    MAX_GIT_RECORD_BYTES, command, ensure_git_record_size, run_command_output_limited, run_git_text,
+};
+
+const MAX_REBASE_TODOS: usize = 10_000;
+const MAX_REBASE_TODO_BYTES: usize = 4 * 1024 * 1024;
 
 /// onto..HEAD 最老在前，全部 Pick
 pub fn plan(repo_path: &Path, onto: &str) -> Result<Vec<RebaseTodo>> {
+    validate_revision_arg(onto)?;
     let out = run_git_text(
         repo_path,
         &[
@@ -18,19 +26,43 @@ pub fn plan(repo_path: &Path, onto: &str) -> Result<Vec<RebaseTodo>> {
             &format!("{onto}..HEAD"),
         ],
     )?;
+    parse_plan_output(&out)
+}
+
+fn parse_plan_output(out: &str) -> Result<Vec<RebaseTodo>> {
     let mut todos = Vec::new();
-    for line in out.lines() {
-        let line = line.trim();
+    let mut retained_bytes = 0usize;
+    for (line_index, line) in out.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
         if line.is_empty() {
             continue;
         }
-        if let Some((hash, subject)) = line.split_once(' ') {
-            todos.push(RebaseTodo {
-                action: RebaseAction::Pick,
-                hash: hash.to_string(),
-                subject: subject.to_string(),
-            });
+        if todos.len() >= MAX_REBASE_TODOS {
+            return Err(DomainError::QueryFailed(format!(
+                "rebase 计划超过 {MAX_REBASE_TODOS} 个 commit 安全上限，请缩小上游范围"
+            )));
         }
+        ensure_git_record_size(line.as_bytes(), "Git rebase 计划记录", line_index + 1)?;
+        retained_bytes = retained_bytes.saturating_add(line.len());
+        if retained_bytes > MAX_REBASE_TODO_BYTES {
+            return Err(DomainError::QueryFailed(format!(
+                "rebase 计划文本超过 {} MiB 安全上限，请缩小上游范围",
+                MAX_REBASE_TODO_BYTES / 1024 / 1024
+            )));
+        }
+        // format 在 hash 后固定放一个空格；空 subject 会只剩 hash，仍须保留该 commit。
+        let (hash, subject) = line.split_once(' ').unwrap_or((line, ""));
+        if !is_safe_object_id(hash) {
+            return Err(DomainError::QueryFailed(format!(
+                "解析 rebase 计划第 {} 条记录失败：commit id 无效",
+                line_index + 1
+            )));
+        }
+        todos.push(RebaseTodo {
+            action: RebaseAction::Pick,
+            hash: hash.to_string(),
+            subject: subject.to_string(),
+        });
     }
     Ok(todos)
 }
@@ -38,38 +70,34 @@ pub fn plan(repo_path: &Path, onto: &str) -> Result<Vec<RebaseTodo>> {
 /// 临时 shell 脚本作 GIT_SEQUENCE_EDITOR，避免弹出 $EDITOR。
 /// Git for Windows 自带 POSIX shell，Windows 上显式通过 `sh` 执行，无需可执行权限位。
 pub fn execute(repo_path: &Path, onto: &str, todos: &[RebaseTodo]) -> Result<()> {
-    let todo_content: String = todos
-        .iter()
-        .map(|t| format!("{} {} {}\n", t.action.as_str(), t.short_hash(), t.subject))
-        .collect();
+    validate_revision_arg(onto)?;
+    if todos.is_empty() {
+        return Err(DomainError::InvalidConfig("rebase 计划不能为空".into()));
+    }
+    let todo_content = build_todo_content(todos)?;
 
-    let tag = nano_id();
-    let tmp_todo = std::env::temp_dir().join(format!("ramag_rebase_{tag}.txt"));
-    let tmp_script = std::env::temp_dir().join(format!("ramag_seq_editor_{tag}.sh"));
-    let _cleanup = TempFiles([tmp_todo.clone(), tmp_script.clone()]);
-    std::fs::write(&tmp_todo, &todo_content)
-        .map_err(|e| DomainError::Other(format!("写 rebase todo 失败: {e}")))?;
+    let tmp_todo = TempFile::create("ramag_rebase", "txt", todo_content.as_bytes())?;
 
     let script = "#!/bin/sh\nset -eu\ncp \"$RAMAG_REBASE_TODO\" \"$1\"\n";
-    std::fs::write(&tmp_script, script)
-        .map_err(|e| DomainError::Other(format!("写 sequence editor 脚本失败: {e}")))?;
+    let tmp_script = TempFile::create("ramag_seq_editor", "sh", script.as_bytes())?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(&tmp_script)
+        let meta = std::fs::metadata(tmp_script.path())
             .map_err(|e| DomainError::Other(format!("读取 sequence editor 权限失败: {e}")))?;
         let mut perms = meta.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&tmp_script, perms)
+        perms.set_mode(0o700);
+        std::fs::set_permissions(tmp_script.path(), perms)
             .map_err(|e| DomainError::Other(format!("设置 sequence editor 权限失败: {e}")))?;
     }
 
-    let script_str = shell_path(&tmp_script)?;
-    let todo_path_str = shell_path(&tmp_todo)?;
+    let script_str = shell_path(tmp_script.path())?;
+    let todo_path_str = shell_path(tmp_todo.path())?;
     let sequence_editor = sequence_editor_command(&script_str);
 
-    let output = command()
+    let mut rebase = command();
+    rebase
         .args([
             "-c",
             "core.quotepath=false",
@@ -84,9 +112,8 @@ pub fn execute(repo_path: &Path, onto: &str, todos: &[RebaseTodo]) -> Result<()>
         .env("GIT_SEQUENCE_EDITOR", sequence_editor)
         .env("GIT_EDITOR", "true")
         .env("RAMAG_REBASE_TODO", todo_path_str)
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| DomainError::Other(format!("执行 git rebase -i 失败: {e}")))?;
+        .current_dir(repo_path);
+    let output = run_command_output_limited(rebase, "rebase -i")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     // 大写 CONFLICT 是 git 冲突标记，进入冲突解决态算正常推进；不匹配小写以免吞掉真实失败
@@ -98,6 +125,59 @@ pub fn execute(repo_path: &Path, onto: &str, todos: &[RebaseTodo]) -> Result<()>
             &stderr,
         )))
     }
+}
+
+fn build_todo_content(todos: &[RebaseTodo]) -> Result<String> {
+    if todos.len() > MAX_REBASE_TODOS {
+        return Err(DomainError::InvalidConfig(format!(
+            "rebase 计划超过 {MAX_REBASE_TODOS} 个 commit 安全上限"
+        )));
+    }
+    let mut capacity = 0usize;
+    for todo in todos {
+        if !is_safe_object_id(&todo.hash) {
+            return Err(DomainError::InvalidConfig(format!(
+                "rebase commit id 无效：{}",
+                todo.hash
+            )));
+        }
+        if todo.subject.len() > MAX_GIT_RECORD_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "rebase commit {} 的标题超过 {} KiB 上限",
+                todo.short_hash(),
+                MAX_GIT_RECORD_BYTES / 1024
+            )));
+        }
+        capacity = capacity
+            .checked_add(
+                todo.action
+                    .as_str()
+                    .len()
+                    .saturating_add(todo.short_hash().len())
+                    .saturating_add(todo.subject.len())
+                    .saturating_add(3),
+            )
+            .ok_or_else(|| DomainError::InvalidConfig("rebase 计划大小溢出".into()))?;
+        if capacity > MAX_REBASE_TODO_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "rebase 计划文本超过 {} MiB 安全上限",
+                MAX_REBASE_TODO_BYTES / 1024 / 1024
+            )));
+        }
+    }
+
+    let mut content = String::with_capacity(capacity);
+    for todo in todos {
+        writeln!(
+            content,
+            "{} {} {}",
+            todo.action.as_str(),
+            todo.short_hash(),
+            sanitize_todo_subject(&todo.subject)
+        )
+        .map_err(|error| DomainError::Other(format!("生成 rebase 计划失败：{error}")))?;
+    }
+    Ok(content)
 }
 
 /// Git 把 editor 当 shell 命令解析，因此路径必须可靠引用；Windows 需显式交给自带的 sh。
@@ -125,12 +205,87 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-struct TempFiles([PathBuf; 2]);
+fn validate_revision_arg(revision: &str) -> Result<()> {
+    crate::git_cmd::validate_positional_arg(revision, "rebase 上游引用")
+}
 
-impl Drop for TempFiles {
+fn is_safe_object_id(value: &str) -> bool {
+    (4..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn sanitize_todo_subject(subject: &str) -> String {
+    subject
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+struct TempFile {
+    path: PathBuf,
+}
+
+impl TempFile {
+    fn create(prefix: &str, extension: &str, content: &[u8]) -> Result<Self> {
+        let tag = nano_id();
+        for attempt in 0..16 {
+            let path = std::env::temp_dir().join(format!("{prefix}_{tag}_{attempt}.{extension}"));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            let mut file = match options.open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(DomainError::Other(format!(
+                        "创建 rebase 临时文件 {} 失败: {error}",
+                        path.display()
+                    )));
+                }
+            };
+            let temp = Self { path };
+            if let Err(error) = file.write_all(content) {
+                let message = DomainError::Other(format!(
+                    "写 rebase 临时文件 {} 失败: {error}",
+                    temp.path.display()
+                ));
+                // Windows 不允许删除仍打开的文件，先关闭句柄再由 TempFile::drop 清理。
+                drop(file);
+                return Err(message);
+            }
+            return Ok(temp);
+        }
+        Err(DomainError::Other(
+            "创建 rebase 临时文件失败：连续发生文件名冲突".into(),
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempFile {
     fn drop(&mut self) {
-        for path in &self.0 {
-            let _ = std::fs::remove_file(path);
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    path = %self.path.display(),
+                    "cleanup rebase temporary file failed"
+                );
+            }
         }
     }
 }
@@ -146,7 +301,12 @@ fn nano_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{sequence_editor_command, shell_quote};
+    use super::{
+        MAX_REBASE_TODOS, TempFile, build_todo_content, parse_plan_output, sanitize_todo_subject,
+        sequence_editor_command, shell_quote, validate_revision_arg,
+    };
+    use ramag_domain::entities::{RebaseAction, RebaseTodo};
+    use ramag_domain::error::DomainError;
 
     #[test]
     fn shell_quote_handles_spaces_and_apostrophes() {
@@ -163,5 +323,50 @@ mod tests {
             assert!(!command.starts_with("sh "));
         }
         assert!(command.contains("ramag editor.sh"));
+    }
+
+    #[test]
+    fn temporary_file_is_exclusive_and_removed_on_drop() -> ramag_domain::error::Result<()> {
+        let temp = TempFile::create("ramag_rebase_test", "txt", b"content")?;
+        let path = temp.path().to_path_buf();
+        assert_eq!(
+            std::fs::read(&path).map_err(|error| {
+                DomainError::Other(format!("读取测试临时文件失败：{error}"))
+            })?,
+            b"content"
+        );
+        drop(temp);
+        assert!(!path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn plan_keeps_commit_with_empty_subject() -> ramag_domain::error::Result<()> {
+        let hash = "a".repeat(40);
+        let plan = parse_plan_output(&format!("{hash} \n"))?;
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].subject.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn rebase_plan_budget_rejects_excessive_items() {
+        let todo = RebaseTodo {
+            action: RebaseAction::Pick,
+            hash: "a".repeat(40),
+            subject: "subject".into(),
+        };
+        assert!(build_todo_content(&vec![todo; MAX_REBASE_TODOS + 1]).is_err());
+    }
+
+    #[test]
+    fn rebase_arguments_and_subject_are_sanitized() {
+        assert!(validate_revision_arg("main").is_ok());
+        assert!(validate_revision_arg("--exec=bad").is_err());
+        assert_eq!(
+            sanitize_todo_subject("first\nexec bad\r"),
+            "first exec bad "
+        );
+        assert!(parse_plan_output("not-a-hash subject\n").is_err());
     }
 }

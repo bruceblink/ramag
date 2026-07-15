@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use mongodb::Client;
 use mongodb::options::{ClientOptions, Credential, ServerAddress};
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
@@ -13,13 +14,22 @@ use tracing::{debug, info, warn};
 
 use crate::errors::map_mongo_error;
 
+type BuildLock = Arc<tokio::sync::Mutex<()>>;
+type BuildLocks = Arc<DashMap<(ConnectionId, u64), BuildLock>>;
+
 #[derive(Clone, Default)]
 pub struct PoolCache {
-    clients: Arc<DashMap<ConnectionId, Client>>,
+    clients: Arc<DashMap<ConnectionId, CachedClient>>,
     /// 建连串行化锁：首次打开同一连接时 prefetch_version 与 list_databases 会并发 miss，
-    /// 各建一个 Client、各跑一轮 SDAM 拓扑发现，远端 prod 上表现为首开卡顿。
-    /// 锁 + 双检确保每连接只建一次（再开命中缓存，无此开销）
-    build_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 各建一个 Client、各跑一轮 SDAM 拓扑发现。不同连接使用不同锁，互不阻塞。
+    build_locks: BuildLocks,
+    generations: Arc<DashMap<ConnectionId, u64>>,
+}
+
+#[derive(Clone)]
+struct CachedClient {
+    generation: u64,
+    client: Client,
 }
 
 impl PoolCache {
@@ -39,26 +49,72 @@ impl PoolCache {
             )));
         }
 
-        if let Some(entry) = self.clients.get(&config.id) {
+        let generation = self.generation(&config.id);
+        if let Some(client) = self.get_cached(&config.id, generation) {
             debug!(connection_id = %config.id, "mongo client cache hit");
-            return Ok(entry.clone());
+            return Ok(client);
         }
 
         // 串行化建连 + 双检：避免并发重复建连（各触发一轮 SDAM 发现 → 首开卡顿）
-        let _guard = self.build_lock.lock().await;
-        if let Some(entry) = self.clients.get(&config.id) {
+        let build_lock = self.build_lock(&config.id, generation);
+        let _guard = build_lock.lock().await;
+        if self.generation(&config.id) != generation {
+            return build_client(config).await;
+        }
+        if let Some(client) = self.get_cached(&config.id, generation) {
             debug!(connection_id = %config.id, "mongo client cache hit (after lock)");
-            return Ok(entry.clone());
+            return Ok(client);
         }
 
         info!(connection_id = %config.id, name = %config.name, host = %config.host, "creating mongo client");
         let client = build_client(config).await?;
-        self.clients.insert(config.id.clone(), client.clone());
+        self.clients.insert(
+            config.id.clone(),
+            CachedClient {
+                generation,
+                client: client.clone(),
+            },
+        );
+        if self.generation(&config.id) != generation
+            && let Entry::Occupied(entry) = self.clients.entry(config.id.clone())
+            && entry.get().generation == generation
+        {
+            entry.remove();
+        }
         Ok(client)
+    }
+
+    fn get_cached(&self, conn_id: &ConnectionId, generation: u64) -> Option<Client> {
+        match self.clients.entry(conn_id.clone()) {
+            Entry::Occupied(entry) if entry.get().generation == generation => {
+                Some(entry.get().client.clone())
+            }
+            Entry::Occupied(entry) => {
+                entry.remove();
+                None
+            }
+            Entry::Vacant(_) => None,
+        }
+    }
+
+    fn generation(&self, conn_id: &ConnectionId) -> u64 {
+        self.generations.get(conn_id).map_or(0, |entry| *entry)
+    }
+
+    fn build_lock(&self, conn_id: &ConnectionId, generation: u64) -> BuildLock {
+        self.build_locks
+            .entry((conn_id.clone(), generation))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// 移除该连接的缓存（编辑配置后调）
     pub fn evict(&self, conn_id: &ConnectionId) {
+        self.generations
+            .entry(conn_id.clone())
+            .and_modify(|generation| *generation = generation.wrapping_add(1))
+            .or_insert(1);
+        self.build_locks.retain(|key, _| &key.0 != conn_id);
         if self.clients.remove(conn_id).is_some() {
             info!(connection_id = %conn_id, "mongo client evicted");
         }
@@ -137,6 +193,10 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         .app_name(Some("ramag".to_string()))
         .connect_timeout(Some(Duration::from_secs(10)))
         .server_selection_timeout(Some(Duration::from_secs(10)))
+        // 桌面端并发有限；与 SQL 池一致限制连接数，并回收长期空闲 socket。
+        .max_pool_size(Some(8))
+        .min_pool_size(Some(0))
+        .max_idle_time(Some(Duration::from_secs(60 * 5)))
         .build();
 
     let client = Client::with_options(opts).map_err(|e| {
@@ -163,5 +223,29 @@ mod tests {
         let id = ConnectionId::new();
         // 应不报错
         cache.evict(&id);
+    }
+
+    #[test]
+    fn build_locks_are_per_connection_and_evict_advances_generation() {
+        let cache = PoolCache::new();
+        let first_id = ConnectionId::new();
+        let second_id = ConnectionId::new();
+
+        assert!(Arc::ptr_eq(
+            &cache.build_lock(&first_id, 0),
+            &cache.build_lock(&first_id, 0)
+        ));
+        assert!(!Arc::ptr_eq(
+            &cache.build_lock(&first_id, 0),
+            &cache.build_lock(&second_id, 0)
+        ));
+        assert!(!Arc::ptr_eq(
+            &cache.build_lock(&first_id, 0),
+            &cache.build_lock(&first_id, 1)
+        ));
+
+        assert_eq!(cache.generation(&first_id), 0);
+        cache.evict(&first_id);
+        assert_eq!(cache.generation(&first_id), 1);
     }
 }

@@ -166,9 +166,9 @@ impl ResultPanel {
         let count = qr.warnings.len();
         let expanded = self.warnings_expanded;
         let header_label = if expanded {
-            format!("⚠ {count} 条服务端警告（点击收起）")
+            format!("⚠ {count} 条查询警告（点击收起）")
         } else {
-            format!("⚠ {count} 条服务端警告（点击展开）")
+            format!("⚠ {count} 条查询警告（点击展开）")
         };
         let header = h_flex()
             .id(SharedString::from("warnings-header"))

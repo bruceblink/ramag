@@ -7,7 +7,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _,
+    ActiveTheme, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -161,6 +161,7 @@ impl Render for ValueEditForm {
                                     .ghost()
                                     .small()
                                     .label("取消")
+                                    .disabled(submitting)
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.handle_cancel(cx);
                                     })),
@@ -170,6 +171,7 @@ impl Render for ValueEditForm {
                                     .primary()
                                     .small()
                                     .label(if submitting { "保存中…" } else { "保存" })
+                                    .disabled(submitting)
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         if !matches!(this.state, SubmitState::Submitting) {
                                             this.handle_save(cx);

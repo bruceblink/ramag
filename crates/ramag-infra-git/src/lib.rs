@@ -26,21 +26,26 @@ pub mod status;
 pub mod tag;
 pub mod work_ops;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use futures::lock::Mutex as AsyncMutex;
 
 use ramag_domain::entities::{RepoConfig, RepoId};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::handle::OpenRepo;
 
+type OpenLock = Arc<AsyncMutex<()>>;
+
 #[derive(Clone, Default)]
 pub struct GitDriverImpl {
     /// path → RepoId 去重，同物理仓库不重复打开
     by_path: Arc<DashMap<PathBuf, RepoId>>,
     repos: Arc<DashMap<RepoId, Arc<OpenRepo>>>,
+    /// 同一路径的打开与关闭必须串行，避免并发首次打开产生孤儿句柄。
+    open_locks: Arc<DashMap<PathBuf, OpenLock>>,
 }
 
 impl GitDriverImpl {
@@ -53,6 +58,16 @@ impl GitDriverImpl {
             .get(id)
             .map(|r| r.clone())
             .ok_or_else(|| DomainError::InvalidConfig(format!("仓库未打开: {id}")))
+    }
+
+    pub(crate) fn open_lock(&self, path: &Path) -> OpenLock {
+        // 仅保留仍有调用方持有的锁，避免访问大量临时仓库后无限积累路径。
+        self.open_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+        self.open_locks
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 }
 

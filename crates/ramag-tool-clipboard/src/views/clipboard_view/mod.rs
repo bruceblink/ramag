@@ -8,6 +8,7 @@ mod render;
 mod settings;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui::{
@@ -24,7 +25,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(600);
 pub struct ClipboardView {
     pub(super) service: Arc<ClipboardService>,
     /// 最近窗口快照（来自 service 缓存，最近优先）
-    pub(super) items: Vec<ClipItem>,
+    pub(super) items: Vec<Arc<ClipItem>>,
     pub(super) settings: ClipboardSettings,
     pub(super) loaded_settings_revision: u64,
     pub(super) settings_save_generation: u64,
@@ -36,11 +37,13 @@ pub struct ClipboardView {
     /// 上次已加载的版本号，轮询时与 service.revision() 比对
     pub(super) loaded_revision: u64,
     /// 后台全量搜索结果：补充缓存窗口之外的匹配（搜索词非空时与缓存即时结果合并）
-    pub(super) search_results: Vec<ClipItem>,
+    pub(super) search_results: Vec<Arc<ClipItem>>,
     /// 后台搜索命中超过 SEARCH_LIMIT；状态栏必须明确提示结果被截断。
     pub(super) search_truncated: bool,
     /// 搜索去抖代号：每次输入自增，异步任务到期比对以丢弃过期搜索
     pub(super) search_gen: u64,
+    /// 当前全量搜索的取消标记；输入变化或视图销毁时停止旧扫描。
+    pub(super) search_cancel: Arc<AtomicBool>,
     /// 设置面板是否展开
     pub(super) show_settings: bool,
     pub(super) list_scroll: UniformListScrollHandle,
@@ -54,6 +57,12 @@ pub struct ClipboardView {
 impl Focusable for ClipboardView {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+impl Drop for ClipboardView {
+    fn drop(&mut self) {
+        self.search_cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -96,6 +105,7 @@ impl ClipboardView {
             search_results: Vec::new(),
             search_truncated: false,
             search_gen: 0,
+            search_cancel: Arc::new(AtomicBool::new(false)),
             show_settings: false,
             list_scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),

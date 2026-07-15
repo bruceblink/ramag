@@ -1,17 +1,26 @@
 //! Redis 连接缓存：键为 `(ConnectionId, db)`（SELECT 是连接级状态，不能跨 db 共享）。
 //! ConnectionManager 自动重连 + 多路复用，clone 是 Arc 廉价复制。当前仅 standalone
 
+use std::io::Read as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
 use ramag_domain::error::{DomainError, Result};
 use redis::aio::ConnectionManager;
 use redis::{Client, ConnectionAddr, ConnectionInfo, ProtocolVersion, RedisConnectionInfo};
-use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::errors::map_redis_error;
+
+type BuildLock = Arc<tokio::sync::Mutex<()>>;
+type BuildLocks = Arc<DashMap<(PoolKey, u64), BuildLock>>;
+
+const MAX_CA_CERT_BYTES: usize = 1024 * 1024;
+const MAX_CACHED_DBS_PER_CONNECTION: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolKey {
@@ -27,7 +36,17 @@ impl PoolKey {
 
 #[derive(Clone, Default)]
 pub struct PoolCache {
-    pools: Arc<DashMap<PoolKey, ConnectionManager>>,
+    pools: Arc<DashMap<PoolKey, CachedManager>>,
+    build_locks: BuildLocks,
+    generations: Arc<DashMap<ConnectionId, u64>>,
+    access_clock: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+struct CachedManager {
+    generation: u64,
+    last_used: u64,
+    manager: ConnectionManager,
 }
 
 impl PoolCache {
@@ -52,20 +71,113 @@ impl PoolCache {
         }
 
         let key = PoolKey::new(config.id.clone(), db);
+        let generation = self.generation(&config.id);
 
-        if let Some(entry) = self.pools.get(&key) {
+        if let Some(manager) = self.get_cached(&key, generation) {
+            self.enforce_pool_limit(&config.id, &key, generation);
             debug!(connection_id = %config.id, db, "redis pool cache hit");
-            return Ok(entry.clone());
+            return Ok(manager);
+        }
+
+        let build_lock = self
+            .build_locks
+            .entry((key.clone(), generation))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = build_lock.lock().await;
+        if self.generation(&config.id) != generation {
+            return build_connection_manager(config, db).await;
+        }
+        if let Some(manager) = self.get_cached(&key, generation) {
+            self.enforce_pool_limit(&config.id, &key, generation);
+            debug!(connection_id = %config.id, db, "redis pool cache hit (after lock)");
+            return Ok(manager);
         }
 
         info!(connection_id = %config.id, name = %config.name, host = %config.host, db, "creating redis connection manager");
         let mgr = build_connection_manager(config, db).await?;
-        self.pools.insert(key, mgr.clone());
+        self.pools.insert(
+            key.clone(),
+            CachedManager {
+                generation,
+                last_used: self.next_access(),
+                manager: mgr.clone(),
+            },
+        );
+        if self.generation(&config.id) != generation {
+            if let Entry::Occupied(entry) = self.pools.entry(key)
+                && entry.get().generation == generation
+            {
+                entry.remove();
+            }
+        } else {
+            self.enforce_pool_limit(&config.id, &key, generation);
+        }
         Ok(mgr)
+    }
+
+    fn get_cached(&self, key: &PoolKey, generation: u64) -> Option<ConnectionManager> {
+        match self.pools.entry(key.clone()) {
+            Entry::Occupied(mut entry) if entry.get().generation == generation => {
+                entry.get_mut().last_used = self.next_access();
+                Some(entry.get().manager.clone())
+            }
+            Entry::Occupied(entry) => {
+                entry.remove();
+                None
+            }
+            Entry::Vacant(_) => None,
+        }
+    }
+
+    fn generation(&self, conn_id: &ConnectionId) -> u64 {
+        self.generations.get(conn_id).map_or(0, |entry| *entry)
+    }
+
+    fn next_access(&self) -> u64 {
+        self.access_clock.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn enforce_pool_limit(&self, conn_id: &ConnectionId, keep: &PoolKey, generation: u64) {
+        let entries = self
+            .pools
+            .iter()
+            .filter(|entry| {
+                &entry.key().conn_id == conn_id && entry.value().generation == generation
+            })
+            .map(|entry| (entry.key().clone(), entry.value().last_used))
+            .collect();
+        let candidates = lru_eviction_candidates(entries, keep, MAX_CACHED_DBS_PER_CONNECTION);
+        let mut evicted = 0usize;
+        for (key, observed_last_used) in candidates {
+            if let Entry::Occupied(entry) = self.pools.entry(key)
+                && entry.get().generation == generation
+                && entry.get().last_used == observed_last_used
+            {
+                entry.remove();
+                evicted += 1;
+            }
+        }
+        if evicted > 0 {
+            debug!(connection_id = %conn_id, evicted, "redis database pools evicted by LRU");
+        }
+    }
+
+    #[cfg(test)]
+    fn build_lock(&self, key: &PoolKey, generation: u64) -> BuildLock {
+        self.build_locks
+            .entry((key.clone(), generation))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// 移除该连接所有 db 的缓存（编辑配置后调）
     pub fn evict_all_dbs(&self, conn_id: &ConnectionId) {
+        self.generations
+            .entry(conn_id.clone())
+            .and_modify(|generation| *generation = generation.wrapping_add(1))
+            .or_insert(1);
+        self.build_locks.retain(|key, _| &key.0.conn_id != conn_id);
         let to_remove: Vec<_> = self
             .pools
             .iter()
@@ -87,6 +199,21 @@ impl PoolCache {
     }
 }
 
+fn lru_eviction_candidates(
+    mut entries: Vec<(PoolKey, u64)>,
+    keep: &PoolKey,
+    max_entries: usize,
+) -> Vec<(PoolKey, u64)> {
+    let remove_count = entries.len().saturating_sub(max_entries);
+    if remove_count == 0 {
+        return Vec::new();
+    }
+    entries.retain(|(key, _)| key != keep);
+    entries.sort_by_key(|(key, last_used)| (*last_used, key.db));
+    entries.truncate(remove_count);
+    entries
+}
+
 async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<ConnectionManager> {
     // SSH 隧道：启用时改连 127.0.0.1:本地转发端口（就绪探测阻塞，经 spawn_blocking 隔离）
     let cfg_for_tunnel = config.clone();
@@ -103,8 +230,7 @@ async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<C
     let client = if config.tls
         && let Some(ca) = config.ca_cert_path.as_deref().filter(|s| !s.is_empty())
     {
-        let pem = std::fs::read(ca)
-            .map_err(|e| DomainError::InvalidConfig(format!("读取 CA 证书失败（{ca}）：{e}")))?;
+        let pem = read_ca_certificate(ca)?;
         Client::build_with_tls(
             info,
             redis::TlsCertificates {
@@ -137,6 +263,30 @@ async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<C
     })?;
 
     Ok(mgr)
+}
+
+fn read_ca_certificate(path: &str) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path).map_err(|error| {
+        DomainError::InvalidConfig(format!("读取 CA 证书失败（{path}）：{error}"))
+    })?;
+    let mut pem = Vec::with_capacity(16 * 1024);
+    file.take((MAX_CA_CERT_BYTES + 1) as u64)
+        .read_to_end(&mut pem)
+        .map_err(|error| {
+            DomainError::InvalidConfig(format!("读取 CA 证书失败（{path}）：{error}"))
+        })?;
+    if pem.len() > MAX_CA_CERT_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "CA 证书超过 {} MiB 安全上限（{path}）",
+            MAX_CA_CERT_BYTES / 1024 / 1024
+        )));
+    }
+    if pem.is_empty() {
+        return Err(DomainError::InvalidConfig(format!(
+            "CA 证书文件为空（{path}）"
+        )));
+    }
+    Ok(pem)
 }
 
 /// TCP 或 TLS（config.tls）；Unix Socket 暂不支持。
@@ -191,6 +341,8 @@ fn build_connection_info(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     #[test]
@@ -201,6 +353,38 @@ mod tests {
         let c = PoolKey::new(id, 1);
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn build_locks_are_per_database_and_evict_advances_generation() {
+        let cache = PoolCache::new();
+        let first_id = ConnectionId::new();
+        let second_id = ConnectionId::new();
+        let first = PoolKey::new(first_id.clone(), 0);
+        let first_again = PoolKey::new(first_id.clone(), 0);
+        let other_db = PoolKey::new(first_id.clone(), 1);
+        let other_connection = PoolKey::new(second_id, 0);
+
+        assert!(Arc::ptr_eq(
+            &cache.build_lock(&first, 0),
+            &cache.build_lock(&first_again, 0)
+        ));
+        assert!(!Arc::ptr_eq(
+            &cache.build_lock(&first, 0),
+            &cache.build_lock(&other_db, 0)
+        ));
+        assert!(!Arc::ptr_eq(
+            &cache.build_lock(&first, 0),
+            &cache.build_lock(&other_connection, 0)
+        ));
+        assert!(!Arc::ptr_eq(
+            &cache.build_lock(&first, 0),
+            &cache.build_lock(&first, 1)
+        ));
+
+        assert_eq!(cache.generation(&first_id), 0);
+        cache.evict_all_dbs(&first_id);
+        assert_eq!(cache.generation(&first_id), 1);
     }
 
     #[test]
@@ -222,5 +406,48 @@ mod tests {
         assert_eq!(info.redis.db, 3);
         assert_eq!(info.redis.username.as_deref(), Some("default"));
         assert_eq!(info.redis.password.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn ca_certificate_read_is_bounded_and_rejects_empty_files()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "ramag-redis-ca-test-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path_text = path.to_string_lossy();
+
+        std::fs::write(&path, b"certificate")?;
+        assert_eq!(read_ca_certificate(&path_text)?, b"certificate");
+
+        std::fs::write(&path, [])?;
+        assert!(read_ca_certificate(&path_text).is_err());
+
+        std::fs::write(&path, vec![0; MAX_CA_CERT_BYTES + 1])?;
+        assert!(read_ca_certificate(&path_text).is_err());
+
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn lru_eviction_keeps_current_database_and_removes_oldest_others() {
+        let id = ConnectionId::new();
+        let keep = PoolKey::new(id.clone(), 0);
+        let entries = (0u8..10)
+            .map(|db| (PoolKey::new(id.clone(), db), u64::from(db)))
+            .collect();
+
+        let candidates = lru_eviction_candidates(entries, &keep, 8);
+
+        assert_eq!(
+            candidates
+                .into_iter()
+                .map(|(key, _)| key.db)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 }

@@ -1,14 +1,16 @@
 //! ConnectionListPanel 渲染：header（搜索 + 新建按钮）+ body（行列表 / 空状态）
 
+use std::ops::Range;
+
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, Render, Styled, Window, div, px,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    scroll::ScrollableElement as _,
     v_flex,
 };
 
@@ -38,9 +40,9 @@ impl Render for ConnectionListPanel {
 
         let total = self.connections.len();
         let loading = self.loading;
-        let visible = self.filtered();
+        let visible = self.filtered_indices();
         let visible_count = visible.len();
-        let selected = self.selected.clone();
+        let connections = self.connections.clone();
 
         // 大屏限宽 1080px 居中，header 和列表共用同宽容器
         const CONTENT_MAX_W: f32 = 1080.0;
@@ -128,38 +130,49 @@ impl Render for ConnectionListPanel {
                 )
                 .into_any_element()
         } else {
-            let mut rows: Vec<AnyElement> = Vec::with_capacity(visible_count);
-            for (idx, conn) in visible.into_iter().enumerate() {
-                let is_selected = selected.as_ref() == Some(&conn.id);
-                let version = self.versions.get(&conn.id).cloned();
-                rows.push(
-                    connection_row(
-                        idx,
-                        conn,
-                        is_selected,
-                        version,
-                        density,
-                        border,
-                        row_hover,
-                        accent,
-                        fg,
-                        muted_fg,
-                        cx,
-                    )
-                    .into_any_element(),
-                );
-            }
-            v_flex()
+            let rows = uniform_list(
+                "connection-list-rows",
+                visible_count,
+                cx.processor({
+                    let connections = connections.clone();
+                    let visible = visible.clone();
+                    move |this, range: Range<usize>, _window, cx| {
+                        range
+                            .map(|row_index| {
+                                let connection_index = visible[row_index];
+                                let conn = connections[connection_index].clone();
+                                let is_selected = this.selected.as_ref() == Some(&conn.id);
+                                let version = this.versions.get(&conn.id).cloned();
+                                h_flex()
+                                    .w_full()
+                                    .justify_center()
+                                    .px(px(24.0))
+                                    .child(div().w_full().max_w(px(CONTENT_MAX_W)).child(
+                                        connection_row(
+                                            row_index,
+                                            conn,
+                                            is_selected,
+                                            version,
+                                            density,
+                                            border,
+                                            row_hover,
+                                            accent,
+                                            fg,
+                                            muted_fg,
+                                            cx,
+                                        ),
+                                    ))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                }),
+            )
+            .size_full();
+            div()
                 .size_full()
-                .overflow_y_scrollbar()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .justify_center()
-                        .px(px(24.0))
-                        .py(px(10.0))
-                        .child(v_flex().w_full().max_w(px(CONTENT_MAX_W)).children(rows)),
-                )
+                .py(px(10.0))
+                .child(rows)
                 .into_any_element()
         };
 

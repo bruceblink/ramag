@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::contains_case_insensitive;
+
 /// 一次 SQL 查询请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
@@ -95,6 +97,24 @@ impl Value {
         }
     }
 
+    /// 行过滤用大小写不敏感匹配。常见 ASCII 文本不分配完整副本；其它类型保持展示语义。
+    pub fn contains_query_lower(&self, query_lower: &str) -> bool {
+        match self {
+            Value::Null => contains_case_insensitive("NULL", query_lower),
+            Value::Bool(value) => {
+                contains_case_insensitive(if *value { "true" } else { "false" }, query_lower)
+            }
+            Value::Int(value) => value.to_string().contains(query_lower),
+            Value::Float(value) => value.to_string().contains(query_lower),
+            Value::Text(value) => contains_case_insensitive(value, query_lower),
+            Value::Bytes(value) => {
+                contains_case_insensitive(&format!("[{} bytes]", value.len()), query_lower)
+            }
+            Value::DateTime(value) => contains_case_insensitive(&value.to_rfc3339(), query_lower),
+            Value::Json(value) => contains_case_insensitive(&value.to_string(), query_lower),
+        }
+    }
+
     /// 转 SQL 字面量（MySQL 方言，向后兼容）。新代码优先用 [`Value::to_sql_literal_for`]
     pub fn to_sql_literal(&self) -> String {
         self.to_sql_literal_for(super::connection::DriverKind::Mysql)
@@ -120,10 +140,7 @@ impl Value {
             Value::Float(f) => f.to_string(),
             Value::Text(s) => format!("'{}'", escape_sql_string(s, is_pg)),
             Value::Bytes(b) => {
-                let mut hex = String::with_capacity(4 + b.len() * 2);
-                for byte in b {
-                    hex.push_str(&format!("{byte:02x}"));
-                }
+                let hex = encode_hex(b);
                 if is_pg {
                     // PG bytea 输入字面量：'\xDEADBEEF'
                     format!("'\\x{hex}'")
@@ -155,17 +172,21 @@ impl Value {
             Value::Int(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Text(s) => s.clone(),
-            Value::Bytes(b) => {
-                let mut out = String::with_capacity(b.len() * 2);
-                for byte in b {
-                    out.push_str(&format!("{:02x}", byte));
-                }
-                out
-            }
+            Value::Bytes(b) => encode_hex(b),
             Value::DateTime(dt) => dt.to_rfc3339(),
             Value::Json(v) => v.to_string(),
         }
     }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        output.push(char::from(DIGITS[(byte >> 4) as usize]));
+        output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 /// SQL 字符串字面量转义。单引号一律双写（两方言通用）；
@@ -184,12 +205,12 @@ fn escape_sql_string(s: &str, is_pg: bool) -> String {
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len).collect();
-        format!("{}…", truncated)
+    let mut chars = s.chars();
+    let mut prefix: String = chars.by_ref().take(max_len).collect();
+    if chars.next().is_some() {
+        prefix.push('…');
     }
+    prefix
 }
 
 /// 单行预览清洗：换行符（\n / \r）替换为空格。
@@ -218,6 +239,19 @@ mod tests {
         assert_eq!(Value::Bool(true).to_clipboard_string(), "true");
         assert_eq!(Value::Int(-42).to_clipboard_string(), "-42");
         assert_eq!(Value::Float(2.5).to_clipboard_string(), "2.5");
+    }
+
+    #[test]
+    fn query_match_is_case_insensitive_for_ascii_and_unicode() {
+        assert!(Value::Text("Hello Rust".into()).contains_query_lower("hello"));
+        assert!(Value::Text("你好世界".into()).contains_query_lower("世界"));
+        assert!(!Value::Text("Hello".into()).contains_query_lower("world"));
+    }
+
+    #[test]
+    fn preview_truncates_without_splitting_unicode() {
+        assert_eq!(Value::Text("你好世界".into()).display_preview(2), "你好…");
+        assert_eq!(Value::Text("你好".into()).display_preview(2), "你好");
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! 详情面板：选中条目的完整内容 + 元信息 + 操作按钮
 
+use std::sync::Arc;
+
 use chrono::Utc;
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, img, prelude::*, px};
 use gpui_component::{
@@ -29,20 +31,24 @@ impl ClipboardView {
                 .into_any_element();
         };
 
+        let header = self.detail_header(item.as_ref(), cx).into_any_element();
+        let body = self.detail_body(item.clone(), cx);
+        let actions = self.detail_actions(item, cx);
+
         v_flex()
             .size_full()
             .p(px(16.0))
             .gap(px(12.0))
-            .child(self.detail_header(&item, cx))
+            .child(header)
             .child(
                 div()
                     .id("clip-detail-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(self.detail_body(&item, cx)),
+                    .child(body),
             )
-            .children(self.detail_actions(&item, cx))
+            .children(actions)
             .into_any_element()
     }
 
@@ -69,26 +75,35 @@ impl ClipboardView {
 
     /// 详情底部只保留卡片行没有的上下文动作（浏览器打开 / 文件管理器显示 / 纯文本复制）。
     /// 复制 / 删除已由卡片行图标按钮覆盖，不在详情重复。无适用动作时返回 None
-    fn detail_actions(&self, item: &ClipItem, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn detail_actions(
+        &self,
+        item: Arc<ClipItem>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let mut buttons = Vec::new();
         let contextual = match item.kind {
-            ClipKind::Link => item.text.clone().map(|url| {
-                Button::new("detail-open")
-                    .small()
-                    .label("在浏览器打开")
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.open_link(url.clone(), cx);
-                    }))
-                    .into_any_element()
-            }),
+            ClipKind::Link if item.text.is_some() => {
+                let item = item.clone();
+                Some(
+                    Button::new("detail-open")
+                        .small()
+                        .label("在浏览器打开")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if let Some(url) = &item.text {
+                                this.open_link(url.clone(), cx);
+                            }
+                        }))
+                        .into_any_element(),
+                )
+            }
             ClipKind::Files => {
-                let files = item.files.clone();
+                let item = item.clone();
                 Some(
                     Button::new("detail-reveal")
                         .small()
                         .label(file_manager_reveal_label())
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.reveal_files(files.clone(), cx);
+                            this.reveal_files(item.files.clone(), cx);
                         }))
                         .into_any_element(),
                 )
@@ -144,12 +159,12 @@ impl ClipboardView {
     }
 
     /// 详情主体：图片显示大图（解密原图），文件列路径，文本显示全文
-    fn detail_body(&self, item: &ClipItem, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn detail_body(&self, item: Arc<ClipItem>, cx: &mut Context<Self>) -> gpui::AnyElement {
         match item.kind {
-            ClipKind::Image => match self.image_for(item, false, cx) {
+            ClipKind::Image => match self.image_for(item.clone(), false, cx) {
                 Some(image) => img(image).max_w_full().into_any_element(),
                 // 失败明示（媒体文件缺失 / 解密失败），不再永久显示假「加载中」
-                None if self.image_failed(item, false) => div()
+                None if self.image_failed(item.as_ref(), false) => div()
                     .text_sm()
                     .child("图片无法解密或已缺失（媒体文件可能被清理）")
                     .into_any_element(),

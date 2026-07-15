@@ -10,14 +10,30 @@ use super::vcs_view::{RepoSessionState, VcsView};
 
 /// Project Files 点击文件后读盘上限（4MB）；超过截断后 UI 显示提示
 pub(super) const PF_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// 仅保留最近访问仓库的轻量 UI 会话，避免长时间运行后路径与草稿无限累积。
+const REPO_SESSION_CACHE_LIMIT: usize = 32;
 
 /// worker 线程跨线程返回结构（Send）；主线程 finalize 后包 Rc 成 FileContentSnapshot
 pub(super) struct RawFileContent {
     pub(super) path: String,
     pub(super) lines: Vec<String>,
+    pub(super) max_chars: usize,
     pub(super) truncated: bool,
     pub(super) binary: bool,
     pub(super) error: Option<String>,
+}
+
+impl RawFileContent {
+    pub(in crate::views) fn with_error(path: String, error: String) -> Self {
+        Self {
+            path,
+            lines: Vec::new(),
+            max_chars: 0,
+            truncated: false,
+            binary: false,
+            error: Some(error),
+        }
+    }
 }
 
 impl VcsView {
@@ -69,7 +85,7 @@ impl VcsView {
             .iter()
             .find(|r| r.path == path)
             .map(|r| r.id.clone());
-        self.recent_repos.retain(|r| r.path != path);
+        std::rc::Rc::make_mut(&mut self.recent_repos).retain(|r| r.path != path);
         if let Some(id) = repo_id {
             self.delete_repo_async(id, cx);
         }
@@ -123,22 +139,24 @@ impl VcsView {
         .detach();
     }
 
-    /// 点击文件复用 file_tabs：命中已开则激活，否则追加并 std::thread 读盘。4MB 上限 + NUL 字节判二进制
+    /// 点击文件复用 file_tabs：命中已开则激活，否则追加并在线程池读盘。4MB 上限 + NUL 字节判二进制
     pub(super) fn select_pf_file(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.as_ref() else {
+        let Some((repo_path, repo_id)) = self
+            .repo
+            .as_ref()
+            .map(|repo| (repo.path.clone(), repo.id.clone()))
+        else {
             return;
         };
         // 点击 Project Files 文件 → 关掉 commit detail，避免主区残留 commit diff
         if self.viewing_commit.is_some() {
+            self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
             self.viewing_commit = None;
-            self.commit_files.clear();
-            self.commit_files_collapsed.clear();
+            self.reset_commit_files_tree();
             self.selected_commit_file = None;
             self.commit_file_diff = None;
             self.loading_commit_files = false;
         }
-        let repo_path = repo.path.clone();
-        let repo_id = repo.id.clone();
         self.file_content_request_seq = self.file_content_request_seq.wrapping_add(1);
         let request_seq = self.file_content_request_seq;
         if self.selected_pf_path.as_deref() != Some(path.as_str()) {
@@ -167,15 +185,19 @@ impl VcsView {
             return;
         }
 
-        let abs_path = std::path::PathBuf::from(&repo_path).join(&path);
+        let repo_root = std::path::PathBuf::from(&repo_path);
         cx.spawn(async move |this, cx| {
-            let (tx, rx) = futures::channel::oneshot::channel();
-            let path_for_thread = path.clone();
-            std::thread::spawn(move || {
-                let raw = read_raw_file_content(&abs_path, &path_for_thread);
-                let _ = tx.send(raw);
-            });
-            let raw = rx.await.ok();
+            let path_for_worker = path.clone();
+            let raw = match ramag_app::run_blocking(move || {
+                Ok(read_raw_file_content(&repo_root, &path_for_worker))
+            })
+            .await
+            {
+                Ok(raw) => raw,
+                Err(e) => {
+                    RawFileContent::with_error(path.clone(), format!("文件读取任务失败: {e}"))
+                }
+            };
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo_id)
                     || this.file_content_request_seq != request_seq
@@ -183,7 +205,7 @@ impl VcsView {
                 {
                     return;
                 }
-                let snapshot = raw.map(finalize_file_snapshot);
+                let snapshot = Some(finalize_file_snapshot(raw));
                 if let Some(tab) = this
                     .file_tabs
                     .iter_mut()
@@ -237,22 +259,53 @@ impl VcsView {
             self.notify_warning("当前操作尚未完成，完成后再关闭仓库标签", cx);
             return;
         }
+        let Some(repo_id) = self
+            .open_repos
+            .iter()
+            .find(|repo| repo.path == path)
+            .map(|repo| repo.id.clone())
+        else {
+            self.notify_warning("仓库标签已不存在", cx);
+            return;
+        };
         let is_current = self.repo.as_ref().map(|r| r.path == path).unwrap_or(false);
         if is_current {
             // 关闭标签不应静默丢掉尚未提交的 message 与已打开文件；本次进程内重开可恢复。
             self.save_current_session_to_cache(cx);
         }
-        self.open_repos.retain(|r| r.path != path);
-        self.persist_open_repos(cx);
-        if is_current {
-            if let Some(next) = self.open_repos.first().cloned() {
-                self.open_recent_repo(next.path, cx);
-            } else {
-                self.reset_session_state(cx);
-            }
-        } else {
-            cx.notify();
-        }
+        self.loading = true;
+        self.loading_label = Some("正在关闭仓库…".into());
+        cx.notify();
+
+        let driver = self.driver.clone();
+        cx.spawn(async move |this, cx| {
+            let result = driver.close_repo(&repo_id).await;
+            let _ = this.update(cx, |this, cx| {
+                this.loading = false;
+                this.loading_label = None;
+                match result {
+                    Ok(()) => {
+                        this.open_repos.retain(|repo| repo.path != path);
+                        this.persist_open_repos(cx);
+                        if is_current {
+                            if let Some(next) = this.open_repos.first().cloned() {
+                                this.open_recent_repo(next.path, cx);
+                            } else {
+                                this.reset_session_state(cx);
+                            }
+                        } else {
+                            cx.notify();
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, repo_id = %repo_id, "vcs: close repo failed");
+                        this.error = Some(format!("关闭仓库失败：{e}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     fn reset_session_state(&mut self, cx: &mut Context<Self>) {
@@ -273,11 +326,6 @@ impl VcsView {
         let Some(path) = self.repo.as_ref().map(|r| r.path.clone()) else {
             return;
         };
-        if let (Some(idx), Some(diff)) = (self.active_file_tab_idx, self.current_diff.clone())
-            && let Some(tab) = self.file_tabs.get_mut(idx)
-        {
-            tab.cached_diff = Some(diff);
-        }
         let commit_text = self.commit_input.read(cx).value();
         // 切仓即持久化当前草稿（作废在途防抖任务——其读到的将是新仓文本），重启后可恢复
         self.commit_draft_gen = self.commit_draft_gen.wrapping_add(1);
@@ -293,10 +341,16 @@ impl VcsView {
                 })
                 .detach();
         }
-        self.repo_session_cache.insert(
+        // 切回仓库时本就必须重读磁盘 / Git 状态；缓存只保留 tab 元数据，不能让旧 diff
+        // 或 4MB 文件快照在每个访问过的仓库中长期占用内存。
+        let mut file_tabs = self.file_tabs.clone();
+        strip_file_tab_payloads(&mut file_tabs);
+        cache_repo_session(
+            &mut self.repo_session_cache,
+            &mut self.repo_session_order,
             path,
             RepoSessionState {
-                file_tabs: self.file_tabs.clone(),
+                file_tabs,
                 active_file_tab_idx: self.active_file_tab_idx,
                 commit_text,
                 commit_amend: self.commit_amend,
@@ -346,6 +400,9 @@ impl VcsView {
     /// Render 阶段（持有 Window）写回 InputState。返回 true 表示命中缓存
     pub(super) fn restore_session_from_cache(&mut self, path: &str) -> bool {
         let cached = self.repo_session_cache.get(path).cloned();
+        if cached.is_some() {
+            touch_repo_session(&mut self.repo_session_order, path);
+        }
         match cached {
             Some(mut state) => {
                 // 切回仓库时磁盘 / HEAD 可能已被终端或其它工具修改；保留 tab，丢弃内容缓存。
@@ -423,14 +480,14 @@ pub(super) async fn open_repo_async(
         // 是否首次打开（区分「新开仓库」和「tab 切换」）
         let is_new = !this.open_repos.iter().any(|r| r.path == repo_config.path);
         this.save_current_session_to_cache(cx);
-        if let Some(existing) = this
-            .recent_repos
+        let recent_repos = std::rc::Rc::make_mut(&mut this.recent_repos);
+        if let Some(existing) = recent_repos
             .iter_mut()
             .find(|existing| existing.path == repo_config.path)
         {
             *existing = repo_config.clone();
         } else {
-            this.recent_repos.push(repo_config.clone());
+            recent_repos.push(repo_config.clone());
         }
         this.save_repo_async(repo_config.clone(), cx);
         this.clear_session_data();
@@ -446,17 +503,35 @@ pub(super) async fn open_repo_async(
             *open = repo_config.clone();
         }
         this.persist_open_repos(cx);
-        // 仓库打开成功但状态查询失败：不静默显示成空工作区，给出可见错误
+        // 仓库打开成功但状态 / 分支查询失败：保留已成功部分，并明确显示失败项。
+        let mut load_errors = Vec::new();
         match status {
             Ok(s) => this.status = Some(s),
             Err(e) => {
                 tracing::error!(error = %e, "vcs: open repo status failed");
                 this.status = None;
-                this.error = Some(format!("读取工作区状态失败：{e}"));
+                load_errors.push(format!("读取工作区状态失败：{e}"));
             }
         }
-        this.local_branches = local.unwrap_or_default();
-        this.remote_branches = remote.unwrap_or_default();
+        match local {
+            Ok(branches) => this.local_branches = branches,
+            Err(e) => {
+                tracing::error!(error = %e, "vcs: open repo local branches failed");
+                this.local_branches.clear();
+                load_errors.push(format!("读取本地分支失败：{e}"));
+            }
+        }
+        match remote {
+            Ok(branches) => this.remote_branches = branches,
+            Err(e) => {
+                tracing::error!(error = %e, "vcs: open repo remote branches failed");
+                this.remote_branches.clear();
+                load_errors.push(format!("读取远程分支失败：{e}"));
+            }
+        }
+        if !load_errors.is_empty() {
+            this.error = Some(load_errors.join("；"));
+        }
         this.active_view = ActiveView::Session;
 
         // 已访问过的仓库：还原文件 tab 状态；新仓库：空 tabs 让用户自己选
@@ -467,13 +542,14 @@ pub(super) async fn open_repo_async(
             let storage = this.storage.clone();
             let path = repo_config.path.clone();
             cx.spawn(async move |this, cx| {
-                let draft = storage
-                    .get_preference(&commit_draft_pref_key(&path))
-                    .await
-                    .ok()
-                    .flatten()
-                    .filter(|s| !s.is_empty());
-                let Some(draft) = draft else { return };
+                let draft = match storage.get_preference(&commit_draft_pref_key(&path)).await {
+                    Ok(Some(draft)) if !draft.is_empty() => draft,
+                    Ok(_) => return,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "load commit draft failed");
+                        return;
+                    }
+                };
                 let _ = this.update(cx, |this, cx| {
                     let same_repo = this.repo.as_ref().is_some_and(|r| r.path == path);
                     let untouched = this.commit_input.read(cx).value().trim().is_empty();
@@ -517,6 +593,93 @@ pub(super) async fn open_repo_async(
 /// 提交草稿的 prefs key（按仓库 path 隔离）
 pub(super) fn commit_draft_pref_key(path: &str) -> String {
     format!("vcs_commit_draft:{path}")
+}
+
+fn strip_file_tab_payloads(file_tabs: &mut [FileTab]) {
+    for tab in file_tabs {
+        tab.cached_diff = None;
+        tab.cached_content = None;
+    }
+}
+
+fn cache_repo_session(
+    cache: &mut std::collections::HashMap<String, RepoSessionState>,
+    order: &mut std::collections::VecDeque<String>,
+    path: String,
+    state: RepoSessionState,
+) {
+    touch_repo_session(order, &path);
+    cache.insert(path, state);
+    while cache.len() > REPO_SESSION_CACHE_LIMIT {
+        let Some(oldest) = order.pop_front() else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+}
+
+fn touch_repo_session(order: &mut std::collections::VecDeque<String>, path: &str) {
+    if let Some(index) = order.iter().position(|entry| entry == path) {
+        order.remove(index);
+    }
+    order.push_back(path.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_session_cache_is_bounded_and_lru() {
+        let mut cache = std::collections::HashMap::new();
+        let mut order = std::collections::VecDeque::new();
+        for index in 0..REPO_SESSION_CACHE_LIMIT {
+            cache_repo_session(
+                &mut cache,
+                &mut order,
+                format!("repo-{index}"),
+                RepoSessionState::default(),
+            );
+        }
+        cache_repo_session(
+            &mut cache,
+            &mut order,
+            "repo-0".into(),
+            RepoSessionState::default(),
+        );
+        cache_repo_session(
+            &mut cache,
+            &mut order,
+            "repo-new".into(),
+            RepoSessionState::default(),
+        );
+
+        assert_eq!(cache.len(), REPO_SESSION_CACHE_LIMIT);
+        assert!(cache.contains_key("repo-0"));
+        assert!(!cache.contains_key("repo-1"));
+    }
+
+    #[test]
+    fn repo_session_drops_loaded_file_payloads() {
+        let mut tabs = vec![FileTab {
+            path: "src/lib.rs".into(),
+            source: FileTabSource::ProjectFiles,
+            cached_diff: None,
+            cached_content: Some(super::super::helpers::FileContentSnapshot {
+                path: "src/lib.rs".into(),
+                lines: std::rc::Rc::new(vec!["content".into()]),
+                max_chars: 7,
+                truncated: false,
+                binary: false,
+                error: None,
+            }),
+        }];
+
+        strip_file_tab_payloads(&mut tabs);
+
+        assert!(tabs[0].cached_content.is_none());
+        assert!(tabs[0].cached_diff.is_none());
+    }
 }
 
 mod admin;

@@ -352,6 +352,18 @@ pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
             "文本包含 NUL 字符，无法写入 Windows 剪贴板".into(),
         ));
     }
+    let encoded_bytes = text
+        .encode_utf16()
+        .count()
+        .checked_add(1)
+        .and_then(|units| units.checked_mul(2))
+        .ok_or_else(|| DomainError::InvalidConfig("剪贴文本长度溢出".into()))?;
+    if encoded_bytes > MAX_CLIPBOARD_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴文本超过 {} MiB 上限",
+            MAX_CLIPBOARD_BYTES / 1024 / 1024
+        )));
+    }
     let mut units: Vec<u16> = text.encode_utf16().collect();
     units.push(0);
     let bytes = unsafe { std::slice::from_raw_parts(units.as_ptr().cast::<u8>(), units.len() * 2) };
@@ -379,6 +391,12 @@ pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
 
 /// 写图片：同时放 "PNG" 格式（Ramag 自身往返）与 CF_DIB（外部应用如 Paint / Word 识别）
 pub fn write_image_png(png: &[u8]) -> Result<i64> {
+    if png.len() > MAX_CLIPBOARD_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "PNG 图片超过 {} MiB 上限",
+            MAX_CLIPBOARD_BYTES / 1024 / 1024
+        )));
+    }
     let _dims = png_dims(png)
         .filter(|dims| image_dimensions_allowed(*dims))
         .ok_or_else(|| DomainError::InvalidConfig("PNG 图片格式无效或尺寸过大".into()))?;

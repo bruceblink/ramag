@@ -20,11 +20,16 @@ use ramag_domain::entities::{
 };
 use ramag_domain::traits::{GitDriver, Storage};
 
+use super::commit_detail::CommitFilesRowsCacheEntry;
 use super::helpers::{
     ActiveView, DiffViewMode, FileContentSnapshot, FileTab, FileTabSource, FilesViewMode,
     GroupKind, ViewMode,
 };
-use super::project_files::ProjectRowsCacheEntry;
+use super::history_panel::HistoryLeftRowsCacheEntry;
+use super::project_files::{ProjectRowsCacheEntry, ProjectStatusCacheEntry};
+use super::reflog_view::ReflogRowsCacheEntry;
+use super::repo_list::RepoListRowsCacheEntry;
+use super::workspace_panel::WorkspaceRowsCacheEntry;
 
 /// 仓库 tab UI 状态快照：文件 tabs + commit 草稿（按仓库隔离，避免串扰）
 /// commit 文本通过 `pending_commit_text` + Render 内 `cx.defer_in` 写回 InputState
@@ -54,6 +59,9 @@ pub struct VcsView {
     pub(super) status: Option<WorkingTreeStatus>,
     /// status / branch 静默刷新代际号，防窗口激活与文件监听的旧回包倒灌
     pub(super) status_request_seq: u64,
+    /// status + branches 联合静默刷新最多一组在途；期间的新请求合并为一次补刷新。
+    pub(super) workspace_refresh_in_flight: bool,
+    pub(super) workspace_refresh_pending: bool,
     /// 本地分支列表
     pub(super) local_branches: Vec<Branch>,
     /// 远程分支列表
@@ -143,6 +151,8 @@ pub struct VcsView {
     pub(super) collapsed_tag: bool,
     /// sidebar 「远程仓库」段是否折叠（默认折叠；与「远程分支」段独立）
     pub(super) collapsed_remote_repos: bool,
+    /// History 左栏派生行缓存，避免普通重渲染重复克隆分支、Tag 与远程仓库。
+    pub(super) history_left_rows_cache: RefCell<Option<HistoryLeftRowsCacheEntry>>,
     /// 用户已点击展开的 diff spacer：(hunk_idx, run_start_line_idx)；切换文件 / commit 时清空
     pub(super) expanded_diff_spacers: std::collections::HashSet<(usize, usize)>,
     /// 远程仓库列表（git remote -v 解析）
@@ -157,7 +167,7 @@ pub struct VcsView {
     /// 当前在 commit 详情视图查看的 commit（None = 处于 history 列表态）
     pub(super) viewing_commit: Option<Commit>,
     /// 详情视图的文件列表（git diff-tree --name-status 解析）
-    pub(super) commit_files: Vec<FileStatus>,
+    pub(super) commit_files: std::rc::Rc<Vec<FileStatus>>,
     /// 详情视图当前选中查看 diff 的文件
     pub(super) selected_commit_file: Option<String>,
     /// 详情视图当前文件的 diff 快照（Rc 同 current_diff）
@@ -168,7 +178,13 @@ pub struct VcsView {
     pub(super) commit_detail_request_seq: u64,
     /// commit 详情 / Changes 文件树折叠目录（分开维护：commit 切换时只清前者）
     pub(super) commit_files_collapsed: std::collections::HashSet<String>,
+    pub(super) commit_files_collapsed_version: u64,
+    pub(super) commit_files_rows_cache: RefCell<Option<CommitFilesRowsCacheEntry>>,
     pub(super) changes_collapsed_dirs: std::collections::HashSet<String>,
+    /// Changes 扁平行缓存的折叠代次；目录切换或切仓时递增。
+    pub(super) changes_collapsed_dirs_version: u64,
+    /// Changes 派生行缓存，避免普通重渲染重复克隆全部状态并重建目录树。
+    pub(super) changes_rows_cache: RefCell<Option<WorkspaceRowsCacheEntry>>,
     /// 单文件历史过滤路径（None = 全仓库 history；Some(path) = 仅该文件）
     pub(super) history_path_filter: Option<String>,
     /// commit 搜索关键词（按 message grep / author / since 解析）
@@ -189,7 +205,9 @@ pub struct VcsView {
     /// diff 视图模式：标准（默认带 3 行上下文）/ 全文件 / 仅变更（前端过滤 Context）
     pub(super) diff_view_mode: DiffViewMode,
     /// reflog 条目列表
-    pub(super) reflog_entries: Vec<ramag_domain::entities::ReflogEntry>,
+    pub(super) reflog_entries: std::rc::Rc<Vec<ramag_domain::entities::ReflogEntry>>,
+    /// Reflog 搜索结果索引缓存，避免普通重渲染重复小写、过滤并克隆全部条目。
+    pub(super) reflog_rows_cache: RefCell<Option<ReflogRowsCacheEntry>>,
     /// reflog 是否正在拉取
     pub(super) loading_reflog: bool,
     pub(super) reflog_request_seq: u64,
@@ -204,7 +222,9 @@ pub struct VcsView {
     /// 顶层视图：仓库管理页 / 进入了仓库的 session
     pub(super) active_view: ActiveView,
     /// 最近打开仓库（启动从 storage.list_repos 加载，打开/删除时单条 upsert/delete）
-    pub(super) recent_repos: Vec<RepoConfig>,
+    pub(super) recent_repos: std::rc::Rc<Vec<RepoConfig>>,
+    /// 仓库管理页过滤 / 排序索引缓存，普通重渲染不重复处理整表。
+    pub(super) repo_list_rows_cache: RefCell<Option<RepoListRowsCacheEntry>>,
     /// 仓库管理页搜索框
     pub(super) repo_search_input: Entity<InputState>,
     /// IDE 左侧 Files panel 当前显示模式（Changes / Project / Stash）
@@ -224,6 +244,7 @@ pub struct VcsView {
     pub(super) project_files_version: u64,
     pub(super) project_expanded_dirs_version: u64,
     pub(super) project_rows_cache: RefCell<Option<ProjectRowsCacheEntry>>,
+    pub(super) project_status_cache: RefCell<Option<ProjectStatusCacheEntry>>,
     /// Project Files 虚拟列表滚动句柄（uniform_list 行级虚拟化，与 dbclient 表树同款）
     pub(super) project_scroll: UniformListScrollHandle,
     /// Project Files 模式当前选中查看内容的文件路径（与 selected_file 互独立：
@@ -264,6 +285,7 @@ pub struct VcsView {
     pub(super) file_tabs: Vec<FileTab>,
     pub(super) active_file_tab_idx: Option<usize>,
     pub(super) repo_session_cache: std::collections::HashMap<String, RepoSessionState>,
+    pub(super) repo_session_order: std::collections::VecDeque<String>,
 
     // ---- Clone 对话框 ----
     pub(super) clone_url_input: Entity<InputState>,
@@ -279,7 +301,7 @@ pub struct VcsView {
 
     // ---- Conflict Editor ----
     pub(super) conflict_editor_path: Option<String>,
-    pub(super) conflict_content: Option<ConflictContent>,
+    pub(super) conflict_content: Option<std::rc::Rc<ConflictContent>>,
     pub(super) loading_conflict: bool,
     /// 冲突内容请求代际号：快速切冲突文件时只接收最后一次请求
     pub(super) conflict_request_seq: u64,
@@ -344,10 +366,15 @@ impl VcsView {
                 self.selected_pf_path = None;
                 self.current_file_content = None;
                 self.loading_file_content = false;
+                self.project_rows_cache.get_mut().take();
+                self.project_status_cache.get_mut().take();
             } else {
                 self.selected_file = None;
                 self.current_diff = None;
                 self.loading_diff = false;
+            }
+            if !matches!(mode, FilesViewMode::Changes) {
+                self.changes_rows_cache.get_mut().take();
             }
             cx.notify();
             // 切到任何 mode 都立即异步 reload 对应数据（实时更新，不需要刷新按钮）
@@ -374,9 +401,10 @@ impl VcsView {
         self.loading_file_content = false;
         self.file_content_request_seq = self.file_content_request_seq.wrapping_add(1);
         self.viewing_commit = None;
-        self.commit_files.clear();
-        self.commit_files_collapsed.clear();
+        self.reset_commit_files_tree();
         self.changes_collapsed_dirs.clear();
+        self.changes_collapsed_dirs_version = self.changes_collapsed_dirs_version.wrapping_add(1);
+        self.changes_rows_cache.get_mut().take();
         self.selected_commit_file = None;
         self.commit_file_diff = None;
         self.loading_commit_files = false;
@@ -394,6 +422,7 @@ impl VcsView {
         // 代际推进：上一个仓库在途的 history 回包全部失效
         self.history_request_seq = self.history_request_seq.wrapping_add(1);
         self.project_files.clear();
+        self.project_status_cache.get_mut().take();
         self.loading_project_files = false;
         self.project_files_request_seq = self.project_files_request_seq.wrapping_add(1);
         self.project_expanded_dirs.clear();
@@ -402,7 +431,8 @@ impl VcsView {
         // 以下均为仓库级状态，跨仓残留会"串味"：
         // 单文件历史过滤 / reflog / blame / 展开的 diff spacer / 上一仓的错误横幅
         self.history_path_filter = None;
-        self.reflog_entries.clear();
+        self.reflog_entries = std::rc::Rc::new(Vec::new());
+        self.reflog_rows_cache.get_mut().take();
         self.showing_reflog = false;
         self.loading_reflog = false;
         self.reflog_request_seq = self.reflog_request_seq.wrapping_add(1);
@@ -425,7 +455,9 @@ impl VcsView {
         self.remotes.clear();
         self.loading_remotes = false;
         self.remotes_request_seq = self.remotes_request_seq.wrapping_add(1);
+        self.history_left_rows_cache.get_mut().take();
         self.status_request_seq = self.status_request_seq.wrapping_add(1);
+        self.workspace_refresh_pending = false;
         // 搜索框内容属仓库上下文，经 Render 的 defer 写回清空（异步处拿不到 Window）
         self.pending_clear_search_inputs = true;
         self.pending_clear_creation_inputs = true;
@@ -478,6 +510,7 @@ impl VcsView {
         self.busy = true;
         // 所有更早发起的静默 status 刷新失效；写操作结束时取得的状态才是权威结果。
         self.status_request_seq = self.status_request_seq.wrapping_add(1);
+        self.workspace_refresh_pending = false;
         self.busy_label = Some(label);
         self.error = None;
         cx.notify();

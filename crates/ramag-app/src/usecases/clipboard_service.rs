@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use chrono::Utc;
 use parking_lot::RwLock;
 use ramag_domain::entities::{
-    CapturedClip, ClipId, ClipItem, ClipKind, ClipSource, ClipboardSettings, blacklist_matches,
-    classify_text, fnv1a_hash, make_preview,
+    CapturedClip, ClipId, ClipItem, ClipKind, ClipSearchResult, ClipSource, ClipboardSettings,
+    blacklist_matches, classify_text, fnv1a_hash, is_safe_http_url, make_preview,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{ClipboardDriver, Storage};
@@ -29,10 +29,14 @@ const MAX_ITEMS: u32 = 1_000_000;
 const MAX_AGE_DAYS: u32 = 360;
 
 /// 内存缓存窗口：常驻最近 N 条（已解密），视图唤起 / 刷新同步读；内存与历史总量解耦。
-/// 取 500 而非上万：启动只解密这些条、每次快照 / 过滤只深拷贝这些条（成本随窗口线性）；
+/// 取 500 而非上万：启动只解密这些条；快照通过 Arc 共享正文，不再深拷贝大文本；
 /// 更早的历史由主视图与抽屉的全量存储搜索（`search`）覆盖，不靠缓存兜底。
 /// 与 SEARCH_LIMIT 同量级，避免"缓存即时层"与"全量层"结果规模悬殊
 const CACHE_WINDOW: usize = 500;
+/// 文本、RTF 与文件路径在内存窗口中的总预算；最新一条即使较大也保留，避免记录刚产生就不可见。
+const CACHE_INLINE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
+/// 后台搜索结果与缓存使用相同正文预算，避免匹配大量大文本时再次放大内存。
+const SEARCH_INLINE_BYTE_BUDGET: u64 = CACHE_INLINE_BYTE_BUDGET;
 
 /// 防止高压缩图片在解码/渲染时膨胀为超大内存。
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
@@ -54,7 +58,7 @@ pub struct ClipboardService {
     /// 视图轮询此值，仅在变化时才重载解密，避免每拍全表解密
     revision: Arc<AtomicU64>,
     /// 已解密的最近 N 条窗口缓存（最近优先）。写操作增量维护，视图同步快照取
-    cache: Arc<RwLock<Vec<ClipItem>>>,
+    cache: Arc<RwLock<Vec<Arc<ClipItem>>>>,
     /// 采集开关内存镜像：设置读取/保存时在同一串行区间内同步。
     /// 供 App 级热键循环每拍读，避免每拍解密设置；关采集即据此释放全局热键
     capture_enabled: Arc<AtomicBool>,
@@ -152,9 +156,15 @@ impl ClipboardService {
 
     /// 启动预热：解密最近 CACHE_WINDOW 条入缓存（仅启动调一次）
     pub async fn preload(&self) {
-        match self.storage.clip_list_recent(CACHE_WINDOW).await {
+        match self
+            .storage
+            .clip_list_recent_bounded(CACHE_WINDOW, CACHE_INLINE_BYTE_BUDGET)
+            .await
+        {
             Ok(items) => {
-                *self.cache.write() = items;
+                let mut cache: Vec<_> = items.into_iter().map(Arc::new).collect();
+                truncate_cache(&mut cache, CACHE_WINDOW, CACHE_INLINE_BYTE_BUDGET);
+                *self.cache.write() = cache;
                 self.bump();
             }
             Err(e) => warn!(error = %e, "clip cache preload failed"),
@@ -162,20 +172,19 @@ impl ClipboardService {
     }
 
     /// 同步取缓存快照（已解密、最近优先）。视图唤起 / 刷新用，无 IO、无解密
-    pub fn cached_snapshot(&self) -> Vec<ClipItem> {
+    pub fn cached_snapshot(&self) -> Vec<Arc<ClipItem>> {
         self.cache.read().clone()
     }
 
     /// 缓存增量更新：移除旧同 id → 插最前 → 去超龄 + 截窗口（全内存，不解密）
     fn cache_upsert(&self, item: ClipItem) {
         let cutoff = Utc::now() - chrono::Duration::days(i64::from(MAX_AGE_DAYS));
+        let item = Arc::new(item);
         let mut c = self.cache.write();
         c.retain(|i| i.id != item.id);
         c.insert(0, item);
         c.retain(|i| i.last_used_at >= cutoff);
-        if c.len() > CACHE_WINDOW {
-            c.truncate(CACHE_WINDOW);
-        }
+        truncate_cache(&mut c, CACHE_WINDOW, CACHE_INLINE_BYTE_BUDGET);
     }
 
     fn cache_remove(&self, id: &ClipId) {
@@ -352,9 +361,35 @@ impl ClipboardService {
         settings: &ClipboardSettings,
     ) -> Result<bool> {
         let now = Utc::now();
-        if let Some(mut existing) = self.storage.clip_find_by_hash(&hash).await? {
+        let primary_hash = hash;
+        let mut content_hash = primary_hash.clone();
+        if let Some(mut existing) = self.storage.clip_find_by_hash(&content_hash).await? {
+            if self.payload_matches(&existing, &captured, kind).await {
+                existing.last_used_at = now;
+                if let Some(src) = source.clone() {
+                    existing.source = Some(src);
+                }
+                self.storage.clip_save(&existing).await?;
+                self.cache_upsert(existing);
+                self.bump();
+                return Ok(true);
+            }
+
+            warn!(
+                clip_id = %existing.id,
+                hash = %content_hash,
+                "clipboard content hash collision detected"
+            );
+            content_hash = collision_hash(&captured, &primary_hash);
+        }
+
+        // 同一碰撞内容后续仍命中自己的二级哈希，避免每次复制都新增一条。
+        if content_hash != primary_hash
+            && let Some(mut existing) = self.storage.clip_find_by_hash(&content_hash).await?
+            && self.payload_matches(&existing, &captured, kind).await
+        {
             existing.last_used_at = now;
-            if let Some(src) = source {
+            if let Some(src) = source.clone() {
                 existing.source = Some(src);
             }
             self.storage.clip_save(&existing).await?;
@@ -376,12 +411,12 @@ impl ClipboardService {
                 };
                 let enc_full = self.storage.seal(png).await?;
                 let full = self
-                    .driver
-                    .persist_media(&format!("{hash}.img"), &enc_full)?;
+                    .persist_media(format!("{content_hash}.img"), enc_full)
+                    .await?;
                 let enc_thumb = self.storage.seal(&thumb).await?;
                 let thumb_path = self
-                    .driver
-                    .persist_media(&format!("{hash}.thumb"), &enc_thumb)?;
+                    .persist_media(format!("{content_hash}.thumb"), enc_thumb)
+                    .await?;
                 (Some(full), Some(thumb_path))
             }
             _ => (None, None),
@@ -413,7 +448,7 @@ impl ClipboardService {
             preview,
             source,
             byte_size,
-            content_hash: hash,
+            content_hash,
             created_at: now,
             last_used_at: now,
         };
@@ -424,11 +459,53 @@ impl ClipboardService {
         Ok(true)
     }
 
+    async fn payload_matches(
+        &self,
+        existing: &ClipItem,
+        captured: &CapturedClip,
+        kind: ClipKind,
+    ) -> bool {
+        if existing.kind != kind {
+            return false;
+        }
+        if !matches!(kind, ClipKind::Image) {
+            return inline_payload_matches(existing, captured, kind);
+        }
+
+        let Some(expected) = captured.image_png.as_deref() else {
+            return false;
+        };
+        if existing.byte_size != expected.len() as u64 || existing.image_dims != captured.image_dims
+        {
+            return false;
+        }
+        match self.load_image(existing).await {
+            Ok(Some(actual)) => actual == expected,
+            Ok(None) => false,
+            Err(error) => {
+                warn!(error = %error, clip_id = %existing.id, "verify clipboard image hash failed");
+                false
+            }
+        }
+    }
+
     // —— 历史读取 / 操作 ——
 
     /// 全量搜索（覆盖缓存窗口之外的历史）。主视图后台去抖调用，匹配 preview/text
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<ClipItem>> {
         self.storage.clip_search(query, limit).await
+    }
+
+    /// 可取消的全量搜索；视图输入变化后用取消标记尽快停止旧扫描。
+    pub async fn search_cancellable(
+        &self,
+        query: &str,
+        limit: usize,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<ClipSearchResult> {
+        self.storage
+            .clip_search_cancellable_bounded(query, limit, SEARCH_INLINE_BYTE_BUDGET, cancelled)
+            .await
     }
 
     /// 复制条目回剪贴板（不自动粘贴）
@@ -453,8 +530,7 @@ impl ClipboardService {
             }
         }
         // 复制即提升为最新
-        let mut latest = item.clone();
-        latest.last_used_at = Utc::now();
+        let latest = touch_item(item, Utc::now());
         self.storage.clip_save(&latest).await?;
         self.cache_upsert(latest);
         self.bump();
@@ -476,9 +552,9 @@ impl ClipboardService {
         match &item.text {
             Some(text) => {
                 self.driver.write_text(text, None)?;
-                let mut latest = item.clone();
-                latest.rtf = None;
-                latest.last_used_at = Utc::now();
+                // “纯文本”只影响本次写回；历史中的 RTF 必须保留，否则之后普通复制
+                // 无法再恢复原富文本内容，属于不可见的数据损失。
+                let latest = touch_item(item, Utc::now());
                 self.storage.clip_save(&latest).await?;
                 self.cache_upsert(latest);
                 self.bump();
@@ -495,6 +571,12 @@ impl ClipboardService {
 
     /// 用默认浏览器打开链接
     pub fn open_url(&self, url: &str) -> Result<()> {
+        let url = url.trim();
+        if !is_safe_http_url(url) {
+            return Err(DomainError::InvalidConfig(
+                "仅支持不超过 16 KiB、且不含空白或控制字符的 HTTP/HTTPS 链接".into(),
+            ));
+        }
         self.driver.open_url(url)
     }
 
@@ -524,12 +606,11 @@ pub fn decide_capture(
 
     // 文件优先，其次图片，最后文本（与驱动读取优先级一致）
     if !captured.files.is_empty() {
-        let joined = captured.files.join("\n");
-        if (joined.len() as u64) > settings.max_item_bytes {
+        if file_payload_len(&captured.files) > settings.max_item_bytes {
             return CaptureDecision::Skip("files too large");
         }
         return CaptureDecision::Record {
-            hash: hash_hex(joined.as_bytes()),
+            hash: format!("{:016x}", file_payload_hash(&captured.files)),
             kind: ClipKind::Files,
         };
     }
@@ -579,18 +660,106 @@ fn hash_hex(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a_hash(bytes))
 }
 
+fn truncate_cache(cache: &mut Vec<Arc<ClipItem>>, max_items: usize, max_inline_bytes: u64) {
+    cache.truncate(max_items);
+    if max_inline_bytes == 0 {
+        cache.clear();
+        return;
+    }
+    let mut total = 0u64;
+    let mut keep = 0usize;
+    for item in cache.iter() {
+        let next = total.saturating_add(item.inline_payload_bytes());
+        if keep > 0 && next > max_inline_bytes {
+            break;
+        }
+        total = next;
+        keep += 1;
+        if total >= max_inline_bytes {
+            break;
+        }
+    }
+    cache.truncate(keep);
+}
+
+fn file_payload_len(files: &[String]) -> u64 {
+    files.iter().fold(
+        u64::try_from(files.len().saturating_sub(1)).unwrap_or(u64::MAX),
+        |total, path| total.saturating_add(u64::try_from(path.len()).unwrap_or(u64::MAX)),
+    )
+}
+
+fn file_payload_hash(files: &[String]) -> u64 {
+    let mut hash = FNV1A_OFFSET;
+    for (index, path) in files.iter().enumerate() {
+        if index > 0 {
+            update_fnv1a(&mut hash, std::iter::once(b'\n'));
+        }
+        update_fnv1a(&mut hash, path.bytes());
+    }
+    hash
+}
+
+fn inline_payload_matches(existing: &ClipItem, captured: &CapturedClip, kind: ClipKind) -> bool {
+    match kind {
+        ClipKind::Files => existing.files == captured.files,
+        ClipKind::Text | ClipKind::Link | ClipKind::Color => existing.text == captured.text,
+        ClipKind::Image => false,
+    }
+}
+
+/// 仅在主 FNV 指纹真实碰撞时使用；反向 FNV 与主哈希组合，兼容既有 16 位哈希记录。
+fn collision_hash(captured: &CapturedClip, primary: &str) -> String {
+    let secondary = if !captured.files.is_empty() {
+        reverse_file_payload_hash(&captured.files)
+    } else if let Some(png) = &captured.image_png {
+        reverse_fnv1a_hash(png)
+    } else if let Some(text) = &captured.text {
+        reverse_fnv1a_hash(text.as_bytes())
+    } else {
+        reverse_fnv1a_hash(&[])
+    };
+    format!("{primary}-{secondary:016x}")
+}
+
+const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn update_fnv1a(hash: &mut u64, bytes: impl Iterator<Item = u8>) {
+    for byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV1A_PRIME);
+    }
+}
+
+fn reverse_file_payload_hash(files: &[String]) -> u64 {
+    let mut hash = FNV1A_OFFSET;
+    for (index, path) in files.iter().rev().enumerate() {
+        if index > 0 {
+            update_fnv1a(&mut hash, std::iter::once(b'\n'));
+        }
+        update_fnv1a(&mut hash, path.bytes().rev());
+    }
+    hash
+}
+
+fn reverse_fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash = FNV1A_OFFSET;
+    update_fnv1a(&mut hash, bytes.iter().rev().copied());
+    hash
+}
+
+/// 提升条目最近使用时间，但不改写任何原始负载（text / RTF / 媒体引用）。
+fn touch_item(item: &ClipItem, now: chrono::DateTime<Utc>) -> ClipItem {
+    let mut latest = item.clone();
+    latest.last_used_at = now;
+    latest
+}
+
 /// 工作线程生成缩略图（std::thread + oneshot，与 Storage 桥接同款；不引入 runtime）。
 /// 采集循环跑在 GPUI 前台 executor，图片编解码留在主线程会造成可感知卡顿
 async fn make_thumbnail_off_thread(png: Vec<u8>) -> Result<Vec<u8>> {
-    let (tx, rx) = futures::channel::oneshot::channel();
-    std::thread::Builder::new()
-        .name("ramag-clip-thumb".into())
-        .spawn(move || {
-            let _ = tx.send(make_thumbnail(&png, THUMB_MAX_W));
-        })
-        .map_err(|e| DomainError::Other(format!("启动缩略图线程失败：{e}")))?;
-    rx.await
-        .map_err(|_| DomainError::Other("缩略图线程中断".into()))?
+    crate::run_blocking(move || make_thumbnail(&png, THUMB_MAX_W)).await
 }
 
 #[cfg(test)]

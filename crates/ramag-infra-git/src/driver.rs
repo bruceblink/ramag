@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dashmap::mapref::entry::Entry;
 use parking_lot::Mutex;
 
 use ramag_domain::entities::{
@@ -34,12 +35,19 @@ impl GitDriver for GitDriverImpl {
         let canonical = dunce::canonicalize(path)
             .map_err(|e| DomainError::InvalidConfig(format!("路径无法访问: {e}")))?;
 
-        // 同 path 复用已打开句柄
+        // 串行化同一路径的首次打开并在锁内双检，避免并发创建孤儿句柄。
+        let open_lock = self.open_lock(&canonical);
+        let _guard = open_lock.lock().await;
+
+        // 同 path 复用已打开句柄；同时清理旧版本或异常中断留下的失效映射。
         if let Some(existing_id) = self.by_path.get(&canonical) {
             let id = existing_id.clone();
             drop(existing_id);
-            let path_string = canonical.to_string_lossy().into_owned();
-            return Ok(RepoConfig::from_path(path_string).with_id(id));
+            if self.repos.contains_key(&id) {
+                let path_string = canonical.to_string_lossy().into_owned();
+                return Ok(RepoConfig::from_path(path_string).with_id(id));
+            }
+            self.by_path.remove(&canonical);
         }
 
         // 阻塞线程打开（gix 有 I/O）
@@ -62,8 +70,18 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn close_repo(&self, repo: &RepoId) -> Result<()> {
-        if let Some((_, handle)) = self.repos.remove(repo) {
-            self.by_path.remove(&handle.path);
+        let Some(handle) = self.repos.get(repo).map(|entry| entry.clone()) else {
+            return Ok(());
+        };
+        let path = handle.path.clone();
+        let open_lock = self.open_lock(&path);
+        let _guard = open_lock.lock().await;
+
+        if self.repos.remove(repo).is_some()
+            && let Entry::Occupied(entry) = self.by_path.entry(path)
+            && entry.get() == repo
+        {
+            entry.remove();
         }
         Ok(())
     }
@@ -441,6 +459,7 @@ impl GitDriver for GitDriverImpl {
         let handle = self.get_repo(repo)?;
         let onto = onto.to_string();
         run_write_blocking(handle, move |p| {
+            git_cmd::validate_positional_arg(&onto, "rebase 上游")?;
             git_cmd::run_git_bytes(p, &["rebase", &onto]).map(|_| ())
         })
         .await

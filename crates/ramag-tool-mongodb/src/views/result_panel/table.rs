@@ -37,7 +37,7 @@ pub(super) fn render(
     panel: &mut ResultPanel,
     table: Arc<FlatTable>,
     col_indices: Option<Vec<usize>>,
-    row_indices: Option<Vec<usize>>,
+    row_indices: Arc<Vec<usize>>,
     docs_override: Option<Arc<Vec<serde_json::Value>>>,
     allow_edit: bool,
     cx: &mut Context<ResultPanel>,
@@ -50,25 +50,7 @@ pub(super) fn render(
 
     let visible_cols: Vec<usize> =
         col_indices.unwrap_or_else(|| (0..table.columns.len()).collect());
-    let mut visible_rows: Vec<usize> =
-        row_indices.unwrap_or_else(|| (0..table.rows.len()).collect());
-    // 排序：按 sort 列 path 定位列后对可见行重排（普通 / 钻取视图共用此函数；path 失配则不排）
-    if let Some((sort_path, dir)) = panel.sort_by.clone()
-        && let Some(si) = table.columns.iter().position(|c| c.path == sort_path)
-    {
-        let numeric = matches!(
-            table.columns[si].kind,
-            "int" | "long" | "double" | "decimal"
-        );
-        visible_rows.sort_by(|&a, &b| {
-            let ord = compare_cells(&table.rows[a][si].text, &table.rows[b][si].text, numeric);
-            if matches!(dir, SortDir::Desc) {
-                ord.reverse()
-            } else {
-                ord
-            }
-        });
-    }
+    let visible_rows = row_indices;
 
     // 行号列宽：按总行数位数动态算（与 dbclient::result_table 同算法，clamp 40-70）
     let row_num_width =
@@ -115,7 +97,7 @@ pub(super) fn render(
     // uniform_list 闭包内需要 'static，clone Arc + 索引向量
     let table_for_list = table.clone();
     let cols_for_list = visible_cols.clone();
-    let rows_for_list = visible_rows.clone();
+    let rows_for_list = visible_rows;
     // 行文档来源：默认当前结果集的 Arc 缓存（零拷贝）；展平视图等传 docs_override 覆盖
     let docs_for_list: Arc<Vec<serde_json::Value>> = docs_override
         .or_else(|| panel.docs_arc.clone())
@@ -135,10 +117,8 @@ pub(super) fn render(
                 .map(|i| {
                     let row_idx = rows_for_list[i];
                     let row = &table_for_list.rows[row_idx];
-                    let doc = docs_for_list
-                        .get(row_idx)
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
+                    let null_doc = serde_json::Value::Null;
+                    let doc = docs_for_list.get(row_idx).unwrap_or(&null_doc);
                     let selected = panel.is_row_selected(row_idx);
                     let entity_for_row = cx.entity().clone();
                     let checkbox = div()
@@ -307,13 +287,44 @@ pub(super) fn compare_cells(a: &str, b: &str, numeric: bool) -> std::cmp::Orderi
     a.cmp(b)
 }
 
+/// 对行索引排序；数值列先为每行解析一次 f64，避免比较器在 O(n log n) 次比较中重复解析。
+pub(super) fn sort_row_indices(
+    table: &FlatTable,
+    column_index: usize,
+    numeric: bool,
+    direction: SortDir,
+    indices: &mut [usize],
+) {
+    let numeric_values = numeric.then(|| {
+        table
+            .rows
+            .iter()
+            .map(|row| row[column_index].text.parse::<f64>().ok())
+            .collect::<Vec<_>>()
+    });
+    indices.sort_by(|&left, &right| {
+        let left_text = &table.rows[left][column_index].text;
+        let right_text = &table.rows[right][column_index].text;
+        let ordering = numeric_values
+            .as_ref()
+            .and_then(|values| values[left].zip(values[right]))
+            .and_then(|(left, right)| left.partial_cmp(&right))
+            .unwrap_or_else(|| compare_cells(left_text, right_text, false));
+        if matches!(direction, SortDir::Desc) {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+}
+
 pub(super) fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len).collect();
-        format!("{truncated}…")
+    let mut chars = s.chars();
+    let mut preview: String = chars.by_ref().take(max_len).collect();
+    if chars.next().is_some() {
+        preview.push('…');
     }
+    preview
 }
 
 /// 单行预览清洗：换行符（\n / \r）替换为空格。
@@ -363,5 +374,32 @@ mod tests {
         assert_eq!(compare_cells("9", "10", false), Ordering::Greater); // 字典序 "9" > "10"
         assert_eq!(compare_cells("", "x", false), Ordering::Less); // null 排前
         assert_eq!(compare_cells("x", "", false), Ordering::Greater);
+    }
+
+    #[test]
+    fn numeric_row_sort_keeps_fallback_semantics() {
+        use super::super::cell::Cell;
+
+        let table = FlatTable {
+            columns: vec![Column {
+                path: "n".into(),
+                kind: "int",
+            }],
+            total_columns: 1,
+            rows: ["10", "9", "x"]
+                .into_iter()
+                .map(|text| {
+                    vec![Cell {
+                        text: text.into(),
+                        kind: "int",
+                    }]
+                })
+                .collect(),
+        };
+        let mut indices = vec![0, 1, 2];
+
+        sort_row_indices(&table, 0, true, SortDir::Asc, &mut indices);
+
+        assert_eq!(indices, vec![1, 0, 2]);
     }
 }

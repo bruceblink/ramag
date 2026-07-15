@@ -49,8 +49,8 @@ impl SqlBackend for StubMysqlBackend {
         unimplemented!("stub: 仅用于类型系统验证")
     }
 
-    fn decode_row(&self, _row: &<Self::Db as sqlx::Database>::Row) -> Vec<Value> {
-        Vec::new()
+    fn decode_row(&self, _row: &<Self::Db as sqlx::Database>::Row) -> Result<Vec<Value>> {
+        Ok(Vec::new())
     }
 
     fn extract_columns(

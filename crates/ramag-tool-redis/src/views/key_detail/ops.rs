@@ -200,6 +200,16 @@ impl KeyDetailPanel {
         }
     }
 
+    pub(super) fn scalar_is_truncated(&self) -> bool {
+        match (
+            self.value.as_ref().and_then(RedisValue::scalar_byte_len),
+            self.collection_total,
+        ) {
+            (Some(loaded), Some(total)) => (loaded as u64) < total,
+            _ => false,
+        }
+    }
+
     pub(super) fn is_read_only(&self) -> bool {
         self.config.as_ref().is_some_and(|config| config.production)
     }

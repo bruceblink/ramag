@@ -108,6 +108,26 @@ pub struct ClipItem {
     pub last_used_at: DateTime<Utc>,
 }
 
+impl ClipItem {
+    /// 当前条目直接常驻内存的原始负载大小；图片正文只保存磁盘路径，因此不计 `byte_size`。
+    pub fn inline_payload_bytes(&self) -> u64 {
+        let text = self.text.as_ref().map_or(0, String::len);
+        let rtf = self.rtf.as_ref().map_or(0, Vec::len);
+        let files = self
+            .files
+            .iter()
+            .fold(0usize, |total, path| total.saturating_add(path.len()));
+        u64::try_from(text.saturating_add(rtf).saturating_add(files)).unwrap_or(u64::MAX)
+    }
+}
+
+/// 有界剪贴板搜索结果；`truncated` 同时覆盖条数与内存预算截断。
+#[derive(Debug)]
+pub struct ClipSearchResult {
+    pub items: Vec<ClipItem>,
+    pub truncated: bool,
+}
+
 /// 采集与展示设置（prefs KV 以 JSON 持久化）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipboardSettings {
@@ -192,7 +212,7 @@ pub fn fnv1a_hash(bytes: &[u8]) -> u64 {
 /// 文本二次分类：URL → Link、颜色字面量 → Color、否则 Text
 pub fn classify_text(s: &str) -> ClipKind {
     let t = s.trim();
-    if is_url(t) {
+    if is_safe_http_url(t) {
         ClipKind::Link
     } else if is_color(t) {
         ClipKind::Color
@@ -201,12 +221,19 @@ pub fn classify_text(s: &str) -> ClipKind {
     }
 }
 
-fn is_url(t: &str) -> bool {
-    if t.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+pub fn is_safe_http_url(value: &str) -> bool {
+    const MAX_URL_BYTES: usize = 16 * 1024;
+
+    let value = value.trim();
+    if value.len() > MAX_URL_BYTES
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
         return false;
     }
-    let lower = t.to_ascii_lowercase();
-    (lower.starts_with("http://") || lower.starts_with("https://")) && t.len() > 10
+    let lower = value.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://")) && value.len() > 10
 }
 
 fn is_color(t: &str) -> bool {
@@ -353,6 +380,29 @@ mod tests {
     }
 
     #[test]
+    fn inline_payload_size_excludes_file_backed_image_bytes() {
+        let now = Utc::now();
+        let item = ClipItem {
+            id: ClipId::new(),
+            kind: ClipKind::Text,
+            text: Some("abc".into()),
+            rtf: Some(vec![0; 4]),
+            image_path: Some("large.img".into()),
+            thumb_path: None,
+            image_dims: Some((10, 10)),
+            files: vec!["/a".into(), "/bc".into()],
+            preview: "preview".into(),
+            source: None,
+            byte_size: 1024 * 1024,
+            content_hash: "hash".into(),
+            created_at: now,
+            last_used_at: now,
+        };
+
+        assert_eq!(item.inline_payload_bytes(), 12);
+    }
+
+    #[test]
     fn classify_url_color_text() {
         assert_eq!(classify_text("https://example.com/page"), ClipKind::Link);
         assert_eq!(classify_text("  http://a.cn/x  "), ClipKind::Link);
@@ -365,6 +415,10 @@ mod tests {
         assert_eq!(classify_text("rgb(1, 2, 3)"), ClipKind::Color);
         assert_eq!(classify_text("hsla(0, 0%, 0%, 1)"), ClipKind::Color);
         assert_eq!(classify_text("SELECT 1;"), ClipKind::Text);
+        assert!(!is_safe_http_url(&format!(
+            "https://example.com/{}",
+            "x".repeat(16 * 1024)
+        )));
     }
 
     #[test]

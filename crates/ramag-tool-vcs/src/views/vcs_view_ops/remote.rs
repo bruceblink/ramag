@@ -175,9 +175,18 @@ impl VcsView {
             };
             // 不论成功失败都刷新一次 status（pull 后 ahead/behind 必变）；
             // remote 分支同刷：fetch/pull 更新远端 refs，push -u 会新建 origin/<branch>
-            let new_status = driver.status(&repo).await.ok();
-            let local = driver.list_branches(&repo, BranchKind::Local).await.ok();
-            let remote_b = driver.list_branches(&repo, BranchKind::Remote).await.ok();
+            let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.status(&repo).await,
+                "workspace status",
+            );
+            let local = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Local).await,
+                "local branches",
+            );
+            let remote_b = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                driver.list_branches(&repo, BranchKind::Remote).await,
+                "remote branches",
+            );
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.busy_label = None;
@@ -281,7 +290,14 @@ impl VcsView {
     /// 远端操作进行中的最新进度行（工具栏展示用）；无操作时 None
     pub(in crate::views) fn remote_op_progress_line(&self) -> Option<String> {
         let slot = self.remote_op_progress.as_ref()?;
-        let text = slot.lock().ok()?.clone();
+        let text = match slot.try_lock() {
+            Ok(text) => text.clone(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                tracing::warn!("vcs remote progress lock poisoned");
+                error.into_inner().clone()
+            }
+        };
         if text.is_empty() { None } else { Some(text) }
     }
 
