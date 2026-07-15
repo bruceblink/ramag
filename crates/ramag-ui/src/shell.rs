@@ -42,10 +42,14 @@ pub struct WindowBoundsPref {
 
 impl WindowBoundsPref {
     pub const PREF_KEY: &'static str = "window_bounds";
+    const MAX_PREF_BYTES: usize = 1024;
     const MAX_ABS_COORDINATE: f32 = 1_000_000.0;
     const MAX_SIZE: f32 = 1_000_000.0;
 
     pub fn parse(json: &str) -> Result<Self, String> {
+        if json.len() > Self::MAX_PREF_BYTES {
+            return Err(format!("窗口位置数据过大：{} bytes", json.len()));
+        }
         let pref: Self =
             serde_json::from_str(json).map_err(|error| format!("窗口位置数据格式无效：{error}"))?;
         if !pref.x.is_finite() || !pref.y.is_finite() || !pref.w.is_finite() || !pref.h.is_finite()
@@ -406,6 +410,9 @@ mod tests {
                 r#"{"x":1000001.0,"y":20.0,"w":1200.0,"h":780.0,"maximized":false}"#
             )
             .is_err()
+        );
+        assert!(
+            WindowBoundsPref::parse(&" ".repeat(WindowBoundsPref::MAX_PREF_BYTES + 1)).is_err()
         );
     }
 }

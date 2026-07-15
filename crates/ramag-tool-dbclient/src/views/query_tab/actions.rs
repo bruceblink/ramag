@@ -21,12 +21,36 @@ use crate::views::result_panel::ResultState;
 
 impl QueryTab {
     /// 取出当前编辑器中的 SQL
-    pub(super) fn current_sql(&self, cx: &gpui::App) -> String {
-        self.editor.read(cx).value().to_string()
+    pub(super) fn current_sql(&self, cx: &gpui::App) -> gpui::SharedString {
+        self.editor.read(cx).value()
+    }
+
+    /// 运行、解析或格式化前先拦住异常大的编辑器内容，避免复制和 CPU 峰值。
+    fn checked_current_sql(
+        &mut self,
+        operation: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::SharedString> {
+        let sql = self.current_sql(cx);
+        if sql.len() <= ramag_ui::MAX_EDITOR_DRAFT_BYTES {
+            return Some(sql);
+        }
+        self.result.update(cx, |result, cx| {
+            result.set_state(
+                ResultState::Error(format!(
+                    "SQL 内容超过 {} MiB 安全上限，无法{operation}；请拆分脚本后重试",
+                    ramag_ui::MAX_EDITOR_DRAFT_BYTES / 1024 / 1024
+                )),
+                cx,
+            );
+        });
+        None
     }
 
     pub(super) fn handle_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sql = self.current_sql(cx);
+        let Some(sql) = self.checked_current_sql("运行", cx) else {
+            return;
+        };
         let trimmed = sql.trim().to_string();
         // run = 用户主动执行，标题用原 SQL 派生，DDL 后刷新 cache
         let title_sql = trimmed.clone();
@@ -35,7 +59,9 @@ impl QueryTab {
 
     /// 仅执行光标所在的那条 SQL（按 `;` 切分；避开字符串/注释/dollar-quoted 里的 `;`）
     pub(super) fn handle_run_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sql = self.current_sql(cx);
+        let Some(sql) = self.checked_current_sql("运行", cx) else {
+            return;
+        };
         let cursor = self.editor.read(cx).cursor();
         let driver = self.connection.as_ref().map(|c| c.driver);
         let stmt = extract_statement_at_cursor(&sql, cursor, driver);
@@ -50,7 +76,9 @@ impl QueryTab {
     /// EXPLAIN 当前 SQL：把 SQL 包一层 `EXPLAIN ` 提交，结果展示在结果区
     /// 已经以 EXPLAIN 开头的 SQL 不重复加；末尾 `;` 自动 strip
     pub(crate) fn handle_explain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sql = self.current_sql(cx);
+        let Some(sql) = self.checked_current_sql("生成执行计划", cx) else {
+            return;
+        };
         let trimmed = sql.trim().trim_end_matches(';').trim().to_string();
         if trimmed.is_empty() {
             return;
@@ -378,7 +406,9 @@ impl QueryTab {
             cx.notify();
             return;
         }
-        let sql = self.current_sql(cx);
+        let Some(sql) = self.checked_current_sql("格式化", cx) else {
+            return;
+        };
         if sql.trim().is_empty() {
             return;
         }
@@ -415,7 +445,7 @@ impl QueryTab {
                         this.editor.update(cx, |state, cx| {
                             state.set_value(formatted, window, cx);
                         });
-                        this.prefetch_columns_for_used_tables(cx);
+                        this.prefetch_columns_now(cx);
                         cx.emit(super::QueryTabEvent::DraftChanged);
                     }
                     Ok(_) => {}
@@ -515,13 +545,34 @@ impl QueryTab {
         cx.notify();
     }
 
+    /// 连续输入停顿后才扫描 SQL，避免每次按键都解析整段文本并发元数据请求。
+    pub(super) fn schedule_column_prefetch(&mut self, cx: &mut Context<Self>) {
+        self.column_prefetch_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.prefetch_columns_for_used_tables(cx);
+            });
+        }));
+    }
+
+    /// 程序整体替换 SQL 后立即预拉，并取消尚未触发的输入防抖任务。
+    pub(super) fn prefetch_columns_now(&mut self, cx: &mut Context<Self>) {
+        self.column_prefetch_task.take();
+        self.prefetch_columns_for_used_tables(cx);
+    }
+
     /// 扫描当前 SQL 找出 FROM / JOIN 涉及的表，对未在 cache 的表后台拉一次列结构
     /// schema 推断顺序：SQL 全限定 schema → active_schema → 连接默认 database → cache.tables 反查
-    pub(super) fn prefetch_columns_for_used_tables(&self, cx: &mut Context<Self>) {
+    fn prefetch_columns_for_used_tables(&self, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
         };
-        let sql = self.editor.read(cx).value().to_string();
+        let sql = self.editor.read(cx).value();
+        if sql.len() > ramag_ui::MAX_EDITOR_DRAFT_BYTES {
+            return;
+        }
         let tables = extract_tables_in_use_for_prefetch(&sql);
         if tables.is_empty() {
             return;
@@ -529,28 +580,30 @@ impl QueryTab {
 
         let cache = self.schema_cache.clone();
         let resolved: Vec<(String, String)> = {
-            let r = cache.read();
-            tables
-                .into_iter()
-                .filter_map(|(maybe_s, t)| {
-                    if let Some(s) = maybe_s {
-                        return Some((s, t));
-                    }
-                    if let Some(s) = self.active_schema.clone() {
-                        return Some((s, t));
-                    }
-                    if let Some(s) = conn.database.clone() {
-                        return Some((s, t));
-                    }
-                    for (s, ts) in r.tables.iter() {
-                        if ts.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
-                            return Some((s.clone(), t));
-                        }
-                    }
-                    None
-                })
-                .filter(|(s, t)| !r.columns.contains_key(&(s.clone(), t.clone())))
-                .collect()
+            let mut cache = cache.write();
+            let mut resolved = Vec::new();
+            for (maybe_schema, table) in tables {
+                let schema = maybe_schema
+                    .or_else(|| self.active_schema.clone())
+                    .or_else(|| conn.database.clone())
+                    .or_else(|| {
+                        cache.tables.iter().find_map(|(schema, tables)| {
+                            tables
+                                .iter()
+                                .any(|known| known.eq_ignore_ascii_case(&table))
+                                .then(|| schema.clone())
+                        })
+                    });
+                let Some(schema) = schema else {
+                    continue;
+                };
+                let key = (schema, table);
+                if cache.columns.contains_key(&key) || !cache.loading_columns.insert(key.clone()) {
+                    continue;
+                }
+                resolved.push(key);
+            }
+            resolved
         };
         if resolved.is_empty() {
             return;
@@ -562,9 +615,17 @@ impl QueryTab {
                 match svc.list_columns(&conn, &schema, &table).await {
                     Ok(cols) => {
                         let names: Vec<String> = cols.into_iter().map(|c| c.name).collect();
-                        cache.write().columns.insert((schema, table), names);
+                        let mut cache = cache.write();
+                        cache
+                            .loading_columns
+                            .remove(&(schema.clone(), table.clone()));
+                        cache.columns.insert((schema, table), names);
                     }
                     Err(e) => {
+                        cache
+                            .write()
+                            .loading_columns
+                            .remove(&(schema.clone(), table.clone()));
                         tracing::warn!(
                             error = %e, schema = %schema, table = %table,
                             "prefetch columns failed"

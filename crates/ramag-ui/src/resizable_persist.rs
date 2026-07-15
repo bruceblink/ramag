@@ -13,6 +13,7 @@ use gpui_component::resizable::{ResizablePanelEvent, ResizableState};
 const RESTORE_DELAY: Duration = Duration::from_millis(150);
 /// 拖动停顿后才落盘
 const PERSIST_DEBOUNCE: Duration = Duration::from_millis(600);
+const MAX_PANEL_SIZES_PREF_BYTES: usize = 1024;
 
 /// 给一个 Resizable 分隔挂「尺寸跨重启」：返回的订阅由调用方持有（随视图生命周期）。
 /// 无 StorageGlobal（极早期调用）时仅返回空订阅语义的监听（不落盘不恢复）
@@ -141,6 +142,9 @@ pub fn persist_resizable_sizes<V: 'static>(
 
 /// 偏好属于外部输入：拒绝 NaN/无穷和非正尺寸，避免布局恢复成不可交互状态。
 fn parse_sizes(json: &str) -> Result<Vec<f32>, String> {
+    if json.len() > MAX_PANEL_SIZES_PREF_BYTES {
+        return Err(format!("面板尺寸偏好过大：{} bytes", json.len()));
+    }
     let sizes: Vec<f32> =
         serde_json::from_str(json).map_err(|e| format!("尺寸数据格式无效：{e}"))?;
     if sizes.len() > 8 {
@@ -154,7 +158,7 @@ fn parse_sizes(json: &str) -> Result<Vec<f32>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sizes;
+    use super::{MAX_PANEL_SIZES_PREF_BYTES, parse_sizes};
 
     #[test]
     fn parses_valid_sizes() {
@@ -164,5 +168,6 @@ mod tests {
     #[test]
     fn rejects_non_positive_sizes() {
         assert!(parse_sizes("[0.0,640.0]").is_err());
+        assert!(parse_sizes(&" ".repeat(MAX_PANEL_SIZES_PREF_BYTES + 1)).is_err());
     }
 }

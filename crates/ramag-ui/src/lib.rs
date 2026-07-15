@@ -26,7 +26,8 @@ pub use prompt_dialog::open_prompt;
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget};
 pub use editor_workspace::{
-    EditorDraftPref, EditorWorkspacePref, MAX_EDITOR_TABS, can_open_editor_tab,
+    EditorDraftPref, EditorWorkspacePref, MAX_EDITOR_DRAFT_BYTES, MAX_EDITOR_TABS,
+    MAX_EDITOR_WORKSPACE_PREF_BYTES, MAX_EDITOR_WORKSPACE_TEXT_BYTES, can_open_editor_tab,
 };
 pub use home_view::{HomeEvent, HomeView};
 pub use mutation_gate::{AsyncMutationGate, MutationToken};

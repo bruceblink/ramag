@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Git 提交消息安全上限；UI 草稿、提交入口与 infra 执行共用，避免边界漂移。
+pub const MAX_COMMIT_MESSAGE_BYTES: usize = 1024 * 1024;
+
 /// 仓库运行时 UUID（不持久化进 git；上层用 path 去重）
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RepoId(pub Uuid);

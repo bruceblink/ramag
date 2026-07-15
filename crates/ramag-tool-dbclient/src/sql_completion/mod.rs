@@ -1,7 +1,7 @@
 //! SQL 补全：实现 gpui-component CompletionProvider。
 //! 覆盖关键字 / 表名 / 列名 / 点号限定（`表.列`、`库.表`）补全
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -29,6 +29,8 @@ pub struct SchemaCache {
     /// (schema, table) → 列名列表
     /// 由 QueryTab 编辑器变化时按 FROM/JOIN 用到的表预拉；列名补全 + 点号限定补全读取
     pub columns: HashMap<(String, String), Vec<String>>,
+    /// 正在拉取列结构的表；避免连续输入或多个 Tab 对同一表重复发请求。
+    pub loading_columns: HashSet<(String, String)>,
     /// 默认 schema（连接配置里的 database 字段）
     pub default_schema: Option<String>,
     /// 当前连接已知的所有 schema 名（不论是否展开）
@@ -87,36 +89,37 @@ enum SqlContext {
 }
 
 /// 通过 cursor 前的纯大写文本，找最近的关键字判定上下文
-fn detect_context(before_cursor_upper: &str) -> SqlContext {
-    let tokens: Vec<String> = before_cursor_upper
-        .split_ascii_whitespace()
-        .map(|t| {
-            t.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .to_string()
-        })
-        .filter(|t| !t.is_empty())
-        .collect();
-
-    // 倒着扫，碰到第一个能定上下文的 token 就返回
-    for (i, t) in tokens.iter().enumerate().rev() {
-        let t = t.as_str();
-
-        // 多词关键字：BY 前面是 ORDER / GROUP → 列名上下文
-        if t == "BY" && i > 0 {
-            let prev = tokens[i - 1].as_str();
-            if prev == "ORDER" || prev == "GROUP" {
-                return SqlContext::Column;
-            }
+fn detect_context(before_cursor: &str) -> SqlContext {
+    let mut tokens = before_cursor.split_ascii_whitespace().rev().peekable();
+    // 倒着扫，碰到第一个能定上下文的 token 就返回；不再复制整段 token 列表。
+    while let Some(token) = tokens.next() {
+        let token = token.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
+        if token.is_empty() {
+            continue;
         }
-
-        match t {
-            // 表名上下文
-            "FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" => return SqlContext::Table,
-            // 列名上下文
-            "SELECT" | "WHERE" | "AND" | "OR" | "ON" | "USING" | "HAVING" | "SET" | "DISTINCT" => {
-                return SqlContext::Column;
-            }
-            _ => {}
+        // 多词关键字：BY 前面是 ORDER / GROUP → 列名上下文。
+        if token.eq_ignore_ascii_case("BY")
+            && tokens.peek().is_some_and(|previous| {
+                let previous =
+                    previous.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
+                previous.eq_ignore_ascii_case("ORDER") || previous.eq_ignore_ascii_case("GROUP")
+            })
+        {
+            return SqlContext::Column;
+        }
+        if ["FROM", "JOIN", "INTO", "UPDATE", "TABLE"]
+            .iter()
+            .any(|keyword| token.eq_ignore_ascii_case(keyword))
+        {
+            return SqlContext::Table;
+        }
+        if [
+            "SELECT", "WHERE", "AND", "OR", "ON", "USING", "HAVING", "SET", "DISTINCT",
+        ]
+        .iter()
+        .any(|keyword| token.eq_ignore_ascii_case(keyword))
+        {
+            return SqlContext::Column;
         }
     }
     SqlContext::Other
@@ -155,36 +158,75 @@ fn extract_tables_in_use(sql: &str) -> Vec<String> {
 /// 提取 (schema, table) 对：schema 来自全限定 `schema.table` 形式
 /// 若是裸表名（无 schema 前缀），返回 (None, table)
 fn extract_tables_with_schema(sql: &str) -> Vec<(Option<String>, String)> {
-    let upper: Vec<String> = sql
-        .split_ascii_whitespace()
-        .map(|t| t.to_ascii_uppercase())
-        .collect();
-    let orig: Vec<&str> = sql.split_ascii_whitespace().collect();
-
     let mut tables = Vec::new();
-    for i in 0..upper.len() {
-        let kw = upper[i].trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
-        if matches!(kw, "FROM" | "JOIN" | "INTO" | "UPDATE") && i + 1 < orig.len() {
-            let raw = orig[i + 1];
-            // 去反引号 / 引号 / 括号等，仅保留 [\w.]
-            let cleaned: String = raw
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-                .collect();
-            // 按 . 拆：[schema, table] 或 [table]
-            let parts: Vec<&str> = cleaned.split('.').filter(|s| !s.is_empty()).collect();
-            match parts.as_slice() {
-                [t] => tables.push((None, (*t).to_string())),
-                [s, t] => tables.push((Some((*s).to_string()), (*t).to_string())),
-                [_, s, t] => {
-                    // catalog.schema.table 形式：取后两段
-                    tables.push((Some((*s).to_string()), (*t).to_string()))
-                }
-                _ => {}
-            }
+    let mut seen = HashSet::new();
+    let mut tokens = sql.split_ascii_whitespace();
+    while let Some(token) = tokens.next() {
+        let keyword = token.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
+        if !["FROM", "JOIN", "INTO", "UPDATE"]
+            .iter()
+            .any(|expected| keyword.eq_ignore_ascii_case(expected))
+        {
+            continue;
+        }
+        let Some(raw) = tokens.next() else {
+            break;
+        };
+        // 数据库标识符通常只有几十字节；异常长 token 不值得为补全复制和清洗。
+        if raw.len() > 4 * 1024 {
+            continue;
+        }
+        let cleaned: String = raw
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        let mut count = 0usize;
+        let mut previous = None;
+        let mut current = None;
+        for part in cleaned.split('.').filter(|part| !part.is_empty()) {
+            count += 1;
+            previous = current;
+            current = Some(part);
+        }
+        let table = match (count, previous, current) {
+            (1, _, Some(table)) => (None, table.to_string()),
+            (2.., Some(schema), Some(table)) => (Some(schema.to_string()), table.to_string()),
+            _ => continue,
+        };
+        if seen.insert(table.clone()) {
+            tables.push(table);
         }
     }
     tables
+}
+
+/// 大脚本补全只分析光标附近最多 256 KiB，避免每次按键复制整份编辑器内容。
+const MAX_COMPLETION_ANALYSIS_BYTES: usize = 256 * 1024;
+
+fn completion_source_window(rope: &Rope, offset: usize) -> (String, usize, usize) {
+    let total_bytes = rope.len();
+    let cursor_byte = rope.floor_char_boundary(offset.min(total_bytes));
+    if total_bytes <= MAX_COMPLETION_ANALYSIS_BYTES {
+        return (rope.to_string(), cursor_byte, 0);
+    }
+    let half = MAX_COMPLETION_ANALYSIS_BYTES / 2;
+    let (start_target, end_target) = if cursor_byte <= half {
+        (0, MAX_COMPLETION_ANALYSIS_BYTES)
+    } else if total_bytes.saturating_sub(cursor_byte) <= half {
+        (total_bytes - MAX_COMPLETION_ANALYSIS_BYTES, total_bytes)
+    } else {
+        (
+            cursor_byte - half,
+            cursor_byte - half + MAX_COMPLETION_ANALYSIS_BYTES,
+        )
+    };
+    let start_byte = rope.ceil_char_boundary(start_target);
+    let end_byte = rope.floor_char_boundary(end_target);
+    (
+        rope.slice(start_byte..end_byte).to_string(),
+        cursor_byte.saturating_sub(start_byte),
+        start_byte,
+    )
 }
 
 /// `documentation` 走 markdown，长名在右侧 docs 面板可见（上游 CompletionMenu 行为）
@@ -310,9 +352,8 @@ impl CompletionProvider for SqlCompletionProvider {
         _window: &mut Window,
         _cx: &mut Context<InputState>,
     ) -> Task<Result<CompletionResponse>> {
-        let text = rope.to_string();
+        let (text, real_offset, window_start_byte) = completion_source_window(rope, offset);
         let bytes = text.as_bytes();
-        let real_offset = offset.min(bytes.len());
 
         // 取光标前的"单词"作为补全前缀（点号场景下即点号后的 partial）
         let mut start = real_offset;
@@ -326,8 +367,9 @@ impl CompletionProvider for SqlCompletionProvider {
         }
         let prefix = &text[start..real_offset];
 
-        let end_pos = rope.offset_to_position(real_offset);
-        let replace_range = lsp_types::Range::new(rope.offset_to_position(start), end_pos);
+        let end_pos = rope.offset_to_position(window_start_byte + real_offset);
+        let replace_range =
+            lsp_types::Range::new(rope.offset_to_position(window_start_byte + start), end_pos);
         let prefix_lower = prefix.to_ascii_lowercase();
 
         // 点号限定：partial 前若紧跟 `限定符.`，取出限定符（别名 / 表名 / 库名）走专门补全
@@ -354,7 +396,7 @@ impl CompletionProvider for SqlCompletionProvider {
 
         // 上下文判定：取前缀单词之前的全部文本（不含当前正在敲的）
         let before = &text[..start];
-        let context = detect_context(&before.to_ascii_uppercase());
+        let context = detect_context(before);
 
         let mut items: Vec<CompletionItem> = Vec::new();
 
@@ -445,8 +487,10 @@ impl CompletionProvider for SqlCompletionProvider {
         // —— 此时单词 prefix 只剩 "T"，匹配不到带空格的整短语
         let phrase = phrase_prefix(&text, real_offset);
         let phrase_upper = phrase.to_ascii_uppercase();
-        let phrase_replace_range =
-            lsp_types::Range::new(rope.offset_to_position(real_offset - phrase.len()), end_pos);
+        let phrase_replace_range = lsp_types::Range::new(
+            rope.offset_to_position(window_start_byte + real_offset - phrase.len()),
+            end_pos,
+        );
 
         // 关键字兜底，总数 ≤ 50
         for kw in SQL_KEYWORDS {

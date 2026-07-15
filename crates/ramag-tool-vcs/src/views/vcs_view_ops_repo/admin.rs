@@ -95,6 +95,9 @@ impl VcsView {
         dest: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
+        if !self.ensure_commit_draft_within_limit(cx) {
+            return;
+        }
         if !self.ensure_open_repo_capacity(&dest.to_string_lossy(), cx) {
             return;
         }
@@ -244,6 +247,9 @@ impl VcsView {
     /// 异步初始化空仓库（真正执行 git init），完成后打开 session。
     /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
     pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !self.ensure_commit_draft_within_limit(cx) {
+            return;
+        }
         if !self.ensure_open_repo_capacity(&path.to_string_lossy(), cx) {
             return;
         }

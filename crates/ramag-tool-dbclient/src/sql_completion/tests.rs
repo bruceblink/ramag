@@ -16,6 +16,7 @@ fn detect_table_context() {
     );
     assert_eq!(detect_context("UPDATE "), SqlContext::Table);
     assert_eq!(detect_context("INSERT INTO "), SqlContext::Table);
+    assert_eq!(detect_context("select * from "), SqlContext::Table);
 }
 
 #[test]
@@ -68,6 +69,14 @@ fn extract_tables_basic() {
     assert_eq!(
         extract_tables_in_use("SELECT * FROM `db`.`users`"),
         vec!["users".to_string()]
+    );
+}
+
+#[test]
+fn extract_tables_deduplicates_repeated_references() {
+    assert_eq!(
+        extract_tables_in_use_for_prefetch("SELECT * FROM users JOIN users"),
+        vec![(None, "users".to_string())]
     );
 }
 
@@ -153,6 +162,18 @@ fn phrase_prefix_multiword() {
     // 空输入 + offset 越界（自动收敛到末尾）
     assert_eq!(phrase_prefix("", 0), "");
     assert_eq!(phrase_prefix("USE", 99), "USE");
+}
+
+#[test]
+fn completion_window_is_bounded_and_preserves_unicode_cursor_offset() {
+    let source = format!("{}数据库{}", "a".repeat(80_000), "b".repeat(80_000));
+    let rope = Rope::from_str(&source);
+    let cursor = source.find("数据").expect("unicode marker exists") + "数据".len();
+    let (window, local_cursor, start_byte) = completion_source_window(&rope, cursor);
+
+    assert!(window.len() <= MAX_COMPLETION_ANALYSIS_BYTES);
+    assert_eq!(start_byte + local_cursor, cursor);
+    assert!(window.is_char_boundary(local_cursor));
 }
 
 #[test]

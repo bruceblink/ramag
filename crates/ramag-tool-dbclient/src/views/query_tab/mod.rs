@@ -41,6 +41,8 @@ pub struct QueryTab {
     pub(super) formatting: bool,
     /// 当前正在跑的任务句柄（drop 后取消异步任务）
     pub(super) current_task: Option<Task<()>>,
+    /// 编辑器停顿后再预拉列元数据；替换句柄会取消尚未触发的旧任务。
+    pub(super) column_prefetch_task: Option<Task<()>>,
     /// 取消句柄：driver 在 acquire 后写入 mysql 后端 thread id（0 = 未拿到）
     pub(super) cancel_handle: Option<ramag_domain::traits::CancelHandle>,
     /// 查询开始时间，仅 running 时为 Some
@@ -118,7 +120,7 @@ impl QueryTab {
                     this.pinned_target = None;
                     this.result.update(cx, |r, cx| r.clear_editable_target(cx));
                 }
-                this.prefetch_columns_for_used_tables(cx);
+                this.schedule_column_prefetch(cx);
                 cx.emit(QueryTabEvent::DraftChanged);
             }
         });
@@ -136,6 +138,7 @@ impl QueryTab {
             running: false,
             formatting: false,
             current_task: None,
+            column_prefetch_task: None,
             cancel_handle: None,
             query_start: None,
             schema_cache,
@@ -162,15 +165,15 @@ impl QueryTab {
     }
 
     /// 手写草稿快照；自动注入或空编辑器不参与跨重启持久化。
-    pub fn draft_text(&self, cx: &gpui::App) -> Option<String> {
+    pub fn draft_text(&self, cx: &gpui::App) -> Option<gpui::SharedString> {
         self.has_user_draft(cx)
-            .then(|| self.editor.read(cx).value().to_string())
+            .then(|| self.editor.read(cx).value())
     }
 
     /// 从本地偏好恢复手写草稿，不触发查询执行。
     pub fn restore_draft(
         &mut self,
-        text: String,
+        text: gpui::SharedString,
         schema: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -256,7 +259,7 @@ impl QueryTab {
         // 默认视为普通写入（可能是历史填入等用户内容）；自动注入路径由调用方再 mark_injected
         self.last_injected_sql = None;
         // set_value 不发 InputEvent::Change（emit_events=false），手动触发预拉
-        self.prefetch_columns_for_used_tables(cx);
+        self.prefetch_columns_now(cx);
         cx.notify();
     }
 
@@ -287,7 +290,7 @@ impl QueryTab {
         // 示例模板属自动注入：未手改前点表树仍可原地覆盖
         self.last_injected_sql = Some(sql.to_string());
         // set_value 不发 Change 事件，手动触发列结构预拉（与 set_sql 一致）
-        self.prefetch_columns_for_used_tables(cx);
+        self.prefetch_columns_now(cx);
         cx.notify();
     }
 

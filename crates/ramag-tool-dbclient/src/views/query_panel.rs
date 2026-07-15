@@ -54,6 +54,8 @@ pub struct QueryPanel {
     draft_subscriptions: Vec<gpui::Subscription>,
     /// 草稿落盘防抖代际；Arc 让会话关闭后最后一次写入仍可完成。
     draft_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// 同一连接的草稿写入串行化；等待锁后再验代际，保证最终落盘的一定是最新快照。
+    draft_write_lock: Arc<futures::lock::Mutex<()>>,
     /// 异步读取旧草稿期间，空默认标签不应抢先覆盖持久化内容。
     draft_load_pending: bool,
     /// 异步恢复期间抑制中间态落盘。
@@ -83,6 +85,7 @@ impl QueryPanel {
             history_sub: None,
             draft_subscriptions: Vec::new(),
             draft_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            draft_write_lock: Arc::new(futures::lock::Mutex::new(())),
             draft_load_pending: false,
             restoring_drafts: false,
             draft_persist_error: None,

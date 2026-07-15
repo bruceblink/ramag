@@ -18,9 +18,9 @@ pub use clipboard::{
 pub use connection::{ConnectionConfig, ConnectionId, DriverKind, TlsVerify};
 pub use git::{
     BlameLine, Branch, BranchKind, Commit, CommitId, ConflictContent, DiffKind, DiffLine,
-    DiffLineKind, FileChangeKind, FileDiff, FileStatus, Hunk, LogOptions, RebaseAction, RebaseTodo,
-    ReflogEntry, Remote, RepoConfig, RepoId, RepoOperation, ResetKind, Signature, Stash, StashId,
-    Tag, TagKind, WorkingTreeStatus,
+    DiffLineKind, FileChangeKind, FileDiff, FileStatus, Hunk, LogOptions, MAX_COMMIT_MESSAGE_BYTES,
+    RebaseAction, RebaseTodo, ReflogEntry, Remote, RepoConfig, RepoId, RepoOperation, ResetKind,
+    Signature, Stash, StashId, Tag, TagKind, WorkingTreeStatus,
 };
 pub use history::{
     QueryHistoryPage, QueryRecord, QueryRecordId, QueryStatus, compact_text_preview,

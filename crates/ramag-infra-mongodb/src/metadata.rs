@@ -60,6 +60,7 @@ pub async fn list_indexes(client: &Client, db: &str, coll: &str) -> Result<Vec<M
     let mut cursor = collection.list_indexes().await.map_err(map_mongo_error)?;
     let mut out = Vec::new();
     while let Some(model) = cursor.try_next().await.map_err(map_mongo_error)? {
+        ensure_metadata_item_limit(out.len().saturating_add(1), "索引")?;
         let name = model
             .options
             .as_ref()

@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{App, AppContext as _, Context, Entity, Window};
+use ramag_domain::error::DomainError;
 use ramag_ui::{EditorDraftPref, EditorWorkspacePref};
 
 use super::QueryPanel;
@@ -79,31 +80,54 @@ impl QueryPanel {
         let Some(key) = self.draft_pref_key() else {
             return;
         };
-        let Ok(json) = serde_json::to_string(&snapshot) else {
-            tracing::warn!("serialize SQL drafts failed");
-            return;
-        };
         let generation = self.draft_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let generation_ref = self.draft_generation.clone();
+        let write_lock = self.draft_write_lock.clone();
+        if let Err(error) = snapshot.validate() {
+            self.draft_persist_error = Some(error);
+            cx.notify();
+            return;
+        }
         // cx.spawn 而非 background spawn：失败要回写 draft_persist_error 供警示条展示。
-        // 任务 detach 后独立运行至完成，面板关闭不影响最后一次真实落盘
+        // 快照只克隆 SharedString 引用；真正的 JSON 生成推迟到防抖命中后，并在线程池执行。
+        // 任务 detach 后独立运行至完成，面板关闭不影响最后一次真实落盘。
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PERSIST_DEBOUNCE).await;
             if generation_ref.load(Ordering::Relaxed) != generation {
                 return;
             }
-            let result = storage.set_preference(&key, &json).await;
-            let _ = this.update(cx, |this, cx| match &result {
-                Ok(()) => {
-                    // 恢复成功后撤掉之前的失败警示
-                    if this.draft_persist_error.take().is_some() {
+            let serialized = ramag_app::run_blocking(move || {
+                snapshot.to_json().map_err(DomainError::InvalidConfig)
+            })
+            .await;
+            let result = match serialized {
+                Ok(json) => {
+                    let _guard = write_lock.lock().await;
+                    if generation_ref.load(Ordering::Relaxed) != generation {
+                        return;
+                    }
+                    storage.set_preference(&key, &json).await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "persist SQL drafts failed");
+            }
+            let _ = this.update(cx, |this, cx| {
+                if generation_ref.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                match &result {
+                    Ok(()) => {
+                        // 恢复成功后撤掉之前的失败警示
+                        if this.draft_persist_error.take().is_some() {
+                            cx.notify();
+                        }
+                    }
+                    Err(e) => {
+                        this.draft_persist_error = Some(e.to_string());
                         cx.notify();
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "persist SQL drafts failed");
-                    this.draft_persist_error = Some(e.to_string());
-                    cx.notify();
                 }
             });
         })

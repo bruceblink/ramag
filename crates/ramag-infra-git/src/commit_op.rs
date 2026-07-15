@@ -2,12 +2,10 @@
 
 use std::path::Path;
 
-use ramag_domain::entities::CommitId;
+use ramag_domain::entities::{CommitId, MAX_COMMIT_MESSAGE_BYTES};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{run_git_bytes, run_git_stdin, run_git_text};
-
-const MAX_COMMIT_MESSAGE_BYTES: usize = 1024 * 1024;
 
 pub fn run(repo_path: &Path, message: &str, amend: bool, sign: bool) -> Result<CommitId> {
     if message.len() > MAX_COMMIT_MESSAGE_BYTES {

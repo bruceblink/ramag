@@ -1,6 +1,8 @@
 //! 工作区底部 commit 面板：subject 输入 + amend 切换 + 提交按钮
 
-use gpui::{AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, px};
+use gpui::{
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
+};
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -9,6 +11,7 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
+use ramag_domain::entities::MAX_COMMIT_MESSAGE_BYTES;
 
 use super::vcs_view::VcsView;
 
@@ -26,7 +29,9 @@ impl VcsView {
             .map(|s| s.files.iter().filter(|f| f.staged.is_some()).count())
             .unwrap_or(0);
         // 非 amend 必须有 commit message；amend 可沿用上一次 message 故不强制
-        let has_message = !self.commit_input.read(cx).value().trim().is_empty();
+        let commit_value = self.commit_input.read(cx).value();
+        let has_message = !commit_value.trim().is_empty();
+        let message_too_large = commit_value.len() > MAX_COMMIT_MESSAGE_BYTES;
         let has_head = self
             .status
             .as_ref()
@@ -40,7 +45,8 @@ impl VcsView {
                 .is_none()
             && (!self.commit_amend || has_head)
             && (staged_count > 0 || self.commit_amend)
-            && (has_message || self.commit_amend);
+            && (has_message || self.commit_amend)
+            && !message_too_large;
 
         // 主按钮：普通模式提交暂存区；Amend 模式改写上一次 commit
         let committing = self.busy_label == Some("提交中…");
@@ -133,21 +139,32 @@ impl VcsView {
                             .text_color(accent)
                             .child("Commit"),
                     )
-                    .child(div().text_xs().text_color(muted_fg).child(
-                        if staged_count == 0 && !self.commit_amend {
-                            "· 暂存区为空（先暂存文件）".to_string()
-                        } else if !has_message && !self.commit_amend {
-                            format!("· 已暂存 {staged_count} 个文件，填写提交信息后可提交")
-                        } else {
-                            format!("· 已暂存 {staged_count} 个文件")
-                        },
-                    )),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted_fg)
+                            .child(if message_too_large {
+                                format!(
+                                    "· 提交信息超过 {} MiB 上限，请缩短后再提交",
+                                    MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+                                )
+                            } else if staged_count == 0 && !self.commit_amend {
+                                "· 暂存区为空（先暂存文件）".to_string()
+                            } else if !has_message && !self.commit_amend {
+                                format!("· 已暂存 {staged_count} 个文件，填写提交信息后可提交")
+                            } else {
+                                format!("· 已暂存 {staged_count} 个文件")
+                            }),
+                    ),
             )
             .child(
                 Input::new(&self.commit_input)
                     .h(px(72.0))
                     .into_any_element(),
             )
+            .when_some(self.commit_draft_error.clone(), |panel, error| {
+                panel.child(div().text_xs().text_color(theme.warning).child(error))
+            })
             .child(
                 h_flex()
                     .items_center()

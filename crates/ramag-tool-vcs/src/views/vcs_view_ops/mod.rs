@@ -5,7 +5,7 @@ mod stash;
 mod tag;
 
 use gpui::Context;
-use ramag_domain::entities::{BranchKind, LogOptions};
+use ramag_domain::entities::{BranchKind, LogOptions, MAX_COMMIT_MESSAGE_BYTES};
 use tracing::{error, info};
 
 use super::helpers::{BranchOp, FileOp, FileTabSource, HISTORY_PAGE_SIZE};
@@ -314,7 +314,16 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        let message = self.commit_input.read(cx).value().trim().to_string();
+        let raw_message = self.commit_input.read(cx).value();
+        if raw_message.len() > MAX_COMMIT_MESSAGE_BYTES {
+            self.error = Some(format!(
+                "commit message 超过 {} MiB 上限，请缩短后重试",
+                MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+            ));
+            cx.notify();
+            return;
+        }
+        let message = raw_message.trim().to_string();
         if self.commit_amend
             && self
                 .status
@@ -365,7 +374,9 @@ impl VcsView {
                         // 提交成功：清空 message（避免下次误用同一条），已提交文件的 tabs 对齐；
                         // 持久化的草稿一并清除（作废在途防抖写）
                         this.pending_commit_text = Some(gpui::SharedString::default());
-                        this.commit_draft_gen = this.commit_draft_gen.wrapping_add(1);
+                        this.commit_draft_gen
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        this.commit_draft_error = None;
                         if let Some(path) = this.repo.as_ref().map(|r| r.path.clone()) {
                             let storage = this.storage.clone();
                             cx.background_executor()

@@ -51,6 +51,8 @@ pub struct MongoQueryPanel {
     draft_subscriptions: Vec<Subscription>,
     /// 草稿落盘防抖代际；会话关闭后最后一次后台写仍可完成。
     draft_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// 草稿写入串行化；等待锁后再验代际，避免较慢旧写覆盖最新内容。
+    draft_write_lock: Arc<futures::lock::Mutex<()>>,
     /// 读取旧草稿期间，空默认标签不得覆盖存储内容。
     draft_load_pending: bool,
     restoring_drafts: bool,
@@ -74,6 +76,7 @@ impl MongoQueryPanel {
             history_sub: None,
             draft_subscriptions: Vec::new(),
             draft_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            draft_write_lock: Arc::new(futures::lock::Mutex::new(())),
             draft_load_pending: false,
             restoring_drafts: false,
             draft_persist_error: None,

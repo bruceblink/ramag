@@ -145,15 +145,15 @@ impl MongoQueryTab {
     }
 
     /// 手写草稿快照；默认模板和树自动注入不落盘。
-    pub fn draft_text(&self, cx: &gpui::App) -> Option<String> {
+    pub fn draft_text(&self, cx: &gpui::App) -> Option<gpui::SharedString> {
         self.has_user_draft(cx)
-            .then(|| self.editor.read(cx).value().to_string())
+            .then(|| self.editor.read(cx).value())
     }
 
     /// 从本地偏好恢复手写命令，不自动执行。
     pub fn restore_draft(
         &mut self,
-        text: String,
+        text: gpui::SharedString,
         database: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -291,7 +291,20 @@ impl MongoQueryTab {
         if self.running {
             return;
         }
-        let text = self.editor.read(cx).value().to_string();
+        let text = self.editor.read(cx).value();
+        if text.len() > ramag_ui::MAX_EDITOR_DRAFT_BYTES {
+            self.result.update(cx, |panel, cx| {
+                panel.set_error(
+                    format!(
+                        "MongoDB 命令超过 {} MiB 安全上限，无法运行；请拆分命令后重试",
+                        ramag_ui::MAX_EDITOR_DRAFT_BYTES / 1024 / 1024
+                    ),
+                    cx,
+                );
+            });
+            return;
+        }
+        let text = text.to_string();
         let cmd: Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
@@ -466,7 +479,19 @@ impl MongoQueryTab {
             cx.notify();
             return;
         }
-        let text = self.editor.read(cx).value().to_string();
+        let text = self.editor.read(cx).value();
+        if text.len() > ramag_ui::MAX_EDITOR_DRAFT_BYTES {
+            self.result.update(cx, |panel, cx| {
+                panel.set_error(
+                    format!(
+                        "MongoDB 命令超过 {} MiB 安全上限，无法格式化；请拆分命令后重试",
+                        ramag_ui::MAX_EDITOR_DRAFT_BYTES / 1024 / 1024
+                    ),
+                    cx,
+                );
+            });
+            return;
+        }
         if text.trim().is_empty() {
             return;
         }

@@ -1,8 +1,10 @@
 //! 仓库 / Session 管理 ops：pick_directory / open_recent_repo / remove_recent_repo /
 //! remove_open_repo / open_repo_async（共享异步流：open + 拉 status / 分支 / stash 等）
 
+use std::sync::atomic::Ordering;
+
 use gpui::Context;
-use ramag_domain::entities::BranchKind;
+use ramag_domain::entities::{BranchKind, MAX_COMMIT_MESSAGE_BYTES};
 use tracing::{error, info};
 
 use super::helpers::{ActiveView, FileTab, FileTabSource, FilesViewMode};
@@ -41,6 +43,9 @@ impl RawFileContent {
 impl VcsView {
     /// 弹出系统目录选择器；用户选完后异步打开仓库
     pub(super) fn pick_directory(&mut self, cx: &mut Context<Self>) {
+        if !self.ensure_commit_draft_within_limit(cx) {
+            return;
+        }
         let driver = self.driver.clone();
         self.loading = true;
         self.error = None;
@@ -69,6 +74,9 @@ impl VcsView {
             self.notify_warning("当前 Git 写操作尚未完成，完成后再切换仓库", cx);
             return;
         }
+        if !self.ensure_commit_draft_within_limit(cx) {
+            return;
+        }
         if !self.ensure_open_repo_capacity(&path, cx) {
             return;
         }
@@ -94,6 +102,22 @@ impl VcsView {
             format!("仓库标签已达上限（{MAX_OPEN_REPOS} 个），请先关闭不需要的标签"),
             cx,
         );
+        false
+    }
+
+    /// 超限草稿既不能提交，也不能安全进入有界会话缓存；先让用户缩短，避免切仓时丢稿。
+    pub(super) fn ensure_commit_draft_within_limit(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.repo.is_none()
+            || self.commit_input.read(cx).value().len() <= MAX_COMMIT_MESSAGE_BYTES
+        {
+            return true;
+        }
+        let message = format!(
+            "提交草稿超过 {} MiB 上限，尚未保存；请缩短后再切换或关闭仓库",
+            MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+        );
+        self.commit_draft_error = Some(message.clone());
+        self.notify_warning(message, cx);
         false
     }
 
@@ -293,6 +317,9 @@ impl VcsView {
         };
         let is_current = self.repo.as_ref().map(|r| r.path == path).unwrap_or(false);
         if is_current {
+            if !self.ensure_commit_draft_within_limit(cx) {
+                return;
+            }
             // 关闭标签不应静默丢掉尚未提交的 message 与已打开文件；本次进程内重开可恢复。
             self.save_current_session_to_cache(cx);
         }
@@ -345,24 +372,45 @@ impl VcsView {
     /// 把当前仓库的文件 tab + commit 草稿状态保存到缓存（切换仓库前调用）
     ///
     /// commit_input 的当前文本同时入快照——切回该仓库时再原样恢复，避免跨仓库串扰
-    pub(super) fn save_current_session_to_cache(&mut self, cx: &gpui::App) {
+    pub(super) fn save_current_session_to_cache(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.repo.as_ref().map(|r| r.path.clone()) else {
             return;
         };
         let commit_text = self.commit_input.read(cx).value();
+        debug_assert!(commit_text.len() <= MAX_COMMIT_MESSAGE_BYTES);
         // 切仓即持久化当前草稿（作废在途防抖任务——其读到的将是新仓文本），重启后可恢复
-        self.commit_draft_gen = self.commit_draft_gen.wrapping_add(1);
+        let generation = self.commit_draft_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation_ref = self.commit_draft_gen.clone();
         {
             let storage = self.storage.clone();
+            let write_lock = self.commit_draft_write_lock.clone();
             let key = commit_draft_pref_key(&path);
-            let text = commit_text.to_string();
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(e) = storage.set_preference(&key, &text).await {
-                        tracing::warn!(error = %e, "persist commit draft on switch failed");
+            let text = commit_text.clone();
+            cx.spawn(async move |this, cx| {
+                let _guard = write_lock.lock().await;
+                // 切仓快照必须落盘；后续新仓输入会推进全局代际，但写的是不同 key，不能取消本次。
+                let result = storage.set_preference(&key, &text).await;
+                if let Err(error) = &result {
+                    tracing::warn!(error = %error, "persist commit draft on switch failed");
+                }
+                let _ = this.update(cx, |this, cx| {
+                    if generation_ref.load(Ordering::Relaxed) != generation {
+                        return;
                     }
-                })
-                .detach();
+                    match result {
+                        Ok(()) => {
+                            if this.commit_draft_error.take().is_some() {
+                                cx.notify();
+                            }
+                        }
+                        Err(error) => {
+                            this.commit_draft_error = Some(format!("提交草稿保存失败：{error}"));
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
         }
         // 切回仓库时本就必须重读磁盘 / Git 状态；缓存只保留 tab 元数据，不能让旧 diff
         // 或 4MB 文件快照在每个访问过的仓库中长期占用内存。
@@ -385,36 +433,55 @@ impl VcsView {
     /// 提交草稿防抖持久化：输入停顿 800ms 后按当前仓库 path 写 prefs；
     /// 期间再输入 / 切仓则代际不符自动作废（切仓另有同步写兜底）
     pub(super) fn schedule_commit_draft_persist(&mut self, cx: &mut gpui::Context<Self>) {
-        if self.repo.is_none() {
+        let Some(path) = self.repo.as_ref().map(|repo| repo.path.clone()) else {
+            return;
+        };
+        let text = self.commit_input.read(cx).value();
+        let generation = self.commit_draft_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation_ref = self.commit_draft_gen.clone();
+        if text.len() > MAX_COMMIT_MESSAGE_BYTES {
+            self.commit_draft_error = Some(format!(
+                "提交草稿超过 {} MiB 上限，未保存；请缩短后重试",
+                MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+            ));
+            cx.notify();
             return;
         }
-        self.commit_draft_gen = self.commit_draft_gen.wrapping_add(1);
-        let generation = self.commit_draft_gen;
         let storage = self.storage.clone();
+        let write_lock = self.commit_draft_write_lock.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(800))
                 .await;
-            // 代际校验通过才读文本与 path（保证读到的仍是同一仓库的草稿）
-            let snapshot = this
-                .update(cx, |this, cx| {
-                    if this.commit_draft_gen != generation {
-                        return None;
-                    }
-                    let path = this.repo.as_ref().map(|r| r.path.clone())?;
-                    Some((path, this.commit_input.read(cx).value().to_string()))
-                })
-                .ok()
-                .flatten();
-            let Some((path, text)) = snapshot else {
+            if generation_ref.load(Ordering::Relaxed) != generation {
                 return;
-            };
-            if let Err(e) = storage
-                .set_preference(&commit_draft_pref_key(&path), &text)
-                .await
-            {
-                tracing::warn!(error = %e, "persist commit draft failed");
             }
+            let _guard = write_lock.lock().await;
+            if generation_ref.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let result = storage
+                .set_preference(&commit_draft_pref_key(&path), &text)
+                .await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "persist commit draft failed");
+            }
+            let _ = this.update(cx, |this, cx| {
+                if generation_ref.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        if this.commit_draft_error.take().is_some() {
+                            cx.notify();
+                        }
+                    }
+                    Err(error) => {
+                        this.commit_draft_error = Some(format!("提交草稿保存失败：{error}"));
+                        cx.notify();
+                    }
+                }
+            });
         })
         .detach();
     }
@@ -494,6 +561,25 @@ pub(super) async fn open_repo_async(
     if !capacity_available {
         if let Err(error) = driver.close_repo(&repo_config.id).await {
             tracing::warn!(error = %error, "close repo after tab limit rejection failed");
+        }
+        return;
+    }
+
+    // 文件对话框或远程操作期间仍做一次防御性复核，避免异步间隙中的超限草稿被切仓丢弃。
+    let draft_safe = this
+        .update(cx, |this, cx| {
+            let safe = this.ensure_commit_draft_within_limit(cx);
+            if !safe {
+                this.loading = false;
+                this.loading_label = None;
+                cx.notify();
+            }
+            safe
+        })
+        .unwrap_or(false);
+    if !draft_safe {
+        if let Err(error) = driver.close_repo(&repo_config.id).await {
+            tracing::warn!(error = %error, "close repo after commit draft rejection failed");
         }
         return;
     }
@@ -584,6 +670,17 @@ pub(super) async fn open_repo_async(
             let path = repo_config.path.clone();
             cx.spawn(async move |this, cx| {
                 let draft = match storage.get_preference(&commit_draft_pref_key(&path)).await {
+                    Ok(Some(draft)) if draft.len() > MAX_COMMIT_MESSAGE_BYTES => {
+                        tracing::warn!(bytes = draft.len(), "ignore oversized commit draft");
+                        let _ = this.update(cx, |this, cx| {
+                            this.commit_draft_error = Some(format!(
+                                "已忽略超过 {} MiB 上限的历史提交草稿",
+                                MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+                            ));
+                            cx.notify();
+                        });
+                        return;
+                    }
                     Ok(Some(draft)) if !draft.is_empty() => draft,
                     Ok(_) => return,
                     Err(e) => {
