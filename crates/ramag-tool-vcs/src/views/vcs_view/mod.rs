@@ -271,6 +271,8 @@ pub struct VcsView {
     /// 虚拟列表滚动句柄：history 中栏 + reflog 列表（uniform_list 行级，万级也不卡）
     pub(super) history_scroll: UniformListScrollHandle,
     pub(super) reflog_scroll: UniformListScrollHandle,
+    pub(super) stash_scroll: UniformListScrollHandle,
+    pub(super) rebase_scroll: UniformListScrollHandle,
     /// pf_content / diff 横向滚动句柄：uniform_list 管 Y，外层 overflow_x_scroll 管 X
     pub(super) pf_content_h_scroll: ScrollHandle,
     /// diff 横滚 handle（unified 单栏 + split 左右两栏共享，两栏一起横滚）
@@ -411,6 +413,7 @@ impl VcsView {
         self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
         self.show_rebase_plan = false;
         self.rebase_todos.clear();
+        self.rebase_scroll = UniformListScrollHandle::new();
         self.loading_rebase_plan = false;
         self.rebase_request_seq = self.rebase_request_seq.wrapping_add(1);
         self.conflict_editor_path = None;
@@ -447,6 +450,7 @@ impl VcsView {
         self.conflict_request_seq = self.conflict_request_seq.wrapping_add(1);
         // 列表清空：切仓后 open_repo_async 会重拉，避免拉取期间短暂显示旧仓数据
         self.stashes.clear();
+        self.stash_scroll = UniformListScrollHandle::new();
         self.loading_stashes = false;
         self.stash_request_seq = self.stash_request_seq.wrapping_add(1);
         self.tags.clear();

@@ -295,16 +295,26 @@ impl TableTreePanel {
         let Some(conn) = self.connection.clone() else {
             return;
         };
+        let Some(mutation_token) = self.ddl_gate.begin() else {
+            self.pending_notification =
+                Some(Notification::warning("上一项结构变更尚未完成，请稍候").autohide(true));
+            cx.notify();
+            return;
+        };
+        cx.notify();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let result = svc
                 .execute_with_history(&conn, &Query::new(sql.clone()))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.connection.as_ref().map(|current| &current.id) != Some(&conn.id) {
+                let current_mutation = this.ddl_gate.finish(mutation_token);
+                let current_connection =
+                    this.connection.as_ref().map(|current| &current.id) == Some(&conn.id);
+                if !current_connection || !current_mutation {
                     this.pending_notification = Some(match &result {
                         Ok(_) => Notification::success(format!(
-                            "{success_msg}（原连接「{}」；当前树未自动刷新）",
+                            "{success_msg}（发起时的连接「{}」；当前树状态已变化，未自动刷新）",
                             conn.name
                         ))
                         .autohide(true),
@@ -316,7 +326,7 @@ impl TableTreePanel {
                                 "tree ddl failed after connection changed"
                             );
                             Notification::error(
-                                error.write_hint(&format!("原连接「{}」执行失败", conn.name)),
+                                error.write_hint(&format!("发起时的连接「{}」执行失败", conn.name)),
                             )
                             .autohide(true)
                         }

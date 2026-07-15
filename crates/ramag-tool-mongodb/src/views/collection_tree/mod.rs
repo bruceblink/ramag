@@ -23,7 +23,7 @@ use gpui_component::{
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoCollection, MongoDatabase};
-use ramag_ui::platform::primary_shortcut;
+use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 use row::TreeRowsCacheEntry;
 use tracing::{error, info};
 
@@ -59,6 +59,8 @@ pub struct CollectionTreePanel {
     auto_expand_pending: bool,
     /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
     pending_notification: Option<gpui_component::notification::Notification>,
+    /// 集合级写操作串行化闸门；连接切换会使旧任务 token 失效。
+    mutation_gate: AsyncMutationGate,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,6 +154,7 @@ impl CollectionTreePanel {
             tree_rows_cache: RefCell::new(None),
             auto_expand_pending: false,
             pending_notification: None,
+            mutation_gate: AsyncMutationGate::default(),
             _subscriptions: subs,
         }
     }
@@ -177,6 +180,7 @@ impl CollectionTreePanel {
 
     /// 连接切换：清空旧状态，异步拉 db 列表。如果连接配置带 database 字段，预填到 active_db
     pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
+        self.mutation_gate.reset();
         self.active_db = conn
             .as_ref()
             .and_then(|c| c.database.clone())
@@ -559,6 +563,9 @@ impl Render for CollectionTreePanel {
         // 库过多时搜索不自动补拉未加载 db（防雪崩，见 ensure_search_coverage）——如实标注范围
         if !filter.is_empty() && total_dbs > 50 {
             footer_text.push_str(" · 库过多，搜索仅覆盖已展开的库");
+        }
+        if self.mutation_gate.is_busy() {
+            footer_text.push_str(" · 写操作执行中…");
         }
 
         v_flex()

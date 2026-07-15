@@ -296,6 +296,7 @@ impl VcsView {
         self.loading_rebase_plan = true;
         self.rebase_plan_onto = onto;
         self.show_rebase_plan = true;
+        self.rebase_scroll = gpui::UniformListScrollHandle::new();
         self.error = None;
         self.rebase_request_seq = self.rebase_request_seq.wrapping_add(1);
         let request_seq = self.rebase_request_seq;

@@ -230,6 +230,8 @@ impl VcsView {
             conflict_theirs_scroll: UniformListScrollHandle::new(),
             history_scroll: UniformListScrollHandle::new(),
             reflog_scroll: UniformListScrollHandle::new(),
+            stash_scroll: UniformListScrollHandle::new(),
+            rebase_scroll: UniformListScrollHandle::new(),
             pf_content_h_scroll: ScrollHandle::new(),
             diff_h_scroll: ScrollHandle::new(),
             history_pane_visible: false,

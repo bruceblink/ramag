@@ -120,9 +120,23 @@ pub(super) fn database_context_menu(
 // ===== 命令执行 =====
 
 impl CollectionTreePanel {
+    fn begin_tree_mutation(&mut self, cx: &mut Context<Self>) -> Option<ramag_ui::MutationToken> {
+        let Some(token) = self.mutation_gate.begin() else {
+            self.pending_notification =
+                Some(Notification::warning("上一项集合操作尚未完成，请稍候").autohide(true));
+            cx.notify();
+            return None;
+        };
+        cx.notify();
+        Some(token)
+    }
+
     /// delete 全部文档（q:{} + limit:0），集合与索引保留
     pub(super) fn clear_collection(&mut self, db: String, coll: String, cx: &mut Context<Self>) {
         let Some(conf) = self.connection.clone() else {
+            return;
+        };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
             return;
         };
         let svc = self.service.clone();
@@ -130,12 +144,15 @@ impl CollectionTreePanel {
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
             let _ = this.update(cx, |this, cx| {
-                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                let current_connection =
+                    this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
+                if !current_connection || !current_mutation {
                     this.pending_notification = Some(match &r {
                         Ok(reply) => {
                             let n = reply.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
                             Notification::success(format!(
-                                "已在原连接「{}」清空 {db}.{coll}，删除 {n} 个文档；当前树未自动刷新",
+                                "已在发起时的连接「{}」清空 {db}.{coll}，删除 {n} 个文档；当前树状态已变化，未自动刷新",
                                 conf.name
                             ))
                             .autohide(true)
@@ -149,7 +166,7 @@ impl CollectionTreePanel {
                                 "clear collection failed after connection changed"
                             );
                             Notification::error(error.write_hint(&format!(
-                                "原连接「{}」清空失败",
+                                "发起时的连接「{}」清空失败",
                                 conf.name
                             )))
                             .autohide(true)
@@ -192,6 +209,9 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let cmd = json!({
             "renameCollection": format!("{db}.{old}"),
@@ -200,10 +220,13 @@ impl CollectionTreePanel {
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, "admin", cmd).await;
             let _ = this.update(cx, |this, cx| {
-                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                let current_connection =
+                    this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
+                if !current_connection || !current_mutation {
                     this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
-                            "已在原连接「{}」完成重命名 {db}.{old} → {db}.{new}；当前树未自动刷新",
+                            "已在发起时的连接「{}」完成重命名 {db}.{old} → {db}.{new}；当前树状态已变化，未自动刷新",
                             conf.name
                         ))
                         .autohide(true),
@@ -216,7 +239,7 @@ impl CollectionTreePanel {
                                 "rename collection failed after connection changed"
                             );
                             Notification::error(error.write_hint(&format!(
-                                "原连接「{}」重命名失败",
+                                "发起时的连接「{}」重命名失败",
                                 conf.name
                             )))
                             .autohide(true)
@@ -255,15 +278,21 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let cmd = json!({"drop": coll.clone()});
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
             let _ = this.update(cx, |this, cx| {
-                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                let current_connection =
+                    this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
+                if !current_connection || !current_mutation {
                     this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
-                            "已在原连接「{}」删除 {db}.{coll}；当前树未自动刷新",
+                            "已在发起时的连接「{}」删除 {db}.{coll}；当前树状态已变化，未自动刷新",
                             conf.name
                         ))
                         .autohide(true),
@@ -276,7 +305,7 @@ impl CollectionTreePanel {
                                 "drop collection failed after connection changed"
                             );
                             Notification::error(error.write_hint(&format!(
-                                "原连接「{}」删除集合失败",
+                                "发起时的连接「{}」删除集合失败",
                                 conf.name
                             )))
                             .autohide(true)
@@ -313,15 +342,21 @@ impl CollectionTreePanel {
         let Some(conf) = self.connection.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let cmd = json!({"dropDatabase": 1});
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
             let _ = this.update(cx, |this, cx| {
-                if this.connection.as_ref().map(|current| &current.id) != Some(&conf.id) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                let current_connection =
+                    this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
+                if !current_connection || !current_mutation {
                     this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
-                            "已在原连接「{}」删除数据库 {db}；当前树未自动刷新",
+                            "已在发起时的连接「{}」删除数据库 {db}；当前树状态已变化，未自动刷新",
                             conf.name
                         ))
                         .autohide(true),
@@ -332,9 +367,10 @@ impl CollectionTreePanel {
                                 db = %db,
                                 "drop database failed after connection changed"
                             );
-                            Notification::error(
-                                error.write_hint(&format!("原连接「{}」删除数据库失败", conf.name)),
-                            )
+                            Notification::error(error.write_hint(&format!(
+                                "发起时的连接「{}」删除数据库失败",
+                                conf.name
+                            )))
                             .autohide(true)
                         }
                     });

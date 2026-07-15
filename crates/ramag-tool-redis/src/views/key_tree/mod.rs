@@ -27,7 +27,7 @@ use gpui_component::{
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
-use ramag_ui::platform::primary_shortcut;
+use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 
 use tree::{TreeNode, VisibleRow, build_tree};
 
@@ -130,6 +130,8 @@ pub struct KeyTreePanel {
     uniform_scroll: UniformListScrollHandle,
     /// 右键删除操作完成后的 toast，下次 render 推送
     pending_notification: Option<gpui_component::notification::Notification>,
+    /// 树级写操作串行化闸门；切换连接或 DB 后旧任务 token 失效。
+    mutation_gate: AsyncMutationGate,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -185,6 +187,7 @@ impl KeyTreePanel {
             scan_target: KEYS_PAGE_SIZE,
             uniform_scroll: UniformListScrollHandle::new(),
             pending_notification: None,
+            mutation_gate: AsyncMutationGate::default(),
             _subscriptions: subs,
         }
     }
@@ -196,6 +199,7 @@ impl KeyTreePanel {
         db: u8,
         cx: &mut Context<Self>,
     ) {
+        self.mutation_gate.reset();
         self.config = config;
         self.db = db;
         self.selected = None;
@@ -309,6 +313,7 @@ impl Render for KeyTreePanel {
         let (visible_rc, visible_leaf_count) = self.visible_rows();
         let selected = self.selected.clone();
         let read_only = self.is_read_only();
+        let mutating = self.mutation_gate.is_busy();
 
         // 状态栏：扫描中报进度；带服务端 MATCH 时标注模式，区别于「共 N（全库）」
         let pattern_note = self
@@ -316,7 +321,7 @@ impl Render for KeyTreePanel {
             .as_deref()
             .map(|p| format!("MATCH {p} · "))
             .unwrap_or_default();
-        let count_label = if self.config.is_none() {
+        let mut count_label = if self.config.is_none() {
             "尚未连接".to_string()
         } else if self.search_pending {
             format!("正在准备全库搜索“{}”…", self.query)
@@ -336,6 +341,9 @@ impl Render for KeyTreePanel {
         } else {
             format!("{pattern_note}匹配 {visible_leaf_count} / {total}")
         };
+        if mutating {
+            count_label.push_str(" · 写操作执行中…");
+        }
 
         // 顶部第 1 行：DB 选择
         let current_db = self.db;
@@ -439,9 +447,11 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .disabled(read_only)
+                    .disabled(read_only || mutating)
                     .tooltip(if read_only {
                         "生产连接为只读，不能新建 Key"
+                    } else if mutating {
+                        "上一项写操作尚未完成"
                     } else {
                         "新建 Key"
                     })
@@ -508,8 +518,12 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::ellipsis())
-                    .tooltip("更多操作")
-                    .disabled(read_only)
+                    .tooltip(if mutating {
+                        "上一项写操作尚未完成"
+                    } else {
+                        "更多操作"
+                    })
+                    .disabled(read_only || mutating)
                     .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                         ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
                     })

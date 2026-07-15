@@ -2,9 +2,12 @@
 //!
 //! 行尾按钮 [Apply][Pop][Drop]，每条 stash 显示 stash@{N} + message + 时间。
 
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
+use std::ops::Range;
+use std::rc::Rc;
+
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px, uniform_list};
 use gpui_component::{ActiveTheme, IconName, h_flex, v_flex};
-use ramag_domain::entities::Stash;
+use ramag_domain::entities::{Stash, contains_case_insensitive};
 
 use super::helpers::{StashOp, side_op_button};
 use super::vcs_view::VcsView;
@@ -36,19 +39,24 @@ impl VcsView {
                 .into_any_element();
         }
         // Files panel 搜索框在 Stash 模式按描述过滤（与 Changes/Project 的路径过滤语义对齐）
-        let query = self
-            .files_search_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_lowercase();
-        let rows: Vec<AnyElement> = self
-            .stashes
-            .iter()
-            .filter(|s| query.is_empty() || s.message.to_lowercase().contains(&query))
-            .map(|s| stash_row(s, busy, cx).into_any_element())
-            .collect();
-        if rows.is_empty() {
+        let search = self.files_search_input.read(cx);
+        let search_value = search.value();
+        let query = search_value.trim();
+        let filtered_indices = (!query.is_empty()).then(|| {
+            Rc::new(
+                self.stashes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, stash)| {
+                        contains_case_insensitive(&stash.message, query).then_some(index)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let row_count = filtered_indices
+            .as_ref()
+            .map_or(self.stashes.len(), |indices| indices.len());
+        if row_count == 0 {
             return div()
                 .pl(px(4.0))
                 .text_xs()
@@ -56,7 +64,28 @@ impl VcsView {
                 .child("没有匹配的 stash")
                 .into_any_element();
         }
-        v_flex().gap(px(2.0)).children(rows).into_any_element()
+        uniform_list(
+            "vcs-stash-rows",
+            row_count,
+            cx.processor(move |this, range: Range<usize>, _, cx| {
+                range
+                    .filter_map(|visible_index| {
+                        let source_index = filtered_indices
+                            .as_ref()
+                            .and_then(|indices| indices.get(visible_index).copied())
+                            .unwrap_or(visible_index);
+                        this.stashes
+                            .get(source_index)
+                            .map(|stash| stash_row(stash, busy, cx).into_any_element())
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.stash_scroll)
+        .flex_1()
+        .min_h_0()
+        .gap(px(2.0))
+        .into_any_element()
     }
 }
 

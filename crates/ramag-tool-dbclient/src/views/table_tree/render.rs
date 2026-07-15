@@ -96,6 +96,9 @@ impl Render for TableTreePanel {
         if has_filter && failed_schemas > 0 {
             header_text.push_str(&format!(" · {failed_schemas} 个库加载失败"));
         }
+        if self.ddl_gate.is_busy() {
+            header_text.push_str(" · 结构变更执行中…");
+        }
         let toggle_icon = if show_system {
             IconName::Eye
         } else {

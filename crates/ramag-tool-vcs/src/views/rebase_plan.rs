@@ -1,15 +1,16 @@
 //! 交互式 Rebase 计划编辑器：todo 列表（action dropdown / 上移 / 下移）+ 取消 / 执行
 
+use std::ops::Range;
+
 use gpui::{
     AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Styled, Window, div, px,
+    SharedString, Styled, Window, div, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    scroll::ScrollableElement as _,
     v_flex,
 };
 use ramag_domain::entities::RebaseAction;
@@ -122,40 +123,56 @@ impl VcsView {
             );
 
         let entity = cx.entity();
-        let todos = self.rebase_todos.clone();
-        let total = todos.len();
-        let rows: Vec<AnyElement> = todos
-            .iter()
-            .enumerate()
-            .map(|(idx, todo)| {
-                let can_move_up = idx > 0
-                    && !(idx == 1
-                        && matches!(todo.action, RebaseAction::Squash | RebaseAction::Fixup));
-                let can_move_down = idx + 1 < total
-                    && !(idx == 0
-                        && matches!(
-                            todos[idx + 1].action,
-                            RebaseAction::Squash | RebaseAction::Fixup
-                        ));
-                rebase_todo_row(
-                    idx,
-                    todo.action,
-                    &todo.hash,
-                    &todo.subject,
-                    can_move_up,
-                    can_move_down,
-                    busy,
-                    entity.clone(),
-                    cx,
-                )
-            })
-            .collect();
-
-        let body = div()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scrollbar()
-            .child(v_flex().p(px(4.0)).children(rows));
+        let total = self.rebase_todos.len();
+        let body = uniform_list(
+            "vcs-rebase-todos",
+            total,
+            cx.processor(move |this, range: Range<usize>, _, cx| {
+                range
+                    .filter_map(|idx| {
+                        let (action, hash, subject, can_move_up, can_move_down) = {
+                            let todo = this.rebase_todos.get(idx)?;
+                            let can_move_up = idx > 0
+                                && !(idx == 1
+                                    && matches!(
+                                        todo.action,
+                                        RebaseAction::Squash | RebaseAction::Fixup
+                                    ));
+                            let can_move_down = idx + 1 < this.rebase_todos.len()
+                                && !(idx == 0
+                                    && this.rebase_todos.get(1).is_some_and(|next| {
+                                        matches!(
+                                            next.action,
+                                            RebaseAction::Squash | RebaseAction::Fixup
+                                        )
+                                    }));
+                            (
+                                todo.action,
+                                todo.hash.clone(),
+                                todo.subject.clone(),
+                                can_move_up,
+                                can_move_down,
+                            )
+                        };
+                        Some(rebase_todo_row(
+                            idx,
+                            action,
+                            &hash,
+                            &subject,
+                            can_move_up,
+                            can_move_down,
+                            busy,
+                            entity.clone(),
+                            cx,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.rebase_scroll)
+        .flex_1()
+        .min_h_0()
+        .p(px(4.0));
 
         let footer = h_flex()
             .w_full()

@@ -13,6 +13,7 @@ use gpui_component::input::{InputEvent, InputState};
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema};
+use ramag_ui::AsyncMutationGate;
 use tracing::error;
 
 use self::row::TreeRowsCacheEntry;
@@ -54,6 +55,8 @@ pub struct TableTreePanel {
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
+    /// DDL 串行化闸门；切换连接后旧回包不能解锁新连接的操作。
+    pub(super) ddl_gate: AsyncMutationGate,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -152,6 +155,7 @@ impl TableTreePanel {
             tree_revision: 0,
             tree_rows_cache: RefCell::new(None),
             pending_notification: None,
+            ddl_gate: AsyncMutationGate::default(),
             _subscriptions: subs,
         }
     }
@@ -206,6 +210,7 @@ impl TableTreePanel {
     }
 
     pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
+        self.ddl_gate.reset();
         self.connection = conn;
         self.schemas.clear();
         self.expanded.clear();

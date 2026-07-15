@@ -121,6 +121,17 @@ pub(super) fn toolbar_more_menu(
 // ===== 删除 / 重命名执行 =====
 
 impl KeyTreePanel {
+    fn begin_tree_mutation(&mut self, cx: &mut Context<Self>) -> Option<ramag_ui::MutationToken> {
+        let Some(token) = self.mutation_gate.begin() else {
+            self.pending_notification =
+                Some(Notification::warning("上一项 Key 操作尚未完成，请稍候").autohide(true));
+            cx.notify();
+            return None;
+        };
+        cx.notify();
+        Some(token)
+    }
+
     /// RENAMENX：目标 key 已存在则返回 0 不覆盖，避免静默吞掉别人的数据
     pub(super) fn rename_key_op(&mut self, old: String, new: String, cx: &mut Context<Self>) {
         if new == old {
@@ -129,16 +140,20 @@ impl KeyTreePanel {
         let Some(config) = self.config.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let db = self.db;
         cx.spawn(async move |this, cx| {
             let argv = vec!["RENAMENX".to_string(), old.clone(), new.clone()];
             let r = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.operation_context_matches(&config, db) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                if !this.operation_context_matches(&config, db) || !current_mutation {
                     this.pending_notification = Some(match &r {
                         Ok(RedisValue::Int(1)) => Notification::success(format!(
-                            "已在原 DB {db} 完成重命名；当前树未自动刷新"
+                            "已在发起时的 DB {db} 完成重命名；当前树状态已变化，未自动刷新"
                         ))
                         .autohide(true),
                         Ok(RedisValue::Int(_)) => {
@@ -148,10 +163,10 @@ impl KeyTreePanel {
                         Ok(_) => {
                             Notification::error("原 DB 重命名失败：服务端应答异常").autohide(true)
                         }
-                        Err(error) => {
-                            Notification::error(error.write_hint(&format!("原 DB {db} 重命名失败")))
-                                .autohide(true)
-                        }
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("发起时的 DB {db} 重命名失败")),
+                        )
+                        .autohide(true),
                     });
                     cx.notify();
                     return;
@@ -201,20 +216,24 @@ impl KeyTreePanel {
         let Some(config) = self.config.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let db = self.db;
         cx.spawn(async move |this, cx| {
             let r = svc.delete_key(&config, db, &key).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.operation_context_matches(&config, db) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                if !this.operation_context_matches(&config, db) || !current_mutation {
                     this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
-                            "已在原 DB {db} 删除 key {}；当前树未自动刷新",
+                            "已在发起时的 DB {db} 删除 key {}；当前树状态已变化，未自动刷新",
                             truncate_label(&key, 60)
                         ))
                         .autohide(true),
                         Err(error) => Notification::error(
-                            error.write_hint(&format!("原 DB {db} 删除 key 失败")),
+                            error.write_hint(&format!("发起时的 DB {db} 删除 key 失败")),
                         )
                         .autohide(true),
                     });
@@ -254,21 +273,25 @@ impl KeyTreePanel {
         let Some(config) = self.config.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let db = self.db;
         let pattern = format!("{}:*", escape_glob(&prefix));
         cx.spawn(async move |this, cx| {
             let result = delete_by_pattern(&svc, &config, db, &pattern).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.operation_context_matches(&config, db) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                if !this.operation_context_matches(&config, db) || !current_mutation {
                     this.pending_notification = Some(match &result {
                         Ok(count) => Notification::success(format!(
-                            "已在原 DB {db} 删除前缀 {} 下 {count} 个 key；当前树未自动刷新",
+                            "已在发起时的 DB {db} 删除前缀 {} 下 {count} 个 key；当前树状态已变化，未自动刷新",
                             truncate_label(&prefix, 60)
                         ))
                         .autohide(true),
                         Err(error) => Notification::error(
-                            error.write_hint(&format!("原 DB {db} 删除前缀失败")),
+                            error.write_hint(&format!("发起时的 DB {db} 删除前缀失败")),
                         )
                         .autohide(true),
                     });
@@ -313,6 +336,9 @@ impl KeyTreePanel {
         let Some(config) = self.config.clone() else {
             return;
         };
+        let Some(mutation_token) = self.begin_tree_mutation(cx) else {
+            return;
+        };
         let svc = self.service.clone();
         let db = self.db;
         cx.spawn(async move |this, cx| {
@@ -320,16 +346,17 @@ impl KeyTreePanel {
                 .execute_command(&config, db, vec!["FLUSHDB".to_string()])
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if !this.operation_context_matches(&config, db) {
+                let current_mutation = this.mutation_gate.finish(mutation_token);
+                if !this.operation_context_matches(&config, db) || !current_mutation {
                     this.pending_notification = Some(match &r {
-                        Ok(_) => {
-                            Notification::success(format!("已清空原 DB {db}；当前树未自动刷新"))
-                                .autohide(true)
-                        }
-                        Err(error) => {
-                            Notification::error(error.write_hint(&format!("清空原 DB {db} 失败")))
-                                .autohide(true)
-                        }
+                        Ok(_) => Notification::success(format!(
+                            "已清空发起时的 DB {db}；当前树状态已变化，未自动刷新"
+                        ))
+                        .autohide(true),
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("清空发起时的 DB {db} 失败")),
+                        )
+                        .autohide(true),
                     });
                     cx.notify();
                     return;
