@@ -25,7 +25,7 @@ pub(super) const SPLIT_MARKER_W: f32 = 10.0;
 /// 行内容左右 padding（×2）
 pub(super) const CONTENT_PAD: f32 = 8.0;
 
-use super::diff_keys::{UnifiedKey, build_unified_keys};
+use super::diff_keys::UnifiedKey;
 
 /// 关闭 GPUI 单轴 scroll 的"另一方向劫持"行为（与 pf_content 同款 trick）
 pub(super) trait RestrictScrollExt: Styled + Sized {
@@ -36,25 +36,12 @@ pub(super) trait RestrictScrollExt: Styled + Sized {
 }
 impl<T: Styled> RestrictScrollExt for T {}
 
-/// 计算 diff 中最长行字符数（unified / split 公用，决定行内容固定宽度）
-pub(super) fn max_line_chars(diff: &FileDiff) -> usize {
-    let mut max = 0usize;
-    for h in &diff.hunks {
-        for l in &h.lines {
-            let n = super::syntax::display_cols(&l.text);
-            if n > max {
-                max = n;
-            }
-        }
-    }
-    max
-}
-
 /// Unified diff。固定 list w + 外层 overflow_x_scroll 共享 ScrollHandle，restrict_scroll_to_axis 防 wheel 错位
 #[allow(clippy::too_many_arguments)]
-pub fn render_file_diff(
+pub(super) fn render_file_diff(
     diff: &Rc<FileDiff>,
-    changes_only: bool,
+    keys: Rc<Vec<UnifiedKey>>,
+    max_chars: usize,
     // 语法高亮语言（None=纯文本）
     lang: Option<SharedString>,
     mono: SharedString,
@@ -71,12 +58,10 @@ pub fn render_file_diff(
     }
     // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
     let diff_rc: Rc<FileDiff> = diff.clone();
-    let keys: Rc<Vec<UnifiedKey>> = Rc::new(build_unified_keys(&diff_rc, changes_only));
     let total = keys.len();
     let scroll = scroll.clone();
     let h_scroll = h_scroll.clone();
 
-    let max_chars = max_line_chars(&diff_rc);
     let content_w = (max_chars as f32) * MONO_CHAR_W + CONTENT_PAD;
     let total_w = LINE_NO_W * 2.0 + UNIFIED_MARKER_W + content_w;
 

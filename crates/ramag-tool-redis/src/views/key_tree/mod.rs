@@ -618,6 +618,7 @@ impl Render for KeyTreePanel {
                         .map(|i| {
                             let row_data = &visible_for_closure[i];
                             this.render_node_row(
+                                i,
                                 row_data,
                                 &selected_for_closure,
                                 fg,

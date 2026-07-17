@@ -44,24 +44,116 @@ impl VcsView {
     /// 弹出系统目录选择器；用户选完后异步打开仓库
     pub(super) fn pick_directory(&mut self, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
+        if self.loading || self.directory_picker_busy {
+            return;
+        }
+        if self.busy {
+            self.notify_warning("当前 Git 写操作尚未完成，完成后再切换仓库", cx);
+            return;
+        }
         if !self.ensure_commit_draft_within_limit(cx) {
             return;
         }
         let driver = self.driver.clone();
-        self.loading = true;
+        self.directory_picker_busy = true;
         self.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let dialog = rfd::FileDialog::new().set_title("选择 Git 仓库目录");
-            let Some(path) = dialog.pick_folder() else {
+            let path = rfd::AsyncFileDialog::new()
+                .set_title("选择 Git 仓库目录")
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let Some(path) = path else {
                 let _ = this.update(cx, |this, cx| {
-                    this.loading = false;
-                    this.loading_label = None;
+                    this.directory_picker_busy = false;
                     cx.notify();
                 });
                 return;
             };
+            let should_open = this
+                .update(cx, |this, cx| {
+                    this.directory_picker_busy = false;
+                    if this.loading {
+                        cx.notify();
+                        return false;
+                    }
+                    if this.busy {
+                        this.notify_warning("当前 Git 写操作尚未完成，完成后再切换仓库", cx);
+                        return false;
+                    }
+                    if !this.ensure_commit_draft_within_limit(cx)
+                        || !this.ensure_open_repo_capacity(&path.to_string_lossy(), cx)
+                    {
+                        return false;
+                    }
+                    this.loading = true;
+                    this.error = None;
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !should_open {
+                return;
+            }
             open_repo_async(&this, driver, path, cx).await;
+        })
+        .detach();
+    }
+
+    /// 异步选择待初始化目录，避免原生对话框阻塞 GPUI 前台线程。
+    pub(super) fn pick_init_directory(&mut self, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
+        if self.loading || self.directory_picker_busy {
+            return;
+        }
+        if self.busy {
+            self.notify_warning("当前 Git 写操作尚未完成，完成后再初始化仓库", cx);
+            return;
+        }
+        if !self.ensure_commit_draft_within_limit(cx) {
+            return;
+        }
+        self.directory_picker_busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let path = rfd::AsyncFileDialog::new()
+                .set_title("选择或新建仓库目录")
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let _ = this.update(cx, |this, cx| {
+                this.directory_picker_busy = false;
+                if let Some(path) = path {
+                    this.init_repo_async(path, cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 异步选择 Clone 父目录；只更新表单，不启动网络操作。
+    pub(super) fn pick_clone_destination(&mut self, cx: &mut Context<Self>) {
+        if self.loading || self.busy || self.directory_picker_busy {
+            return;
+        }
+        self.directory_picker_busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let path = rfd::AsyncFileDialog::new()
+                .set_title("选择 Clone 目标目录")
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let _ = this.update(cx, |this, cx| {
+                this.directory_picker_busy = false;
+                if let Some(path) = path {
+                    this.clone_dest_path = Some(path);
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -133,7 +225,7 @@ impl VcsView {
             .map(|r| r.id.clone());
         std::rc::Rc::make_mut(&mut self.recent_repos).retain(|r| r.path != path);
         if let Some(id) = repo_id {
-            self.delete_repo_async(id, cx);
+            self.delete_repo_async(path, id, cx);
         }
         cx.notify();
     }
@@ -165,11 +257,8 @@ impl VcsView {
                 }
                 this.loading_project_files = false;
                 match result {
-                    Ok(mut paths) => {
-                        // 字母序：让目录树渲染稳定（同一目录文件聚拢）
-                        paths.sort_unstable();
-                        this.project_files = paths;
-                    }
+                    // driver 已在受限 Git worker 中按字母序整理，UI 只交换结果。
+                    Ok(paths) => this.project_files = paths,
                     Err(e) => {
                         error!(error = %e, "vcs: list project files failed");
                         // 失败时仍清空避免显示旧数据；错误以 banner 形式提示

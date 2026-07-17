@@ -15,6 +15,8 @@ use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 /// 首次使用引导的偏好 key（值 "1" = 已看过）
 const ONBOARDING_PREF: &str = "onboarding_shown";
+/// 首页只展示少量快捷入口，不长期持有其余连接（其中包含解密后的凭据）。
+const HOME_CONNECTION_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 pub enum HomeEvent {
@@ -40,6 +42,7 @@ pub struct HomeView {
     /// 上次停留工具（从 last_tool 偏好异步读回）：解析出 (id, 名称) 展示「继续上次」
     last_tool: Option<(String, String)>,
     connections: Vec<ConnectionConfig>,
+    connections_total: usize,
     connections_loading: bool,
     connections_error: Option<String>,
 }
@@ -83,7 +86,7 @@ impl HomeView {
                 this.connections_loading = false;
                 match result {
                     Ok(connections) => {
-                        this.connections = connections;
+                        (this.connections, this.connections_total) = home_connections(connections);
                         this.connections_error = None;
                     }
                     Err(error) => this.connections_error = Some(error.to_string()),
@@ -99,6 +102,7 @@ impl HomeView {
             show_onboarding: false,
             last_tool: None,
             connections: Vec::new(),
+            connections_total: 0,
             connections_loading: true,
             connections_error: None,
         }
@@ -138,7 +142,9 @@ impl HomeView {
             let _ = this.update(cx, |this, cx| {
                 this.connections_loading = false;
                 match result {
-                    Ok(connections) => this.connections = connections,
+                    Ok(connections) => {
+                        (this.connections, this.connections_total) = home_connections(connections);
+                    }
                     Err(error) => this.connections_error = Some(error.to_string()),
                 }
                 cx.notify();
@@ -205,7 +211,7 @@ impl Render for HomeView {
                     .child("尚未保存连接，进入数据库客户端后即可新建。"),
             );
         } else {
-            for (index, connection) in self.connections.iter().take(8).cloned().enumerate() {
+            for (index, connection) in self.connections.iter().cloned().enumerate() {
                 let label = format_connection(&connection);
                 let tooltip = format!(
                     "{}{}",
@@ -229,11 +235,11 @@ impl Render for HomeView {
                         })),
                 );
             }
-            if self.connections.len() > 8 {
+            if self.connections_total > self.connections.len() {
                 connection_body =
                     connection_body.child(div().text_xs().text_color(muted_fg).child(format!(
                         "另有 {} 个连接，请在数据库客户端中查看",
-                        self.connections.len() - 8
+                        self.connections_total - self.connections.len()
                     )));
             }
         }
@@ -353,6 +359,13 @@ impl Render for HomeView {
                     }),
             )
     }
+}
+
+fn home_connections(mut connections: Vec<ConnectionConfig>) -> (Vec<ConnectionConfig>, usize) {
+    let total = connections.len();
+    connections.truncate(HOME_CONNECTION_LIMIT);
+    connections.shrink_to_fit();
+    (connections, total)
 }
 
 fn format_connection(connection: &ConnectionConfig) -> String {

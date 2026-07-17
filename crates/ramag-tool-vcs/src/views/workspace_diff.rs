@@ -33,6 +33,7 @@ impl VcsView {
         // file_tab 是 Commit / ProjectFiles 时 selected_file 为 None，此时从 tab 推 kind_tag
         let active_tab = self.active_file_tab_idx.and_then(|i| self.file_tabs.get(i));
         let Some(tab) = active_tab else {
+            self.diff_layout_cache.borrow_mut().take();
             return div()
                 .size_full()
                 .flex()
@@ -88,6 +89,7 @@ impl VcsView {
             }
             FileTabSource::ProjectFiles => {
                 // 不会进这条路（render_main_area 已分流到 render_pf_content）
+                self.diff_layout_cache.borrow_mut().take();
                 return div().into_any_element();
             }
         };
@@ -358,27 +360,35 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.loading_diff {
+            self.diff_layout_cache.borrow_mut().take();
             return placeholder("拉取中…", muted_fg);
         }
         // Untracked 不再短路：读盘伪 diff 已写入 current_diff，走正常渲染
         if matches!(kind, GroupKind::Conflict) {
+            self.diff_layout_cache.borrow_mut().take();
             return placeholder("（点击左侧冲突文件行，直接打开三栏冲突解决器）", muted_fg);
         }
         let Some(d) = &self.current_diff else {
+            self.diff_layout_cache.borrow_mut().take();
             return placeholder("（无差异）", muted_fg);
         };
         // Changes（Staged/Unstaged）允许 hunk 回滚（中间列按钮）；commit 等只读源关闭
         let enable_discard = enable_hunk_ops;
         // render 期间 entity 已被 mut 借用，状态必须从 &self 读出后传给纯函数渲染器
         let has_blame = self.showing_blame && !self.blame_lines.is_empty();
-        let expanded_spacers = self.expanded_diff_spacers.clone();
         // Standard 折叠长 context（少量上下文）；FullFile 不折叠（展示所有内容）
         let collapse = matches!(self.diff_view_mode, super::helpers::DiffViewMode::Standard);
-        super::diff_panel_split::render_file_diff_split(
+        let layout = super::diff_panel_split::prepare_diff_layout(
+            &self.diff_layout_cache,
             d,
-            enable_discard,
             false,
             collapse,
+            &self.expanded_diff_spacers,
+        );
+        super::diff_panel_split::render_file_diff_split(
+            d,
+            layout,
+            enable_discard,
             lang,
             mono,
             fg,
@@ -388,7 +398,6 @@ impl VcsView {
             &self.diff_h_scroll,
             has_blame,
             blame_supported,
-            &expanded_spacers,
             cx,
         )
     }

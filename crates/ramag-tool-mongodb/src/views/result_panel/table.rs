@@ -38,7 +38,6 @@ pub(super) fn render(
     table: Arc<FlatTable>,
     col_indices: Option<Vec<usize>>,
     row_indices: Arc<Vec<usize>>,
-    docs_override: Option<Arc<Vec<serde_json::Value>>>,
     allow_edit: bool,
     cx: &mut Context<ResultPanel>,
 ) -> impl IntoElement {
@@ -58,8 +57,7 @@ pub(super) fn render(
 
     // 全选复选框：勾选 / 取消当前可见的全部行
     let all_data_idx = visible_rows.clone();
-    let all_selected =
-        !all_data_idx.is_empty() && all_data_idx.iter().all(|i| panel.is_row_selected(*i));
+    let all_selected = panel.all_visible_rows_selected(&all_data_idx);
     let entity_for_all = cx.entity().clone();
     let header_checkbox = div()
         .w(px(CHECKBOX_WIDTH))
@@ -98,11 +96,6 @@ pub(super) fn render(
     let table_for_list = table.clone();
     let cols_for_list = visible_cols.clone();
     let rows_for_list = visible_rows;
-    // 行文档来源：默认当前结果集的 Arc 缓存（零拷贝）；展平视图等传 docs_override 覆盖
-    let docs_for_list: Arc<Vec<serde_json::Value>> = docs_override
-        .or_else(|| panel.docs_arc.clone())
-        .unwrap_or_else(|| Arc::new(Vec::new()));
-
     let body = uniform_list(
         "mongo-result-rows",
         rows_for_list.len(),
@@ -117,8 +110,6 @@ pub(super) fn render(
                 .map(|i| {
                     let row_idx = rows_for_list[i];
                     let row = &table_for_list.rows[row_idx];
-                    let null_doc = serde_json::Value::Null;
-                    let doc = docs_for_list.get(row_idx).unwrap_or(&null_doc);
                     let selected = panel.is_row_selected(row_idx);
                     let entity_for_row = cx.entity().clone();
                     let checkbox = div()
@@ -147,7 +138,6 @@ pub(super) fn render(
                         row,
                         &cols_for_list,
                         &table_for_list.columns,
-                        doc,
                         fg,
                         muted,
                         border,

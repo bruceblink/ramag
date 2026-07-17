@@ -15,7 +15,10 @@ mod table;
 mod toolbar;
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement, Point, Render,
@@ -34,7 +37,7 @@ use serde_json::Value;
 pub use flatten::FlatTable;
 
 use crate::views::inline_text_preview;
-use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for};
+use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for_cancellable};
 
 /// 过滤列补全收集的最大嵌套深度（支持 consume.detail.x 这类多层）
 const PATH_COMPLETION_DEPTH: usize = 5;
@@ -53,6 +56,8 @@ pub struct ResultPanel {
     pub(crate) table_building: bool,
     /// 表格构建代际；新结果/下钻会使旧任务回包失效。
     table_build_seq: u64,
+    /// 当前表格构建取消标记；新结果或关闭视图时终止旧 CPU 任务。
+    table_build_cancel: Option<Arc<AtomicBool>>,
     /// 工具栏：过滤列名（逗号分隔多列）
     pub(crate) column_filter: Entity<InputState>,
     /// 工具栏：过滤行（子串包含；任意单元格匹配即保留）
@@ -79,6 +84,9 @@ pub struct ResultPanel {
     pub(super) pending_close_dialog: bool,
     /// 勾选的行（按 documents 索引）；删除文档用
     pub(crate) selected_rows: BTreeSet<usize>,
+    /// 选择变化代次与当前可见行交集缓存，避免普通重渲染反复扫描最多五万行。
+    selection_revision: u64,
+    visible_selection_cache: Option<VisibleSelectionCache>,
     /// 下钻栈：栈底=原始查询结果，双击嵌套 push 一层；栈深 > 1 即下钻态（只读 + 面包屑）
     pub(crate) drill_stack: Vec<drill::DrillLevel>,
     /// 当前排序列 path + 方向；用 path 而非索引，钻取换表后失配自动失效
@@ -89,6 +97,8 @@ pub struct ResultPanel {
     pub(crate) row_view_building: bool,
     /// 行视图请求代次；输入、排序或表格变化后递增，旧回包不得覆盖新条件。
     row_view_request_seq: u64,
+    /// 当前行筛选 / 排序取消标记。
+    row_view_cancel: Option<Arc<AtomicBool>>,
     /// 后台行视图构建失败时显式展示，修改条件或重建表格会清除。
     pub(crate) row_view_error: Option<String>,
     _subscriptions: Vec<gpui::Subscription>,
@@ -121,9 +131,23 @@ struct RowViewCache {
     indices: Arc<Vec<usize>>,
 }
 
-fn build_row_view_indices(table: &FlatTable, key: &RowViewKey) -> Arc<Vec<usize>> {
-    let mut indices =
-        row_indices_for(table, &key.query).unwrap_or_else(|| (0..table.rows.len()).collect());
+struct VisibleSelectionCache {
+    rows: Arc<Vec<usize>>,
+    selection_revision: u64,
+    visible_selected: usize,
+}
+
+fn build_row_view_indices(
+    table: &FlatTable,
+    key: &RowViewKey,
+    cancelled: &AtomicBool,
+) -> Option<Arc<Vec<usize>>> {
+    let mut indices = row_indices_for_cancellable(table, &key.query, Some(cancelled))
+        .ok()?
+        .unwrap_or_else(|| (0..table.rows.len()).collect());
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
     if let Some((sort_path, direction)) = &key.sort_by
         && let Some(column_index) = table
             .columns
@@ -136,7 +160,14 @@ fn build_row_view_indices(table: &FlatTable, key: &RowViewKey) -> Arc<Vec<usize>
         );
         table::sort_row_indices(table, column_index, numeric, *direction, &mut indices);
     }
-    Arc::new(indices)
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(Arc::new(indices))
+}
+
+fn visible_selection_count(selected: &BTreeSet<usize>, visible: &[usize]) -> usize {
+    visible.iter().filter(|row| selected.contains(row)).count()
 }
 
 impl EventEmitter<ResultEvent> for ResultPanel {}
@@ -178,6 +209,7 @@ impl ResultPanel {
             table: None,
             table_building: false,
             table_build_seq: 0,
+            table_build_cancel: None,
             column_filter,
             row_filter,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -192,11 +224,14 @@ impl ResultPanel {
             exporting: false,
             pending_close_dialog: false,
             selected_rows: BTreeSet::new(),
+            selection_revision: 0,
+            visible_selection_cache: None,
             drill_stack: Vec::new(),
             sort_by: None,
             row_view_cache: None,
             row_view_building: false,
             row_view_request_seq: 0,
+            row_view_cancel: None,
             row_view_error: None,
             _subscriptions: subs,
         }
@@ -230,7 +265,7 @@ impl ResultPanel {
         let had_result = self.running || self.result.is_some() || self.error.is_some();
         self.database = db;
         self.target_collection = None;
-        self.selected_rows.clear();
+        self.clear_selected_rows();
         if had_result {
             self.set_error("已切换数据库，旧结果已失效；请重新运行命令".into(), cx);
         } else {
@@ -277,6 +312,7 @@ impl ResultPanel {
         if !self.selected_rows.insert(idx) {
             self.selected_rows.remove(&idx);
         }
+        self.mark_selection_changed();
         cx.notify();
     }
 
@@ -289,7 +325,34 @@ impl ResultPanel {
         } else {
             self.selected_rows.extend(all.iter().copied());
         }
+        self.mark_selection_changed();
         cx.notify();
+    }
+
+    pub(crate) fn clear_selected_rows(&mut self) {
+        self.selected_rows.clear();
+        self.mark_selection_changed();
+    }
+
+    pub(crate) fn all_visible_rows_selected(&mut self, visible: &Arc<Vec<usize>>) -> bool {
+        if let Some(cache) = &self.visible_selection_cache
+            && cache.selection_revision == self.selection_revision
+            && Arc::ptr_eq(&cache.rows, visible)
+        {
+            return !visible.is_empty() && cache.visible_selected == visible.len();
+        }
+        let visible_selected = visible_selection_count(&self.selected_rows, visible);
+        self.visible_selection_cache = Some(VisibleSelectionCache {
+            rows: visible.clone(),
+            selection_revision: self.selection_revision,
+            visible_selected,
+        });
+        !visible.is_empty() && visible_selected == visible.len()
+    }
+
+    fn mark_selection_changed(&mut self) {
+        self.selection_revision = self.selection_revision.wrapping_add(1);
+        self.visible_selection_cache = None;
     }
 
     pub(crate) fn is_row_selected(&self, idx: usize) -> bool {
@@ -321,7 +384,7 @@ impl ResultPanel {
     }
 
     pub fn set_result(&mut self, mut r: MongoQueryResult, cx: &mut Context<Self>) {
-        self.selected_rows.clear();
+        self.clear_selected_rows();
         // 新查询：重置下钻栈为顶层（label 用目标 collection）
         let label = self
             .target_collection
@@ -342,6 +405,7 @@ impl ResultPanel {
     }
 
     pub fn set_error(&mut self, err: String, cx: &mut Context<Self>) {
+        self.cancel_table_build();
         self.table_build_seq = self.table_build_seq.wrapping_add(1);
         self.table_building = false;
         self.invalidate_row_view();
@@ -363,6 +427,7 @@ impl ResultPanel {
             .map(|l| l.documents.clone())
             .unwrap_or_else(|| Arc::new(Vec::new()));
         let ancestors = level.map(|l| l.ancestors.clone()).unwrap_or_default();
+        self.cancel_table_build();
         self.table_build_seq = self.table_build_seq.wrapping_add(1);
         let request_seq = self.table_build_seq;
         self.table = None;
@@ -373,9 +438,19 @@ impl ResultPanel {
             return;
         }
 
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.table_build_cancel = Some(cancelled.clone());
+
         cx.spawn(async move |this, cx| {
+            let worker_cancelled = cancelled.clone();
             let built = ramag_app::run_blocking(move || {
-                let mut ft = flatten::build_flat_table_with(docs.as_slice(), &BTreeSet::new());
+                let Some(mut ft) = flatten::build_flat_table_with_cancellable(
+                    docs.as_slice(),
+                    &BTreeSet::new(),
+                    &worker_cancelled,
+                ) else {
+                    return Ok(None);
+                };
                 // 下钻层：祖先链为常量（该层所有行同一父），作前导列，根→深保序，列名即对象名
                 if !ancestors.is_empty() {
                     let lead = ancestors
@@ -389,23 +464,38 @@ impl ResultPanel {
                             (flatten::Column { path: label, kind }, cell)
                         })
                         .collect();
-                    ft.prepend_constant_lead(lead);
+                    if !ft.prepend_constant_lead_cancellable(lead, &worker_cancelled) {
+                        return Ok(None);
+                    }
                 }
-                let completions = flatten::collect_paths(docs.as_slice(), PATH_COMPLETION_DEPTH);
-                Ok((Arc::new(ft), completions))
+                let Some(completions) = flatten::collect_paths_cancellable(
+                    docs.as_slice(),
+                    PATH_COMPLETION_DEPTH,
+                    &worker_cancelled,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some((Arc::new(ft), completions)))
             })
             .await;
             let _ = this.update(cx, |this, cx| {
-                if this.table_build_seq != request_seq {
+                if this.table_build_seq != request_seq
+                    || !this
+                        .table_build_cancel
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
+                {
                     return;
                 }
+                this.table_build_cancel = None;
                 this.table_building = false;
                 match built {
-                    Ok((table, completions)) => {
+                    Ok(Some((table, completions))) => {
                         this.table = Some(table);
                         *this.column_completion_source.write() = completions;
                         this.schedule_row_view(false, cx);
                     }
+                    Ok(None) => {}
                     Err(error) => {
                         this.invalidate_row_view();
                         this.error = Some(format!("构建 MongoDB 结果表格失败：{error}"));
@@ -438,6 +528,7 @@ impl ResultPanel {
     }
 
     fn invalidate_row_view(&mut self) {
+        self.cancel_row_view_build();
         self.row_view_request_seq = self.row_view_request_seq.wrapping_add(1);
         self.row_view_cache = None;
         self.row_view_building = false;
@@ -467,11 +558,14 @@ impl ResultPanel {
             return;
         }
 
+        self.cancel_row_view_build();
         self.row_view_request_seq = self.row_view_request_seq.wrapping_add(1);
         let request_seq = self.row_view_request_seq;
         self.row_view_cache = None;
         self.row_view_building = true;
         self.row_view_error = None;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.row_view_cancel = Some(cancelled.clone());
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -482,6 +576,10 @@ impl ResultPanel {
                 .update(cx, |this, _| {
                     this.row_view_request_seq == request_seq
                         && this.table_build_seq == key.generation
+                        && this
+                            .row_view_cancel
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
                 })
                 .unwrap_or(false);
             if !current {
@@ -489,20 +587,32 @@ impl ResultPanel {
             }
 
             let worker_key = key.clone();
-            let built =
-                ramag_app::run_blocking(move || Ok(build_row_view_indices(&table, &worker_key)))
-                    .await;
+            let worker_cancelled = cancelled.clone();
+            let built = ramag_app::run_blocking(move || {
+                Ok(build_row_view_indices(
+                    &table,
+                    &worker_key,
+                    &worker_cancelled,
+                ))
+            })
+            .await;
             let _ = this.update(cx, |this, cx| {
                 if this.row_view_request_seq != request_seq
                     || this.table_build_seq != key.generation
+                    || !this
+                        .row_view_cancel
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
                 {
                     return;
                 }
+                this.row_view_cancel = None;
                 this.row_view_building = false;
                 match built {
-                    Ok(indices) => {
+                    Ok(Some(indices)) => {
                         this.row_view_cache = Some(RowViewCache { key, indices });
                     }
+                    Ok(None) => {}
                     Err(error) => {
                         this.row_view_error = Some(format!("构建行视图失败：{error}"));
                     }
@@ -511,6 +621,18 @@ impl ResultPanel {
             });
         })
         .detach();
+    }
+
+    fn cancel_table_build(&mut self) {
+        if let Some(cancelled) = self.table_build_cancel.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn cancel_row_view_build(&mut self) {
+        if let Some(cancelled) = self.row_view_cancel.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
     }
 
     /// 双击单元格 → 弹该单元格内容详情（与 MySQL dbclient::cell_edit_dialog 同款交互）。
@@ -561,6 +683,13 @@ impl ResultPanel {
                     )
                 })
         });
+    }
+}
+
+impl Drop for ResultPanel {
+    fn drop(&mut self) {
+        self.cancel_table_build();
+        self.cancel_row_view_build();
     }
 }
 
@@ -745,7 +874,6 @@ impl Render for ResultPanel {
             table_arc,
             col_indices,
             row_indices,
-            None,
             true,
             cx,
         )))
@@ -845,9 +973,22 @@ mod row_view_tests {
             sort_by: Some(("n".into(), SortDir::Desc)),
         };
 
-        let indices = build_row_view_indices(&table(), &key);
+        let cancelled = AtomicBool::new(false);
+        let indices = build_row_view_indices(&table(), &key, &cancelled).unwrap();
 
         assert_eq!(indices.as_slice(), &[0, 2]);
+    }
+
+    #[test]
+    fn row_view_stops_before_scanning_when_cancelled() {
+        let key = RowViewKey {
+            generation: 1,
+            query: "bo".into(),
+            sort_by: None,
+        };
+        let cancelled = AtomicBool::new(true);
+
+        assert!(build_row_view_indices(&table(), &key, &cancelled).is_none());
     }
 
     #[test]
@@ -866,6 +1007,13 @@ mod row_view_tests {
         let mut stale = key;
         stale.generation += 1;
         assert_ne!(cache.key, stale);
+    }
+
+    #[test]
+    fn visible_selection_count_ignores_hidden_rows() {
+        let selected = BTreeSet::from([0, 2, 4]);
+
+        assert_eq!(visible_selection_count(&selected, &[2, 3, 4]), 2);
     }
 
     #[test]

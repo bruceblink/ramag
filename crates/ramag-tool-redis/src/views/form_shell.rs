@@ -1,5 +1,7 @@
 //! Redis 各元素 / 字段 / 新建表单的共享件：统一提交态 + 底部按钮条
 
+use std::collections::HashSet;
+
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
 };
@@ -30,6 +32,22 @@ impl SubmitState {
     pub fn is_submitting(&self) -> bool {
         matches!(self, SubmitState::Submitting)
     }
+}
+
+/// 保留首次出现顺序地去重；HashSet 仅借用原字符串，避免批量输入再复制一份内容。
+pub fn deduplicate_preserving_order(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::with_capacity(values.len());
+    let keep: Vec<bool> = values
+        .iter()
+        .map(|value| seen.insert(value.as_str()))
+        .collect();
+    drop(seen);
+
+    values
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(value, keep)| keep.then_some(value))
+        .collect()
 }
 
 /// 渲染表单底部一行：左错误文字 + 右「取消 / 主操作」按钮条。
@@ -82,4 +100,16 @@ pub fn form_footer<V: 'static>(
                         .on_click(cx.listener(on_save)),
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deduplicate_preserving_order;
+
+    #[test]
+    fn deduplication_keeps_first_value_and_order() {
+        let values = vec!["a".into(), "b".into(), "a".into(), "c".into()];
+
+        assert_eq!(deduplicate_preserving_order(values), vec!["a", "b", "c"]);
+    }
 }

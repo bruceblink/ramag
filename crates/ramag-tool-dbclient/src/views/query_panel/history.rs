@@ -17,27 +17,35 @@ impl QueryPanel {
         self.history_sub = Some(cx.subscribe_in(
             &list,
             window,
-            |this: &mut Self, _, event: &HistoryEvent, window, cx| match event {
-                HistoryEvent::FillEditor(sql) => {
-                    window.close_dialog(cx);
-                    this.fill_active_sql(sql.clone(), window, cx);
-                }
-                HistoryEvent::RunSql(sql) => {
-                    window.close_dialog(cx);
-                    this.fill_active_sql(sql.clone(), window, cx);
-                    if let Some(tab) = this.tabs.get(this.active) {
-                        tab.update(cx, |tab, cx| tab.run(window, cx));
+            |this: &mut Self, _, event: &HistoryEvent, window, cx| {
+                this.history_sub = None;
+                match event {
+                    HistoryEvent::FillEditor(sql) => {
+                        window.close_dialog(cx);
+                        this.fill_active_sql(sql.clone(), window, cx);
+                    }
+                    HistoryEvent::RunSql(sql) => {
+                        window.close_dialog(cx);
+                        this.fill_active_sql(sql.clone(), window, cx);
+                        if let Some(tab) = this.tabs.get(this.active) {
+                            tab.update(cx, |tab, cx| tab.run(window, cx));
+                        }
                     }
                 }
             },
         ));
 
         let title = SharedString::from(format!("查询历史 · {}", conn.name));
+        let panel_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let list = list.clone();
+            let panel_for_close = panel_for_close.clone();
             dialog
                 .title(title.clone())
                 .close_button(true)
+                .on_close(move |_, _, app| {
+                    panel_for_close.update(app, |this, _| this.history_sub = None);
+                })
                 .width(px(760.0))
                 .content(move |content, _, _| content.child(list.clone()))
         });

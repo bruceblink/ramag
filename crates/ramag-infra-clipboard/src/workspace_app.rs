@@ -50,14 +50,14 @@ pub(crate) fn open_url(url: &str) -> Result<()> {
     unsafe {
         let ns_url: id = msg_send![class!(NSURL), URLWithString: ns_string(url)];
         if ns_url == nil {
-            return Err(DomainError::InvalidConfig(format!("无效链接：{url}")));
+            return Err(DomainError::InvalidConfig("无效 HTTP/HTTPS 链接".into()));
         }
         let ws: id = msg_send![class!(NSWorkspace), sharedWorkspace];
         let ok: bool = msg_send![ws, openURL: ns_url];
         if ok {
             Ok(())
         } else {
-            Err(DomainError::Other(format!("打开链接失败：{url}")))
+            Err(DomainError::Other("系统未能打开该链接".into()))
         }
     }
 }

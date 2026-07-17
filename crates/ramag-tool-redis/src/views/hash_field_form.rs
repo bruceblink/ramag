@@ -47,6 +47,10 @@ pub struct HashFieldForm {
 impl EventEmitter<HashFieldFormEvent> for HashFieldForm {}
 
 impl HashFieldForm {
+    pub fn is_submitting(&self) -> bool {
+        self.state.is_submitting()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         service: Arc<RedisService>,
@@ -100,6 +104,9 @@ impl HashFieldForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         let field = match &self.mode {
             HashFieldFormMode::Edit { field } => field.clone(),
             HashFieldFormMode::Add => self.field_input.read(cx).value().trim().to_string(),
@@ -122,7 +129,7 @@ impl HashFieldForm {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(?field, "hash field saved");
+                    info!(field_bytes = field.len(), "hash field saved");
                     cx.emit(HashFieldFormEvent::Saved { field });
                 }
                 Err(e) => {
@@ -147,6 +154,7 @@ impl Render for HashFieldForm {
         let border = theme.border;
 
         let is_edit = matches!(self.mode, HashFieldFormMode::Edit { .. });
+        let submitting = self.state.is_submitting();
 
         // 编辑模式下 field input 禁用（视觉上灰显）
         let field_block = if is_edit {
@@ -175,7 +183,11 @@ impl Render for HashFieldForm {
                         .text_color(muted_fg)
                         .child("字段名"),
                 )
-                .child(div().w_full().child(Input::new(&self.field_input)))
+                .child(
+                    div()
+                        .w_full()
+                        .child(Input::new(&self.field_input).disabled(submitting)),
+                )
         };
 
         v_flex()
@@ -201,9 +213,11 @@ impl Render for HashFieldForm {
                             .child("值"),
                     )
                     .child(
-                        div()
-                            .w_full()
-                            .child(Input::new(&self.value_input).h(px(180.0))),
+                        div().w_full().child(
+                            Input::new(&self.value_input)
+                                .h(px(180.0))
+                                .disabled(submitting),
+                        ),
                     ),
             )
             .child(div().h(px(1.0)).bg(border).my(px(2.0)))

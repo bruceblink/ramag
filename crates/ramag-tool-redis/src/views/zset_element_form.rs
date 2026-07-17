@@ -46,6 +46,10 @@ pub struct ZSetElementForm {
 impl EventEmitter<ZSetElementFormEvent> for ZSetElementForm {}
 
 impl ZSetElementForm {
+    pub fn is_submitting(&self) -> bool {
+        self.state.is_submitting()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         service: Arc<RedisService>,
@@ -84,6 +88,9 @@ impl ZSetElementForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         let score_raw = self.score_input.read(cx).value().trim().to_string();
         if score_raw.is_empty() {
             self.state = SubmitState::Failed("请填写 score".into());
@@ -116,7 +123,7 @@ impl ZSetElementForm {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(?member, "zset member saved");
+                    info!(member_bytes = member.len(), "zset member saved");
                     cx.emit(ZSetElementFormEvent::Saved);
                 }
                 Err(e) => {
@@ -141,6 +148,7 @@ impl Render for ZSetElementForm {
         let border = theme.border;
 
         let is_edit = matches!(self.mode, ZSetElementFormMode::EditScore { .. });
+        let submitting = self.state.is_submitting();
 
         let member_block = if is_edit {
             v_flex()
@@ -168,7 +176,11 @@ impl Render for ZSetElementForm {
                         .text_color(muted_fg)
                         .child("成员"),
                 )
-                .child(div().w_full().child(Input::new(&self.member_input)))
+                .child(
+                    div()
+                        .w_full()
+                        .child(Input::new(&self.member_input).disabled(submitting)),
+                )
         };
 
         v_flex()
@@ -192,7 +204,11 @@ impl Render for ZSetElementForm {
                             .text_color(muted_fg)
                             .child("Score"),
                     )
-                    .child(div().w_full().child(Input::new(&self.score_input))),
+                    .child(
+                        div()
+                            .w_full()
+                            .child(Input::new(&self.score_input).disabled(submitting)),
+                    ),
             )
             .child(member_block)
             .child(div().h(px(1.0)).bg(border).my(px(2.0)))

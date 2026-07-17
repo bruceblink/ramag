@@ -2,12 +2,12 @@
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};
 use gpui_component::WindowExt as _;
-use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
-use tracing::{error, warn};
+use ramag_domain::entities::{ConnectionConfig, ConnectionId};
+use tracing::error;
 
 use crate::views::connection_form::{self, ConnectionFormPanel, FormEvent};
 
-use super::DbClientView;
+use super::{DbClientView, evict_connection_resources};
 
 impl DbClientView {
     pub(super) fn open_form_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -41,7 +41,7 @@ impl DbClientView {
         cx: &mut Context<Self>,
     ) {
         let sub = cx.subscribe_in(&form, window, Self::on_form_event);
-        self._subscriptions.push(sub);
+        self.form_subscription = Some(sub);
 
         // 取一次 dialog 标题（mode 在 form 创建时就定了；不显示 driver 名，由表单内选择行体现）
         let title = {
@@ -49,10 +49,12 @@ impl DbClientView {
             connection_form::dialog_title(f.mode()).to_string()
         };
         let form_for_dialog = form.clone();
+        let view_for_close = cx.entity().clone();
 
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
             let form_for_cancel = form_for_dialog.clone();
+            let view_for_close = view_for_close.clone();
             let title = title.clone();
             dialog
                 .title(title)
@@ -61,6 +63,9 @@ impl DbClientView {
                 .close_button(false)
                 // Esc / 点遮罩关闭前的脏保护：有修改先弹确认，确认「放弃修改」才关
                 .on_cancel(move |_, window, app| {
+                    if form_for_cancel.read(app).is_saving() {
+                        return false;
+                    }
                     if !form_for_cancel.read(app).is_dirty(app) {
                         return true;
                     }
@@ -81,6 +86,9 @@ impl DbClientView {
                     );
                     false
                 })
+                .on_close(move |_, _, app| {
+                    view_for_close.update(app, |this, _| this.form_subscription = None);
+                })
                 .w(px(720.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -94,23 +102,22 @@ impl DbClientView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.form_subscription = None;
         match event {
             FormEvent::Saved(conn) => {
                 window.close_dialog(cx);
-                self.picker.update(cx, |p, cx| p.refresh(cx));
+                self.picker.update(cx, |p, cx| {
+                    p.invalidate_version(&conn.id);
+                    p.refresh(cx);
+                });
                 // 失效 driver 内的连接池缓存：池按 ConnectionId 索引，旧 config 建的池
                 // 还指向旧 host/db，必须丢弃，下次访问按新 config 重建
-                match conn.driver {
-                    DriverKind::Mysql | DriverKind::Postgres => {
-                        self.service.evict_pool(conn);
-                    }
-                    DriverKind::Redis => {
-                        self.redis_service.evict_pool(&conn.id);
-                    }
-                    DriverKind::Mongodb => {
-                        self.mongo_service.evict_pool(&conn.id);
-                    }
-                }
+                evict_connection_resources(
+                    &self.service,
+                    &self.redis_service,
+                    &self.mongo_service,
+                    &conn.id,
+                );
                 // 编辑场景：旧标签的实体仍持旧配置（host / 库 / production 只读态都可能已变），
                 // 继续使用存在按旧配置读写的风险。立即丢弃旧实体（终止其后台元数据刷新与
                 // 在途等待，与关标签同语义）并置 stale，中央区显示"重新连接"面板；
@@ -185,19 +192,6 @@ impl DbClientView {
     }
 
     fn handle_delete(&mut self, id: ConnectionId, cx: &mut Context<Self>) {
-        let config = self
-            .sessions
-            .iter()
-            .find(|session| session.config.id == id)
-            .map(|session| session.config.clone())
-            .or_else(|| {
-                self.picker
-                    .read(cx)
-                    .connections()
-                    .iter()
-                    .find(|config| config.id == id)
-                    .cloned()
-            });
         let svc = self.service.clone();
         let redis_svc = self.redis_service.clone();
         let mongo_svc = self.mongo_service.clone();
@@ -205,18 +199,7 @@ impl DbClientView {
         cx.spawn(async move |this, cx| {
             let result = svc.delete(&id_for_async).await;
             if result.is_ok() {
-                match config.as_ref().map(|config| config.driver) {
-                    Some(DriverKind::Mysql | DriverKind::Postgres) => {
-                        if let Some(config) = &config {
-                            svc.evict_pool(config);
-                        }
-                    }
-                    Some(DriverKind::Redis) => redis_svc.evict_pool(&id_for_async),
-                    Some(DriverKind::Mongodb) => mongo_svc.evict_pool(&id_for_async),
-                    None => {
-                        warn!(connection_id = %id_for_async, "deleted connection config unavailable for pool eviction");
-                    }
-                }
+                evict_connection_resources(&svc, &redis_svc, &mongo_svc, &id_for_async);
             }
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {

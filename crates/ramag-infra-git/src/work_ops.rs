@@ -29,7 +29,10 @@ pub fn list_files(repo_path: &Path) -> Result<Vec<String>> {
             "-z",
         ],
     )?;
-    parse_file_list(&bytes)
+    let mut files = parse_file_list(&bytes)?;
+    // list_files 整体在 Git worker 中运行；排序也留在 worker，避免 25 万路径回到 UI 后阻塞。
+    files.sort_unstable();
+    Ok(files)
 }
 
 fn parse_file_list(bytes: &[u8]) -> Result<Vec<String>> {

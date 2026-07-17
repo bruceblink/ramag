@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, img, prelude::*, px};
+use gpui::{
+    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
+};
 use gpui_component::{
     ActiveTheme, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -15,8 +17,13 @@ use ramag_ui::platform::file_manager_reveal_label;
 use super::ClipboardView;
 use crate::views::helpers::relative_time;
 
+const MAX_DETAIL_TEXT_BYTES: usize = 128 * 1024;
+const MAX_DETAIL_FILE_ROWS: usize = 500;
+const MAX_DETAIL_PATH_BYTES: usize = 4 * 1024;
+const DETAIL_TEXT_NOTICE: &str = "\n\n[内容过大，仅展示前 128 KiB；复制和粘贴仍使用完整内容]";
+
 impl ClipboardView {
-    pub(super) fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_detail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
 
         let Some(item) = self.selected_item(cx) else {
@@ -103,7 +110,7 @@ impl ClipboardView {
                         .small()
                         .label(file_manager_reveal_label())
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.reveal_files(item.files.clone(), cx);
+                            this.reveal_files(&item.files, cx);
                         }))
                         .into_any_element(),
                 )
@@ -159,30 +166,106 @@ impl ClipboardView {
     }
 
     /// 详情主体：图片显示大图（解密原图），文件列路径，文本显示全文
-    fn detail_body(&self, item: Arc<ClipItem>, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn detail_body(&mut self, item: Arc<ClipItem>, cx: &mut Context<Self>) -> gpui::AnyElement {
         match item.kind {
             ClipKind::Image => match self.image_for(item.clone(), false, cx) {
                 Some(image) => img(image).max_w_full().into_any_element(),
-                // 失败明示（媒体文件缺失 / 解密失败），不再永久显示假「加载中」
+                // 失败明示（媒体缺失 / 损坏 / 尺寸过大），不再永久显示假「加载中」
                 None if self.image_failed(item.as_ref(), false) => div()
                     .text_sm()
-                    .child("图片无法解密或已缺失（媒体文件可能被清理）")
+                    .child("图片无法加载（文件可能缺失、损坏或尺寸过大）")
                     .into_any_element(),
                 None => div().child("加载中…").into_any_element(),
             },
-            ClipKind::Files => v_flex()
-                .gap(px(4.0))
-                .children(
-                    item.files
-                        .iter()
-                        .map(|f| div().text_sm().child(f.clone()).into_any_element()),
-                )
-                .into_any_element(),
-            _ => div()
-                .text_sm()
-                .whitespace_normal()
-                .child(item.text.clone().unwrap_or_default())
-                .into_any_element(),
+            ClipKind::Files => {
+                let mut body = v_flex().gap(px(4.0)).children(
+                    item.files.iter().take(MAX_DETAIL_FILE_ROWS).map(|path| {
+                        div()
+                            .text_sm()
+                            .child(bounded_path_text(path))
+                            .into_any_element()
+                    }),
+                );
+                if item.files.len() > MAX_DETAIL_FILE_ROWS {
+                    body = body.child(
+                        div().text_xs().child(format!(
+                            "文件较多，仅展示前 {MAX_DETAIL_FILE_ROWS} / {} 个；复制和粘贴仍使用完整列表",
+                            item.files.len()
+                        )),
+                    );
+                }
+                body.into_any_element()
+            }
+            _ => {
+                let display = self.detail_text(item.as_ref());
+                div()
+                    .text_sm()
+                    .whitespace_normal()
+                    .child(display)
+                    .into_any_element()
+            }
         }
+    }
+
+    fn detail_text(&mut self, item: &ClipItem) -> SharedString {
+        if let Some((cached_id, text)) = &self.detail_text_cache
+            && cached_id == &item.id
+        {
+            return text.clone();
+        }
+        let text = SharedString::from(bounded_detail_text(
+            item.text.as_deref().unwrap_or_default(),
+        ));
+        self.detail_text_cache = Some((item.id.clone(), text.clone()));
+        text
+    }
+}
+
+fn bounded_detail_text(text: &str) -> String {
+    if text.len() <= MAX_DETAIL_TEXT_BYTES {
+        return text.to_string();
+    }
+    let content_limit = MAX_DETAIL_TEXT_BYTES.saturating_sub(DETAIL_TEXT_NOTICE.len());
+    let mut end = content_limit.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut display = String::with_capacity(MAX_DETAIL_TEXT_BYTES);
+    display.push_str(&text[..end]);
+    display.push_str(DETAIL_TEXT_NOTICE);
+    display
+}
+
+fn bounded_path_text(path: &str) -> String {
+    if path.len() <= MAX_DETAIL_PATH_BYTES {
+        return path.to_string();
+    }
+    let mut end = MAX_DETAIL_PATH_BYTES.saturating_sub('…'.len_utf8());
+    while end > 0 && !path.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &path[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detail_text_is_bounded_without_splitting_unicode() {
+        let text = "你".repeat(MAX_DETAIL_TEXT_BYTES);
+        let display = bounded_detail_text(&text);
+
+        assert!(display.len() <= MAX_DETAIL_TEXT_BYTES);
+        assert!(display.contains("复制和粘贴仍使用完整内容"));
+    }
+
+    #[test]
+    fn detail_path_is_bounded_without_splitting_unicode() {
+        let path = "文".repeat(MAX_DETAIL_PATH_BYTES);
+        let display = bounded_path_text(&path);
+
+        assert!(display.len() <= MAX_DETAIL_PATH_BYTES);
+        assert!(display.ends_with('…'));
     }
 }

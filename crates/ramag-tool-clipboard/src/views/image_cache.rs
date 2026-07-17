@@ -10,16 +10,18 @@ use gpui::Image;
 
 /// 抽屉最多同时展示 60 张卡片；留出余量给主视图详情，同时限制长时间运行的内存增长。
 const MAX_ENTRIES: usize = 96;
-/// 同时限制编码图片字节总量，避免少量大图绕过纯条数上限。
-const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+/// 按 PNG 编码字节 + RGBA 像素估算驻留内存，避免压缩率极高的大图绕过缓存上限。
+const MAX_RETAINED_BYTES: usize = 256 * 1024 * 1024;
+/// 极端长宽即使总像素不大，也可能触发解码器或纹理后端的异常大尺寸路径。
+const MAX_IMAGE_DIMENSION: u32 = 16_384;
 /// 失败记录也必须有界；旧失败被淘汰后允许未来重试（文件可能已被恢复或修复）。
 const MAX_FAILED_ENTRIES: usize = 256;
 /// 快速滚动时限制同时解密 / 解码的图片数，避免任务与临时字节堆积。
-const MAX_IN_FLIGHT_LOADS: usize = 16;
+const MAX_IN_FLIGHT_LOADS: usize = 4;
 
 struct CacheEntry {
     image: Arc<Image>,
-    encoded_bytes: usize,
+    retained_bytes: usize,
 }
 
 #[derive(Default)]
@@ -27,7 +29,7 @@ struct CacheState {
     entries: HashMap<String, CacheEntry>,
     /// 最近使用的 key 在队尾。
     order: VecDeque<String>,
-    encoded_bytes: usize,
+    retained_bytes: usize,
 }
 
 #[derive(Default)]
@@ -52,7 +54,7 @@ impl ImageCache {
         Some(image)
     }
 
-    /// 该路径是否已判定失败（渲染显示「无法解密」占位）
+    /// 该路径是否已判定失败（缺失、损坏或尺寸过大时不再每帧重试）
     pub(crate) fn is_failed(&self, path: &str) -> bool {
         self.failed.borrow().contains(path)
     }
@@ -69,23 +71,27 @@ impl ImageCache {
         loading.insert(path.to_string())
     }
 
-    pub(crate) fn insert(&self, path: String, image: Arc<Image>, encoded_bytes: usize) {
+    pub(crate) fn insert(&self, path: String, image: Arc<Image>, retained_bytes: usize) {
         self.loading.borrow_mut().remove(&path);
+        if retained_bytes > MAX_RETAINED_BYTES {
+            self.fail(&path);
+            return;
+        }
         if self.failed.borrow_mut().remove(&path) {
             remove_key(&mut self.failed_order.borrow_mut(), &path);
         }
 
         let mut cache = self.cache.borrow_mut();
         if let Some(previous) = cache.entries.remove(&path) {
-            cache.encoded_bytes = cache.encoded_bytes.saturating_sub(previous.encoded_bytes);
+            cache.retained_bytes = cache.retained_bytes.saturating_sub(previous.retained_bytes);
             remove_key(&mut cache.order, &path);
         }
-        cache.encoded_bytes = cache.encoded_bytes.saturating_add(encoded_bytes);
+        cache.retained_bytes = cache.retained_bytes.saturating_add(retained_bytes);
         cache.entries.insert(
             path.clone(),
             CacheEntry {
                 image,
-                encoded_bytes,
+                retained_bytes,
             },
         );
         cache.order.push_back(path);
@@ -125,14 +131,36 @@ fn remove_key(order: &mut VecDeque<String>, key: &str) {
 }
 
 fn evict_to_limits(cache: &mut CacheState) {
-    while cache.entries.len() > MAX_ENTRIES || cache.encoded_bytes > MAX_ENCODED_BYTES {
+    while cache.entries.len() > MAX_ENTRIES || cache.retained_bytes > MAX_RETAINED_BYTES {
         let Some(oldest) = cache.order.pop_front() else {
             break;
         };
         if let Some(entry) = cache.entries.remove(&oldest) {
-            cache.encoded_bytes = cache.encoded_bytes.saturating_sub(entry.encoded_bytes);
+            cache.retained_bytes = cache.retained_bytes.saturating_sub(entry.retained_bytes);
         }
     }
+}
+
+/// 读取 PNG signature + IHDR 尺寸，估算编码缓冲与 RGBA 解码后的共同驻留字节。
+pub(crate) fn png_retained_bytes(bytes: &[u8]) -> Option<usize> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 33
+        || &bytes[..8] != PNG_SIGNATURE
+        || u32::from_be_bytes(bytes[8..12].try_into().ok()?) != 13
+        || &bytes[12..16] != b"IHDR"
+    {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return None;
+    }
+    let decoded = u64::from(width)
+        .checked_mul(u64::from(height))?
+        .checked_mul(4)?;
+    let retained = usize::try_from(decoded).ok()?.checked_add(bytes.len())?;
+    (retained <= MAX_RETAINED_BYTES).then_some(retained)
 }
 
 #[cfg(test)]
@@ -160,13 +188,53 @@ mod tests {
     }
 
     #[test]
-    fn cache_respects_encoded_byte_limit() {
+    fn cache_respects_retained_byte_limit() {
         let cache = ImageCache::new();
-        cache.insert("first.png".into(), image(), MAX_ENCODED_BYTES);
+        cache.insert("first.png".into(), image(), MAX_RETAINED_BYTES);
         cache.insert("second.png".into(), image(), 1);
 
         assert!(cache.peek("first.png").is_none());
         assert!(cache.peek("second.png").is_some());
+    }
+
+    #[test]
+    fn oversized_single_image_is_not_reloaded_forever() {
+        let cache = ImageCache::new();
+        cache.insert("huge.png".into(), image(), MAX_RETAINED_BYTES + 1);
+
+        assert!(cache.peek("huge.png").is_none());
+        assert!(cache.is_failed("huge.png"));
+        assert!(!cache.begin_load("huge.png"));
+    }
+
+    #[test]
+    fn png_retained_size_counts_decoded_pixels() {
+        let png = png_header(10, 20);
+
+        assert_eq!(png_retained_bytes(&png), Some(png.len() + 10 * 20 * 4));
+        assert_eq!(png_retained_bytes(b"not png"), None);
+    }
+
+    #[test]
+    fn png_retained_size_rejects_oversized_or_malformed_headers() {
+        assert_eq!(png_retained_bytes(&png_header(u32::MAX, u32::MAX)), None);
+        assert_eq!(
+            png_retained_bytes(&png_header(MAX_IMAGE_DIMENSION + 1, 1)),
+            None
+        );
+
+        let mut malformed = png_header(10, 20);
+        malformed[11] = 12;
+        assert_eq!(png_retained_bytes(&malformed), None);
+    }
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut png = Vec::from(*b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        png.extend_from_slice(&width.to_be_bytes());
+        png.extend_from_slice(&height.to_be_bytes());
+        // bit depth、color type、compression、filter、interlace + CRC 占位。
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        png
     }
 
     #[test]

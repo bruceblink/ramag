@@ -1,5 +1,5 @@
 //! 结果集导出：CSV（基于扁平表格）/ JSON（原始文档）。
-//! rfd 保存框与序列化都放受限工作池，结果回主线程提示（与 dbclient 同款）。
+//! rfd 保存框异步等待，序列化放受限工作池，结果回主线程提示（与 dbclient 同款）。
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -115,31 +115,32 @@ impl ResultPanel {
             .unwrap_or_else(|| "export".to_string());
         let name = format!("{coll}.{ext}");
         let scope_label = scope;
-        let documents = documents.clone();
-        let table = table.clone();
-        // 用户取消时不做序列化；共享有界 worker + 防重入避免无限创建线程和重复弹框。
+        // 用户取消时不做排序 / 序列化；保存框不占共享 worker，防重入避免重复弹框。
         self.exporting = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let outcome = ramag_app::run_blocking(move || {
-                let mut rows = rows;
-                if let Some((column_index, numeric, direction)) = selected_sort {
-                    super::table::sort_row_indices(
-                        &table,
-                        column_index,
-                        numeric,
-                        direction,
-                        &mut rows,
-                    );
-                }
-                let path = rfd::FileDialog::new()
-                    .set_file_name(&name)
-                    .add_filter(ext, &[ext])
-                    .save_file();
-                Ok(match path {
-                    None => ExportOutcome::Cancelled,
-                    Some(p) => {
-                        let write_result = export::write_atomic_with(&p, |writer| {
+            let path = rfd::AsyncFileDialog::new()
+                .set_file_name(&name)
+                .add_filter(ext, &[ext])
+                .save_file()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let outcome = match path {
+                None => ExportOutcome::Cancelled,
+                Some(path) => {
+                    let write_path = path.clone();
+                    match ramag_app::run_blocking(move || {
+                        let mut rows = rows;
+                        if let Some((column_index, numeric, direction)) = selected_sort {
+                            super::table::sort_row_indices(
+                                &table,
+                                column_index,
+                                numeric,
+                                direction,
+                                &mut rows,
+                            );
+                        }
+                        export::write_atomic_with(&write_path, |writer| {
                             if as_csv {
                                 write_flat_csv(writer, &table, &rows, &cols).map_err(|error| {
                                     DomainError::Storage(format!(
@@ -160,21 +161,18 @@ impl ResultPanel {
                                     ))
                                 })
                             }
-                        });
-                        match write_result {
-                            Ok(()) => ExportOutcome::Saved(p),
-                            Err(error) => ExportOutcome::Failed(format!(
-                                "写入导出文件 {} 失败：{error}",
-                                p.display()
-                            )),
-                        }
+                        })
+                    })
+                    .await
+                    {
+                        Ok(()) => ExportOutcome::Saved(path),
+                        Err(error) => ExportOutcome::Failed(format!(
+                            "写入导出文件 {} 失败：{error}",
+                            path.display()
+                        )),
                     }
-                })
-            })
-            .await
-            .unwrap_or_else(|error| {
-                ExportOutcome::Failed(format!("导出后台任务无法执行：{error}"))
-            });
+                }
+            };
             let _ = this.update(cx, |this, cx| {
                 this.exporting = false;
                 this.pending_notification = Some(match outcome {

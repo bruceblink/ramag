@@ -4,7 +4,7 @@ use gpui::Context;
 use ramag_domain::entities::{BranchKind, RepoId};
 use tracing::{error, info};
 
-use super::super::helpers::{RemoteOp, default_remote_name};
+use super::super::helpers::{RemoteOp, default_remote_name, is_current_arc_slot};
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
@@ -118,6 +118,7 @@ impl VcsView {
         self.remote_op_cancel = Some(cancel.clone());
         self.remote_op_progress = Some(progress.clone());
         // 进度轮询：每 120ms notify 让工具栏刷新最新进度行，操作结束（槽被清）即退出
+        let poll_cancel = cancel.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -125,7 +126,8 @@ impl VcsView {
                     .await;
                 let still = this
                     .update(cx, |this, cx| {
-                        let active = this.remote_op_cancel.is_some();
+                        let active =
+                            is_current_arc_slot(this.remote_op_cancel.as_ref(), &poll_cancel);
                         if active {
                             cx.notify();
                         }
@@ -188,13 +190,14 @@ impl VcsView {
                 "remote branches",
             );
             let _ = this.update(cx, |this, cx| {
+                // 只允许发起该任务的操作收尾，避免迟到回调清掉后续操作的状态槽。
+                if !is_current_arc_slot(this.remote_op_cancel.as_ref(), &cancel) {
+                    return;
+                }
                 this.busy = false;
                 this.busy_label = None;
                 // 清进度 / 取消槽（也让轮询任务下一拍退出）
-                let was_cancelled = this
-                    .remote_op_cancel
-                    .as_ref()
-                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
+                let was_cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
                 this.remote_op_cancel = None;
                 this.remote_op_progress = None;
                 if !this.is_current_repo(&repo) {

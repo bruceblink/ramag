@@ -3,8 +3,12 @@
 use chrono::{DateTime, Utc};
 use ramag_domain::entities::{ClipItem, ClipKind, contains_case_insensitive};
 
+/// 即时层每条正文最多扫描此前缀；完整正文由去抖后的后台存储搜索覆盖。
+const MAX_IMMEDIATE_TEXT_SEARCH_BYTES: usize = 4 * 1024;
+
 /// 过滤 + 排序：按 last_used_at desc。
-/// 搜索匹配 preview / text（大小写不敏感）；kind=None 不限类型
+/// 搜索即时匹配 preview / 正文有界前缀（大小写不敏感）；kind=None 不限类型。
+/// 更深正文由后台全量搜索补齐，避免每次按键在 UI 线程扫描最多 64 MiB 缓存。
 pub fn filter_items<'a, T>(items: &'a [T], query: &str, kind: Option<ClipKind>) -> Vec<&'a T>
 where
     T: std::borrow::Borrow<ClipItem>,
@@ -42,7 +46,15 @@ fn matches_query(item: &ClipItem, q_lower: &str) -> bool {
     }
     item.text
         .as_deref()
-        .is_some_and(|text| contains_case_insensitive(text, q_lower))
+        .is_some_and(|text| contains_case_insensitive(text_prefix(text), q_lower))
+}
+
+fn text_prefix(text: &str) -> &str {
+    let mut end = text.len().min(MAX_IMMEDIATE_TEXT_SEARCH_BYTES);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期
@@ -115,6 +127,15 @@ mod tests {
         let items = vec![item.clone()];
         let filtered = filter_items(&items, "shared", None);
         assert!(Arc::ptr_eq(filtered[0], &item));
+    }
+
+    #[test]
+    fn immediate_filter_bounds_large_text_scan() {
+        let text = format!("{}needle", "a".repeat(MAX_IMMEDIATE_TEXT_SEARCH_BYTES));
+        let mut item = clip(&text, ClipKind::Text, 1);
+        item.preview = "a".into();
+
+        assert!(filter_items(&[item], "needle", None).is_empty());
     }
 
     #[test]

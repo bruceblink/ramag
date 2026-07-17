@@ -32,6 +32,10 @@ pub struct StreamEntryForm {
 impl EventEmitter<StreamEntryFormEvent> for StreamEntryForm {}
 
 impl StreamEntryForm {
+    pub fn is_submitting(&self) -> bool {
+        self.state.is_submitting()
+    }
+
     pub fn new(
         service: Arc<RedisService>,
         config: ConnectionConfig,
@@ -52,6 +56,9 @@ impl StreamEntryForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         let pairs = match self.editor.read(cx).collect(cx) {
             Ok(p) => p,
             Err(e) => {
@@ -66,6 +73,8 @@ impl StreamEntryForm {
             return;
         }
 
+        self.editor
+            .update(cx, |editor, cx| editor.set_disabled(true, cx));
         self.state = SubmitState::Submitting;
         cx.notify();
         let svc = self.service.clone();
@@ -86,6 +95,8 @@ impl StreamEntryForm {
                     cx.emit(StreamEntryFormEvent::Saved);
                 }
                 Err(e) => {
+                    this.editor
+                        .update(cx, |editor, cx| editor.set_disabled(false, cx));
                     error!(error = %e, "xadd failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();

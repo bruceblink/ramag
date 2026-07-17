@@ -53,6 +53,8 @@ pub struct VcsView {
     pub(super) driver: Arc<dyn GitDriver>,
     /// 持久化层（recent_repos 跨重启保留）；按 RepoId 单条 CRUD（redb `repos` 表）
     pub(super) storage: Arc<dyn Storage>,
+    /// 最近仓库写入按 path 只保留最新快照，并串行落盘，避免快速切换时旧状态倒灌。
+    pub(super) repo_write_coordinator: super::latest_write::LatestWriteCoordinator,
     /// 当前已打开的仓库（None = 还没选）
     pub(super) repo: Option<RepoConfig>,
     /// 工作区状态快照
@@ -112,6 +114,8 @@ pub struct VcsView {
     pub(super) selected_file: Option<(String, GroupKind)>,
     /// 当前文件的 diff 快照（Rc：渲染层多列表零拷贝共享，不每帧 clone 全量 diff）
     pub(super) current_diff: Option<std::rc::Rc<FileDiff>>,
+    /// 当前 diff 的扁平行索引与宽度派生缓存，普通重渲染不再重复扫描整份 diff。
+    pub(super) diff_layout_cache: RefCell<Option<super::diff_panel_split::DiffLayoutCacheEntry>>,
     /// diff 是否正在拉取中
     pub(super) loading_diff: bool,
     /// diff 请求代际号：快速切文件 / 切选项时，旧回包不得覆盖当前视图
@@ -303,6 +307,8 @@ pub struct VcsView {
     pub(super) clone_url_input: Entity<InputState>,
     pub(super) clone_dest_path: Option<PathBuf>,
     pub(super) show_clone_panel: bool,
+    /// 系统目录选择器单实例闸门；异步选择期间禁用所有仓库目录入口。
+    pub(super) directory_picker_busy: bool,
 
     // ---- Interactive Rebase ----
     pub(super) show_rebase_plan: bool,
@@ -398,6 +404,7 @@ impl VcsView {
     /// 切到仓库管理页（保留当前 repo 数据，仅切视图）
     pub(super) fn show_repo_list(&mut self, cx: &mut Context<Self>) {
         self.active_view = ActiveView::RepoList;
+        self.diff_layout_cache.get_mut().take();
         cx.notify();
     }
 
@@ -406,6 +413,7 @@ impl VcsView {
     pub(super) fn clear_session_data(&mut self) {
         self.selected_file = None;
         self.current_diff = None;
+        self.diff_layout_cache.get_mut().take();
         self.loading_diff = false;
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         self.selected_pf_path = None;

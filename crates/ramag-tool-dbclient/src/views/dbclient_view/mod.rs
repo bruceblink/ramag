@@ -10,7 +10,7 @@ use gpui::{
     AnyView, App, AppContext as _, Context, Entity, Point, ScrollHandle, Subscription, Window, px,
 };
 use ramag_app::{ConnectionService, MongoService, RedisService};
-use ramag_domain::entities::{ConnectionConfig, DriverKind};
+use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
 
 use ramag_tool_mongodb::MongoSessionPanel;
 use ramag_tool_redis::RedisSessionPanel;
@@ -91,6 +91,18 @@ pub(super) fn driver_kind_label(driver: DriverKind) -> &'static str {
     }
 }
 
+pub(super) fn evict_connection_resources(
+    service: &ConnectionService,
+    redis_service: &RedisService,
+    mongo_service: &MongoService,
+    id: &ConnectionId,
+) {
+    // 连接配置允许切换 driver；关闭或更新时必须清理旧、新所有类型的缓存。
+    service.evict_all_pools(id);
+    redis_service.evict_pool(id);
+    mongo_service.evict_pool(id);
+}
+
 pub struct DbClientView {
     pub(super) service: Arc<ConnectionService>,
     pub(super) redis_service: Arc<RedisService>,
@@ -115,6 +127,8 @@ pub struct DbClientView {
     )>,
     /// 启动恢复只在用户尚未手动改动标签时生效；慢回包不得覆盖用户刚做出的选择。
     pub(super) restore_allowed: bool,
+    /// 当前连接表单订阅；关闭后释放，避免反复打开表单累积实体与输入缓冲。
+    pub(super) form_subscription: Option<Subscription>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -278,6 +292,7 @@ impl DbClientView {
             pending_notification: None,
             pending_restore: None,
             restore_allowed: true,
+            form_subscription: None,
             _subscriptions: subs,
         }
     }
@@ -364,13 +379,12 @@ impl DbClientView {
             return;
         }
         let config = slot.config.clone();
-        let conn_id = config.id.clone();
-        let entity = self.build_session_entity(config, window, cx);
+        let entity = self.build_session_entity(config.clone(), window, cx);
         entity.focus(window, cx);
         self.sessions[idx].entity = Some(entity);
         // 真正连库时才异步探测版本（占位标签不建池 / 不试连）
         self.picker
-            .update(cx, |p, cx| p.prefetch_version(&conn_id, cx));
+            .update(cx, |p, cx| p.prefetch_version(&config, cx));
         cx.notify();
     }
 
@@ -429,8 +443,8 @@ impl DbClientView {
             return;
         }
 
-        // 在 config 被 move 进 session 之前先抓 id 用于版本探测
-        let conn_id = config.id.clone();
+        // 在 config 被 move 进 session 之前保留版本探测快照。
+        let version_config = config.clone();
         let entity = self.build_session_entity(config.clone(), window, cx);
         // 新会话立即聚焦内容，cmd-e 等快捷键无需先点内容区
         entity.focus(window, cx);
@@ -446,7 +460,7 @@ impl DbClientView {
             .set_offset(Point::new(px(-99999.0), px(0.0)));
         // 用户主动打开后才异步探测版本（不打开的连接不会去建池/试连）
         self.picker
-            .update(cx, |p, cx| p.prefetch_version(&conn_id, cx));
+            .update(cx, |p, cx| p.prefetch_version(&version_config, cx));
         self.persist_open_sessions(cx);
         cx.notify();
     }
@@ -468,7 +482,21 @@ impl DbClientView {
         }
         self.restore_allowed = false;
         self.pending_restore = None;
-        self.sessions.remove(idx);
+        let SessionSlot {
+            entity,
+            config,
+            stale: _,
+        } = self.sessions.remove(idx);
+        // 先释放视图及其后台 ticker，再清连接池 / SSH 隧道。
+        drop(entity);
+        self.picker
+            .update(cx, |picker, _| picker.cancel_version_prefetch(&config.id));
+        evict_connection_resources(
+            &self.service,
+            &self.redis_service,
+            &self.mongo_service,
+            &config.id,
+        );
         // 调整 active
         if self.sessions.is_empty() {
             self.active_session = None;
@@ -518,6 +546,23 @@ impl DbClientView {
         // 刷新一下列表
         self.picker.update(cx, |p, cx| p.refresh(cx));
         cx.notify();
+    }
+}
+
+impl Drop for DbClientView {
+    fn drop(&mut self) {
+        let service = self.service.clone();
+        let redis_service = self.redis_service.clone();
+        let mongo_service = self.mongo_service.clone();
+        for SessionSlot {
+            entity,
+            config,
+            stale: _,
+        } in self.sessions.drain(..)
+        {
+            drop(entity);
+            evict_connection_resources(&service, &redis_service, &mongo_service, &config.id);
+        }
     }
 }
 

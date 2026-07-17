@@ -39,11 +39,12 @@ impl MongoService {
     // 元数据。只读操作用 retry_idempotent_read! 兜底闲置断连后的首次读
 
     pub async fn list_databases(&self, config: &ConnectionConfig) -> Result<Vec<MongoDatabase>> {
-        retry_idempotent_read!(
+        let databases = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.list_databases(config).await
-        )
+        )?;
+        crate::run_blocking(move || Ok(sort_databases(databases))).await
     }
 
     pub async fn list_collections(
@@ -157,5 +158,33 @@ impl MongoService {
     /// 清空某连接（None = 全部）的历史
     pub async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()> {
         self.storage.clear_history(connection_id).await
+    }
+}
+
+fn sort_databases(mut databases: Vec<MongoDatabase>) -> Vec<MongoDatabase> {
+    databases.sort_by(|left, right| left.name.cmp(&right.name));
+    databases
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_results_are_sorted_for_all_driver_implementations() {
+        let databases = vec![
+            MongoDatabase {
+                name: "users".into(),
+                size_on_disk: None,
+                empty: false,
+            },
+            MongoDatabase {
+                name: "admin".into(),
+                size_on_disk: None,
+                empty: false,
+            },
+        ];
+
+        assert_eq!(sort_databases(databases)[0].name, "admin");
     }
 }

@@ -35,6 +35,7 @@ pub struct PairsEditor {
     kind: PairsKind,
     rows: Vec<PairRow>,
     next_id: u64,
+    disabled: bool,
 }
 
 impl PairsEditor {
@@ -43,13 +44,14 @@ impl PairsEditor {
             kind,
             rows: Vec::new(),
             next_id: 0,
+            disabled: false,
         };
         me.add_row(window, cx);
         me
     }
 
     fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.rows.len() >= MAX_EDITOR_ROWS {
+        if self.disabled || self.rows.len() >= MAX_EDITOR_ROWS {
             return;
         }
         let (lph, rph) = placeholders(self.kind);
@@ -68,11 +70,18 @@ impl PairsEditor {
     }
 
     fn remove_row(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.rows.len() <= 1 {
+        if self.disabled || self.rows.len() <= 1 {
             return;
         }
         self.rows.retain(|r| r.id != id);
         cx.notify();
+    }
+
+    pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if self.disabled != disabled {
+            self.disabled = disabled;
+            cx.notify();
+        }
     }
 
     /// 收集 + 行级校验
@@ -147,7 +156,7 @@ impl Render for PairsEditor {
                     .small()
                     .icon(IconName::Plus)
                     .label(add_label)
-                    .disabled(self.rows.len() >= MAX_EDITOR_ROWS)
+                    .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
                     .tooltip(if self.rows.len() >= MAX_EDITOR_ROWS {
                         "单次最多添加 200 行；更大批量请使用脚本"
                     } else {
@@ -175,15 +184,21 @@ impl Render for PairsEditor {
                     div()
                         .w(px(left_width))
                         .flex_none()
-                        .child(Input::new(&row.left)),
+                        .child(Input::new(&row.left).disabled(self.disabled)),
                 )
-                .child(div().flex_1().min_w_0().child(Input::new(&row.right)));
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&row.right).disabled(self.disabled)),
+                );
             if self.rows.len() > 1 {
                 line = line.child(
                     Button::new(SharedString::from(format!("pe-rm-{id}")))
                         .ghost()
                         .small()
                         .icon(IconName::Close)
+                        .disabled(self.disabled)
                         .tooltip("删除该行")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_row(id, cx);

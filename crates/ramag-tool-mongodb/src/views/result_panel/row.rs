@@ -20,7 +20,6 @@ pub(super) fn render_row(
     cells: &[Cell],
     visible_cols: &[usize],
     columns: &[Column],
-    doc: &serde_json::Value,
     fg: Hsla,
     muted: Hsla,
     border: Hsla,
@@ -63,10 +62,6 @@ pub(super) fn render_row(
         .child(checkbox)
         .child(row_num_cell);
 
-    // 文档 _id：双击单元格编辑时用它作 update_one 的定位条件
-    let row_id = doc.get("_id").cloned();
-    // 下钻前导列展示用的行标识：优先 _id，没有就用 id（很多集合用 id 而非 _id）
-    let row_ident = doc.get("_id").or_else(|| doc.get("id")).cloned();
     for &ci in visible_cols {
         let cell = &cells[ci];
         let column = &columns[ci];
@@ -95,12 +90,22 @@ pub(super) fn render_row(
                 .overflow_hidden()
                 .cursor_pointer()
                 .on_click({
-                    let id_for_click = row_id.clone();
-                    let ident_for_click = row_ident.clone();
                     cx.listener(move |panel, e: &gpui::ClickEvent, window, cx| {
                         if e.click_count() < 2 {
                             return;
                         }
+                        // 仅在实际双击时克隆定位值；避免每帧为所有可见行复制可能很大的 _id。
+                        let (id_for_click, ident_for_click) = panel
+                            .docs_arc
+                            .as_ref()
+                            .and_then(|documents| documents.get(source_row_idx))
+                            .map(|document| {
+                                (
+                                    document.get("_id").cloned(),
+                                    document.get("_id").or_else(|| document.get("id")).cloned(),
+                                )
+                            })
+                            .unwrap_or_default();
                         let Some(text_for_click) = panel
                             .table
                             .as_ref()
@@ -116,8 +121,8 @@ pub(super) fn render_row(
                             panel.drill_into(
                                 path_for_click.clone(),
                                 source_row_idx,
-                                id_for_click.clone(),
-                                ident_for_click.clone(),
+                                id_for_click,
+                                ident_for_click,
                                 window,
                                 cx,
                             );
@@ -132,10 +137,10 @@ pub(super) fn render_row(
                             && panel.can_write()
                             && !panel.is_drilled()
                             && super::edit::cell_is_editable(kind_for_click, text_for_click.len())
-                            && let Some(id) = &id_for_click
+                            && let Some(id) = id_for_click
                         {
                             panel.open_cell_edit_dialog(
-                                id.clone(),
+                                id,
                                 path_for_click.clone(),
                                 kind_for_click,
                                 text_for_click,

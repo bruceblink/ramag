@@ -373,6 +373,10 @@ impl ConnectionFormPanel {
     pub fn is_dirty(&self, cx: &gpui::App) -> bool {
         self.snapshot(cx) != self.initial
     }
+
+    pub fn is_saving(&self) -> bool {
+        self.saving
+    }
 }
 
 /// 在调用方使用：根据 mode 计算 dialog 标题（不显示具体 driver，已由表单内 driver 选择行体现）

@@ -109,11 +109,19 @@ impl ClipboardDrawer {
         let image = match self.img_cache.peek(&cache_key) {
             Some(image) => image,
             None => {
+                if self.img_cache.is_failed(&cache_key) {
+                    return None;
+                }
                 let png = self.service().app_icon(bundle)?;
-                let encoded_bytes = png.len();
+                let Some(retained_bytes) =
+                    crate::views::image_cache::png_retained_bytes(png.as_ref())
+                else {
+                    self.img_cache.fail(&cache_key);
+                    return None;
+                };
                 let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.as_ref().clone()));
                 self.img_cache
-                    .insert(cache_key, image.clone(), encoded_bytes);
+                    .insert(cache_key, image.clone(), retained_bytes);
                 image
             }
         };
@@ -174,8 +182,8 @@ fn card_footer(item: &ClipItem, muted: Hsla) -> impl IntoElement {
             .unwrap_or_default(),
         ClipKind::Files => format!("{} 个文件", item.files.len()),
         _ => {
-            let n = item.text.as_deref().map(|t| t.chars().count()).unwrap_or(0);
-            format!("{n} characters")
+            let bytes = item.text.as_ref().map_or(0, String::len);
+            format!("{bytes} 字节")
         }
     };
     div()

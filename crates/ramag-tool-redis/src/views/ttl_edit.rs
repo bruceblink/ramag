@@ -45,6 +45,10 @@ pub struct TtlEditForm {
 impl EventEmitter<TtlEditEvent> for TtlEditForm {}
 
 impl TtlEditForm {
+    pub fn is_submitting(&self) -> bool {
+        matches!(self.state, SubmitState::Submitting)
+    }
+
     pub fn new(
         service: Arc<RedisService>,
         config: ConnectionConfig,
@@ -71,6 +75,9 @@ impl TtlEditForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.state, SubmitState::Submitting) {
+            return;
+        }
         let ttl_secs = match self.picker.read(cx).collect(cx) {
             Ok(v) => v,
             Err(e) => {
@@ -79,6 +86,8 @@ impl TtlEditForm {
                 return;
             }
         };
+        self.picker
+            .update(cx, |picker, cx| picker.set_disabled(true, cx));
         self.state = SubmitState::Submitting;
         cx.notify();
 
@@ -94,15 +103,22 @@ impl TtlEditForm {
             let result = svc.set_ttl(&config, db, &key, ttl_secs).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(true) => {
-                    info!(?key, ?ttl_secs, "ttl updated");
+                    info!(key_bytes = key.len(), ?ttl_secs, "ttl updated");
                     cx.emit(TtlEditEvent::Updated(label));
                 }
                 Ok(false) => {
-                    error!(?key, "ttl update returned false (key may be gone)");
+                    this.picker
+                        .update(cx, |picker, cx| picker.set_disabled(false, cx));
+                    error!(
+                        key_bytes = key.len(),
+                        "ttl update returned false (key may be gone)"
+                    );
                     this.state = SubmitState::Failed("Key 不存在或操作未生效".into());
                     cx.notify();
                 }
                 Err(e) => {
+                    this.picker
+                        .update(cx, |picker, cx| picker.set_disabled(false, cx));
                     error!(error = %e, "ttl update failed");
                     this.state = SubmitState::Failed(e.write_hint("更新失败"));
                     cx.notify();

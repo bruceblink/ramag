@@ -452,12 +452,10 @@ pub(super) fn make_short_title(sql: &str) -> String {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
-    if first_line.chars().count() > MAX {
-        let prefix: String = first_line.chars().take(MAX).collect();
-        format!("{prefix}…")
-    } else {
-        first_line.to_string()
-    }
+    first_line.char_indices().nth(MAX).map_or_else(
+        || first_line.to_string(),
+        |(end, _)| format!("{}…", &first_line[..end]),
+    )
 }
 
 #[cfg(test)]

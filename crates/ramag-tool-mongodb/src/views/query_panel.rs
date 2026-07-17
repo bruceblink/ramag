@@ -259,6 +259,7 @@ impl MongoQueryPanel {
              window,
              cx| {
                 use crate::views::history_dialog::MongoHistoryEvent;
+                this.history_sub = None;
                 match e {
                     MongoHistoryEvent::FillEditor(cmd) => {
                         window.close_dialog(cx);
@@ -278,11 +279,16 @@ impl MongoQueryPanel {
             },
         ));
         let title = SharedString::from(format!("查询历史 · {}", conn.name));
+        let panel_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let list = list.clone();
+            let panel_for_close = panel_for_close.clone();
             dialog
                 .title(title.clone())
                 .close_button(true)
+                .on_close(move |_, _, app| {
+                    panel_for_close.update(app, |this, _| this.history_sub = None);
+                })
                 .width(px(760.0))
                 .content(move |content, _, _| content.child(list.clone()))
         });

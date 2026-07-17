@@ -123,7 +123,7 @@ pub(super) fn command_response_kind(command: &Value) -> CommandResponseKind {
 
 /// 根据原命令区分同名 `n` 字段，避免把写入结果误报为 count。
 pub(super) fn parse_run_command_response(
-    response: Value,
+    mut response: Value,
     elapsed_ms: u64,
     kind: CommandResponseKind,
 ) -> MongoQueryResult {
@@ -131,11 +131,12 @@ pub(super) fn parse_run_command_response(
         .get("__ramag_truncated")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if let Some(batch) = response
-        .get("cursor")
-        .and_then(|cursor| cursor.get("firstBatch"))
-        .and_then(Value::as_array)
-        .cloned()
+    if let Some(Value::Array(batch)) = response
+        .get_mut("cursor")
+        .and_then(Value::as_object_mut)
+        .and_then(|cursor| cursor.get_mut("firstBatch"))
+        .filter(|batch| batch.is_array())
+        .map(std::mem::take)
     {
         return MongoQueryResult::read_maybe_truncated(batch, elapsed_ms, truncated);
     }
@@ -143,7 +144,7 @@ pub(super) fn parse_run_command_response(
         CommandResponseKind::Count => {
             if let Some(count) = response.get("n").and_then(Value::as_u64) {
                 return MongoQueryResult {
-                    documents: vec![response.clone()],
+                    documents: vec![response],
                     affected: count,
                     elapsed_ms,
                     summary: format!("count={count}, {elapsed_ms}ms"),

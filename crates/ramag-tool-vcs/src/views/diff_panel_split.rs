@@ -2,9 +2,10 @@
 //! 5 个 list 共享 `UniformListScrollHandle` 行级 Y 同步；content 各自独立 X 滚；gutter / 中间列在 overflow_x_scroll 之外保持可见。
 //! `h_flex` 默认 items_center，必须显式 `.items_stretch()` 否则子栏会被压成内容高
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement,
@@ -17,7 +18,7 @@ use gpui_component::{
 };
 use ramag_domain::entities::{DiffLineKind, FileDiff};
 
-use super::diff_keys::{SplitKey, build_split_keys};
+use super::diff_keys::{SplitKey, UnifiedKey, build_split_keys, build_unified_keys};
 use super::diff_panel::{
     CONTENT_PAD, DIFF_ROW_H, LINE_NO_W, MONO_CHAR_W, RestrictScrollExt as _, SPLIT_MARKER_W,
     render_diff_empty, render_file_diff,
@@ -31,58 +32,148 @@ use super::vcs_view::VcsView;
 /// gutter 固定宽：marker(10) + lineno(40) = 50px
 const SPLIT_GUTTER_W: f32 = SPLIT_MARKER_W + LINE_NO_W;
 
-/// 计算左右两栏各自最长行的字符数（旧 / 新分别算）
-fn split_max_chars(diff: &FileDiff) -> (usize, usize) {
+#[derive(Clone)]
+pub(super) enum DiffLayout {
+    Unified {
+        keys: Rc<Vec<UnifiedKey>>,
+        max_chars: usize,
+    },
+    Split {
+        keys: Rc<Vec<SplitKey>>,
+        button_rows: Rc<HashMap<usize, usize>>,
+        max_chars: usize,
+    },
+}
+
+pub(super) struct DiffLayoutCacheEntry {
+    diff: Weak<FileDiff>,
+    changes_only: bool,
+    collapse: bool,
+    expanded_spacers: HashSet<(usize, usize)>,
+    layout: DiffLayout,
+}
+
+impl DiffLayoutCacheEntry {
+    fn get(
+        &self,
+        diff: &Rc<FileDiff>,
+        changes_only: bool,
+        collapse: bool,
+        expanded_spacers: &HashSet<(usize, usize)>,
+    ) -> Option<DiffLayout> {
+        let cached = self.diff.upgrade()?;
+        (Rc::ptr_eq(&cached, diff)
+            && self.changes_only == changes_only
+            && self.collapse == collapse
+            && self.expanded_spacers == *expanded_spacers)
+            .then(|| self.layout.clone())
+    }
+}
+
+/// 缓存 diff 扁平行、折叠布局与最大宽度；选择行、toast 等普通重渲染只做 O(1) Rc clone。
+pub(super) fn prepare_diff_layout(
+    cache: &RefCell<Option<DiffLayoutCacheEntry>>,
+    diff: &Rc<FileDiff>,
+    changes_only: bool,
+    collapse: bool,
+    expanded_spacers: &HashSet<(usize, usize)>,
+) -> DiffLayout {
+    if let Some(layout) = cache
+        .borrow()
+        .as_ref()
+        .and_then(|entry| entry.get(diff, changes_only, collapse, expanded_spacers))
+    {
+        return layout;
+    }
+
+    let (has_old, has_new, max_old, max_new) = diff_metrics(diff, changes_only);
+    let layout = if has_old && has_new {
+        let keys = Rc::new(build_split_keys(
+            diff,
+            changes_only,
+            collapse,
+            expanded_spacers,
+        ));
+        let button_rows = Rc::new(hunk_button_rows(&keys));
+        DiffLayout::Split {
+            keys,
+            button_rows,
+            max_chars: max_old.max(max_new),
+        }
+    } else {
+        DiffLayout::Unified {
+            keys: Rc::new(build_unified_keys(diff, changes_only)),
+            max_chars: max_old.max(max_new),
+        }
+    };
+    cache.replace(Some(DiffLayoutCacheEntry {
+        diff: Rc::downgrade(diff),
+        changes_only,
+        collapse,
+        expanded_spacers: expanded_spacers.clone(),
+        layout: layout.clone(),
+    }));
+    layout
+}
+
+fn diff_metrics(diff: &FileDiff, changes_only: bool) -> (bool, bool, usize, usize) {
+    let mut has_old = false;
+    let mut has_new = false;
     let mut max_old = 0usize;
     let mut max_new = 0usize;
     for h in &diff.hunks {
         for l in &h.lines {
-            let n = super::syntax::display_cols(&l.text);
-            match l.kind {
-                DiffLineKind::Delete => max_old = max_old.max(n),
-                DiffLineKind::Add => max_new = max_new.max(n),
-                DiffLineKind::Context => {
-                    max_old = max_old.max(n);
-                    max_new = max_new.max(n);
-                }
+            if changes_only && matches!(l.kind, DiffLineKind::Context) {
+                continue;
             }
-        }
-    }
-    (max_old, max_new)
-}
-
-/// 判断 diff 是否是「单边」：纯新增（无 Delete / Context）或纯删除（无 Add / Context）
-///
-/// split 模式下另一栏永远空白，这种文件统一退化为 unified 单栏渲染避免视觉浪费
-fn is_one_sided(diff: &FileDiff) -> bool {
-    let mut has_old = false;
-    let mut has_new = false;
-    for h in &diff.hunks {
-        for l in &h.lines {
+            let chars = super::syntax::display_cols(&l.text);
             match l.kind {
-                DiffLineKind::Delete => has_old = true,
-                DiffLineKind::Add => has_new = true,
+                DiffLineKind::Delete => {
+                    has_old = true;
+                    max_old = max_old.max(chars);
+                }
+                DiffLineKind::Add => {
+                    has_new = true;
+                    max_new = max_new.max(chars);
+                }
                 DiffLineKind::Context => {
                     has_old = true;
                     has_new = true;
+                    max_old = max_old.max(chars);
+                    max_new = max_new.max(chars);
                 }
-            }
-            if has_old && has_new {
-                return false;
             }
         }
     }
-    !(has_old && has_new)
+    (has_old, has_new, max_old, max_new)
+}
+
+fn hunk_button_rows(keys: &[SplitKey]) -> HashMap<usize, usize> {
+    let mut rows = HashMap::new();
+    let mut index = 0;
+    while index < keys.len() {
+        if let SplitKey::Header { hunk_idx } = keys[index] {
+            let mut end = index + 1;
+            while end < keys.len() && !matches!(keys[end], SplitKey::Header { .. }) {
+                end += 1;
+            }
+            let span = end - index;
+            let middle = if span > 1 { index + span / 2 } else { index };
+            rows.insert(middle, hunk_idx);
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    rows
 }
 
 /// 渲染整个文件的 diff（Split 模式，IDEA 风格双栏独立横滚 + sticky gutter + 中间列）
 #[allow(clippy::too_many_arguments)]
-pub fn render_file_diff_split(
+pub(super) fn render_file_diff_split(
     diff: &Rc<FileDiff>,
+    layout: DiffLayout,
     enable_discard: bool,
-    changes_only: bool,
-    // false=不折叠长 Context（FullFile 模式展示所有内容）
-    collapse: bool,
     // 语法高亮语言（None=纯文本，由调用方按文件扩展名算）
     lang: Option<SharedString>,
     mono: SharedString,
@@ -94,66 +185,44 @@ pub fn render_file_diff_split(
     h_scroll: &ScrollHandle,
     has_blame: bool,
     allow_blame: bool,
-    expanded_spacers: &HashSet<(usize, usize)>,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     if let Some(empty) = render_diff_empty(diff.as_ref(), muted_fg) {
         return empty;
     }
-    if is_one_sided(diff.as_ref()) {
-        return render_file_diff(
-            diff,
-            changes_only,
-            lang,
-            mono,
-            _fg,
-            muted_fg,
-            muted_bg,
-            scroll,
-            h_scroll,
-            allow_blame,
-            cx,
-        );
-    }
+    let (keys, button_rows, max_chars) = match layout {
+        DiffLayout::Unified { keys, max_chars } => {
+            return render_file_diff(
+                diff,
+                keys,
+                max_chars,
+                lang,
+                mono,
+                _fg,
+                muted_fg,
+                muted_bg,
+                scroll,
+                h_scroll,
+                allow_blame,
+                cx,
+            );
+        }
+        DiffLayout::Split {
+            keys,
+            button_rows,
+            max_chars,
+        } => (keys, button_rows, max_chars),
+    };
 
     // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
     let diff_rc: Rc<FileDiff> = diff.clone();
-    let keys: Rc<Vec<SplitKey>> = Rc::new(build_split_keys(
-        &diff_rc,
-        changes_only,
-        collapse,
-        expanded_spacers,
-    ));
     let total = keys.len();
-
-    // 每个 hunk 的「中点行」→ hunk_idx：回滚按钮放中点行（仿 VSCode 居中），而非 header 第一行
-    let button_rows: Rc<HashMap<usize, usize>> = {
-        let mut m: HashMap<usize, usize> = HashMap::new();
-        let mut i = 0;
-        while i < keys.len() {
-            if let SplitKey::Header { hunk_idx } = keys[i] {
-                let mut j = i + 1;
-                while j < keys.len() && !matches!(keys[j], SplitKey::Header { .. }) {
-                    j += 1;
-                }
-                let span = j - i;
-                // 中点偏向内容行（header 之后），span=1 的退化 hunk 落回 header
-                let mid = if span > 1 { i + span / 2 } else { i };
-                m.insert(mid, hunk_idx);
-                i = j;
-            } else {
-                i += 1;
-            }
-        }
-        Rc::new(m)
-    };
 
     let scroll_v = scroll.clone();
     let h_shared = h_scroll.clone();
 
-    let (max_old, max_new) = split_max_chars(&diff_rc);
     // 左右共用同一内容宽度（取较长侧）：共享横滚 handle 时两栏滚动范围才一致，都能滚到行尾
-    let content_w = (max_old.max(max_new) as f32) * MONO_CHAR_W + CONTENT_PAD;
+    let content_w = (max_chars as f32) * MONO_CHAR_W + CONTENT_PAD;
     // 中间列：仅回滚按钮时窄（28），需展示 blame author 时宽（96）
     // 中间列宽：blame 展示 140 / 未暂存两个按钮（暂存+丢弃）56 / 已暂存单按钮 28
     let middle_w = if has_blame { 140.0 } else { 56.0 };
@@ -543,4 +612,70 @@ fn render_middle_cell(
         .child(div().flex_none().w(px(1.0)).h(px(DIFF_ROW_H)).bg(sep))
         .child(col(right_author))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::{DiffLine, FileChangeKind, Hunk};
+
+    fn line(kind: DiffLineKind, text: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            old_lineno: None,
+            new_lineno: None,
+            text: text.into(),
+        }
+    }
+
+    fn sample_diff() -> Rc<FileDiff> {
+        Rc::new(FileDiff {
+            path: "a.rs".into(),
+            old_path: None,
+            change_kind: FileChangeKind::Modified,
+            binary: false,
+            old_mode: None,
+            new_mode: None,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 2,
+                new_start: 1,
+                new_lines: 2,
+                heading: None,
+                lines: vec![
+                    line(DiffLineKind::Delete, "old"),
+                    line(DiffLineKind::Add, "new value"),
+                ],
+            }],
+        })
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn layout_cache_reuses_rows_for_unchanged_diff_and_options() {
+        let cache = RefCell::new(None);
+        let diff = sample_diff();
+        let expanded = HashSet::new();
+        let first = prepare_diff_layout(&cache, &diff, false, true, &expanded);
+        let second = prepare_diff_layout(&cache, &diff, false, true, &expanded);
+
+        match (first, second) {
+            (
+                DiffLayout::Split {
+                    keys: first_keys,
+                    button_rows: first_buttons,
+                    ..
+                },
+                DiffLayout::Split {
+                    keys: second_keys,
+                    button_rows: second_buttons,
+                    ..
+                },
+            ) => {
+                assert!(Rc::ptr_eq(&first_keys, &second_keys));
+                assert!(Rc::ptr_eq(&first_buttons, &second_buttons));
+            }
+            _ => panic!("two-sided diff should use split layout"),
+        }
+    }
 }

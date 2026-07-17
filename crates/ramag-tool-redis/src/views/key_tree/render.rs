@@ -66,6 +66,7 @@ impl KeyTreePanel {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_node_row(
         &self,
+        row_index: usize,
         row: &VisibleRow,
         selected: &Option<String>,
         fg: gpui::Hsla,
@@ -81,7 +82,7 @@ impl KeyTreePanel {
         let is_leaf = row.is_key;
         let is_selected = is_leaf && selected.as_deref() == Some(row.full_path.as_str());
 
-        let row_id = SharedString::from(format!("redis-tree-{}-{}", row.depth, row.full_path));
+        let row_id = SharedString::from(format!("redis-tree-row-{row_index}"));
         let path_for_click = row.full_path.clone();
         let path_for_load = row.full_path.clone();
 
@@ -91,7 +92,7 @@ impl KeyTreePanel {
             let glyph = if row.is_expanded { "▼" } else { "▶" };
             let path_for_chevron = row.full_path.clone();
             div()
-                .id(SharedString::from(format!("chev-{}", row.full_path)))
+                .id(SharedString::from(format!("redis-tree-chev-{row_index}")))
                 .w(px(12.0))
                 .text_xs()
                 .text_color(muted_fg)
@@ -99,7 +100,7 @@ impl KeyTreePanel {
                 .child(glyph)
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.toggle_expanded(path_for_chevron.clone(), cx);
+                    this.toggle_expanded(path_for_chevron.as_ref().clone(), cx);
                 }))
                 .into_any_element()
         } else {
@@ -110,7 +111,7 @@ impl KeyTreePanel {
         let type_badge: Option<gpui::AnyElement> = row.leaf_type.map(|t| {
             let path = path_for_load.clone();
             div()
-                .id(SharedString::from(format!("badge-{}", row.full_path)))
+                .id(SharedString::from(format!("redis-tree-badge-{row_index}")))
                 .text_xs()
                 .px(px(5.0))
                 .py(px(1.0))
@@ -122,7 +123,7 @@ impl KeyTreePanel {
                 // badge 单击：始终加载值（不冒泡到行 toggle）
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.select_key(path.clone(), cx);
+                    this.select_key(path.as_ref().clone(), cx);
                 }))
                 .into_any_element()
         });
@@ -132,9 +133,9 @@ impl KeyTreePanel {
         let load_on_click = is_leaf;
         let on_row_click = cx.listener(move |this, _: &ClickEvent, _, cx| {
             if load_on_click {
-                this.select_key(path_for_click.clone(), cx);
+                this.select_key(path_for_click.as_ref().clone(), cx);
             } else {
-                this.toggle_expanded(path_for_click.clone(), cx);
+                this.toggle_expanded(path_for_click.as_ref().clone(), cx);
             }
         });
 
@@ -188,7 +189,7 @@ impl KeyTreePanel {
                     super::ops::node_context_menu(
                         menu,
                         entity_for_menu.clone(),
-                        path_for_menu.clone(),
+                        path_for_menu.as_ref().clone(),
                         is_leaf,
                         is_namespace,
                     )
@@ -266,7 +267,7 @@ fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool, full_path: Stri
     VisibleRow {
         depth,
         label: node.label.clone(),
-        full_path,
+        full_path: Rc::new(full_path),
         is_key: node.is_key,
         leaf_type: node.leaf_type,
         is_namespace: node.is_namespace(),

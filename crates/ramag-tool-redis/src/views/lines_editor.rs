@@ -40,6 +40,7 @@ pub struct LinesEditor {
     rows: Vec<LineRow>,
     next_id: u64,
     push_dir: PushDir,
+    disabled: bool,
 }
 
 impl LinesEditor {
@@ -49,6 +50,7 @@ impl LinesEditor {
             rows: Vec::new(),
             next_id: 0,
             push_dir: PushDir::Tail,
+            disabled: false,
         };
         // 默认起始 1 行，避免空表单看起来不知所措
         me.add_row(window, cx);
@@ -59,8 +61,15 @@ impl LinesEditor {
         self.push_dir
     }
 
+    pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if self.disabled != disabled {
+            self.disabled = disabled;
+            cx.notify();
+        }
+    }
+
     fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.rows.len() >= MAX_EDITOR_ROWS {
+        if self.disabled || self.rows.len() >= MAX_EDITOR_ROWS {
             return;
         }
         let placeholder = match self.kind {
@@ -77,6 +86,9 @@ impl LinesEditor {
     }
 
     fn remove_row(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         // 至少留 1 行：首行不渲染删除按钮，此处保险再判一次
         if self.rows.len() <= 1 {
             return;
@@ -86,7 +98,7 @@ impl LinesEditor {
     }
 
     fn set_dir(&mut self, dir: PushDir, cx: &mut Context<Self>) {
-        if self.push_dir != dir {
+        if !self.disabled && self.push_dir != dir {
             self.push_dir = dir;
             cx.notify();
         }
@@ -147,7 +159,7 @@ impl Render for LinesEditor {
                     .small()
                     .icon(IconName::Plus)
                     .label(label_add)
-                    .disabled(self.rows.len() >= MAX_EDITOR_ROWS)
+                    .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
                     .tooltip(if self.rows.len() >= MAX_EDITOR_ROWS {
                         "单次最多添加 200 行；更大批量请使用脚本"
                     } else {
@@ -186,6 +198,9 @@ impl Render for LinesEditor {
                         .cursor_pointer()
                         .hover(move |this| this.border_color(accent_border));
                 }
+                if self.disabled {
+                    chip = chip.opacity(0.55);
+                }
                 chip
             };
             toolbar = toolbar
@@ -219,7 +234,12 @@ impl Render for LinesEditor {
                         .child(format!("{}", idx + 1)),
                 );
             }
-            line = line.child(div().flex_1().min_w_0().child(Input::new(&row.input)));
+            line = line.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(Input::new(&row.input).disabled(self.disabled)),
+            );
             // 仅在 >1 行时显示删除按钮（保留至少 1 行，无空态）
             if self.rows.len() > 1 {
                 line = line.child(
@@ -227,6 +247,7 @@ impl Render for LinesEditor {
                         .ghost()
                         .small()
                         .icon(IconName::Close)
+                        .disabled(self.disabled)
                         .tooltip("删除该行")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_row(id, cx);

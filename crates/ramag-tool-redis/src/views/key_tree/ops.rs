@@ -204,8 +204,8 @@ impl KeyTreePanel {
                             Notification::error("目标 key 已存在，未执行重命名").autohide(true),
                         );
                     }
-                    Ok(other) => {
-                        tracing::error!(?other, "renamenx unexpected reply");
+                    Ok(_) => {
+                        tracing::error!("renamenx unexpected reply");
                         this.pending_notification =
                             Some(Notification::error("重命名失败：服务端应答异常").autohide(true));
                     }
@@ -330,7 +330,7 @@ impl KeyTreePanel {
                         this.refresh(cx);
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, pattern = %pattern, "delete by prefix failed");
+                        tracing::error!(error = %e, pattern_bytes = pattern.len(), "delete by prefix failed");
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("删除失败")).autohide(true));
                     }

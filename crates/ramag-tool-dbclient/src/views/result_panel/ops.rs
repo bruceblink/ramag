@@ -105,9 +105,8 @@ impl ResultPanel {
             .get(idx)
             .map(|v| v.display_preview(60))
             .unwrap_or_default();
-        let visible = crate::views::result_table::compute_display_view(self, result, cx)
-            .display_indices
-            .contains(&ri);
+        let visible = crate::views::result_table::cached_display_view(self, result, cx)
+            .is_none_or(|view| view.display_indices.contains(&ri));
         let hidden_note = if visible {
             ""
         } else {
@@ -124,14 +123,12 @@ impl ResultPanel {
         let ResultState::Ok(result) = &self.state else {
             return None;
         };
-        let mut indices: Vec<usize> = self
+        let indices: Vec<usize> = self
             .selected_rows
             .iter()
             .copied()
             .filter(|i| *i < result.rows.len())
             .collect();
-        indices.sort();
-        indices.dedup();
         if indices.is_empty() {
             return None;
         }
@@ -153,12 +150,16 @@ impl ResultPanel {
         if indices.len() > 3 {
             samples.push(format!("…还有 {} 行", indices.len() - 3));
         }
-        let visible = crate::views::result_table::compute_display_view(self, result, cx)
-            .display_indices
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        let hidden = indices.iter().filter(|ri| !visible.contains(ri)).count();
+        let hidden = crate::views::result_table::cached_display_view(self, result, cx)
+            .map(|view| {
+                let visible = view
+                    .display_indices
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>();
+                indices.iter().filter(|ri| !visible.contains(ri)).count()
+            })
+            .unwrap_or(0);
         let hidden_note = if hidden > 0 {
             format!("（其中 {hidden} 行当前被筛选隐藏）")
         } else {
@@ -283,16 +284,15 @@ impl ResultPanel {
                     if let ResultState::Ok(r) = &mut this.state {
                         let r = Arc::make_mut(r);
                         let before = r.rows.len();
-                        let mut to_remove = deleted.clone();
-                        to_remove.sort_by(|a, b| b.cmp(a));
-                        for ri in to_remove {
+                        // 删除计划源自 BTreeSet，成功项保持升序；逆序移除即可避免索引位移。
+                        for &ri in deleted.iter().rev() {
                             if ri < r.rows.len() {
                                 r.rows.remove(ri);
                             }
                         }
                         result_changed = r.rows.len() != before;
                     }
-                    this.selected_rows.clear();
+                    this.clear_selected_rows();
                     this.selected_cell = None;
                 }
                 if result_changed {

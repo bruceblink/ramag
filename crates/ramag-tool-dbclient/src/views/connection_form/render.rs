@@ -52,11 +52,14 @@ impl ConnectionFormPanel {
                     .id("production-toggle")
                     .items_center()
                     .gap(px(8.0))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.production = !this.production;
-                        cx.notify();
-                    }))
+                    .when(!self.saving, |row| {
+                        row.cursor_pointer()
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.production = !this.production;
+                                cx.notify();
+                            }))
+                    })
+                    .when(self.saving, |row| row.opacity(0.6))
                     .child(track)
                     .child(
                         div()
@@ -133,13 +136,14 @@ impl Render for ConnectionFormPanel {
                         .gap(px(8.0))
                         .child(div().flex_1().min_w_0().child(field_row(
                             "从 URI 填充（可选）",
-                            Input::new(&self.mongo_uri),
+                            Input::new(&self.mongo_uri).disabled(self.saving),
                         )))
                         .child(
                             Button::new("apply-mongo-uri")
                                 .small()
                                 .label("填充")
                                 .tooltip("解析 mongodb:// 地址并回填下方字段")
+                                .disabled(self.saving)
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.apply_mongo_uri(window, cx);
                                 })),
@@ -151,7 +155,10 @@ impl Render for ConnectionFormPanel {
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("连接信息", muted_fg))
-                    .child(field_row("名称", Input::new(&self.name)))
+                    .child(field_row(
+                        "名称",
+                        Input::new(&self.name).disabled(self.saving),
+                    ))
                     .child(
                         h_flex()
                             .w_full()
@@ -160,15 +167,24 @@ impl Render for ConnectionFormPanel {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(field_row("Host", Input::new(&self.host))),
+                                    .child(field_row(
+                                        "Host",
+                                        Input::new(&self.host).disabled(self.saving),
+                                    )),
                             )
                             .child(
                                 div()
                                     .w(px(110.0))
-                                    .child(field_row("Port", Input::new(&self.port))),
+                                    .child(field_row(
+                                        "Port",
+                                        Input::new(&self.port).disabled(self.saving),
+                                    )),
                             ),
                     )
-                    .child(field_row(database_label, Input::new(&self.database)))
+                    .child(field_row(
+                        database_label,
+                        Input::new(&self.database).disabled(self.saving),
+                    ))
                     .child(self.render_production_toggle(cx)),
             )
             // —— 认证 ——
@@ -176,14 +192,22 @@ impl Render for ConnectionFormPanel {
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("认证", muted_fg))
-                    .child(field_row(username_label, Input::new(&self.username)))
+                    .child(field_row(
+                        username_label,
+                        Input::new(&self.username).disabled(self.saving),
+                    ))
                     // 密码默认掩码显示，右侧提供显示/隐藏切换按钮
-                    .child(field_row("密码", Input::new(&self.password).mask_toggle()))
+                    .child(field_row(
+                        "密码",
+                        Input::new(&self.password)
+                            .mask_toggle()
+                            .disabled(self.saving),
+                    ))
                     // MongoDB 专属：认证库 authSource（独立于"默认打开的库"）
                     .when(self.driver_id == "mongodb", |this| {
                         this.child(field_row(
                             "认证库 authSource（可选，留空 = admin）",
-                            Input::new(&self.auth_source),
+                            Input::new(&self.auth_source).disabled(self.saving),
                         ))
                     }),
             )
@@ -208,6 +232,7 @@ impl Render for ConnectionFormPanel {
                             .child(
                                 gpui_component::switch::Switch::new("conn-tls")
                                     .checked(self.tls)
+                                    .disabled(self.saving)
                                     .on_click(cx.listener(|this, _: &bool, _, cx| {
                                         this.tls = !this.tls;
                                         this.invalidate_test(cx);
@@ -235,6 +260,7 @@ impl Render for ConnectionFormPanel {
                                 Button::new(SharedString::from(format!("tls-verify-{mode:?}")))
                                     .small()
                                     .label(label)
+                                    .disabled(self.saving)
                                     .when(selected, |b| b.primary())
                                     .when(!selected, |b| b.ghost())
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -249,7 +275,7 @@ impl Render for ConnectionFormPanel {
                         this.child(verify_row)
                             .child(field_row(
                                 "自定义 CA 证书（PEM，自签服务端用；留空用系统信任链验证）",
-                                Input::new(&self.ca_cert_path),
+                                Input::new(&self.ca_cert_path).disabled(self.saving),
                             ))
                             // Redis / Mongo 驱动无「验链不验名」档：Ca 档在这两类上等同严格校验
                             .when(
@@ -284,12 +310,15 @@ impl Render for ConnectionFormPanel {
                             .gap(px(12.0))
                             .child(div().flex_1().min_w_0().child(field_row(
                                 "SSH 跳板（可选，需已配密钥或 ssh-agent）",
-                                Input::new(&self.ssh_target),
+                                Input::new(&self.ssh_target).disabled(self.saving),
                             )))
                             .child(
                                 div()
                                     .w(px(110.0))
-                                    .child(field_row("SSH 端口", Input::new(&self.ssh_port))),
+                                    .child(field_row(
+                                        "SSH 端口",
+                                        Input::new(&self.ssh_port).disabled(self.saving),
+                                    )),
                             ),
                     ),
             )
@@ -316,7 +345,10 @@ impl Render for ConnectionFormPanel {
                                     } else {
                                         "测试连接"
                                     })
-                                    .disabled(matches!(self.test_state, TestState::Testing))
+                                    .disabled(
+                                        self.saving
+                                            || matches!(self.test_state, TestState::Testing),
+                                    )
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.handle_test(cx);
                                     })),

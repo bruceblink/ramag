@@ -43,7 +43,9 @@ pub struct RedisSessionPanel {
     console: Entity<CliConsole>,
     console_open: bool,
     resize_state: Entity<ResizableState>,
-    subscriptions: Vec<Subscription>,
+    _subscriptions: Vec<Subscription>,
+    /// 当前写入弹窗事件订阅；单槽替换并在关闭时释放，避免每次打开都永久累积。
+    dialog_subscription: Option<Subscription>,
 }
 
 impl RedisSessionPanel {
@@ -295,7 +297,8 @@ impl RedisSessionPanel {
             console,
             console_open: false,
             resize_state,
-            subscriptions: subs,
+            _subscriptions: subs,
+            dialog_subscription: None,
         }
     }
 
@@ -322,9 +325,13 @@ impl RedisSessionPanel {
         self.detail.update(cx, |p, cx| p.focus_panel(window, cx));
     }
 
-    /// 让 dialogs.rs 内的方法把 subscription 推进 Vec（保持字段私有）
-    pub(super) fn push_subscription(&mut self, sub: Subscription) {
-        self.subscriptions.push(sub);
+    /// 同一窗口只保留当前写入弹窗的订阅，替换时释放上一弹窗及其输入状态。
+    pub(super) fn set_dialog_subscription(&mut self, sub: Subscription) {
+        self.dialog_subscription = Some(sub);
+    }
+
+    pub(super) fn clear_dialog_subscription(&mut self) {
+        self.dialog_subscription = None;
     }
 
     /// DB 切换：树重连 + 主区清空当前 key（旧 key 在原 db，无关）

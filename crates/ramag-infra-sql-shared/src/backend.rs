@@ -26,8 +26,10 @@ use crate::sql::{
 pub const MAX_QUERY_WARNINGS: usize = 1_000;
 /// 即使用户关闭自动 LIMIT，客户端也不会无限保留结果行。
 const MAX_QUERY_RESULT_ROWS: usize = 100_000;
-/// 结果行估算的常驻内存硬上限；列定义与单个在途驱动行不计入。
-const MAX_QUERY_RESULT_BYTES: u64 = 256 * 1024 * 1024;
+/// 结果行与列元数据估算的常驻内存硬上限；单个在途驱动行不计入。
+const MAX_QUERY_RESULT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_QUERY_RESULT_COLUMNS: usize = 4_096;
+const MAX_QUERY_RESULT_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
 /// SQL 类 driver 抽象。`Db` 绑到 sqlx Database（MySql/Postgres/Sqlite 等）。
 /// where 子句的 HRTB GAT 是 sqlx 0.8 必备，sqlx 内置 Database 自动满足
@@ -498,6 +500,7 @@ where
         while let Some(row) = rows.try_next().await.map_err(|e| map_err(b, e))? {
             if !saw_row {
                 (columns, column_types) = b.extract_columns(&row);
+                retained_bytes = validate_query_columns(&columns, &column_types)?;
                 saw_row = true;
             }
             if domain_rows.len() >= MAX_QUERY_RESULT_ROWS {
@@ -525,6 +528,7 @@ where
             .extract_columns_fallback(conn, sql)
             .await
             .unwrap_or_default();
+        validate_query_columns(&columns, &column_types)?;
     }
 
     let warnings = limit_reached
@@ -561,6 +565,50 @@ where
 enum QueryResultLimit {
     Rows,
     Bytes,
+}
+
+fn validate_query_columns(columns: &[String], column_types: &[String]) -> Result<u64> {
+    validate_query_columns_with_limits(
+        columns,
+        column_types,
+        MAX_QUERY_RESULT_COLUMNS,
+        MAX_QUERY_RESULT_METADATA_BYTES,
+    )
+}
+
+fn validate_query_columns_with_limits(
+    columns: &[String],
+    column_types: &[String],
+    max_columns: usize,
+    max_bytes: u64,
+) -> Result<u64> {
+    if columns.len() != column_types.len() {
+        return Err(DomainError::QueryFailed(format!(
+            "查询结果列名与类型数量不一致：{} != {}",
+            columns.len(),
+            column_types.len()
+        )));
+    }
+    if columns.len() > max_columns {
+        return Err(DomainError::QueryFailed(format!(
+            "查询结果包含 {} 列，超过 {max_columns} 列安全上限；请减少 SELECT 字段",
+            columns.len()
+        )));
+    }
+    let retained = columns
+        .iter()
+        .chain(column_types)
+        .try_fold(0u64, |total, value| {
+            total.checked_add(u64::try_from(value.len()).unwrap_or(u64::MAX))
+        })
+        .ok_or_else(|| DomainError::QueryFailed("查询结果列元数据大小溢出".into()))?;
+    if retained > max_bytes {
+        return Err(DomainError::QueryFailed(format!(
+            "查询结果列元数据超过 {} MiB 安全上限；请减少 SELECT 字段",
+            max_bytes / (1024 * 1024)
+        )));
+    }
+    Ok(retained)
 }
 
 fn try_push_query_row(
@@ -613,7 +661,7 @@ where
 mod tests {
     use super::{
         MAX_QUERY_WARNINGS, QueryResultLimit, append_warnings_bounded, try_push_query_row,
-        validate_backend_config, validate_metadata_identifier,
+        validate_backend_config, validate_metadata_identifier, validate_query_columns_with_limits,
     };
     use ramag_domain::entities::{ConnectionConfig, DriverKind, Row, Value, Warning};
 
@@ -688,6 +736,20 @@ mod tests {
             Err(QueryResultLimit::Bytes)
         );
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn query_result_column_metadata_is_bounded_and_consistent() {
+        let columns = vec!["a".to_string(), "bb".to_string()];
+        let types = vec!["x".to_string(), "yy".to_string()];
+
+        assert!(matches!(
+            validate_query_columns_with_limits(&columns, &types, 2, 6),
+            Ok(6)
+        ));
+        assert!(validate_query_columns_with_limits(&columns, &types, 1, 6).is_err());
+        assert!(validate_query_columns_with_limits(&columns, &types, 2, 5).is_err());
+        assert!(validate_query_columns_with_limits(&columns, &types[..1], 2, 6).is_err());
     }
 
     #[test]

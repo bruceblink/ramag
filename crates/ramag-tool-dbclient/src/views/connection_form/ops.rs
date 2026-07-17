@@ -17,6 +17,9 @@ impl ConnectionFormPanel {
     /// 「从 URI 填充」：解析 mongodb:// 地址回填表单各字段。
     /// 解析失败复用测试结论区显示红字；副本集多主机明确拒绝，避免静默改变拓扑。
     pub(super) fn apply_mongo_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         let raw = self.mongo_uri.read(cx).value().trim().to_string();
         if raw.is_empty() {
             return;
@@ -67,7 +70,7 @@ impl ConnectionFormPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.driver_id == id {
+        if self.saving || self.driver_id == id {
             return;
         }
         let cur_port = self.port.read(cx).value().to_string();
@@ -232,7 +235,7 @@ impl ConnectionFormPanel {
                     .bg(accent_tint)
                     .border_color(accent_border)
                     .text_color(accent);
-            } else if available {
+            } else if available && !self.saving {
                 // 可点击未选中
                 btn = btn
                     .bg(secondary_bg)
@@ -263,7 +266,7 @@ impl ConnectionFormPanel {
 
     pub(super) fn handle_test(&mut self, cx: &mut Context<Self>) {
         // 防重入：测试进行中不再发起（结果竞态已由 epoch 挡，这里挡资源重复占用）
-        if matches!(self.test_state, TestState::Testing) {
+        if self.saving || matches!(self.test_state, TestState::Testing) {
             return;
         }
         let config = match self.validate(cx) {
@@ -321,6 +324,9 @@ impl ConnectionFormPanel {
     }
 
     pub(super) fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         let config = match self.validate(cx) {
             Ok(c) => c,
             Err(e) => {
@@ -355,6 +361,9 @@ impl ConnectionFormPanel {
 
     /// 「取消」按钮：有未保存修改先确认，确认「放弃修改」才发 Cancelled 关闭表单
     pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         if !self.is_dirty(cx) {
             cx.emit(FormEvent::Cancelled);
             return;

@@ -194,7 +194,7 @@ impl ResultPanel {
             .last()
             .map(|l| l.documents.clone())
             .unwrap_or_else(|| Arc::new(Vec::new()));
-        self.selected_rows.clear();
+        self.clear_selected_rows();
         // 换层清空过滤（新层新列，旧过滤无意义）→ 展开路径随之清空
         self.column_filter
             .update(cx, |s, cx| s.set_value("", window, cx));

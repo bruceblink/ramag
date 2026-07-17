@@ -30,6 +30,7 @@ enum Mode {
 pub struct TtlPicker {
     mode: Mode,
     custom: Entity<InputState>,
+    disabled: bool,
 }
 
 impl TtlPicker {
@@ -39,6 +40,7 @@ impl TtlPicker {
         Self {
             mode: Mode::Forever,
             custom,
+            disabled: false,
         }
     }
 
@@ -65,8 +67,15 @@ impl TtlPicker {
     }
 
     fn set_mode(&mut self, m: Mode, cx: &mut Context<Self>) {
-        if self.mode != m {
+        if !self.disabled && self.mode != m {
             self.mode = m;
+            cx.notify();
+        }
+    }
+
+    pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if self.disabled != disabled {
+            self.disabled = disabled;
             cx.notify();
         }
     }
@@ -133,6 +142,9 @@ impl Render for TtlPicker {
                         .cursor_pointer()
                         .hover(move |this| this.border_color(accent_border));
                 }
+                if self.disabled {
+                    c = c.opacity(0.55);
+                }
                 c
             };
 
@@ -178,7 +190,7 @@ impl Render for TtlPicker {
                     div()
                         .w(px(140.0))
                         .ml(px(4.0))
-                        .child(Input::new(&self.custom)),
+                        .child(Input::new(&self.custom).disabled(self.disabled)),
                 )
                 .child(div().text_xs().text_color(muted_fg).child("秒"));
         }

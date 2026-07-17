@@ -7,6 +7,7 @@
 //!   `{"_id":{"$oid":"abc..."}}` → `{"_id": "abc..."}`
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
@@ -70,24 +71,45 @@ impl FlatTable {
 
     /// 下钻层的祖先值对所有行相同；直接逐行写入，避免先构造完整 `lead_rows` 中间矩阵。
     pub fn prepend_constant_lead(&mut self, lead: Vec<(Column, Cell)>) {
+        self.prepend_constant_lead_impl(lead, None);
+    }
+
+    /// 可取消地插入祖先列；返回 false 表示旧表格任务已失效。
+    pub fn prepend_constant_lead_cancellable(
+        &mut self,
+        lead: Vec<(Column, Cell)>,
+        cancelled: &AtomicBool,
+    ) -> bool {
+        self.prepend_constant_lead_impl(lead, Some(cancelled))
+    }
+
+    fn prepend_constant_lead_impl(
+        &mut self,
+        lead: Vec<(Column, Cell)>,
+        cancelled: Option<&AtomicBool>,
+    ) -> bool {
         if lead.is_empty() {
-            return;
+            return true;
         }
         let discovered = lead.len();
         self.total_columns = self.total_columns.saturating_add(discovered);
         let n = self.lead_capacity().min(discovered);
         if n == 0 {
-            return;
+            return true;
         }
         let kept = lead.into_iter().skip(discovered - n);
         let (mut columns, cells): (Vec<_>, Vec<_>) = kept.unzip();
         columns.append(&mut self.columns);
         self.columns = columns;
-        for row in &mut self.rows {
+        for (index, row) in self.rows.iter_mut().enumerate() {
+            if index % 64 == 0 && is_cancelled(cancelled) {
+                return false;
+            }
             let mut head = cells.clone();
             head.append(row);
             *row = head;
         }
+        true
     }
 
     fn lead_capacity(&self) -> usize {
@@ -102,27 +124,46 @@ fn build_flat_table(docs: &[Value]) -> FlatTable {
 }
 
 /// 带展开路径的扁平化：expanded 里的对象路径递归展开成 `父.子` 子列（array 不展开，仍走 unwind）
+#[cfg(test)]
 pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> FlatTable {
+    build_flat_table_impl(docs, expanded, None).unwrap_or_default()
+}
+
+/// 可取消表格构建；新结果或下钻到来后，旧任务按文档批次尽快退出。
+pub fn build_flat_table_with_cancellable(
+    docs: &[Value],
+    expanded: &BTreeSet<String>,
+    cancelled: &AtomicBool,
+) -> Option<FlatTable> {
+    build_flat_table_impl(docs, expanded, Some(cancelled))
+}
+
+fn build_flat_table_impl(
+    docs: &[Value],
+    expanded: &BTreeSet<String>,
+    cancelled: Option<&AtomicBool>,
+) -> Option<FlatTable> {
     let column_limit = table_column_limit(docs.len());
     let mut col_seen: HashSet<String> = HashSet::new();
     let mut col_order: Vec<String> = Vec::new();
     let mut col_kinds: HashMap<String, &'static str> = HashMap::new();
     let mut columns_truncated = false;
     // 列名达到最终矩阵上限后，不再为其构造 Cell / map entry，避免宽文档先制造巨大中间表。
-    let flat_rows: Vec<BTreeMap<String, Cell>> = docs
-        .iter()
-        .map(|document| {
-            flatten_doc_bounded(
-                document,
-                expanded,
-                column_limit,
-                &mut col_seen,
-                &mut col_order,
-                &mut col_kinds,
-                &mut columns_truncated,
-            )
-        })
-        .collect();
+    let mut flat_rows: Vec<BTreeMap<String, Cell>> = Vec::with_capacity(docs.len());
+    for (index, document) in docs.iter().enumerate() {
+        if index % 64 == 0 && is_cancelled(cancelled) {
+            return None;
+        }
+        flat_rows.push(flatten_doc_bounded(
+            document,
+            expanded,
+            column_limit,
+            &mut col_seen,
+            &mut col_order,
+            &mut col_kinds,
+            &mut columns_truncated,
+        ));
+    }
 
     // 2) 排序：_id 优先；其它按插入顺序
     col_order.sort_by(|a, b| match (a.as_str(), b.as_str()) {
@@ -147,21 +188,31 @@ pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> Fla
         text: String::new(),
         kind: "null",
     };
-    let rows: Vec<Vec<Cell>> = flat_rows
-        .into_iter()
-        .map(|mut row| {
+    let mut rows = Vec::with_capacity(flat_rows.len());
+    for (index, mut row) in flat_rows.into_iter().enumerate() {
+        if index % 64 == 0 && is_cancelled(cancelled) {
+            return None;
+        }
+        rows.push(
             columns
                 .iter()
-                .map(|c| row.remove(&c.path).unwrap_or_else(|| empty_cell.clone()))
-                .collect()
-        })
-        .collect();
+                .map(|column| {
+                    row.remove(&column.path)
+                        .unwrap_or_else(|| empty_cell.clone())
+                })
+                .collect(),
+        );
+    }
 
-    FlatTable {
+    Some(FlatTable {
         columns,
         total_columns,
         rows,
-    }
+    })
+}
+
+fn is_cancelled(cancelled: Option<&AtomicBool>) -> bool {
+    cancelled.is_some_and(|token| token.load(Ordering::Relaxed))
 }
 
 fn table_column_limit(row_count: usize) -> usize {
@@ -329,14 +380,35 @@ fn insert_bounded_cell(
 
 /// 收集过滤列补全候选：顶层字段 + 嵌套对象的 dotted 子字段路径（到 max_depth 层）。
 /// 让「consume.」能补全出 consume.cost；array 与 ExtJSON 包装不深入
+#[cfg(test)]
 pub fn collect_paths(docs: &[Value], max_depth: usize) -> Vec<String> {
+    collect_paths_impl(docs, max_depth, None).unwrap_or_default()
+}
+
+/// 可取消地收集补全路径；新结果到来后无需继续遍历旧文档。
+pub fn collect_paths_cancellable(
+    docs: &[Value],
+    max_depth: usize,
+    cancelled: &AtomicBool,
+) -> Option<Vec<String>> {
+    collect_paths_impl(docs, max_depth, Some(cancelled))
+}
+
+fn collect_paths_impl(
+    docs: &[Value],
+    max_depth: usize,
+    cancelled: Option<&AtomicBool>,
+) -> Option<Vec<String>> {
     let mut set = BTreeSet::new();
-    for doc in docs {
+    for (index, doc) in docs.iter().enumerate() {
+        if index % 64 == 0 && is_cancelled(cancelled) {
+            return None;
+        }
         if let Value::Object(map) = doc {
             collect_into(map, "", max_depth, &mut set);
         }
     }
-    set.into_iter().collect()
+    Some(set.into_iter().collect())
 }
 
 fn collect_into(
@@ -398,6 +470,15 @@ mod tests {
         assert_eq!(table.columns.len(), MAX_TABLE_COLUMNS);
         assert_eq!(table.rows.len(), docs.len());
         assert_eq!(table_column_limit(50_000), 40);
+    }
+
+    #[test]
+    fn cancelled_table_work_stops_before_scanning_documents() {
+        let docs = vec![json!({"name": "Alice"})];
+        let cancelled = AtomicBool::new(true);
+
+        assert!(build_flat_table_with_cancellable(&docs, &BTreeSet::new(), &cancelled).is_none());
+        assert!(collect_paths_cancellable(&docs, 4, &cancelled).is_none());
     }
 
     #[test]

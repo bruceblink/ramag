@@ -93,6 +93,23 @@ fn pick_default_db(conn: Option<&ConnectionConfig>, databases: &[MongoDatabase])
         .map(|d| d.name.clone())
 }
 
+/// driver 已返回有序数据库；配置中的空库用二分定位插入，避免 UI 再排序最多五万项。
+fn insert_configured_database(databases: &mut Vec<MongoDatabase>, configured: Option<String>) {
+    let Some(name) = configured.filter(|name| !name.is_empty()) else {
+        return;
+    };
+    if let Err(index) = databases.binary_search_by(|database| database.name.cmp(&name)) {
+        databases.insert(
+            index,
+            MongoDatabase {
+                name,
+                size_on_disk: None,
+                empty: true,
+            },
+        );
+    }
+}
+
 #[derive(Default)]
 struct ExpandedState {
     loading: bool,
@@ -266,17 +283,7 @@ impl CollectionTreePanel {
                         info!(count = dbs.len(), "mongo databases loaded");
                         // 配置指定了库但 MongoDB listDatabases 不返回它（库内无任何集合/数据）→
                         // 仍补一行展示，便于直接在其下建集合，不必先绕开再回来
-                        if let Some(cfg_db) = conf.database.clone().filter(|s| !s.is_empty())
-                            && !dbs.iter().any(|d| d.name == cfg_db)
-                        {
-                            dbs.push(MongoDatabase {
-                                name: cfg_db,
-                                size_on_disk: None,
-                                empty: true,
-                            });
-                        }
-                        // listDatabases 返回服务端顺序，按库名字典序排（含上面补的空库），左侧列表稳定有序
-                        dbs.sort_by(|a, b| a.name.cmp(&b.name));
+                        insert_configured_database(&mut dbs, conf.database.clone());
                         this.databases = dbs;
                         // 首次加载：自动展开并激活默认库（config.database 优先，否则首个非系统库）
                         if this.auto_expand_pending {
@@ -934,5 +941,33 @@ mod cache_budget_tests {
         assert_eq!(prospective_collection_bytes(100, 40, 60), 120);
         assert_eq!(prospective_collection_bytes(10, 20, 5), 5);
         assert_eq!(prospective_collection_bytes(usize::MAX, 0, 1), usize::MAX);
+    }
+
+    #[test]
+    fn configured_database_is_inserted_once_without_resorting() {
+        let mut databases = vec![
+            MongoDatabase {
+                name: "admin".into(),
+                size_on_disk: None,
+                empty: false,
+            },
+            MongoDatabase {
+                name: "users".into(),
+                size_on_disk: None,
+                empty: false,
+            },
+        ];
+
+        insert_configured_database(&mut databases, Some("app".into()));
+        insert_configured_database(&mut databases, Some("users".into()));
+
+        assert_eq!(
+            databases
+                .iter()
+                .map(|database| database.name.as_str())
+                .collect::<Vec<_>>(),
+            ["admin", "app", "users"]
+        );
+        assert!(databases[1].empty);
     }
 }

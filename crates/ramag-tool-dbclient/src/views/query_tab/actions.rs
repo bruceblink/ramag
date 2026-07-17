@@ -708,12 +708,15 @@ fn build_danger_prompt(
         .collect::<Vec<_>>()
         .join("\n");
     let sql_trimmed = sql.trim();
-    let sql_shown: String = if sql_trimmed.chars().count() > SQL_PREVIEW_MAX {
-        let head: String = sql_trimmed.chars().take(SQL_PREVIEW_MAX).collect();
-        format!("{head}\n…（SQL 过长已截断展示，执行的是完整语句）")
-    } else {
-        sql_trimmed.to_string()
-    };
+    let sql_shown = sql_trimmed.char_indices().nth(SQL_PREVIEW_MAX).map_or_else(
+        || sql_trimmed.to_string(),
+        |(end, _)| {
+            format!(
+                "{}\n…（SQL 过长已截断展示，执行的是完整语句）",
+                &sql_trimmed[..end]
+            )
+        },
+    );
     format!(
         "连接：{}（{}:{}）\n数据库：{database}\n\n{risk_lines}\n\n完整 SQL：\n{sql_shown}",
         conn.name, conn.host, conn.port

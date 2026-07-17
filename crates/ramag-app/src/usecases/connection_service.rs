@@ -77,6 +77,16 @@ impl ConnectionService {
         }
     }
 
+    /// 按连接 ID 清理全部 SQL 驱动池。
+    ///
+    /// 编辑连接时允许切换数据库类型；此时仅按新类型清理会遗留旧驱动池，
+    /// 后续关闭标签也无法再从新配置推断旧类型。
+    pub fn evict_all_pools(&self, id: &ConnectionId) {
+        for driver in self.drivers.values() {
+            driver.evict_pool(id);
+        }
+    }
+
     // 元数据查询（走 driver）。只读，故用 retry_idempotent_read! 兜底「查询执行到一半断连」
     // （sqlx test_before_acquire 已能在取连接时换掉死连接，这里再加一层重连重试）
 

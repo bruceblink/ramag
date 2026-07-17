@@ -105,7 +105,7 @@ impl VcsView {
         let row_hover = theme.muted;
         let bg = theme.background;
         // clone/init/add 走 self.loading（见 admin.rs），工作区操作走 self.busy——都要挡
-        let busy = self.busy || self.loading;
+        let busy = self.busy || self.loading || self.directory_picker_busy;
 
         // 当前搜索关键字（小写）；空 = 不过滤
         let query = self
@@ -153,10 +153,7 @@ impl VcsView {
                     .tooltip("初始化新 Git 仓库")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        let dialog = rfd::FileDialog::new().set_title("选择或新建仓库目录");
-                        if let Some(path) = dialog.pick_folder() {
-                            this.init_repo_async(path, cx);
-                        }
+                        this.pick_init_directory(cx);
                     })),
             )
             .child(
@@ -297,7 +294,7 @@ impl VcsView {
         let theme = cx.theme();
         let border = theme.border;
         let bg = theme.background;
-        let busy = self.loading;
+        let busy = self.loading || self.busy || self.directory_picker_busy;
         let dest_label = self
             .clone_dest_path
             .as_ref()
@@ -328,11 +325,7 @@ impl VcsView {
                     .tooltip("选择 Clone 目标目录")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        let dialog = rfd::FileDialog::new().set_title("选择 Clone 目标目录");
-                        if let Some(path) = dialog.pick_folder() {
-                            this.clone_dest_path = Some(path);
-                            cx.notify();
-                        }
+                        this.pick_clone_destination(cx);
                     })),
             )
             .child(

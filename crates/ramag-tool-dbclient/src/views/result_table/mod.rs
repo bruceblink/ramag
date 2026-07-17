@@ -2,7 +2,11 @@
 
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled,
@@ -27,6 +31,11 @@ use gpui_component::{
 use ramag_domain::entities::{QueryResult, contains_case_insensitive};
 
 use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
+
+/// 连续输入筛选词时先等待短暂停顿，避免每个按键都占用共享 CPU 工作池。
+const DISPLAY_VIEW_DEBOUNCE: Duration = Duration::from_millis(160);
+/// 横向表格未做列虚拟化；限制交互式列数，避免异常宽结果创建数千个控件。
+const MAX_COLUMNS_DISPLAY: usize = 512;
 
 /// 帧级数据：本次 render_table 计算一次，供 uniform_list closure 共享访问
 /// 用 Rc 包装才能在 'static + Fn 闭包内 capture（不能 borrow 栈局部变量）
@@ -53,6 +62,10 @@ struct TableRowFrame {
 pub(crate) struct DisplayView {
     /// 可见列的原始下标（列过滤后）
     pub(crate) visible_col_indices: Arc<Vec<usize>>,
+    /// 列过滤命中总数；可能大于交互式显示上限。
+    pub(crate) matched_col_count: usize,
+    /// 是否因 MAX_COLUMNS_DISPLAY 仅显示命中列前缀。
+    pub(crate) columns_truncated: bool,
     /// 原始行下标：排序 + 行过滤后的显示序
     pub(crate) display_indices: Arc<Vec<usize>>,
     /// 基于当前显示行样本估算的默认列宽；手动覆盖在渲染时叠加。
@@ -70,7 +83,7 @@ pub(crate) struct DisplayView {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct DisplayViewCacheKey {
+pub(crate) struct DisplayViewCacheKey {
     result_identity: usize,
     result_revision: u64,
     sort_by: Option<(usize, SortDir)>,
@@ -90,6 +103,16 @@ impl DisplayViewCache {
     }
 }
 
+impl DisplayViewCacheKey {
+    fn only_filters_differ_from(&self, previous: &Self) -> bool {
+        self.result_identity == previous.result_identity
+            && self.result_revision == previous.result_revision
+            && self.sort_by == previous.sort_by
+            && (self.column_filter != previous.column_filter
+                || self.row_filter_lower != previous.row_filter_lower)
+    }
+}
+
 impl DisplayView {
     /// 视图是否与原始结果不同（有排序 / 过滤）——导出时据此决定导原始还是导视图
     pub(crate) fn differs_from_raw(&self, panel: &ResultPanel) -> bool {
@@ -97,50 +120,170 @@ impl DisplayView {
     }
 }
 
-/// 计算表格当前视图：保留原始行下标供 DML / 复制 / 编辑定位真实行；
-/// 排序、行过滤都在 (source_idx, row) 对上进行（仅前 MAX_ROWS_DISPLAY 行）
-pub(crate) fn compute_display_view(
+fn display_view_key(
     panel: &ResultPanel,
     result: &QueryResult,
     cx: &gpui::App,
-) -> DisplayView {
+) -> DisplayViewCacheKey {
     let column_filter = panel.column_filter_text(cx);
     let row_filter_lower = panel.row_filter_text(cx).to_lowercase();
-    let key = DisplayViewCacheKey {
+    DisplayViewCacheKey {
         result_identity: result as *const QueryResult as usize,
         result_revision: panel.result_revision,
         sort_by: panel.sort_by(),
-        column_filter: column_filter.clone(),
-        row_filter_lower: row_filter_lower.clone(),
-    };
+        column_filter,
+        row_filter_lower,
+    }
+}
+
+/// 只读取已完成且与当前输入严格匹配的派生视图；用户操作不得同步回退扫描大结果集。
+pub(crate) fn cached_display_view(
+    panel: &ResultPanel,
+    result: &QueryResult,
+    cx: &gpui::App,
+) -> Option<DisplayView> {
+    let key = display_view_key(panel, result, cx);
+    panel
+        .display_view_cache
+        .as_ref()
+        .and_then(|cache| cache.get(&key))
+}
+
+/// 确保当前排序 / 筛选视图在受限工作池中计算。缓存未就绪时返回 None，渲染层显示进度态。
+fn ensure_display_view(
+    panel: &mut ResultPanel,
+    result: &Arc<QueryResult>,
+    cx: &mut Context<ResultPanel>,
+) -> Option<DisplayView> {
+    let key = display_view_key(panel, result, cx);
     if let Some(view) = panel
         .display_view_cache
-        .borrow()
         .as_ref()
         .and_then(|cache| cache.get(&key))
     {
-        return view;
+        return Some(view);
+    }
+    if panel.display_view_build_key.as_ref() == Some(&key) {
+        return None;
     }
 
-    let view = build_display_view(result, panel.sort_by(), &column_filter, &row_filter_lower);
-    panel.display_view_cache.replace(Some(DisplayViewCache {
-        key,
-        view: view.clone(),
-    }));
-    view
+    let previous_key = panel
+        .display_view_build_key
+        .as_ref()
+        .or_else(|| panel.display_view_cache.as_ref().map(|cache| &cache.key));
+    let debounce = previous_key.is_some_and(|previous| key.only_filters_differ_from(previous));
+    panel.cancel_display_view_build();
+    panel.display_view_request_seq = panel.display_view_request_seq.wrapping_add(1);
+    let request_seq = panel.display_view_request_seq;
+    panel.display_view_cache = None;
+    panel.display_view_build_key = Some(key.clone());
+    panel.display_view_building = true;
+    panel.display_view_error = None;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    panel.display_view_cancel = Some(cancelled.clone());
+
+    let result = result.clone();
+    let request_key = key.clone();
+    cx.spawn(async move |this, cx| {
+        if debounce {
+            cx.background_executor().timer(DISPLAY_VIEW_DEBOUNCE).await;
+        }
+        let current = this
+            .update(cx, |this, _| {
+                this.display_view_request_seq == request_seq
+                    && this.display_view_build_key.as_ref() == Some(&request_key)
+                    && this
+                        .display_view_cancel
+                        .as_ref()
+                        .is_some_and(|token| Arc::ptr_eq(token, &cancelled))
+            })
+            .unwrap_or(false);
+        if !current {
+            return;
+        }
+
+        let worker_cancelled = cancelled.clone();
+        let worker_key = request_key.clone();
+        let built = ramag_app::run_blocking(move || {
+            Ok(build_display_view_cancellable(
+                &result,
+                worker_key.sort_by,
+                &worker_key.column_filter,
+                &worker_key.row_filter_lower,
+                &worker_cancelled,
+            ))
+        })
+        .await;
+        let _ = this.update(cx, |this, cx| {
+            if this.display_view_request_seq != request_seq
+                || this.display_view_build_key.as_ref() != Some(&request_key)
+                || !this
+                    .display_view_cancel
+                    .as_ref()
+                    .is_some_and(|token| Arc::ptr_eq(token, &cancelled))
+            {
+                return;
+            }
+            this.display_view_cancel = None;
+            this.display_view_building = false;
+            match built {
+                Ok(Some(view)) => {
+                    this.display_view_cache = Some(DisplayViewCache {
+                        key: request_key.clone(),
+                        view,
+                    });
+                    this.display_view_build_key = None;
+                }
+                Ok(None) => {
+                    this.display_view_build_key = None;
+                }
+                Err(error) => {
+                    this.display_view_error = Some(format!("构建结果视图失败：{error}"));
+                }
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+
+    None
 }
 
+#[cfg(test)]
 fn build_display_view(
     result: &QueryResult,
     sort_by: Option<(usize, SortDir)>,
     column_filter: &str,
     row_filter_lower: &str,
 ) -> DisplayView {
+    build_display_view_cancellable(
+        result,
+        sort_by,
+        column_filter,
+        row_filter_lower,
+        &AtomicBool::new(false),
+    )
+    .expect("non-cancelled display view build should finish")
+}
+
+fn build_display_view_cancellable(
+    result: &QueryResult,
+    sort_by: Option<(usize, SortDir)>,
+    column_filter: &str,
+    row_filter_lower: &str,
+    cancelled: &AtomicBool,
+) -> Option<DisplayView> {
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut display_indices = (0..result.rows.len().min(MAX_ROWS_DISPLAY)).collect::<Vec<_>>();
     let truncated = result.rows.len() > MAX_ROWS_DISPLAY;
 
     if let Some((sort_col, dir)) = sort_by {
         display_indices.sort_by(|&a_index, &b_index| {
+            if cancelled.load(Ordering::Relaxed) {
+                return std::cmp::Ordering::Equal;
+            }
             let a = &result.rows[a_index];
             let b = &result.rows[b_index];
             let av = a.values.get(sort_col);
@@ -152,6 +295,9 @@ fn build_display_view(
                 ord
             }
         });
+        if cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
     }
 
     let col_tokens: Vec<String> = column_filter
@@ -160,52 +306,71 @@ fn build_display_view(
         .filter(|t| !t.is_empty())
         .collect();
     let cols_filtered = !col_tokens.is_empty();
-    let visible_col_indices: Vec<usize> = if cols_filtered {
-        result
-            .columns
-            .iter()
-            .enumerate()
-            .filter(|(_, column)| {
-                col_tokens
-                    .iter()
-                    .any(|token| contains_case_insensitive(column, token))
-            })
-            .map(|(i, _)| i)
-            .collect()
+    let matching_col_indices: Vec<usize> = if cols_filtered {
+        let mut indices = Vec::new();
+        for (index, column) in result.columns.iter().enumerate() {
+            if index % 64 == 0 && cancelled.load(Ordering::Relaxed) {
+                return None;
+            }
+            if col_tokens
+                .iter()
+                .any(|token| contains_case_insensitive(column, token))
+            {
+                indices.push(index);
+            }
+        }
+        indices
     } else {
         (0..result.columns.len()).collect()
     };
     let pre_filter_count = display_indices.len();
     let row_filtering = !row_filter_lower.is_empty();
     if row_filtering {
-        display_indices.retain(|&source_idx| {
+        let mut filtered = Vec::with_capacity(display_indices.len());
+        for (position, source_idx) in display_indices.into_iter().enumerate() {
+            if position % 64 == 0 && cancelled.load(Ordering::Relaxed) {
+                return None;
+            }
             let row = &result.rows[source_idx];
-            visible_col_indices.iter().any(|&ci| {
+            if matching_col_indices.iter().any(|&ci| {
                 row.values
                     .get(ci)
                     .map(|value| value.contains_query_lower(row_filter_lower))
                     .unwrap_or(false)
-            })
-        });
+            }) {
+                filtered.push(source_idx);
+            }
+        }
+        display_indices = filtered;
     }
 
-    let default_col_widths = (0..result.columns.len())
-        .map(|ci| {
-            estimate_col_width(
-                ci,
-                &result.columns,
-                &result.column_types,
-                result,
-                &display_indices,
-            )
-        })
-        .collect();
-    let right_align = (0..result.columns.len())
-        .map(|ci| detect_numeric_column(ci, result, &display_indices))
-        .collect();
+    let matched_col_count = matching_col_indices.len();
+    let columns_truncated = matched_col_count > MAX_COLUMNS_DISPLAY;
+    let visible_col_indices = matching_col_indices
+        .into_iter()
+        .take(MAX_COLUMNS_DISPLAY)
+        .collect::<Vec<_>>();
 
-    DisplayView {
+    let mut default_col_widths = vec![px(100.0); result.columns.len()];
+    let mut right_align = vec![false; result.columns.len()];
+    for (position, &ci) in visible_col_indices.iter().enumerate() {
+        if position % 16 == 0 && cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+        default_col_widths[ci] = estimate_col_width(
+            ci,
+            &result.columns,
+            &result.column_types,
+            result,
+            &display_indices,
+        );
+        right_align[ci] = detect_numeric_column(ci, result, &display_indices);
+    }
+
+    Some(DisplayView {
         visible_col_indices: Arc::new(visible_col_indices),
+        matched_col_count,
+        columns_truncated,
         display_indices: Arc::new(display_indices),
         default_col_widths: Arc::new(default_col_widths),
         right_align: Arc::new(right_align),
@@ -213,7 +378,7 @@ fn build_display_view(
         cols_filtered,
         row_filtering,
         pre_filter_count,
-    }
+    })
 }
 
 /// 渲染单次查询结果表格
@@ -221,7 +386,7 @@ fn build_display_view(
 /// 入口由 ResultPanel::render 调用，接收所有需要的主题色和上下文
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_table(
-    panel: &ResultPanel,
+    panel: &mut ResultPanel,
     // 借用而非按值：避免每帧深拷贝整个结果集（大结果集卡顿主因）。
     // Arc 共享结果集；本帧只生成排序 / 过滤索引与少量列元数据。
     result: &Arc<QueryResult>,
@@ -238,22 +403,6 @@ pub(super) fn render_table(
     let total_rows = result.rows.len();
     let affected = result.affected_rows;
     let elapsed = result.elapsed_ms;
-
-    // 排序 + 列/行过滤统一走 compute_display_view（导出复用同一函数，保证所见即所导）
-    let view = compute_display_view(panel, result, cx);
-    let DisplayView {
-        visible_col_indices,
-        display_indices,
-        default_col_widths,
-        right_align,
-        truncated,
-        cols_filtered,
-        row_filtering,
-        pre_filter_count,
-    } = view;
-    let total_cols = columns.len();
-    let visible_cols_count = visible_col_indices.len();
-    let visible_count = display_indices.len();
 
     // DML/DDL：没有列，只显示 affected_rows
     if columns.is_empty() {
@@ -276,6 +425,57 @@ pub(super) fn render_table(
             )
             .into_any_element();
     }
+
+    // 排序、筛选与列宽估算可能扫描大结果集，统一在受限工作池构建。
+    let Some(view) = ensure_display_view(panel, result, cx) else {
+        let error = panel.display_view_error.clone();
+        let message = error.clone().unwrap_or_else(|| {
+            format!(
+                "正在准备结果视图…（最多处理 {} 行）",
+                total_rows.min(MAX_ROWS_DISPLAY)
+            )
+        });
+        let mut placeholder = v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .text_xs()
+            .text_color(if error.is_some() {
+                cx.theme().danger
+            } else {
+                muted_fg
+            })
+            .child(message);
+        if error.is_some() {
+            placeholder = placeholder.child(
+                Button::new("result-view-retry")
+                    .ghost()
+                    .small()
+                    .label("重试")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.invalidate_display_view();
+                        cx.notify();
+                    })),
+            );
+        }
+        return placeholder.into_any_element();
+    };
+    let DisplayView {
+        visible_col_indices,
+        matched_col_count,
+        columns_truncated,
+        display_indices,
+        default_col_widths,
+        right_align,
+        truncated,
+        cols_filtered,
+        row_filtering,
+        pre_filter_count,
+    } = view;
+    let total_cols = columns.len();
+    let visible_cols_count = visible_col_indices.len();
+    let visible_count = display_indices.len();
 
     // 注：0 行不再 early return；让 header + 空 body + 状态栏正常渲染，
     // 用户能看到列头与列类型，避免"查无结果"占位遮蔽元信息
@@ -321,12 +521,9 @@ pub(super) fn render_table(
         .border_color(border)
         .into_any_element();
 
-    let selected_rows_set = panel.selected_rows();
     let visible_row_indices = display_indices.clone();
-    let all_selected = !visible_row_indices.is_empty()
-        && visible_row_indices
-            .iter()
-            .all(|source_idx| selected_rows_set.contains(source_idx));
+    let (visible_selected, all_selected) = panel.visible_selection_summary(&visible_row_indices);
+    let selected_rows_set = panel.selected_rows();
     let panel_entity = cx.entity();
 
     let checkbox_header = {
@@ -431,10 +628,6 @@ pub(super) fn render_table(
         ))
     });
     let selected_count = selected_rows_set.len();
-    let visible_selected = visible_row_indices
-        .iter()
-        .filter(|ri| selected_rows_set.contains(ri))
-        .count();
     let hidden_selected = selected_count.saturating_sub(visible_selected);
     let selected_scope = (selected_count > 0).then(|| {
         if hidden_selected > 0 {
@@ -443,6 +636,37 @@ pub(super) fn render_table(
             format!("· 已选 {selected_count} 行")
         }
     });
+
+    let mut status_parts = Vec::with_capacity(2);
+    if cols_filtered {
+        if columns_truncated {
+            status_parts.push(format!(
+                "命中 {matched_col_count} / {total_cols} 列（仅显示前 {visible_cols_count} 列）"
+            ));
+        } else {
+            status_parts.push(format!("命中 {matched_col_count} / {total_cols} 列"));
+        }
+    } else if columns_truncated {
+        status_parts.push(format!(
+            "显示 {visible_cols_count} / {total_cols} 列（已截断）"
+        ));
+    }
+    if row_filtering {
+        if truncated {
+            status_parts.push(format!(
+                "命中 {visible_count} / {pre_filter_count} 行（仅搜索前 {pre_filter_count} / {total_rows} 行）"
+            ));
+        } else {
+            status_parts.push(format!("命中 {visible_count} / {pre_filter_count} 行"));
+        }
+    } else if truncated {
+        status_parts.push(format!(
+            "显示 {pre_filter_count} / {total_rows} 行（已截断）"
+        ));
+    } else {
+        status_parts.push(format!("{total_rows} 行"));
+    }
+    let status_summary = status_parts.join(" · ");
 
     let status_bar = h_flex()
         .w_full()
@@ -456,21 +680,7 @@ pub(super) fn render_table(
         .bg(secondary_bg)
         .text_xs()
         .text_color(muted_fg)
-        .child(match (cols_filtered, row_filtering) {
-            (true, true) => div().child(format!(
-                "命中 {visible_cols_count} / {total_cols} 列 · {visible_count} / {pre_filter_count} 行"
-            )),
-            (true, false) => div().child(format!(
-                "命中 {visible_cols_count} / {total_cols} 列 · {pre_filter_count} 行"
-            )),
-            (false, true) => {
-                div().child(format!("命中 {visible_count} / {pre_filter_count} 行"))
-            }
-            (false, false) if truncated => div().child(format!(
-                "显示 {MAX_ROWS_DISPLAY} / {total_rows} 行（已截断）"
-            )),
-            (false, false) => div().child(format!("{total_rows} 行")),
-        })
+        .child(div().child(status_summary))
         .child(div().child(format!("· 耗时 {elapsed} ms")))
         .when_some(selected_scope, |this, scope| this.child(div().child(scope)))
         .when_some(selected_info, |this, info| {
@@ -582,6 +792,21 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_display_view_stops_before_scanning_rows() {
+        let cancelled = AtomicBool::new(true);
+        assert!(
+            build_display_view_cancellable(
+                &sample_result(),
+                Some((0, SortDir::Asc)),
+                "name",
+                "alpha",
+                &cancelled,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn display_view_cache_reuses_only_matching_revision_and_inputs() {
         let view = build_display_view(&sample_result(), None, "", "");
         let key = DisplayViewCacheKey {
@@ -638,5 +863,27 @@ mod tests {
         let view = build_display_view(&result, None, "über", "");
 
         assert_eq!(view.visible_col_indices.as_slice(), &[1]);
+    }
+
+    #[test]
+    fn wide_results_cap_rendered_columns_but_filter_all_columns() {
+        let column_count = MAX_COLUMNS_DISPLAY + 1;
+        let mut values = vec![Value::Text(String::new()); column_count];
+        values[column_count - 1] = Value::Text("needle".into());
+        let result = QueryResult {
+            columns: (0..column_count).map(|index| format!("c{index}")).collect(),
+            column_types: vec!["TEXT".into(); column_count],
+            rows: vec![Row { values }],
+            affected_rows: 0,
+            elapsed_ms: 1,
+            warnings: Vec::new(),
+        };
+
+        let view = build_display_view(&result, None, "", "needle");
+
+        assert_eq!(view.visible_col_indices.len(), MAX_COLUMNS_DISPLAY);
+        assert_eq!(view.matched_col_count, column_count);
+        assert!(view.columns_truncated);
+        assert_eq!(view.display_indices.as_slice(), &[0]);
     }
 }

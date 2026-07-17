@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, FocusHandle, Focusable, Subscription,
+    AppContext as _, Context, Entity, FocusHandle, Focusable, SharedString, Subscription,
     UniformListScrollHandle, Window,
 };
 use gpui_component::input::{InputEvent, InputState};
@@ -34,6 +34,8 @@ pub struct ClipboardView {
     /// 类型筛选；None = 全部
     pub(super) filter: Option<ClipKind>,
     pub(super) selected: Option<ClipId>,
+    /// 当前详情文本的有界展示缓存；避免轮询重绘反复复制、排版大文本。
+    pub(super) detail_text_cache: Option<(ClipId, SharedString)>,
     /// 上次已加载的版本号，轮询时与 service.revision() 比对
     pub(super) loaded_revision: u64,
     /// 后台全量搜索结果：补充缓存窗口之外的匹配（搜索词非空时与缓存即时结果合并）
@@ -102,6 +104,7 @@ impl ClipboardView {
             search,
             filter: None,
             selected: None,
+            detail_text_cache: None,
             loaded_revision: 0,
             search_results: Vec::new(),
             search_truncated: false,

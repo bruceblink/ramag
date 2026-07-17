@@ -2,8 +2,12 @@
 //! 行操作：复制 SQL / 填入编辑器（不自动执行）；入口在 QueryPanel 工具条，
 //! 由 QueryPanel 经 `window.open_dialog` 装载本视图并订阅 `HistoryEvent`
 
-use std::sync::Arc;
-use std::{ops::Range, rc::Rc};
+mod filter;
+
+use std::{
+    ops::Range,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use gpui::{
     AnyElement, ClickEvent, ClipboardItem, Context, EventEmitter, Hsla, IntoElement, ParentElement,
@@ -13,6 +17,7 @@ use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    input::InputEvent,
     notification::Notification,
     v_flex,
 };
@@ -42,7 +47,14 @@ pub struct HistoryList {
     service: Arc<ConnectionService>,
     /// 只看当前连接的历史（list_history 原生支持按 ConnectionId 过滤）
     connection_id: ConnectionId,
-    records: Vec<Arc<QueryRecord>>,
+    records: Arc<Vec<Arc<QueryRecord>>>,
+    /// 后台筛选只保存命中下标，避免复制大记录正文。
+    filtered_indices: Arc<Vec<usize>>,
+    filter_query: String,
+    filter_generation: u64,
+    filtering: bool,
+    filter_cancel: Option<Arc<AtomicBool>>,
+    filter_error: Option<String>,
     history_truncated: bool,
     loading: bool,
     /// 删除 / 清空串行执行，避免重复点击与旧加载结果在清空后回写。
@@ -67,17 +79,24 @@ impl HistoryList {
                 .placeholder("搜索 SQL / 错误内容")
                 .clean_on_escape()
         });
-        cx.subscribe(
-            &search,
-            |_this: &mut Self, _, _e: &gpui_component::input::InputEvent, cx| cx.notify(),
-        )
+        cx.subscribe(&search, |this: &mut Self, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.schedule_filter(true, cx);
+            }
+        })
         .detach();
         let mut this = Self {
             service,
             connection_id,
-            records: Vec::new(),
+            records: Arc::new(Vec::new()),
+            filtered_indices: Arc::new(Vec::new()),
+            filter_query: String::new(),
+            filter_generation: 0,
+            filtering: false,
+            filter_cancel: None,
+            filter_error: None,
             history_truncated: false,
-            loading: true,
+            loading: false,
             mutating: false,
             load_error: None,
             mutation_error: None,
@@ -98,7 +117,10 @@ impl HistoryList {
             let _ = this.update(cx, |this, cx| {
                 this.mutating = false;
                 match r {
-                    Ok(()) => this.records.retain(|rec| rec.id != id),
+                    Ok(()) => {
+                        Arc::make_mut(&mut this.records).retain(|rec| rec.id != id);
+                        this.schedule_filter(false, cx);
+                    }
                     Err(e) => {
                         error!(error = %e, "delete history failed");
                         this.mutation_error = Some(format!("删除失败：{e}"));
@@ -123,8 +145,9 @@ impl HistoryList {
                 this.mutating = false;
                 match r {
                     Ok(()) => {
-                        this.records.clear();
+                        this.records = Arc::new(Vec::new());
                         this.history_truncated = false;
+                        this.schedule_filter(false, cx);
                     }
                     Err(e) => {
                         error!(error = %e, "clear history failed");
@@ -149,8 +172,12 @@ impl HistoryList {
 
     /// 异步拉取历史。必须走 service（内部已处理 storage 的线程桥接），视图层不碰底层
     fn load(&mut self, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
         self.loading = true;
         self.load_error = None;
+        cx.notify();
         let svc = self.service.clone();
         let conn_id = self.connection_id.clone();
         cx.spawn(async move |this, cx| {
@@ -160,7 +187,8 @@ impl HistoryList {
                 match result {
                     Ok(page) => {
                         this.history_truncated = page.truncated;
-                        this.records = page.records.into_iter().map(Arc::new).collect();
+                        this.records = Arc::new(page.records.into_iter().map(Arc::new).collect());
+                        this.schedule_filter(false, cx);
                     }
                     Err(e) => {
                         error!(error = %e, "load query history failed");
@@ -334,14 +362,13 @@ impl Render for HistoryList {
         let warning = theme.warning;
         let border = theme.border;
 
-        // 关键字过滤（SQL 与错误文案都参与匹配）
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        let filtered: Vec<Arc<QueryRecord>> = self
-            .records
-            .iter()
-            .filter(|record| record.matches_query_lower(&query))
-            .cloned()
-            .collect();
+        let query = self.filter_query.clone();
+        let filtered_indices = self.filtered_indices.clone();
+        let count_text = if self.filtering {
+            format!("… / {}", self.records.len())
+        } else {
+            format!("{} / {}", filtered_indices.len(), self.records.len())
+        };
 
         let toolbar = h_flex()
             .w_full()
@@ -356,11 +383,7 @@ impl Render for HistoryList {
                     .min_w_0()
                     .child(gpui_component::input::Input::new(&self.search).small()),
             )
-            .child(div().text_xs().text_color(muted_fg).child(format!(
-                "{} / {}",
-                filtered.len(),
-                self.records.len()
-            )))
+            .child(div().text_xs().text_color(muted_fg).child(count_text))
             .when(self.history_truncated, |this| {
                 this.child(
                     div()
@@ -398,21 +421,62 @@ impl Render for HistoryList {
         let body: AnyElement = if self.loading {
             centered_hint("加载中…", muted_fg)
         } else if let Some(e) = &self.load_error {
-            centered_hint(format!("加载失败：{e}"), danger)
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(danger)
+                        .child(format!("加载失败：{e}")),
+                )
+                .child(
+                    Button::new("hist-load-retry")
+                        .ghost()
+                        .xsmall()
+                        .label("重试")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load(cx))),
+                )
+                .into_any_element()
         } else if self.records.is_empty() {
             centered_hint("暂无查询历史", muted_fg)
-        } else if filtered.is_empty() {
+        } else if self.filtering {
+            centered_hint("搜索中…", muted_fg)
+        } else if let Some(error) = &self.filter_error {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(div().text_sm().text_color(danger).child(error.clone()))
+                .child(
+                    Button::new("hist-filter-retry")
+                        .ghost()
+                        .xsmall()
+                        .label("重试")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.schedule_filter(false, cx);
+                        })),
+                )
+                .into_any_element()
+        } else if filtered_indices.is_empty() {
             centered_hint(format!("没有匹配「{query}」的历史"), muted_fg)
         } else {
-            let records = Rc::new(filtered);
+            let records = self.records.clone();
             let rows = uniform_list(
                 "query-history-rows",
-                records.len(),
+                filtered_indices.len(),
                 cx.processor({
                     let records = records.clone();
+                    let filtered_indices = filtered_indices.clone();
                     move |this, range: Range<usize>, _window, cx| {
                         range
-                            .map(|index| this.render_row(index, records[index].clone(), cx))
+                            .map(|index| {
+                                let record_index = filtered_indices[index];
+                                this.render_row(index, records[record_index].clone(), cx)
+                            })
                             .collect::<Vec<_>>()
                     }
                 }),

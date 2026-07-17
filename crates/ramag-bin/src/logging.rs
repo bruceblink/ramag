@@ -1,6 +1,6 @@
 //! 应用日志初始化：首选用户数据目录，失败时回退临时目录。
 
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use tracing::{error, info};
@@ -169,6 +169,12 @@ fn try_open_log_file(dir: &Path) -> io::Result<(PathBuf, RotatingLogWriter)> {
 }
 
 fn try_open_log_file_at(dir: &Path, max_bytes: u64) -> io::Result<(PathBuf, RotatingLogWriter)> {
+    if max_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log size limit must be positive",
+        ));
+    }
     std::fs::create_dir_all(dir)?;
     set_private_dir_permissions(dir)?;
     let path = dir.join("ramag.log");
@@ -221,15 +227,53 @@ fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
 }
 
 fn rotate_if_oversized_at(path: &Path, max_bytes: u64) -> std::io::Result<()> {
+    if max_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log size limit must be positive",
+        ));
+    }
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return retain_log_tail(&path.with_extension("log.old"), max_bytes);
+        }
         Err(error) => return Err(error),
     };
     if metadata.len() < max_bytes {
+        return retain_log_tail(&path.with_extension("log.old"), max_bytes);
+    }
+    rotate_log_file(path)?;
+    retain_log_tail(&path.with_extension("log.old"), max_bytes)
+}
+
+/// 启动时可能接手旧版本留下的超大日志；轮转后只保留有诊断价值的最新尾部。
+fn retain_log_tail(path: &Path, max_bytes: u64) -> io::Result<()> {
+    let len = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if len <= max_bytes {
         return Ok(());
     }
-    rotate_log_file(path)
+    let capacity = usize::try_from(max_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log size limit exceeds addressable memory",
+        )
+    })?;
+    let mut source = std::fs::File::open(path)?;
+    source.seek(io::SeekFrom::Start(len - max_bytes))?;
+    let mut tail = Vec::new();
+    tail.try_reserve_exact(capacity)
+        .map_err(|error| io::Error::other(format!("reserve log tail buffer failed: {error}")))?;
+    (&mut source).take(max_bytes).read_to_end(&mut tail)?;
+    drop(source);
+
+    let mut target = open_log_handle(path, true)?;
+    target.write_all(&tail)?;
+    target.flush()
 }
 
 fn rotate_log_file(path: &Path) -> io::Result<()> {
@@ -253,7 +297,7 @@ mod tests {
     use super::{rotate_if_oversized_at, try_open_log_file, try_open_log_file_at};
 
     #[test]
-    fn oversized_log_is_rotated_once() -> std::io::Result<()> {
+    fn oversized_log_backup_keeps_bounded_tail() -> std::io::Result<()> {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -265,7 +309,50 @@ mod tests {
         std::fs::write(&path, b"12345")?;
         rotate_if_oversized_at(&path, 4)?;
         assert!(!path.exists());
-        assert_eq!(std::fs::read(path.with_extension("log.old"))?, b"12345");
+        assert_eq!(std::fs::read(path.with_extension("log.old"))?, b"2345");
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn zero_log_limit_does_not_modify_existing_log() -> std::io::Result<()> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-log-limit-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("ramag.log");
+        std::fs::write(&path, b"keep")?;
+
+        assert!(try_open_log_file_at(&dir, 0).is_err());
+        assert_eq!(std::fs::read(&path)?, b"keep");
+        assert!(!path.with_extension("log.old").exists());
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn stale_backup_is_bounded_even_when_current_log_is_missing() -> std::io::Result<()> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-stale-log-backup-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("ramag.log");
+        let backup = path.with_extension("log.old");
+        std::fs::write(&backup, b"12345")?;
+
+        rotate_if_oversized_at(&path, 4)?;
+
+        assert_eq!(std::fs::read(&backup)?, b"2345");
         std::fs::remove_dir_all(dir)?;
         Ok(())
     }

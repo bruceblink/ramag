@@ -211,7 +211,7 @@ impl KvDriver for RedisDriver {
                 .await
                 .map_err(map_redis_error)?;
             let kind = RedisType::parse(&t);
-            debug!(?key, ?kind, "get_value dispatch");
+            debug!(key_bytes = key.len(), ?kind, "get_value dispatch");
             let total = fetch_value_len(&mut mgr, &key, kind).await?;
             let (value, byte_limited) = match kind {
                 RedisType::None => Ok((RedisValue::Nil, false)),

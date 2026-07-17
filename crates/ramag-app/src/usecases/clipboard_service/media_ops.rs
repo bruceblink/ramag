@@ -33,15 +33,21 @@ impl ClipboardService {
 
     /// 清理磁盘上未被任何历史条目引用的媒体文件。
     pub async fn cleanup_orphans(&self) -> Result<usize> {
+        // 目录枚举先在锁外完成；新写入但未出现在快照中的文件不会被本轮删除。
+        let driver = self.driver.clone();
+        let media_paths = crate::run_blocking(move || driver.list_media()).await?;
+
         // 引用快照与目录删除必须和媒体落盘/入库串行，否则会把“已落盘、尚未入库”的新文件误判为孤儿。
         let _guard = self.history_mutation_lock.lock().await;
-        let referenced: std::collections::HashSet<String> =
-            self.storage.clip_media_paths().await?.into_iter().collect();
+        let mut referenced = self.storage.clip_media_paths().await?;
+        // 路径正文已占主要内存；原地排序比再建 HashSet 少一份哈希桶与节点开销。
+        referenced.sort_unstable();
+        referenced.dedup();
         let driver = self.driver.clone();
         let removed = crate::run_blocking(move || {
             let mut removed = 0;
-            for path in driver.list_media()? {
-                if !referenced.contains(&path) {
+            for path in media_paths {
+                if referenced.binary_search(&path).is_err() {
                     if removed >= MAX_ORPHAN_REMOVALS_PER_RUN {
                         warn!(
                             limit = MAX_ORPHAN_REMOVALS_PER_RUN,

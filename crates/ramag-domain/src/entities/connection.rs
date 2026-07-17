@@ -76,7 +76,7 @@ pub enum TlsVerify {
 }
 
 /// 连接配置。密码运行时明文，落盘前由 storage 层 AES-GCM 加密
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: ConnectionId,
     pub name: String,

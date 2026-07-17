@@ -7,9 +7,11 @@ mod render;
 
 pub use export::ExportFormat;
 
-use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use parking_lot::RwLock;
 
@@ -50,6 +52,12 @@ pub enum SortDir {
     Desc,
 }
 
+struct VisibleSelectionCache {
+    rows: Arc<Vec<usize>>,
+    selection_revision: u64,
+    visible_selected: usize,
+}
+
 pub struct ResultPanel {
     pub(super) state: ResultState,
     /// 异步任务（如导出）完成后挂这里，下次 render 在 window 上下文里 push
@@ -58,6 +66,9 @@ pub struct ResultPanel {
     pub(super) selected_cell: Option<(usize, usize)>,
     /// 多选行：表格首列 checkbox 勾选的行索引集合
     pub(super) selected_rows: BTreeSet<usize>,
+    /// 选择变化代次与当前可见行交集缓存，避免普通重渲染反复扫描最多一万行。
+    selection_revision: u64,
+    visible_selection_cache: Option<VisibleSelectionCache>,
     /// 当前结果对应的源 SQL（QueryTab 在 run/explain 后注入）
     pub(super) source_sql: Option<String>,
     /// 上游显式注入的目标 (schema, table)：表树点击时由 QueryPanel 传入
@@ -76,7 +87,14 @@ pub struct ResultPanel {
     /// 结果内容代次：状态切换或本地增删改后递增，用于派生视图缓存和异步回包校验。
     pub(super) result_revision: u64,
     /// 排序、筛选及列布局的派生缓存；选择单元格等无关重渲染可直接复用。
-    pub(super) display_view_cache: RefCell<Option<crate::views::result_table::DisplayViewCache>>,
+    pub(super) display_view_cache: Option<crate::views::result_table::DisplayViewCache>,
+    /// 当前后台派生视图的条件；用于避免普通重渲染重复排队同一任务。
+    pub(super) display_view_build_key: Option<crate::views::result_table::DisplayViewCacheKey>,
+    /// 派生视图构建状态与精确取消令牌。
+    pub(super) display_view_building: bool,
+    pub(super) display_view_cancel: Option<Arc<AtomicBool>>,
+    pub(super) display_view_request_seq: u64,
+    pub(super) display_view_error: Option<String>,
     /// 列过滤输入框：逗号分隔多列名（命中即显示该列）
     pub(super) column_filter_input: Entity<InputState>,
     /// 行过滤输入框：单一关键字
@@ -131,7 +149,12 @@ impl ResultPanel {
             exporting: false,
             sort_by: None,
             result_revision: 0,
-            display_view_cache: RefCell::new(None),
+            display_view_cache: None,
+            display_view_build_key: None,
+            display_view_building: false,
+            display_view_cancel: None,
+            display_view_request_seq: 0,
+            display_view_error: None,
             column_filter_input,
             row_filter_input,
             cell_edit_input: None,
@@ -141,6 +164,8 @@ impl ResultPanel {
             pinned_target: None,
             row_identity: None,
             selected_rows: BTreeSet::new(),
+            selection_revision: 0,
+            visible_selection_cache: None,
             pending_insert: None,
             uniform_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
@@ -429,7 +454,7 @@ impl ResultPanel {
         self.mark_result_changed();
         // 数据集变更后清除选中、排序、列宽覆盖、新增草稿
         self.selected_cell = None;
-        self.selected_rows.clear();
+        self.clear_selected_rows();
         self.sort_by = None;
         self.col_width_overrides.clear();
         self.pending_insert = None;
@@ -456,7 +481,23 @@ impl ResultPanel {
     /// 标记结果数据已变化，并丢弃所有依赖旧行内容的派生缓存。
     pub(super) fn mark_result_changed(&mut self) {
         self.result_revision = self.result_revision.wrapping_add(1);
-        self.display_view_cache.get_mut().take();
+        self.invalidate_display_view();
+    }
+
+    /// 排序、筛选或结果变化后取消旧 CPU 任务并释放派生索引。
+    pub(super) fn invalidate_display_view(&mut self) {
+        self.cancel_display_view_build();
+        self.display_view_request_seq = self.display_view_request_seq.wrapping_add(1);
+        self.display_view_cache = None;
+        self.display_view_build_key = None;
+        self.display_view_building = false;
+        self.display_view_error = None;
+    }
+
+    pub(super) fn cancel_display_view_build(&mut self) {
+        if let Some(cancelled) = self.display_view_cancel.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn selected_rows(&self) -> &BTreeSet<usize> {
@@ -467,12 +508,46 @@ impl ResultPanel {
         if !self.selected_rows.remove(&ri) {
             self.selected_rows.insert(ri);
         }
+        self.mark_selection_changed();
         cx.notify();
     }
 
     pub(super) fn toggle_visible_rows(&mut self, visible: &[usize], cx: &mut Context<Self>) {
         toggle_visible_selection(&mut self.selected_rows, visible);
+        self.mark_selection_changed();
         cx.notify();
+    }
+
+    pub(super) fn clear_selected_rows(&mut self) {
+        self.selected_rows.clear();
+        self.mark_selection_changed();
+    }
+
+    pub(super) fn visible_selection_summary(&mut self, visible: &Arc<Vec<usize>>) -> (usize, bool) {
+        if let Some(cache) = &self.visible_selection_cache
+            && cache.selection_revision == self.selection_revision
+            && Arc::ptr_eq(&cache.rows, visible)
+        {
+            return (
+                cache.visible_selected,
+                !visible.is_empty() && cache.visible_selected == visible.len(),
+            );
+        }
+        let visible_selected = visible_selection_count(&self.selected_rows, visible);
+        self.visible_selection_cache = Some(VisibleSelectionCache {
+            rows: visible.clone(),
+            selection_revision: self.selection_revision,
+            visible_selected,
+        });
+        (
+            visible_selected,
+            !visible.is_empty() && visible_selected == visible.len(),
+        )
+    }
+
+    fn mark_selection_changed(&mut self) {
+        self.selection_revision = self.selection_revision.wrapping_add(1);
+        self.visible_selection_cache = None;
     }
 
     pub(super) fn set_col_width_override(&mut self, col_ix: usize, width: gpui::Pixels) {
@@ -499,6 +574,7 @@ impl ResultPanel {
             _ => Some((col_idx, SortDir::Asc)),
         };
         self.selected_cell = None;
+        self.invalidate_display_view();
         cx.notify();
     }
 
@@ -545,6 +621,12 @@ impl ResultPanel {
     }
 }
 
+impl Drop for ResultPanel {
+    fn drop(&mut self) {
+        self.cancel_display_view_build();
+    }
+}
+
 /// 全选只作用于当前视图的源行索引，避免过滤 / 排序后误选其它原始行。
 fn toggle_visible_selection(selected: &mut BTreeSet<usize>, visible: &[usize]) {
     let all_visible_selected =
@@ -558,9 +640,13 @@ fn toggle_visible_selection(selected: &mut BTreeSet<usize>, visible: &[usize]) {
     }
 }
 
+fn visible_selection_count(selected: &BTreeSet<usize>, visible: &[usize]) -> usize {
+    visible.iter().filter(|row| selected.contains(row)).count()
+}
+
 #[cfg(test)]
 mod selection_tests {
-    use super::toggle_visible_selection;
+    use super::{toggle_visible_selection, visible_selection_count};
     use std::collections::BTreeSet;
 
     #[test]
@@ -588,5 +674,12 @@ mod selection_tests {
         toggle_visible_selection(&mut selected, &[2, 4]);
 
         assert_eq!(selected, BTreeSet::from([2, 4]));
+    }
+
+    #[test]
+    fn visible_selection_count_ignores_hidden_rows() {
+        let selected = BTreeSet::from([0, 2, 4]);
+
+        assert_eq!(visible_selection_count(&selected, &[2, 3, 4]), 2);
     }
 }

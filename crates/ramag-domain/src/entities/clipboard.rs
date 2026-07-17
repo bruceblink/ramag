@@ -343,12 +343,9 @@ pub fn make_preview(
                 .lines()
                 .next()
                 .unwrap_or_default();
-            if line.chars().count() > MAX {
-                let cut: String = line.chars().take(MAX).collect();
-                format!("{cut}…")
-            } else {
-                line.to_string()
-            }
+            line.char_indices()
+                .nth(MAX)
+                .map_or_else(|| line.to_string(), |(end, _)| format!("{}…", &line[..end]))
         }
     }
 }

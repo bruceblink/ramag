@@ -1,6 +1,7 @@
 //! 扁平 key 按 `:` 建 Trie 多层命名空间树
 
 use std::collections::{BTreeMap, HashSet};
+use std::rc::Rc;
 
 use ramag_domain::entities::{KeyMeta, RedisType};
 
@@ -34,7 +35,7 @@ impl TreeNode {
 pub(super) struct VisibleRow {
     pub(super) depth: usize,
     pub(super) label: String,
-    pub(super) full_path: String,
+    pub(super) full_path: Rc<String>,
     pub(super) is_key: bool,
     pub(super) leaf_type: Option<RedisType>,
     pub(super) is_namespace: bool,

@@ -32,6 +32,10 @@ pub struct ListElementForm {
 impl EventEmitter<ListElementFormEvent> for ListElementForm {}
 
 impl ListElementForm {
+    pub fn is_submitting(&self) -> bool {
+        self.state.is_submitting()
+    }
+
     pub fn new(
         service: Arc<RedisService>,
         config: ConnectionConfig,
@@ -52,6 +56,9 @@ impl ListElementForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         let editor_ref = self.editor.read(cx);
         let elems = match editor_ref.collect(cx) {
             Ok(elements) => elements,
@@ -71,6 +78,8 @@ impl ListElementForm {
             return;
         }
 
+        self.editor
+            .update(cx, |editor, cx| editor.set_disabled(true, cx));
         self.state = SubmitState::Submitting;
         cx.notify();
         let svc = self.service.clone();
@@ -87,6 +96,8 @@ impl ListElementForm {
                     cx.emit(ListElementFormEvent::Saved);
                 }
                 Err(e) => {
+                    this.editor
+                        .update(cx, |editor, cx| editor.set_disabled(false, cx));
                     error!(error = %e, "list push failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();

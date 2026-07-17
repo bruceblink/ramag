@@ -13,6 +13,14 @@ use ramag_domain::entities::{Branch, FileChangeKind, FileDiff, Remote};
 
 use super::vcs_view::VcsView;
 
+/// 异步状态槽必须按 Arc 身份确认归属，不能只判断槽非空；否则旧任务会误伤后续任务。
+pub(super) fn is_current_arc_slot<T>(
+    current: Option<&std::sync::Arc<T>>,
+    expected: &std::sync::Arc<T>,
+) -> bool {
+    current.is_some_and(|current| std::sync::Arc::ptr_eq(current, expected))
+}
+
 /// 主视图当前展示模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ViewMode {
@@ -385,7 +393,7 @@ mod tests {
     use ramag_domain::entities::{Branch, BranchKind, CommitId, Remote};
 
     use super::{
-        BranchOp, RemoteOp, checkout_remote_branch_op, default_remote_name,
+        BranchOp, RemoteOp, checkout_remote_branch_op, default_remote_name, is_current_arc_slot,
         needs_first_push_remote_picker,
     };
 
@@ -468,5 +476,15 @@ mod tests {
             &[remote("origin"), remote("upstream")],
             None
         ));
+    }
+
+    #[test]
+    fn async_slot_identity_rejects_replacement_value() {
+        let original = std::sync::Arc::new(false);
+        let replacement = std::sync::Arc::new(false);
+
+        assert!(is_current_arc_slot(Some(&original), &original));
+        assert!(!is_current_arc_slot(Some(&replacement), &original));
+        assert!(!is_current_arc_slot(None, &original));
     }
 }

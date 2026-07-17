@@ -142,12 +142,18 @@ impl ClipboardDrawer {
                 let loaded = svc.load_thumb(item.as_ref()).await;
                 let _ = this.update(cx, |this, cx| match loaded {
                     Ok(Some(bytes)) => {
-                        let encoded_bytes = bytes.len();
+                        let Some(retained_bytes) =
+                            crate::views::image_cache::png_retained_bytes(&bytes)
+                        else {
+                            this.img_cache.fail(&path);
+                            cx.notify();
+                            return;
+                        };
                         let image = std::sync::Arc::new(gpui::Image::from_bytes(
                             gpui::ImageFormat::Png,
                             bytes,
                         ));
-                        this.img_cache.insert(path, image, encoded_bytes);
+                        this.img_cache.insert(path, image, retained_bytes);
                         cx.notify();
                     }
                     _ => this.img_cache.fail(&path),
@@ -199,9 +205,10 @@ impl ClipboardDrawer {
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
         self.search_cancel.store(true, Ordering::Relaxed);
+        // 去抖等待期间只显示当前关键词的即时匹配，不能混入上一轮后台结果。
+        self.search_results.clear();
+        self.search_truncated = false;
         if query.trim().is_empty() {
-            self.search_results.clear();
-            self.search_truncated = false;
             return;
         }
         let cancelled = Arc::new(AtomicBool::new(false));

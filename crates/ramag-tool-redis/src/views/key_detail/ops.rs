@@ -165,7 +165,7 @@ impl KeyDetailPanel {
                 }
                 match result {
                     Ok(_) => {
-                        info!(?field, "hash field deleted");
+                        info!(field_bytes = field.len(), "hash field deleted");
                         this.load_key_with_limit(key_for_reload, false, cx);
                     }
                     Err(error) => {
@@ -265,14 +265,14 @@ impl KeyDetailPanel {
                 match result {
                     Ok(RedisValue::Int(bytes)) if bytes >= 0 => {
                         this.key_size_bytes = Some(bytes as u64);
-                        info!(?key, bytes, "memory usage ok");
+                        tracing::debug!(key_bytes = key.len(), bytes, "memory usage ok");
                     }
                     Ok(RedisValue::Nil) => {
                         this.key_size_bytes = None;
-                        info!(?key, "memory usage nil (key gone)");
+                        tracing::debug!(key_bytes = key.len(), "memory usage nil (key gone)");
                     }
-                    Ok(other) => {
-                        error!(?other, "memory usage unexpected response");
+                    Ok(_) => {
+                        error!("memory usage unexpected response");
                         this.size_error =
                             Some("MEMORY USAGE 应答异常（可能服务端不支持）".to_string());
                     }
@@ -444,7 +444,7 @@ impl KeyDetailPanel {
                 }
                 match result {
                     Ok(_) => {
-                        info!(?key, "key deleted");
+                        info!(key_bytes = key.len(), "key deleted");
                         let removed_key = key.clone();
                         this.clear_key(cx);
                         cx.emit(KeyDetailEvent::Deleted(removed_key));

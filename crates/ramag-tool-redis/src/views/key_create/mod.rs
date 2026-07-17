@@ -2,7 +2,6 @@
 //! 命令：String=SET、List=RPUSH/LPUSH、Set=SADD（客户端去重）、Hash=HSET、ZSet=ZADD、Stream=`XADD * ...`。
 //! TTL 写入后单独 EXPIRE，避免命令对 EX/EXAT 支持不一
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
@@ -22,15 +21,18 @@ use ramag_domain::entities::{
 use tracing::{error, info};
 
 use crate::views::bounded_input;
-use crate::views::form_shell::{SubmitState, form_footer};
+use crate::views::form_shell::{SubmitState, deduplicate_preserving_order, form_footer};
 use crate::views::lines_editor::{LinesEditor, LinesKind, PushDir};
 use crate::views::pairs_editor::{PairsEditor, PairsKind};
 use crate::views::ttl_picker::TtlPicker;
 
 #[derive(Debug, Clone)]
 pub enum KeyCreateEvent {
-    /// 创建成功，返回 key 名（让上层刷新树并选中新 key）
-    Created(String),
+    /// Key 写入成功；TTL 后处理失败时携带警告，避免用户重试导致集合内容重复追加。
+    Created {
+        key: String,
+        ttl_warning: Option<String>,
+    },
     Cancelled,
 }
 
@@ -43,6 +45,27 @@ const CREATE_TYPES: &[RedisType] = &[
     RedisType::ZSet,
     RedisType::Stream,
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostWriteTtl {
+    Unchanged,
+    Expire(i64),
+    Persist,
+}
+
+enum CreateOutcome {
+    Created,
+    CreatedWithTtlWarning(String),
+    Failed(String),
+}
+
+fn post_write_ttl(existing: RedisType, ttl: Option<i64>) -> PostWriteTtl {
+    match ttl {
+        Some(seconds) => PostWriteTtl::Expire(seconds),
+        None if existing != RedisType::None => PostWriteTtl::Persist,
+        None => PostWriteTtl::Unchanged,
+    }
+}
 
 pub struct KeyCreateForm {
     service: Arc<RedisService>,
@@ -63,6 +86,10 @@ pub struct KeyCreateForm {
 impl EventEmitter<KeyCreateEvent> for KeyCreateForm {}
 
 impl KeyCreateForm {
+    pub fn is_submitting(&self) -> bool {
+        self.state.is_submitting()
+    }
+
     pub fn new(
         service: Arc<RedisService>,
         config: ConnectionConfig,
@@ -119,7 +146,7 @@ impl KeyCreateForm {
     }
 
     fn select_type(&mut self, t: RedisType, cx: &mut Context<Self>) {
-        if self.selected_type != t {
+        if !self.state.is_submitting() && self.selected_type != t {
             self.selected_type = t;
             // 切换类型时清掉旧错误，避免误导
             if let SubmitState::Failed(_) = self.state {
@@ -161,11 +188,7 @@ impl KeyCreateForm {
                 if elems.is_empty() {
                     return Err("Set 至少需要 1 个成员".into());
                 }
-                let mut seen: HashSet<String> = HashSet::new();
-                let dedup: Vec<String> = elems
-                    .into_iter()
-                    .filter(|s| seen.insert(s.clone()))
-                    .collect();
+                let dedup = deduplicate_preserving_order(elems);
                 let mut argv = vec!["SADD".into(), key.clone()];
                 argv.extend(dedup);
                 argv
@@ -214,6 +237,9 @@ impl KeyCreateForm {
     }
 
     fn handle_create(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         let (argv, ttl) = match self.build_argv_and_ttl(cx) {
             Ok(t) => t,
             Err(e) => {
@@ -225,6 +251,7 @@ impl KeyCreateForm {
         let key = self.key_name.read(cx).value().trim().to_string();
         let intended_type = self.selected_type;
 
+        self.set_child_editors_disabled(true, cx);
         self.state = SubmitState::Submitting;
         cx.notify();
 
@@ -236,18 +263,33 @@ impl KeyCreateForm {
             // - None    → 不存在，安全继续
             // - 同类型  → 允许（Redis 行为：String SET 覆盖；List/Hash/Set/ZSet 合并；Stream XADD 追加）
             // - 不同类型 → 拒绝，避免 WRONGTYPE 错误前已知拦下
-            let precheck = svc.key_type(&config, db, &key).await;
-            if let Ok(existing) = precheck
-                && existing != RedisType::None
-                && existing != intended_type
-            {
+            let existing = match svc.key_type(&config, db, &key).await {
+                Ok(existing) => existing,
+                Err(error) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.set_child_editors_disabled(false, cx);
+                        error!(error = %error, key_bytes = key.len(), "create key precheck failed");
+                        this.state =
+                            SubmitState::Failed(error.write_hint("创建前检查 Key 类型失败"));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            if existing != RedisType::None && existing != intended_type {
                 let msg = format!(
                     "已存在「{}」类型的 key「{key}」，不能用「{}」类型覆盖。请先删除原 key 或换名。",
                     existing.label(),
                     intended_type.label(),
                 );
                 let _ = this.update(cx, |this, cx| {
-                    error!(error = %msg, "create key precheck failed: type conflict");
+                    this.set_child_editors_disabled(false, cx);
+                    error!(
+                        existing_type = existing.label(),
+                        intended_type = intended_type.label(),
+                        key_bytes = key.len(),
+                        "create key precheck found type conflict"
+                    );
                     this.state = SubmitState::Failed(msg);
                     cx.notify();
                 });
@@ -256,22 +298,50 @@ impl KeyCreateForm {
 
             // 第 2 步：写入命令
             let write_result = svc.execute_command(&config, db, argv).await;
-            let final_result = match write_result {
-                Ok(_) => match ttl {
-                    Some(ts) => match svc.set_ttl(&config, db, &key, Some(ts)).await {
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(format!("写入成功但 TTL 设置失败：{e}")),
+            let ttl_action = post_write_ttl(existing, ttl);
+            let outcome = match write_result {
+                Ok(_) => match ttl_action {
+                    PostWriteTtl::Expire(seconds) => match svc
+                        .set_ttl(&config, db, &key, Some(seconds))
+                        .await
+                    {
+                        Ok(true) => CreateOutcome::Created,
+                        Ok(false) => CreateOutcome::CreatedWithTtlWarning(
+                            "Key 已创建，但 TTL 未生效；Key 可能已被并发删除".into(),
+                        ),
+                        Err(e) => CreateOutcome::CreatedWithTtlWarning(format!(
+                            "Key 已创建，但 TTL 设置失败：{e}"
+                        )),
                     },
-                    None => Ok(()),
+                    // 同类型旧 Key 允许合并；用户选“永久”时要清掉它原有的 TTL。
+                    PostWriteTtl::Persist => match svc.set_ttl(&config, db, &key, None).await {
+                        // false 也可能表示本来就没有 TTL，此时目标状态已经满足。
+                        Ok(_) => CreateOutcome::Created,
+                        Err(e) => CreateOutcome::CreatedWithTtlWarning(format!(
+                            "Key 已创建，但清除原 TTL 失败：{e}"
+                        )),
+                    },
+                    PostWriteTtl::Unchanged => CreateOutcome::Created,
                 },
-                Err(e) => Err(format!("{e}")),
+                Err(e) => CreateOutcome::Failed(e.to_string()),
             };
-            let _ = this.update(cx, |this, cx| match final_result {
-                Ok(_) => {
-                    info!(?key, ?ttl, "redis key created");
-                    cx.emit(KeyCreateEvent::Created(key.clone()));
+            let _ = this.update(cx, |this, cx| match outcome {
+                CreateOutcome::Created => {
+                    info!(key_bytes = key.len(), ?ttl, "redis key created");
+                    cx.emit(KeyCreateEvent::Created {
+                        key: key.clone(),
+                        ttl_warning: None,
+                    });
                 }
-                Err(msg) => {
+                CreateOutcome::CreatedWithTtlWarning(warning) => {
+                    tracing::warn!(key_bytes = key.len(), "redis key created with ttl warning");
+                    cx.emit(KeyCreateEvent::Created {
+                        key: key.clone(),
+                        ttl_warning: Some(warning),
+                    });
+                }
+                CreateOutcome::Failed(msg) => {
+                    this.set_child_editors_disabled(false, cx);
                     error!(error = %msg, "create key failed");
                     this.state = SubmitState::Failed(msg);
                     cx.notify();
@@ -282,16 +352,35 @@ impl KeyCreateForm {
     }
 
     fn handle_cancel(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         cx.emit(KeyCreateEvent::Cancelled);
     }
 
+    fn set_child_editors_disabled(&self, disabled: bool, cx: &mut Context<Self>) {
+        self.list_editor
+            .update(cx, |editor, cx| editor.set_disabled(disabled, cx));
+        self.set_editor
+            .update(cx, |editor, cx| editor.set_disabled(disabled, cx));
+        self.hash_editor
+            .update(cx, |editor, cx| editor.set_disabled(disabled, cx));
+        self.zset_editor
+            .update(cx, |editor, cx| editor.set_disabled(disabled, cx));
+        self.stream_editor
+            .update(cx, |editor, cx| editor.set_disabled(disabled, cx));
+        self.ttl_picker
+            .update(cx, |picker, cx| picker.set_disabled(disabled, cx));
+    }
+
     /// 当前类型对应的 editor 元素
-    fn render_editor(&self) -> AnyElement {
+    fn render_editor(&self, disabled: bool) -> AnyElement {
         match self.selected_type {
             // multi_line 高度走 Input 自己的 .h()（外层 div h() 在 multi_line 渲染中被忽略）
             // 220px 与编辑弹窗 value_edit.rs 同款，避免新建 / 修改两边视觉跳变
             RedisType::String => Input::new(&self.string_input)
                 .h(px(220.0))
+                .disabled(disabled)
                 .into_any_element(),
             RedisType::List => self.list_editor.clone().into_any_element(),
             RedisType::Set => self.set_editor.clone().into_any_element(),
@@ -310,6 +399,7 @@ impl Render for KeyCreateForm {
         let fg = theme.foreground;
         let border = theme.border;
         let secondary_bg = theme.secondary;
+        let submitting = self.state.is_submitting();
 
         let current_color = redis_type_color(self.selected_type);
         let mut card_bg = secondary_bg;
@@ -355,7 +445,7 @@ impl Render for KeyCreateForm {
                     .border_color(soft_border)
                     .text_color(color)
                     .font_weight(gpui::FontWeight::SEMIBOLD);
-            } else {
+            } else if !submitting {
                 btn = btn
                     .bg(secondary_bg)
                     .border_color(border)
@@ -365,6 +455,11 @@ impl Render for KeyCreateForm {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.select_type(kind, cx);
                     }));
+            } else {
+                btn = btn.bg(secondary_bg).border_color(border).text_color(fg);
+            }
+            if submitting {
+                btn = btn.opacity(0.55);
             }
             type_row = type_row.child(btn);
         }
@@ -380,7 +475,11 @@ impl Render for KeyCreateForm {
                 v_flex()
                     .gap(px(8.0))
                     .child(section_title("Key 名", muted_fg, None))
-                    .child(div().w_full().child(Input::new(&self.key_name))),
+                    .child(
+                        div()
+                            .w_full()
+                            .child(Input::new(&self.key_name).disabled(submitting)),
+                    ),
             )
             .child(
                 v_flex()
@@ -404,7 +503,7 @@ impl Render for KeyCreateForm {
                             .border_1()
                             .border_color(border)
                             .bg(card_bg)
-                            .child(self.render_editor()),
+                            .child(self.render_editor(submitting)),
                     ),
             )
             .child(
@@ -455,5 +554,28 @@ fn redis_type_color(t: RedisType) -> Hsla {
         RedisType::ZSet => hsla(20.0 / 360.0, 0.7, 0.55, 1.0),
         RedisType::Stream => hsla(330.0 / 360.0, 0.55, 0.55, 1.0),
         RedisType::None => hsla(0.0, 0.0, 0.5, 1.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PostWriteTtl, post_write_ttl};
+    use ramag_domain::entities::RedisType;
+
+    #[test]
+    fn ttl_plan_preserves_new_permanent_key_without_extra_command() {
+        assert_eq!(
+            post_write_ttl(RedisType::None, None),
+            PostWriteTtl::Unchanged
+        );
+    }
+
+    #[test]
+    fn ttl_plan_persists_existing_key_or_sets_expiration() {
+        assert_eq!(post_write_ttl(RedisType::Hash, None), PostWriteTtl::Persist);
+        assert_eq!(
+            post_write_ttl(RedisType::None, Some(300)),
+            PostWriteTtl::Expire(300)
+        );
     }
 }

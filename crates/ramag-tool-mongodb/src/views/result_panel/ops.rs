@@ -2,6 +2,7 @@
 //! toast 经 pending_notification 在下次 render 推送（与 dbclient::result_panel 同款）
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use gpui::{App, ClickEvent, Context, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
@@ -315,6 +316,7 @@ impl ResultPanel {
         if ids.is_empty() {
             return self.notify_error("勾选的文档缺少 _id，无法删除".to_string(), cx);
         }
+        let ids = Arc::new(ids);
         let n = ids.len();
         let Some((visible, rows_filtered)) = self.display_row_indices(cx) else {
             return self.notify_error("当前行视图尚未准备完成".to_string(), cx);
@@ -351,7 +353,8 @@ impl ResultPanel {
                 .small()
                 .label("删除")
                 .on_click(move |_: &ClickEvent, window, app| {
-                    let ids = ids_apply.clone();
+                    // 仅确认时复制一次；弹框重渲染只克隆 Arc，避免反复深拷贝大 _id 集合。
+                    let ids = ids_apply.as_ref().clone();
                     let started = panel_apply.update(app, |this, cx| this.do_delete_async(ids, cx));
                     if started {
                         window.close_dialog(app);

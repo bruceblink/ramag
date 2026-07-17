@@ -12,6 +12,7 @@ pub mod helpers;
 pub mod history_panel;
 mod history_retention;
 pub mod ide_layout;
+mod latest_write;
 pub mod pf_content;
 pub mod project_files;
 pub mod rebase_plan;

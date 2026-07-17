@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use gpui::{App, AppContext as _, Context, ParentElement, SharedString, Styled, Window, px};
-use gpui_component::WindowExt as _;
+use gpui_component::{WindowExt as _, notification::Notification};
 use tracing::info;
 
 use super::RedisSessionPanel;
@@ -44,26 +44,43 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |_this: &mut Self, _, ev: &KeyCreateEvent, window, cx| match ev {
-                KeyCreateEvent::Created(key) => {
-                    info!(?key, "key created via dialog");
-                    let new_key = key.clone();
-                    window.close_dialog(cx);
-                    tree_for_refresh.update(cx, |t, cx| {
-                        t.refresh(cx);
-                        t.select_key_external(new_key.clone(), cx);
-                    });
+            move |this: &mut Self, _, ev: &KeyCreateEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    KeyCreateEvent::Created { key, ttl_warning } => {
+                        info!(key_bytes = key.len(), "key created via dialog");
+                        let new_key = key.clone();
+                        window.close_dialog(cx);
+                        if let Some(warning) = ttl_warning {
+                            window.push_notification(
+                                Notification::warning(warning.clone())
+                                    .title("Key 已创建，但 TTL 未按预期设置"),
+                                cx,
+                            );
+                        }
+                        tree_for_refresh.update(cx, |t, cx| {
+                            t.refresh(cx);
+                            t.select_key_external(new_key.clone(), cx);
+                        });
+                    }
+                    KeyCreateEvent::Cancelled => window.close_dialog(cx),
                 }
-                KeyCreateEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             dialog
                 .title("新建 Key")
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(640.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -86,22 +103,32 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &TtlEditEvent, window, cx| match ev {
-                TtlEditEvent::Updated(label) => {
-                    info!(?key_for_reload, ?label, "ttl updated");
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &TtlEditEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    TtlEditEvent::Updated(_) => {
+                        info!(key_bytes = key_for_reload.len(), "ttl updated");
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    TtlEditEvent::Cancelled => window.close_dialog(cx),
                 }
-                TtlEditEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             dialog
                 .title(format!("编辑 TTL · {}", inline_text_preview(&key, 96)))
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(520.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -125,22 +152,32 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &ValueEditEvent, window, cx| match ev {
-                ValueEditEvent::Saved => {
-                    info!(?key_for_reload, "value saved");
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &ValueEditEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    ValueEditEvent::Saved => {
+                        info!(key_bytes = key_for_reload.len(), "value saved");
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    ValueEditEvent::Cancelled => window.close_dialog(cx),
                 }
-                ValueEditEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             dialog
                 .title(format!("编辑值 · {}", inline_text_preview(&key, 96)))
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(640.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -176,16 +213,19 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &HashFieldFormEvent, window, cx| match ev {
-                HashFieldFormEvent::Saved { field } => {
-                    info!(?field, "hash field saved");
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &HashFieldFormEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    HashFieldFormEvent::Saved { field } => {
+                        info!(field_bytes = field.len(), "hash field saved");
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    HashFieldFormEvent::Cancelled => window.close_dialog(cx),
                 }
-                HashFieldFormEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let key_preview = inline_text_preview(&key, 64);
         let title = match &mode {
             HashFieldFormMode::Add => format!("新增字段 · {key_preview}"),
@@ -195,12 +235,19 @@ impl RedisSessionPanel {
             ),
         };
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             let title = title.clone();
             dialog
                 .title(title)
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(640.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -221,22 +268,32 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &ListElementFormEvent, window, cx| match ev {
-                ListElementFormEvent::Saved => {
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &ListElementFormEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    ListElementFormEvent::Saved => {
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    ListElementFormEvent::Cancelled => window.close_dialog(cx),
                 }
-                ListElementFormEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             let title = format!("新增 List 元素 · {}", inline_text_preview(&key, 96));
             dialog
                 .title(title)
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(640.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -257,22 +314,32 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &SetElementFormEvent, window, cx| match ev {
-                SetElementFormEvent::Saved => {
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &SetElementFormEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    SetElementFormEvent::Saved => {
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    SetElementFormEvent::Cancelled => window.close_dialog(cx),
                 }
-                SetElementFormEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             let title = format!("新增 Set 元素 · {}", inline_text_preview(&key, 96));
             dialog
                 .title(title)
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(640.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -308,15 +375,18 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &ZSetElementFormEvent, window, cx| match ev {
-                ZSetElementFormEvent::Saved => {
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &ZSetElementFormEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    ZSetElementFormEvent::Saved => {
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    ZSetElementFormEvent::Cancelled => window.close_dialog(cx),
                 }
-                ZSetElementFormEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let key_preview = inline_text_preview(&key, 64);
         let title = match &mode {
             ZSetElementFormMode::Add => format!("新增 ZSet 成员 · {key_preview}"),
@@ -326,12 +396,19 @@ impl RedisSessionPanel {
             ),
         };
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             let title = title.clone();
             dialog
                 .title(title)
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(560.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))
@@ -352,22 +429,32 @@ impl RedisSessionPanel {
         let sub = cx.subscribe_in(
             &form,
             window,
-            move |this: &mut Self, _, ev: &StreamEntryFormEvent, window, cx| match ev {
-                StreamEntryFormEvent::Saved => {
-                    window.close_dialog(cx);
-                    this.reload_detail_if_key(&key_for_reload, cx);
+            move |this: &mut Self, _, ev: &StreamEntryFormEvent, window, cx| {
+                this.clear_dialog_subscription();
+                match ev {
+                    StreamEntryFormEvent::Saved => {
+                        window.close_dialog(cx);
+                        this.reload_detail_if_key(&key_for_reload, cx);
+                    }
+                    StreamEntryFormEvent::Cancelled => window.close_dialog(cx),
                 }
-                StreamEntryFormEvent::Cancelled => window.close_dialog(cx),
             },
         );
-        self.push_subscription(sub);
+        self.set_dialog_subscription(sub);
         let form_for_dialog = form.clone();
+        let session_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
+            let form_for_cancel = form_for_dialog.clone();
+            let session_for_close = session_for_close.clone();
             let title = format!("新增 Stream 条目 · {}", inline_text_preview(&key, 96));
             dialog
                 .title(title)
-                .close_button(true)
+                .close_button(false)
+                .on_cancel(move |_, _, app| !form_for_cancel.read(app).is_submitting())
+                .on_close(move |_, _, app| {
+                    session_for_close.update(app, |this, _| this.clear_dialog_subscription());
+                })
                 .w(px(640.0))
                 .p(px(24.0))
                 .content(move |content, _, _| content.child(form.clone()))

@@ -112,7 +112,7 @@ impl CollectionTreePanel {
                 let name_for_menu = name.clone();
                 let entity_for_menu = cx.entity().clone();
                 h_flex()
-                    .id(SharedString::from(format!("mongo-db-row-{name}")))
+                    .id(SharedString::from(format!("mongo-db-row-{database_index}")))
                     .h(px(28.0))
                     .flex_none()
                     .items_center()
@@ -194,7 +194,9 @@ impl CollectionTreePanel {
                 let is_view_for_menu = is_view;
                 let entity_for_menu = cx.entity().clone();
                 let mut row = h_flex()
-                    .id(SharedString::from(format!("mongo-coll-row-{db}-{name}")))
+                    .id(SharedString::from(format!(
+                        "mongo-coll-row-{database_index}-{collection_index}"
+                    )))
                     .h(px(28.0))
                     .flex_none()
                     .items_center()

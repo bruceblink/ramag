@@ -62,6 +62,10 @@ pub fn contains_case_insensitive(text: &str, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
     }
+    // 常见的同大小写 / 无大小写文字（如中文）先走标准库子串搜索，零分配且更快。
+    if text.contains(query_lower) {
+        return true;
+    }
     // ASCII 查询不会命中 UTF-8 多字节中的高位字节，可直接逐字节比较；
     // 即使正文含 Unicode，也无需为整段正文分配 lowercase 副本。
     if query_lower.is_ascii() {

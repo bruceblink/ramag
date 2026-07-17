@@ -175,9 +175,10 @@ impl ClipboardView {
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
         self.search_cancel.store(true, Ordering::Relaxed);
+        // 新查询不能沿用上一关键词的后台结果，否则去抖期间会短暂展示错误命中。
+        self.search_results.clear();
+        self.search_truncated = false;
         if query.trim().is_empty() {
-            self.search_results.clear();
-            self.search_truncated = false;
             return;
         }
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -270,8 +271,8 @@ impl ClipboardView {
     }
 
     /// 在系统文件管理器中显示文件
-    pub(super) fn reveal_files(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
-        if let Err(e) = self.service.reveal_in_file_manager(&paths) {
+    pub(super) fn reveal_files(&mut self, paths: &[String], cx: &mut Context<Self>) {
+        if let Err(e) = self.service.reveal_in_file_manager(paths) {
             error!(error = %e, "reveal in file manager failed");
             self.pending_notification = Some(Notification::error(e.to_string()));
             cx.notify();
@@ -472,12 +473,18 @@ impl ClipboardView {
                 };
                 let _ = this.update(cx, |this, cx| match loaded {
                     Ok(Some(bytes)) => {
-                        let encoded_bytes = bytes.len();
+                        let Some(retained_bytes) =
+                            crate::views::image_cache::png_retained_bytes(&bytes)
+                        else {
+                            this.img_cache.fail(&path);
+                            cx.notify();
+                            return;
+                        };
                         let image = std::sync::Arc::new(gpui::Image::from_bytes(
                             gpui::ImageFormat::Png,
                             bytes,
                         ));
-                        this.img_cache.insert(path, image, encoded_bytes);
+                        this.img_cache.insert(path, image, retained_bytes);
                         cx.notify();
                     }
                     _ => this.img_cache.fail(&path),

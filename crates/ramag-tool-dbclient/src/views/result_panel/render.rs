@@ -37,7 +37,9 @@ impl Render for ResultPanel {
         let muted_bg = theme.muted;
         let accent = theme.accent;
 
-        let content = match &self.state {
+        // Ok 仅克隆 Arc，避免借用 state 时无法启动异步派生视图任务。
+        let state = self.state.clone();
+        let content = match state {
             ResultState::Empty => v_flex()
                 .size_full()
                 .items_center()
@@ -97,13 +99,13 @@ impl Render for ResultPanel {
                                     })),
                             ),
                     )
-                    .child(div().text_xs().text_color(fg).child(msg.clone()))
+                    .child(div().text_xs().text_color(fg).child(msg))
                     .into_any_element()
             }
 
             ResultState::Ok(result) => render_table(
                 self,
-                result,
+                &result,
                 fg,
                 muted_fg,
                 secondary_bg,

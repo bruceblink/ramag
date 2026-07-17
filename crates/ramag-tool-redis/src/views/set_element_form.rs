@@ -1,6 +1,5 @@
 //! Set 成员新增：复用 LinesEditor(Set)，提交时客户端去重，发 `SADD`
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
@@ -12,7 +11,7 @@ use ramag_app::RedisService;
 use ramag_domain::entities::ConnectionConfig;
 use tracing::{error, info};
 
-use crate::views::form_shell::{SubmitState, form_footer};
+use crate::views::form_shell::{SubmitState, deduplicate_preserving_order, form_footer};
 use crate::views::lines_editor::{LinesEditor, LinesKind};
 
 #[derive(Debug, Clone)]
@@ -33,6 +32,10 @@ pub struct SetElementForm {
 impl EventEmitter<SetElementFormEvent> for SetElementForm {}
 
 impl SetElementForm {
+    pub fn is_submitting(&self) -> bool {
+        self.state.is_submitting()
+    }
+
     pub fn new(
         service: Arc<RedisService>,
         config: ConnectionConfig,
@@ -53,6 +56,9 @@ impl SetElementForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if self.state.is_submitting() {
+            return;
+        }
         let elems = match self.editor.read(cx).collect(cx) {
             Ok(elements) => elements,
             Err(error) => {
@@ -67,12 +73,10 @@ impl SetElementForm {
             return;
         }
         // 客户端去重，保留首次出现顺序（Redis 服务端也会去重，提前去重避免无谓的命令体积）
-        let mut seen: HashSet<String> = HashSet::new();
-        let dedup: Vec<String> = elems
-            .into_iter()
-            .filter(|s| seen.insert(s.clone()))
-            .collect();
+        let dedup = deduplicate_preserving_order(elems);
 
+        self.editor
+            .update(cx, |editor, cx| editor.set_disabled(true, cx));
         self.state = SubmitState::Submitting;
         cx.notify();
         let svc = self.service.clone();
@@ -89,6 +93,8 @@ impl SetElementForm {
                     cx.emit(SetElementFormEvent::Saved);
                 }
                 Err(e) => {
+                    this.editor
+                        .update(cx, |editor, cx| editor.set_disabled(false, cx));
                     error!(error = %e, "sadd failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();

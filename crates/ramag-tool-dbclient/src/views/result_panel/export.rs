@@ -49,6 +49,12 @@ impl ResultPanel {
             cx.notify();
             return;
         }
+        let Some(view) = crate::views::result_table::cached_display_view(self, &base, cx) else {
+            self.pending_notification =
+                Some(Notification::info("结果仍在筛选或排序，请稍候再导出").autohide(true));
+            cx.notify();
+            return;
+        };
 
         // 导出范围三档：勾选行 > 当前视图（有排序/过滤时，所见即所导）> 原始全量
         let (row_indices, column_indices, scope_label) = if !self.selected_rows.is_empty() {
@@ -66,7 +72,7 @@ impl ResultPanel {
                 return;
             }
             let n = selected.len();
-            let visible = crate::views::result_table::compute_display_view(self, &base, cx)
+            let visible = view
                 .display_indices
                 .iter()
                 .copied()
@@ -83,7 +89,6 @@ impl ResultPanel {
             };
             (Some(selected), None, scope)
         } else {
-            let view = crate::views::result_table::compute_display_view(self, &base, cx);
             if view.differs_from_raw(self) {
                 // 视图与原始不同：仅传共享索引，后台按可见列和显示行序流式投影。
                 if view.display_indices.is_empty() {
@@ -95,7 +100,7 @@ impl ResultPanel {
                 let n = view.display_indices.len();
                 (
                     Some(view.display_indices),
-                    Some(view.visible_col_indices),
+                    view.cols_filtered.then_some(view.visible_col_indices),
                     format!("当前视图（筛选/排序后）{n} 行"),
                 )
             } else {
@@ -127,21 +132,24 @@ impl ResultPanel {
             ),
         };
 
-        // 保存框与序列化放入共享有界 worker；防重入避免重复弹框和无限创建线程。
+        // 保存框异步等待，不占用共享 worker；选定路径后才把序列化交给有界工作池。
         self.exporting = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let outcome = ramag_app::run_blocking(move || {
-                let path = rfd::FileDialog::new()
-                    .set_file_name(&default_name)
-                    .add_filter(ext, &[ext])
-                    .save_file();
-                Ok(match path {
-                    None => ExportOutcome::Cancelled,
-                    Some(p) => {
+            let path = rfd::AsyncFileDialog::new()
+                .set_file_name(&default_name)
+                .add_filter(ext, &[ext])
+                .save_file()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+            let outcome = match path {
+                None => ExportOutcome::Cancelled,
+                Some(path) => {
+                    let write_path = path.clone();
+                    match ramag_app::run_blocking(move || {
                         let rows = row_indices.as_deref().map(Vec::as_slice);
                         let columns = column_indices.as_deref().map(Vec::as_slice);
-                        let write_result = export::write_atomic_with(&p, |writer| match format {
+                        export::write_atomic_with(&write_path, |writer| match format {
                             ExportFormat::Csv => {
                                 export::write_csv_view(writer, &base, rows, columns)
                             }
@@ -151,21 +159,18 @@ impl ResultPanel {
                             ExportFormat::Markdown => {
                                 export::write_markdown_view(writer, &base, rows, columns)
                             }
-                        });
-                        match write_result {
-                            Ok(_) => ExportOutcome::Saved(p),
-                            Err(e) => ExportOutcome::Failed(format!(
-                                "写入导出文件 {} 失败：{e}",
-                                p.display()
-                            )),
-                        }
+                        })
+                    })
+                    .await
+                    {
+                        Ok(()) => ExportOutcome::Saved(path),
+                        Err(error) => ExportOutcome::Failed(format!(
+                            "写入导出文件 {} 失败：{error}",
+                            path.display()
+                        )),
                     }
-                })
-            })
-            .await
-            .unwrap_or_else(|error| {
-                ExportOutcome::Failed(format!("导出后台任务无法执行：{error}"))
-            });
+                }
+            };
             let _ = this.update(cx, |this, cx| {
                 this.exporting = false;
                 let n = match outcome {
@@ -182,12 +187,10 @@ impl ResultPanel {
                     ExportOutcome::Cancelled => Notification::info("已取消导出").autohide(true),
                     ExportOutcome::Failed(msg) => {
                         error!(error = %msg, "export failed");
-                        let short = if msg.chars().count() > 80 {
-                            let truncated: String = msg.chars().take(80).collect();
-                            format!("{truncated}…")
-                        } else {
-                            msg
-                        };
+                        let short = msg
+                            .char_indices()
+                            .nth(80)
+                            .map_or_else(|| msg.clone(), |(end, _)| format!("{}…", &msg[..end]));
                         Notification::error(short).title("导出失败").autohide(true)
                     }
                 };

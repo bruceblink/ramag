@@ -45,6 +45,10 @@ pub struct ValueEditForm {
 impl EventEmitter<ValueEditEvent> for ValueEditForm {}
 
 impl ValueEditForm {
+    pub fn is_submitting(&self) -> bool {
+        matches!(self.state, SubmitState::Submitting)
+    }
+
     pub fn new(
         service: Arc<RedisService>,
         config: ConnectionConfig,
@@ -84,6 +88,9 @@ impl ValueEditForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.state, SubmitState::Submitting) {
+            return;
+        }
         let value = self.value_input.read(cx).value().to_string();
         self.state = SubmitState::Submitting;
         cx.notify();
@@ -97,7 +104,7 @@ impl ValueEditForm {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(?key, "string value saved");
+                    info!(key_bytes = key.len(), "string value saved");
                     cx.emit(ValueEditEvent::Saved);
                 }
                 Err(e) => {
@@ -149,9 +156,11 @@ impl Render for ValueEditForm {
                             .child("新值"),
                     )
                     .child(
-                        div()
-                            .w_full()
-                            .child(Input::new(&self.value_input).h(px(220.0))),
+                        div().w_full().child(
+                            Input::new(&self.value_input)
+                                .h(px(220.0))
+                                .disabled(submitting),
+                        ),
                     ),
             )
             .child(div().h(px(1.0)).bg(border).my(px(2.0)))

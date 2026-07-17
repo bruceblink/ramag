@@ -6,6 +6,7 @@ use gpui::{Context, Window};
 use ramag_domain::entities::{RepoConfig, RepoId};
 use ramag_domain::error::{DomainError, Result};
 
+use super::super::helpers::is_current_arc_slot;
 use super::super::vcs_view::VcsView;
 use super::{MAX_OPEN_REPOS, open_repo_async};
 
@@ -34,8 +35,13 @@ impl VcsView {
     /// 保存单条 RepoConfig 到 storage；失败要可见，否则收藏 / 最近时间会在重启后悄悄丢失。
     pub(crate) fn save_repo_async(&self, repo: RepoConfig, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
+        let coordinator = self.repo_write_coordinator.clone();
+        let ticket = coordinator.begin(repo.path.clone());
         cx.spawn(async move |this, cx| {
-            if let Err(e) = storage.save_repo(&repo).await {
+            let result = coordinator
+                .run_if_latest(&ticket, || storage.save_repo(&repo))
+                .await;
+            if let Some(Err(e)) = result {
                 tracing::warn!(error = %e, repo = %repo.name, "vcs: save_repo failed");
                 let _ = this.update(cx, |this, cx| {
                     this.error = Some(format!("仓库记录未能保存（重启后设置可能丢失）：{e}"));
@@ -48,10 +54,15 @@ impl VcsView {
 
     /// 从 storage 删除单条 RepoConfig。失败要提示：内存列表已移除，
     /// 持久化没删掉会在下次启动"复活"，静默会让用户以为删除生效了
-    pub(crate) fn delete_repo_async(&self, id: RepoId, cx: &mut Context<Self>) {
+    pub(crate) fn delete_repo_async(&self, path: String, id: RepoId, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
+        let coordinator = self.repo_write_coordinator.clone();
+        let ticket = coordinator.begin(path);
         cx.spawn(async move |this, cx| {
-            if let Err(e) = storage.delete_repo(&id).await {
+            let result = coordinator
+                .run_if_latest(&ticket, || storage.delete_repo(&id))
+                .await;
+            if let Some(Err(e)) = result {
                 tracing::warn!(error = %e, repo_id = %id, "vcs: delete_repo failed");
                 let _ = this.update(cx, |this, cx| {
                     this.error = Some(format!("移除记录未能持久化（重启后可能重新出现）：{e}"));
@@ -97,6 +108,13 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) {
         self.startup_repo_restore_allowed = false;
+        if self.loading {
+            return;
+        }
+        if self.busy {
+            self.notify_warning("当前 Git 写操作尚未完成，完成后再 Clone 仓库", cx);
+            return;
+        }
         if !self.ensure_commit_draft_within_limit(cx) {
             return;
         }
@@ -122,6 +140,7 @@ impl VcsView {
         cx.notify();
         // 进度刷新 ticker：进度槽由后台线程写入，须周期 notify 驱动 loading 屏重渲染；
         // clone 结束（槽被清空）自动退出
+        let poll_cancel = cancel.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -129,7 +148,7 @@ impl VcsView {
                     .await;
                 let alive = this
                     .update(cx, |this, cx| {
-                        let alive = this.clone_progress.is_some();
+                        let alive = is_current_arc_slot(this.clone_cancel.as_ref(), &poll_cancel);
                         if alive {
                             cx.notify();
                         }
@@ -143,7 +162,6 @@ impl VcsView {
         })
         .detach();
         cx.spawn(async move |this, cx| {
-            let was_cancelled = cancel.clone();
             let destination = dest.clone();
             let prepared = ramag_app::run_blocking(move || {
                 prepare_clone_destination(&destination)
@@ -152,6 +170,9 @@ impl VcsView {
             if let Err(error) = prepared {
                 tracing::error!(error = %error, dir = %dest.display(), "vcs: prepare clone destination failed");
                 let _ = this.update(cx, |this, cx| {
+                    if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
+                        return;
+                    }
                     this.loading = false;
                     this.loading_label = None;
                     this.clone_cancel = None;
@@ -161,8 +182,11 @@ impl VcsView {
                 });
                 return;
             }
-            if was_cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 let _ = this.update(cx, |this, cx| {
+                    if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
+                        return;
+                    }
                     this.loading = false;
                     this.loading_label = None;
                     this.clone_cancel = None;
@@ -173,26 +197,38 @@ impl VcsView {
                 return;
             }
             match driver
-                .clone_repo_streaming(&url, &dest, cancel, progress)
+                .clone_repo_streaming(&url, &dest, cancel.clone(), progress)
                 .await
             {
                 Ok(rc) => {
                     tracing::info!("vcs clone done");
-                    let _ = this.update(cx, |this, cx| {
-                        this.clone_cancel = None;
-                        this.clone_progress = None;
-                        cx.notify();
-                    });
+                    let current = this
+                        .update(cx, |this, cx| {
+                            if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
+                                return false;
+                            }
+                            this.clone_cancel = None;
+                            this.clone_progress = None;
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !current {
+                        return;
+                    }
                     open_repo_async(&this, driver, std::path::PathBuf::from(&rc.path), cx).await;
                 }
                 Err(e) => {
-                    let cancelled = was_cancelled.load(std::sync::atomic::Ordering::Relaxed);
+                    let cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
                     if cancelled {
                         tracing::info!("vcs clone cancelled by user");
                     } else {
                         tracing::error!(error = %e, "vcs: clone failed");
                     }
                     let _ = this.update(cx, |this, cx| {
+                        if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
+                            return;
+                        }
                         this.loading = false;
                         this.loading_label = None;
                         this.clone_cancel = None;
@@ -250,6 +286,13 @@ impl VcsView {
     /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
     pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
+        if self.loading {
+            return;
+        }
+        if self.busy {
+            self.notify_warning("当前 Git 写操作尚未完成，完成后再初始化仓库", cx);
+            return;
+        }
         if !self.ensure_commit_draft_within_limit(cx) {
             return;
         }

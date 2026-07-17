@@ -152,6 +152,7 @@ impl VcsView {
         let this = Self {
             driver,
             storage,
+            repo_write_coordinator: Default::default(),
             repo: None,
             status: None,
             status_request_seq: 0,
@@ -182,6 +183,7 @@ impl VcsView {
             pending_clear_creation_inputs: false,
             selected_file: None,
             current_diff: None,
+            diff_layout_cache: RefCell::new(None),
             loading_diff: false,
             diff_request_seq: 0,
             view_mode: ViewMode::Workspace,
@@ -287,6 +289,7 @@ impl VcsView {
             clone_url_input,
             clone_dest_path: None,
             show_clone_panel: false,
+            directory_picker_busy: false,
             show_rebase_plan: false,
             rebase_plan_onto: String::new(),
             rebase_todos: Vec::new(),

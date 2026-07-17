@@ -1,5 +1,7 @@
 //! 结果区「过滤列 / 过滤行」解析：列/行子串匹配（纯函数，可独立测试）
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::flatten::FlatTable;
 use ramag_domain::entities::contains_case_insensitive;
 
@@ -42,22 +44,36 @@ pub(crate) fn column_indices_for(table: &FlatTable, filters: &[String]) -> Optio
 }
 
 /// 行过滤：任意单元格子串包含 query（大小写不敏感）→ 行索引；空 query 返回 None（全显示）
+#[cfg(test)]
 pub(crate) fn row_indices_for(table: &FlatTable, query: &str) -> Option<Vec<usize>> {
+    row_indices_for_cancellable(table, query, None)
+        .ok()
+        .flatten()
+}
+
+/// 可取消行过滤；每批行检查一次，旧筛选任务无需继续扫描整张矩阵。
+pub(crate) fn row_indices_for_cancellable(
+    table: &FlatTable,
+    query: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Option<Vec<usize>>, ()> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let indices: Vec<usize> = table
-        .rows
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| {
-            row.iter()
-                .any(|cell| contains_case_insensitive(&cell.text, &q))
-        })
-        .map(|(i, _)| i)
-        .collect();
-    Some(indices)
+    let mut indices = Vec::new();
+    for (index, row) in table.rows.iter().enumerate() {
+        if index % 64 == 0 && cancelled.is_some_and(|token| token.load(Ordering::Relaxed)) {
+            return Err(());
+        }
+        if row
+            .iter()
+            .any(|cell| contains_case_insensitive(&cell.text, &q))
+        {
+            indices.push(index);
+        }
+    }
+    Ok(Some(indices))
 }
 
 #[cfg(test)]

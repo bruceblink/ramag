@@ -324,7 +324,7 @@ impl TableTreePanel {
                             tracing::error!(
                                 error = %error,
                                 connection = %conn.name,
-                                sql = %sql,
+                                sql_bytes = sql.len(),
                                 "tree ddl failed after connection changed"
                             );
                             Notification::error(
@@ -375,7 +375,7 @@ impl TableTreePanel {
                         }
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, sql = %sql, "tree ddl failed");
+                        tracing::error!(error = %e, sql_bytes = sql.len(), "tree ddl failed");
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("执行失败")).autohide(true));
                     }
