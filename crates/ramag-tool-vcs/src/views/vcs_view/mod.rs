@@ -290,6 +290,8 @@ pub struct VcsView {
 
     // ---- 多仓库 Tabs ----
     pub(super) open_repos: Vec<RepoConfig>,
+    /// 启动标签恢复只在用户尚未手动操作仓库时生效。
+    pub(super) startup_repo_restore_allowed: bool,
     /// 仓库 Tab Bar 横向滚动句柄：仓库开多了超出宽度时可横滚，固定「仓库管理」tab 常驻不参与滚动
     pub(super) repos_scroll: ScrollHandle,
     pub(super) file_tabs: Vec<FileTab>,

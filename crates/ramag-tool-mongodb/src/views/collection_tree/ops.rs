@@ -4,7 +4,8 @@
 use gpui::{Context, Entity};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::Notification;
-use ramag_ui::{open_confirm, open_prompt};
+use ramag_domain::entities::{MAX_MONGO_COLLECTION_NAME_BYTES, validate_mongo_collection_name};
+use ramag_ui::{open_bounded_prompt, open_confirm};
 use serde_json::json;
 
 use super::CollectionTreePanel;
@@ -27,11 +28,12 @@ pub(super) fn collection_context_menu(
         menu.item(
             PopupMenuItem::new("重命名").on_click(move |_, window, app| {
                 let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
-                open_prompt(
+                open_bounded_prompt(
                     "重命名集合",
                     format!("输入 {d}.{c} 的新名称"),
                     &c.clone(),
                     "重命名",
+                    MAX_MONGO_COLLECTION_NAME_BYTES,
                     move |new_name, _, app| {
                         ent.update(app, |this, cx| this.rename_collection(d, c, new_name, cx));
                     },
@@ -204,6 +206,12 @@ impl CollectionTreePanel {
         cx: &mut Context<Self>,
     ) {
         if new == old {
+            return;
+        }
+        if let Err(error) = validate_mongo_collection_name(&new) {
+            self.pending_notification =
+                Some(Notification::error(error.message().to_string()).autohide(true));
+            cx.notify();
             return;
         }
         let Some(conf) = self.connection.clone() else {
@@ -379,7 +387,7 @@ impl CollectionTreePanel {
                 }
                 match r {
                     Ok(_) => {
-                        this.expanded.remove(&db);
+                        this.remove_expanded_entry(&db);
                         this.open_databases.remove(&db);
                         this.invalidate_tree_rows();
                         if this.active_db.as_deref() == Some(db.as_str()) {

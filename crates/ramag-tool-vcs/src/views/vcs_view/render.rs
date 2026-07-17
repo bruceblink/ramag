@@ -5,6 +5,7 @@ use gpui::{
     prelude::*,
 };
 use gpui_component::{ActiveTheme, v_flex};
+use ramag_domain::entities::MAX_COMMIT_MESSAGE_BYTES;
 
 use super::super::helpers::ActiveView;
 use super::VcsView;
@@ -39,12 +40,22 @@ impl Render for VcsView {
         }
         // commit 草稿恢复：仓库切换后用 cx.defer_in 借 Window 写回 InputState
         if let Some(text) = self.pending_commit_text.take() {
-            let input = self.commit_input.clone();
-            cx.defer_in(window, move |_, window, cx| {
-                input.update(cx, |state, ctx| {
-                    state.set_value(text, window, ctx);
+            if text.len() > MAX_COMMIT_MESSAGE_BYTES {
+                self.pending_notification = Some(
+                    gpui_component::notification::Notification::warning(format!(
+                        "已忽略超过 {} MiB 上限的提交信息",
+                        MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+                    ))
+                    .autohide(true),
+                );
+            } else {
+                let input = self.commit_input.clone();
+                cx.defer_in(window, move |_, window, cx| {
+                    input.update(cx, |state, ctx| {
+                        state.set_value(text, window, ctx);
+                    });
                 });
-            });
+            }
         }
         // 切仓后清空搜索框：文件搜索与历史搜索是仓库上下文，不跨仓残留
         if self.pending_clear_search_inputs {

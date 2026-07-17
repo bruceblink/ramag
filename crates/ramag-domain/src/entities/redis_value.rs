@@ -38,6 +38,9 @@ pub struct RedisValueLoad {
     pub value: RedisValue,
     /// String 为服务端字节数；List/Hash/Set/ZSet/Stream 为服务端当前元素总数。
     pub total: Option<u64>,
+    /// 内容因累计字节预算只保留了安全前缀；调用方不得把它当作完整值覆盖回服务端。
+    #[serde(default)]
+    pub byte_limited: bool,
 }
 
 impl RedisValueLoad {
@@ -181,6 +184,7 @@ mod tests {
         let load = RedisValueLoad {
             value: RedisValue::List(vec![RedisValue::Int(1)]),
             total: Some(2),
+            byte_limited: false,
         };
 
         assert_eq!(load.loaded_len(), Some(1));
@@ -192,9 +196,11 @@ mod tests {
         let load = RedisValueLoad {
             value: RedisValue::Text("hello".into()),
             total: Some(10),
+            byte_limited: true,
         };
 
         assert_eq!(load.loaded_len(), Some(5));
         assert!(load.has_more());
+        assert!(load.byte_limited);
     }
 }

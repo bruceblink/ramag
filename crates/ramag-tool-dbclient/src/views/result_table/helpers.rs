@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::input::InputState;
-use ramag_domain::entities::{QueryResult, Value};
+use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, QueryResult, Value};
 
 use crate::views::result_panel::ResultPanel;
 
@@ -121,12 +121,19 @@ pub(super) fn open_cell_editor(
     window: &mut gpui::Window,
     cx: &mut Context<ResultPanel>,
 ) {
-    let Some((col_name, initial_text)) = panel.cell_info(ri, ci) else {
+    let Some((col_name, initial_text, truncated)) = panel.cell_info(ri, ci) else {
         return;
     };
     // 写入闸门未过（非单表 / 无定位键 / 生产只读 / 视图）或二进制单元格：
     // 弹框仍打开供查看 / 复制完整内容，但禁用提交并说明原因
-    let read_only_reason = panel.cell_edit_block_reason(ri, ci);
+    let read_only_reason = if truncated {
+        Some(format!(
+            "单元格内容超过 {} MiB 编辑上限，当前仅显示开头部分；请用 SQL 或导出处理完整值",
+            MAX_SQL_QUERY_BYTES / 1024 / 1024
+        ))
+    } else {
+        panel.cell_edit_block_reason(ri, ci)
+    };
     let locate_label = panel.identity_label();
     let input = cx.new(|cx_inner| {
         InputState::new(window, cx_inner)
@@ -134,6 +141,23 @@ pub(super) fn open_cell_editor(
             .rows(8)
             .default_value(initial_text)
     });
+    ramag_ui::enforce_multiline_input_byte_limit(
+        &input,
+        MAX_SQL_QUERY_BYTES,
+        window,
+        cx,
+        |panel, _, cx| {
+            panel.pending_notification = Some(
+                gpui_component::notification::Notification::warning(format!(
+                    "单元格编辑最多保留 {} MiB，超出部分已截断",
+                    MAX_SQL_QUERY_BYTES / 1024 / 1024
+                ))
+                .autohide(true),
+            );
+            cx.notify();
+        },
+    )
+    .detach();
     panel.set_cell_edit_input(Some(input.clone()));
     let panel_entity = cx.entity();
     crate::views::cell_edit_dialog::open(
@@ -149,31 +173,8 @@ pub(super) fn open_cell_editor(
     );
 }
 
-/// 比较两个 Value：Null 视为最小，同型按值比较，跨型用字符串兜底
+/// 比较两个 Value：直接按值与类型稳定排序，不为混合列或 JSON 列生成完整字符串副本。
 pub(super) fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
-    compare_values_inner(a, b, |left, right| {
-        display_sort_key(left).cmp(&display_sort_key(right))
-    })
-}
-
-/// 预计算展示排序键后比较，避免 JSON / 混合类型在 O(N log N) 比较中反复序列化。
-pub(super) fn compare_values_with_display_keys(
-    a: Option<&Value>,
-    b: Option<&Value>,
-    a_key: Option<&str>,
-    b_key: Option<&str>,
-) -> std::cmp::Ordering {
-    compare_values_inner(a, b, |left, right| match (a_key, b_key) {
-        (Some(left), Some(right)) => left.cmp(right),
-        _ => compare_values(Some(left), Some(right)),
-    })
-}
-
-fn compare_values_inner(
-    a: Option<&Value>,
-    b: Option<&Value>,
-    fallback: impl FnOnce(&Value, &Value) -> std::cmp::Ordering,
-) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
         (None, None) => Ordering::Equal,
@@ -185,60 +186,124 @@ fn compare_values_inner(
             (_, Value::Null) => Ordering::Greater,
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-            (Value::Int(a), Value::Float(b)) => {
-                (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)
-            }
+            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+            (Value::Int(a), Value::Float(b)) => (*a as f64).total_cmp(b),
+            (Value::Float(a), Value::Int(b)) => a.total_cmp(&(*b as f64)),
             (Value::Text(a), Value::Text(b)) => a.cmp(b),
             (Value::DateTime(a), Value::DateTime(b)) => a.cmp(b),
             (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
-            _ => fallback(x, y),
+            (Value::Json(a), Value::Json(b)) => compare_json(a, b),
+            _ => value_sort_rank(x).cmp(&value_sort_rank(y)),
         },
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DirectSortKind {
-    Bool,
-    Numeric,
-    Text,
-    Bytes,
-    DateTime,
-}
-
-/// 同列只有直接可比类型时无需展示键；JSON 或混合类型才预计算一次完整字符串。
-pub(super) fn needs_display_sort_keys<'a>(
-    values: impl IntoIterator<Item = Option<&'a Value>>,
-) -> bool {
-    let mut kind = None;
-    for value in values.into_iter().flatten() {
-        let current = match value {
-            Value::Null => continue,
-            Value::Bool(_) => DirectSortKind::Bool,
-            Value::Int(_) | Value::Float(_) => DirectSortKind::Numeric,
-            Value::Text(_) => DirectSortKind::Text,
-            Value::Bytes(_) => DirectSortKind::Bytes,
-            Value::DateTime(_) => DirectSortKind::DateTime,
-            Value::Json(_) => return true,
-        };
-        if kind.is_some_and(|previous| previous != current) {
-            return true;
-        }
-        kind = Some(current);
-    }
-    false
-}
-
-/// 与 `display_preview(usize::MAX)` 等价，但避免 Text / JSON 先完整复制再二次复制。
-pub(super) fn display_sort_key(value: &Value) -> String {
+fn value_sort_rank(value: &Value) -> u8 {
     match value {
-        Value::Text(text) if text.contains(['\n', '\r']) => text.replace(['\n', '\r'], " "),
-        Value::Text(text) => text.clone(),
-        Value::Json(json) => json.to_string(),
-        other => other.display_preview(usize::MAX),
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Int(_) | Value::Float(_) => 2,
+        Value::Text(_) => 3,
+        Value::Bytes(_) => 4,
+        Value::DateTime(_) => 5,
+        Value::Json(_) => 6,
+    }
+}
+
+fn compare_json(left: &serde_json::Value, right: &serde_json::Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let rank = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => 0,
+        serde_json::Value::Bool(_) => 1,
+        serde_json::Value::Number(_) => 2,
+        serde_json::Value::String(_) => 3,
+        serde_json::Value::Array(_) => 4,
+        serde_json::Value::Object(_) => 5,
+    };
+    let rank_order = rank(left).cmp(&rank(right));
+    if rank_order != Ordering::Equal {
+        return rank_order;
+    }
+    match (left, right) {
+        (serde_json::Value::Null, serde_json::Value::Null) => Ordering::Equal,
+        (serde_json::Value::Bool(left), serde_json::Value::Bool(right)) => left.cmp(right),
+        (serde_json::Value::Number(left), serde_json::Value::Number(right)) => {
+            compare_json_numbers(left, right)
+        }
+        (serde_json::Value::String(left), serde_json::Value::String(right)) => left.cmp(right),
+        (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+            compare_json_sequences(left.iter(), right.iter())
+        }
+        (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+            let mut left = left.iter();
+            let mut right = right.iter();
+            loop {
+                match (left.next(), right.next()) {
+                    (Some((left_key, left_value)), Some((right_key, right_value))) => {
+                        let key_order = left_key.cmp(right_key);
+                        if key_order != Ordering::Equal {
+                            return key_order;
+                        }
+                        let value_order = compare_json(left_value, right_value);
+                        if value_order != Ordering::Equal {
+                            return value_order;
+                        }
+                    }
+                    (Some(_), None) => return Ordering::Greater,
+                    (None, Some(_)) => return Ordering::Less,
+                    (None, None) => return Ordering::Equal,
+                }
+            }
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+fn compare_json_sequences<'a>(
+    mut left: impl Iterator<Item = &'a serde_json::Value>,
+    mut right: impl Iterator<Item = &'a serde_json::Value>,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    loop {
+        match (left.next(), right.next()) {
+            (Some(left), Some(right)) => {
+                let order = compare_json(left, right);
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return Ordering::Equal,
+        }
+    }
+}
+
+fn compare_json_numbers(
+    left: &serde_json::Number,
+    right: &serde_json::Number,
+) -> std::cmp::Ordering {
+    match (left.as_i64(), left.as_u64(), right.as_i64(), right.as_u64()) {
+        (Some(left), _, Some(right), _) => left.cmp(&right),
+        (_, Some(left), _, Some(right)) => left.cmp(&right),
+        (Some(left), _, _, Some(right)) => {
+            if left < 0 {
+                std::cmp::Ordering::Less
+            } else {
+                (left as u64).cmp(&right)
+            }
+        }
+        (_, Some(left), Some(right), _) => {
+            if right < 0 {
+                std::cmp::Ordering::Greater
+            } else {
+                left.cmp(&(right as u64))
+            }
+        }
+        _ => left
+            .as_f64()
+            .unwrap_or_default()
+            .total_cmp(&right.as_f64().unwrap_or_default()),
     }
 }
 

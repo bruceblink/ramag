@@ -14,6 +14,8 @@ const MAX_ENTRIES: usize = 96;
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 /// 失败记录也必须有界；旧失败被淘汰后允许未来重试（文件可能已被恢复或修复）。
 const MAX_FAILED_ENTRIES: usize = 256;
+/// 快速滚动时限制同时解密 / 解码的图片数，避免任务与临时字节堆积。
+const MAX_IN_FLIGHT_LOADS: usize = 16;
 
 struct CacheEntry {
     image: Arc<Image>,
@@ -60,7 +62,11 @@ impl ImageCache {
         if self.cache.borrow().entries.contains_key(path) || self.failed.borrow().contains(path) {
             return false;
         }
-        self.loading.borrow_mut().insert(path.to_string())
+        let mut loading = self.loading.borrow_mut();
+        if loading.len() >= MAX_IN_FLIGHT_LOADS {
+            return false;
+        }
+        loading.insert(path.to_string())
     }
 
     pub(crate) fn insert(&self, path: String, image: Arc<Image>, encoded_bytes: usize) {
@@ -172,5 +178,17 @@ mod tests {
 
         assert!(cache.begin_load("0.png"));
         assert!(!cache.begin_load(&format!("{MAX_FAILED_ENTRIES}.png")));
+    }
+
+    #[test]
+    fn concurrent_image_loads_are_bounded_and_slots_are_reused() {
+        let cache = ImageCache::new();
+        for index in 0..MAX_IN_FLIGHT_LOADS {
+            assert!(cache.begin_load(&format!("{index}.png")));
+        }
+        assert!(!cache.begin_load("overflow.png"));
+
+        cache.fail("0.png");
+        assert!(cache.begin_load("replacement.png"));
     }
 }

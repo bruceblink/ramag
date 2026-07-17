@@ -25,6 +25,7 @@ impl ConnectionService {
 
     /// 按 config.driver 取 driver；缺失返回 InvalidConfig
     fn driver_for(&self, config: &ConnectionConfig) -> Result<&Arc<dyn Driver>> {
+        config.validate().map_err(DomainError::InvalidConfig)?;
         self.drivers
             .get(&config.driver)
             .ok_or_else(|| DomainError::InvalidConfig(format!("驱动不可用: {:?}", config.driver)))
@@ -38,6 +39,7 @@ impl ConnectionService {
     }
 
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
+        config.validate().map_err(DomainError::InvalidConfig)?;
         self.storage.save_connection(config).await
     }
 
@@ -185,8 +187,8 @@ impl ConnectionService {
         let record = match result {
             Ok(r) => QueryRecord::new_success(
                 config.id.clone(),
-                config.name.clone(),
-                query.sql.clone(),
+                &config.name,
+                &query.sql,
                 r.elapsed_ms,
                 if r.rows.is_empty() {
                     r.affected_rows
@@ -194,12 +196,9 @@ impl ConnectionService {
                     r.rows.len() as u64
                 },
             ),
-            Err(e) => QueryRecord::new_failed(
-                config.id.clone(),
-                config.name.clone(),
-                query.sql.clone(),
-                e.to_string(),
-            ),
+            Err(e) => {
+                QueryRecord::new_failed(config.id.clone(), &config.name, &query.sql, e.to_string())
+            }
         };
         if let Err(e) = self.storage.append_history(&record).await {
             tracing::warn!(error = %e, "append history failed");

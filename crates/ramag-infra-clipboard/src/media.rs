@@ -8,10 +8,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ramag_domain::entities::MAX_CLIPBOARD_ITEM_BYTES;
 use ramag_domain::error::{DomainError, Result};
 use tracing::warn;
 
-const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
+/// AES-GCM 媒体格式为 nonce(12) + 明文等长密文 + tag(16)。
+const MEDIA_ENCRYPTION_OVERHEAD_BYTES: usize = 12 + 16;
+const MAX_MEDIA_BYTES: usize = MAX_CLIPBOARD_ITEM_BYTES as usize + MEDIA_ENCRYPTION_OVERHEAD_BYTES;
 const MAX_MEDIA_FILES: usize = 100_000;
 const STALE_TEMP_FILE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -57,6 +60,13 @@ impl MediaStore {
                     "检查剪贴媒体目标失败：{error}"
                 )));
             }
+        }
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|e| DomainError::Storage(format!("复核剪贴媒体目标失败：{e}")))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(DomainError::Storage(
+                "剪贴媒体目标在写入期间变成了非普通文件".into(),
+            ));
         }
         set_private_file_permissions(&path)
             .map_err(|e| DomainError::Storage(format!("收紧剪贴媒体文件权限失败：{e}")))?;
@@ -178,6 +188,51 @@ impl MediaStore {
         }
     }
 
+    /// 清空受管目录。逐项删除保持常量内存；符号链接只删除链接本身，不跟随目标。
+    pub(crate) fn clear(&self) -> Result<()> {
+        let metadata = match fs::symlink_metadata(&self.dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(DomainError::Storage(format!(
+                    "检查剪贴媒体目录失败：{error}"
+                )));
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(DomainError::Storage(
+                "剪贴媒体目录不是可安全清理的普通目录".into(),
+            ));
+        }
+
+        let entries = fs::read_dir(&self.dir)
+            .map_err(|error| DomainError::Storage(format!("读取剪贴媒体目录失败：{error}")))?;
+        let mut first_error = None;
+        for entry in entries {
+            let result = (|| -> std::io::Result<()> {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                if !file_type.is_file() && !file_type.is_symlink() {
+                    return Err(std::io::Error::other(format!(
+                        "拒绝删除非文件条目 {}",
+                        entry.path().display()
+                    )));
+                }
+                fs::remove_file(entry.path())
+            })();
+            if let Err(error) = result {
+                warn!(error = %error, "clear media cache entry failed");
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(DomainError::Storage(format!(
+                "剪贴媒体目录未能完全清空：{error}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     fn managed_path(&self, path: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
         (path.parent() == Some(self.dir.as_path()) && path.file_name().is_some()).then_some(path)
@@ -282,7 +337,19 @@ mod tests {
 
     use ramag_domain::error::DomainError;
 
-    use super::{MediaStore, STALE_TEMP_FILE_AGE, is_temp_file_name, read_limited, sanitize};
+    use super::{
+        MAX_MEDIA_BYTES, MEDIA_ENCRYPTION_OVERHEAD_BYTES, MediaStore, STALE_TEMP_FILE_AGE,
+        is_temp_file_name, read_limited, sanitize,
+    };
+    use ramag_domain::entities::MAX_CLIPBOARD_ITEM_BYTES;
+
+    #[test]
+    fn media_limit_includes_encryption_overhead() {
+        assert_eq!(
+            MAX_MEDIA_BYTES,
+            MAX_CLIPBOARD_ITEM_BYTES as usize + MEDIA_ENCRYPTION_OVERHEAD_BYTES
+        );
+    }
 
     #[test]
     fn cache_key_keeps_only_safe_file_name() {
@@ -345,6 +412,64 @@ mod tests {
         assert_eq!(read_limited(&path, 5)?, b"12345");
         std::fs::remove_file(path)
             .map_err(|error| DomainError::Storage(format!("清理测试文件失败：{error}")))?;
+        Ok(())
+    }
+
+    #[test]
+    fn media_clear_streams_all_regular_files() -> ramag_domain::error::Result<()> {
+        static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-media-clear-test-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| DomainError::Storage(format!("创建测试目录失败：{error}")))?;
+        std::fs::write(dir.join("one.img"), b"1")
+            .map_err(|error| DomainError::Storage(format!("写测试文件失败：{error}")))?;
+        std::fs::write(dir.join("two.img"), b"2")
+            .map_err(|error| DomainError::Storage(format!("写测试文件失败：{error}")))?;
+
+        MediaStore { dir: dir.clone() }.clear()?;
+
+        let remaining = std::fs::read_dir(&dir)
+            .map_err(|error| DomainError::Storage(format!("读取测试目录失败：{error}")))?
+            .count();
+        assert_eq!(remaining, 0);
+        std::fs::remove_dir(dir)
+            .map_err(|error| DomainError::Storage(format!("清理测试目录失败：{error}")))?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn media_clear_removes_symlink_without_following_target() -> ramag_domain::error::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "ramag-media-clear-link-test-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let dir = root.join("media");
+        let target = root.join("keep.txt");
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| DomainError::Storage(format!("创建测试目录失败：{error}")))?;
+        std::fs::write(&target, b"keep")
+            .map_err(|error| DomainError::Storage(format!("写测试文件失败：{error}")))?;
+        symlink(&target, dir.join("linked.img"))
+            .map_err(|error| DomainError::Storage(format!("创建测试链接失败：{error}")))?;
+
+        MediaStore { dir }.clear()?;
+
+        assert_eq!(
+            std::fs::read(&target)
+                .map_err(|error| DomainError::Storage(format!("读取目标文件失败：{error}")))?,
+            b"keep"
+        );
+        std::fs::remove_dir_all(root)
+            .map_err(|error| DomainError::Storage(format!("清理测试目录失败：{error}")))?;
         Ok(())
     }
 

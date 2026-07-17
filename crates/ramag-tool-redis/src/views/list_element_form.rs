@@ -53,7 +53,14 @@ impl ListElementForm {
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
         let editor_ref = self.editor.read(cx);
-        let elems = editor_ref.collect(cx);
+        let elems = match editor_ref.collect(cx) {
+            Ok(elements) => elements,
+            Err(error) => {
+                self.state = SubmitState::Failed(error);
+                cx.notify();
+                return;
+            }
+        };
         let cmd = match editor_ref.push_dir() {
             PushDir::Tail => "RPUSH",
             PushDir::Head => "LPUSH",

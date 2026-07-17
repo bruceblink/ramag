@@ -113,6 +113,8 @@ pub struct DbClientView {
         Vec<ConnectionConfig>,
         Option<ramag_domain::entities::ConnectionId>,
     )>,
+    /// 启动恢复只在用户尚未手动改动标签时生效；慢回包不得覆盖用户刚做出的选择。
+    pub(super) restore_allowed: bool,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -275,6 +277,7 @@ impl DbClientView {
             sessions_scroll: ScrollHandle::new(),
             pending_notification: None,
             pending_restore: None,
+            restore_allowed: true,
             _subscriptions: subs,
         }
     }
@@ -394,6 +397,8 @@ impl DbClientView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.restore_allowed = false;
+        self.pending_restore = None;
         // 已开过的话直接切过去；stale 槽视为用户明确要求按新配置连接，直接重连
         if let Some(idx) = self.sessions.iter().position(|s| s.config.id == config.id) {
             self.active_session = Some(idx);
@@ -461,6 +466,8 @@ impl DbClientView {
         if idx >= self.sessions.len() {
             return;
         }
+        self.restore_allowed = false;
+        self.pending_restore = None;
         self.sessions.remove(idx);
         // 调整 active
         if self.sessions.is_empty() {

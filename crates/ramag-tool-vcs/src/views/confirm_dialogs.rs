@@ -9,7 +9,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
 };
-use ramag_domain::entities::RepoOperation;
+use ramag_domain::entities::{MAX_GIT_NAME_ARG_BYTES, MAX_GIT_POSITIONAL_ARG_BYTES, RepoOperation};
 
 use super::helpers::{
     BranchOp, FileOp, RemoteOp, StashOp, TagOp, default_remote_name, needs_first_push_remote_picker,
@@ -49,15 +49,17 @@ pub(super) fn open_prompt_dialog(
     description: String,
     initial: String,
     confirm_label: impl Into<SharedString>,
+    max_bytes: usize,
     on_confirm: impl FnOnce(&mut VcsView, String, &mut Context<VcsView>) + 'static,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    ramag_ui::open_prompt(
+    ramag_ui::open_bounded_prompt(
         title,
         description,
         &initial,
         confirm_label,
+        max_bytes,
         move |value, _window, app| {
             view.update(app, |this, cx| on_confirm(this, value, cx));
         },
@@ -480,6 +482,7 @@ impl VcsView {
             format!("为远程「{name}」输入新名称："),
             name,
             "重命名",
+            MAX_GIT_NAME_ARG_BYTES,
             move |this, new, cx| this.rename_remote_op(old.clone(), new, cx),
             window,
             cx,
@@ -500,6 +503,7 @@ impl VcsView {
             format!("为远程「{name}」输入新的 fetch URL："),
             current,
             "保存",
+            MAX_GIT_POSITIONAL_ARG_BYTES,
             move |this, url, cx| this.set_remote_url_op(name.clone(), url, cx),
             window,
             cx,

@@ -12,7 +12,8 @@ use chrono::Utc;
 use parking_lot::RwLock;
 use ramag_domain::entities::{
     CapturedClip, ClipId, ClipItem, ClipKind, ClipSearchResult, ClipSource, ClipboardSettings,
-    blacklist_matches, classify_text, fnv1a_hash, is_safe_http_url, make_preview,
+    MAX_CLIPBOARD_SEARCH_BYTES, blacklist_matches, classify_text, fnv1a_hash, is_safe_http_url,
+    make_preview,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{ClipboardDriver, Storage};
@@ -44,6 +45,15 @@ const SEARCH_INLINE_BYTE_BUDGET: u64 = CACHE_INLINE_BYTE_BUDGET;
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 
+fn validate_search_query(query: &str) -> Result<()> {
+    if query.len() > MAX_CLIPBOARD_SEARCH_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴历史搜索词超过 {MAX_CLIPBOARD_SEARCH_BYTES} bytes 上限"
+        )));
+    }
+    Ok(())
+}
+
 /// 采集判定结果（纯逻辑产物，不触 IO）
 #[derive(Debug, PartialEq)]
 pub enum CaptureDecision {
@@ -73,6 +83,8 @@ pub struct ClipboardService {
     settings_revision: Arc<AtomicU64>,
     /// 设置读写串行化，避免慢读取或旧保存晚完成后覆盖新值。
     settings_save_lock: Arc<futures::lock::Mutex<()>>,
+    /// 历史与媒体写操作串行化，避免采集、清空、删除和复制提升相互穿插后留下断链媒体。
+    history_mutation_lock: Arc<futures::lock::Mutex<()>>,
     /// 全局热键注册状态（见 HotkeyState）：App 级热键循环写，设置面板读，
     /// 让「热键没注册上（如被占用）」对用户可见而非只留日志
     hotkey_state: Arc<AtomicU8>,
@@ -125,6 +137,7 @@ impl ClipboardService {
             settings_cache: Arc::new(RwLock::new(ClipboardSettings::default())),
             settings_revision: Arc::new(AtomicU64::new(0)),
             settings_save_lock: Arc::new(futures::lock::Mutex::new(())),
+            history_mutation_lock: Arc::new(futures::lock::Mutex::new(())),
             hotkey_state: Arc::new(AtomicU8::new(HotkeyState::Disabled.as_u8())),
             settings_degraded: Arc::new(AtomicBool::new(false)),
             pending_media_deletes: Arc::new(PendingMediaDeletes::default()),
@@ -158,6 +171,8 @@ impl ClipboardService {
 
     /// 启动预热：解密最近 CACHE_WINDOW 条入缓存（仅启动调一次）
     pub async fn preload(&self) {
+        // 与采集/清空共用锁，避免慢预热最后用旧快照覆盖启动期间刚写入的缓存。
+        let _guard = self.history_mutation_lock.lock().await;
         match self
             .storage
             .clip_list_recent_bounded(CACHE_WINDOW, CACHE_INLINE_BYTE_BUDGET)
@@ -350,6 +365,7 @@ impl ClipboardService {
                 Ok(false)
             }
             CaptureDecision::Record { hash, kind } => {
+                let _guard = self.history_mutation_lock.lock().await;
                 self.record(captured, kind, hash, source, settings).await
             }
         }
@@ -358,7 +374,7 @@ impl ClipboardService {
     /// 入库：命中指纹则提升旧条目，否则新建（图片先落盘）
     async fn record(
         &self,
-        captured: CapturedClip,
+        mut captured: CapturedClip,
         kind: ClipKind,
         hash: String,
         source: Option<ClipSource>,
@@ -404,7 +420,8 @@ impl ClipboardService {
 
         // 图片先完成受限解码，拒绝只有伪造 PNG 头的损坏输入；再把原图与缩略图加密落盘。
         // 缩略图生成（解码 + 缩放 + 编码）是 CPU 大头，挪工作线程避免采集时 UI 卡顿
-        let (image_path, thumb_path) = match (&captured.image_png, settings.capture_images) {
+        let image_png = captured.image_png.take().map(Arc::new);
+        let (image_path, thumb_path) = match (&image_png, settings.capture_images) {
             (Some(png), true) => {
                 let thumb = match make_thumbnail_off_thread(png.clone()).await {
                     Ok(thumb) => thumb,
@@ -413,19 +430,35 @@ impl ClipboardService {
                         return Ok(false);
                     }
                 };
-                let enc_full = self.storage.seal(png).await?;
+                let enc_full = self.storage.seal(png.as_slice()).await?;
                 let full = self
                     .persist_media(format!("{content_hash}.img"), enc_full)
                     .await?;
-                let enc_thumb = self.storage.seal(&thumb).await?;
-                let thumb_path = self
-                    .persist_media(format!("{content_hash}.thumb"), enc_thumb)
-                    .await?;
+                let thumb_result = async {
+                    let enc_thumb = self.storage.seal(&thumb).await?;
+                    self.persist_media(format!("{content_hash}.thumb"), enc_thumb)
+                        .await
+                }
+                .await;
+                let thumb_path = match thumb_result {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let rollback = self.unprotected_staged_media(vec![full.clone()]);
+                        if let Err(cleanup_error) = self.cleanup_media(rollback).await {
+                            warn!(
+                                error = %cleanup_error,
+                                path = %full,
+                                "rollback clipboard image after thumbnail failure failed"
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
                 (Some(full), Some(thumb_path))
             }
             _ => (None, None),
         };
-        let byte_size = if let Some(png) = &captured.image_png {
+        let byte_size = if let Some(png) = &image_png {
             png.len() as u64
         } else if let Some(text) = &captured.text {
             text.len()
@@ -456,7 +489,24 @@ impl ClipboardService {
             created_at: now,
             last_used_at: now,
         };
-        self.storage.clip_save(&item).await?;
+        if let Err(error) = self.storage.clip_save(&item).await {
+            let staged_media = self.unprotected_staged_media(
+                [&item.image_path, &item.thumb_path]
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect(),
+            );
+            if let Err(cleanup_error) = self.cleanup_media(staged_media).await {
+                warn!(
+                    error = %cleanup_error,
+                    clip_id = %item.id,
+                    "rollback clipboard media after record save failure failed"
+                );
+            }
+            return Err(error);
+        }
+        self.protect_item_media(&item);
         self.cache_upsert(item);
         self.prune().await;
         self.bump();
@@ -497,6 +547,7 @@ impl ClipboardService {
 
     /// 全量搜索（覆盖缓存窗口之外的历史）。主视图后台去抖调用，匹配 preview/text
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<ClipItem>> {
+        validate_search_query(query)?;
         self.storage.clip_search(query, limit).await
     }
 
@@ -507,6 +558,7 @@ impl ClipboardService {
         limit: usize,
         cancelled: Arc<AtomicBool>,
     ) -> Result<ClipSearchResult> {
+        validate_search_query(query)?;
         self.storage
             .clip_search_cancellable_bounded(query, limit, SEARCH_INLINE_BYTE_BUDGET, cancelled)
             .await
@@ -514,6 +566,19 @@ impl ClipboardService {
 
     /// 复制条目回剪贴板（不自动粘贴）
     pub async fn copy_to_clipboard(&self, item: &ClipItem) -> Result<()> {
+        let _guard = self.history_mutation_lock.lock().await;
+        let current = self.current_clip(&item.id).await?;
+        self.write_clipboard_payload(&current, false).await?;
+        self.touch_current_clip(current).await
+    }
+
+    async fn current_clip(&self, id: &ClipId) -> Result<ClipItem> {
+        self.storage.clip_get(id).await?.ok_or_else(|| {
+            DomainError::NotFound("该剪贴记录已被删除或清空，请刷新列表后重试".into())
+        })
+    }
+
+    async fn write_clipboard_payload(&self, item: &ClipItem, plain_text: bool) -> Result<()> {
         match item.kind {
             ClipKind::Image => {
                 if let Some(png) = self.load_image(item).await? {
@@ -529,12 +594,17 @@ impl ClipboardService {
             }
             _ => {
                 if let Some(text) = &item.text {
-                    self.driver.write_text(text, item.rtf.as_deref())?;
+                    let rtf = (!plain_text).then_some(item.rtf.as_deref()).flatten();
+                    self.driver.write_text(text, rtf)?;
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn touch_current_clip(&self, item: ClipItem) -> Result<()> {
         // 复制即提升为最新
-        let latest = touch_item(item, Utc::now());
+        let latest = touch_item(&item, Utc::now());
         self.storage.clip_save(&latest).await?;
         self.cache_upsert(latest);
         self.bump();
@@ -553,19 +623,12 @@ impl ClipboardService {
 
     /// 仅复制纯文本（剥离 RTF 富文本格式）；非文本类型回退普通复制
     pub async fn copy_as_plain_text(&self, item: &ClipItem) -> Result<()> {
-        match &item.text {
-            Some(text) => {
-                self.driver.write_text(text, None)?;
-                // “纯文本”只影响本次写回；历史中的 RTF 必须保留，否则之后普通复制
-                // 无法再恢复原富文本内容，属于不可见的数据损失。
-                let latest = touch_item(item, Utc::now());
-                self.storage.clip_save(&latest).await?;
-                self.cache_upsert(latest);
-                self.bump();
-                Ok(())
-            }
-            None => self.copy_to_clipboard(item).await,
-        }
+        let _guard = self.history_mutation_lock.lock().await;
+        let current = self.current_clip(&item.id).await?;
+        self.write_clipboard_payload(&current, true).await?;
+        // “纯文本”只影响本次写回；历史中的 RTF 必须保留，否则之后普通复制
+        // 无法再恢复原富文本内容，属于不可见的数据损失。
+        self.touch_current_clip(current).await
     }
 
     /// 来源应用图标 PNG（按 bundle_id 缓存）；卡片右上角显示用
@@ -788,8 +851,8 @@ fn touch_item(item: &ClipItem, now: chrono::DateTime<Utc>) -> ClipItem {
 
 /// 工作线程生成缩略图（std::thread + oneshot，与 Storage 桥接同款；不引入 runtime）。
 /// 采集循环跑在 GPUI 前台 executor，图片编解码留在主线程会造成可感知卡顿
-async fn make_thumbnail_off_thread(png: Vec<u8>) -> Result<Vec<u8>> {
-    crate::run_blocking(move || make_thumbnail(&png, THUMB_MAX_W)).await
+async fn make_thumbnail_off_thread(png: Arc<Vec<u8>>) -> Result<Vec<u8>> {
+    crate::run_blocking(move || make_thumbnail(png.as_slice(), THUMB_MAX_W)).await
 }
 
 #[cfg(test)]

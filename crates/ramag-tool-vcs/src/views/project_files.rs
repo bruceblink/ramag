@@ -19,8 +19,8 @@ use super::vcs_view::VcsView;
 enum Node {
     /// 目录：children 按名字字母序，目录排前文件排后
     Dir(BTreeMap<String, Node>),
-    /// 文件：相对仓库根的完整路径（用于 status 查找 / select_file）
-    File { full_path: String },
+    /// 文件仅保留原始 `project_files` 索引，避免树与行缓存重复持有完整路径。
+    File { path_index: usize },
 }
 
 /// 节点 map 类型别名：目录名 → 子节点；BTreeMap 自带字母序
@@ -42,7 +42,7 @@ pub(super) enum ProjectRow {
     /// 文件行：状态字母 + 名字，可点击查看 diff
     File {
         name: String,
-        full_path: String,
+        path_index: usize,
         depth: usize,
     },
 }
@@ -57,18 +57,22 @@ pub(super) struct ProjectRowsCacheEntry {
 
 /// Project 文件行只需展示一个状态字母；按 status Vec 身份缓存路径索引。
 pub(super) struct ProjectStatusCacheEntry {
+    project_files_version: u64,
     files_identity: usize,
     files_len: usize,
-    kinds: Rc<HashMap<String, FileChangeKind>>,
+    kinds: Rc<HashMap<usize, FileChangeKind>>,
 }
 
 impl ProjectStatusCacheEntry {
     fn get(
         &self,
+        project_files_version: u64,
         files_identity: usize,
         files_len: usize,
-    ) -> Option<Rc<HashMap<String, FileChangeKind>>> {
-        (self.files_identity == files_identity && self.files_len == files_len)
+    ) -> Option<Rc<HashMap<usize, FileChangeKind>>> {
+        (self.project_files_version == project_files_version
+            && self.files_identity == files_identity
+            && self.files_len == files_len)
             .then(|| self.kinds.clone())
     }
 }
@@ -76,26 +80,21 @@ impl ProjectStatusCacheEntry {
 /// 把扁平 path 列表（已排序）构建成嵌套目录树
 ///
 /// 例：`["a/b.rs", "a/c.rs", "d.rs"]` → `Dir { a: Dir { b.rs: File, c.rs: File }, d.rs: File }`
-fn build_tree(paths: &[String]) -> NodeMap {
+fn build_tree<'a>(paths: impl IntoIterator<Item = (usize, &'a str)>) -> NodeMap {
     let mut root: NodeMap = BTreeMap::new();
-    for path in paths {
-        insert_path(&mut root, path);
+    for (path_index, path) in paths {
+        insert_path(&mut root, path_index, path);
     }
     root
 }
 
 /// 流式插入单条 path，不为每个文件额外分配分段 Vec。
-fn insert_path(map: &mut NodeMap, full_path: &str) {
+fn insert_path(map: &mut NodeMap, path_index: usize, full_path: &str) {
     let mut parts = full_path.split('/').peekable();
     let mut current = map;
     while let Some(part) = parts.next() {
         if parts.peek().is_none() {
-            current.insert(
-                part.to_string(),
-                Node::File {
-                    full_path: full_path.to_string(),
-                },
-            );
+            current.insert(part.to_string(), Node::File { path_index });
             return;
         }
         let entry = current
@@ -137,10 +136,10 @@ fn flatten(
         }
     }
     for (name, node) in files {
-        if let Node::File { full_path } = node {
+        if let Node::File { path_index } = node {
             out.push(ProjectRow::File {
                 name,
-                full_path,
+                path_index,
                 depth,
             });
         }
@@ -148,6 +147,20 @@ fn flatten(
 }
 
 impl VcsView {
+    pub(super) fn prune_project_expanded_dirs(&mut self) {
+        if self.project_expanded_dirs.is_empty() {
+            return;
+        }
+        let current = collect_ancestors(&self.project_files);
+        let before = self.project_expanded_dirs.len();
+        self.project_expanded_dirs
+            .retain(|path| current.contains(path));
+        if self.project_expanded_dirs.len() != before {
+            self.project_expanded_dirs_version = self.project_expanded_dirs_version.wrapping_add(1);
+            self.project_rows_cache.get_mut().take();
+        }
+    }
+
     /// Project Files 视图主入口（IDE 左侧 panel Project 模式）
     pub(super) fn render_project_files_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
@@ -213,7 +226,7 @@ impl VcsView {
                 let status_kinds = status_kinds.clone();
                 move |this, range: Range<usize>, _w, cx| {
                     range
-                        .map(|i| this.render_project_row(&rows_rc[i], status_kinds.as_ref(), cx))
+                        .map(|i| this.render_project_row(i, &rows_rc[i], status_kinds.as_ref(), cx))
                         .collect::<Vec<_>>()
                 }
             }),
@@ -228,7 +241,7 @@ impl VcsView {
             .into_any_element()
     }
 
-    fn project_status_kinds(&self) -> Rc<HashMap<String, FileChangeKind>> {
+    fn project_status_kinds(&self) -> Rc<HashMap<usize, FileChangeKind>> {
         let (files_identity, files_len) = self.status.as_ref().map_or((0, 0), |status| {
             (status.files.as_ptr() as usize, status.files.len())
         });
@@ -236,18 +249,20 @@ impl VcsView {
             let cache = self.project_status_cache.borrow();
             if let Some(kinds) = cache
                 .as_ref()
-                .and_then(|entry| entry.get(files_identity, files_len))
+                .and_then(|entry| entry.get(self.project_files_version, files_identity, files_len))
             {
                 return kinds;
             }
         }
 
         let kinds = Rc::new(build_status_kind_map(
+            &self.project_files,
             self.status
                 .as_ref()
                 .map_or(&[][..], |status| status.files.as_slice()),
         ));
         *self.project_status_cache.borrow_mut() = Some(ProjectStatusCacheEntry {
+            project_files_version: self.project_files_version,
             files_identity,
             files_len,
             kinds: kinds.clone(),
@@ -258,8 +273,9 @@ impl VcsView {
     /// 渲染单条扁平行（uniform_list closure 内调用）
     fn render_project_row(
         &self,
+        row_index: usize,
         row: &ProjectRow,
-        status_kinds: &HashMap<String, FileChangeKind>,
+        status_kinds: &HashMap<usize, FileChangeKind>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match row {
@@ -268,17 +284,30 @@ impl VcsView {
                 dir_path,
                 depth,
                 is_expanded,
-            } => self.render_pf_dir_row(name.clone(), dir_path.clone(), *depth, *is_expanded, cx),
+            } => self.render_pf_dir_row(
+                row_index,
+                name.clone(),
+                dir_path.clone(),
+                *depth,
+                *is_expanded,
+                cx,
+            ),
             ProjectRow::File {
                 name,
-                full_path,
+                path_index,
                 depth,
-            } => self.render_pf_file_row(
-                name.clone(),
-                full_path.clone(),
-                *depth,
-                status_kinds.get(full_path).copied(),
-                cx,
+            } => self.project_files.get(*path_index).map_or_else(
+                || div().h(px(28.0)).into_any_element(),
+                |full_path| {
+                    self.render_pf_file_row(
+                        *path_index,
+                        name.clone(),
+                        full_path.clone(),
+                        *depth,
+                        status_kinds.get(path_index).copied(),
+                        cx,
+                    )
+                },
             ),
         }
     }
@@ -286,6 +315,7 @@ impl VcsView {
     /// 目录行：折叠图标 + 名字，整行可点切换展开
     fn render_pf_dir_row(
         &self,
+        row_index: usize,
         name: String,
         dir_path: String,
         depth: usize,
@@ -298,7 +328,7 @@ impl VcsView {
         let hover_bg = theme.muted;
         let arrow = if is_expanded { "▾" } else { "▸" };
         let dir_path_for_toggle = dir_path.clone();
-        let row_id = SharedString::from(format!("vcs-pf-dir-{depth}-{dir_path}"));
+        let row_id = SharedString::from(format!("vcs-pf-dir-{row_index}"));
 
         h_flex()
             .id(row_id)
@@ -330,7 +360,7 @@ impl VcsView {
                     .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(name),
+                    .child(super::inline_text_preview(&name, 160)),
             )
             .into_any_element()
     }
@@ -338,6 +368,7 @@ impl VcsView {
     /// 行：状态字母 + 名字。Project 模式点文件走 select_pf_file 看内容，不走 diff
     fn render_pf_file_row(
         &self,
+        path_index: usize,
         name: String,
         full_path: String,
         depth: usize,
@@ -358,7 +389,7 @@ impl VcsView {
         let is_selected = self.selected_pf_path.as_deref() == Some(full_path.as_str());
 
         let path_for_open = full_path.clone();
-        let row_id = SharedString::from(format!("vcs-pf-file-{depth}-{full_path}"));
+        let row_id = SharedString::from(format!("vcs-pf-file-{path_index}"));
 
         let mut row = h_flex()
             .id(row_id)
@@ -390,7 +421,7 @@ impl VcsView {
                     .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(name),
+                    .child(super::inline_text_preview(&name, 160)),
             );
         if is_selected {
             row = row.bg(accent_bg);
@@ -403,22 +434,29 @@ impl VcsView {
     /// 仅在 (files_version / expanded_version / query) 任一变化时调；命中路径直接复用。
     fn rebuild_project_rows(&self, query: &str) -> Rc<Vec<ProjectRow>> {
         // filter：搜索词非空时按 substring 过滤
-        let filtered: Vec<String> = if query.is_empty() {
-            self.project_files.clone()
-        } else {
-            self.project_files
-                .iter()
-                .filter(|path| contains_case_insensitive(path, query))
-                .cloned()
-                .collect()
-        };
+        let filtered_indices: Vec<usize> = self
+            .project_files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, path)| {
+                (query.is_empty() || contains_case_insensitive(path, query)).then_some(index)
+            })
+            .collect();
         // 搜索时：自动展开所有命中路径的祖先目录
         let auto_expanded: std::collections::HashSet<String> = if query.is_empty() {
             self.project_expanded_dirs.clone()
         } else {
-            collect_ancestors(&filtered)
+            collect_ancestors_iter(
+                filtered_indices
+                    .iter()
+                    .filter_map(|index| self.project_files.get(*index).map(String::as_str)),
+            )
         };
-        let tree = build_tree(&filtered);
+        let tree = build_tree(filtered_indices.iter().filter_map(|index| {
+            self.project_files
+                .get(*index)
+                .map(|path| (*index, path.as_str()))
+        }));
         let mut rows: Vec<ProjectRow> = Vec::new();
         flatten(tree, &auto_expanded, "", 0, &mut rows);
         let rows_rc = Rc::new(rows);
@@ -434,6 +472,7 @@ impl VcsView {
 
     /// 切换 Project Files 目录的折叠状态
     pub(super) fn toggle_project_dir(&mut self, dir_path: String, cx: &mut Context<Self>) {
+        self.prune_project_expanded_dirs();
         if !self.project_expanded_dirs.remove(&dir_path) {
             self.project_expanded_dirs.insert(dir_path);
         }
@@ -477,12 +516,21 @@ fn pick_display_kind(f: &FileStatus) -> Option<FileChangeKind> {
     f.unstaged.or(f.staged)
 }
 
-fn build_status_kind_map(files: &[FileStatus]) -> HashMap<String, FileChangeKind> {
+fn build_status_kind_map(
+    project_files: &[String],
+    files: &[FileStatus],
+) -> HashMap<usize, FileChangeKind> {
     let mut kinds = HashMap::with_capacity(files.len());
     for file in files {
-        if let Some(kind) = pick_display_kind(file) {
-            kinds.insert(file.path.clone(), kind);
-        }
+        let Some(kind) = pick_display_kind(file) else {
+            continue;
+        };
+        let Ok(path_index) =
+            project_files.binary_search_by(|path| path.as_str().cmp(file.path.as_str()))
+        else {
+            continue;
+        };
+        kinds.insert(path_index, kind);
     }
     kinds
 }
@@ -491,6 +539,12 @@ fn build_status_kind_map(files: &[FileStatus]) -> HashMap<String, FileChangeKind
 ///
 /// 例：`["a/b/c.rs"]` → `{"a", "a/b"}`
 fn collect_ancestors(paths: &[String]) -> std::collections::HashSet<String> {
+    collect_ancestors_iter(paths.iter().map(String::as_str))
+}
+
+fn collect_ancestors_iter<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     for path in paths {
         let mut parts = path.split('/').peekable();
@@ -528,6 +582,11 @@ mod tests {
 
     #[test]
     fn status_kind_map_keeps_display_precedence() {
+        let project_files = vec![
+            "clean.rs".to_string(),
+            "conflict.rs".to_string(),
+            "modified.rs".to_string(),
+        ];
         let files = vec![
             status(
                 "modified.rs",
@@ -542,29 +601,31 @@ mod tests {
             status("clean.rs", None, None),
         ];
 
-        let kinds = build_status_kind_map(&files);
+        let kinds = build_status_kind_map(&project_files, &files);
 
-        assert_eq!(kinds.get("modified.rs"), Some(&FileChangeKind::Modified));
-        assert_eq!(kinds.get("conflict.rs"), Some(&FileChangeKind::Conflicted));
-        assert!(!kinds.contains_key("clean.rs"));
+        assert_eq!(kinds.get(&2), Some(&FileChangeKind::Modified));
+        assert_eq!(kinds.get(&1), Some(&FileChangeKind::Conflicted));
+        assert!(!kinds.contains_key(&0));
     }
 
     #[test]
     fn status_cache_requires_matching_vec_identity_and_length() {
         let kinds = Rc::new(HashMap::new());
         let cache = ProjectStatusCacheEntry {
+            project_files_version: 7,
             files_identity: 11,
             files_len: 2,
             kinds: kinds.clone(),
         };
 
-        let cached = cache.get(11, 2);
+        let cached = cache.get(7, 11, 2);
         assert!(cached.is_some());
         if let Some(cached) = cached {
             assert!(Rc::ptr_eq(&cached, &kinds));
         }
-        assert!(cache.get(12, 2).is_none());
-        assert!(cache.get(11, 3).is_none());
+        assert!(cache.get(8, 11, 2).is_none());
+        assert!(cache.get(7, 12, 2).is_none());
+        assert!(cache.get(7, 11, 3).is_none());
     }
 
     #[test]

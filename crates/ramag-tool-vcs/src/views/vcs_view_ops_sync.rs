@@ -1,5 +1,7 @@
 //! 工作区状态同步：静默刷新（窗口激活 / 手动刷新）+ Changes 文件 tabs 与最新 status 对齐
 
+use std::collections::HashMap;
+
 use gpui::Context;
 use ramag_domain::entities::{BranchKind, FileChangeKind, FileStatus};
 
@@ -160,22 +162,37 @@ impl VcsView {
     ///
     /// ProjectFiles / Commit 来源的 tabs 不受影响（仅索引可能因关闭前移）
     pub(super) fn sync_changes_tabs_with_status(&mut self, cx: &mut Context<Self>) {
+        self.prune_changes_collapsed_dirs();
         let Some(status) = self.status.as_ref() else {
             return;
         };
+        // 没有 Changes 来源标签时无需复制或索引可能很大的工作区文件列表。
+        if !self
+            .file_tabs
+            .iter()
+            .any(|tab| matches!(tab.source, FileTabSource::Changes(_)))
+        {
+            return;
+        }
         let active_identity = self
             .active_file_tab_idx
             .and_then(|i| self.file_tabs.get(i))
             .map(|t| (t.path.clone(), t.source.clone()));
 
-        let files = status.files.clone();
+        // 文件标签最多 32 个，但仓库变更文件可能很多；预建借用索引把 O(tabs × files)
+        // 的重复线性搜索降为 O(files + tabs)，同时不克隆路径与整份 FileStatus。
+        let files_by_path: HashMap<&str, &FileStatus> = status
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file))
+            .collect();
         let mut new_tabs = Vec::with_capacity(self.file_tabs.len());
         for mut tab in std::mem::take(&mut self.file_tabs) {
             let FileTabSource::Changes(kind) = tab.source else {
                 new_tabs.push(tab);
                 continue;
             };
-            let Some(f) = files.iter().find(|f| f.path == tab.path) else {
+            let Some(f) = files_by_path.get(tab.path.as_str()).copied() else {
                 continue;
             };
             let new_kind = redirect_group_kind(f, kind);

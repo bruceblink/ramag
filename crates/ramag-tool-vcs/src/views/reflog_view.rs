@@ -167,11 +167,7 @@ fn render_reflog_row(
     mono: SharedString,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    let short_hash = if e.commit.0.len() > 7 {
-        &e.commit.0[..7]
-    } else {
-        e.commit.0.as_str()
-    };
+    let short_hash = e.commit.short();
     let time_str = e.timestamp.format("%m-%d %H:%M").to_string();
     let action_color = match e.action.as_str() {
         "commit" | "commit (initial)" | "commit (amend)" => accent,
@@ -210,7 +206,7 @@ fn render_reflog_row(
                 .font_family(mono.clone())
                 .text_xs()
                 .text_color(muted_fg)
-                .child(e.selector.clone()),
+                .child(super::inline_text_preview(&e.selector, 80)),
         )
         .child(
             div()
@@ -219,7 +215,7 @@ fn render_reflog_row(
                 .text_xs()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(action_color)
-                .child(e.action.clone()),
+                .child(super::inline_text_preview(&e.action, 60)),
         )
         .child(
             div()
@@ -229,7 +225,7 @@ fn render_reflog_row(
                 .text_color(fg)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(e.subject.clone()),
+                .child(super::inline_text_preview(&e.subject, 240)),
         )
         .child(
             div()

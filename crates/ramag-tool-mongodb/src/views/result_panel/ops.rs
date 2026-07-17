@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use gpui::{ClickEvent, Context, Entity, SharedString, Window, div, prelude::*, px};
+use gpui::{App, ClickEvent, Context, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -15,6 +15,14 @@ use gpui_component::{
 use serde_json::Value;
 
 use super::{ResultEvent, ResultPanel};
+use crate::views::{
+    MAX_MONGO_INTERACTIVE_INPUT_BYTES, bounded_input, estimated_json_value_bytes,
+    inline_text_preview, reserve_input_bytes,
+};
+
+const MAX_INSERT_FORM_FIELDS: usize = 256;
+const MAX_DELETE_BATCH_IDS: usize = 5_000;
+const MAX_DELETE_BATCH_BYTES: usize = 4 * 1024 * 1024;
 
 impl ResultPanel {
     /// 弹「新增文档」：按当前结果的字段逐项填写（对齐 dbclient 按列填）；确认后 insert_one
@@ -34,7 +42,7 @@ impl ResultPanel {
             .map(|m| m.keys().filter(|k| k.as_str() != "_id").cloned().collect())
             .unwrap_or_default();
         // 空集合无字段模板：不再一味报错，改弹「整篇文档 JSON」输入框，支持插入首个文档
-        if fields.is_empty() {
+        if fields.is_empty() || fields.len() > MAX_INSERT_FORM_FIELDS {
             return self.open_raw_insert_dialog(coll, window, cx);
         }
         let inputs: Vec<(String, Entity<InputState>)> = fields
@@ -42,14 +50,12 @@ impl ResultPanel {
             .map(|f| {
                 (
                     f.clone(),
-                    cx.new(|c| {
-                        InputState::new(window, c).placeholder("值（JSON / 文本，留空跳过）")
-                    }),
+                    cx.new(|c| bounded_input(window, c).placeholder("值（JSON / 文本，留空跳过）")),
                 )
             })
             .collect();
         let panel = cx.entity().clone();
-        let title = SharedString::from(format!("新增文档 → {coll}"));
+        let title = SharedString::from(format!("新增文档 → {}", inline_text_preview(&coll, 96)));
         window.open_dialog(cx, move |dialog, _, app| {
             let panel_cancel = panel.clone();
             let panel_on_cancel = panel.clone();
@@ -71,12 +77,15 @@ impl ResultPanel {
                 .label("插入")
                 .disabled(dml_busy)
                 .on_click(move |_: &ClickEvent, _window, app| {
-                    let pairs: Vec<(String, String)> = inputs_apply
-                        .iter()
-                        .map(|(f, inp)| (f.clone(), inp.read(app).value().to_string()))
-                        .collect();
                     // 不立即关弹框：成功经 pending_close_dialog 关闭，失败 / 校验不过保留输入
-                    panel_apply.update(app, |this, cx| this.do_insert_fields(pairs, cx));
+                    match collect_field_inputs(&inputs_apply, app) {
+                        Ok(pairs) => {
+                            panel_apply.update(app, |this, cx| this.do_insert_fields(pairs, cx));
+                        }
+                        Err(error) => {
+                            panel_apply.update(app, |this, cx| this.notify_error(error, cx));
+                        }
+                    }
                 });
             dialog
                 .title(title.clone())
@@ -96,7 +105,7 @@ impl ResultPanel {
                                     div()
                                         .text_xs()
                                         .text_color(muted)
-                                        .child(SharedString::from(field.clone())),
+                                        .child(SharedString::from(inline_text_preview(field, 128))),
                                 )
                                 .child(Input::new(input).small()),
                         );
@@ -134,14 +143,31 @@ impl ResultPanel {
         cx: &mut Context<Self>,
     ) {
         let input = cx.new(|c| {
-            InputState::new(window, c)
+            bounded_input(window, c)
                 .multi_line(true)
                 .placeholder("输入完整文档 JSON，如 {\"name\": \"alice\", \"age\": 30}")
                 .default_value("{\n  \n}")
         });
+        ramag_ui::enforce_multiline_input_byte_limit(
+            &input,
+            MAX_MONGO_INTERACTIVE_INPUT_BYTES,
+            window,
+            cx,
+            |panel, _, cx| {
+                panel.pending_notification = Some(
+                    Notification::warning(format!(
+                        "文档输入最多保留 {} MiB，超出部分已截断",
+                        MAX_MONGO_INTERACTIVE_INPUT_BYTES / 1024 / 1024
+                    ))
+                    .autohide(true),
+                );
+                cx.notify();
+            },
+        )
+        .detach();
         input.update(cx, |s, c| s.focus(window, c));
         let panel = cx.entity().clone();
-        let title = SharedString::from(format!("新增文档 → {coll}"));
+        let title = SharedString::from(format!("新增文档 → {}", inline_text_preview(&coll, 96)));
         window.open_dialog(cx, move |dialog, _, app| {
             let panel_cancel = panel.clone();
             let panel_on_cancel = panel.clone();
@@ -208,6 +234,11 @@ impl ResultPanel {
             cx.notify();
             return;
         }
+        if let Err(error) =
+            ramag_domain::entities::validate_mongo_document(&doc, "MongoDB insert document")
+        {
+            return self.notify_error(error.message().to_string(), cx);
+        }
         let (Some(svc), Some(conf), Some(coll)) = (
             self.service.clone(),
             self.config.clone(),
@@ -261,7 +292,7 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// 弹删除确认；确认后对勾选行按 _id 逐个 delete_one
+    /// 弹删除确认；确认后对勾选行按 `_id` 受限分批删除。
     pub(crate) fn open_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.doc_dml_busy {
             return self.notify_error("上一写操作尚未完成".to_string(), cx);
@@ -333,14 +364,14 @@ impl ResultPanel {
                 .content(move |content, _, cx| {
                     let muted = cx.theme().muted_foreground;
                     content.child(div().text_sm().text_color(muted).child(SharedString::from(
-                        format!("将从「{coll_hint}」按 _id 逐个删除{hidden_hint}，操作不可撤销"),
+                        format!("将从「{coll_hint}」按 _id 分批删除{hidden_hint}，操作不可撤销"),
                     )))
                 })
                 .footer(dialog_footer(cancel, apply))
         });
     }
 
-    /// 异步逐个 delete_one；完成后 emit Refresh
+    /// 异步分批执行 delete 命令；完成后 emit Refresh。
     fn do_delete_async(&mut self, ids: Vec<Value>, cx: &mut Context<Self>) -> bool {
         if self.doc_dml_busy {
             self.pending_notification =
@@ -356,15 +387,28 @@ impl ResultPanel {
             return false;
         };
         let db = self.database.clone();
+        let batches = delete_id_batches(ids, MAX_DELETE_BATCH_IDS, MAX_DELETE_BATCH_BYTES);
         self.doc_dml_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let mut ok = 0usize;
+            let mut deleted = 0u64;
             let mut failed: Option<ramag_domain::error::DomainError> = None;
-            for id in ids {
-                let filter = serde_json::json!({ "_id": id });
-                match svc.delete_one(&conf, &db, &coll, &filter).await {
-                    Ok(_) => ok += 1,
+            for batch in batches {
+                let command = serde_json::json!({
+                    "delete": &coll,
+                    "deletes": [{"q": {"_id": {"$in": batch}}, "limit": 0}],
+                    "ordered": true,
+                });
+                match svc.run_command(&conf, &db, command).await {
+                    Ok(reply) => match mongo_response_u64(reply.get("n")) {
+                        Some(count) => deleted = deleted.saturating_add(count),
+                        None => {
+                            failed = Some(ramag_domain::error::DomainError::QueryFailed(
+                                "MongoDB delete 响应缺少有效的 n 字段".into(),
+                            ));
+                            break;
+                        }
+                    },
                     Err(e) => {
                         failed = Some(e);
                         break;
@@ -374,30 +418,32 @@ impl ResultPanel {
             let _ = this.update(cx, |this, cx| {
                 this.doc_dml_busy = false;
                 if !this.dml_context_matches(&conf, &db, &coll) {
-                    this.pending_notification =
-                        Some(match failed {
-                            Some(error) => Notification::error(error.write_hint(&format!(
-                                "原上下文 {db}.{coll} 删除失败（已删 {ok} 个）"
-                            )))
-                            .autohide(true),
-                            None => Notification::success(format!(
-                                "已在原上下文 {db}.{coll} 删除 {ok} 个文档；当前视图未自动刷新"
-                            ))
-                            .autohide(true),
-                        });
+                    this.pending_notification = Some(match failed {
+                        Some(error) => Notification::error(error.write_hint(&format!(
+                            "原上下文 {db}.{coll} 删除失败（已删 {deleted} 个）"
+                        )))
+                        .autohide(true),
+                        None => Notification::success(format!(
+                            "已在原上下文 {db}.{coll} 删除 {deleted} 个文档；当前视图未自动刷新"
+                        ))
+                        .autohide(true),
+                    });
                     cx.notify();
                     return;
                 }
                 match failed {
                     Some(e) => {
                         this.pending_notification = Some(
-                            Notification::error(e.write_hint(&format!("删除失败（已删 {ok} 个）")))
-                                .autohide(true),
+                            Notification::error(
+                                e.write_hint(&format!("删除失败（已删 {deleted} 个）")),
+                            )
+                            .autohide(true),
                         )
                     }
                     None => {
                         this.pending_notification = Some(
-                            Notification::success(format!("已删除 {ok} 个文档")).autohide(true),
+                            Notification::success(format!("已删除 {deleted} 个文档"))
+                                .autohide(true),
                         );
                         cx.emit(ResultEvent::Refresh);
                     }
@@ -408,6 +454,63 @@ impl ResultPanel {
         .detach();
         true
     }
+}
+
+fn delete_id_batches(ids: Vec<Value>, max_ids: usize, max_bytes: usize) -> Vec<Vec<Value>> {
+    debug_assert!(max_ids > 0);
+    debug_assert!(max_bytes > 0);
+    let mut batches = Vec::new();
+    let mut current = Vec::with_capacity(ids.len().min(max_ids));
+    let mut current_bytes = 0usize;
+
+    for id in ids {
+        let id_bytes = estimated_json_value_bytes(&id);
+        let exceeds_count = current.len() >= max_ids;
+        let exceeds_bytes = current_bytes.saturating_add(id_bytes) > max_bytes;
+        if !current.is_empty() && (exceeds_count || exceeds_bytes) {
+            batches.push(std::mem::take(&mut current));
+            current = Vec::with_capacity(max_ids);
+            current_bytes = 0;
+        }
+        current_bytes = current_bytes.saturating_add(id_bytes);
+        current.push(id);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+fn mongo_response_u64(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    value.as_u64().or_else(|| {
+        value
+            .get("$numberLong")
+            .and_then(Value::as_str)
+            .and_then(|number| number.parse().ok())
+    })
+}
+
+fn collect_field_inputs(
+    inputs: &[(String, Entity<InputState>)],
+    app: &App,
+) -> Result<Vec<(String, String)>, String> {
+    let mut total_bytes = 0usize;
+    let mut pairs = Vec::with_capacity(inputs.len());
+    for (field, input) in inputs {
+        let state = input.read(app);
+        let value = state.value();
+        let added = field
+            .len()
+            .checked_add(value.len())
+            .ok_or_else(|| "MongoDB 表单输入总长度溢出".to_string())?;
+        let Some(next_bytes) = reserve_input_bytes(total_bytes, added) else {
+            return Err("MongoDB 表单输入超过 4 MiB 总上限，请改用精简 JSON 或脚本".into());
+        };
+        total_bytes = next_bytes;
+        pairs.push((field.clone(), value.to_string()));
+    }
+    Ok(pairs)
 }
 
 pub(super) fn dml_dialog_can_close(panel: &Entity<ResultPanel>, app: &mut gpui::App) -> bool {
@@ -442,4 +545,29 @@ fn dialog_footer(cancel: Button, apply: Button) -> impl IntoElement {
         .gap(px(8.0))
         .child(cancel)
         .child(apply)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{delete_id_batches, mongo_response_u64};
+
+    #[test]
+    fn delete_batches_bound_count_and_estimated_bytes() {
+        let by_count = delete_id_batches(vec![json!(1), json!(2), json!(3)], 2, usize::MAX);
+        assert_eq!(by_count.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1]);
+
+        let by_bytes = delete_id_batches(vec![json!("a"), json!("b"), json!("c")], 10, 130);
+        assert_eq!(by_bytes.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    #[test]
+    fn mongo_delete_count_accepts_int32_and_number_long() {
+        assert_eq!(mongo_response_u64(Some(&json!(42))), Some(42));
+        assert_eq!(
+            mongo_response_u64(Some(&json!({"$numberLong": "5000000000"}))),
+            Some(5_000_000_000)
+        );
+    }
 }

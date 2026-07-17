@@ -16,6 +16,7 @@ const DEFAULT_APPLICATION_NAME: &str = "ramag";
 
 /// PG 必须指定 database，空时返回 InvalidConfig
 pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
+    config.validate().map_err(DomainError::InvalidConfig)?;
     if config.driver != DriverKind::Postgres {
         return Err(DomainError::InvalidConfig(format!(
             "PostgresDriver 不支持 {:?} 类型连接",
@@ -29,6 +30,14 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
         .ok_or_else(|| {
             DomainError::InvalidConfig("PostgreSQL 必须指定具体数据库（database 字段必填）".into())
         })?;
+    if config.tls
+        && let Some(ca) = config
+            .ca_cert_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+    {
+        ramag_infra_tunnel::validate_ca_certificate_file(ca)?;
+    }
 
     // SSH 隧道：启用时先确保系统 ssh 转发就绪，DB 改连 127.0.0.1:本地端口；
     // 就绪探测是阻塞调用，经 spawn_blocking 隔离，不占 tokio worker

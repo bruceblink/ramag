@@ -111,6 +111,7 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn diff_file(&self, repo: &RepoId, path: &str, kind: DiffKind) -> Result<FileDiff> {
+        git_cmd::validate_path_arg(path, "diff 文件路径")?;
         let handle = self.get_repo(repo)?;
         let path = path.to_string();
         run_blocking(move || diff::run_diff(&handle.path, &path, &kind)).await
@@ -123,6 +124,7 @@ impl GitDriver for GitDriverImpl {
         kind: DiffKind,
         ignore_whitespace: bool,
     ) -> Result<FileDiff> {
+        git_cmd::validate_path_arg(path, "diff 文件路径")?;
         let handle = self.get_repo(repo)?;
         let path = path.to_string();
         run_blocking(move || diff::run_diff_opts(&handle.path, &path, &kind, ignore_whitespace))
@@ -137,6 +139,7 @@ impl GitDriver for GitDriverImpl {
         ignore_whitespace: bool,
         context_lines: u32,
     ) -> Result<FileDiff> {
+        git_cmd::validate_path_arg(path, "diff 文件路径")?;
         let handle = self.get_repo(repo)?;
         let path = path.to_string();
         run_blocking(move || {
@@ -148,18 +151,21 @@ impl GitDriver for GitDriverImpl {
     // 写操作走 subprocess git（gix 写 API 还在演进）
 
     async fn stage(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
+        git_cmd::validate_path_args(paths, "待暂存文件列表")?;
         let handle = self.get_repo(repo)?;
         let paths = paths.to_vec();
         run_write_blocking(handle, move |p| work_ops::stage(p, &paths)).await
     }
 
     async fn unstage(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
+        git_cmd::validate_path_args(paths, "待撤回暂存文件列表")?;
         let handle = self.get_repo(repo)?;
         let paths = paths.to_vec();
         run_write_blocking(handle, move |p| work_ops::unstage(p, &paths)).await
     }
 
     async fn discard(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
+        git_cmd::validate_path_args(paths, "待丢弃文件列表")?;
         let handle = self.get_repo(repo)?;
         let paths = paths.to_vec();
         run_write_blocking(handle, move |p| work_ops::discard(p, &paths)).await
@@ -177,18 +183,24 @@ impl GitDriver for GitDriverImpl {
         amend: bool,
         sign: bool,
     ) -> Result<CommitId> {
+        commit_op::validate_message(message)?;
         let handle = self.get_repo(repo)?;
         let message = message.to_string();
         run_write_blocking(handle, move |p| commit_op::run(p, &message, amend, sign)).await
     }
 
     async fn checkout(&self, repo: &RepoId, target: &str) -> Result<()> {
+        git_cmd::validate_positional_arg(target, "checkout 目标")?;
         let handle = self.get_repo(repo)?;
         let target = target.to_string();
         run_write_blocking(handle, move |p| work_ops::checkout(p, &target)).await
     }
 
     async fn create_branch(&self, repo: &RepoId, name: &str, base: Option<&str>) -> Result<()> {
+        git_cmd::validate_name_arg(name, "分支名")?;
+        if let Some(base) = base {
+            git_cmd::validate_positional_arg(base, "分支基点")?;
+        }
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         let base = base.map(str::to_owned);
@@ -199,12 +211,16 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn delete_branch(&self, repo: &RepoId, name: &str, force: bool) -> Result<()> {
+        git_cmd::validate_name_arg(name, "分支名")?;
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         run_write_blocking(handle, move |p| work_ops::delete_branch(p, &name, force)).await
     }
 
     async fn fetch(&self, repo: &RepoId, remote: &str) -> Result<()> {
+        if !remote.is_empty() {
+            git_cmd::validate_name_arg(remote, "远程名")?;
+        }
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         run_write_blocking(handle, move |p| remote::fetch(p, &remote)).await
@@ -218,6 +234,8 @@ impl GitDriver for GitDriverImpl {
         set_upstream: bool,
         force_with_lease: bool,
     ) -> Result<()> {
+        git_cmd::validate_name_arg(remote, "远程名")?;
+        git_cmd::validate_name_arg(branch, "分支名")?;
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         let branch = branch.to_string();
@@ -228,6 +246,8 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn pull(&self, repo: &RepoId, remote: &str, branch: &str, rebase: bool) -> Result<()> {
+        git_cmd::validate_name_arg(remote, "远程名")?;
+        git_cmd::validate_name_arg(branch, "分支名")?;
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         let branch = branch.to_string();
@@ -241,6 +261,9 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<()> {
+        if !remote.is_empty() {
+            git_cmd::validate_name_arg(remote, "远程名")?;
+        }
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         run_write_blocking(handle, move |p| {
@@ -260,6 +283,8 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<()> {
+        git_cmd::validate_name_arg(remote, "远程名")?;
+        git_cmd::validate_name_arg(branch, "分支名")?;
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         let branch = branch.to_string();
@@ -286,6 +311,8 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<()> {
+        git_cmd::validate_name_arg(remote, "远程名")?;
+        git_cmd::validate_name_arg(branch, "分支名")?;
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         let branch = branch.to_string();
@@ -306,6 +333,9 @@ impl GitDriver for GitDriverImpl {
         message: Option<&str>,
         include_untracked: bool,
     ) -> Result<()> {
+        if let Some(message) = message {
+            stash::validate_message(message)?;
+        }
         let handle = self.get_repo(repo)?;
         let msg = message.map(str::to_owned);
         run_write_blocking(handle, move |p| {
@@ -337,6 +367,13 @@ impl GitDriver for GitDriverImpl {
         message: Option<&str>,
         sign: bool,
     ) -> Result<()> {
+        git_cmd::validate_name_arg(name, "tag 名")?;
+        if let Some(target) = target {
+            git_cmd::validate_positional_arg(target, "tag 目标")?;
+        }
+        if let Some(message) = message {
+            tag::validate_message(message)?;
+        }
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         let target = target.map(str::to_owned);
@@ -348,12 +385,15 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn delete_tag(&self, repo: &RepoId, name: &str) -> Result<()> {
+        git_cmd::validate_name_arg(name, "tag 名")?;
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         run_write_blocking(handle, move |p| tag::delete(p, &name)).await
     }
 
     async fn push_tag(&self, repo: &RepoId, remote: &str, name: &str) -> Result<()> {
+        git_cmd::validate_name_arg(remote, "远程名")?;
+        git_cmd::validate_name_arg(name, "tag 名")?;
         let handle = self.get_repo(repo)?;
         let remote = remote.to_string();
         let name = name.to_string();
@@ -361,18 +401,21 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn stage_patch(&self, repo: &RepoId, patch: &str) -> Result<()> {
+        patch::validate_patch(patch)?;
         let handle = self.get_repo(repo)?;
         let patch = patch.to_string();
         run_write_blocking(handle, move |p| patch::stage(p, &patch)).await
     }
 
     async fn unstage_patch(&self, repo: &RepoId, patch: &str) -> Result<()> {
+        patch::validate_patch(patch)?;
         let handle = self.get_repo(repo)?;
         let patch = patch.to_string();
         run_write_blocking(handle, move |p| patch::unstage(p, &patch)).await
     }
 
     async fn discard_patch(&self, repo: &RepoId, patch: &str) -> Result<()> {
+        patch::validate_patch(patch)?;
         let handle = self.get_repo(repo)?;
         let patch = patch.to_string();
         run_write_blocking(handle, move |p| patch::discard(p, &patch)).await
@@ -386,6 +429,10 @@ impl GitDriver for GitDriverImpl {
         ff_only: bool,
         message: Option<&str>,
     ) -> Result<()> {
+        git_cmd::validate_name_arg(branch, "合并分支名")?;
+        if let Some(message) = message {
+            merge::validate_message(message)?;
+        }
         let handle = self.get_repo(repo)?;
         let branch = branch.to_string();
         let message = message.map(str::to_owned);
@@ -406,6 +453,7 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn cherry_pick(&self, repo: &RepoId, commit: &str) -> Result<()> {
+        git_cmd::validate_positional_arg(commit, "cherry-pick commit")?;
         let handle = self.get_repo(repo)?;
         let commit = commit.to_string();
         run_write_blocking(handle, move |p| cherry_pick::start(p, &commit)).await
@@ -422,24 +470,28 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn use_ours(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
+        git_cmd::validate_path_args(paths, "冲突文件列表")?;
         let handle = self.get_repo(repo)?;
         let paths = paths.to_vec();
         run_write_blocking(handle, move |p| conflict_ops::use_ours(p, &paths)).await
     }
 
     async fn use_theirs(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
+        git_cmd::validate_path_args(paths, "冲突文件列表")?;
         let handle = self.get_repo(repo)?;
         let paths = paths.to_vec();
         run_write_blocking(handle, move |p| conflict_ops::use_theirs(p, &paths)).await
     }
 
     async fn reset(&self, repo: &RepoId, target: &str, kind: ResetKind) -> Result<()> {
+        git_cmd::validate_positional_arg(target, "reset 目标")?;
         let handle = self.get_repo(repo)?;
         let target = target.to_string();
         run_write_blocking(handle, move |p| history_ops::reset(p, &target, kind)).await
     }
 
     async fn revert(&self, repo: &RepoId, commit: &str) -> Result<()> {
+        git_cmd::validate_positional_arg(commit, "revert commit")?;
         let handle = self.get_repo(repo)?;
         let commit = commit.to_string();
         run_write_blocking(handle, move |p| history_ops::revert(p, &commit)).await
@@ -456,6 +508,7 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn rebase(&self, repo: &RepoId, onto: &str) -> Result<()> {
+        git_cmd::validate_positional_arg(onto, "rebase 上游")?;
         let handle = self.get_repo(repo)?;
         let onto = onto.to_string();
         run_write_blocking(handle, move |p| {
@@ -495,6 +548,8 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn add_remote(&self, repo: &RepoId, name: &str, url: &str) -> Result<()> {
+        git_cmd::validate_name_arg(name, "远程名")?;
+        git_cmd::validate_positional_arg(url, "远程 URL")?;
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         let url = url.to_string();
@@ -502,12 +557,15 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn remove_remote(&self, repo: &RepoId, name: &str) -> Result<()> {
+        git_cmd::validate_name_arg(name, "远程名")?;
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         run_write_blocking(handle, move |p| remote::remove(p, &name)).await
     }
 
     async fn set_remote_url(&self, repo: &RepoId, name: &str, url: &str) -> Result<()> {
+        git_cmd::validate_name_arg(name, "远程名")?;
+        git_cmd::validate_positional_arg(url, "远程 URL")?;
         let handle = self.get_repo(repo)?;
         let name = name.to_string();
         let url = url.to_string();
@@ -515,6 +573,8 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn rename_remote(&self, repo: &RepoId, old: &str, new: &str) -> Result<()> {
+        git_cmd::validate_name_arg(old, "原远程名")?;
+        git_cmd::validate_name_arg(new, "新远程名")?;
         let handle = self.get_repo(repo)?;
         let old = old.to_string();
         let new = new.to_string();
@@ -522,12 +582,14 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn list_commit_files(&self, repo: &RepoId, commit: &str) -> Result<Vec<FileStatus>> {
+        git_cmd::validate_positional_arg(commit, "commit id")?;
         let handle = self.get_repo(repo)?;
         let commit = commit.to_string();
         run_blocking(move || commit_files::list(&handle.path, &commit)).await
     }
 
     async fn blame(&self, repo: &RepoId, path: &str) -> Result<Vec<BlameLine>> {
+        git_cmd::validate_path_arg(path, "blame 文件路径")?;
         let handle = self.get_repo(repo)?;
         let path = path.to_string();
         run_blocking(move || blame::run(&handle.path, &path)).await
@@ -539,6 +601,15 @@ impl GitDriver for GitDriverImpl {
         ref_name: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<ReflogEntry>> {
+        if let Some(ref_name) = ref_name {
+            git_cmd::validate_positional_arg(ref_name, "reflog 引用")?;
+        }
+        if limit.is_some_and(|limit| limit > git_cmd::MAX_PARSED_GIT_ITEMS) {
+            return Err(DomainError::InvalidConfig(format!(
+                "reflog 数量超过 {} 条安全上限",
+                git_cmd::MAX_PARSED_GIT_ITEMS
+            )));
+        }
         let handle = self.get_repo(repo)?;
         let ref_name = ref_name.map(str::to_owned);
         run_blocking(move || reflog::list(&handle.path, ref_name.as_deref(), limit)).await
@@ -547,6 +618,7 @@ impl GitDriver for GitDriverImpl {
     // ---- Clone / Init ----
 
     async fn clone_repo(&self, url: &str, dest: &Path) -> Result<RepoConfig> {
+        git_cmd::validate_positional_arg(url, "仓库 URL")?;
         let url = url.to_string();
         let dest_clone = dest.to_path_buf();
         run_blocking(move || clone::clone_repo(&url, &dest_clone)).await?;
@@ -560,6 +632,7 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<RepoConfig> {
+        git_cmd::validate_positional_arg(url, "仓库 URL")?;
         let url = url.to_string();
         let dest_clone = dest.to_path_buf();
         run_blocking(move || clone::clone_repo_streaming(&url, &dest_clone, cancel, progress))
@@ -576,6 +649,7 @@ impl GitDriver for GitDriverImpl {
     // ---- Interactive Rebase ----
 
     async fn interactive_rebase_plan(&self, repo: &RepoId, onto: &str) -> Result<Vec<RebaseTodo>> {
+        git_cmd::validate_positional_arg(onto, "rebase 上游引用")?;
         let handle = self.get_repo(repo)?;
         let onto = onto.to_string();
         run_blocking(move || rebase_interactive::plan(&handle.path, &onto)).await
@@ -587,6 +661,8 @@ impl GitDriver for GitDriverImpl {
         onto: &str,
         todos: &[RebaseTodo],
     ) -> Result<()> {
+        git_cmd::validate_positional_arg(onto, "rebase 上游引用")?;
+        rebase_interactive::validate_todos(todos)?;
         let handle = self.get_repo(repo)?;
         let onto = onto.to_string();
         let todos = todos.to_vec();
@@ -597,6 +673,7 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn get_conflict_content(&self, repo: &RepoId, path: &str) -> Result<ConflictContent> {
+        git_cmd::validate_path_arg(path, "冲突文件路径")?;
         let handle = self.get_repo(repo)?;
         let path = path.to_string();
         run_blocking(move || conflict_content::get_content(&handle.path, &path)).await

@@ -5,17 +5,55 @@ use std::sync::Arc;
 use gpui::Context;
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{ConnectionConfig, Query, Value};
+use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES, Query, Value};
 use tracing::error;
 
 use super::ResultPanel;
 use super::ResultState;
 use super::helpers::{
-    RowIdentity, batch_delete_notice, build_identity_where, build_new_value, dml_row_limit,
-    escape_new_value_for_old,
+    IdentityWhereError, MAX_BATCH_DELETE_ROWS, MAX_BATCH_DELETE_SQL_BYTES, RowIdentity,
+    batch_delete_notice, build_identity_where, build_new_value, dml_row_limit,
+    reserve_batch_delete_sql_bytes,
 };
 
+fn identity_where_error_message(error: IdentityWhereError) -> &'static str {
+    match error {
+        IdentityWhereError::MissingColumn => "结果集缺少定位键列，已取消操作；请重新查询该表",
+        IdentityWhereError::TooLarge => {
+            "行定位键生成的 SQL 超过 4 MiB 安全上限，已取消操作；请用手写 SQL 处理"
+        }
+    }
+}
+
 impl ResultPanel {
+    fn guard_generated_query(&mut self, query: &Query, cx: &mut Context<Self>) -> bool {
+        if let Err(error) = query.validate() {
+            self.pending_notification =
+                Some(Notification::error(error.to_string()).autohide(false));
+            cx.notify();
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn guard_batch_delete_count(
+        &mut self,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if count <= MAX_BATCH_DELETE_ROWS {
+            return true;
+        }
+        self.pending_notification = Some(
+            Notification::warning(format!(
+                "单次批量删除最多 {MAX_BATCH_DELETE_ROWS} 行，请减少勾选后分批执行"
+            ))
+            .autohide(false),
+        );
+        cx.notify();
+        false
+    }
+
     /// DML 前置守卫：取连接服务 + 连接配置，缺任一即弹 toast 返回 None。
     /// `action` 用于提示文案（删除 / 新增 / 修改）。
     fn dml_conn(
@@ -140,6 +178,9 @@ impl ResultPanel {
         indices: Vec<usize>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if !self.guard_batch_delete_count(indices.len(), cx) {
+            return false;
+        }
         let Some(identity) = self.guard_modify("删除", cx) else {
             return false;
         };
@@ -163,22 +204,45 @@ impl ResultPanel {
         let strategy = format!("按{}", identity.label);
         let driver = conn.driver;
         let limit_clause = dml_row_limit(driver);
-        let mut plans: Vec<(usize, String)> = Vec::with_capacity(indices.len());
+        let mut plans: Vec<(usize, Query)> = Vec::with_capacity(indices.len());
+        let mut total_sql_bytes = 0usize;
         for &ri in &indices {
             let Some(row) = result.rows.get(ri) else {
                 continue;
             };
             // 键列缺失（理论上单表 SELECT * 不会发生）：整批拒绝，绝不退化成模糊匹配
-            let Some(where_clause) = build_identity_where(result, row, &identity, driver) else {
+            let where_clause = match build_identity_where(result, row, &identity, driver) {
+                Ok(where_clause) => where_clause,
+                Err(error) => {
+                    self.pending_notification = Some(
+                        Notification::error(identity_where_error_message(error)).autohide(false),
+                    );
+                    cx.notify();
+                    return false;
+                }
+            };
+            let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
+            let Some(next_total) = reserve_batch_delete_sql_bytes(total_sql_bytes, sql.len())
+            else {
                 self.pending_notification = Some(
-                    Notification::error("结果集缺少定位键列，已取消删除；请重新查询该表")
-                        .autohide(true),
+                    Notification::error(format!(
+                        "批量 DELETE 语句合计超过 {} MiB 安全上限，请减少勾选行数",
+                        MAX_BATCH_DELETE_SQL_BYTES / 1024 / 1024
+                    ))
+                    .autohide(false),
                 );
                 cx.notify();
                 return false;
             };
-            let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
-            plans.push((ri, sql));
+            let query = Query::new(sql);
+            if let Err(error) = query.validate() {
+                self.pending_notification =
+                    Some(Notification::error(error.to_string()).autohide(false));
+                cx.notify();
+                return false;
+            }
+            total_sql_bytes = next_total;
+            plans.push((ri, query));
         }
         if plans.is_empty() {
             return false;
@@ -193,9 +257,8 @@ impl ResultPanel {
             let mut not_matched = 0usize;
             let mut anomalous_affected = None;
             let mut last_err: Option<ramag_domain::error::DomainError> = None;
-            for (ri, sql) in plans {
-                let q = Query::new(sql);
-                match svc.execute_with_history(&conn, &q).await {
+            for (ri, query) in plans {
+                match svc.execute_with_history(&conn, &query).await {
                     Ok(qr) if qr.affected_rows > 0 => {
                         affected_rows = affected_rows.saturating_add(qr.affected_rows);
                         deleted.push(ri);
@@ -303,6 +366,25 @@ impl ResultPanel {
             .map(|(c, _)| driver.quote_identifier(c))
             .collect::<Vec<_>>()
             .join(", ");
+        let mut estimated_sql_bytes = "INSERT INTO  () VALUES ();"
+            .len()
+            .saturating_add(table_ref.len())
+            .saturating_add(cols_sql.len());
+        for (index, (_, value)) in values.iter().enumerate() {
+            estimated_sql_bytes = estimated_sql_bytes.saturating_add(usize::from(index > 0) * 2);
+            let remaining = MAX_SQL_QUERY_BYTES.saturating_sub(estimated_sql_bytes);
+            let Some(literal_bytes) = value.bounded_sql_literal_len_for(driver, remaining) else {
+                self.pending_notification = Some(
+                    Notification::error(
+                        "INSERT 生成的 SQL 超过 4 MiB 安全上限，请减少列或缩短输入",
+                    )
+                    .autohide(false),
+                );
+                cx.notify();
+                return false;
+            };
+            estimated_sql_bytes = estimated_sql_bytes.saturating_add(literal_bytes);
+        }
         let vals_sql = values
             .iter()
             .map(|(_, v)| v.to_sql_literal_for(driver))
@@ -310,6 +392,9 @@ impl ResultPanel {
             .join(", ");
         let sql = format!("INSERT INTO {table_ref} ({cols_sql}) VALUES ({vals_sql});");
         let q = Query::new(sql);
+        if !self.guard_generated_query(&q, cx) {
+            return false;
+        }
         let new_row_values: Option<Vec<Value>> = match &self.state {
             ResultState::Ok(r) => Some(
                 r.columns
@@ -406,17 +491,21 @@ impl ResultPanel {
         };
 
         let strategy = format!("按{}", identity.label);
-        let Some(where_clause) = build_identity_where(result, &row, &identity, conn.driver) else {
-            self.pending_notification = Some(
-                Notification::error("结果集缺少定位键列，已取消删除；请重新查询该表")
-                    .autohide(true),
-            );
-            cx.notify();
-            return false;
+        let where_clause = match build_identity_where(result, &row, &identity, conn.driver) {
+            Ok(where_clause) => where_clause,
+            Err(error) => {
+                self.pending_notification =
+                    Some(Notification::error(identity_where_error_message(error)).autohide(false));
+                cx.notify();
+                return false;
+            }
         };
         let limit_clause = dml_row_limit(conn.driver);
         let sql = format!("DELETE FROM {table_ref} WHERE {where_clause}{limit_clause};");
         let q = Query::new(sql);
+        if !self.guard_generated_query(&q, cx) {
+            return false;
+        }
 
         let result_revision = self.result_revision;
         self.dml_busy = true;
@@ -537,22 +626,44 @@ impl ResultPanel {
 
         let strategy = format!("按{}", identity.label);
         let driver = conn.driver;
-        let Some(where_clause) = build_identity_where(result, &row, &identity, driver) else {
+        let where_clause = match build_identity_where(result, &row, &identity, driver) {
+            Ok(where_clause) => where_clause,
+            Err(error) => {
+                self.pending_notification =
+                    Some(Notification::error(identity_where_error_message(error)).autohide(false));
+                cx.notify();
+                return false;
+            }
+        };
+        let new_cell_val = build_new_value(&cell_val, &new_text);
+        let limit_clause = dml_row_limit(driver);
+        let column = driver.quote_identifier(&col_name);
+        let fixed_sql_bytes = "UPDATE  SET  =  WHERE ;"
+            .len()
+            .saturating_add(table_ref.len())
+            .saturating_add(column.len())
+            .saturating_add(where_clause.len())
+            .saturating_add(limit_clause.len());
+        let remaining = MAX_SQL_QUERY_BYTES.saturating_sub(fixed_sql_bytes);
+        if new_cell_val
+            .bounded_sql_literal_len_for(driver, remaining)
+            .is_none()
+        {
             self.pending_notification = Some(
-                Notification::error("结果集缺少定位键列，已取消修改；请重新查询该表")
-                    .autohide(true),
+                Notification::error("UPDATE 生成的 SQL 超过 4 MiB 安全上限，请缩短单元格内容")
+                    .autohide(false),
             );
             cx.notify();
             return false;
-        };
-        let new_literal = escape_new_value_for_old(&cell_val, &new_text, driver);
-        let limit_clause = dml_row_limit(driver);
+        }
+        let new_literal = new_cell_val.to_sql_literal_for(driver);
         let sql = format!(
-            "UPDATE {table_ref} SET {} = {new_literal} WHERE {where_clause}{limit_clause};",
-            driver.quote_identifier(&col_name),
+            "UPDATE {table_ref} SET {column} = {new_literal} WHERE {where_clause}{limit_clause};",
         );
-        let new_cell_val = build_new_value(&cell_val, &new_text);
         let q = Query::new(sql);
+        if !self.guard_generated_query(&q, cx) {
+            return false;
+        }
 
         let result_revision = self.result_revision;
         self.dml_busy = true;

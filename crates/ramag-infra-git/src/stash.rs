@@ -2,12 +2,15 @@
 
 use std::path::Path;
 
-use ramag_domain::entities::{CommitId, Stash, StashId};
+use ramag_domain::entities::{CommitId, MAX_GIT_STASH_MESSAGE_BYTES, Stash, StashId};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_text};
 
 pub fn save(repo_path: &Path, message: Option<&str>, include_untracked: bool) -> Result<()> {
+    if let Some(message) = message {
+        validate_message(message)?;
+    }
     let mut args: Vec<&str> = vec!["stash", "push"];
     if include_untracked {
         args.push("-u");
@@ -17,6 +20,16 @@ pub fn save(repo_path: &Path, message: Option<&str>, include_untracked: bool) ->
         args.push(m);
     }
     run_git_bytes(repo_path, &args).map(|_| ())
+}
+
+pub(crate) fn validate_message(message: &str) -> Result<()> {
+    if message.len() > MAX_GIT_STASH_MESSAGE_BYTES || message.contains('\0') {
+        return Err(DomainError::InvalidConfig(format!(
+            "stash 说明超过 {} KiB 上限或包含 NUL 字符",
+            MAX_GIT_STASH_MESSAGE_BYTES / 1024
+        )));
+    }
+    Ok(())
 }
 
 /// pop=true 应用后删除
@@ -105,5 +118,12 @@ mod tests {
         assert!(parse_stash_output("stash@{x}|abc123|1700000000|bad").is_err());
         assert!(parse_stash_output("stash@{0}|abc123|bad-time|bad").is_err());
         assert!(parse_stash_output("incomplete").is_err());
+    }
+
+    #[test]
+    fn stash_message_has_explicit_argument_boundary() {
+        assert!(validate_message(&"m".repeat(MAX_GIT_STASH_MESSAGE_BYTES)).is_ok());
+        assert!(validate_message(&"m".repeat(MAX_GIT_STASH_MESSAGE_BYTES + 1)).is_err());
+        assert!(validate_message("bad\0message").is_err());
     }
 }

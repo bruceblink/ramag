@@ -10,7 +10,7 @@ use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
 
 use super::helpers::futures_join;
-use super::{COLLECTION_PAGE_SIZE, KeyDetailEvent, KeyDetailPanel};
+use super::{COLLECTION_PAGE_SIZE, KeyDetailEvent, KeyDetailPanel, MAX_COLLECTION_ITEMS};
 
 impl KeyDetailPanel {
     /// 加载某 key 的值（由 Session 在收到 KeyTreeEvent::Selected 时调用）。
@@ -23,6 +23,8 @@ impl KeyDetailPanel {
         let Some(config) = self.config.clone() else {
             return;
         };
+        self.request_seq = self.request_seq.wrapping_add(1);
+        let request_seq = self.request_seq;
         self.key = Some(key.clone());
         if preserve_value {
             self.loading_more = true;
@@ -30,12 +32,14 @@ impl KeyDetailPanel {
             self.value = None;
             self.ttl_ms = None;
             self.collection_total = None;
+            self.value_byte_limited = false;
             self.loading = true;
         }
         self.ttl_loading = true;
         self.ttl_error = None;
         self.error = None;
         self.key_size_bytes = None;
+        self.estimating_size = false;
         self.size_error = None;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
@@ -51,7 +55,9 @@ impl KeyDetailPanel {
             )
             .await;
             let _ = this.update(cx, |this, cx| {
-                if !this.request_is_current(&config, db, &key) || this.collection_limit != limit {
+                if !this.load_request_is_current(&config, db, &key, request_seq)
+                    || this.collection_limit != limit
+                {
                     return;
                 }
                 this.loading = false;
@@ -61,6 +67,7 @@ impl KeyDetailPanel {
                     Ok(load) => {
                         this.value = Some(load.value);
                         this.collection_total = load.total;
+                        this.value_byte_limited = load.byte_limited;
                     }
                     Err(error) => {
                         error!(error = %error, "load key value failed");
@@ -70,7 +77,7 @@ impl KeyDetailPanel {
                                 .as_ref()
                                 .and_then(RedisValue::len)
                                 .unwrap_or(COLLECTION_PAGE_SIZE)
-                                .max(COLLECTION_PAGE_SIZE);
+                                .clamp(COLLECTION_PAGE_SIZE, MAX_COLLECTION_ITEMS);
                             this.pending_notification = Some(
                                 Notification::error(format!("继续加载失败：{error}"))
                                     .autohide(true),
@@ -108,6 +115,7 @@ impl KeyDetailPanel {
         };
         self.ttl_loading = true;
         self.ttl_error = None;
+        let request_seq = self.request_seq;
         cx.notify();
 
         let service = self.service.clone();
@@ -115,7 +123,7 @@ impl KeyDetailPanel {
         cx.spawn(async move |this, cx| {
             let result = service.key_ttl(&config, db, &key).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.request_is_current(&config, db, &key) {
+                if !this.load_request_is_current(&config, db, &key, request_seq) {
                     return;
                 }
                 this.ttl_loading = false;
@@ -180,13 +188,13 @@ impl KeyDetailPanel {
     }
 
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.loading || self.loading_more || !self.has_more() {
+        if self.loading || self.loading_more || !self.can_load_more() {
             return;
         }
         let Some(key) = self.key.clone() else {
             return;
         };
-        self.collection_limit = self.collection_limit.saturating_add(COLLECTION_PAGE_SIZE);
+        self.collection_limit = next_collection_limit(self.collection_limit);
         self.load_key_with_limit(key, true, cx);
     }
 
@@ -198,6 +206,10 @@ impl KeyDetailPanel {
             (Some(loaded), Some(total)) => (loaded as u64) < total,
             _ => false,
         }
+    }
+
+    pub(super) fn can_load_more(&self) -> bool {
+        self.has_more() && !self.value_byte_limited && self.collection_limit < MAX_COLLECTION_ITEMS
     }
 
     pub(super) fn scalar_is_truncated(&self) -> bool {
@@ -226,6 +238,9 @@ impl KeyDetailPanel {
     }
 
     pub(super) fn estimate_size(&mut self, cx: &mut Context<Self>) {
+        if self.estimating_size {
+            return;
+        }
         let Some(config) = self.config.clone() else {
             return;
         };
@@ -238,11 +253,12 @@ impl KeyDetailPanel {
 
         let service = self.service.clone();
         let db = self.db;
+        let request_seq = self.request_seq;
         cx.spawn(async move |this, cx| {
             let arguments = vec!["MEMORY".into(), "USAGE".into(), key.clone()];
             let result = service.execute_command(&config, db, arguments).await;
             let _ = this.update(cx, |this, cx| {
-                if !this.request_is_current(&config, db, &key) {
+                if !this.load_request_is_current(&config, db, &key, request_seq) {
                     return;
                 }
                 this.estimating_size = false;
@@ -454,6 +470,41 @@ impl KeyDetailPanel {
         self.key.as_deref() == Some(key)
             && self.db == db
             && self.config.as_ref().map(|current| &current.id) == Some(&config.id)
+    }
+
+    fn load_request_is_current(
+        &self,
+        config: &ramag_domain::entities::ConnectionConfig,
+        db: u8,
+        key: &str,
+        request_seq: u64,
+    ) -> bool {
+        self.request_seq == request_seq && self.request_is_current(config, db, key)
+    }
+}
+
+fn next_collection_limit(current: usize) -> usize {
+    current
+        .saturating_add(COLLECTION_PAGE_SIZE)
+        .min(MAX_COLLECTION_ITEMS)
+}
+
+#[cfg(test)]
+mod collection_limit_tests {
+    use super::{MAX_COLLECTION_ITEMS, next_collection_limit};
+
+    #[test]
+    fn collection_limit_grows_by_page_and_stops_at_safety_cap() {
+        assert_eq!(next_collection_limit(2_000), 4_000);
+        assert_eq!(
+            next_collection_limit(MAX_COLLECTION_ITEMS - 1),
+            MAX_COLLECTION_ITEMS
+        );
+        assert_eq!(
+            next_collection_limit(MAX_COLLECTION_ITEMS),
+            MAX_COLLECTION_ITEMS
+        );
+        assert_eq!(next_collection_limit(usize::MAX), MAX_COLLECTION_ITEMS);
     }
 }
 

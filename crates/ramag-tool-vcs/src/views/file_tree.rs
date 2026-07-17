@@ -6,8 +6,13 @@ use ramag_domain::entities::FileStatus;
 
 /// 树节点：目录 / 文件
 pub(super) enum Node {
-    Dir(BTreeMap<String, Node>),
-    File { idx: usize },
+    Dir {
+        children: BTreeMap<String, Node>,
+        file_count: usize,
+    },
+    File {
+        idx: usize,
+    },
 }
 
 /// 扁平化后的一行（uniform_list 数据单元，强制等高）
@@ -28,10 +33,25 @@ pub(super) enum Row {
 
 /// 把扁平 file 列表构建成嵌套目录树（按 / 分割路径）
 pub(super) fn build_tree(files: &[FileStatus]) -> BTreeMap<String, Node> {
-    let mut root: BTreeMap<String, Node> = BTreeMap::new();
-    for (idx, f) in files.iter().enumerate() {
-        insert_path(&mut root, &f.path, idx);
+    let mut root = BTreeMap::new();
+    for (idx, file) in files.iter().enumerate() {
+        insert_path(&mut root, &file.path, idx);
     }
+    populate_file_counts(&mut root);
+    root
+}
+
+pub(super) fn build_tree_for_indices(
+    files: &[FileStatus],
+    indices: &[usize],
+) -> BTreeMap<String, Node> {
+    let mut root: BTreeMap<String, Node> = BTreeMap::new();
+    for &idx in indices {
+        if let Some(file) = files.get(idx) {
+            insert_path(&mut root, &file.path, idx);
+        }
+    }
+    populate_file_counts(&mut root);
     root
 }
 
@@ -45,12 +65,33 @@ fn insert_path(map: &mut BTreeMap<String, Node>, path: &str, idx: usize) {
         }
         let entry = current
             .entry(part.to_string())
-            .or_insert_with(|| Node::Dir(BTreeMap::new()));
-        let Node::Dir(children) = entry else {
+            .or_insert_with(|| Node::Dir {
+                children: BTreeMap::new(),
+                file_count: 0,
+            });
+        let Node::Dir { children, .. } = entry else {
             return;
         };
         current = children;
     }
+}
+
+/// 构树后单次后序遍历缓存子树文件数，避免扁平化时为每个目录重复扫描整棵子树。
+fn populate_file_counts(map: &mut BTreeMap<String, Node>) -> usize {
+    let mut total = 0usize;
+    for node in map.values_mut() {
+        total = total.saturating_add(match node {
+            Node::Dir {
+                children,
+                file_count,
+            } => {
+                *file_count = populate_file_counts(children);
+                *file_count
+            }
+            Node::File { .. } => 1,
+        });
+    }
+    total
 }
 
 /// 扁平化树：dir 自动压缩单链中间目录（IDEA compact middle packages）
@@ -61,15 +102,18 @@ pub(super) fn flatten(
     collapsed: &HashSet<String>,
     out: &mut Vec<Row>,
 ) {
-    let mut dirs: Vec<(String, &BTreeMap<String, Node>)> = Vec::new();
+    let mut dirs: Vec<(String, &BTreeMap<String, Node>, usize)> = Vec::new();
     let mut files: Vec<(String, usize)> = Vec::new();
     for (name, node) in map {
         match node {
-            Node::Dir(children) => dirs.push((name.clone(), children)),
+            Node::Dir {
+                children,
+                file_count,
+            } => dirs.push((name.clone(), children, *file_count)),
             Node::File { idx } => files.push((name.clone(), *idx)),
         }
     }
-    for (name, children) in dirs {
+    for (name, children, file_count) in dirs {
         let mut display = name.clone();
         let mut full = if prefix.is_empty() {
             name.clone()
@@ -78,7 +122,14 @@ pub(super) fn flatten(
         };
         let mut cur = children;
         while cur.len() == 1 {
-            let Some((only_name, Node::Dir(grandchildren))) = cur.iter().next() else {
+            let Some((
+                only_name,
+                Node::Dir {
+                    children: grandchildren,
+                    ..
+                },
+            )) = cur.iter().next()
+            else {
                 break;
             };
             display = format!("{display}/{only_name}");
@@ -86,7 +137,6 @@ pub(super) fn flatten(
             cur = grandchildren;
         }
         let is_collapsed = collapsed.contains(&full);
-        let file_count = count_files(cur);
         out.push(Row::Dir {
             display_name: display,
             dir_path: full.clone(),
@@ -101,17 +151,6 @@ pub(super) fn flatten(
     for (_name, idx) in files {
         out.push(Row::File { idx, depth });
     }
-}
-
-fn count_files(map: &BTreeMap<String, Node>) -> usize {
-    let mut total = 0;
-    for node in map.values() {
-        match node {
-            Node::Dir(children) => total += count_files(children),
-            Node::File { .. } => total += 1,
-        }
-    }
-    total
 }
 
 #[cfg(test)]
@@ -140,5 +179,37 @@ mod tests {
 
         assert_eq!(rows.len(), 2);
         assert!(matches!(rows[1], Row::File { idx: 0, .. }));
+    }
+
+    #[test]
+    fn directory_file_counts_are_computed_once_during_build() {
+        let files = ["src/a.rs", "src/nested/b.rs", "tests/test.rs"]
+            .into_iter()
+            .map(|path| FileStatus {
+                path: path.to_string(),
+                old_path: None,
+                staged: Some(FileChangeKind::Added),
+                unstaged: None,
+            })
+            .collect::<Vec<_>>();
+
+        let tree = build_tree(&files);
+        let mut rows = Vec::new();
+        flatten(&tree, 0, "", &HashSet::new(), &mut rows);
+
+        let counts = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Dir {
+                    display_name,
+                    file_count,
+                    ..
+                } => Some((display_name.as_str(), *file_count)),
+                Row::File { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(counts.contains(&("src", 2)));
+        assert!(counts.contains(&("nested", 1)));
+        assert!(counts.contains(&("tests", 1)));
     }
 }

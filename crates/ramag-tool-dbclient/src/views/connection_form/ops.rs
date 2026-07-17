@@ -166,7 +166,7 @@ impl ConnectionFormPanel {
         // SSH 与 TLS 允许同开（分别保护跳板段与后段链路）；经隧道后主机名校验必败，
         // driver 层自动降级验证等级（MySQL/PG Full→Ca；Redis/Mongo 仅加密），表单有提示
 
-        Ok(ConnectionConfig {
+        let config = ConnectionConfig {
             id,
             name,
             driver,
@@ -176,14 +176,16 @@ impl ConnectionFormPanel {
             password,
             database,
             auth_source,
-            remark: None,
+            remark: self.remark.clone(),
             production: self.production,
             tls: self.tls,
             tls_verify: self.tls_verify,
             ca_cert_path,
             ssh_target,
             ssh_port,
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// 渲染 driver 选择器：按钮横排，仅可用 driver 可点

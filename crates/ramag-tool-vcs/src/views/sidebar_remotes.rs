@@ -104,7 +104,7 @@ pub(super) fn remote_row(
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(fg)
-                        .child(name.clone()),
+                        .child(super::inline_text_preview(&name, 120)),
                 )
                 .child(
                     div()
@@ -115,7 +115,7 @@ pub(super) fn remote_row(
                         .text_xs()
                         .font_family(mono)
                         .text_color(muted_fg)
-                        .child(url.clone()),
+                        .child(super::inline_text_preview(&url, 240)),
                 ),
         )
         .child(

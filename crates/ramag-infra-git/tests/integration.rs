@@ -146,6 +146,44 @@ fn unstage_and_discard() {
 }
 
 #[test]
+fn pathspec_stdin_treats_special_file_names_literally() {
+    let (driver, id, tmp) = setup();
+    let mut names = vec!["-leading.txt", "!literal.txt"];
+    #[cfg(unix)]
+    names.extend([":(glob)*.txt", "line\nbreak.txt"]);
+
+    for name in &names {
+        write(tmp.path(), name, "base\n");
+    }
+    let paths = names
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    block_on(driver.stage(&id, &paths)).expect("特殊文件名应按字面量暂存");
+    let staged = block_on(driver.status(&id)).unwrap();
+    assert!(names.iter().all(|name| {
+        staged
+            .files
+            .iter()
+            .any(|file| file.path == *name && file.staged.is_some())
+    }));
+
+    block_on(driver.unstage(&id, &paths)).expect("特殊文件名应按字面量撤回暂存");
+    block_on(driver.stage(&id, &paths)).unwrap();
+    block_on(driver.commit(&id, "special paths", false, false)).unwrap();
+    for name in &names {
+        write(tmp.path(), name, "changed\n");
+    }
+    block_on(driver.discard(&id, &paths)).expect("特殊文件名应按字面量丢弃改动");
+    for name in &names {
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(name)).unwrap(),
+            "base\n"
+        );
+    }
+}
+
+#[test]
 fn unstage_before_first_commit_keeps_worktree_file() {
     let (driver, id, tmp) = setup();
     write(tmp.path(), "first.txt", "draft\n");
@@ -248,9 +286,17 @@ fn branch_checkout_merge() {
     commit_file(&driver, &id, tmp.path(), "b.txt", "feat\n", "feat commit");
 
     block_on(driver.checkout(&id, &main)).unwrap();
-    block_on(driver.merge(&id, "feature", true, false, None)).unwrap();
+    block_on(driver.merge(
+        &id,
+        "feature",
+        true,
+        false,
+        Some("merge feature\n\nfrom stdin"),
+    ))
+    .unwrap();
 
     let log = block_on(driver.log(&id, LogOptions::default())).unwrap();
+    assert_eq!(log[0].subject, "merge feature");
     assert!(
         log.iter().any(|c| c.subject == "feat commit"),
         "merge 后历史应含 feature commit"

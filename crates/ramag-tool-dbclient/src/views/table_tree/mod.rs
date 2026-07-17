@@ -19,6 +19,9 @@ use tracing::error;
 use self::row::TreeRowsCacheEntry;
 use crate::sql_completion::{SchemaCache, is_system_schema};
 
+const MAX_LOADED_SCHEMA_TABLES: usize = 64;
+const MAX_EXPANDED_TABLE_COLUMNS: usize = 32;
+
 pub struct TableTreePanel {
     pub(super) service: Arc<ConnectionService>,
     pub(super) connection: Option<ConnectionConfig>,
@@ -35,8 +38,8 @@ pub struct TableTreePanel {
     pub(super) metadata_generation: u64,
     pub(super) table_request_generation: u64,
     pub(super) column_request_generation: u64,
-    /// 已展开的表 → 列状态（key 为 "schema.table"）
-    pub(super) table_columns: HashMap<String, TableColumns>,
+    /// 已展开的表 → 列状态
+    pub(super) table_columns: HashMap<(String, String), TableColumns>,
     pub(super) selected: Option<(String, String)>,
     /// 是否显示系统库（默认隐藏）
     pub(super) show_system: bool,
@@ -117,7 +120,7 @@ impl TableTreePanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let search = cx.new(|cx| {
-            InputState::new(window, cx)
+            ramag_ui::bounded_search_input(window, cx)
                 .placeholder("搜索 schema / table")
                 .clean_on_escape()
         });
@@ -281,14 +284,28 @@ impl TableTreePanel {
         const AUTO_LOAD_MAX_SCHEMAS: usize = 50;
         if self.search.read(cx).value().trim().is_empty() {
             self.cancel_full_search(cx);
+            let before = self.expanded.len();
+            self.expanded
+                .retain(|schema, _| self.open_schemas.contains(schema));
+            self.table_columns
+                .retain(|(schema, _), _| self.open_schemas.contains(schema));
+            if self.expanded.len() != before {
+                self.invalidate_tree_rows();
+            }
             return;
         }
-        if self.schemas.len() > AUTO_LOAD_MAX_SCHEMAS {
+        let searchable_schemas = self
+            .schemas
+            .iter()
+            .filter(|schema| self.show_system || !is_system_schema(&schema.name))
+            .count();
+        if searchable_schemas > AUTO_LOAD_MAX_SCHEMAS {
             return;
         }
         let missing: Vec<String> = self
             .schemas
             .iter()
+            .filter(|schema| self.show_system || !is_system_schema(&schema.name))
             .map(|s| s.name.clone())
             .filter(|n| !self.expanded.contains_key(n))
             .collect();
@@ -334,6 +351,7 @@ impl TableTreePanel {
         let missing: Vec<String> = self
             .schemas
             .iter()
+            .filter(|schema| self.show_system || !is_system_schema(&schema.name))
             .map(|schema| schema.name.clone())
             .filter(|name| {
                 self.expanded
@@ -341,6 +359,20 @@ impl TableTreePanel {
                     .is_none_or(|entry| entry.error.is_some())
             })
             .collect();
+        let new_entries = missing
+            .iter()
+            .filter(|schema| !self.expanded.contains_key(*schema))
+            .count();
+        if self.expanded.len().saturating_add(new_entries) > MAX_LOADED_SCHEMA_TABLES {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(format!(
+                    "全库搜索最多加载 {MAX_LOADED_SCHEMA_TABLES} 个 schema；请先选择具体 schema，或缩小数据库范围"
+                ))
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
         if missing.is_empty() {
             return;
         }
@@ -358,6 +390,14 @@ impl TableTreePanel {
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
             for schema in missing {
+                let cache_generation = this
+                    .update(cx, |this, _| {
+                        this.schema_cache.write().begin_table_refresh(&schema)
+                    })
+                    .unwrap_or(0);
+                if cache_generation == 0 {
+                    break;
+                }
                 let result = service.list_tables(&conn, &schema).await;
                 let should_continue = this
                     .update(cx, |this, cx| {
@@ -367,6 +407,9 @@ impl TableTreePanel {
                                 .full_search
                                 .is_some_and(|progress| progress.generation == generation);
                         if !is_current {
+                            this.schema_cache
+                                .write()
+                                .cancel_table_refresh(&schema, cache_generation);
                             return false;
                         }
 
@@ -380,13 +423,19 @@ impl TableTreePanel {
                                     .filter(|table| table.is_view)
                                     .map(|table| table.name.clone())
                                     .collect();
-                                let mut cache = this.schema_cache.write();
-                                cache.tables.insert(schema.clone(), names);
-                                cache.views.insert(schema.clone(), views);
+                                this.schema_cache.write().finish_table_refresh(
+                                    schema.clone(),
+                                    cache_generation,
+                                    names,
+                                    views,
+                                );
                                 entry.tables = tables;
                                 entry.error = None;
                             }
                             Err(err) => {
+                                this.schema_cache
+                                    .write()
+                                    .cancel_table_refresh(&schema, cache_generation);
                                 error!(error = %err, schema = %schema, "list tables for full search failed");
                                 entry.error = Some(err.to_string());
                                 if let Some(progress) = this.full_search.as_mut() {
@@ -425,6 +474,33 @@ impl TableTreePanel {
 
     /// （重新）拉取某 schema 的表列表；entry 不存在则插入（展开态保持不变）
     pub(super) fn load_tables_for(&mut self, schema_name: String, cx: &mut Context<Self>) {
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        if !self.expanded.contains_key(&schema_name) {
+            while self.expanded.len() >= MAX_LOADED_SCHEMA_TABLES {
+                let evict = self
+                    .expanded
+                    .keys()
+                    .find(|schema| {
+                        !self.open_schemas.contains(*schema)
+                            && self.active_schema.as_ref() != Some(*schema)
+                    })
+                    .cloned();
+                let Some(evict) = evict else {
+                    self.pending_notification = Some(
+                        gpui_component::notification::Notification::warning(format!(
+                            "最多同时保留 {MAX_LOADED_SCHEMA_TABLES} 个 schema 的表列表，请先收起不再使用的 schema"
+                        ))
+                        .autohide(true),
+                    );
+                    cx.notify();
+                    return;
+                };
+                self.expanded.remove(&evict);
+                self.table_columns.retain(|(schema, _), _| schema != &evict);
+            }
+        }
         self.table_request_generation = self.table_request_generation.wrapping_add(1);
         let request_generation = self.table_request_generation;
         let entry = self.expanded.entry(schema_name.clone()).or_default();
@@ -434,12 +510,13 @@ impl TableTreePanel {
         self.invalidate_tree_rows();
         cx.notify();
 
-        let Some(conn) = self.connection.clone() else {
-            return;
-        };
         let svc = self.service.clone();
         let schema_for_async = schema_name.clone();
         let metadata_generation = self.metadata_generation;
+        let cache_generation = self
+            .schema_cache
+            .write()
+            .begin_table_refresh(&schema_for_async);
         cx.spawn(async move |this, cx| {
             let result = svc.list_tables(&conn, &schema_for_async).await;
             let _ = this.update(cx, |this, cx| {
@@ -450,6 +527,9 @@ impl TableTreePanel {
                         .get(&schema_for_async)
                         .is_some_and(|entry| entry.request_generation == request_generation);
                 if !is_current {
+                    this.schema_cache
+                        .write()
+                        .cancel_table_refresh(&schema_for_async, cache_generation);
                     return;
                 }
                 match result {
@@ -460,11 +540,12 @@ impl TableTreePanel {
                             .filter(|t| t.is_view)
                             .map(|t| t.name.clone())
                             .collect();
-                        {
-                            let mut cache = this.schema_cache.write();
-                            cache.tables.insert(schema_for_async.clone(), names);
-                            cache.views.insert(schema_for_async.clone(), view_set);
-                        }
+                        this.schema_cache.write().finish_table_refresh(
+                            schema_for_async.clone(),
+                            cache_generation,
+                            names,
+                            view_set,
+                        );
                         let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
                             return;
                         };
@@ -473,6 +554,9 @@ impl TableTreePanel {
                         entry.error = None;
                     }
                     Err(e) => {
+                        this.schema_cache
+                            .write()
+                            .cancel_table_refresh(&schema_for_async, cache_generation);
                         error!(error = %e, schema = %schema_for_async, "list tables failed");
                         let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
                             return;
@@ -527,12 +611,26 @@ impl TableTreePanel {
         table: String,
         cx: &mut Context<Self>,
     ) {
-        let key = format!("{schema}.{table}");
+        let key = (schema.clone(), table.clone());
         if self.table_columns.remove(&key).is_some() {
             self.invalidate_tree_rows();
             cx.notify();
             return;
         }
+        if self.table_columns.len() >= MAX_EXPANDED_TABLE_COLUMNS {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(format!(
+                    "最多同时展开 {MAX_EXPANDED_TABLE_COLUMNS} 个表的列结构，请先收起不再查看的表"
+                ))
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
+
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
 
         self.column_request_generation = self.column_request_generation.wrapping_add(1);
         let request_generation = self.column_request_generation;
@@ -547,9 +645,6 @@ impl TableTreePanel {
         self.invalidate_tree_rows();
         cx.notify();
 
-        let Some(conn) = self.connection.clone() else {
-            return;
-        };
         let svc = self.service.clone();
         let schema_async = schema.clone();
         let table_async = table.clone();
@@ -577,10 +672,10 @@ impl TableTreePanel {
                     Ok(cols) => {
                         let col_names: Vec<String> =
                             cols.iter().map(|c| c.name.clone()).collect();
-                        this.schema_cache
-                            .write()
-                            .columns
-                            .insert((schema_async.clone(), table_async.clone()), col_names);
+                        this.schema_cache.write().cache_columns(
+                            (schema_async.clone(), table_async.clone()),
+                            col_names,
+                        );
                         entry.columns = cols;
                     }
                     Err(e) => {

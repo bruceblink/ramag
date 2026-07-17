@@ -81,17 +81,43 @@ fn extract_tables_deduplicates_repeated_references() {
 }
 
 #[test]
+fn extracted_table_references_are_bounded() {
+    let sql = (0..=MAX_EXTRACTED_TABLE_REFERENCES)
+        .map(|index| {
+            if index == 0 {
+                format!("SELECT * FROM table_{index}")
+            } else {
+                format!(" JOIN table_{index}")
+            }
+        })
+        .collect::<String>();
+
+    let tables = extract_tables_in_use_for_prefetch(&sql);
+
+    assert_eq!(tables.len(), MAX_EXTRACTED_TABLE_REFERENCES);
+    assert_eq!(
+        tables.last(),
+        Some(&(
+            None,
+            format!("table_{}", MAX_EXTRACTED_TABLE_REFERENCES - 1)
+        ))
+    );
+}
+
+#[test]
 fn cache_default_schema_first() {
-    let mut c = SchemaCache {
-        default_schema: Some("midas".to_string()),
-        ..Default::default()
-    };
-    c.tables.insert(
+    let mut c = SchemaCache::default();
+    c.default_schema = Some("midas".to_string());
+    c.cache_tables(
         "midas".to_string(),
         vec!["users".to_string(), "orders".to_string()],
+        std::collections::HashSet::new(),
     );
-    c.tables
-        .insert("logs".to_string(), vec!["events".to_string()]);
+    c.cache_tables(
+        "logs".to_string(),
+        vec!["events".to_string()],
+        std::collections::HashSet::new(),
+    );
     let all = c.all_tables();
     // 默认 schema 的表必须排在前面
     assert!(all.iter().position(|x| x == "users") < all.iter().position(|x| x == "events"));
@@ -162,6 +188,23 @@ fn phrase_prefix_multiword() {
     // 空输入 + offset 越界（自动收敛到末尾）
     assert_eq!(phrase_prefix("", 0), "");
     assert_eq!(phrase_prefix("USE", 99), "USE");
+}
+
+#[test]
+fn ascii_prefix_matching_avoids_candidate_lowercase_allocations() {
+    assert!(starts_with_ascii_case_insensitive("UserName", "user"));
+    assert!(starts_with_ascii_case_insensitive("users", "users"));
+    assert!(!starts_with_ascii_case_insensitive("ÜBER", "uber"));
+    assert!(!starts_with_ascii_case_insensitive("id", "identifier"));
+}
+
+#[test]
+fn column_filter_matching_supports_unicode_case_folding() {
+    let mut already = std::collections::HashSet::new();
+    assert!(column_filter_matches("ÜBER列", "über", &already));
+
+    already.insert("über列".to_string());
+    assert!(!column_filter_matches("ÜBER列", "über", &already));
 }
 
 #[test]

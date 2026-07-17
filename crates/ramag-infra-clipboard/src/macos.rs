@@ -103,6 +103,10 @@ impl ClipboardDriver for MacClipboardDriver {
         self.media.remove(path)
     }
 
+    fn clear_media(&self) -> Result<()> {
+        self.media.clear()
+    }
+
     fn accessibility_trusted(&self, prompt: bool) -> bool {
         paste::accessibility_trusted(prompt)
     }

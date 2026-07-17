@@ -10,7 +10,7 @@ pub mod types;
 use async_trait::async_trait;
 
 use ramag_domain::entities::{
-    Column, ConnectionConfig, ForeignKey, Index, Schema, Table, Value, Warning,
+    Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema, Table, Value, Warning,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::CancelHandle;
@@ -38,6 +38,10 @@ impl SqlBackend for MysqlDriver {
 
     fn name(&self) -> &'static str {
         "mysql"
+    }
+
+    fn driver_kind(&self) -> DriverKind {
+        DriverKind::Mysql
     }
 
     fn cache(&self) -> &PoolCache<Self::Db> {

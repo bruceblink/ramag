@@ -8,12 +8,16 @@ use gpui::{
     Styled, Window, div, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, h_flex};
+use ramag_domain::entities::{MAX_MONGO_FIELD_PATH_BYTES, validate_mongo_field_path};
 use serde_json::Value;
 
 use super::ResultPanel;
 use super::cell::{Cell, cell_for_value};
+use crate::views::{estimated_json_value_bytes, inline_text_preview};
 
 const MAX_DRILL_DOCUMENTS: usize = 50_000;
+const MAX_DRILL_LEVELS: usize = 32;
+const MAX_DRILL_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 
 /// 下钻栈一层：label 用于面包屑显示，documents 为该层文档
 pub(crate) struct DrillLevel {
@@ -25,6 +29,8 @@ pub(crate) struct DrillLevel {
     pub path_prefix: String,
     /// 本层能否回写编辑：对象下钻=true，数组下钻=false（丢了元素下标）
     pub editable: bool,
+    /// 本层为下钻额外克隆的近似内存；根层共享查询结果，不计入预算。
+    pub owned_bytes: usize,
     /// 祖先 (对象名, id) 链（根→直接父，本层常量）：作前导列展示，列名即对象名（面包屑里的层级名）
     pub ancestors: Vec<(String, Cell)>,
 }
@@ -59,11 +65,12 @@ impl ResultPanel {
     /// 重置下钻栈为顶层（新查询时由 set_result 调）
     pub(crate) fn reset_drill(&mut self, label: String, documents: Arc<Vec<Value>>) {
         self.drill_stack = vec![DrillLevel {
-            label,
+            label: inline_text_preview(&label, 96),
             documents,
             parent_id: None,
             path_prefix: String::new(),
             editable: false,
+            owned_bytes: 0,
             ancestors: Vec::new(),
         }];
     }
@@ -73,24 +80,24 @@ impl ResultPanel {
     pub(crate) fn drill_into(
         &mut self,
         field: String,
+        source_row_idx: usize,
         row_id: Option<Value>,
         row_ident: Option<Value>,
-        value: Value,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 对象下钻可回写（顶层 _id + dotted path 定位）；数组下钻丢了元素下标，保持只读
-        let editable = matches!(value, Value::Object(_));
-        if matches!(&value, Value::Array(items) if items.len() > MAX_DRILL_DOCUMENTS) {
-            self.pending_notification = Some(
-                gpui_component::notification::Notification::warning(format!(
-                    "数组包含超过 {MAX_DRILL_DOCUMENTS} 个元素，请先在查询中缩小范围"
-                ))
-                .autohide(true),
-            );
-            cx.notify();
-            return;
-        }
+        let (value, owned_bytes) = match self.prepare_drill_value(source_row_idx, &field) {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => return,
+            Err(message) => {
+                self.pending_notification = Some(
+                    gpui_component::notification::Notification::warning(message).autohide(true),
+                );
+                cx.notify();
+                return;
+            }
+        };
+        let value_is_object = matches!(value, Value::Object(_));
         let documents = Arc::new(match value {
             Value::Array(arr) => arr,
             Value::Object(_) => vec![value],
@@ -106,20 +113,69 @@ impl ResultPanel {
             ancestors.push((from_label, cell_for_value(ident)));
         }
         let prefix = top.map(|l| l.path_prefix.clone()).unwrap_or_default();
-        let path_prefix = if prefix.is_empty() {
-            field.clone()
-        } else {
-            format!("{prefix}.{field}")
-        };
+        let path_prefix = next_editable_path(
+            self.drill_stack.len() == 1,
+            top.is_some_and(|level| level.editable),
+            &prefix,
+            &field,
+            value_is_object,
+        );
         self.drill_stack.push(DrillLevel {
-            label: field,
+            label: inline_text_preview(&field, 96),
             documents,
             parent_id,
-            path_prefix,
-            editable,
+            editable: path_prefix.is_some(),
+            path_prefix: path_prefix.unwrap_or_default(),
+            owned_bytes,
             ancestors,
         });
         self.apply_top_level(window, cx);
+    }
+
+    fn prepare_drill_value(
+        &self,
+        source_row_idx: usize,
+        field: &str,
+    ) -> Result<Option<(Value, usize)>, String> {
+        if self.drill_stack.len() >= MAX_DRILL_LEVELS {
+            return Err(format!(
+                "嵌套下钻已达到 {MAX_DRILL_LEVELS} 层上限，请返回上层后继续查看"
+            ));
+        }
+        let Some(value) = self
+            .docs_arc
+            .as_ref()
+            .and_then(|documents| documents.get(source_row_idx))
+            .and_then(|document| {
+                if field == "_value" && !document.is_object() {
+                    Some(document)
+                } else {
+                    document.get(field)
+                }
+            })
+        else {
+            return Ok(None);
+        };
+        if !matches!(value, Value::Object(_) | Value::Array(_)) {
+            return Ok(None);
+        }
+        if matches!(value, Value::Array(items) if items.len() > MAX_DRILL_DOCUMENTS) {
+            return Err(format!(
+                "数组包含超过 {MAX_DRILL_DOCUMENTS} 个元素，请先在查询中缩小范围"
+            ));
+        }
+
+        let owned_bytes = estimated_json_value_bytes(value);
+        let current_bytes = self.drill_stack.iter().fold(0usize, |total, level| {
+            total.saturating_add(level.owned_bytes)
+        });
+        if current_bytes.saturating_add(owned_bytes) > MAX_DRILL_RETAINED_BYTES {
+            return Err(format!(
+                "嵌套内容超过 {} MiB 下钻内存上限，请缩小查询结果",
+                MAX_DRILL_RETAINED_BYTES / 1024 / 1024
+            ));
+        }
+        Ok(Some((value.clone(), owned_bytes)))
     }
 
     /// 点面包屑第 index 层 → 截断栈并恢复该层
@@ -174,7 +230,7 @@ impl ResultPanel {
             if i > 0 {
                 bar = bar.child(div().text_color(muted).child(SharedString::from("›")));
             }
-            let label = SharedString::from(level.label.clone());
+            let label = SharedString::from(inline_text_preview(&level.label, 96));
             if i == last {
                 bar = bar.child(
                     div()
@@ -203,5 +259,46 @@ impl ResultPanel {
         } else {
             bar.child(div().text_color(muted).child(SharedString::from("只读")))
         }
+    }
+}
+
+fn next_editable_path(
+    parent_is_root: bool,
+    parent_editable: bool,
+    prefix: &str,
+    field: &str,
+    value_is_object: bool,
+) -> Option<String> {
+    if !value_is_object || (!parent_is_root && !parent_editable) {
+        return None;
+    }
+    let bytes = prefix
+        .len()
+        .checked_add(usize::from(!prefix.is_empty()))?
+        .checked_add(field.len())?;
+    if bytes > MAX_MONGO_FIELD_PATH_BYTES {
+        return None;
+    }
+    let path = if prefix.is_empty() {
+        field.to_string()
+    } else {
+        format!("{prefix}.{field}")
+    };
+    validate_mongo_field_path(&path).ok()?;
+    Some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_path_does_not_recover_after_read_only_array_level() {
+        assert_eq!(
+            next_editable_path(true, false, "", "profile", true).as_deref(),
+            Some("profile")
+        );
+        assert_eq!(next_editable_path(true, false, "", "items", false), None);
+        assert_eq!(next_editable_path(false, false, "", "nested", true), None);
     }
 }

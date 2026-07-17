@@ -83,18 +83,20 @@ pub fn persist_resizable_sizes<V: 'static>(
                     return;
                 }
             };
+            if restored_for_load.swap(true, Ordering::Relaxed) {
+                return;
+            }
             *pending_for_load.lock() = Some(sizes.clone());
             let _ = cx.update(|window, cx| {
-                if state_for_restore.read(cx).sizes().len() == sizes.len()
-                    && !sizes.is_empty()
-                    && !restored_for_load.swap(true, Ordering::Relaxed)
-                {
+                if state_for_restore.read(cx).sizes().len() == sizes.len() && !sizes.is_empty() {
                     state_for_restore.update(cx, |state, cx| {
                         for (index, size) in sizes.iter().enumerate() {
                             // 上游 API 会按各 panel 的 size_range 和容器尺寸二次 clamp。
                             state.resize_panel(index, px(*size), window, cx);
                         }
                     });
+                } else {
+                    restored_for_load.store(false, Ordering::Relaxed);
                 }
             });
         })
@@ -103,6 +105,7 @@ pub fn persist_resizable_sizes<V: 'static>(
 
     // —— 落盘：Resized（拖动中逐次发）→ 代际防抖，停顿后才写 ——
     let generation = Arc::new(AtomicU64::new(0));
+    let write_lock = Arc::new(futures::lock::Mutex::new(()));
     let pending_for_persist = pending_restore.clone();
     let restored_for_persist = restored_for_presence;
     cx.subscribe_in(
@@ -112,8 +115,9 @@ pub fn persist_resizable_sizes<V: 'static>(
             let Some(storage) = crate::theme::storage_from_cx(cx) else {
                 return;
             };
-            let my_gen = generation.fetch_add(1, Ordering::Relaxed) + 1;
+            let my_gen = generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             let generation = generation.clone();
+            let write_lock = write_lock.clone();
             let sizes: Vec<f32> = state
                 .read(cx)
                 .sizes()
@@ -131,6 +135,10 @@ pub fn persist_resizable_sizes<V: 'static>(
                     let Ok(json) = serde_json::to_string(&sizes) else {
                         return;
                     };
+                    let _guard = write_lock.lock().await;
+                    if generation.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
                     if let Err(e) = storage.set_preference(pref_key, &json).await {
                         tracing::warn!(error = %e, pref_key, "persist panel sizes failed");
                     }

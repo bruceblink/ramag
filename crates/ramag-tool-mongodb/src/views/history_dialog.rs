@@ -63,7 +63,7 @@ impl MongoHistoryList {
         cx: &mut Context<Self>,
     ) -> Self {
         let search = cx.new(|cx| {
-            InputState::new(window, cx)
+            ramag_ui::bounded_search_input(window, cx)
                 .placeholder("搜索命令 / 错误内容")
                 .clean_on_escape()
         });
@@ -185,7 +185,7 @@ impl MongoHistoryList {
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
-        let meta = match rec.status {
+        let mut meta = match rec.status {
             QueryStatus::Success => {
                 format!("{} · {} 行 · {} ms", when_text, rec.rows, rec.elapsed_ms)
             }
@@ -195,6 +195,13 @@ impl MongoHistoryList {
                 compact_text_preview(rec.error.as_deref().unwrap_or("未知错误"), ERROR_MAX_CHARS,)
             ),
         };
+        if rec.sql_truncated {
+            meta.push_str(" · 历史正文已截断");
+        }
+        if rec.error_truncated {
+            meta.push_str(" · 错误详情已截断");
+        }
+        let sql_truncated = rec.sql_truncated;
         let rec_for_copy = rec.clone();
         let rec_for_fill = rec.clone();
         let rec_for_run = rec.clone();
@@ -248,6 +255,12 @@ impl MongoHistoryList {
                             .ghost()
                             .xsmall()
                             .label("复制")
+                            .tooltip(if sql_truncated {
+                                "历史正文不完整，已禁止复制"
+                            } else {
+                                "复制命令到剪贴板"
+                            })
+                            .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     rec_for_copy.sql.clone(),
@@ -263,6 +276,12 @@ impl MongoHistoryList {
                             .ghost()
                             .xsmall()
                             .label("填入编辑器")
+                            .tooltip(if sql_truncated {
+                                "历史正文不完整，无法安全填入编辑器"
+                            } else {
+                                "填入当前命令编辑器（不执行）"
+                            })
+                            .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(MongoHistoryEvent::FillEditor(rec_for_fill.sql.clone()));
                             })),
@@ -272,7 +291,12 @@ impl MongoHistoryList {
                             .ghost()
                             .xsmall()
                             .label("重跑")
-                            .tooltip("填入编辑器并立即执行（失败记录亦可重试）")
+                            .tooltip(if sql_truncated {
+                                "历史正文不完整，无法安全重跑"
+                            } else {
+                                "填入编辑器并立即执行（失败记录亦可重试）"
+                            })
+                            .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(MongoHistoryEvent::RunCommand(rec_for_run.sql.clone()));
                             })),

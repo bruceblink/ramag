@@ -1,7 +1,9 @@
 //! SQL 补全：实现 gpui-component CompletionProvider。
 //! 覆盖关键字 / 表名 / 列名 / 点号限定（`表.列`、`库.表`）补全
 
-use std::collections::{HashMap, HashSet};
+mod cache;
+
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -14,67 +16,13 @@ use lsp_types::{
     Documentation, InsertReplaceEdit, MarkupContent, MarkupKind,
 };
 use parking_lot::RwLock;
+use ramag_domain::entities::contains_case_insensitive;
 use ropey::Rope;
 
-/// Schema 元数据缓存：表 / 视图 / 列 / schema 列表，供补全与视图判定共用。
-/// 把这个 Arc 传给 SqlCompletionProvider；后续即使重建编辑器也读同一份。
-#[derive(Default)]
-pub struct SchemaCache {
-    /// schema → 表名列表
-    pub tables: HashMap<String, Vec<String>>,
-    /// schema → 视图名集合（包括普通视图 / 物化视图 / SYSTEM VIEW）
-    /// 由 TableTreePanel 在 list_tables 时按 Table::is_view 提取写入；
-    /// result_panel 用它判断当前查询的目标表是否视图，从而禁用写操作按钮
-    pub views: HashMap<String, std::collections::HashSet<String>>,
-    /// (schema, table) → 列名列表
-    /// 由 QueryTab 编辑器变化时按 FROM/JOIN 用到的表预拉；列名补全 + 点号限定补全读取
-    pub columns: HashMap<(String, String), Vec<String>>,
-    /// 正在拉取列结构的表；避免连续输入或多个 Tab 对同一表重复发请求。
-    pub loading_columns: HashSet<(String, String)>,
-    /// 默认 schema（连接配置里的 database 字段）
-    pub default_schema: Option<String>,
-    /// 当前连接已知的所有 schema 名（不论是否展开）
-    /// 由 TableTreePanel 在 list_schemas 成功后写入；DB 下拉读取
-    pub all_schemas: Vec<String>,
-    /// 表树侧"显示系统库"toggle 的当前状态
-    /// 默认 false（隐藏）；DB 下拉读取此值决定是否展示系统库
-    pub show_system: bool,
-}
+pub use cache::SchemaCache;
 
-impl SchemaCache {
-    /// 判断 schema.table 是否视图（不区分大小写匹配）。schema 为 None 时不判断，返回 false
-    pub fn is_view(&self, schema: Option<&str>, table: &str) -> bool {
-        let Some(s) = schema else {
-            return false;
-        };
-        match self.views.get(s) {
-            Some(set) => set.iter().any(|v| v.eq_ignore_ascii_case(table)),
-            None => false,
-        }
-    }
-}
-
-impl SchemaCache {
-    pub fn new_shared() -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self::default()))
-    }
-
-    /// 取所有可补全的表名（默认 schema 优先，其余次之）
-    pub fn all_tables(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if let Some(d) = &self.default_schema
-            && let Some(ts) = self.tables.get(d)
-        {
-            out.extend(ts.iter().cloned());
-        }
-        for (s, ts) in &self.tables {
-            if Some(s) != self.default_schema.as_ref() {
-                out.extend(ts.iter().cloned());
-            }
-        }
-        out
-    }
-}
+/// 单次补全 / 预拉最多跟踪这些不同表，避免异常长 SQL 发起大量元数据请求。
+const MAX_EXTRACTED_TABLE_REFERENCES: usize = 128;
 
 /// SQL 上下文：根据光标前的最后一个关键字猜测应补全什么
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +88,22 @@ fn phrase_prefix(text: &str, offset: usize) -> &str {
     text[s..off].trim_start()
 }
 
+fn starts_with_ascii_case_insensitive(value: &str, prefix_lower: &str) -> bool {
+    value
+        .as_bytes()
+        .get(..prefix_lower.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix_lower.as_bytes()))
+}
+
+fn column_filter_matches(
+    name: &str,
+    prefix_lower: &str,
+    already: &std::collections::HashSet<String>,
+) -> bool {
+    contains_case_insensitive(name, prefix_lower)
+        && (already.is_empty() || !already.contains(&name.to_lowercase()))
+}
+
 /// 公开版本：让 QueryTab 编辑器变化时可以预拉这些表的列结构
 /// 返回 (schema_可选, table) 对，schema 来自 `db.table` 这种全限定形式
 pub fn extract_tables_in_use_for_prefetch(sql: &str) -> Vec<(Option<String>, String)> {
@@ -195,6 +159,9 @@ fn extract_tables_with_schema(sql: &str) -> Vec<(Option<String>, String)> {
         };
         if seen.insert(table.clone()) {
             tables.push(table);
+            if tables.len() >= MAX_EXTRACTED_TABLE_REFERENCES {
+                break;
+            }
         }
     }
     tables
@@ -301,7 +268,7 @@ impl SqlCompletionProvider {
                     continue;
                 }
                 for col in cols {
-                    if col.to_ascii_lowercase().starts_with(prefix_lower) {
+                    if starts_with_ascii_case_insensitive(col, prefix_lower) {
                         let doc = format!("**{col}**\n\nColumn · in **{schema}.{t}**");
                         items.push(make_item(
                             col.clone(),
@@ -324,7 +291,7 @@ impl SqlCompletionProvider {
                 continue;
             }
             for t in ts {
-                if t.to_ascii_lowercase().starts_with(prefix_lower) {
+                if starts_with_ascii_case_insensitive(t, prefix_lower) {
                     let doc = format!("**{t}**\n\nTable · schema **{s}**");
                     items.push(make_item(
                         t.clone(),
@@ -405,44 +372,46 @@ impl CompletionProvider for SqlCompletionProvider {
             SqlContext::Table => {
                 let cache = self.cache.read();
                 let default_schema = cache.default_schema.clone();
-                // 默认 schema 的表先入队，其他 schema 在后；保留 schema 上下文
-                let mut order: Vec<(&String, &String)> = Vec::new();
+                // 默认 schema 先直接遍历；达到候选上限后不再扫描其余大缓存。
                 if let Some(d) = default_schema.as_ref()
                     && let Some(ts) = cache.tables.get(d)
                 {
-                    for t in ts {
-                        order.push((d, t));
-                    }
-                }
-                for (s, ts) in cache.tables.iter() {
-                    if Some(s) == default_schema.as_ref() {
-                        continue;
-                    }
-                    for t in ts {
-                        order.push((s, t));
-                    }
-                }
-                for (schema, name) in order {
-                    if name.to_ascii_lowercase().starts_with(&prefix_lower) {
-                        // 不用反引号 inline code（上游 markdown 渲染会染成饱和蓝块）；
-                        // 用粗体名字 + 普通文本归属，配色更柔和
-                        let doc = format!(
-                            "**{name}**\n\nTable · schema **{schema}**{default_marker}",
-                            default_marker = if Some(schema) == default_schema.as_ref() {
-                                "（默认库）"
-                            } else {
-                                ""
+                    for name in ts {
+                        if starts_with_ascii_case_insensitive(name, &prefix_lower) {
+                            let doc = format!("**{name}**\n\nTable · schema **{d}**（默认库）");
+                            items.push(make_item(
+                                name.clone(),
+                                CompletionItemKind::CLASS,
+                                Some("table"),
+                                Some(doc),
+                                replace_range,
+                            ));
+                            if items.len() >= 30 {
+                                break;
                             }
-                        );
-                        items.push(make_item(
-                            name.clone(),
-                            CompletionItemKind::CLASS,
-                            Some("table"),
-                            Some(doc),
-                            replace_range,
-                        ));
-                        if items.len() >= 30 {
-                            break;
+                        }
+                    }
+                }
+                if items.len() < 30 {
+                    'schemas: for (schema, tables) in &cache.tables {
+                        if Some(schema) == default_schema.as_ref() {
+                            continue;
+                        }
+                        for name in tables {
+                            if starts_with_ascii_case_insensitive(name, &prefix_lower) {
+                                // 不用反引号 inline code（上游 markdown 渲染会染成饱和蓝块）。
+                                let doc = format!("**{name}**\n\nTable · schema **{schema}**");
+                                items.push(make_item(
+                                    name.clone(),
+                                    CompletionItemKind::CLASS,
+                                    Some("table"),
+                                    Some(doc),
+                                    replace_range,
+                                ));
+                                if items.len() >= 30 {
+                                    break 'schemas;
+                                }
+                            }
                         }
                     }
                 }
@@ -452,28 +421,28 @@ impl CompletionProvider for SqlCompletionProvider {
                 let tables_in_use = extract_tables_in_use(&text);
                 let cache = self.cache.read();
                 let mut seen = std::collections::HashSet::new();
-                for table_name in &tables_in_use {
+                'tables: for table_name in &tables_in_use {
                     for ((schema, t), cols) in cache.columns.iter() {
                         if !t.eq_ignore_ascii_case(table_name) {
                             continue;
                         }
                         for col in cols {
-                            if !seen.insert(col.clone()) {
+                            if !starts_with_ascii_case_insensitive(col, &prefix_lower)
+                                || !seen.insert(col.clone())
+                            {
                                 continue;
                             }
-                            if col.to_ascii_lowercase().starts_with(&prefix_lower) {
-                                // 同表名补全：避免反引号 inline code 染成蓝块
-                                let doc = format!("**{col}**\n\nColumn · in **{schema}.{t}**");
-                                items.push(make_item(
-                                    col.clone(),
-                                    CompletionItemKind::FIELD,
-                                    Some("column"),
-                                    Some(doc),
-                                    replace_range,
-                                ));
-                                if items.len() >= 30 {
-                                    break;
-                                }
+                            // 同表名补全：避免反引号 inline code 染成蓝块
+                            let doc = format!("**{col}**\n\nColumn · in **{schema}.{t}**");
+                            items.push(make_item(
+                                col.clone(),
+                                CompletionItemKind::FIELD,
+                                Some("column"),
+                                Some(doc),
+                                replace_range,
+                            ));
+                            if items.len() >= 30 {
+                                break 'tables;
                             }
                         }
                     }
@@ -559,7 +528,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
     ) -> Task<Result<CompletionResponse>> {
         let text = rope.to_string();
         let bytes = text.as_bytes();
-        let real_offset = offset.min(bytes.len());
+        let real_offset = rope.floor_char_boundary(offset.min(bytes.len()));
 
         // 找当前 token 起点：从光标向前扫到最近的逗号（或文本起点）
         let mut tok_start = real_offset;
@@ -567,14 +536,14 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
             tok_start -= 1;
         }
         // 跳过前导空格
-        while tok_start < real_offset && bytes[tok_start] == b' ' {
+        while tok_start < real_offset && bytes[tok_start].is_ascii_whitespace() {
             tok_start += 1;
         }
         let prefix = &text[tok_start..real_offset];
         if prefix.is_empty() {
             return Task::ready(Ok(CompletionResponse::Array(vec![])));
         }
-        let prefix_lower = prefix.to_ascii_lowercase();
+        let prefix_lower = prefix.to_lowercase();
 
         let start_pos = rope.offset_to_position(tok_start);
         let end_pos = rope.offset_to_position(real_offset);
@@ -583,19 +552,15 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         // 已经填进过滤框的列（其它 token）不再建议，避免重复
         let already: std::collections::HashSet<String> = text
             .split(',')
-            .map(|t| t.trim().to_ascii_lowercase())
+            .map(|t| t.trim().to_lowercase())
             .filter(|s| !s.is_empty() && *s != prefix_lower)
             .collect();
 
         let cols = self.columns.read();
         let mut items: Vec<CompletionItem> = Vec::new();
         for name in cols.iter() {
-            let lc = name.to_ascii_lowercase();
             // 子串匹配（与表格过滤逻辑一致：大小写不敏感 contains）
-            if !lc.contains(&prefix_lower) {
-                continue;
-            }
-            if already.contains(&lc) {
+            if !column_filter_matches(name, &prefix_lower, &already) {
                 continue;
             }
             items.push(make_item(

@@ -21,13 +21,14 @@ use gpui_component::{
     scroll::ScrollableElement as _, v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::{ConnectionConfig, RedisValue};
+use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COLLECTION_ITEMS, RedisValue};
 
 use helpers::render_value;
 
 use crate::views::value_display::ViewMode;
 
-const COLLECTION_PAGE_SIZE: usize = 10_000;
+const COLLECTION_PAGE_SIZE: usize = 2_000;
+const MAX_COLLECTION_ITEMS: usize = MAX_REDIS_COLLECTION_ITEMS;
 
 #[derive(Debug, Clone)]
 pub enum KeyDetailEvent {
@@ -95,6 +96,8 @@ pub struct KeyDetailPanel {
     pub(super) ttl_error: Option<String>,
     /// 加载状态
     loading: bool,
+    /// 详情读取代际；同一 key 的旧值/TTL/大小回包也不能覆盖较新的刷新。
+    request_seq: u64,
     error: Option<String>,
     /// 写操作的 toast（只读拦截 / 删除失败等，render 时 push，不覆盖内容区）
     pending_notification: Option<Notification>,
@@ -105,6 +108,8 @@ pub struct KeyDetailPanel {
     pub(super) size_error: Option<String>,
     /// 集合服务端总数；None 表示标量或尚未加载。
     pub(super) collection_total: Option<u64>,
+    /// 多批集合读取因累计内容字节预算只保留了安全前缀。
+    pub(super) value_byte_limited: bool,
     collection_limit: usize,
     pub(super) loading_more: bool,
     /// 标量值视图模式：None=按内容自动（JSON 美化 / Raw），Some=用户手动选定
@@ -146,11 +151,13 @@ impl KeyDetailPanel {
             ttl_loading: false,
             ttl_error: None,
             loading: false,
+            request_seq: 0,
             error: None,
             pending_notification: None,
             key_size_bytes: None,
             size_error: None,
             collection_total: None,
+            value_byte_limited: false,
             collection_limit: COLLECTION_PAGE_SIZE,
             loading_more: false,
             value_view_mode: None,
@@ -167,6 +174,7 @@ impl KeyDetailPanel {
         db: u8,
         cx: &mut Context<Self>,
     ) {
+        self.request_seq = self.request_seq.wrapping_add(1);
         self.config = config;
         self.db = db;
         self.key = None;
@@ -180,6 +188,7 @@ impl KeyDetailPanel {
         self.estimating_size = false;
         self.size_error = None;
         self.collection_total = None;
+        self.value_byte_limited = false;
         self.collection_limit = COLLECTION_PAGE_SIZE;
         self.loading_more = false;
         self.value_view_mode = None;
@@ -194,6 +203,7 @@ impl KeyDetailPanel {
 
     /// 清空当前展示（恢复"未选中 Key"占位态）
     pub fn clear_key(&mut self, cx: &mut Context<Self>) {
+        self.request_seq = self.request_seq.wrapping_add(1);
         self.key = None;
         self.value = None;
         self.ttl_ms = None;
@@ -205,6 +215,7 @@ impl KeyDetailPanel {
         self.estimating_size = false;
         self.size_error = None;
         self.collection_total = None;
+        self.value_byte_limited = false;
         self.collection_limit = COLLECTION_PAGE_SIZE;
         self.loading_more = false;
         self.value_view_mode = None;

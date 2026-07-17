@@ -256,7 +256,7 @@ impl VcsView {
         }
         self.loading_history = true;
         // 请求代际：换搜索词/刷新后才返回的旧回包据此丢弃，避免乱序覆盖新结果
-        self.history_request_seq += 1;
+        self.history_request_seq = self.history_request_seq.wrapping_add(1);
         let request_seq = self.history_request_seq;
         cx.notify();
 

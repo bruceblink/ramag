@@ -29,7 +29,7 @@ pub struct Column {
 #[derive(Debug, Clone, Default)]
 pub struct FlatTable {
     pub columns: Vec<Column>,
-    /// 截断前发现的联合列总数；大于 columns.len() 表示表格矩阵按资源预算裁剪。
+    /// 大于 columns.len() 表示表格矩阵按资源预算裁剪；超限时该值是已知下界。
     pub total_columns: usize,
     /// 每行 = 列对齐的 cell 字符串（缺字段填空字符串，kind=null）
     pub rows: Vec<Vec<Cell>>,
@@ -103,39 +103,37 @@ fn build_flat_table(docs: &[Value]) -> FlatTable {
 
 /// 带展开路径的扁平化：expanded 里的对象路径递归展开成 `父.子` 子列（array 不展开，仍走 unwind）
 pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> FlatTable {
-    // 1) 扁平化每条文档
-    let flat_rows: Vec<BTreeMap<String, Cell>> =
-        docs.iter().map(|d| flatten_doc(d, expanded)).collect();
-
-    // 2) 列发现 + 类型推断
+    let column_limit = table_column_limit(docs.len());
     let mut col_seen: HashSet<String> = HashSet::new();
     let mut col_order: Vec<String> = Vec::new();
     let mut col_kinds: HashMap<String, &'static str> = HashMap::new();
-    for row in &flat_rows {
-        for (k, v) in row {
-            if col_seen.insert(k.clone()) {
-                col_order.push(k.clone());
-            }
-            // 取首个非 null kind 作为该列类型
-            col_kinds.entry(k.clone()).or_insert(v.kind);
-            if let Some(existing) = col_kinds.get_mut(k)
-                && *existing == "null"
-                && v.kind != "null"
-            {
-                *existing = v.kind;
-            }
-        }
-    }
+    let mut columns_truncated = false;
+    // 列名达到最终矩阵上限后，不再为其构造 Cell / map entry，避免宽文档先制造巨大中间表。
+    let flat_rows: Vec<BTreeMap<String, Cell>> = docs
+        .iter()
+        .map(|document| {
+            flatten_doc_bounded(
+                document,
+                expanded,
+                column_limit,
+                &mut col_seen,
+                &mut col_order,
+                &mut col_kinds,
+                &mut columns_truncated,
+            )
+        })
+        .collect();
 
-    // 3) 排序：_id 优先；其它按插入顺序
+    // 2) 排序：_id 优先；其它按插入顺序
     col_order.sort_by(|a, b| match (a.as_str(), b.as_str()) {
         ("_id", _) => std::cmp::Ordering::Less,
         (_, "_id") => std::cmp::Ordering::Greater,
         _ => std::cmp::Ordering::Equal,
     });
 
-    let total_columns = col_order.len();
-    col_order.truncate(table_column_limit(docs.len()));
+    let total_columns = col_order
+        .len()
+        .saturating_add(usize::from(columns_truncated));
     let columns: Vec<Column> = col_order
         .iter()
         .map(|p| Column {
@@ -144,7 +142,7 @@ pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> Fla
         })
         .collect();
 
-    // 4) 行 → 列对齐
+    // 3) 行 → 列对齐
     let empty_cell = Cell {
         text: String::new(),
         kind: "null",
@@ -171,13 +169,41 @@ fn table_column_limit(row_count: usize) -> usize {
     MAX_TABLE_COLUMNS.min(cell_limited.max(1))
 }
 
-/// 扁平化单文档：默认只解析第一层；expanded 含某对象路径则递归展开成 dotted-path 子列
-fn flatten_doc(v: &Value, expanded: &BTreeSet<String>) -> BTreeMap<String, Cell> {
+/// 扁平化单文档：只为最终可展示的列构造 Cell；其余字段仅标记“存在截断”。
+#[allow(clippy::too_many_arguments)]
+fn flatten_doc_bounded(
+    value: &Value,
+    expanded: &BTreeSet<String>,
+    column_limit: usize,
+    col_seen: &mut HashSet<String>,
+    col_order: &mut Vec<String>,
+    col_kinds: &mut HashMap<String, &'static str>,
+    columns_truncated: &mut bool,
+) -> BTreeMap<String, Cell> {
     let mut out = BTreeMap::new();
-    match v {
-        Value::Object(map) => flatten_into(map, "", expanded, &mut out),
+    match value {
+        Value::Object(map) => flatten_into_bounded(
+            map,
+            "",
+            expanded,
+            column_limit,
+            col_seen,
+            col_order,
+            col_kinds,
+            columns_truncated,
+            &mut out,
+        ),
         _ => {
-            out.insert("_value".to_string(), cell_for_value(v));
+            insert_bounded_cell(
+                "_value".to_string(),
+                value,
+                column_limit,
+                col_seen,
+                col_order,
+                col_kinds,
+                columns_truncated,
+                &mut out,
+            );
         }
     }
     out
@@ -185,27 +211,120 @@ fn flatten_doc(v: &Value, expanded: &BTreeSet<String>) -> BTreeMap<String, Cell>
 
 /// 递归展开：path 在 expanded 且值为普通对象（排除 $oid 等 ExtJSON 包装）→ 展开成 path.child 子列；
 /// 否则该字段作为单列（嵌套对象仍出 `{N 字段}` 摘要）。prefix 空表示顶层
-fn flatten_into(
+#[allow(clippy::too_many_arguments)]
+fn flatten_into_bounded(
     map: &serde_json::Map<String, Value>,
     prefix: &str,
     expanded: &BTreeSet<String>,
+    column_limit: usize,
+    col_seen: &mut HashSet<String>,
+    col_order: &mut Vec<String>,
+    col_kinds: &mut HashMap<String, &'static str>,
+    columns_truncated: &mut bool,
     out: &mut BTreeMap<String, Cell>,
 ) {
+    if prefix.is_empty()
+        && let Some(value) = map.get("_id")
+    {
+        flatten_value_bounded(
+            "_id".to_string(),
+            value,
+            expanded,
+            column_limit,
+            col_seen,
+            col_order,
+            col_kinds,
+            columns_truncated,
+            out,
+        );
+    }
     for (k, vv) in map {
+        if prefix.is_empty() && k == "_id" {
+            continue;
+        }
         let path = if prefix.is_empty() {
             k.clone()
         } else {
             format!("{prefix}.{k}")
         };
-        match vv {
-            Value::Object(child) if expanded.contains(&path) && extjson_cell(child).is_none() => {
-                flatten_into(child, &path, expanded, out);
-            }
-            _ => {
-                out.insert(path, cell_for_value(vv));
-            }
-        }
+        flatten_value_bounded(
+            path,
+            vv,
+            expanded,
+            column_limit,
+            col_seen,
+            col_order,
+            col_kinds,
+            columns_truncated,
+            out,
+        );
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flatten_value_bounded(
+    path: String,
+    value: &Value,
+    expanded: &BTreeSet<String>,
+    column_limit: usize,
+    col_seen: &mut HashSet<String>,
+    col_order: &mut Vec<String>,
+    col_kinds: &mut HashMap<String, &'static str>,
+    columns_truncated: &mut bool,
+    out: &mut BTreeMap<String, Cell>,
+) {
+    match value {
+        Value::Object(child) if expanded.contains(&path) && extjson_cell(child).is_none() => {
+            flatten_into_bounded(
+                child,
+                &path,
+                expanded,
+                column_limit,
+                col_seen,
+                col_order,
+                col_kinds,
+                columns_truncated,
+                out,
+            );
+        }
+        _ => insert_bounded_cell(
+            path,
+            value,
+            column_limit,
+            col_seen,
+            col_order,
+            col_kinds,
+            columns_truncated,
+            out,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_bounded_cell(
+    path: String,
+    value: &Value,
+    column_limit: usize,
+    col_seen: &mut HashSet<String>,
+    col_order: &mut Vec<String>,
+    col_kinds: &mut HashMap<String, &'static str>,
+    columns_truncated: &mut bool,
+    out: &mut BTreeMap<String, Cell>,
+) {
+    if !col_seen.contains(&path) {
+        if col_seen.len() >= column_limit {
+            *columns_truncated = true;
+            return;
+        }
+        col_seen.insert(path.clone());
+        col_order.push(path.clone());
+    }
+    let cell = cell_for_value(value);
+    let kind = col_kinds.entry(path.clone()).or_insert(cell.kind);
+    if *kind == "null" && cell.kind != "null" {
+        *kind = cell.kind;
+    }
+    out.insert(path, cell);
 }
 
 /// 收集过滤列补全候选：顶层字段 + 嵌套对象的 dotted 子字段路径（到 max_depth 层）。
@@ -279,6 +398,22 @@ mod tests {
         assert_eq!(table.columns.len(), MAX_TABLE_COLUMNS);
         assert_eq!(table.rows.len(), docs.len());
         assert_eq!(table_column_limit(50_000), 40);
+    }
+
+    #[test]
+    fn wide_document_is_bounded_before_building_the_row_matrix() {
+        let mut document = serde_json::Map::new();
+        for index in 0..(MAX_TABLE_COLUMNS + 100) {
+            document.insert(format!("field_{index}"), json!(index));
+        }
+        document.insert("_id".to_string(), json!("primary"));
+
+        let table = build_flat_table(&[Value::Object(document)]);
+
+        assert_eq!(table.columns.len(), MAX_TABLE_COLUMNS);
+        assert_eq!(table.rows[0].len(), MAX_TABLE_COLUMNS);
+        assert_eq!(table.columns[0].path, "_id");
+        assert!(table.total_columns > table.columns.len());
     }
 
     #[test]

@@ -39,7 +39,8 @@ impl VcsView {
                             let date = b.timestamp.format("%Y-%m-%d");
                             this.inline_blame_text = Some(SharedString::from(format!(
                                 "L{line_no}　{short}　·　{}　·　{date}　·　{}",
-                                b.author, b.subject
+                                super::super::inline_text_preview(&b.author, 40),
+                                super::super::inline_text_preview(&b.subject, 160)
                             )));
                         } else {
                             this.inline_blame_text =

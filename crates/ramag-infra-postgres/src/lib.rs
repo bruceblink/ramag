@@ -9,7 +9,9 @@ pub mod types;
 
 use async_trait::async_trait;
 
-use ramag_domain::entities::{Column, ConnectionConfig, ForeignKey, Index, Schema, Table, Value};
+use ramag_domain::entities::{
+    Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema, Table, Value,
+};
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::CancelHandle;
 use ramag_infra_sql_shared::PoolCache;
@@ -36,6 +38,10 @@ impl SqlBackend for PostgresDriver {
 
     fn name(&self) -> &'static str {
         "postgres"
+    }
+
+    fn driver_kind(&self) -> DriverKind {
+        DriverKind::Postgres
     }
 
     fn cache(&self) -> &PoolCache<Self::Db> {

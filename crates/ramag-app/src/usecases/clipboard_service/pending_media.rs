@@ -20,7 +20,10 @@ struct PendingMediaDelete {
 impl PendingMediaDeletes {
     /// 返回本次删除的唯一代际，避免“撤销后再次删除”被上一次的旧计时器提前清理。
     pub(super) fn stage(&self, id: ClipId, paths: Vec<String>) -> u64 {
-        let token = self.next_token.fetch_add(1, Ordering::Relaxed) + 1;
+        let token = self
+            .next_token
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         self.items
             .lock()
             .insert(id, PendingMediaDelete { token, paths });
@@ -48,5 +51,29 @@ impl PendingMediaDeletes {
             return None;
         }
         items.remove(id).map(|pending| pending.paths)
+    }
+
+    pub(super) fn contains_path(&self, path: &str) -> bool {
+        self.items
+            .lock()
+            .values()
+            .any(|pending| pending.paths.iter().any(|candidate| candidate == path))
+    }
+
+    /// 新记录复用了撤销窗口内的同名媒体时，保留待恢复条目但移除物理删除路径。
+    pub(super) fn protect_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) {
+        let protected: std::collections::HashSet<&str> = paths.into_iter().collect();
+        if protected.is_empty() {
+            return;
+        }
+        for pending in self.items.lock().values_mut() {
+            pending
+                .paths
+                .retain(|path| !protected.contains(path.as_str()));
+        }
+    }
+
+    pub(super) fn clear(&self) {
+        self.items.lock().clear();
     }
 }

@@ -141,6 +141,7 @@ impl MongoQueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.draft_load_pending = false;
         let has_draft = self
             .tabs
             .get(self.active)
@@ -180,6 +181,7 @@ impl MongoQueryPanel {
             );
             return false;
         }
+        self.draft_load_pending = false;
         // 找出未使用的最小编号（与 dbclient::QueryPanel 同款策略）
         let title = self.next_tab_title();
         let tab = self.build_tab(conf, window, cx);
@@ -317,6 +319,7 @@ impl MongoQueryPanel {
         if idx >= self.tabs.len() {
             return;
         }
+        self.draft_load_pending = false;
         if let Some(tab) = self.tabs.get(idx) {
             tab.update(cx, |tab, cx| tab.cancel_if_running(cx));
         }
@@ -344,6 +347,7 @@ impl MongoQueryPanel {
 
     pub fn select_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         if idx < self.tabs.len() && self.active != idx {
+            self.draft_load_pending = false;
             self.active = idx;
             self.focus_active_editor(window, cx);
             self.schedule_draft_persist(cx);
@@ -358,6 +362,7 @@ impl MongoQueryPanel {
     /// 把示例命令写入当前激活 Tab 的编辑器（整体替换）；没 Tab 时先建一个。
     /// 有手写草稿时另开 Tab，不覆盖（防丢稿）
     fn apply_example(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_load_pending = false;
         let has_draft = self
             .tabs
             .get(self.active)

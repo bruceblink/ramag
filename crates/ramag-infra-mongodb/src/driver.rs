@@ -2,8 +2,10 @@
 
 use async_trait::async_trait;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, MongoCollection, MongoCollectionStats, MongoDatabase,
-    MongoDocument, MongoIndex, MongoQueryResult, MongoQuerySpec,
+    ConnectionConfig, ConnectionId, DriverKind, MongoCollection, MongoCollectionStats,
+    MongoDatabase, MongoDocument, MongoIndex, MongoQueryResult, MongoQuerySpec,
+    validate_mongo_collection_name, validate_mongo_database_name, validate_mongo_document,
+    validate_mongo_pipeline,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::DocDriver;
@@ -33,6 +35,35 @@ impl Default for MongoDriver {
     }
 }
 
+fn ensure_mongo_config(config: &ConnectionConfig) -> Result<()> {
+    config.validate().map_err(DomainError::InvalidConfig)?;
+    if config.driver != DriverKind::Mongodb {
+        return Err(DomainError::InvalidConfig(format!(
+            "MongoDriver 不支持 {:?} 类型连接",
+            config.driver
+        )));
+    }
+    Ok(())
+}
+
+fn validate_namespace(db: &str, coll: Option<&str>) -> Result<()> {
+    validate_mongo_database_name(db)?;
+    if let Some(coll) = coll {
+        validate_mongo_collection_name(coll)?;
+        let namespace_bytes = db
+            .len()
+            .checked_add(1)
+            .and_then(|bytes| bytes.checked_add(coll.len()))
+            .ok_or_else(|| DomainError::InvalidConfig("MongoDB namespace 长度溢出".into()))?;
+        if namespace_bytes > 255 {
+            return Err(DomainError::InvalidConfig(
+                "MongoDB database.collection 超过 255 bytes namespace 上限".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl DocDriver for MongoDriver {
     fn name(&self) -> &'static str {
@@ -40,6 +71,7 @@ impl DocDriver for MongoDriver {
     }
 
     async fn test_connection(&self, config: &ConnectionConfig) -> Result<()> {
+        ensure_mongo_config(config)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         run_in_tokio(async move {
@@ -50,6 +82,7 @@ impl DocDriver for MongoDriver {
     }
 
     async fn server_version(&self, config: &ConnectionConfig) -> Result<String> {
+        ensure_mongo_config(config)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         run_in_tokio(async move {
@@ -60,6 +93,7 @@ impl DocDriver for MongoDriver {
     }
 
     async fn list_databases(&self, config: &ConnectionConfig) -> Result<Vec<MongoDatabase>> {
+        ensure_mongo_config(config)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         run_in_tokio(async move {
@@ -74,6 +108,8 @@ impl DocDriver for MongoDriver {
         config: &ConnectionConfig,
         db: &str,
     ) -> Result<Vec<MongoCollection>> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, None)?;
         let config = config.clone();
         let db = db.to_string();
         let pools = self.pools.clone_handle();
@@ -90,6 +126,8 @@ impl DocDriver for MongoDriver {
         db: &str,
         coll: &str,
     ) -> Result<Vec<MongoIndex>> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
         let config = config.clone();
         let db = db.to_string();
         let coll = coll.to_string();
@@ -107,6 +145,8 @@ impl DocDriver for MongoDriver {
         db: &str,
         coll: &str,
     ) -> Result<MongoCollectionStats> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
         let config = config.clone();
         let db = db.to_string();
         let coll = coll.to_string();
@@ -125,6 +165,9 @@ impl DocDriver for MongoDriver {
         coll: &str,
         spec: &MongoQuerySpec,
     ) -> Result<MongoQueryResult> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        spec.validate()?;
         let config = config.clone();
         let db = db.to_string();
         let coll = coll.to_string();
@@ -144,6 +187,11 @@ impl DocDriver for MongoDriver {
         coll: &str,
         filter: &MongoDocument,
     ) -> Result<u64> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        if !filter.is_null() {
+            validate_mongo_document(filter, "MongoDB count filter")?;
+        }
         let config = config.clone();
         let db = db.to_string();
         let coll = coll.to_string();
@@ -163,6 +211,9 @@ impl DocDriver for MongoDriver {
         coll: &str,
         pipeline: Vec<MongoDocument>,
     ) -> Result<MongoQueryResult> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        validate_mongo_pipeline(&pipeline)?;
         if config.production && pipeline_has_write_stage(&pipeline) {
             warn!(conn = %config.name, %db, %coll, "read-only mode: blocked aggregate $out/$merge");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
@@ -185,6 +236,9 @@ impl DocDriver for MongoDriver {
         coll: &str,
         document: MongoDocument,
     ) -> Result<String> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        validate_mongo_document(&document, "MongoDB insert document")?;
         if config.production {
             warn!(conn = %config.name, %db, %coll, "read-only mode: blocked insert");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
@@ -208,6 +262,10 @@ impl DocDriver for MongoDriver {
         filter: &MongoDocument,
         update: &MongoDocument,
     ) -> Result<MongoQueryResult> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        validate_mongo_document(filter, "MongoDB update filter")?;
+        validate_mongo_document(update, "MongoDB update document")?;
         if config.production {
             warn!(conn = %config.name, %db, %coll, "read-only mode: blocked update");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
@@ -232,6 +290,9 @@ impl DocDriver for MongoDriver {
         coll: &str,
         filter: &MongoDocument,
     ) -> Result<MongoQueryResult> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        validate_mongo_document(filter, "MongoDB delete filter")?;
         if config.production {
             warn!(conn = %config.name, %db, %coll, "read-only mode: blocked delete");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
@@ -254,6 +315,9 @@ impl DocDriver for MongoDriver {
         db: &str,
         command: MongoDocument,
     ) -> Result<MongoDocument> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, None)?;
+        validate_mongo_document(&command, "MongoDB command")?;
         if config.production && command_is_write(&command) {
             warn!(conn = %config.name, %db, "read-only mode: blocked write command");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
@@ -272,5 +336,18 @@ impl DocDriver for MongoDriver {
         self.pools.evict(id);
         // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
         ramag_infra_tunnel::evict(id);
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::validate_namespace;
+
+    #[test]
+    fn namespace_validation_runs_before_driver_clones_or_network() {
+        assert!(validate_namespace("app", Some("users")).is_ok());
+        assert!(validate_namespace("", Some("users")).is_err());
+        assert!(validate_namespace("app", Some("")).is_err());
+        assert!(validate_namespace("d", Some(&"c".repeat(254))).is_err());
     }
 }

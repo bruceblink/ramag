@@ -1,8 +1,7 @@
 //! Interactive rebase。plan：log onto..HEAD 全标 Pick；execute：用临时脚本作 GIT_SEQUENCE_EDITOR 注入 todo
 
 use std::fmt::Write as _;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ramag_domain::entities::{RebaseAction, RebaseTodo};
 use ramag_domain::error::{DomainError, Result};
@@ -10,6 +9,7 @@ use ramag_domain::error::{DomainError, Result};
 use crate::git_cmd::{
     MAX_GIT_RECORD_BYTES, command, ensure_git_record_size, run_command_output_limited, run_git_text,
 };
+use crate::temp_file::TempFile;
 
 const MAX_REBASE_TODOS: usize = 10_000;
 const MAX_REBASE_TODO_BYTES: usize = 4 * 1024 * 1024;
@@ -71,9 +71,6 @@ fn parse_plan_output(out: &str) -> Result<Vec<RebaseTodo>> {
 /// Git for Windows 自带 POSIX shell，Windows 上显式通过 `sh` 执行，无需可执行权限位。
 pub fn execute(repo_path: &Path, onto: &str, todos: &[RebaseTodo]) -> Result<()> {
     validate_revision_arg(onto)?;
-    if todos.is_empty() {
-        return Err(DomainError::InvalidConfig("rebase 计划不能为空".into()));
-    }
     let todo_content = build_todo_content(todos)?;
 
     let tmp_todo = TempFile::create("ramag_rebase", "txt", todo_content.as_bytes())?;
@@ -128,6 +125,26 @@ pub fn execute(repo_path: &Path, onto: &str, todos: &[RebaseTodo]) -> Result<()>
 }
 
 fn build_todo_content(todos: &[RebaseTodo]) -> Result<String> {
+    let capacity = validate_todos(todos)?;
+
+    let mut content = String::with_capacity(capacity);
+    for todo in todos {
+        writeln!(
+            content,
+            "{} {} {}",
+            todo.action.as_str(),
+            todo.short_hash(),
+            sanitize_todo_subject(&todo.subject)
+        )
+        .map_err(|error| DomainError::Other(format!("生成 rebase 计划失败：{error}")))?;
+    }
+    Ok(content)
+}
+
+pub(crate) fn validate_todos(todos: &[RebaseTodo]) -> Result<usize> {
+    if todos.is_empty() {
+        return Err(DomainError::InvalidConfig("rebase 计划不能为空".into()));
+    }
     if todos.len() > MAX_REBASE_TODOS {
         return Err(DomainError::InvalidConfig(format!(
             "rebase 计划超过 {MAX_REBASE_TODOS} 个 commit 安全上限"
@@ -166,18 +183,7 @@ fn build_todo_content(todos: &[RebaseTodo]) -> Result<String> {
         }
     }
 
-    let mut content = String::with_capacity(capacity);
-    for todo in todos {
-        writeln!(
-            content,
-            "{} {} {}",
-            todo.action.as_str(),
-            todo.short_hash(),
-            sanitize_todo_subject(&todo.subject)
-        )
-        .map_err(|error| DomainError::Other(format!("生成 rebase 计划失败：{error}")))?;
-    }
-    Ok(content)
+    Ok(capacity)
 }
 
 /// Git 把 editor 当 shell 命令解析，因此路径必须可靠引用；Windows 需显式交给自带的 sh。
@@ -226,87 +232,13 @@ fn sanitize_todo_subject(subject: &str) -> String {
         .collect()
 }
 
-struct TempFile {
-    path: PathBuf,
-}
-
-impl TempFile {
-    fn create(prefix: &str, extension: &str, content: &[u8]) -> Result<Self> {
-        let tag = nano_id();
-        for attempt in 0..16 {
-            let path = std::env::temp_dir().join(format!("{prefix}_{tag}_{attempt}.{extension}"));
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                options.mode(0o600);
-            }
-            let mut file = match options.open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(DomainError::Other(format!(
-                        "创建 rebase 临时文件 {} 失败: {error}",
-                        path.display()
-                    )));
-                }
-            };
-            let temp = Self { path };
-            if let Err(error) = file.write_all(content) {
-                let message = DomainError::Other(format!(
-                    "写 rebase 临时文件 {} 失败: {error}",
-                    temp.path.display()
-                ));
-                // Windows 不允许删除仍打开的文件，先关闭句柄再由 TempFile::drop 清理。
-                drop(file);
-                return Err(message);
-            }
-            return Ok(temp);
-        }
-        Err(DomainError::Other(
-            "创建 rebase 临时文件失败：连续发生文件名冲突".into(),
-        ))
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        match std::fs::remove_file(&self.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    path = %self.path.display(),
-                    "cleanup rebase temporary file failed"
-                );
-            }
-        }
-    }
-}
-
-fn nano_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{}_{ns:x}", std::process::id())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_REBASE_TODOS, TempFile, build_todo_content, parse_plan_output, sanitize_todo_subject,
+        MAX_REBASE_TODOS, build_todo_content, parse_plan_output, sanitize_todo_subject,
         sequence_editor_command, shell_quote, validate_revision_arg,
     };
     use ramag_domain::entities::{RebaseAction, RebaseTodo};
-    use ramag_domain::error::DomainError;
 
     #[test]
     fn shell_quote_handles_spaces_and_apostrophes() {
@@ -323,21 +255,6 @@ mod tests {
             assert!(!command.starts_with("sh "));
         }
         assert!(command.contains("ramag editor.sh"));
-    }
-
-    #[test]
-    fn temporary_file_is_exclusive_and_removed_on_drop() -> ramag_domain::error::Result<()> {
-        let temp = TempFile::create("ramag_rebase_test", "txt", b"content")?;
-        let path = temp.path().to_path_buf();
-        assert_eq!(
-            std::fs::read(&path).map_err(|error| {
-                DomainError::Other(format!("读取测试临时文件失败：{error}"))
-            })?,
-            b"content"
-        );
-        drop(temp);
-        assert!(!path.exists());
-        Ok(())
     }
 
     #[test]

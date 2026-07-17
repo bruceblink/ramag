@@ -20,8 +20,8 @@ use redb::{Database, ReadableDatabase as _, ReadableTableMetadata as _, TableErr
 use tracing::info;
 
 use ramag_domain::entities::{
-    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, QueryHistoryPage,
-    QueryRecord, QueryRecordId, RepoConfig, RepoId,
+    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, MAX_CLIPBOARD_SEARCH_BYTES,
+    QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::Storage;
@@ -146,6 +146,15 @@ fn database_has_encrypted_records(db: &Database) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn validate_clip_search_query(query: &str) -> Result<()> {
+    if query.len() > MAX_CLIPBOARD_SEARCH_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴历史搜索词超过 {MAX_CLIPBOARD_SEARCH_BYTES} bytes 上限"
+        )));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -273,6 +282,13 @@ impl Storage for RedbStorage {
         run_blocking(move || repos::clip_repo::save(db, cipher, item)).await
     }
 
+    async fn clip_get(&self, id: &ClipId) -> Result<Option<ClipItem>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let id = id.to_string();
+        run_blocking(move || repos::clip_repo::get(db, cipher, id)).await
+    }
+
     async fn clip_list(&self) -> Result<Vec<ClipItem>> {
         let db = self.db.clone();
         let cipher = self.cipher.clone();
@@ -305,6 +321,7 @@ impl Storage for RedbStorage {
     }
 
     async fn clip_search(&self, query: &str, limit: usize) -> Result<Vec<ClipItem>> {
+        validate_clip_search_query(query)?;
         let db = self.db.clone();
         let cipher = self.cipher.clone();
         let query = query.to_string();
@@ -317,6 +334,7 @@ impl Storage for RedbStorage {
         limit: usize,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Vec<ClipItem>> {
+        validate_clip_search_query(query)?;
         let db = self.db.clone();
         let cipher = self.cipher.clone();
         let query = query.to_string();
@@ -333,6 +351,7 @@ impl Storage for RedbStorage {
         max_inline_bytes: u64,
         cancelled: Arc<AtomicBool>,
     ) -> Result<ClipSearchResult> {
+        validate_clip_search_query(query)?;
         let db = self.db.clone();
         let cipher = self.cipher.clone();
         let query = query.to_string();
@@ -362,10 +381,9 @@ impl Storage for RedbStorage {
         run_blocking(move || repos::clip_repo::find_by_hash(db, cipher, hash)).await
     }
 
-    async fn clip_clear(&self) -> Result<Vec<String>> {
+    async fn clip_clear(&self) -> Result<()> {
         let db = self.db.clone();
-        let cipher = self.cipher.clone();
-        run_blocking(move || repos::clip_repo::clear(db, cipher)).await
+        run_blocking(move || repos::clip_repo::clear(db)).await
     }
 
     async fn clip_prune(&self, max_items: u32, max_age_days: u32) -> Result<Vec<String>> {
@@ -524,6 +542,22 @@ mod tests {
         QueryRecord::new_success(connection_id, "test", sql, 5, 1)
     }
 
+    fn history_stats(storage: &RedbStorage) -> (u64, u64) {
+        let txn = storage.db.begin_read().unwrap();
+        let table = txn
+            .open_table(repos::history_repo::HISTORY_META_TABLE)
+            .unwrap();
+        let count = table
+            .get("record_count")
+            .unwrap()
+            .map_or(0, |value| value.value());
+        let bytes = table
+            .get("value_bytes")
+            .unwrap()
+            .map_or(0, |value| value.value());
+        (count, bytes)
+    }
+
     #[tokio::test]
     async fn history_crud_and_connection_filter() {
         let (storage, _tmp) = make_test_storage();
@@ -536,6 +570,9 @@ mod tests {
 
         storage.append_history(&first).await.unwrap();
         storage.append_history(&second).await.unwrap();
+        let (count, bytes) = history_stats(&storage);
+        assert_eq!(count, 2);
+        assert!(bytes > 0);
         assert_eq!(storage.list_history(None, 10).await.unwrap().len(), 2);
         let newest = storage.list_history(None, 1).await.unwrap();
         assert_eq!(newest[0].id, second.id);
@@ -553,11 +590,13 @@ mod tests {
         assert!(bounded.truncated);
 
         storage.delete_history(&first.id).await.unwrap();
+        assert_eq!(history_stats(&storage).0, 1);
         assert_eq!(storage.list_history(None, 10).await.unwrap().len(), 1);
         storage
             .clear_history(Some(&second_connection))
             .await
             .unwrap();
+        assert_eq!(history_stats(&storage), (0, 0));
         assert!(storage.list_history(None, 10).await.unwrap().is_empty());
     }
 
@@ -649,11 +688,20 @@ mod tests {
         let clip = sample_clip("dup-me", 0);
         storage.clip_save(&clip).await.unwrap();
 
+        assert_eq!(
+            storage
+                .clip_get(&clip.id)
+                .await
+                .unwrap()
+                .map(|item| item.id),
+            Some(clip.id.clone())
+        );
         let found = storage.clip_find_by_hash(&clip.content_hash).await.unwrap();
         assert_eq!(found.unwrap().id, clip.id);
         assert!(storage.clip_find_by_hash("ffff").await.unwrap().is_none());
 
         storage.clip_delete(&clip.id).await.unwrap();
+        assert!(storage.clip_get(&clip.id).await.unwrap().is_none());
         assert!(storage.clip_list().await.unwrap().is_empty());
     }
 
@@ -932,6 +980,12 @@ mod tests {
         // 空 query / 无匹配 → 空
         assert!(storage.clip_search("", 10).await.unwrap().is_empty());
         assert!(storage.clip_search("zzz", 10).await.unwrap().is_empty());
+        assert!(
+            storage
+                .clip_search(&"x".repeat(MAX_CLIPBOARD_SEARCH_BYTES + 1), 10)
+                .await
+                .is_err()
+        );
 
         let bounded = storage
             .clip_search_cancellable_bounded("hello", 10, 10, Arc::new(AtomicBool::new(false)))

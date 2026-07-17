@@ -19,6 +19,12 @@ pub fn list(
     if let Some(ref_name) = ref_name {
         validate_positional_arg(ref_name, "reflog 引用")?;
     }
+    if limit.is_some_and(|limit| limit > crate::git_cmd::MAX_PARSED_GIT_ITEMS) {
+        return Err(DomainError::InvalidConfig(format!(
+            "reflog 数量超过 {} 条安全上限",
+            crate::git_cmd::MAX_PARSED_GIT_ITEMS
+        )));
+    }
     let mut args: Vec<String> = vec![
         "reflog".into(),
         "show".into(),

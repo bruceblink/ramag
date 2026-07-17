@@ -6,12 +6,13 @@ use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::Input,
     notification::Notification,
 };
 use serde_json::Value;
 
 use super::{ResultEvent, ResultPanel};
+use crate::views::{MAX_MONGO_INTERACTIVE_INPUT_BYTES, bounded_input, inline_text_preview};
 
 impl ResultPanel {
     /// 双击单元格编辑：输入新值 → update_one $set（dotted path）。
@@ -25,15 +26,35 @@ impl ResultPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if current.len() > MAX_MONGO_INTERACTIVE_INPUT_BYTES {
+            return self.open_cell_dialog(path, kind, current, window, cx);
+        }
         // multi_line：值可能含换行（GPUI 单行 shape_line 不接受 \n），且本对话框是 220px 多行编辑框
         let input = cx.new(|c| {
-            InputState::new(window, c)
+            bounded_input(window, c)
                 .multi_line(true)
                 .default_value(current)
         });
+        ramag_ui::enforce_multiline_input_byte_limit(
+            &input,
+            MAX_MONGO_INTERACTIVE_INPUT_BYTES,
+            window,
+            cx,
+            |panel, _, cx| {
+                panel.pending_notification = Some(
+                    Notification::warning(format!(
+                        "字段输入最多保留 {} MiB，超出部分已截断",
+                        MAX_MONGO_INTERACTIVE_INPUT_BYTES / 1024 / 1024
+                    ))
+                    .autohide(true),
+                );
+                cx.notify();
+            },
+        )
+        .detach();
         input.update(cx, |s, c| s.focus(window, c));
         let panel = cx.entity().clone();
-        let title = SharedString::from(format!("编辑字段 {path}"));
+        let title = SharedString::from(format!("编辑字段 {}", inline_text_preview(&path, 96)));
         window.open_dialog(cx, move |dialog, _, app| {
             let panel_cancel = panel.clone();
             let panel_on_cancel = panel.clone();
@@ -111,6 +132,12 @@ impl ResultPanel {
         if self.doc_dml_busy {
             self.pending_notification =
                 Some(Notification::warning("提交执行中，请稍候").autohide(true));
+            cx.notify();
+            return;
+        }
+        if let Err(error) = ramag_domain::entities::validate_mongo_field_path(&path) {
+            self.pending_notification =
+                Some(Notification::error(error.message().to_string()).autohide(true));
             cx.notify();
             return;
         }
@@ -199,6 +226,10 @@ pub(super) fn kind_is_editable(kind: &str) -> bool {
     )
 }
 
+pub(super) fn cell_is_editable(kind: &str, text_bytes: usize) -> bool {
+    kind_is_editable(kind) && text_bytes <= MAX_MONGO_INTERACTIVE_INPUT_BYTES
+}
+
 /// 其余按 JSON 解析（123→数字 / true→布尔 / 其它→字符串），保留「可改类型」的灵活性。
 /// 注：date 文本需为 ISO8601（结果集 relaxed Extended JSON 形态即 ISO），否则 driver 转换报错
 fn value_for_kind(kind: &str, raw: String) -> Value {
@@ -217,7 +248,7 @@ fn value_for_kind(kind: &str, raw: String) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::value_for_kind;
+    use super::{cell_is_editable, value_for_kind};
     use serde_json::json;
 
     #[test]
@@ -251,5 +282,15 @@ mod tests {
             value_for_kind("long", "9999999999".into()),
             json!({ "$numberLong": "9999999999" })
         );
+    }
+
+    #[test]
+    fn oversized_cells_are_read_only_even_for_roundtrippable_types() {
+        assert!(cell_is_editable("text", 4));
+        assert!(!cell_is_editable(
+            "text",
+            super::MAX_MONGO_INTERACTIVE_INPUT_BYTES + 1
+        ));
+        assert!(!cell_is_editable("binary", 4));
     }
 }

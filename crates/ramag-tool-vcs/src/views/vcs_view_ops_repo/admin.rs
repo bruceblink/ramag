@@ -17,6 +17,7 @@ const MAX_OPEN_REPO_PATH_BYTES: usize = 32 * 1024;
 impl VcsView {
     /// 收藏 / 取消收藏最近仓库，并立即持久化。
     pub(crate) fn toggle_repo_favorite(&mut self, path: String, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
         let repo = std::rc::Rc::make_mut(&mut self.recent_repos)
             .iter_mut()
             .find(|repo| repo.path == path)
@@ -95,6 +96,7 @@ impl VcsView {
         dest: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
+        self.startup_repo_restore_allowed = false;
         if !self.ensure_commit_draft_within_limit(cx) {
             return;
         }
@@ -247,6 +249,7 @@ impl VcsView {
     /// 异步初始化空仓库（真正执行 git init），完成后打开 session。
     /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
     pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
         if !self.ensure_commit_draft_within_limit(cx) {
             return;
         }
@@ -309,32 +312,51 @@ impl VcsView {
                     )
                 }
             };
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(list) => {
-                    // 按保存顺序恢复 Tab；已从 recent 移除的仓库自动跳过
-                    this.open_repos = open_paths
-                        .iter()
-                        .filter_map(|p| list.iter().find(|r| &r.path == p).cloned())
-                        .collect();
-                    this.recent_repos = std::rc::Rc::new(list);
-                    this.repo_list_rows_cache.get_mut().take();
-                    if let Some(error) = open_paths_error {
-                        this.error = Some(error);
-                    }
-                    if open_paths_adjusted {
-                        this.pending_notification = Some(
+            let _ = this.update(cx, |this, cx| {
+                let restore_allowed = this.startup_repo_restore_allowed;
+                this.startup_repo_restore_allowed = false;
+                match result {
+                    Ok(mut list) => {
+                        if restore_allowed {
+                            // 按保存顺序恢复 Tab；已从 recent 移除的仓库自动跳过
+                            this.open_repos = open_paths
+                                .iter()
+                                .filter_map(|p| list.iter().find(|r| &r.path == p).cloned())
+                                .collect();
+                        } else {
+                            // 用户已打开新仓库：保留内存中的较新记录，只补齐存储中的历史项。
+                            for current in this.recent_repos.iter() {
+                                if let Some(loaded) =
+                                    list.iter_mut().find(|loaded| loaded.path == current.path)
+                                {
+                                    *loaded = current.clone();
+                                } else {
+                                    list.push(current.clone());
+                                }
+                            }
+                        }
+                        this.recent_repos = std::rc::Rc::new(list);
+                        this.repo_list_rows_cache.get_mut().take();
+                        if let Some(error) = open_paths_error {
+                            this.error = Some(error);
+                        }
+                        if open_paths_adjusted {
+                            this.pending_notification = Some(
                             gpui_component::notification::Notification::warning(format!(
                                 "上次仓库标签包含重复或超限项，仅恢复前 {MAX_OPEN_REPOS} 个有效标签"
                             ))
                             .autohide(true),
                         );
+                        }
+                        cx.notify();
                     }
-                    cx.notify();
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "vcs: list_repos failed");
-                    this.error = Some(format!("加载最近仓库失败：{e}"));
-                    cx.notify();
+                    Err(e) => {
+                        tracing::warn!(error = %e, "vcs: list_repos failed");
+                        if restore_allowed {
+                            this.error = Some(format!("加载最近仓库失败：{e}"));
+                            cx.notify();
+                        }
+                    }
                 }
             });
         })

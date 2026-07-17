@@ -1,6 +1,7 @@
 //! 泛型连接池缓存：按 ConnectionId 缓存 `sqlx::Pool<Db>`。DashMap + Arc 多线程安全
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
@@ -15,8 +16,10 @@ pub struct PoolCache<Db: Database> {
     pools: Arc<DashMap<ConnectionId, CachedPool<Db>>>,
     /// 同一连接首次建池串行化；不同连接使用不同锁，可并行握手。
     build_locks: BuildLocks,
-    /// evict 后递增。旧配置的在途建池即使晚回包，也只会写入旧代际，后续不会命中。
+    /// 当前活跃请求代际。evict 会删除条目，避免永久保留已删除连接的 ID。
     generations: Arc<DashMap<ConnectionId, u64>>,
+    /// 全局单调代际号；同一 ID 删除后重建也不会与旧在途请求发生 ABA。
+    generation_clock: Arc<AtomicU64>,
 }
 
 struct CachedPool<Db: Database> {
@@ -30,6 +33,7 @@ impl<Db: Database> Default for PoolCache<Db> {
             pools: Arc::new(DashMap::new()),
             build_locks: Arc::new(DashMap::new()),
             generations: Arc::new(DashMap::new()),
+            generation_clock: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -40,6 +44,7 @@ impl<Db: Database> Clone for PoolCache<Db> {
             pools: self.pools.clone(),
             build_locks: self.build_locks.clone(),
             generations: self.generations.clone(),
+            generation_clock: self.generation_clock.clone(),
         }
     }
 }
@@ -51,23 +56,29 @@ impl<Db: Database> PoolCache<Db> {
 
     /// 未命中返回 None（外部 build_pool 后 insert）
     pub fn get(&self, id: &ConnectionId, generation: u64) -> Option<Pool<Db>> {
-        match self.pools.entry(id.clone()) {
-            Entry::Occupied(entry) if entry.get().generation == generation => {
-                Some(entry.get().pool.clone())
-            }
-            Entry::Occupied(entry) => {
-                entry.remove();
-                None
-            }
-            Entry::Vacant(_) => None,
-        }
+        self.pools
+            .get(id)
+            .and_then(|entry| (entry.generation == generation).then(|| entry.pool.clone()))
     }
 
     pub fn insert(&self, id: ConnectionId, generation: u64, pool: Pool<Db>) {
-        self.pools
-            .insert(id.clone(), CachedPool { generation, pool });
+        if !self.is_current_generation(&id, generation) {
+            return;
+        }
+        match self.pools.entry(id.clone()) {
+            Entry::Occupied(mut entry) => {
+                // 新代际已先写入时，旧请求不得覆盖它。
+                if entry.get().generation > generation {
+                    return;
+                }
+                entry.insert(CachedPool { generation, pool });
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(CachedPool { generation, pool });
+            }
+        }
         // evict 可能发生在 await 建池期间；只移除本次旧代际，不能误删已写入的新池。
-        if self.generation(&id) != generation
+        if !self.is_current_generation(&id, generation)
             && let Entry::Occupied(entry) = self.pools.entry(id)
             && entry.get().generation == generation
         {
@@ -75,8 +86,33 @@ impl<Db: Database> PoolCache<Db> {
         }
     }
 
-    pub(crate) fn generation(&self, id: &ConnectionId) -> u64 {
-        self.generations.get(id).map_or(0, |entry| *entry)
+    pub(crate) fn generation_for_request(&self, id: &ConnectionId) -> u64 {
+        match self.generations.entry(id.clone()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let generation = self.next_generation();
+                entry.insert(generation);
+                generation
+            }
+        }
+    }
+
+    pub(crate) fn is_current_generation(&self, id: &ConnectionId, generation: u64) -> bool {
+        self.generations
+            .get(id)
+            .is_some_and(|entry| *entry == generation)
+    }
+
+    fn next_generation(&self) -> u64 {
+        loop {
+            let generation = self
+                .generation_clock
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            if generation != 0 {
+                return generation;
+            }
+        }
     }
 
     pub(crate) fn build_lock(&self, id: &ConnectionId, generation: u64) -> BuildLock {
@@ -87,12 +123,24 @@ impl<Db: Database> PoolCache<Db> {
     }
 
     pub fn evict(&self, id: &ConnectionId) {
-        self.generations
-            .entry(id.clone())
-            .and_modify(|generation| *generation = generation.wrapping_add(1))
-            .or_insert(1);
-        self.build_locks.retain(|key, _| &key.0 != id);
-        if self.pools.remove(id).is_some() {
+        let invalidated = self
+            .generations
+            .remove(id)
+            .map(|(_, generation)| generation);
+        let Some(invalidated) = invalidated else {
+            return;
+        };
+        self.build_locks
+            .retain(|key, _| &key.0 != id || key.1 != invalidated);
+        let removed = if let Entry::Occupied(entry) = self.pools.entry(id.clone())
+            && entry.get().generation == invalidated
+        {
+            entry.remove();
+            true
+        } else {
+            false
+        };
+        if removed {
             info!(connection_id = %id, "pool evicted");
         }
     }
@@ -103,21 +151,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_locks_are_per_connection_and_evict_advances_generation() {
+    fn build_locks_are_per_connection_and_evict_releases_generation_entry() {
         let cache = PoolCache::<sqlx::MySql>::new();
         let first_id = ConnectionId::new();
         let second_id = ConnectionId::new();
+        let first_generation = cache.generation_for_request(&first_id);
+        let second_generation = cache.generation_for_request(&second_id);
 
-        let first = cache.build_lock(&first_id, 0);
-        let first_again = cache.build_lock(&first_id, 0);
-        let second = cache.build_lock(&second_id, 0);
-        let next_generation = cache.build_lock(&first_id, 1);
+        let first = cache.build_lock(&first_id, first_generation);
+        let first_again = cache.build_lock(&first_id, first_generation);
+        let second = cache.build_lock(&second_id, second_generation);
+        let next_generation = cache.build_lock(&first_id, first_generation + 1);
         assert!(Arc::ptr_eq(&first, &first_again));
         assert!(!Arc::ptr_eq(&first, &second));
         assert!(!Arc::ptr_eq(&first, &next_generation));
 
-        assert_eq!(cache.generation(&first_id), 0);
+        assert!(cache.is_current_generation(&first_id, first_generation));
         cache.evict(&first_id);
-        assert_eq!(cache.generation(&first_id), 1);
+        assert!(!cache.generations.contains_key(&first_id));
+        assert!(!cache.is_current_generation(&first_id, first_generation));
+
+        let recreated_generation = cache.generation_for_request(&first_id);
+        assert_ne!(recreated_generation, first_generation);
+        assert!(cache.is_current_generation(&first_id, recreated_generation));
     }
 }

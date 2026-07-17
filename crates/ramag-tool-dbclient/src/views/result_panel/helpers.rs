@@ -2,7 +2,16 @@
 
 use gpui::Entity;
 use gpui_component::input::InputState;
-use ramag_domain::entities::{Column, ColumnKind, Index, QueryResult, Value};
+use ramag_domain::entities::{Column, ColumnKind, Index, MAX_SQL_QUERY_BYTES, QueryResult, Value};
+
+pub(super) const MAX_BATCH_DELETE_ROWS: usize = 500;
+pub(super) const MAX_BATCH_DELETE_SQL_BYTES: usize = 4 * 1024 * 1024;
+
+pub(super) fn reserve_batch_delete_sql_bytes(current: usize, added: usize) -> Option<usize> {
+    current
+        .checked_add(added)
+        .filter(|total| *total <= MAX_BATCH_DELETE_SQL_BYTES)
+}
 
 /// 新增草稿行。表名在 INSERT 时由 `extract_first_table_ref` 从 SQL 反推，与 UPDATE/DELETE 一致
 pub(crate) struct PendingInsert {
@@ -140,6 +149,12 @@ fn col_eq_condition(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IdentityWhereError {
+    MissingColumn,
+    TooLarge,
+}
+
 /// 构造按行定位键匹配单行的 WHERE：键列必须全部在结果集中（SELECT * 的单表数据必然满足），
 /// 缺任一列返回 None，调用方拒绝执行而不是退化成模糊匹配
 pub(super) fn build_identity_where(
@@ -147,17 +162,49 @@ pub(super) fn build_identity_where(
     row: &ramag_domain::entities::Row,
     identity: &RowIdentity,
     driver: ramag_domain::entities::DriverKind,
-) -> Option<String> {
-    let mut parts = Vec::with_capacity(identity.columns.len());
-    for col in &identity.columns {
+) -> Result<String, IdentityWhereError> {
+    let mut values = Vec::with_capacity(identity.columns.len());
+    let mut total_bytes = 0usize;
+    for (position, col) in identity.columns.iter().enumerate() {
         let idx = result
             .columns
             .iter()
-            .position(|c| c.eq_ignore_ascii_case(col))?;
-        let val = row.values.get(idx)?;
-        parts.push(col_eq_condition(col, val, driver));
+            .position(|c| c.eq_ignore_ascii_case(col))
+            .ok_or(IdentityWhereError::MissingColumn)?;
+        let val = row
+            .values
+            .get(idx)
+            .ok_or(IdentityWhereError::MissingColumn)?;
+        let identifier_bytes = driver.quote_identifier(col).len();
+        let separator_bytes = usize::from(position > 0) * " AND ".len();
+        let condition_bytes = if matches!(val, Value::Null) {
+            identifier_bytes.saturating_add(" IS NULL".len())
+        } else {
+            let fixed = identifier_bytes.saturating_add(" = ".len());
+            let remaining = MAX_SQL_QUERY_BYTES
+                .saturating_sub(total_bytes)
+                .saturating_sub(separator_bytes)
+                .saturating_sub(fixed);
+            let literal = val
+                .bounded_sql_literal_len_for(driver, remaining)
+                .ok_or(IdentityWhereError::TooLarge)?;
+            fixed.saturating_add(literal)
+        };
+        total_bytes = total_bytes
+            .checked_add(separator_bytes)
+            .and_then(|total| total.checked_add(condition_bytes))
+            .filter(|total| *total <= MAX_SQL_QUERY_BYTES)
+            .ok_or(IdentityWhereError::TooLarge)?;
+        values.push((col.as_str(), val));
     }
-    Some(parts.join(" AND "))
+    let mut output = String::with_capacity(total_bytes);
+    for (position, (column, value)) in values.into_iter().enumerate() {
+        if position > 0 {
+            output.push_str(" AND ");
+        }
+        output.push_str(&col_eq_condition(column, value, driver));
+    }
+    Ok(output)
 }
 
 /// 按原 cell 类型把用户输入转换成新的 Value（同时供本地刷新 + SQL 字面量）
@@ -190,15 +237,6 @@ fn build_new_value_for_old(old: &Value, new_text: &str) -> Value {
 /// 公开版本：用于 ops::apply_cell_update_async 同步本地 cell
 pub(super) fn build_new_value(old: &Value, new_text: &str) -> Value {
     build_new_value_for_old(old, new_text)
-}
-
-/// SQL 字面量包装（apply_cell_update_async 用）：build → 按 driver 方言的 to_sql_literal
-pub(super) fn escape_new_value_for_old(
-    old: &Value,
-    new_text: &str,
-    driver: ramag_domain::entities::DriverKind,
-) -> String {
-    build_new_value_for_old(old, new_text).to_sql_literal_for(driver)
 }
 
 /// 单行 DML LIMIT 子句。MySQL ` LIMIT 1` 防误删；PG / Redis / MongoDB 不支持，返回空
@@ -244,6 +282,18 @@ mod tests {
             elapsed_ms: 0,
             affected_rows: 0,
         }
+    }
+
+    #[test]
+    fn batch_delete_sql_budget_has_an_exact_boundary() {
+        assert_eq!(
+            reserve_batch_delete_sql_bytes(MAX_BATCH_DELETE_SQL_BYTES - 1, 1),
+            Some(MAX_BATCH_DELETE_SQL_BYTES)
+        );
+        assert_eq!(
+            reserve_batch_delete_sql_bytes(MAX_BATCH_DELETE_SQL_BYTES, 1),
+            None
+        );
     }
 
     #[test]
@@ -443,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn build_identity_where_missing_key_column_returns_none() {
+    fn build_identity_where_missing_key_column_returns_error() {
         // 结果集缺键列（如用户只 SELECT 了部分列）：拒绝执行而不是模糊匹配
         let r = make_result(&["name"]);
         let row = Row {
@@ -453,7 +503,27 @@ mod tests {
             columns: vec!["id".into()],
             label: "主键",
         };
-        assert!(build_identity_where(&r, &row, &ident, DriverKind::Mysql).is_none());
+        assert_eq!(
+            build_identity_where(&r, &row, &ident, DriverKind::Mysql),
+            Err(IdentityWhereError::MissingColumn)
+        );
+    }
+
+    #[test]
+    fn build_identity_where_rejects_large_binary_key_before_hex_allocation() {
+        let r = make_result(&["id"]);
+        let row = Row {
+            values: vec![Value::Bytes(vec![0; MAX_SQL_QUERY_BYTES / 2 + 1])],
+        };
+        let ident = RowIdentity {
+            columns: vec!["id".into()],
+            label: "主键",
+        };
+
+        assert_eq!(
+            build_identity_where(&r, &row, &ident, DriverKind::Mysql),
+            Err(IdentityWhereError::TooLarge)
+        );
     }
 
     #[test]

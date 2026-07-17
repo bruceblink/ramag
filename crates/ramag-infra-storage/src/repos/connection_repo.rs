@@ -54,6 +54,7 @@ struct EncryptedConnection {
 
 impl EncryptedConnection {
     fn from_plain(plain: &ConnectionConfig, cipher: &Cipher) -> Result<Self> {
+        plain.validate().map_err(DomainError::InvalidConfig)?;
         Ok(Self {
             id: plain.id.clone(),
             name: plain.name.clone(),
@@ -75,7 +76,7 @@ impl EncryptedConnection {
     }
 
     fn into_plain(self, cipher: &Cipher) -> Result<ConnectionConfig> {
-        Ok(ConnectionConfig {
+        let plain = ConnectionConfig {
             id: self.id,
             name: self.name,
             driver: self.driver,
@@ -92,7 +93,11 @@ impl EncryptedConnection {
             ca_cert_path: self.ca_cert_path,
             ssh_target: self.ssh_target,
             ssh_port: self.ssh_port,
-        })
+        };
+        plain
+            .validate()
+            .map_err(|error| DomainError::Storage(format!("解密后的连接配置无效：{error}")))?;
+        Ok(plain)
     }
 }
 
@@ -260,4 +265,26 @@ pub(crate) fn ensure_table(write_txn: &redb::WriteTransaction) -> Result<()> {
         .open_table(CONNECTIONS_TABLE)
         .map_err(|e| DomainError::Storage(format!("打开 connections 表失败：{e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::MAX_CONNECTION_PASSWORD_BYTES;
+
+    #[test]
+    fn encryption_boundary_rejects_invalid_plain_and_decrypted_configs() {
+        let cipher = Cipher::new(&[7; 32]);
+        let mut config = ConnectionConfig::new_mysql("local", "127.0.0.1", 3306, "root");
+        config.password = "x".repeat(MAX_CONNECTION_PASSWORD_BYTES + 1);
+        assert!(EncryptedConnection::from_plain(&config, &cipher).is_err());
+
+        let valid = ConnectionConfig::new_mysql("local", "127.0.0.1", 3306, "root");
+        let encrypted = EncryptedConnection::from_plain(&valid, &cipher);
+        assert!(encrypted.is_ok());
+        if let Ok(mut encrypted) = encrypted {
+            encrypted.port = 0;
+            assert!(encrypted.into_plain(&cipher).is_err());
+        }
+    }
 }

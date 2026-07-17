@@ -3,7 +3,7 @@
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};
 use gpui_component::WindowExt as _;
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::views::connection_form::{self, ConnectionFormPanel, FormEvent};
 
@@ -185,10 +185,39 @@ impl DbClientView {
     }
 
     fn handle_delete(&mut self, id: ConnectionId, cx: &mut Context<Self>) {
+        let config = self
+            .sessions
+            .iter()
+            .find(|session| session.config.id == id)
+            .map(|session| session.config.clone())
+            .or_else(|| {
+                self.picker
+                    .read(cx)
+                    .connections()
+                    .iter()
+                    .find(|config| config.id == id)
+                    .cloned()
+            });
         let svc = self.service.clone();
+        let redis_svc = self.redis_service.clone();
+        let mongo_svc = self.mongo_service.clone();
         let id_for_async = id.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.delete(&id_for_async).await;
+            if result.is_ok() {
+                match config.as_ref().map(|config| config.driver) {
+                    Some(DriverKind::Mysql | DriverKind::Postgres) => {
+                        if let Some(config) = &config {
+                            svc.evict_pool(config);
+                        }
+                    }
+                    Some(DriverKind::Redis) => redis_svc.evict_pool(&id_for_async),
+                    Some(DriverKind::Mongodb) => mongo_svc.evict_pool(&id_for_async),
+                    None => {
+                        warn!(connection_id = %id_for_async, "deleted connection config unavailable for pool eviction");
+                    }
+                }
+            }
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
                     error!(error = %e, "delete connection failed");

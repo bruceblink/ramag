@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use gpui::{Context, ScrollStrategy, Window};
-use gpui_component::notification::Notification;
+use gpui_component::{Disableable as _, notification::Notification};
 use ramag_domain::entities::{
     ClipId, ClipItem, ClipboardSettings, MAX_CLIPBOARD_BLACKLIST_ENTRIES, blacklist_matches,
     normalize_blacklist_source,
@@ -15,7 +16,7 @@ use super::ClipboardView;
 use crate::views::helpers::filter_items;
 
 /// 图片删除的撤销宽限期；到期仅清理仍未被任何条目引用的媒体。
-const MEDIA_UNDO_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+const DELETE_UNDO_GRACE: Duration = Duration::from_secs(30);
 
 /// 全量搜索去抖：输入停顿此间隔后才触发后台扫描
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
@@ -279,7 +280,6 @@ impl ClipboardView {
 
     pub(super) fn delete_clip(&mut self, item: Arc<ClipItem>, cx: &mut Context<Self>) {
         let svc = self.service.clone();
-        let has_media = item.image_path.is_some() || item.thumb_path.is_some();
         let item_id = item.id.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.delete(item.as_ref()).await;
@@ -292,33 +292,40 @@ impl ClipboardView {
                             Some(Notification::error(format!("删除失败：{e}")));
                     }
                     Ok(_) => {
+                        let undo_deadline = Instant::now() + DELETE_UNDO_GRACE;
                         let svc_for_undo = this.service.clone();
                         let view = cx.entity().clone();
                         let item_for_undo = item.clone();
                         let expiry_scheduled = Arc::new(AtomicBool::new(false));
                         this.pending_notification = Some(
                             Notification::info("已删除该条目").action(move |_, window, cx| {
-                                // action 通知默认不会自动消失；图片宽限期结束时同步收起过期按钮。
-                                if has_media && !expiry_scheduled.swap(true, Ordering::Relaxed) {
+                                // action 通知默认永不自动消失；统一按实际删除时刻收起，避免通知列表
+                                // 与其捕获的大正文长期驻留。延迟打开视图时也不能重新获得完整 30 秒。
+                                let remaining = undo_remaining(undo_deadline, Instant::now());
+                                if !expiry_scheduled.swap(true, Ordering::Relaxed) {
                                     let notification = cx.entity();
+                                    let delay = remaining.unwrap_or(Duration::ZERO);
                                     cx.spawn_in(window, async move |_, cx| {
-                                        cx.background_executor().timer(MEDIA_UNDO_GRACE).await;
+                                        cx.background_executor().timer(delay).await;
                                         let _ = notification.update_in(cx, |note, window, cx| {
                                             note.dismiss(window, cx);
                                         });
                                     })
                                     .detach();
                                 }
+                                if remaining.is_none() {
+                                    return gpui_component::button::Button::new(
+                                        "clip-undo-delete-expired",
+                                    )
+                                    .label("撤销已过期")
+                                    .disabled(true);
+                                }
                                 let svc = svc_for_undo.clone();
                                 let view = view.clone();
                                 let item = item_for_undo.clone();
                                 let notif = cx.entity().clone();
                                 gpui_component::button::Button::new("clip-undo-delete")
-                                    .label(if has_media {
-                                        "撤销（30 秒内）"
-                                    } else {
-                                        "撤销"
-                                    })
+                                    .label("撤销（30 秒内）")
                                     .on_click(move |_, window, app| {
                                         let svc = svc.clone();
                                         let view = view.clone();
@@ -347,7 +354,7 @@ impl ClipboardView {
                 this.reload(cx);
             });
             if let Some(token) = cleanup_token {
-                cx.background_executor().timer(MEDIA_UNDO_GRACE).await;
+                cx.background_executor().timer(DELETE_UNDO_GRACE).await;
                 if let Err(e) = svc.finalize_deleted_media(&item_id, token).await {
                     error!(error = %e, "cleanup deleted clip media failed");
                 }
@@ -479,5 +486,29 @@ impl ClipboardView {
             .detach();
         }
         None
+    }
+}
+
+fn undo_remaining(deadline: Instant, now: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delayed_undo_uses_original_deadline() {
+        let started = Instant::now();
+        let deadline = started + DELETE_UNDO_GRACE;
+
+        assert_eq!(
+            undo_remaining(deadline, started + Duration::from_secs(10)),
+            Some(Duration::from_secs(20))
+        );
+        assert!(undo_remaining(deadline, deadline).is_none());
+        assert!(undo_remaining(deadline, deadline + Duration::from_secs(1)).is_none());
     }
 }

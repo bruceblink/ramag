@@ -103,6 +103,15 @@ pub trait Storage: Send + Sync {
         ))
     }
 
+    /// 按 ID 读取当前记录。复制等排队操作用它确认条目未被更早的删除/清空移除。
+    async fn clip_get(&self, id: &ClipId) -> Result<Option<ClipItem>> {
+        Ok(self
+            .clip_list()
+            .await?
+            .into_iter()
+            .find(|item| &item.id == id))
+    }
+
     /// 按 last_used_at desc 返回全部（全量解密，仅孤儿清理 / 导出等低频场景用）
     async fn clip_list(&self) -> Result<Vec<ClipItem>> {
         Err(crate::error::DomainError::NotImplemented(
@@ -190,8 +199,8 @@ pub trait Storage: Send + Sync {
         ))
     }
 
-    /// 清空全部历史。返回被删条目的 image_path（调用方清理落盘文件）
-    async fn clip_clear(&self) -> Result<Vec<String>> {
+    /// 清空全部历史；媒体目录由剪贴板驱动另行流式清理。
+    async fn clip_clear(&self) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_clear".into(),
         ))

@@ -238,15 +238,30 @@ pub fn write_json_view(
     row_indices: Option<&[usize]>,
     column_indices: Option<&[usize]>,
 ) -> Result<()> {
+    // 列名排序与重复列“后者覆盖前者”的映射只依赖表头，不能在每一行重复分配 BTreeMap。
+    let projection = json_projection(result, column_indices);
     serde_json::to_writer_pretty(
         writer,
         &ExportRows {
             result,
             row_indices,
-            column_indices,
+            projection: &projection,
         },
     )
     .map_err(|error| DomainError::Storage(format!("写入 JSON 导出内容失败：{error}")))
+}
+
+fn json_projection<'a>(
+    result: &'a QueryResult,
+    column_indices: Option<&[usize]>,
+) -> Vec<(&'a str, usize)> {
+    let mut fields = BTreeMap::new();
+    for column_index in selected_indices(column_indices, result.columns.len()) {
+        if let Some(column) = result.columns.get(column_index) {
+            fields.insert(column.as_str(), column_index);
+        }
+    }
+    fields.into_iter().collect()
 }
 
 /// 流式导出 GFM 表格。单元格转义：`|`→`\|`、`\`→`\\`、换行→空格。
@@ -414,13 +429,13 @@ fn write_markdown_value(writer: &mut dyn Write, value: &Value) -> std::io::Resul
     }
 }
 
-struct ExportRows<'a> {
-    result: &'a QueryResult,
-    row_indices: Option<&'a [usize]>,
-    column_indices: Option<&'a [usize]>,
+struct ExportRows<'result, 'selection> {
+    result: &'result QueryResult,
+    row_indices: Option<&'selection [usize]>,
+    projection: &'selection [(&'result str, usize)],
 }
 
-impl Serialize for ExportRows<'_> {
+impl Serialize for ExportRows<'_, '_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -431,41 +446,30 @@ impl Serialize for ExportRows<'_> {
                 continue;
             };
             sequence.serialize_element(&ExportRow {
-                result: self.result,
                 values: &row.values,
-                column_indices: self.column_indices,
+                projection: self.projection,
             })?;
         }
         sequence.end()
     }
 }
 
-struct ExportRow<'a> {
-    result: &'a QueryResult,
-    values: &'a [Value],
-    column_indices: Option<&'a [usize]>,
+struct ExportRow<'result, 'projection> {
+    values: &'result [Value],
+    projection: &'projection [(&'result str, usize)],
 }
 
-impl Serialize for ExportRow<'_> {
+impl Serialize for ExportRow<'_, '_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // 与原 serde_json::Map 语义一致：键排序，重复列名保留最后一个值。
-        let mut fields = BTreeMap::new();
-        for column_index in selected_indices(self.column_indices, self.result.columns.len()) {
-            let Some(column) = self.result.columns.get(column_index) else {
-                continue;
-            };
-            fields.insert(
-                column.as_str(),
-                self.values
-                    .get(column_index)
-                    .map_or(ExportValue::Null, ExportValue::Value),
-            );
-        }
-        let mut map = serializer.serialize_map(Some(fields.len()))?;
-        for (column, value) in fields {
+        let mut map = serializer.serialize_map(Some(self.projection.len()))?;
+        for &(column, column_index) in self.projection {
+            let value = self
+                .values
+                .get(column_index)
+                .map_or(ExportValue::Null, ExportValue::Value);
             map.serialize_entry(column, &value)?;
         }
         map.end()
@@ -593,6 +597,32 @@ mod tests {
         assert!(json[0]["data"].is_null());
         let markdown = String::from_utf8(markdown_output).unwrap();
         assert!(markdown.contains("| 1 | NULL |"));
+    }
+
+    #[test]
+    fn json_projection_sorts_once_and_keeps_last_duplicate_column() {
+        let result = QueryResult {
+            columns: vec!["z".into(), "same".into(), "a".into(), "same".into()],
+            column_types: Vec::new(),
+            rows: vec![Row {
+                values: vec![
+                    Value::Int(1),
+                    Value::Text("old".into()),
+                    Value::Int(2),
+                    Value::Text("new".into()),
+                ],
+            }],
+            affected_rows: 0,
+            elapsed_ms: 0,
+            warnings: Vec::new(),
+        };
+        let projection = json_projection(&result, None);
+        assert_eq!(projection, vec![("a", 2), ("same", 3), ("z", 0)]);
+
+        let mut output = Vec::new();
+        write_json(&mut output, &result).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json[0]["same"], "new");
     }
 
     #[test]

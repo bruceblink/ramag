@@ -6,8 +6,8 @@ use std::time::Instant;
 use async_trait::async_trait;
 use futures::TryStreamExt as _;
 use ramag_domain::entities::{
-    Column, ConnectionConfig, ForeignKey, Index, Query, QueryResult, Row, Schema, Table, Value,
-    Warning,
+    Column, ConnectionConfig, DriverKind, ForeignKey, Index, Query, QueryResult, Row, Schema,
+    Table, Value, Warning,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::CancelHandle;
@@ -18,8 +18,8 @@ use tracing::{debug, info, warn};
 use crate::errors::map_sqlx_common;
 use crate::pool::PoolCache;
 use crate::sql::{
-    SplitOptions, first_keyword, inject_limit_if_needed, is_query_returning_rows,
-    is_write_statement, split_statements, sql_has_no_limit_marker,
+    MAX_SQL_STATEMENTS, SplitOptions, first_keyword, inject_limit_if_needed,
+    is_query_returning_rows, is_write_statement, split_statements_bounded, sql_has_no_limit_marker,
 };
 
 /// 单次查询保留的警告上限，包含可能的截断提示。
@@ -41,6 +41,9 @@ where
     type Db: Database;
 
     fn name(&self) -> &'static str;
+
+    /// 共享池在缓存命中前也必须确认 driver 类型，不能只依赖具体 build_pool 的 miss 路径。
+    fn driver_kind(&self) -> DriverKind;
 
     /// 按 ConnectionId 缓存的连接池
     fn cache(&self) -> &PoolCache<Self::Db>;
@@ -138,15 +141,16 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    validate_backend_config(config, b.driver_kind(), b.name())?;
     // 在等待建池锁前固定请求代际；若期间配置被 evict，本次旧请求可完成，
     // 但不得命中新配置的池，也不得把旧池重新写回缓存。
-    let generation = b.cache().generation(&config.id);
+    let generation = b.cache().generation_for_request(&config.id);
     if let Some(p) = b.cache().get(&config.id, generation) {
         return Ok(p);
     }
     let build_lock = b.cache().build_lock(&config.id, generation);
     let _guard = build_lock.lock().await;
-    if b.cache().generation(&config.id) != generation {
+    if !b.cache().is_current_generation(&config.id, generation) {
         return b.build_pool(config).await;
     }
     // 等锁期间其它请求可能已完成建池。
@@ -157,6 +161,21 @@ where
     b.cache()
         .insert(config.id.clone(), generation, pool.clone());
     Ok(pool)
+}
+
+fn validate_backend_config(
+    config: &ConnectionConfig,
+    expected: DriverKind,
+    backend_name: &str,
+) -> Result<()> {
+    config.validate().map_err(DomainError::InvalidConfig)?;
+    if config.driver != expected {
+        return Err(DomainError::InvalidConfig(format!(
+            "{backend_name} 不支持 {:?} 类型连接",
+            config.driver
+        )));
+    }
+    Ok(())
 }
 
 /// 先走 driver 自定义识别，未命中走 sqlx 通用大类
@@ -221,6 +240,7 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    validate_metadata_identifier(schema, "schema")?;
     let pool = get_pool(b, config).await?;
     b.list_tables_impl(&pool, schema).await
 }
@@ -237,6 +257,8 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    validate_metadata_identifier(schema, "schema")?;
+    validate_metadata_identifier(table, "table")?;
     let pool = get_pool(b, config).await?;
     b.list_columns_impl(&pool, schema, table).await
 }
@@ -253,6 +275,8 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    validate_metadata_identifier(schema, "schema")?;
+    validate_metadata_identifier(table, "table")?;
     let pool = get_pool(b, config).await?;
     b.list_indexes_impl(&pool, schema, table).await
 }
@@ -269,8 +293,25 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    validate_metadata_identifier(schema, "schema")?;
+    validate_metadata_identifier(table, "table")?;
     let pool = get_pool(b, config).await?;
     b.list_foreign_keys_impl(&pool, schema, table).await
+}
+
+fn validate_metadata_identifier(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(DomainError::InvalidConfig(format!("{label} 不能为空")));
+    }
+    if value.len() > ramag_domain::entities::MAX_CONNECTION_IDENTIFIER_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label} 超过 {} KiB 上限或包含控制字符",
+            ramag_domain::entities::MAX_CONNECTION_IDENTIFIER_BYTES / 1024
+        )));
+    }
+    Ok(())
 }
 
 pub async fn cancel_query_impl<B>(b: &B, config: &ConnectionConfig, backend_id: u64) -> Result<()>
@@ -302,6 +343,7 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    query.validate()?;
     let start = Instant::now();
     let pool = get_pool(b, config).await?;
     let mut conn: PoolConnection<B::Db> = pool.acquire().await.map_err(|e| map_err(b, e))?;
@@ -320,7 +362,7 @@ where
             .map_err(|e| map_err(b, e))?;
     }
 
-    let statements = split_statements(&query.sql, b.split_options());
+    let statements = split_statements_bounded(&query.sql, b.split_options(), MAX_SQL_STATEMENTS)?;
     if statements.is_empty() {
         return Ok(QueryResult {
             columns: Vec::new(),
@@ -571,8 +613,9 @@ where
 mod tests {
     use super::{
         MAX_QUERY_WARNINGS, QueryResultLimit, append_warnings_bounded, try_push_query_row,
+        validate_backend_config, validate_metadata_identifier,
     };
-    use ramag_domain::entities::{Row, Value, Warning};
+    use ramag_domain::entities::{ConnectionConfig, DriverKind, Row, Value, Warning};
 
     fn warnings(count: usize) -> Vec<Warning> {
         (0..count)
@@ -645,5 +688,30 @@ mod tests {
             Err(QueryResultLimit::Bytes)
         );
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn backend_validation_runs_before_pool_cache_lookup() {
+        let config = ConnectionConfig::new_mysql("local", "127.0.0.1", 3306, "root");
+        assert!(validate_backend_config(&config, DriverKind::Mysql, "mysql").is_ok());
+        assert!(validate_backend_config(&config, DriverKind::Postgres, "postgres").is_err());
+
+        let mut invalid = config;
+        invalid.port = 0;
+        assert!(validate_backend_config(&invalid, DriverKind::Mysql, "mysql").is_err());
+    }
+
+    #[test]
+    fn metadata_identifiers_are_validated_before_pool_lookup() {
+        assert!(validate_metadata_identifier("public", "schema").is_ok());
+        assert!(validate_metadata_identifier("", "schema").is_err());
+        assert!(validate_metadata_identifier("bad\nname", "table").is_err());
+        assert!(
+            validate_metadata_identifier(
+                &"x".repeat(ramag_domain::entities::MAX_CONNECTION_IDENTIFIER_BYTES + 1),
+                "table",
+            )
+            .is_err()
+        );
     }
 }

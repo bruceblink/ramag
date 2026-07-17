@@ -7,13 +7,17 @@ use std::sync::atomic::AtomicBool;
 
 use ramag_domain::error::{DomainError, Result};
 
-use crate::git_cmd::{run_git_bytes, run_git_streaming};
+use crate::git_cmd::{
+    run_git_bytes, run_git_streaming, validate_path_arg, validate_positional_arg,
+};
 
 /// Clone 远程仓库到 `dest` 目录（由 git 自动创建）
 pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
+    validate_positional_arg(url, "仓库 URL")?;
     let dest_str = dest
         .to_str()
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
+    validate_path_arg(dest_str, "Clone 目标路径")?;
     run_git_bytes(
         dest.parent().unwrap_or(Path::new(".")),
         &["clone", "--", url, dest_str],
@@ -30,9 +34,11 @@ pub fn clone_repo_streaming(
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<String>>,
 ) -> Result<()> {
+    validate_positional_arg(url, "仓库 URL")?;
     let dest_str = dest
         .to_str()
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
+    validate_path_arg(dest_str, "Clone 目标路径")?;
     // clone 在父目录内运行（目标目录由 git 创建）；共用流式执行器
     let dir = dest.parent().unwrap_or(Path::new("."));
     run_git_streaming(
@@ -48,6 +54,7 @@ pub fn init_repo(path: &Path) -> Result<()> {
     let path_str = path
         .to_str()
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
+    validate_path_arg(path_str, "初始化目标路径")?;
     // git init 在目标目录内运行（不存在则自动创建）
     run_git_bytes(
         path.parent().unwrap_or(Path::new(".")),

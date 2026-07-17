@@ -185,12 +185,17 @@ impl Shell {
                     return;
                 }
             };
-            if let Err(e) = storage
-                .set_preference(WindowBoundsPref::PREF_KEY, &json)
-                .await
-            {
-                tracing::warn!(error = %e, "persist window bounds failed");
-            }
+            let _ = this.update(cx, |this, cx| {
+                if this.bounds_gen != generation {
+                    return;
+                }
+                crate::preferences::persist_preference_latest_with_storage(
+                    WindowBoundsPref::PREF_KEY,
+                    json,
+                    storage,
+                    cx,
+                );
+            });
         })
         .detach();
     }

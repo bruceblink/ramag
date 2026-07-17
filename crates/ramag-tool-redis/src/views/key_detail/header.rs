@@ -6,10 +6,11 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
-use ramag_domain::entities::RedisValue;
+use ramag_domain::entities::{MAX_REDIS_COLLECTION_BYTES, RedisValue};
 
 use super::helpers::format_ttl_ms;
-use super::{KeyDetailEvent, KeyDetailPanel};
+use super::{KeyDetailEvent, KeyDetailPanel, MAX_COLLECTION_ITEMS};
+use crate::views::inline_text_preview;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_header(
@@ -108,7 +109,7 @@ pub(super) fn render_header(
             None => format!("{loaded} 元素"),
         };
         info_row = info_row.child(div().child(label));
-        if panel.has_more() || panel.loading_more {
+        if panel.can_load_more() || panel.loading_more {
             let remaining = panel
                 .collection_total
                 .unwrap_or(loaded as u64)
@@ -126,6 +127,17 @@ pub(super) fn render_header(
                     .disabled(panel.loading_more)
                     .tooltip("继续从服务端加载集合成员")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load_more(cx))),
+            );
+        } else if panel.has_more() && panel.value_byte_limited {
+            info_row = info_row.child(div().text_color(muted_fg).child(format!(
+                "内容已达到 {} MiB 安全上限",
+                MAX_REDIS_COLLECTION_BYTES / 1024 / 1024
+            )));
+        } else if panel.has_more() {
+            info_row = info_row.child(
+                div()
+                    .text_color(muted_fg)
+                    .child(format!("已达到 {MAX_COLLECTION_ITEMS} 个安全上限")),
             );
         }
     } else if let Some(loaded) = value_ref.and_then(RedisValue::scalar_byte_len) {
@@ -168,7 +180,7 @@ pub(super) fn render_header(
                         .text_color(fg)
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(key.to_string()),
+                        .child(inline_text_preview(key, 256)),
                 )
                 .child(info_row),
         );

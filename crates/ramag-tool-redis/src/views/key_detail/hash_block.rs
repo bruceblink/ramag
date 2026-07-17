@@ -11,9 +11,10 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
 };
-use ramag_domain::entities::RedisValue;
+use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
 
 use super::{KeyDetailEvent, KeyDetailPanel};
+use crate::views::inline_text_preview;
 
 /// 行高固定 32px：uniform_list 行级虚拟化要求等高
 const ROW_H: f32 = 32.0;
@@ -70,24 +71,29 @@ fn hash_row(
     border: gpui::Hsla,
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
-    let field_name = field.to_string();
+    let field_preview = inline_text_preview(field, 128);
     let value_preview = value.display_preview(256);
     // HSCAN 的字段名目前以 UTF-8 字符串展示；出现替换字符表明原始字节已无法
     // 安全往返，禁用编辑/删除以避免将损坏后的文本当作真实字段名。
     let field_is_lossy = field.contains('\u{fffd}');
     // 仅文本值可编辑：二进制值显示的是 `[N bytes]` 摘要，若允许编辑会把真实二进制
     // 覆盖成摘要串（静默毁数据），故非文本值只读（双击不打开编辑窗）
-    let editable = matches!(value, RedisValue::Text(_)) && !read_only && !field_is_lossy;
-    let delete_disabled = read_only || field_is_lossy;
+    let field_for_delete =
+        (!field_is_lossy && field.len() <= MAX_REDIS_COMMAND_ARG_BYTES).then(|| field.to_string());
+    let field_for_edit = field_for_delete
+        .as_ref()
+        .filter(|field| !field.chars().any(char::is_control))
+        .cloned();
     let value_for_edit = match value {
-        RedisValue::Text(s) => s.clone(),
-        other => other.display_preview(8192),
+        RedisValue::Text(text) if text.len() <= MAX_REDIS_COMMAND_ARG_BYTES => Some(text.clone()),
+        _ => None,
     };
+    let editable = !read_only && field_for_edit.is_some() && value_for_edit.is_some();
+    let delete_disabled = read_only || field_for_delete.is_none();
     let key_for_edit = key.to_string();
-    let field_for_edit = field_name.clone();
-    let value_for_edit_clone = value_for_edit.clone();
+    let value_for_edit_clone = value_for_edit;
     let key_for_del = key.to_string();
-    let field_for_del = field_name.clone();
+    let field_for_del = field_for_delete;
     let row_id = SharedString::from(format!("hash-row-{idx}"));
     let del_id = SharedString::from(format!("hash-del-{idx}"));
 
@@ -104,11 +110,15 @@ fn hash_row(
         .when(editable, |row| row.cursor_pointer())
         // 双击该行打开编辑窗口（仅文本值可编辑，二进制只读）
         .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
-            if editable && e.click_count() >= 2 {
+            if editable
+                && e.click_count() >= 2
+                && let (Some(field), Some(value)) =
+                    (field_for_edit.clone(), value_for_edit_clone.clone())
+            {
                 cx.emit(KeyDetailEvent::RequestEditHashField(
                     key_for_edit.clone(),
-                    field_for_edit.clone(),
-                    value_for_edit_clone.clone(),
+                    field,
+                    value,
                 ));
             }
         }))
@@ -120,7 +130,7 @@ fn hash_row(
                 .flex_none()
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(field_name),
+                .child(field_preview),
         )
         .child(
             div()
@@ -143,14 +153,18 @@ fn hash_row(
                     "生产连接为只读"
                 } else if field_is_lossy {
                     "二进制字段名暂不支持安全删除"
+                } else if field.len() > MAX_REDIS_COMMAND_ARG_BYTES {
+                    "字段名过大，请使用脚本处理"
                 } else {
                     "删除该字段"
                 })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                    cx.emit(KeyDetailEvent::RequestDeleteHashField(
-                        key_for_del.clone(),
-                        field_for_del.clone(),
-                    ));
+                    if let Some(field) = field_for_del.clone() {
+                        cx.emit(KeyDetailEvent::RequestDeleteHashField(
+                            key_for_del.clone(),
+                            field,
+                        ));
+                    }
                 })),
         )
 }

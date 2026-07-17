@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, DriverKind, KeyMeta, RedisType, RedisValue, RedisValueLoad,
-    ScanResult,
+    ConnectionConfig, ConnectionId, DriverKind, KeyMeta, MAX_REDIS_SCAN_ALL_KEYS, RedisType,
+    RedisValue, RedisValueLoad, ScanResult,
 };
-use ramag_domain::error::Result;
+use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{KvDriver, Storage};
 
 pub struct RedisService {
@@ -70,6 +70,11 @@ impl RedisService {
         type_filter: Option<RedisType>,
         max_keys: usize,
     ) -> Result<Vec<KeyMeta>> {
+        if !(1..=MAX_REDIS_SCAN_ALL_KEYS).contains(&max_keys) {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis scan_all 最大 key 数必须在 1 - {MAX_REDIS_SCAN_ALL_KEYS} 之间"
+            )));
+        }
         let mut cursor = 0u64;
         let mut out: Vec<KeyMeta> = Vec::new();
         loop {

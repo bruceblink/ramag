@@ -3,7 +3,9 @@
 
 use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
 use ramag_domain::error::Result;
-use ramag_infra_sql_shared::{METADATA_FETCH_LIMIT, ensure_metadata_item_limit};
+use ramag_infra_sql_shared::{
+    METADATA_FETCH_LIMIT, ensure_metadata_item_limit, ensure_metadata_result_limit,
+};
 use sqlx::MySqlPool;
 use tracing::debug;
 
@@ -31,14 +33,16 @@ pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
     .map_err(|e| map_mysql_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "Schema")?;
 
-    Ok(rows
+    let schemas = rows
         .into_iter()
         .map(|(name, charset, collation)| Schema {
             name,
             charset,
             collation,
         })
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&schemas, "Schema")?;
+    Ok(schemas)
 }
 
 /// 列出 BASE TABLE / VIEW / SYSTEM VIEW。后两者在 UI 都归为视图分组
@@ -50,7 +54,7 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
         SELECT
             CONVERT(TABLE_NAME USING utf8mb4),
             CONVERT(TABLE_TYPE USING utf8mb4),
-            CONVERT(TABLE_COMMENT USING utf8mb4)
+            LEFT(CONVERT(TABLE_COMMENT USING utf8mb4), 4096)
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'SYSTEM VIEW')
         ORDER BY TABLE_TYPE, TABLE_NAME
@@ -64,7 +68,7 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
     .map_err(|e| map_mysql_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "表与视图")?;
 
-    Ok(rows
+    let tables = rows
         .into_iter()
         .map(|(name, table_type, comment)| {
             let is_view = !table_type.eq_ignore_ascii_case("BASE TABLE");
@@ -75,7 +79,9 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
                 is_view,
             }
         })
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&tables, "表与视图")?;
+    Ok(tables)
 }
 
 /// COLUMNS 一行：name / data_type / column_type / is_nullable / column_default / column_comment / column_key
@@ -100,8 +106,8 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
                 CONVERT(DATA_TYPE USING utf8mb4),
                 CONVERT(COLUMN_TYPE USING utf8mb4),
                 CONVERT(IS_NULLABLE USING utf8mb4),
-                CONVERT(COLUMN_DEFAULT USING utf8mb4),
-                CONVERT(COLUMN_COMMENT USING utf8mb4),
+                LEFT(CONVERT(COLUMN_DEFAULT USING utf8mb4), 4096),
+                LEFT(CONVERT(COLUMN_COMMENT USING utf8mb4), 4096),
                 CONVERT(COLUMN_KEY USING utf8mb4)
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
@@ -117,7 +123,7 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
     .map_err(|e| map_mysql_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "列")?;
 
-    Ok(rows
+    let columns = rows
         .into_iter()
         .map(
             |(name, data_type, column_type, is_nullable, default_value, comment, column_key)| {
@@ -131,7 +137,9 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
                 }
             },
         )
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&columns, "列")?;
+    Ok(columns)
 }
 
 /// 含主键 / 唯一 / 普通索引。基于 STATISTICS 一行一列，按 INDEX_NAME 聚合
@@ -178,6 +186,7 @@ pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result
         (false, true) => std::cmp::Ordering::Greater,
         _ => a.name.cmp(&b.name),
     });
+    ensure_metadata_result_limit(&indexes, "索引")?;
     Ok(indexes)
 }
 
@@ -225,7 +234,9 @@ pub async fn list_foreign_keys(
         entry.columns.push(col);
         entry.ref_columns.push(ref_col);
     }
-    Ok(grouped.into_values().collect())
+    let foreign_keys = grouped.into_values().collect::<Vec<_>>();
+    ensure_metadata_result_limit(&foreign_keys, "外键")?;
+    Ok(foreign_keys)
 }
 
 /// `SELECT VERSION()`，形如 "8.0.32"

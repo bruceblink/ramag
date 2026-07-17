@@ -11,7 +11,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
 };
-use ramag_domain::entities::RedisValue;
+use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
 
 use super::{KeyDetailEvent, KeyDetailPanel};
 
@@ -73,11 +73,14 @@ fn zset_row(
     let preview = member.display_preview(256);
     // 仅文本成员可改 score：二进制成员显示 `[N bytes]` 摘要，用它做 ZADD 会新增一个
     // 名为摘要串的垃圾成员而非更新原成员（原成员 score 不变），故二进制成员只读
-    let editable = matches!(member, RedisValue::Text(_)) && !read_only;
+    let member_is_text = matches!(member, RedisValue::Text(_));
     let raw_member = match member {
-        RedisValue::Text(s) => Some(s.clone()),
+        RedisValue::Text(text) if text.len() <= MAX_REDIS_COMMAND_ARG_BYTES => Some(text.clone()),
         _ => None,
     };
+    let editable = raw_member.is_some()
+        && !read_only
+        && !matches!(member, RedisValue::Text(text) if text.chars().any(char::is_control));
     // 整数 score 显 "234"；小数显 "1.5"（去尾随零）
     let score_str = pretty_score(score);
     let score_for_edit = score_str.clone();
@@ -140,7 +143,11 @@ fn zset_row(
                 .tooltip(if read_only {
                     "生产连接为只读"
                 } else if raw_member.is_none() {
-                    "二进制成员暂不支持安全删除"
+                    if member_is_text {
+                        "成员过大，请使用脚本处理"
+                    } else {
+                        "二进制成员暂不支持安全删除"
+                    }
                 } else {
                     "删除该成员"
                 })

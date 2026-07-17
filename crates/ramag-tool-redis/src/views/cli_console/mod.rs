@@ -26,7 +26,7 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConnectionConfig, validate_redis_command};
 use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
 
@@ -79,6 +79,7 @@ impl CliConsole {
     ) -> Self {
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx)
+                .validate(|value, _| value.len() <= MAX_COMMAND_BYTES)
                 .placeholder("输入 Redis 命令，Enter 执行（如 GET foo）");
             // 命令名补全 + 语法提示
             state.lsp.completion_provider = Some(complete::RedisCompletionProvider::new_rc());
@@ -156,6 +157,12 @@ impl CliConsole {
                 return;
             }
         };
+        if let Err(error) = validate_redis_command(&argv) {
+            self.push_entry(raw, Outcome::Err(format!("(error) {}", error.message())), 0);
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            cx.notify();
+            return;
+        }
         if self.config.production
             && argv
                 .first()
@@ -198,13 +205,34 @@ impl CliConsole {
                 self.config.name, self.db
             );
             let entity = cx.entity();
+            let confirmed_connection_id = self.config.id.clone();
+            let confirmed_db = self.db;
+            let confirmed_raw = raw.clone();
             ramag_ui::open_confirm(
                 "执行高危命令？",
                 desc,
                 "执行",
                 true,
                 move |window, app| {
-                    entity.update(app, |this, cx| this.dispatch(raw, argv, window, cx));
+                    entity.update(app, |this, cx| {
+                        let input_changed =
+                            this.input.read(cx).value().trim() != confirmed_raw.as_str();
+                        if this.config.id != confirmed_connection_id
+                            || this.db != confirmed_db
+                            || input_changed
+                        {
+                            this.push_entry(
+                                command_preview(&confirmed_raw, 200),
+                                Outcome::Err(
+                                    "(error) 连接、DB 或命令已变更，已取消执行；请重新确认".into(),
+                                ),
+                                0,
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        this.dispatch(raw, argv, window, cx);
+                    });
                 },
                 window,
                 cx,

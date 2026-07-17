@@ -4,8 +4,8 @@
 use gpui::{Context, Entity};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::Notification;
-use ramag_domain::entities::{DriverKind, Query};
-use ramag_ui::{open_confirm, open_prompt};
+use ramag_domain::entities::{DriverKind, MAX_CONNECTION_IDENTIFIER_BYTES, Query};
+use ramag_ui::{open_bounded_prompt, open_confirm};
 
 use super::TableTreePanel;
 
@@ -54,11 +54,12 @@ pub(super) fn table_context_menu(
     let menu = menu.item(
         PopupMenuItem::new("重命名").on_click(move |_, window, app| {
             let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
-            open_prompt(
+            open_bounded_prompt(
                 rename_title,
                 format!("输入 {s}.{t} 的新名称"),
                 &t.clone(),
                 "重命名",
+                MAX_CONNECTION_IDENTIFIER_BYTES,
                 move |new_name, _, app| {
                     ent.update(app, |this, cx| {
                         this.rename_table(s, t, new_name, is_view, cx)
@@ -134,11 +135,12 @@ pub(super) fn schema_context_menu(
         menu.item(
             PopupMenuItem::new("重命名 Schema").on_click(move |_, window, app| {
                 let (s, ent) = (s.clone(), ent.clone());
-                open_prompt(
+                open_bounded_prompt(
                     "重命名 Schema",
                     format!("输入 schema {s} 的新名称"),
                     &s.clone(),
                     "重命名",
+                    MAX_CONNECTION_IDENTIFIER_BYTES,
                     move |new_name, _, app| {
                         ent.update(app, |this, cx| this.rename_schema(s, new_name, cx));
                     },
@@ -344,6 +346,9 @@ impl TableTreePanel {
                                 schema,
                                 invalidated_table,
                             } => {
+                                this.schema_cache
+                                    .write()
+                                    .invalidate_table(&schema, &invalidated_table);
                                 clear_invalidated_table_state(
                                     &mut this.selected,
                                     &mut this.table_columns,
@@ -356,6 +361,9 @@ impl TableTreePanel {
                                 }
                             }
                             AfterDdl::FullRefresh { invalidated_schema } => {
+                                this.schema_cache
+                                    .write()
+                                    .invalidate_schema(&invalidated_schema);
                                 if this.active_schema.as_deref()
                                     == Some(invalidated_schema.as_str())
                                 {
@@ -381,7 +389,7 @@ impl TableTreePanel {
 
 fn clear_invalidated_table_state(
     selected: &mut Option<(String, String)>,
-    table_columns: &mut std::collections::HashMap<String, super::TableColumns>,
+    table_columns: &mut std::collections::HashMap<(String, String), super::TableColumns>,
     schema: &str,
     table: &str,
 ) {
@@ -393,7 +401,7 @@ fn clear_invalidated_table_state(
     {
         *selected = None;
     }
-    table_columns.remove(&format!("{schema}.{table}"));
+    table_columns.remove(&(schema.to_string(), table.to_string()));
 }
 
 // ===== DDL 语句生成（纯函数） =====
@@ -515,11 +523,11 @@ mod tests {
         let mut selected = Some(("public".to_string(), "users".to_string()));
         let mut columns = HashMap::from([
             (
-                "public.users".to_string(),
+                ("public".to_string(), "users".to_string()),
                 super::super::TableColumns::default(),
             ),
             (
-                "public.posts".to_string(),
+                ("public".to_string(), "posts".to_string()),
                 super::super::TableColumns::default(),
             ),
         ]);
@@ -527,7 +535,7 @@ mod tests {
         clear_invalidated_table_state(&mut selected, &mut columns, "public", "users");
 
         assert!(selected.is_none());
-        assert!(!columns.contains_key("public.users"));
-        assert!(columns.contains_key("public.posts"));
+        assert!(!columns.contains_key(&("public".into(), "users".into())));
+        assert!(columns.contains_key(&("public".into(), "posts".into())));
     }
 }

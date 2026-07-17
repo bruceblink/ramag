@@ -24,7 +24,7 @@ use gpui_component::{
     h_flex, v_flex,
 };
 
-use ramag_domain::entities::{QueryResult, Value, contains_case_insensitive};
+use ramag_domain::entities::{QueryResult, contains_case_insensitive};
 
 use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
 
@@ -140,41 +140,12 @@ fn build_display_view(
     let truncated = result.rows.len() > MAX_ROWS_DISPLAY;
 
     if let Some((sort_col, dir)) = sort_by {
-        let needs_display_keys =
-            needs_display_sort_keys(display_indices.iter().map(|&row_index| {
-                result
-                    .rows
-                    .get(row_index)
-                    .and_then(|row| row.values.get(sort_col))
-            }));
-        let display_keys = needs_display_keys.then(|| {
-            display_indices
-                .iter()
-                .map(|&row_index| {
-                    result
-                        .rows
-                        .get(row_index)
-                        .and_then(|row| row.values.get(sort_col))
-                        .and_then(|value| {
-                            (!matches!(value, Value::Null)).then(|| display_sort_key(value))
-                        })
-                })
-                .collect::<Vec<_>>()
-        });
         display_indices.sort_by(|&a_index, &b_index| {
             let a = &result.rows[a_index];
             let b = &result.rows[b_index];
             let av = a.values.get(sort_col);
             let bv = b.values.get(sort_col);
-            let a_key = display_keys
-                .as_ref()
-                .and_then(|keys| keys.get(a_index))
-                .and_then(|key| key.as_deref());
-            let b_key = display_keys
-                .as_ref()
-                .and_then(|keys| keys.get(b_index))
-                .and_then(|key| key.as_deref());
-            let ord = compare_values_with_display_keys(av, bv, a_key, b_key);
+            let ord = compare_values(av, bv);
             if matches!(dir, SortDir::Desc) {
                 ord.reverse()
             } else {
@@ -569,10 +540,7 @@ mod cells;
 mod helpers;
 
 use cells::{render_data_row, render_header_cell, render_pending_row};
-use helpers::{
-    compare_values_with_display_keys, detect_numeric_column, display_sort_key, estimate_col_width,
-    needs_display_sort_keys,
-};
+use helpers::{compare_values, detect_numeric_column, estimate_col_width};
 
 #[cfg(test)]
 mod tests {
@@ -640,28 +608,26 @@ mod tests {
     }
 
     #[test]
-    fn cached_display_keys_preserve_mixed_and_json_sort_order() {
+    fn mixed_and_json_values_have_deterministic_direct_ordering() {
         let values = [
             Value::Json(serde_json::json!({"z": [3, 2, 1]})),
             Value::Text("plain".into()),
             Value::Bool(true),
         ];
-        assert!(helpers::needs_display_sort_keys(values.iter().map(Some)));
-
-        let keys: Vec<String> = values.iter().map(helpers::display_sort_key).collect();
         for (left_index, left) in values.iter().enumerate() {
             for (right_index, right) in values.iter().enumerate() {
-                assert_eq!(
-                    helpers::compare_values(Some(left), Some(right)),
-                    helpers::compare_values_with_display_keys(
-                        Some(left),
-                        Some(right),
-                        Some(&keys[left_index]),
-                        Some(&keys[right_index]),
-                    )
-                );
+                let forward = helpers::compare_values(Some(left), Some(right));
+                let reverse = helpers::compare_values(Some(right), Some(left));
+                assert_eq!(forward, reverse.reverse(), "{left_index} vs {right_index}");
             }
         }
+        assert_eq!(
+            helpers::compare_values(
+                Some(&Value::Json(serde_json::json!([1, 2]))),
+                Some(&Value::Json(serde_json::json!([1, 3]))),
+            ),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]

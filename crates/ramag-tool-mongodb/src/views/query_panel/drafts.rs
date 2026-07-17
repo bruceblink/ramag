@@ -77,7 +77,10 @@ impl MongoQueryPanel {
         let Some(key) = self.draft_pref_key() else {
             return;
         };
-        let generation = self.draft_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation = self
+            .draft_generation
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         let generation_ref = self.draft_generation.clone();
         let write_lock = self.draft_write_lock.clone();
         if let Err(error) = snapshot.validate() {

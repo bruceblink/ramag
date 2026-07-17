@@ -12,7 +12,11 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::{ConnectionService, MongoService, RedisService};
-use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
+use ramag_domain::entities::{
+    ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_HOST_BYTES,
+    MAX_CONNECTION_IDENTIFIER_BYTES, MAX_CONNECTION_NAME_BYTES, MAX_CONNECTION_PASSWORD_BYTES,
+    MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
+};
 
 /// 表单模式：新增 or 编辑
 #[derive(Debug, Clone)]
@@ -47,6 +51,16 @@ const DRIVERS: &[(&str, &str, bool)] = &[
     ("mongodb", "MongoDB", true),
 ];
 
+const MAX_PORT_TEXT_BYTES: usize = 5;
+
+fn bounded_input(
+    max_bytes: usize,
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+) -> InputState {
+    InputState::new(window, cx).validate(move |value, _| value.len() <= max_bytes)
+}
+
 /// 连接表单面板
 pub struct ConnectionFormPanel {
     service: Arc<ConnectionService>,
@@ -65,6 +79,8 @@ pub struct ConnectionFormPanel {
     pub(super) database: Entity<InputState>,
     /// MongoDB 认证库（authSource）输入框；仅 MongoDB 渲染，留空 = admin
     pub(super) auth_source: Entity<InputState>,
+    /// 当前表单不渲染备注字段；编辑时仍需原样保留，避免静默丢失历史数据。
+    pub(super) remark: Option<String>,
     /// 生产模式：开启后该连接由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     pub(super) production: bool,
     /// 启用 TLS 加密传输
@@ -170,6 +186,7 @@ impl ConnectionFormPanel {
             ssh_port: None,
         });
         let driver_id = driver_kind_to_id(p.driver);
+        let remark = p.remark.clone();
         let port_text = if is_create {
             String::new()
         } else {
@@ -183,60 +200,61 @@ impl ConnectionFormPanel {
         };
 
         let name = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_NAME_BYTES, window, cx)
                 .placeholder(name_placeholder)
                 .default_value(p.name)
         });
         let host = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_HOST_BYTES, window, cx)
                 .placeholder(defaults::DEFAULT_HOST)
                 .default_value(p.host)
         });
         let port = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_PORT_TEXT_BYTES, window, cx)
                 .placeholder(defaults::default_port(driver_id).to_string())
                 .default_value(port_text)
         });
         let username = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_IDENTIFIER_BYTES, window, cx)
                 .placeholder(defaults::username_placeholder(driver_id))
                 .default_value(p.username)
         });
         let password = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_PASSWORD_BYTES, window, cx)
                 .placeholder("（留空表示无密码）")
                 .masked(true)
                 .default_value(p.password)
         });
         let database = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_IDENTIFIER_BYTES, window, cx)
                 .placeholder(defaults::database_placeholder(driver_id))
                 .default_value(p.database.unwrap_or_default())
         });
         // 认证库（authSource）：仅 MongoDB 渲染，虚影提示默认 admin
         let auth_source = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_IDENTIFIER_BYTES, window, cx)
                 .placeholder("admin")
                 .default_value(p.auth_source.unwrap_or_default())
         });
         // 自定义 CA 证书路径（仅 TLS 开启时渲染；留空用系统信任链）
         let ca_cert_path = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_PATH_BYTES, window, cx)
                 .placeholder("CA 证书路径（PEM，可选；留空用系统信任链）")
                 .default_value(p.ca_cert_path.unwrap_or_default())
         });
         // MongoDB URI 粘贴框（仅 MongoDB 渲染，粘贴后点「填充」解析回填表单）
         let mongo_uri = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("mongodb://user:pass@host:27017/db?tls=true")
+            bounded_input(uri::MAX_MONGO_URI_BYTES, window, cx)
+                .placeholder("mongodb://user:pass@host:27017/db?tls=true")
         });
         // SSH 跳板：target 非空即启用；认证走系统 ssh（密钥 / agent / config 别名）
         let ssh_target = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_CONNECTION_SSH_TARGET_BYTES, window, cx)
                 .placeholder("user@bastion 或 ~/.ssh/config 别名（留空不启用）")
                 .default_value(p.ssh_target.unwrap_or_default())
         });
         let ssh_port = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_PORT_TEXT_BYTES, window, cx)
                 .placeholder("22")
                 .default_value(p.ssh_port.map(|v| v.to_string()).unwrap_or_default())
         });
@@ -299,6 +317,7 @@ impl ConnectionFormPanel {
             password,
             database,
             auth_source,
+            remark,
             production: initial_production,
             tls: initial_tls,
             tls_verify: initial_tls_verify,

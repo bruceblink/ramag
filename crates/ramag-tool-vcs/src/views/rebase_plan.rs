@@ -291,9 +291,9 @@ fn rebase_todo_row(
     let fg = theme.foreground;
     let hover_bg = theme.muted;
     let mono = theme.mono_font_family.clone();
-    let short_hash = &hash[..hash.len().min(7)];
-    let subject_owned = subject.to_string();
-    let row_id = SharedString::from(format!("vcs-rb-row-{idx}-{}", short_hash));
+    let short_hash: String = hash.chars().take(7).collect();
+    let subject_owned = super::inline_text_preview(subject, 240);
+    let row_id = SharedString::from(format!("vcs-rb-row-{idx}-{short_hash}"));
 
     let action_label_color = match action {
         RebaseAction::Drop => theme.danger,

@@ -19,7 +19,6 @@ use crate::errors::map_redis_error;
 type BuildLock = Arc<tokio::sync::Mutex<()>>;
 type BuildLocks = Arc<DashMap<(PoolKey, u64), BuildLock>>;
 
-const MAX_CA_CERT_BYTES: usize = 1024 * 1024;
 const MAX_CACHED_DBS_PER_CONNECTION: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -39,6 +38,7 @@ pub struct PoolCache {
     pools: Arc<DashMap<PoolKey, CachedManager>>,
     build_locks: BuildLocks,
     generations: Arc<DashMap<ConnectionId, u64>>,
+    generation_clock: Arc<AtomicU64>,
     access_clock: Arc<AtomicU64>,
 }
 
@@ -63,6 +63,7 @@ impl PoolCache {
         config: &ConnectionConfig,
         db: u8,
     ) -> Result<ConnectionManager> {
+        config.validate().map_err(DomainError::InvalidConfig)?;
         if config.driver != DriverKind::Redis {
             return Err(DomainError::InvalidConfig(format!(
                 "RedisDriver 不支持 {:?} 类型连接",
@@ -71,7 +72,7 @@ impl PoolCache {
         }
 
         let key = PoolKey::new(config.id.clone(), db);
-        let generation = self.generation(&config.id);
+        let generation = self.generation_for_request(&config.id);
 
         if let Some(manager) = self.get_cached(&key, generation) {
             self.enforce_pool_limit(&config.id, &key, generation);
@@ -79,13 +80,9 @@ impl PoolCache {
             return Ok(manager);
         }
 
-        let build_lock = self
-            .build_locks
-            .entry((key.clone(), generation))
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
+        let build_lock = self.build_lock(&key, generation);
         let _guard = build_lock.lock().await;
-        if self.generation(&config.id) != generation {
+        if !self.is_current_generation(&config.id, generation) {
             return build_connection_manager(config, db).await;
         }
         if let Some(manager) = self.get_cached(&key, generation) {
@@ -96,24 +93,44 @@ impl PoolCache {
 
         info!(connection_id = %config.id, name = %config.name, host = %config.host, db, "creating redis connection manager");
         let mgr = build_connection_manager(config, db).await?;
-        self.pools.insert(
-            key.clone(),
-            CachedManager {
-                generation,
-                last_used: self.next_access(),
-                manager: mgr.clone(),
-            },
-        );
-        if self.generation(&config.id) != generation {
+        if self.cache_if_current(key.clone(), generation, mgr.clone()) {
+            self.enforce_pool_limit(&config.id, &key, generation);
+        }
+        Ok(mgr)
+    }
+
+    fn cache_if_current(&self, key: PoolKey, generation: u64, manager: ConnectionManager) -> bool {
+        if !self.is_current_generation(&key.conn_id, generation) {
+            return false;
+        }
+        match self.pools.entry(key.clone()) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().generation > generation {
+                    return false;
+                }
+                entry.insert(CachedManager {
+                    generation,
+                    last_used: self.next_access(),
+                    manager,
+                });
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(CachedManager {
+                    generation,
+                    last_used: self.next_access(),
+                    manager,
+                });
+            }
+        }
+        if !self.is_current_generation(&key.conn_id, generation) {
             if let Entry::Occupied(entry) = self.pools.entry(key)
                 && entry.get().generation == generation
             {
                 entry.remove();
             }
-        } else {
-            self.enforce_pool_limit(&config.id, &key, generation);
+            return false;
         }
-        Ok(mgr)
+        true
     }
 
     fn get_cached(&self, key: &PoolKey, generation: u64) -> Option<ConnectionManager> {
@@ -122,16 +139,38 @@ impl PoolCache {
                 entry.get_mut().last_used = self.next_access();
                 Some(entry.get().manager.clone())
             }
-            Entry::Occupied(entry) => {
-                entry.remove();
-                None
-            }
+            Entry::Occupied(_) => None,
             Entry::Vacant(_) => None,
         }
     }
 
-    fn generation(&self, conn_id: &ConnectionId) -> u64 {
-        self.generations.get(conn_id).map_or(0, |entry| *entry)
+    fn generation_for_request(&self, conn_id: &ConnectionId) -> u64 {
+        match self.generations.entry(conn_id.clone()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let generation = self.next_generation();
+                entry.insert(generation);
+                generation
+            }
+        }
+    }
+
+    fn is_current_generation(&self, conn_id: &ConnectionId, generation: u64) -> bool {
+        self.generations
+            .get(conn_id)
+            .is_some_and(|entry| *entry == generation)
+    }
+
+    fn next_generation(&self) -> u64 {
+        loop {
+            let generation = self
+                .generation_clock
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            if generation != 0 {
+                return generation;
+            }
+        }
     }
 
     fn next_access(&self) -> u64 {
@@ -163,8 +202,10 @@ impl PoolCache {
         }
     }
 
-    #[cfg(test)]
     fn build_lock(&self, key: &PoolKey, generation: u64) -> BuildLock {
+        // 仅 map 自身持有的锁已无等待者或执行者，可安全回收；避免轮询大量 DB 后锁表增长。
+        self.build_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
         self.build_locks
             .entry((key.clone(), generation))
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -173,28 +214,23 @@ impl PoolCache {
 
     /// 移除该连接所有 db 的缓存（编辑配置后调）
     pub fn evict_all_dbs(&self, conn_id: &ConnectionId) {
-        self.generations
-            .entry(conn_id.clone())
-            .and_modify(|generation| *generation = generation.wrapping_add(1))
-            .or_insert(1);
-        self.build_locks.retain(|key, _| &key.0.conn_id != conn_id);
-        let to_remove: Vec<_> = self
-            .pools
-            .iter()
-            .filter_map(|e| {
-                if &e.key().conn_id == conn_id {
-                    Some(e.key().clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let n = to_remove.len();
-        for k in to_remove {
-            self.pools.remove(&k);
-        }
-        if n > 0 {
-            info!(connection_id = %conn_id, evicted = n, "redis pools evicted");
+        let invalidated = self
+            .generations
+            .remove(conn_id)
+            .map(|(_, generation)| generation);
+        let Some(invalidated) = invalidated else {
+            return;
+        };
+        self.build_locks
+            .retain(|key, _| &key.0.conn_id != conn_id || key.1 != invalidated);
+        let mut evicted = 0usize;
+        self.pools.retain(|key, cached| {
+            let remove = &key.conn_id == conn_id && cached.generation == invalidated;
+            evicted += usize::from(remove);
+            !remove
+        });
+        if evicted > 0 {
+            info!(connection_id = %conn_id, evicted, "redis pools evicted");
         }
     }
 }
@@ -215,6 +251,14 @@ fn lru_eviction_candidates(
 }
 
 async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<ConnectionManager> {
+    if config.tls
+        && let Some(ca) = config
+            .ca_cert_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+    {
+        ramag_infra_tunnel::validate_ca_certificate_file(ca)?;
+    }
     // SSH 隧道：启用时改连 127.0.0.1:本地转发端口（就绪探测阻塞，经 spawn_blocking 隔离）
     let cfg_for_tunnel = config.clone();
     let tunnel = tokio::task::spawn_blocking(move || ramag_infra_tunnel::ensure(&cfg_for_tunnel))
@@ -270,15 +314,15 @@ fn read_ca_certificate(path: &str) -> Result<Vec<u8>> {
         DomainError::InvalidConfig(format!("读取 CA 证书失败（{path}）：{error}"))
     })?;
     let mut pem = Vec::with_capacity(16 * 1024);
-    file.take((MAX_CA_CERT_BYTES + 1) as u64)
+    file.take((ramag_infra_tunnel::MAX_CA_CERT_BYTES + 1) as u64)
         .read_to_end(&mut pem)
         .map_err(|error| {
             DomainError::InvalidConfig(format!("读取 CA 证书失败（{path}）：{error}"))
         })?;
-    if pem.len() > MAX_CA_CERT_BYTES {
+    if pem.len() > ramag_infra_tunnel::MAX_CA_CERT_BYTES {
         return Err(DomainError::InvalidConfig(format!(
             "CA 证书超过 {} MiB 安全上限（{path}）",
-            MAX_CA_CERT_BYTES / 1024 / 1024
+            ramag_infra_tunnel::MAX_CA_CERT_BYTES / 1024 / 1024
         )));
     }
     if pem.is_empty() {
@@ -356,35 +400,63 @@ mod tests {
     }
 
     #[test]
-    fn build_locks_are_per_database_and_evict_advances_generation() {
+    fn build_locks_are_per_database_and_evict_releases_generation_entry() {
         let cache = PoolCache::new();
         let first_id = ConnectionId::new();
         let second_id = ConnectionId::new();
+        let first_generation = cache.generation_for_request(&first_id);
+        let second_generation = cache.generation_for_request(&second_id);
         let first = PoolKey::new(first_id.clone(), 0);
         let first_again = PoolKey::new(first_id.clone(), 0);
         let other_db = PoolKey::new(first_id.clone(), 1);
         let other_connection = PoolKey::new(second_id, 0);
 
         assert!(Arc::ptr_eq(
-            &cache.build_lock(&first, 0),
-            &cache.build_lock(&first_again, 0)
+            &cache.build_lock(&first, first_generation),
+            &cache.build_lock(&first_again, first_generation)
         ));
         assert!(!Arc::ptr_eq(
-            &cache.build_lock(&first, 0),
-            &cache.build_lock(&other_db, 0)
+            &cache.build_lock(&first, first_generation),
+            &cache.build_lock(&other_db, first_generation)
         ));
         assert!(!Arc::ptr_eq(
-            &cache.build_lock(&first, 0),
-            &cache.build_lock(&other_connection, 0)
+            &cache.build_lock(&first, first_generation),
+            &cache.build_lock(&other_connection, second_generation)
         ));
         assert!(!Arc::ptr_eq(
-            &cache.build_lock(&first, 0),
-            &cache.build_lock(&first, 1)
+            &cache.build_lock(&first, first_generation),
+            &cache.build_lock(&first, first_generation + 1)
         ));
 
-        assert_eq!(cache.generation(&first_id), 0);
+        assert!(cache.is_current_generation(&first_id, first_generation));
         cache.evict_all_dbs(&first_id);
-        assert_eq!(cache.generation(&first_id), 1);
+        assert!(!cache.generations.contains_key(&first_id));
+        assert!(!cache.is_current_generation(&first_id, first_generation));
+
+        let recreated_generation = cache.generation_for_request(&first_id);
+        assert_ne!(recreated_generation, first_generation);
+        assert!(cache.is_current_generation(&first_id, recreated_generation));
+    }
+
+    #[test]
+    fn idle_build_locks_are_pruned_on_next_cache_miss() {
+        let cache = PoolCache::new();
+        let first = PoolKey::new(ConnectionId::new(), 0);
+        let second = PoolKey::new(ConnectionId::new(), 0);
+
+        let first_generation = cache.generation_for_request(&first.conn_id);
+        let second_generation = cache.generation_for_request(&second.conn_id);
+        let idle = cache.build_lock(&first, first_generation);
+        drop(idle);
+        assert!(
+            cache
+                .build_locks
+                .contains_key(&(first.clone(), first_generation))
+        );
+
+        let _active = cache.build_lock(&second, second_generation);
+        assert!(!cache.build_locks.contains_key(&(first, first_generation)));
+        assert!(cache.build_locks.contains_key(&(second, second_generation)));
     }
 
     #[test]
@@ -408,6 +480,18 @@ mod tests {
         assert_eq!(info.redis.password.as_deref(), Some("secret"));
     }
 
+    #[tokio::test]
+    async fn invalid_config_is_rejected_before_connection_build() {
+        let cache = PoolCache::new();
+        let mut config = ConnectionConfig::new_redis("local", "127.0.0.1", 6379);
+        config.port = 0;
+
+        assert!(matches!(
+            cache.get_or_create(&config, 0).await,
+            Err(DomainError::InvalidConfig(_))
+        ));
+    }
+
     #[test]
     fn ca_certificate_read_is_bounded_and_rejects_empty_files()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -425,7 +509,7 @@ mod tests {
         std::fs::write(&path, [])?;
         assert!(read_ca_certificate(&path_text).is_err());
 
-        std::fs::write(&path, vec![0; MAX_CA_CERT_BYTES + 1])?;
+        std::fs::write(&path, vec![0; ramag_infra_tunnel::MAX_CA_CERT_BYTES + 1])?;
         assert!(read_ca_certificate(&path_text).is_err());
 
         std::fs::remove_file(path)?;

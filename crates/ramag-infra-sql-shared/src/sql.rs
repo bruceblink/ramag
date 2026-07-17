@@ -1,5 +1,10 @@
 //! SQL 文本工具：多语句切分 / LIMIT 注入 / 用户标记识别。方言中性
 
+use ramag_domain::error::{DomainError, Result};
+
+/// 单次执行的语句数量上限；正常脚本远低于此值，边界用于限制切分对象与数据库往返。
+pub const MAX_SQL_STATEMENTS: usize = 1024;
+
 /// 多语句切分选项
 #[derive(Debug, Clone, Copy)]
 pub struct SplitOptions {
@@ -22,7 +27,29 @@ impl SplitOptions {
 }
 
 /// 按 `;` 切分，跳过字符串 / 行注释 / 块注释 / dollar-quoted 内的 `;`
-pub fn split_statements(sql: &str, opts: SplitOptions) -> Vec<String> {
+#[cfg(test)]
+fn split_statements(sql: &str, opts: SplitOptions) -> Vec<String> {
+    split_statements_with_limit(sql, opts, usize::MAX).unwrap_or_default()
+}
+
+/// 有界切分；检测到第 `max_statements + 1` 条时在复制该语句前返回错误。
+pub fn split_statements_bounded(
+    sql: &str,
+    opts: SplitOptions,
+    max_statements: usize,
+) -> Result<Vec<String>> {
+    split_statements_with_limit(sql, opts, max_statements).map_err(|()| {
+        DomainError::InvalidConfig(format!(
+            "SQL 语句数量超过 {max_statements} 条安全上限，请拆分脚本后执行"
+        ))
+    })
+}
+
+fn split_statements_with_limit(
+    sql: &str,
+    opts: SplitOptions,
+    max_statements: usize,
+) -> std::result::Result<Vec<String>, ()> {
     let bytes = sql.as_bytes();
     let mut out: Vec<String> = Vec::new();
     let mut start = 0usize;
@@ -68,6 +95,9 @@ pub fn split_statements(sql: &str, opts: SplitOptions) -> Vec<String> {
             b';' => {
                 let segment = sql[start..i].trim();
                 if !segment.is_empty() {
+                    if out.len() >= max_statements {
+                        return Err(());
+                    }
                     out.push(segment.to_string());
                 }
                 start = i + 1;
@@ -78,9 +108,12 @@ pub fn split_statements(sql: &str, opts: SplitOptions) -> Vec<String> {
     }
     let tail = sql[start..].trim();
     if !tail.is_empty() {
+        if out.len() >= max_statements {
+            return Err(());
+        }
         out.push(tail.to_string());
     }
-    out
+    Ok(out)
 }
 
 /// 扫 dollar-quoted，返回闭合 tag 后的字节位置；非 dollar-quoted 返回 None。
@@ -306,6 +339,20 @@ mod tests {
         let s = split_statements("SELECT 1 -- a;b\n; SELECT 2", SplitOptions::mysql());
         assert_eq!(s.len(), 2);
         assert_eq!(s[1], "SELECT 2");
+    }
+
+    #[test]
+    fn bounded_split_rejects_before_copying_an_extra_statement() {
+        assert_eq!(
+            split_statements_bounded("SELECT 1; SELECT 2", SplitOptions::mysql(), 2)
+                .ok()
+                .map(|statements| statements.len()),
+            Some(2)
+        );
+        assert!(
+            split_statements_bounded("SELECT 1; SELECT 2; SELECT 3", SplitOptions::mysql(), 2,)
+                .is_err()
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ use tracing::info;
 
 use super::RedisSessionPanel;
 use crate::views::hash_field_form::{HashFieldForm, HashFieldFormEvent, HashFieldFormMode};
+use crate::views::inline_text_preview;
 use crate::views::key_create::{KeyCreateEvent, KeyCreateForm};
 use crate::views::list_element_form::{ListElementForm, ListElementFormEvent};
 use crate::views::set_element_form::{SetElementForm, SetElementFormEvent};
@@ -99,7 +100,7 @@ impl RedisSessionPanel {
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
             dialog
-                .title(format!("编辑 TTL · {key}"))
+                .title(format!("编辑 TTL · {}", inline_text_preview(&key, 96)))
                 .close_button(true)
                 .w(px(520.0))
                 .p(px(24.0))
@@ -138,7 +139,7 @@ impl RedisSessionPanel {
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
             dialog
-                .title(format!("编辑值 · {key}"))
+                .title(format!("编辑值 · {}", inline_text_preview(&key, 96)))
                 .close_button(true)
                 .w(px(640.0))
                 .p(px(24.0))
@@ -185,9 +186,13 @@ impl RedisSessionPanel {
             },
         );
         self.push_subscription(sub);
+        let key_preview = inline_text_preview(&key, 64);
         let title = match &mode {
-            HashFieldFormMode::Add => format!("新增字段 · {key}"),
-            HashFieldFormMode::Edit { field } => format!("编辑字段 · {key} · {field}"),
+            HashFieldFormMode::Add => format!("新增字段 · {key_preview}"),
+            HashFieldFormMode::Edit { field } => format!(
+                "编辑字段 · {key_preview} · {}",
+                inline_text_preview(field, 64)
+            ),
         };
         let form_for_dialog = form.clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
@@ -228,7 +233,7 @@ impl RedisSessionPanel {
         let form_for_dialog = form.clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
-            let title = format!("新增 List 元素 · {key}");
+            let title = format!("新增 List 元素 · {}", inline_text_preview(&key, 96));
             dialog
                 .title(title)
                 .close_button(true)
@@ -264,7 +269,7 @@ impl RedisSessionPanel {
         let form_for_dialog = form.clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
-            let title = format!("新增 Set 元素 · {key}");
+            let title = format!("新增 Set 元素 · {}", inline_text_preview(&key, 96));
             dialog
                 .title(title)
                 .close_button(true)
@@ -312,9 +317,13 @@ impl RedisSessionPanel {
             },
         );
         self.push_subscription(sub);
+        let key_preview = inline_text_preview(&key, 64);
         let title = match &mode {
-            ZSetElementFormMode::Add => format!("新增 ZSet 成员 · {key}"),
-            ZSetElementFormMode::EditScore { member } => format!("改 Score · {key} · {member}"),
+            ZSetElementFormMode::Add => format!("新增 ZSet 成员 · {key_preview}"),
+            ZSetElementFormMode::EditScore { member } => format!(
+                "改 Score · {key_preview} · {}",
+                inline_text_preview(member, 64)
+            ),
         };
         let form_for_dialog = form.clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
@@ -355,7 +364,7 @@ impl RedisSessionPanel {
         let form_for_dialog = form.clone();
         window.open_dialog(cx, move |dialog, _w, _app| {
             let form = form_for_dialog.clone();
-            let title = format!("新增 Stream 条目 · {key}");
+            let title = format!("新增 Stream 条目 · {}", inline_text_preview(&key, 96));
             dialog
                 .title(title)
                 .close_button(true)
@@ -390,12 +399,7 @@ impl RedisSessionPanel {
 /// 截断弹窗中要展示的字符串到指定字符数（按 char 计，避免破坏 utf-8 边界）
 /// 超长加省略号，便于在「删除 X」对话框里清晰展示目标
 pub(super) fn truncate_for_dialog(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let mut prefix: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        prefix.push('…');
-    }
-    prefix
+    inline_text_preview(s, max_chars)
 }
 
 #[cfg(test)]
@@ -433,5 +437,10 @@ mod tests {
     #[test]
     fn empty_string() {
         assert_eq!(truncate_for_dialog("", 5), "");
+    }
+
+    #[test]
+    fn control_characters_are_safe_for_single_line_dialogs() {
+        assert_eq!(truncate_for_dialog("a\nb\0c", 10), "a b�c");
     }
 }

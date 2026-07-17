@@ -14,8 +14,10 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COMMAND_ARG_BYTES};
 use tracing::{error, info};
+
+use crate::views::bounded_input;
 
 #[derive(Debug, Clone)]
 pub enum ValueEditEvent {
@@ -53,10 +55,24 @@ impl ValueEditForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let value_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
                 .default_value(initial_value)
         });
+        ramag_ui::enforce_multiline_input_byte_limit(
+            &value_input,
+            MAX_REDIS_COMMAND_ARG_BYTES,
+            window,
+            cx,
+            |this, _, cx| {
+                this.state = SubmitState::Failed(format!(
+                    "字符串值最多保留 {} MiB，超出部分已截断",
+                    MAX_REDIS_COMMAND_ARG_BYTES / 1024 / 1024
+                ));
+                cx.notify();
+            },
+        )
+        .detach();
         Self {
             service,
             config,

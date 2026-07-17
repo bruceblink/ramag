@@ -13,7 +13,7 @@ use gpui_component::{
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
-use ramag_domain::entities::{Column, Schema, contains_case_insensitive};
+use ramag_domain::entities::{Schema, contains_case_insensitive};
 
 use super::{SchemaTables, TableColumns, TableTreePanel};
 use crate::sql_completion::is_system_schema;
@@ -33,15 +33,17 @@ pub(super) enum TreeRow {
     GroupHeader { text: String },
     /// 表/视图行
     Table {
-        schema: String,
-        name: String,
+        key: Rc<(String, String)>,
         is_view: bool,
         is_cols_expanded: bool,
     },
     /// 表的列结构占位行：loading / error
     TablePlaceholder { text: String, is_error: bool },
     /// 列定义行
-    Column { col: Column },
+    Column {
+        key: Rc<(String, String)>,
+        column_index: usize,
+    },
     /// "索引 (N)" / "外键 (N)" 小标题
     SectionLabel { text: String },
     /// 索引 / 外键 的详情行
@@ -192,11 +194,12 @@ impl TableTreePanel {
                 .child(text.clone())
                 .into_any_element(),
             TreeRow::Table {
-                schema,
-                name,
+                key,
                 is_view,
                 is_cols_expanded,
             } => {
+                let schema = &key.0;
+                let name = &key.1;
                 let is_selected =
                     self.selected
                         .as_ref()
@@ -295,7 +298,14 @@ impl TableTreePanel {
             TreeRow::TablePlaceholder { text, is_error } => {
                 render_columns_placeholder(text.clone(), if *is_error { red } else { muted_fg })
             }
-            TreeRow::Column { col } => render_column_row(col, fg, muted_fg),
+            TreeRow::Column { key, column_index } => self
+                .table_columns
+                .get(key.as_ref())
+                .and_then(|columns| columns.columns.get(*column_index))
+                .map_or_else(
+                    || div().h(px(28.0)).into_any_element(),
+                    |column| render_column_row(column, fg, muted_fg),
+                ),
             TreeRow::SectionLabel { text } => render_columns_placeholder(text.clone(), muted_fg),
             TreeRow::DetailLine { text } => render_columns_placeholder(text.clone(), fg),
         }
@@ -306,7 +316,7 @@ fn build_tree_rows(
     schemas: &[Schema],
     expanded: &HashMap<String, SchemaTables>,
     open_schemas: &HashSet<String>,
-    table_columns: &HashMap<String, TableColumns>,
+    table_columns: &HashMap<(String, String), TableColumns>,
     show_system: bool,
     filter: &str,
 ) -> TreeRowsView {
@@ -411,11 +421,10 @@ fn build_tree_rows(
                 last_was_view = Some(table.is_view);
             }
 
-            let columns_key = format!("{name}.{}", table.name);
-            let columns = table_columns.get(&columns_key);
+            let columns_key = Rc::new((name.clone(), table.name.clone()));
+            let columns = table_columns.get(columns_key.as_ref());
             rows.push(TreeRow::Table {
-                schema: name.clone(),
-                name: table.name.clone(),
+                key: columns_key.clone(),
                 is_view: table.is_view,
                 is_cols_expanded: columns.is_some(),
             });
@@ -438,13 +447,12 @@ fn build_tree_rows(
                 continue;
             }
 
-            rows.extend(
-                columns
-                    .columns
-                    .iter()
-                    .cloned()
-                    .map(|col| TreeRow::Column { col }),
-            );
+            rows.extend(columns.columns.iter().enumerate().map(|(column_index, _)| {
+                TreeRow::Column {
+                    key: columns_key.clone(),
+                    column_index,
+                }
+            }));
             if !columns.indexes.is_empty() {
                 rows.push(TreeRow::SectionLabel {
                     text: format!("索引 ({})", columns.indexes.len()),
@@ -529,7 +537,7 @@ mod tests {
         assert!(
             view.rows
                 .iter()
-                .any(|row| { matches!(row, TreeRow::Table { name, .. } if name == "ÜBERblick") })
+                .any(|row| { matches!(row, TreeRow::Table { key, .. } if key.1 == "ÜBERblick") })
         );
     }
 }

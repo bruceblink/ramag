@@ -3,6 +3,21 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// 连接名称用于列表渲染与日志字段，限制异常输入造成的内存与布局开销。
+pub const MAX_CONNECTION_NAME_BYTES: usize = 256;
+/// TCP 主机名 / IP 的资源边界；保留足够空间兼容较长内部域名。
+pub const MAX_CONNECTION_HOST_BYTES: usize = 1024;
+/// 用户名、数据库名与 MongoDB authSource 的统一资源边界。
+pub const MAX_CONNECTION_IDENTIFIER_BYTES: usize = 4 * 1024;
+/// 密码只在内存中保留明文，但加密与 hex 编码会放大体积，故单独限制。
+pub const MAX_CONNECTION_PASSWORD_BYTES: usize = 64 * 1024;
+/// 备注允许多行，但不应让单条连接记录无界增长。
+pub const MAX_CONNECTION_REMARK_BYTES: usize = 16 * 1024;
+/// Windows 长路径与 Unix 路径均留有余量，同时约束 CA 路径复制成本。
+pub const MAX_CONNECTION_PATH_BYTES: usize = 32 * 1024;
+/// SSH 目标仅需容纳 user@host 或 config 别名。
+pub const MAX_CONNECTION_SSH_TARGET_BYTES: usize = 4 * 1024;
+
 /// 连接唯一标识
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub Uuid);
@@ -98,6 +113,54 @@ pub struct ConnectionConfig {
 }
 
 impl ConnectionConfig {
+    /// 校验所有持久化与建连入口共享的资源 / 安全边界。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("连接名称不能为空".to_string());
+        }
+        validate_single_line("连接名称", &self.name, MAX_CONNECTION_NAME_BYTES)?;
+
+        if self.host.trim().is_empty() {
+            return Err("主机地址不能为空".to_string());
+        }
+        validate_single_line("主机地址", &self.host, MAX_CONNECTION_HOST_BYTES)?;
+
+        if self.port == 0 {
+            return Err("端口必须是 1 - 65535".to_string());
+        }
+        validate_protocol_text("用户名", &self.username, MAX_CONNECTION_IDENTIFIER_BYTES)?;
+        validate_protocol_text("密码", &self.password, MAX_CONNECTION_PASSWORD_BYTES)?;
+        validate_optional_protocol_text(
+            "数据库名",
+            self.database.as_deref(),
+            MAX_CONNECTION_IDENTIFIER_BYTES,
+        )?;
+        validate_optional_protocol_text(
+            "认证库",
+            self.auth_source.as_deref(),
+            MAX_CONNECTION_IDENTIFIER_BYTES,
+        )?;
+        validate_optional_protocol_text(
+            "备注",
+            self.remark.as_deref(),
+            MAX_CONNECTION_REMARK_BYTES,
+        )?;
+        validate_optional_single_line(
+            "CA 证书路径",
+            self.ca_cert_path.as_deref(),
+            MAX_CONNECTION_PATH_BYTES,
+        )?;
+        validate_optional_single_line(
+            "SSH 跳板目标",
+            self.ssh_target.as_deref(),
+            MAX_CONNECTION_SSH_TARGET_BYTES,
+        )?;
+        if self.ssh_port == Some(0) {
+            return Err("SSH 端口必须是 1 - 65535".to_string());
+        }
+        Ok(())
+    }
+
     pub fn new_mysql(
         name: impl Into<String>,
         host: impl Into<String>,
@@ -166,5 +229,138 @@ impl ConnectionConfig {
             ssh_target: None,
             ssh_port: None,
         }
+    }
+}
+
+fn validate_optional_single_line(
+    label: &str,
+    value: Option<&str>,
+    max_bytes: usize,
+) -> Result<(), String> {
+    if let Some(value) = value {
+        validate_single_line(label, value, max_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_single_line(label: &str, value: &str, max_bytes: usize) -> Result<(), String> {
+    validate_protocol_text(label, value, max_bytes)?;
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label}不能包含控制字符"));
+    }
+    Ok(())
+}
+
+fn validate_optional_protocol_text(
+    label: &str,
+    value: Option<&str>,
+    max_bytes: usize,
+) -> Result<(), String> {
+    if let Some(value) = value {
+        validate_protocol_text(label, value, max_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_protocol_text(label: &str, value: &str, max_bytes: usize) -> Result<(), String> {
+    if value.len() > max_bytes {
+        return Err(format!(
+            "{label}过长：{} bytes，最多 {max_bytes} bytes",
+            value.len()
+        ));
+    }
+    if value.contains('\0') {
+        return Err(format!("{label}不能包含 NUL 字符"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config() -> ConnectionConfig {
+        ConnectionConfig::new_mysql("local", "127.0.0.1", 3306, "root")
+    }
+
+    fn assert_oversized_rejected(limit: usize, set: impl FnOnce(&mut ConnectionConfig, String)) {
+        let mut config = valid_config();
+        set(&mut config, "x".repeat(limit + 1));
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn connection_validation_accepts_exact_resource_boundaries() {
+        let mut config = valid_config();
+        config.name = "n".repeat(MAX_CONNECTION_NAME_BYTES);
+        config.host = "h".repeat(MAX_CONNECTION_HOST_BYTES);
+        config.username = "u".repeat(MAX_CONNECTION_IDENTIFIER_BYTES);
+        config.password = "p".repeat(MAX_CONNECTION_PASSWORD_BYTES);
+        config.database = Some("d".repeat(MAX_CONNECTION_IDENTIFIER_BYTES));
+        config.auth_source = Some("a".repeat(MAX_CONNECTION_IDENTIFIER_BYTES));
+        config.remark = Some("r".repeat(MAX_CONNECTION_REMARK_BYTES));
+        config.ca_cert_path = Some("c".repeat(MAX_CONNECTION_PATH_BYTES));
+        config.ssh_target = Some("s".repeat(MAX_CONNECTION_SSH_TARGET_BYTES));
+        config.ssh_port = Some(u16::MAX);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn connection_validation_rejects_oversized_fields() {
+        assert_oversized_rejected(MAX_CONNECTION_NAME_BYTES, |config, value| {
+            config.name = value;
+        });
+        assert_oversized_rejected(MAX_CONNECTION_HOST_BYTES, |config, value| {
+            config.host = value;
+        });
+        assert_oversized_rejected(MAX_CONNECTION_IDENTIFIER_BYTES, |config, value| {
+            config.username = value;
+        });
+        assert_oversized_rejected(MAX_CONNECTION_PASSWORD_BYTES, |config, value| {
+            config.password = value;
+        });
+        assert_oversized_rejected(MAX_CONNECTION_IDENTIFIER_BYTES, |config, value| {
+            config.database = Some(value);
+        });
+        assert_oversized_rejected(MAX_CONNECTION_IDENTIFIER_BYTES, |config, value| {
+            config.auth_source = Some(value);
+        });
+        assert_oversized_rejected(MAX_CONNECTION_REMARK_BYTES, |config, value| {
+            config.remark = Some(value);
+        });
+        assert_oversized_rejected(MAX_CONNECTION_PATH_BYTES, |config, value| {
+            config.ca_cert_path = Some(value);
+        });
+        assert_oversized_rejected(MAX_CONNECTION_SSH_TARGET_BYTES, |config, value| {
+            config.ssh_target = Some(value);
+        });
+    }
+
+    #[test]
+    fn connection_validation_rejects_invalid_ports_and_control_characters() {
+        let mut config = valid_config();
+        config.port = 0;
+        assert!(config.validate().is_err());
+
+        config = valid_config();
+        config.ssh_port = Some(0);
+        assert!(config.validate().is_err());
+
+        config = valid_config();
+        config.name = "bad\nname".to_string();
+        assert!(config.validate().is_err());
+
+        config = valid_config();
+        config.host = "bad\0host".to_string();
+        assert!(config.validate().is_err());
+
+        config = valid_config();
+        config.password = "bad\0password".to_string();
+        assert!(config.validate().is_err());
+
+        config = valid_config();
+        config.remark = Some("multi\nline".to_string());
+        assert!(config.validate().is_ok());
     }
 }

@@ -308,7 +308,7 @@ fn render_tree_row(
             is_collapsed,
             file_count,
         } => {
-            let id = SharedString::from(format!("vcs-cd-dir-{idx_in_rows}-{dir_path}"));
+            let id = SharedString::from(format!("vcs-cd-dir-{idx_in_rows}"));
             let icon = if *is_collapsed { "▸" } else { "▾" };
             let dir_clone = dir_path.clone();
             h_flex()
@@ -340,7 +340,7 @@ fn render_tree_row(
                         .text_color(fg)
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(display_name.clone()),
+                        .child(super::inline_text_preview(display_name, 160)),
                 )
                 .child(
                     div()
@@ -371,7 +371,7 @@ fn render_tree_row(
             let is_selected = selected.as_deref() == Some(f.path.as_str());
             let path_for_click = f.path.clone();
             let commit_for_click = commit_id.to_string();
-            let id = SharedString::from(format!("vcs-cd-file-{idx_in_rows}-{}", f.path));
+            let id = SharedString::from(format!("vcs-cd-file-{idx_in_rows}"));
             let mut row = h_flex()
                 .id(id)
                 .gap(px(8.0))
@@ -402,7 +402,7 @@ fn render_tree_row(
                         .text_color(fg)
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(label),
+                        .child(super::inline_text_preview(&label, 200)),
                 );
             if is_selected {
                 row = row.bg(sel_bg);

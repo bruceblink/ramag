@@ -20,7 +20,7 @@ use gpui::{
 use gpui_component::input::InputState;
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{Column, ConnectionConfig, QueryResult, Value};
+use ramag_domain::entities::{Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, Value};
 
 use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
@@ -30,6 +30,8 @@ pub(crate) use helpers::{RowIdentity, derive_row_identity};
 
 /// UI 表格最多渲染行数（超出截断 + 状态栏提示"已截断"）
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
+/// 行内新增最多创建的输入框数量，避免异常元数据一次生成数万控件。
+pub(super) const MAX_INSERT_COLUMNS: usize = 512;
 
 /// 结果集状态
 #[derive(Debug, Clone, Default)]
@@ -105,12 +107,14 @@ impl ResultPanel {
             column_completion_source.clone(),
         );
         let column_filter_input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("过滤列（逗号分隔多列名）");
+            let mut state =
+                ramag_ui::bounded_search_input(window, cx).placeholder("过滤列（逗号分隔多列名）");
             state.lsp.completion_provider = Some(provider);
             state
         });
-        let row_filter_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("过滤行（任意单元格包含）"));
+        let row_filter_input = cx.new(|cx| {
+            ramag_ui::bounded_search_input(window, cx).placeholder("过滤行（任意单元格包含）")
+        });
         // 输入变化 → 触发 ResultPanel 重渲染
         cx.observe(&column_filter_input, |_, _, cx| cx.notify())
             .detach();
@@ -187,8 +191,21 @@ impl ResultPanel {
         };
         let mut values: Vec<(String, Value)> = Vec::new();
         let mut err: Option<String> = None;
+        let mut total_input_bytes = 0usize;
         for (col, input) in pending.columns.iter().zip(pending.inputs.iter()) {
-            let text = input.read(cx).value().to_string();
+            let input_value = input.read(cx).value();
+            let Some(next_total) = total_input_bytes
+                .checked_add(input_value.len())
+                .filter(|total| *total <= MAX_SQL_QUERY_BYTES)
+            else {
+                err = Some(format!(
+                    "新增行内容合计超过 {} MiB 安全上限，请改用 SQL 分批写入",
+                    MAX_SQL_QUERY_BYTES / 1024 / 1024
+                ));
+                break;
+            };
+            total_input_bytes = next_total;
+            let text = input_value.to_string();
             let nullable = col.nullable;
             let has_default = col.default_value.is_some() || col.is_primary_key;
             match parse_value_for_kind(col.data_type.kind, &text, nullable, has_default) {
@@ -337,13 +354,14 @@ impl ResultPanel {
         self.cell_edit_input = input;
     }
 
-    pub(super) fn cell_info(&self, ri: usize, ci: usize) -> Option<(String, String)> {
+    pub(super) fn cell_info(&self, ri: usize, ci: usize) -> Option<(String, String, bool)> {
         let ResultState::Ok(result) = &self.state else {
             return None;
         };
         let col_name = result.columns.get(ci)?.clone();
         let val = result.rows.get(ri)?.values.get(ci)?;
-        Some((col_name, val.display_for_edit()))
+        let (display, truncated) = val.display_for_edit_bounded(MAX_SQL_QUERY_BYTES);
+        Some((col_name, display, truncated))
     }
 
     /// 单元格编辑弹框的只读原因：写入闸门未过 → 相应原因；二进制单元格 → 防损坏只读。

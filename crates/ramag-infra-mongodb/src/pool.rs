@@ -2,6 +2,7 @@
 //! Client 内部自带连接池 + 自动重连 + 多路复用，clone 是 Arc 廉价复制；db 切换走命令而非新连接
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -24,6 +25,7 @@ pub struct PoolCache {
     /// 各建一个 Client、各跑一轮 SDAM 拓扑发现。不同连接使用不同锁，互不阻塞。
     build_locks: BuildLocks,
     generations: Arc<DashMap<ConnectionId, u64>>,
+    generation_clock: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -42,6 +44,7 @@ impl PoolCache {
     }
 
     pub async fn get_or_create(&self, config: &ConnectionConfig) -> Result<Client> {
+        config.validate().map_err(DomainError::InvalidConfig)?;
         if config.driver != DriverKind::Mongodb {
             return Err(DomainError::InvalidConfig(format!(
                 "MongoDriver 不支持 {:?} 类型连接",
@@ -49,7 +52,7 @@ impl PoolCache {
             )));
         }
 
-        let generation = self.generation(&config.id);
+        let generation = self.generation_for_request(&config.id);
         if let Some(client) = self.get_cached(&config.id, generation) {
             debug!(connection_id = %config.id, "mongo client cache hit");
             return Ok(client);
@@ -58,7 +61,7 @@ impl PoolCache {
         // 串行化建连 + 双检：避免并发重复建连（各触发一轮 SDAM 发现 → 首开卡顿）
         let build_lock = self.build_lock(&config.id, generation);
         let _guard = build_lock.lock().await;
-        if self.generation(&config.id) != generation {
+        if !self.is_current_generation(&config.id, generation) {
             return build_client(config).await;
         }
         if let Some(client) = self.get_cached(&config.id, generation) {
@@ -68,37 +71,66 @@ impl PoolCache {
 
         info!(connection_id = %config.id, name = %config.name, host = %config.host, "creating mongo client");
         let client = build_client(config).await?;
-        self.clients.insert(
-            config.id.clone(),
-            CachedClient {
-                generation,
-                client: client.clone(),
-            },
-        );
-        if self.generation(&config.id) != generation
-            && let Entry::Occupied(entry) = self.clients.entry(config.id.clone())
+        self.cache_if_current(config.id.clone(), generation, client.clone());
+        Ok(client)
+    }
+
+    fn cache_if_current(&self, conn_id: ConnectionId, generation: u64, client: Client) {
+        if !self.is_current_generation(&conn_id, generation) {
+            return;
+        }
+        match self.clients.entry(conn_id.clone()) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().generation > generation {
+                    return;
+                }
+                entry.insert(CachedClient { generation, client });
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(CachedClient { generation, client });
+            }
+        }
+        if !self.is_current_generation(&conn_id, generation)
+            && let Entry::Occupied(entry) = self.clients.entry(conn_id)
             && entry.get().generation == generation
         {
             entry.remove();
         }
-        Ok(client)
     }
 
     fn get_cached(&self, conn_id: &ConnectionId, generation: u64) -> Option<Client> {
-        match self.clients.entry(conn_id.clone()) {
-            Entry::Occupied(entry) if entry.get().generation == generation => {
-                Some(entry.get().client.clone())
+        self.clients
+            .get(conn_id)
+            .and_then(|entry| (entry.generation == generation).then(|| entry.client.clone()))
+    }
+
+    fn generation_for_request(&self, conn_id: &ConnectionId) -> u64 {
+        match self.generations.entry(conn_id.clone()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let generation = self.next_generation();
+                entry.insert(generation);
+                generation
             }
-            Entry::Occupied(entry) => {
-                entry.remove();
-                None
-            }
-            Entry::Vacant(_) => None,
         }
     }
 
-    fn generation(&self, conn_id: &ConnectionId) -> u64 {
-        self.generations.get(conn_id).map_or(0, |entry| *entry)
+    fn is_current_generation(&self, conn_id: &ConnectionId, generation: u64) -> bool {
+        self.generations
+            .get(conn_id)
+            .is_some_and(|entry| *entry == generation)
+    }
+
+    fn next_generation(&self) -> u64 {
+        loop {
+            let generation = self
+                .generation_clock
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            if generation != 0 {
+                return generation;
+            }
+        }
     }
 
     fn build_lock(&self, conn_id: &ConnectionId, generation: u64) -> BuildLock {
@@ -110,12 +142,24 @@ impl PoolCache {
 
     /// 移除该连接的缓存（编辑配置后调）
     pub fn evict(&self, conn_id: &ConnectionId) {
-        self.generations
-            .entry(conn_id.clone())
-            .and_modify(|generation| *generation = generation.wrapping_add(1))
-            .or_insert(1);
-        self.build_locks.retain(|key, _| &key.0 != conn_id);
-        if self.clients.remove(conn_id).is_some() {
+        let invalidated = self
+            .generations
+            .remove(conn_id)
+            .map(|(_, generation)| generation);
+        let Some(invalidated) = invalidated else {
+            return;
+        };
+        self.build_locks
+            .retain(|key, _| &key.0 != conn_id || key.1 != invalidated);
+        let removed = if let Entry::Occupied(entry) = self.clients.entry(conn_id.clone())
+            && entry.get().generation == invalidated
+        {
+            entry.remove();
+            true
+        } else {
+            false
+        };
+        if removed {
             info!(connection_id = %conn_id, "mongo client evicted");
         }
     }
@@ -130,6 +174,14 @@ impl PoolCache {
 }
 
 async fn build_client(config: &ConnectionConfig) -> Result<Client> {
+    if config.tls
+        && let Some(ca) = config
+            .ca_cert_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+    {
+        ramag_infra_tunnel::validate_ca_certificate_file(ca)?;
+    }
     // SSH 隧道：启用时改连 127.0.0.1:本地转发端口（就绪探测阻塞，经 spawn_blocking 隔离）
     let cfg_for_tunnel = config.clone();
     let tunnel = tokio::task::spawn_blocking(move || ramag_infra_tunnel::ensure(&cfg_for_tunnel))
@@ -226,26 +278,45 @@ mod tests {
     }
 
     #[test]
-    fn build_locks_are_per_connection_and_evict_advances_generation() {
+    fn build_locks_are_per_connection_and_evict_releases_generation_entry() {
         let cache = PoolCache::new();
         let first_id = ConnectionId::new();
         let second_id = ConnectionId::new();
+        let first_generation = cache.generation_for_request(&first_id);
+        let second_generation = cache.generation_for_request(&second_id);
 
         assert!(Arc::ptr_eq(
-            &cache.build_lock(&first_id, 0),
-            &cache.build_lock(&first_id, 0)
+            &cache.build_lock(&first_id, first_generation),
+            &cache.build_lock(&first_id, first_generation)
         ));
         assert!(!Arc::ptr_eq(
-            &cache.build_lock(&first_id, 0),
-            &cache.build_lock(&second_id, 0)
+            &cache.build_lock(&first_id, first_generation),
+            &cache.build_lock(&second_id, second_generation)
         ));
         assert!(!Arc::ptr_eq(
-            &cache.build_lock(&first_id, 0),
-            &cache.build_lock(&first_id, 1)
+            &cache.build_lock(&first_id, first_generation),
+            &cache.build_lock(&first_id, first_generation + 1)
         ));
 
-        assert_eq!(cache.generation(&first_id), 0);
+        assert!(cache.is_current_generation(&first_id, first_generation));
         cache.evict(&first_id);
-        assert_eq!(cache.generation(&first_id), 1);
+        assert!(!cache.generations.contains_key(&first_id));
+        assert!(!cache.is_current_generation(&first_id, first_generation));
+
+        let recreated_generation = cache.generation_for_request(&first_id);
+        assert_ne!(recreated_generation, first_generation);
+        assert!(cache.is_current_generation(&first_id, recreated_generation));
+    }
+
+    #[tokio::test]
+    async fn invalid_config_is_rejected_before_client_build() {
+        let cache = PoolCache::new();
+        let mut config = ConnectionConfig::new_mongodb("local", "127.0.0.1", 27017);
+        config.port = 0;
+
+        assert!(matches!(
+            cache.get_or_create(&config).await,
+            Err(DomainError::InvalidConfig(_))
+        ));
     }
 }

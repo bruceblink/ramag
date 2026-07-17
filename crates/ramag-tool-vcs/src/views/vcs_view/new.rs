@@ -6,12 +6,25 @@ use std::sync::Arc;
 use gpui::{AppContext as _, Context, ScrollHandle, UniformListScrollHandle, Window};
 use gpui_component::{
     input::{InputEvent, InputState},
+    notification::Notification,
     resizable::ResizableState,
+};
+use ramag_domain::entities::{
+    MAX_COMMIT_MESSAGE_BYTES, MAX_GIT_NAME_ARG_BYTES, MAX_GIT_POSITIONAL_ARG_BYTES,
+    MAX_GIT_TAG_MESSAGE_BYTES,
 };
 use ramag_domain::traits::{GitDriver, Storage};
 
 use super::super::helpers::{ActiveView, DiffViewMode, FilesViewMode, ViewMode};
 use super::VcsView;
+
+fn bounded_input(
+    max_bytes: usize,
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+) -> InputState {
+    InputState::new(window, cx).validate(move |value, _| value.len() <= max_bytes)
+}
 
 impl VcsView {
     pub fn new(
@@ -21,28 +34,36 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let commit_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner)
+            bounded_input(MAX_COMMIT_MESSAGE_BYTES, window, cx_inner)
                 .multi_line(true)
                 .rows(3)
                 .placeholder("commit message（首行 subject，空行后写 body）")
         });
         let create_branch_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("新分支名（基于当前 HEAD）")
+            bounded_input(MAX_GIT_NAME_ARG_BYTES, window, cx_inner)
+                .placeholder("新分支名（基于当前 HEAD）")
         });
-        let create_tag_input =
-            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("tag 名"));
-        let create_tag_message_input =
-            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("备注（可选）"));
-        let create_remote_name_input =
-            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("远程名（如 origin）"));
+        let create_tag_input = cx.new(|cx_inner| {
+            bounded_input(MAX_GIT_NAME_ARG_BYTES, window, cx_inner).placeholder("tag 名")
+        });
+        let create_tag_message_input = cx.new(|cx_inner| {
+            bounded_input(MAX_GIT_TAG_MESSAGE_BYTES, window, cx_inner).placeholder("备注（可选）")
+        });
+        let create_remote_name_input = cx.new(|cx_inner| {
+            bounded_input(MAX_GIT_NAME_ARG_BYTES, window, cx_inner)
+                .placeholder("远程名（如 origin）")
+        });
         let create_remote_url_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("远程 URL（HTTPS / SSH）")
+            bounded_input(MAX_GIT_POSITIONAL_ARG_BYTES, window, cx_inner)
+                .placeholder("远程 URL（HTTPS / SSH）")
         });
         let history_search_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("搜索：关键词 / @作者 / 7d/1m 时间下限")
+            ramag_ui::bounded_search_input(window, cx_inner)
+                .placeholder("搜索：关键词 / @作者 / 7d/1m 时间下限")
         });
         let clone_url_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("仓库 URL（HTTPS / SSH）")
+            bounded_input(MAX_GIT_POSITIONAL_ARG_BYTES, window, cx_inner)
+                .placeholder("仓库 URL（HTTPS / SSH）")
         });
         let ide_left_resize = cx.new(|_| ResizableState::default());
         let ide_files_resize = cx.new(|_| ResizableState::default());
@@ -52,16 +73,33 @@ impl VcsView {
         ramag_ui::persist_resizable_sizes(&ide_files_resize, "split_vcs_main", window, cx).detach();
         ramag_ui::persist_resizable_sizes(&detail_resize, "split_vcs_detail", window, cx).detach();
         let repo_search_input = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner).placeholder("搜索仓库（名称 / 路径）")
+            ramag_ui::bounded_search_input(window, cx_inner).placeholder("搜索仓库（名称 / 路径）")
         });
-        let files_search_input =
-            cx.new(|cx_inner| InputState::new(window, cx_inner).placeholder("搜索文件路径"));
+        let files_search_input = cx.new(|cx_inner| {
+            ramag_ui::bounded_search_input(window, cx_inner).placeholder("搜索文件路径")
+        });
         // 提交草稿输入即防抖持久化（重启后可恢复；切仓恢复走 session cache）。
         // 恢复写回用 set_value（不发 Change），不会触发本订阅形成回写环
-        cx.subscribe(
+        let commit_input_for_sub = commit_input.clone();
+        cx.subscribe_in(
             &commit_input,
-            |this: &mut Self, _, event: &InputEvent, cx| {
+            window,
+            move |this: &mut Self, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
+                    if ramag_ui::clamp_multiline_input_value(
+                        &commit_input_for_sub,
+                        MAX_COMMIT_MESSAGE_BYTES,
+                        window,
+                        cx,
+                    ) {
+                        this.pending_notification = Some(
+                            Notification::warning(format!(
+                                "提交信息最多保留 {} MiB，超出部分已截断",
+                                MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+                            ))
+                            .autohide(true),
+                        );
+                    }
                     this.schedule_commit_draft_persist(cx);
                 }
             },
@@ -240,6 +278,7 @@ impl VcsView {
             diff_h_scroll: ScrollHandle::new(),
             history_pane_visible: false,
             open_repos: Vec::new(),
+            startup_repo_restore_allowed: true,
             repos_scroll: ScrollHandle::new(),
             file_tabs: Vec::new(),
             active_file_tab_idx: None,

@@ -43,6 +43,7 @@ impl RawFileContent {
 impl VcsView {
     /// 弹出系统目录选择器；用户选完后异步打开仓库
     pub(super) fn pick_directory(&mut self, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
         if !self.ensure_commit_draft_within_limit(cx) {
             return;
         }
@@ -67,6 +68,7 @@ impl VcsView {
 
     /// 从最近列表点击仓库行 → 直接打开（不弹文件对话框）
     pub(super) fn open_recent_repo(&mut self, path: String, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
         if self.loading {
             return;
         }
@@ -123,6 +125,7 @@ impl VcsView {
 
     /// 从最近列表移除（不删磁盘）；按 path 找 RepoId 后调 storage.delete_repo
     pub(super) fn remove_recent_repo(&mut self, path: String, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
         let repo_id = self
             .recent_repos
             .iter()
@@ -164,7 +167,7 @@ impl VcsView {
                 match result {
                     Ok(mut paths) => {
                         // 字母序：让目录树渲染稳定（同一目录文件聚拢）
-                        paths.sort();
+                        paths.sort_unstable();
                         this.project_files = paths;
                     }
                     Err(e) => {
@@ -174,6 +177,7 @@ impl VcsView {
                         this.error = Some(format!("加载 Project Files 失败: {e}"));
                     }
                 }
+                this.prune_project_expanded_dirs();
                 // 列表内容变了 → 递增版本号让 render 缓存失效
                 this.project_files_version = this.project_files_version.wrapping_add(1);
                 cx.notify();
@@ -302,6 +306,7 @@ impl VcsView {
 
     /// 关闭指定路径的 tab；若是当前 tab 则尝试切到下一个，否则直接移除
     pub(super) fn remove_open_repo(&mut self, path: String, cx: &mut Context<Self>) {
+        self.startup_repo_restore_allowed = false;
         if self.busy || self.loading {
             self.notify_warning("当前操作尚未完成，完成后再关闭仓库标签", cx);
             return;
@@ -379,7 +384,10 @@ impl VcsView {
         let commit_text = self.commit_input.read(cx).value();
         debug_assert!(commit_text.len() <= MAX_COMMIT_MESSAGE_BYTES);
         // 切仓即持久化当前草稿（作废在途防抖任务——其读到的将是新仓文本），重启后可恢复
-        let generation = self.commit_draft_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation = self
+            .commit_draft_gen
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         let generation_ref = self.commit_draft_gen.clone();
         {
             let storage = self.storage.clone();
@@ -437,7 +445,10 @@ impl VcsView {
             return;
         };
         let text = self.commit_input.read(cx).value();
-        let generation = self.commit_draft_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation = self
+            .commit_draft_gen
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         let generation_ref = self.commit_draft_gen.clone();
         if text.len() > MAX_COMMIT_MESSAGE_BYTES {
             self.commit_draft_error = Some(format!(

@@ -1,5 +1,8 @@
 //! Commit graph：lane 分配 + 着色 + 左侧 gutter 渲染。算法见 `build_commit_lanes`
 
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
+
 use gpui::{AnyElement, IntoElement, ParentElement, Styled, div, px};
 use gpui_component::{Icon, Sizable as _, h_flex, v_flex};
 use ramag_domain::entities::{Commit, CommitId};
@@ -17,6 +20,8 @@ pub(super) struct CommitGraphRow {
 
 /// 单条 lane 宽度（px）：要小于 commit dot 直径，让线刚好被 dot 覆盖
 const LANE_WIDTH: f32 = 14.0;
+/// 病态分支图可能同时保留成千上万条逻辑 lane；展示层合并尾部 lane，避免每一行创建无界 UI 节点。
+const MAX_RENDERED_LANES: usize = 64;
 
 /// commit 时间倒序 → lane 分配。线性近似：active 维护各 lane 待入 commit，
 /// 当前 commit 占其位、空位复用、新 lane 增长；first parent 替换占位，已存在则合并；其余 parent 起新 lane
@@ -24,58 +29,69 @@ pub(super) fn build_commit_lanes<T>(commits: &[T]) -> Vec<CommitGraphRow>
 where
     T: std::borrow::Borrow<Commit>,
 {
-    let mut active: Vec<Option<CommitId>> = Vec::new();
+    let mut occupied: Vec<bool> = Vec::new();
+    let mut lane_by_commit: HashMap<CommitId, usize> = HashMap::new();
+    let mut free_lanes: BinaryHeap<Reverse<usize>> = BinaryHeap::new();
     let mut rows: Vec<CommitGraphRow> = Vec::with_capacity(commits.len());
 
     for commit in commits {
         let c = commit.borrow();
-        let mut lane_idx = active.iter().position(|x| x.as_ref() == Some(&c.id));
-        if lane_idx.is_none() {
-            lane_idx = match active.iter().position(Option::is_none) {
-                Some(empty) => Some(empty),
-                None => {
-                    active.push(None);
-                    Some(active.len() - 1)
-                }
-            };
-        }
-        let lane = lane_idx.unwrap_or(0);
+        let lane = lane_by_commit
+            .remove(&c.id)
+            .unwrap_or_else(|| allocate_lane(&mut occupied, &mut free_lanes));
         let is_merge = c.parents.len() > 1;
 
         if let Some(p0) = c.parents.first() {
-            let p0_in_other = active
-                .iter()
-                .enumerate()
-                .any(|(i, x)| i != lane && x.as_ref() == Some(p0));
-            active[lane] = if p0_in_other { None } else { Some(p0.clone()) };
+            if lane_by_commit.contains_key(p0) {
+                release_lane(lane, &mut occupied, &mut free_lanes);
+            } else {
+                occupied[lane] = true;
+                lane_by_commit.insert(p0.clone(), lane);
+            }
         } else {
-            active[lane] = None;
+            release_lane(lane, &mut occupied, &mut free_lanes);
         }
 
         for p in c.parents.iter().skip(1) {
-            let already = active.iter().any(|x| x.as_ref() == Some(p));
-            if already {
+            if lane_by_commit.contains_key(p) {
                 continue;
             }
-            match active.iter().position(Option::is_none) {
-                Some(empty) => active[empty] = Some(p.clone()),
-                None => active.push(Some(p.clone())),
-            }
+            let parent_lane = allocate_lane(&mut occupied, &mut free_lanes);
+            lane_by_commit.insert(p.clone(), parent_lane);
         }
 
-        let mut total = active.len();
-        while total > 0 && active[total - 1].is_none() {
-            total -= 1;
+        while occupied.last() == Some(&false) {
+            occupied.pop();
         }
-        let total_lanes = total.max(lane + 1);
+        let logical_total = occupied.len().max(lane + 1);
+        let rendered_lane = lane.min(MAX_RENDERED_LANES - 1);
+        let total_lanes = logical_total.min(MAX_RENDERED_LANES).max(rendered_lane + 1);
 
         rows.push(CommitGraphRow {
-            lane,
+            lane: rendered_lane,
             total_lanes,
             is_merge,
         });
     }
     rows
+}
+
+fn allocate_lane(occupied: &mut Vec<bool>, free_lanes: &mut BinaryHeap<Reverse<usize>>) -> usize {
+    while let Some(Reverse(lane)) = free_lanes.pop() {
+        if occupied.get(lane) == Some(&false) {
+            occupied[lane] = true;
+            return lane;
+        }
+    }
+    occupied.push(true);
+    occupied.len() - 1
+}
+
+fn release_lane(lane: usize, occupied: &mut [bool], free_lanes: &mut BinaryHeap<Reverse<usize>>) {
+    if occupied.get(lane) == Some(&true) {
+        occupied[lane] = false;
+        free_lanes.push(Reverse(lane));
+    }
 }
 
 /// 给 lane 分配高对比度颜色（基于黄金角分布，相邻 lane 不会同色）
@@ -87,13 +103,14 @@ pub(super) fn lane_color(lane: usize) -> gpui::Hsla {
 
 /// 渲染左侧 lane gutter：N 条彩色竖线 + 本 commit 所在 lane 的 dot
 pub(super) fn render_lane_gutter(graph: &CommitGraphRow) -> AnyElement {
-    let total = graph.total_lanes.max(1);
+    let total = graph.total_lanes.clamp(1, MAX_RENDERED_LANES);
+    let current_lane = graph.lane.min(total - 1);
     let mut row = h_flex().flex_none().items_stretch();
     for i in 0..total {
         let mut color = lane_color(i);
         let mut bg_line = color;
         bg_line.a = 0.45;
-        let lane_div = if i == graph.lane {
+        let lane_div = if i == current_lane {
             let dot_icon: AnyElement = if graph.is_merge {
                 Icon::new(ramag_ui::icons::git_merge())
                     .small()
@@ -175,6 +192,20 @@ mod tests {
         assert_eq!(rows[2].lane, 1);
         assert_eq!(rows[3].lane, 0);
         assert_eq!(rows[3].total_lanes, 1);
+    }
+
+    #[test]
+    fn pathological_graph_lane_count_is_bounded_for_rendering() {
+        let parents: Vec<String> = (0..(MAX_RENDERED_LANES + 20))
+            .map(|index| format!("p{index}"))
+            .collect();
+        let parent_refs: Vec<&str> = parents.iter().map(String::as_str).collect();
+        let commits = vec![mk("merge", &parent_refs)];
+
+        let rows = build_commit_lanes(&commits);
+
+        assert_eq!(rows[0].total_lanes, MAX_RENDERED_LANES);
+        assert!(rows[0].lane < MAX_RENDERED_LANES);
     }
 
     #[test]

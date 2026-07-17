@@ -1,7 +1,7 @@
 //! hunk 级 patch：discard_hunk（按 source 分流回滚）+ build_patch_for_hunk
 
 use gpui::Context;
-use ramag_domain::entities::{DiffLineKind, FileChangeKind, FileDiff};
+use ramag_domain::entities::{DiffLineKind, FileChangeKind, FileDiff, MAX_GIT_PATCH_BYTES};
 use tracing::{error, info};
 
 use super::helpers::{FileTabSource, GroupKind};
@@ -45,10 +45,13 @@ impl VcsView {
             cx.notify();
             return;
         }
-        let Some(patch) = build_patch_for_hunk(&diff, hunk_idx) else {
-            self.error = Some("hunk 索引越界".into());
-            cx.notify();
-            return;
+        let patch = match build_patch_for_hunk(&diff, hunk_idx) {
+            Ok(patch) => patch,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
         };
         let driver = self.driver.clone();
         let label = match kind {
@@ -113,10 +116,13 @@ impl VcsView {
             cx.notify();
             return;
         }
-        let Some(patch) = build_patch_for_hunk(&diff, hunk_idx) else {
-            self.error = Some("hunk 索引越界".into());
-            cx.notify();
-            return;
+        let patch = match build_patch_for_hunk(&diff, hunk_idx) {
+            Ok(patch) => patch,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
         };
         let driver = self.driver.clone();
         if !self.begin_op("暂存 hunk 中…", cx) {
@@ -156,38 +162,73 @@ impl VcsView {
 }
 
 /// 整个 hunk（含 context + `+/-` 全部行）→ unified diff patch，给 hunk 回滚用
-pub(super) fn build_patch_for_hunk(diff: &FileDiff, hunk_idx: usize) -> Option<String> {
-    let hunk = diff.hunks.get(hunk_idx)?;
+pub(super) fn build_patch_for_hunk(diff: &FileDiff, hunk_idx: usize) -> Result<String, String> {
+    let hunk = diff
+        .hunks
+        .get(hunk_idx)
+        .ok_or_else(|| "hunk 索引越界".to_string())?;
     let mut out = String::new();
     let path = &diff.path;
     let old_path = diff.old_path.as_deref().unwrap_or(path);
-    out.push_str(&format!("diff --git a/{old_path} b/{path}\n"));
+    if path.chars().any(char::is_control) || old_path.chars().any(char::is_control) {
+        return Err("文件路径包含控制字符，当前不支持行级操作；请改用整文件暂存或撤回".into());
+    }
+    append_patch_bounded(
+        &mut out,
+        &format!("diff --git a/{old_path} b/{path}\n"),
+        MAX_GIT_PATCH_BYTES,
+    )?;
     if matches!(
         diff.change_kind,
         FileChangeKind::Added | FileChangeKind::Untracked
     ) {
-        out.push_str("--- /dev/null\n");
+        append_patch_bounded(&mut out, "--- /dev/null\n", MAX_GIT_PATCH_BYTES)?;
     } else {
-        out.push_str(&format!("--- a/{old_path}\n"));
+        append_patch_bounded(
+            &mut out,
+            &format!("--- a/{old_path}\n"),
+            MAX_GIT_PATCH_BYTES,
+        )?;
     }
     if matches!(diff.change_kind, FileChangeKind::Deleted) {
-        out.push_str("+++ /dev/null\n");
+        append_patch_bounded(&mut out, "+++ /dev/null\n", MAX_GIT_PATCH_BYTES)?;
     } else {
-        out.push_str(&format!("+++ b/{path}\n"));
+        append_patch_bounded(&mut out, &format!("+++ b/{path}\n"), MAX_GIT_PATCH_BYTES)?;
     }
-    out.push_str(&format!(
-        "@@ -{},{} +{},{} @@\n",
-        hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-    ));
+    append_patch_bounded(
+        &mut out,
+        &format!(
+            "@@ -{},{} +{},{} @@\n",
+            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+        ),
+        MAX_GIT_PATCH_BYTES,
+    )?;
     for line in &hunk.lines {
         let prefix = match line.kind {
             DiffLineKind::Context => " ",
             DiffLineKind::Add => "+",
             DiffLineKind::Delete => "-",
         };
-        out.push_str(&format!("{prefix}{}\n", line.text));
+        append_patch_bounded(&mut out, prefix, MAX_GIT_PATCH_BYTES)?;
+        append_patch_bounded(&mut out, &line.text, MAX_GIT_PATCH_BYTES)?;
+        append_patch_bounded(&mut out, "\n", MAX_GIT_PATCH_BYTES)?;
     }
-    Some(out)
+    Ok(out)
+}
+
+fn append_patch_bounded(output: &mut String, value: &str, limit: usize) -> Result<(), String> {
+    let next = output
+        .len()
+        .checked_add(value.len())
+        .ok_or_else(|| "Git patch 长度溢出".to_string())?;
+    if next > limit {
+        return Err(format!(
+            "Git patch 超过 {} MiB 安全上限，请缩小 hunk",
+            MAX_GIT_PATCH_BYTES / 1024 / 1024
+        ));
+    }
+    output.push_str(value);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -235,5 +276,20 @@ mod tests {
         let patch = build_patch_for_hunk(&modified, 0).unwrap();
         assert!(patch.contains("--- a/src/new.rs\n+++ b/src/new.rs\n"));
         assert!(patch.contains("@@ -42,1 +43,1 @@"));
+    }
+
+    #[test]
+    fn patch_builder_stops_before_exceeding_budget() {
+        let mut output = String::new();
+        assert!(append_patch_bounded(&mut output, "1234", 4).is_ok());
+        assert!(append_patch_bounded(&mut output, "5", 4).is_err());
+        assert_eq!(output, "1234");
+    }
+
+    #[test]
+    fn patch_builder_rejects_paths_that_need_git_header_quoting() {
+        let mut special = diff(FileChangeKind::Modified, 1, 1);
+        special.path = "line\nbreak.rs".into();
+        assert!(build_patch_for_hunk(&special, 0).is_err());
     }
 }

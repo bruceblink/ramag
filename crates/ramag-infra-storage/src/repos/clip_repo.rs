@@ -16,7 +16,9 @@ use redb::{
 };
 use tracing::{debug, info};
 
-use ramag_domain::entities::{ClipItem, ClipSearchResult, contains_case_insensitive};
+use ramag_domain::entities::{
+    ClipItem, ClipSearchResult, MAX_CLIPBOARD_SEARCH_BYTES, contains_case_insensitive,
+};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::encryption::Cipher;
@@ -207,6 +209,20 @@ pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipIte
     Ok(())
 }
 
+pub(crate) fn get(
+    db: Arc<Database>,
+    cipher: Arc<RwLock<Cipher>>,
+    uuid: String,
+) -> Result<Option<ClipItem>> {
+    let cipher = cipher.read();
+    let read_txn = db.begin_read().map_err(store_err)?;
+    let clips = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
+    let Some(value) = clips.get(uuid.as_str()).map_err(store_err)? else {
+        return Ok(None);
+    };
+    Ok(Some(decode_record(&uuid, value.value(), &cipher)?))
+}
+
 /// 全量列表（按 last_used desc）。仅 cleanup_orphans 等全量场景用；日常用 `list_recent`
 pub(crate) fn list(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Vec<ClipItem>> {
     let cipher = cipher.read();
@@ -316,6 +332,11 @@ pub(crate) fn search_cancellable_bounded(
     max_inline_bytes: u64,
     cancelled: Arc<AtomicBool>,
 ) -> Result<ClipSearchResult> {
+    if query.len() > MAX_CLIPBOARD_SEARCH_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "剪贴历史搜索词超过 {MAX_CLIPBOARD_SEARCH_BYTES} bytes 上限"
+        )));
+    }
     let q = query.trim().to_lowercase();
     if q.is_empty() || cancelled.load(Ordering::Relaxed) {
         return Ok(ClipSearchResult {
@@ -419,17 +440,8 @@ pub(crate) fn find_by_hash(
     }
 }
 
-/// 清空全部历史。返回被删条目的媒体路径（调用方负责删落盘文件）
-pub(crate) fn clear(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Vec<String>> {
-    // 清空是损坏数据的最终恢复入口：个别记录无法解密时仍删除全部表，未知媒体由
-    // 应用层随后执行的孤儿扫描清理。
-    let images = match media_paths(db.clone(), cipher) {
-        Ok(images) => images,
-        Err(error) => {
-            tracing::warn!(error = %error, "collect clip media before clear failed");
-            Vec::new()
-        }
-    };
+/// 清空全部历史。媒体目录由应用层流式删除，无需在事务前解密并收集全部路径。
+pub(crate) fn clear(db: Arc<Database>) -> Result<()> {
     let write_txn = db.begin_write().map_err(store_err)?;
     write_txn.delete_table(CLIPS_TABLE).map_err(store_err)?;
     write_txn.delete_table(CLIP_BY_TIME).map_err(store_err)?;
@@ -438,7 +450,7 @@ pub(crate) fn clear(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Ve
     ensure_table(&write_txn)?;
     write_txn.commit().map_err(store_err)?;
     info!("clips cleared");
-    Ok(images)
+    Ok(())
 }
 
 /// 超量 / 过期清理：扫时间索引（不解密）定位越界 / 超龄条目，只解密待删的取媒体路径

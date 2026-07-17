@@ -2,12 +2,12 @@
 
 use std::path::Path;
 
-use ramag_domain::entities::{CommitId, Signature, Tag, TagKind};
+use ramag_domain::entities::{CommitId, MAX_GIT_TAG_MESSAGE_BYTES, Signature, Tag, TagKind};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{
-    ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_text, validate_name_arg,
-    validate_positional_arg,
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_stdin, run_git_text,
+    validate_name_arg, validate_positional_arg,
 };
 
 /// message=Some 走 annotated；sign=true 隐含 annotated
@@ -22,30 +22,54 @@ pub fn create(
     if let Some(target) = target {
         validate_positional_arg(target, "tag 目标")?;
     }
+    if let Some(message) = message {
+        validate_message(message)?;
+    }
     let mut args: Vec<&str> = vec!["tag"];
     let placeholder_msg: String;
+    let stdin_message: Option<&str>;
     if sign {
         // message=None 时给占位 subject 避免弹编辑器
         args.push("-s");
-        let msg_to_use = match message {
-            Some(m) => m,
+        stdin_message = match message {
+            Some(m) => {
+                args.push("-F");
+                args.push("-");
+                Some(m)
+            }
             None => {
                 placeholder_msg = format!("Tag {name}");
-                placeholder_msg.as_str()
+                args.push("-m");
+                args.push(placeholder_msg.as_str());
+                None
             }
         };
-        args.push("-m");
-        args.push(msg_to_use);
     } else if let Some(m) = message {
         args.push("-a");
-        args.push("-m");
-        args.push(m);
+        args.push("-F");
+        args.push("-");
+        stdin_message = Some(m);
+    } else {
+        stdin_message = None;
     }
     args.push(name);
     if let Some(t) = target {
         args.push(t);
     }
-    run_git_bytes(repo_path, &args).map(|_| ())
+    match stdin_message {
+        Some(message) => run_git_stdin(repo_path, &args, message),
+        None => run_git_bytes(repo_path, &args).map(|_| ()),
+    }
+}
+
+pub(crate) fn validate_message(message: &str) -> Result<()> {
+    if message.len() > MAX_GIT_TAG_MESSAGE_BYTES || message.contains('\0') {
+        return Err(DomainError::InvalidConfig(format!(
+            "tag 备注超过 {} KiB 上限或包含 NUL 字符",
+            MAX_GIT_TAG_MESSAGE_BYTES / 1024
+        )));
+    }
+    Ok(())
 }
 
 pub fn delete(repo_path: &Path, name: &str) -> Result<()> {
@@ -199,5 +223,12 @@ mod tests {
     fn invalid_tagger_date_is_reported() {
         let text = "v2.0\u{0}tag\u{0}def\u{0}abc\u{0}Alice\u{0}<a@e.com>\u{0}bad-date\u{0}raw\u{0}release\n";
         assert!(parse_tags(text).is_err());
+    }
+
+    #[test]
+    fn tag_message_has_explicit_argument_boundary() {
+        assert!(validate_message(&"m".repeat(MAX_GIT_TAG_MESSAGE_BYTES)).is_ok());
+        assert!(validate_message(&"m".repeat(MAX_GIT_TAG_MESSAGE_BYTES + 1)).is_err());
+        assert!(validate_message("bad\0message").is_err());
     }
 }

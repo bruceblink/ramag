@@ -3,10 +3,14 @@
 use base64::Engine as _;
 use flate2::read::GzDecoder;
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read, Write};
 
 const MAX_GZIP_DECOMPRESSED_BYTES: usize = 16 * 1024 * 1024;
-const MAX_RENDER_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RENDER_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RENDERED_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const RENDER_HINT_RESERVE_BYTES: usize = 256;
+const HEX_LINE_SOURCE_BYTES: usize = 16;
+const HEX_LINE_RENDERED_BYTES: usize = 79;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -64,33 +68,53 @@ fn decompress_gzip_with_limit(
 
 /// 以指定 ViewMode 渲染文本（Raw / JSON / Hex / base64）
 pub fn render_text(text: &str, mode: ViewMode) -> String {
-    render_text_with_limit(text, mode, MAX_RENDER_BYTES)
+    render_text_with_limit(text, mode, MAX_RENDER_SOURCE_BYTES)
 }
 
 fn render_text_with_limit(text: &str, mode: ViewMode, limit: usize) -> String {
-    let (preview, truncated) = truncate_text_bytes(text, limit);
+    render_text_with_limits(text, mode, limit, MAX_RENDERED_OUTPUT_BYTES)
+}
+
+fn render_text_with_limits(
+    text: &str,
+    mode: ViewMode,
+    source_limit: usize,
+    output_limit: usize,
+) -> String {
+    let source_limit = rendered_source_limit(mode, source_limit, output_limit, text.len());
+    let (preview, truncated) = truncate_text_bytes(text, source_limit);
     let mut rendered = match mode {
         ViewMode::Raw => preview.to_string(),
         ViewMode::Json if truncated => {
             format!("(JSON 内容过大，未执行完整格式化)\n\n{preview}")
         }
-        ViewMode::Json => pretty_json(preview.as_bytes()),
+        ViewMode::Json => pretty_json_with_limit(preview.as_bytes(), output_limit),
         ViewMode::Hex => to_hex_dump(preview.as_bytes()),
         ViewMode::Base64 => base64::engine::general_purpose::STANDARD.encode(preview.as_bytes()),
     };
     if truncated {
         append_truncation_hint(&mut rendered, preview.len(), text.len());
     }
-    rendered
+    cap_rendered_output(rendered, output_limit)
 }
 
 /// 以指定 ViewMode 渲染字节流
 pub fn render_bytes(bytes: &[u8], mode: ViewMode) -> String {
-    render_bytes_with_limit(bytes, mode, MAX_RENDER_BYTES)
+    render_bytes_with_limit(bytes, mode, MAX_RENDER_SOURCE_BYTES)
 }
 
 fn render_bytes_with_limit(bytes: &[u8], mode: ViewMode, limit: usize) -> String {
-    let preview = &bytes[..bytes.len().min(limit)];
+    render_bytes_with_limits(bytes, mode, limit, MAX_RENDERED_OUTPUT_BYTES)
+}
+
+fn render_bytes_with_limits(
+    bytes: &[u8],
+    mode: ViewMode,
+    source_limit: usize,
+    output_limit: usize,
+) -> String {
+    let source_limit = rendered_source_limit(mode, source_limit, output_limit, bytes.len());
+    let preview = &bytes[..bytes.len().min(source_limit)];
     let truncated = preview.len() < bytes.len();
     let mut rendered = match mode {
         ViewMode::Raw => match utf8_preview(preview) {
@@ -101,14 +125,32 @@ fn render_bytes_with_limit(bytes: &[u8], mode: ViewMode, limit: usize) -> String
             Ok(text) => format!("(JSON 内容过大，未执行完整格式化)\n\n{text}"),
             Err(_) => format!("[{} bytes：非 UTF-8，无法解析为 JSON]", bytes.len()),
         },
-        ViewMode::Json => pretty_json(preview),
+        ViewMode::Json => pretty_json_with_limit(preview, output_limit),
         ViewMode::Hex => to_hex_dump(preview),
         ViewMode::Base64 => base64::engine::general_purpose::STANDARD.encode(preview),
     };
     if truncated {
         append_truncation_hint(&mut rendered, preview.len(), bytes.len());
     }
-    rendered
+    cap_rendered_output(rendered, output_limit)
+}
+
+fn rendered_source_limit(
+    mode: ViewMode,
+    source_limit: usize,
+    output_limit: usize,
+    source_bytes: usize,
+) -> usize {
+    let content_limit = output_limit.saturating_sub(RENDER_HINT_RESERVE_BYTES);
+    match mode {
+        ViewMode::Hex => source_limit
+            .min((content_limit / HEX_LINE_RENDERED_BYTES).saturating_mul(HEX_LINE_SOURCE_BYTES)),
+        ViewMode::Base64 => source_limit.min((content_limit / 4).saturating_mul(3)),
+        ViewMode::Raw | ViewMode::Json if source_bytes > source_limit => {
+            source_limit.min(content_limit)
+        }
+        ViewMode::Raw | ViewMode::Json => source_limit,
+    }
 }
 
 fn truncate_text_bytes(text: &str, limit: usize) -> (&str, bool) {
@@ -137,6 +179,33 @@ fn append_truncation_hint(rendered: &mut String, shown: usize, total: usize) {
         rendered.push('\n');
     }
     rendered.push_str(&format!("\n[内容过大，仅显示前 {shown} / {total} bytes]"));
+}
+
+fn cap_rendered_output(mut rendered: String, limit: usize) -> String {
+    if rendered.len() <= limit {
+        return rendered;
+    }
+    append_bounded_hint(&mut rendered, limit, "渲染结果过大，仅显示前缀");
+    rendered
+}
+
+fn append_bounded_hint(rendered: &mut String, limit: usize, message: &str) {
+    let hint = format!("\n\n[{message}]");
+    let content_limit = limit.saturating_sub(hint.len());
+    truncate_string_bytes(rendered, content_limit);
+    rendered.push_str(&hint);
+    truncate_string_bytes(rendered, limit);
+}
+
+fn truncate_string_bytes(value: &mut String, limit: usize) {
+    if value.len() <= limit {
+        return;
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
 }
 
 /// 按内容判定默认视图：内容本身、或被编码成字符串的内容（兼容二次编码）解析后是 JSON
@@ -188,16 +257,76 @@ fn unwrap_encoded_json(v: serde_json::Value, depth: u8) -> serde_json::Value {
 }
 
 /// 解析 bytes 为 JSON 并 pretty 输出（先解开被字符串编码的 JSON）；失败时返回原文 + 提示
+#[cfg(test)]
 fn pretty_json(bytes: &[u8]) -> String {
+    pretty_json_with_limit(bytes, MAX_RENDERED_OUTPUT_BYTES)
+}
+
+fn pretty_json_with_limit(bytes: &[u8], output_limit: usize) -> String {
     match serde_json::from_slice::<serde_json::Value>(bytes) {
         Ok(v) => {
             let v = unwrap_encoded_json(v, 4);
-            serde_json::to_string_pretty(&v).unwrap_or_else(|_| "(JSON 序列化失败)".to_string())
+            let mut writer = BoundedJsonWriter::new(output_limit);
+            match serde_json::to_writer_pretty(&mut writer, &v) {
+                Ok(()) => writer.into_string(),
+                Err(_) if writer.exceeded => {
+                    let mut rendered = writer.into_string();
+                    append_bounded_hint(&mut rendered, output_limit, "格式化结果过大，仅显示前缀");
+                    rendered
+                }
+                Err(_) => "(JSON 序列化失败)".to_string(),
+            }
         }
         Err(e) => {
             let preview = std::str::from_utf8(bytes).unwrap_or("（非 UTF-8）");
-            format!("(无法解析为 JSON：{e})\n\n{preview}")
+            cap_rendered_output(format!("(无法解析为 JSON：{e})\n\n{preview}"), output_limit)
         }
+    }
+}
+
+struct BoundedJsonWriter {
+    output: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            output: Vec::with_capacity(limit.min(64 * 1024)),
+            limit,
+            exceeded: false,
+        }
+    }
+
+    fn into_string(mut self) -> String {
+        if let Err(error) = std::str::from_utf8(&self.output) {
+            self.output.truncate(error.valid_up_to());
+        }
+        String::from_utf8(self.output).unwrap_or_default()
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.exceeded {
+            return Err(io::Error::other("JSON output limit exceeded"));
+        }
+        let remaining = self.limit.saturating_sub(self.output.len());
+        if remaining == 0 {
+            self.exceeded = true;
+            return Err(io::Error::other("JSON output limit exceeded"));
+        }
+        let written = remaining.min(bytes.len());
+        self.output.extend_from_slice(&bytes[..written]);
+        if written < bytes.len() {
+            self.exceeded = true;
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -333,6 +462,21 @@ mod tests {
         let json = render_text_with_limit(r#"{"a":123}"#, ViewMode::Json, 4);
         assert!(json.contains("未执行完整格式化"));
         assert!(json.contains("仅显示前"));
+    }
+
+    #[test]
+    fn expanded_rendered_output_is_bounded() {
+        let bytes = vec![b'a'; 1024];
+        for mode in [ViewMode::Hex, ViewMode::Base64] {
+            let rendered = render_bytes_with_limits(&bytes, mode, bytes.len(), 256);
+            assert!(rendered.len() <= 256, "mode={mode:?}");
+            assert!(rendered.contains("仅显示前"), "mode={mode:?}");
+        }
+
+        let json = format!("[{}]", vec!["0"; 300].join(","));
+        let rendered = render_text_with_limits(&json, ViewMode::Json, json.len(), 256);
+        assert!(rendered.len() <= 256);
+        assert!(rendered.contains("格式化结果过大"));
     }
 
     #[test]

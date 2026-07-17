@@ -4,7 +4,10 @@
 use bson::{Bson, Document, doc};
 use futures::TryStreamExt;
 use mongodb::Client;
-use ramag_domain::entities::{MongoCollection, MongoCollectionStats, MongoDatabase, MongoIndex};
+use ramag_domain::entities::{
+    MongoCollection, MongoCollectionStats, MongoDatabase, MongoIndex,
+    validate_mongo_collection_name, validate_mongo_database_name,
+};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::errors::map_mongo_error;
@@ -17,14 +20,21 @@ pub async fn list_databases(client: &Client) -> Result<Vec<MongoDatabase>> {
         .await
         .map_err(map_mongo_error)?;
     ensure_metadata_item_limit(names.len(), "数据库")?;
-    Ok(names
-        .into_iter()
-        .map(|name| MongoDatabase {
+    let mut databases = Vec::with_capacity(names.len());
+    for name in names {
+        validate_mongo_database_name(&name).map_err(|error| {
+            DomainError::QueryFailed(format!(
+                "服务端返回了无法安全显示的数据库名：{}",
+                error.message()
+            ))
+        })?;
+        databases.push(MongoDatabase {
             name,
             size_on_disk: None,
             empty: false,
-        })
-        .collect())
+        });
+    }
+    Ok(databases)
 }
 
 pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoCollection>> {
@@ -35,6 +45,12 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
     while let Some(spec) = cursor.try_next().await.map_err(map_mongo_error)? {
         ensure_metadata_item_limit(out.len().saturating_add(1), "集合")?;
         let is_view = matches!(spec.collection_type, mongodb::results::CollectionType::View);
+        validate_mongo_collection_name(&spec.name).map_err(|error| {
+            DomainError::QueryFailed(format!(
+                "服务端返回了无法安全显示的集合名：{}",
+                error.message()
+            ))
+        })?;
         out.push(MongoCollection {
             name: spec.name,
             database: db.to_string(),

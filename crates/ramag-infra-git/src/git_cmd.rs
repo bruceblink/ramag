@@ -6,6 +6,10 @@ use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 
+use ramag_domain::entities::{
+    MAX_GIT_NAME_ARG_BYTES, MAX_GIT_PATCH_BYTES, MAX_GIT_PATH_ARGS, MAX_GIT_PATH_ARGS_BYTES,
+    MAX_GIT_PATH_BYTES, MAX_GIT_PATH_DEPTH, MAX_GIT_POSITIONAL_ARG_BYTES,
+};
 use ramag_domain::error::{DomainError, Result};
 use tracing::debug;
 
@@ -29,6 +33,7 @@ pub(crate) fn command() -> Command {
         // GUI 子进程没有可用终端；仍允许 Git Credential Manager 等图形凭据助手运行。
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GIT_EDITOR", "true");
+        command.env("GIT_LITERAL_PATHSPECS", "1");
         command
     }
     #[cfg(not(target_os = "windows"))]
@@ -36,6 +41,7 @@ pub(crate) fn command() -> Command {
         let mut command = Command::new("git");
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GIT_EDITOR", "true");
+        command.env("GIT_LITERAL_PATHSPECS", "1");
         command
     }
 }
@@ -192,7 +198,10 @@ fn read_limited(mut reader: impl std::io::Read, limit: usize) -> std::io::Result
         };
         let keep = read.min(limit.saturating_sub(bytes.len()));
         bytes.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < read;
+        if keep < read {
+            truncated = true;
+            break;
+        }
     }
     Ok(LimitedBytes { bytes, truncated })
 }
@@ -356,6 +365,12 @@ pub(crate) fn run_git_streaming(
 /// 把文本写入 stdin。此类命令不消费 stdout；stderr 在写入期间并发排空，避免钩子输出堵塞。
 pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Result<()> {
     use std::io::Write;
+    if stdin_text.len() > MAX_GIT_PATCH_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "git stdin 输入超过 {} MiB 安全上限",
+            MAX_GIT_PATCH_BYTES / 1024 / 1024
+        )));
+    }
     debug!(
         operation = args.first().copied().unwrap_or("unknown"),
         arg_count = args.len(),
@@ -452,6 +467,12 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
     Ok(())
 }
 
+/// 路径列表走 NUL 分隔 stdin，避开系统 argv 总长度上限并保留空白、换行等合法文件名。
+pub(crate) fn run_git_pathspecs(repo_path: &Path, args: &[&str], paths: &[String]) -> Result<()> {
+    let encoded = encode_pathspecs(paths)?;
+    run_git_stdin(repo_path, args, &encoded)
+}
+
 fn record_progress_line(
     line: &mut Vec<u8>,
     truncated: &mut bool,
@@ -522,7 +543,7 @@ fn wait_child_or_cleanup(
 /// 用户可编辑的 Git 名称（branch/tag/remote）：禁止被解析成选项或包含不可见分隔字符。
 pub(crate) fn validate_name_arg(value: &str, label: &str) -> Result<()> {
     if value.is_empty()
-        || value.len() > 1_024
+        || value.len() > MAX_GIT_NAME_ARG_BYTES
         || value.starts_with('-')
         || value.chars().any(char::is_whitespace)
         || value.chars().any(char::is_control)
@@ -537,7 +558,7 @@ pub(crate) fn validate_name_arg(value: &str, label: &str) -> Result<()> {
 /// revision / URL 等单个位置参数可含普通空格，但不能成为 Git 选项或携带控制字符。
 pub(crate) fn validate_positional_arg(value: &str, label: &str) -> Result<()> {
     if value.is_empty()
-        || value.len() > 4_096
+        || value.len() > MAX_GIT_POSITIONAL_ARG_BYTES
         || value.starts_with('-')
         || value.chars().any(char::is_control)
     {
@@ -546,6 +567,71 @@ pub(crate) fn validate_positional_arg(value: &str, label: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// 路径位于 `--` 或 `--pathspec-from-file` 后，可合法以 `-` 开头或包含空白与换行。
+pub(crate) fn validate_path_arg(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() || value.len() > MAX_GIT_PATH_BYTES || value.contains('\0') {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}为空、超过 {} KiB，或包含 NUL 字符",
+            MAX_GIT_PATH_BYTES / 1024
+        )));
+    }
+    let depth = value.bytes().filter(|byte| *byte == b'/').count() + 1;
+    if depth > MAX_GIT_PATH_DEPTH {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}超过 {MAX_GIT_PATH_DEPTH} 层目录上限"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_path_args(paths: &[String], label: &str) -> Result<()> {
+    encode_pathspec_size(paths, label).map(|_| ())
+}
+
+pub(crate) fn validate_output_path(value: &str, label: &str, index: usize) -> Result<()> {
+    validate_path_arg(value, label).map_err(|error| {
+        DomainError::QueryFailed(format!(
+            "{label}第 {index} 条超出安全边界：{}",
+            error.message()
+        ))
+    })
+}
+
+fn encode_pathspecs(paths: &[String]) -> Result<String> {
+    let capacity = encode_pathspec_size(paths, "Git 文件路径列表")?;
+    let mut encoded = String::with_capacity(capacity);
+    for path in paths {
+        encoded.push_str(path);
+        encoded.push('\0');
+    }
+    Ok(encoded)
+}
+
+fn encode_pathspec_size(paths: &[String], label: &str) -> Result<usize> {
+    if paths.is_empty() {
+        return Err(DomainError::InvalidConfig(format!("{label}不能为空")));
+    }
+    if paths.len() > MAX_GIT_PATH_ARGS {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}超过 {MAX_GIT_PATH_ARGS} 条安全上限"
+        )));
+    }
+    let mut total = 0usize;
+    for path in paths {
+        validate_path_arg(path, "Git 文件路径")?;
+        total = total
+            .checked_add(path.len().saturating_add(1))
+            .ok_or_else(|| DomainError::InvalidConfig(format!("{label}总长度溢出")))?;
+        if total > MAX_GIT_PATH_ARGS_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "{label}总长度超过 {} MiB 安全上限",
+                MAX_GIT_PATH_ARGS_BYTES / 1024 / 1024
+            )));
+        }
+    }
+    Ok(total)
 }
 
 /// 子进程输出有字节上限，但解析成大量 String/实体后仍会放大；在分配下一项前拦截。
@@ -582,8 +668,12 @@ fn ensure_git_size(bytes: &[u8], limit: usize, label: &str, index: usize) -> Res
 mod tests {
     use super::{
         MAX_GIT_MESSAGE_BYTES, MAX_GIT_RECORD_BYTES, MAX_PARSED_GIT_ITEMS, PROGRESS_LINE_MAX_BYTES,
-        command, ensure_git_list_room, ensure_git_message_size, ensure_git_record_size,
-        read_limited, record_progress_line, validate_name_arg, validate_positional_arg,
+        command, encode_pathspecs, ensure_git_list_room, ensure_git_message_size,
+        ensure_git_record_size, read_limited, record_progress_line, validate_name_arg,
+        validate_path_arg, validate_path_args, validate_positional_arg,
+    };
+    use ramag_domain::entities::{
+        MAX_GIT_NAME_ARG_BYTES, MAX_GIT_PATH_ARGS_BYTES, MAX_GIT_POSITIONAL_ARG_BYTES,
     };
 
     #[test]
@@ -599,6 +689,11 @@ mod tests {
             .find(|(key, _)| *key == "GIT_EDITOR")
             .and_then(|(_, value)| value);
         assert_eq!(editor, Some(std::ffi::OsStr::new("true")));
+        let literal_pathspecs = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_LITERAL_PATHSPECS")
+            .and_then(|(_, value)| value);
+        assert_eq!(literal_pathspecs, Some(std::ffi::OsStr::new("1")));
     }
 
     #[test]
@@ -621,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_output_is_bounded_while_reader_is_fully_drained() -> std::io::Result<()> {
+    fn captured_output_stops_after_the_safety_limit() -> std::io::Result<()> {
         let captured = read_limited(std::io::Cursor::new(b"123456"), 4)?;
         assert_eq!(captured.bytes, b"1234");
         assert!(captured.truncated);
@@ -640,6 +735,40 @@ mod tests {
         assert!(validate_positional_arg("HEAD~2", "revision").is_ok());
         assert!(validate_positional_arg("--exec=bad", "revision").is_err());
         assert!(validate_positional_arg("bad\nvalue", "revision").is_err());
+        assert!(validate_name_arg(&"n".repeat(MAX_GIT_NAME_ARG_BYTES), "分支名").is_ok());
+        assert!(validate_name_arg(&"n".repeat(MAX_GIT_NAME_ARG_BYTES + 1), "分支名").is_err());
+        assert!(
+            validate_positional_arg(&"u".repeat(MAX_GIT_POSITIONAL_ARG_BYTES), "远程 URL").is_ok()
+        );
+        assert!(
+            validate_positional_arg(&"u".repeat(MAX_GIT_POSITIONAL_ARG_BYTES + 1), "远程 URL")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pathspec_input_preserves_special_names_and_has_batch_boundaries()
+    -> ramag_domain::error::Result<()> {
+        let paths = vec![
+            "-leading".to_string(),
+            ":(glob)*".to_string(),
+            "a\nb".to_string(),
+        ];
+        let encoded = encode_pathspecs(&paths)?;
+        assert_eq!(encoded.as_bytes(), b"-leading\0:(glob)*\0a\nb\0");
+        assert!(validate_path_arg("a\nb", "路径").is_ok());
+        assert!(validate_path_arg("bad\0path", "路径").is_err());
+        assert!(
+            validate_path_arg(
+                &"d/".repeat(ramag_domain::entities::MAX_GIT_PATH_DEPTH),
+                "路径"
+            )
+            .is_err()
+        );
+
+        let oversized = vec!["x".repeat(MAX_GIT_PATH_ARGS_BYTES)];
+        assert!(validate_path_args(&oversized, "路径列表").is_err());
+        Ok(())
     }
 
     #[test]

@@ -417,9 +417,9 @@ fn repo_row(
     let path_for_open = r.path.clone();
     let path_for_remove = r.path.clone();
     let path_for_favorite = r.path.clone();
-    let row_id = SharedString::from(format!("vcs-repo-row-{idx}-{}", r.path));
-    let del_id = SharedString::from(format!("vcs-repo-del-{idx}-{}", r.path));
-    let favorite_id = SharedString::from(format!("vcs-repo-fav-{idx}-{}", r.path));
+    let row_id = SharedString::from(format!("vcs-repo-row-{idx}-{}", r.id));
+    let del_id = SharedString::from(format!("vcs-repo-del-{idx}-{}", r.id));
+    let favorite_id = SharedString::from(format!("vcs-repo-fav-{idx}-{}", r.id));
     let is_favorite = r.favorite;
 
     let mono = cx.theme().mono_font_family.clone();
@@ -461,7 +461,7 @@ fn repo_row(
                 .text_color(fg)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(r.name.clone()),
+                .child(super::inline_text_preview(&r.name, 160)),
         )
         // 路径（mono 小灰，尾部省略；右对齐占据 360px）
         .child(
@@ -473,7 +473,7 @@ fn repo_row(
                 .font_family(mono)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(r.path.clone()),
+                .child(super::inline_text_preview(&r.path, 240)),
         )
         // 操作按钮组（收藏 + 移除；mouse_down 拦冒泡避免触发整行打开）
         .child(

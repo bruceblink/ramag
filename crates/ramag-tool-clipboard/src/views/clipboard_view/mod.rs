@@ -77,7 +77,8 @@ impl ClipboardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索剪贴历史…"));
+        let search =
+            cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索剪贴历史…"));
 
         let mut subscriptions = Vec::new();
         // 搜索框输入即重渲染（过滤是纯内存操作）

@@ -6,9 +6,12 @@ use std::path::Path;
 use ramag_domain::entities::{BlameLine, CommitId};
 use ramag_domain::error::{DomainError, Result};
 
-use crate::git_cmd::{ensure_git_list_room, ensure_git_record_size, run_git_text};
+use crate::git_cmd::{
+    ensure_git_list_room, ensure_git_record_size, run_git_text, validate_path_arg,
+};
 
 pub fn run(repo_path: &Path, file: &str) -> Result<Vec<BlameLine>> {
+    validate_path_arg(file, "blame 文件路径")?;
     let raw = run_git_text(repo_path, &["blame", "--porcelain", "--", file])?;
     parse_porcelain(&raw)
 }

@@ -130,6 +130,8 @@ pub struct ClipSearchResult {
 
 /// 单条剪贴内容允许的最大持久化体积；避免异常设置放大采集时的内存与磁盘占用。
 pub const MAX_CLIPBOARD_ITEM_BYTES: u64 = 64 * 1024 * 1024;
+/// 全量历史搜索会逐条解密与匹配，异常长查询词只会放大比较成本。
+pub const MAX_CLIPBOARD_SEARCH_BYTES: usize = 4 * 1024;
 /// 来源黑名单条目上限；正常应用数量远低于此值，边界用于约束匹配与设置渲染成本。
 pub const MAX_CLIPBOARD_BLACKLIST_ENTRIES: usize = 256;
 const MAX_CLIPBOARD_BLACKLIST_ENTRY_BYTES: usize = 1024;

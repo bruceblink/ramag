@@ -82,10 +82,10 @@ impl VcsView {
                     .unwrap_or(false);
             let path_switch = repo.path.clone();
             let path_close = repo.path.clone();
-            let name = SharedString::from(repo.name.clone());
-            let tab_id = SharedString::from(format!("vcs-tab-repo-{}", repo.path));
-            let label_id = SharedString::from(format!("vcs-tab-label-{}", repo.path));
-            let close_id = SharedString::from(format!("vcs-tab-close-{}", repo.path));
+            let name = SharedString::from(super::inline_text_preview(&repo.name, 160));
+            let tab_id = SharedString::from(format!("vcs-tab-repo-{}", repo.id));
+            let label_id = SharedString::from(format!("vcs-tab-label-{}", repo.id));
+            let close_id = SharedString::from(format!("vcs-tab-close-{}", repo.id));
 
             // 外层无 on_click，内层标签区单独响应切换，关闭按钮独立，避免事件冒泡冲突
             let mut tab = h_flex()

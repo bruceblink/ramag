@@ -125,7 +125,7 @@ pub(super) fn conflict_buttons(
     let (ours_label, theirs_label) = conflict_side_labels(operation);
     let path_for_view = path.to_string();
     let view_btn = {
-        let id = SharedString::from(format!("vcs-conflict-view-{idx}-{path}"));
+        let id = SharedString::from(format!("vcs-conflict-view-{idx}"));
         Button::new(id)
             .ghost()
             .xsmall()
@@ -183,7 +183,7 @@ fn conflict_btn(
     busy: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    let id = SharedString::from(format!("vcs-conflict-{kind}-{idx}-{path}"));
+    let id = SharedString::from(format!("vcs-conflict-{kind}-{idx}"));
     let path_owned = path.to_string();
     Button::new(id)
         .ghost()

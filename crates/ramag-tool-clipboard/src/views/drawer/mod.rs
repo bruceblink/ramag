@@ -76,7 +76,7 @@ impl ClipboardDrawer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索…"));
+        let search = cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索…"));
 
         let mut subs = Vec::new();
         // 输入即过滤：内容变化重置选中到首项；回车粘贴当前选中

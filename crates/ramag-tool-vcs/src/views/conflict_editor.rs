@@ -92,7 +92,10 @@ impl VcsView {
                     .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(format!("冲突对比：{path}")),
+                    .child(format!(
+                        "冲突对比：{}",
+                        super::inline_text_preview(&path, 200)
+                    )),
             )
             .child(
                 Button::new("vcs-conflict-use-ours")

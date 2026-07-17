@@ -21,6 +21,33 @@ const READY_TIMEOUT: Duration = Duration::from_secs(12);
 const PROBE_INTERVAL: Duration = Duration::from_millis(200);
 /// 建连失败时最多回传的 ssh stderr，防异常子进程输出导致无界内存与超长提示。
 const MAX_ERROR_OUTPUT_BYTES: usize = 16 * 1024;
+/// 自定义 CA 证书文件上限；连接驱动通常会整文件读入内存。
+pub const MAX_CA_CERT_BYTES: usize = 1024 * 1024;
+const MAX_ACTIVE_TUNNELS: usize = 64;
+
+/// 在启动 SSH 或网络连接前校验自定义 CA，避免驱动整读异常文件。
+pub fn validate_ca_certificate_file(path: &str) -> Result<()> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        DomainError::InvalidConfig(format!("读取 CA 证书元数据失败（{path}）：{error}"))
+    })?;
+    if !metadata.is_file() {
+        return Err(DomainError::InvalidConfig(format!(
+            "CA 证书不是普通文件（{path}）"
+        )));
+    }
+    if metadata.len() == 0 {
+        return Err(DomainError::InvalidConfig(format!(
+            "CA 证书文件为空（{path}）"
+        )));
+    }
+    if metadata.len() > MAX_CA_CERT_BYTES as u64 {
+        return Err(DomainError::InvalidConfig(format!(
+            "CA 证书超过 {} MiB 安全上限（{path}）",
+            MAX_CA_CERT_BYTES / 1024 / 1024
+        )));
+    }
+    Ok(())
+}
 
 struct Tunnel {
     child: Child,
@@ -69,10 +96,19 @@ fn slot_for(id: &ConnectionId) -> Result<TunnelSlot> {
     let mut map = registry()
         .lock()
         .map_err(|_| DomainError::QueryFailed("SSH 隧道注册表锁失效".into()))?;
+    if !can_allocate_tunnel_slot(map.len(), map.contains_key(id)) {
+        return Err(DomainError::QueryFailed(format!(
+            "SSH 隧道已达 {MAX_ACTIVE_TUNNELS} 个并发上限，请先关闭不再使用的连接"
+        )));
+    }
     Ok(map
         .entry(id.clone())
         .or_insert_with(|| Arc::new(Mutex::new(None)))
         .clone())
+}
+
+fn can_allocate_tunnel_slot(current: usize, already_exists: bool) -> bool {
+    already_exists || current < MAX_ACTIVE_TUNNELS
 }
 
 fn fingerprint(config: &ConnectionConfig) -> String {
@@ -88,6 +124,7 @@ fn fingerprint(config: &ConnectionConfig) -> String {
 /// 确保该连接的 SSH 隧道就绪。未启用隧道返回 `None`；
 /// 启用则返回应改连的本地地址 `("127.0.0.1", 本地端口)`
 pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
+    config.validate().map_err(DomainError::InvalidConfig)?;
     let Some(target) = config
         .ssh_target
         .as_deref()
@@ -118,11 +155,33 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
         info!(connection_id = %config.id, "ssh tunnel rebuilt (stale or dead)");
     }
 
-    let tunnel = build_tunnel(config, target, want)?;
+    let tunnel = match build_tunnel(config, target, want) {
+        Ok(tunnel) => tunnel,
+        Err(error) => {
+            drop(current);
+            remove_unused_slot(&config.id, &slot);
+            return Err(error);
+        }
+    };
     let local_port = tunnel.local_port;
     *current = Some(tunnel);
     info!(connection_id = %config.id, target, local_port, "ssh tunnel established");
     Ok(Some(("127.0.0.1".into(), local_port)))
+}
+
+fn remove_unused_slot(id: &ConnectionId, slot: &TunnelSlot) {
+    let Ok(mut map) = registry().lock() else {
+        warn!(connection_id = %id, "ssh tunnel registry lock poisoned during failed setup cleanup");
+        return;
+    };
+    let is_current = map
+        .get(id)
+        .is_some_and(|registered| Arc::ptr_eq(registered, slot));
+    // registry + 当前调用者各持一个 Arc；更多引用表示已有并发 ensure/evict，不能移除。
+    let is_empty = slot.lock().is_ok_and(|current| current.is_none());
+    if is_current && Arc::strong_count(slot) == 2 && is_empty {
+        map.remove(id);
+    }
 }
 
 fn build_tunnel(config: &ConnectionConfig, target: &str, fingerprint: String) -> Result<Tunnel> {
@@ -330,6 +389,13 @@ mod tests {
     }
 
     #[test]
+    fn invalid_config_is_rejected_without_starting_ssh() {
+        let mut cfg = ConnectionConfig::new_mysql("t", "db.internal", 3306, "root");
+        cfg.port = 0;
+        assert!(matches!(ensure(&cfg), Err(DomainError::InvalidConfig(_))));
+    }
+
+    #[test]
     fn fingerprint_covers_target_port_and_destination() {
         let mut cfg = ConnectionConfig::new_mysql("t", "db.internal", 3306, "root");
         cfg.ssh_target = Some("ops@bastion".into());
@@ -362,6 +428,27 @@ mod tests {
     }
 
     #[test]
+    fn ca_certificate_file_has_an_explicit_size_boundary()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ramag-ca-boundary-{}-{unique}.pem",
+            std::process::id()
+        ));
+
+        std::fs::write(&path, vec![b'x'; MAX_CA_CERT_BYTES])?;
+        assert!(validate_ca_certificate_file(&path.to_string_lossy()).is_ok());
+        std::fs::write(&path, vec![b'x'; MAX_CA_CERT_BYTES + 1])?;
+        assert!(validate_ca_certificate_file(&path.to_string_lossy()).is_err());
+        std::fs::write(&path, [])?;
+        assert!(validate_ca_certificate_file(&path.to_string_lossy()).is_err());
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
     fn slots_serialize_only_the_same_connection()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let first_id = ConnectionId::new();
@@ -376,5 +463,25 @@ mod tests {
         evict(&first_id);
         evict(&second_id);
         Ok(())
+    }
+
+    #[test]
+    fn failed_setup_cleanup_removes_an_unshared_empty_slot()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let id = ConnectionId::new();
+        let slot = slot_for(&id)?;
+        assert!(registry().lock()?.contains_key(&id));
+
+        remove_unused_slot(&id, &slot);
+
+        assert!(!registry().lock()?.contains_key(&id));
+        Ok(())
+    }
+
+    #[test]
+    fn active_tunnel_limit_has_an_exact_boundary() {
+        assert!(can_allocate_tunnel_slot(MAX_ACTIVE_TUNNELS - 1, false));
+        assert!(!can_allocate_tunnel_slot(MAX_ACTIVE_TUNNELS, false));
+        assert!(can_allocate_tunnel_slot(MAX_ACTIVE_TUNNELS, true));
     }
 }

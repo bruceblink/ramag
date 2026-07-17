@@ -5,7 +5,6 @@ use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex};
-use ramag_domain::entities::{Branch, Remote, Tag};
 
 use super::vcs_view::VcsView;
 
@@ -32,16 +31,13 @@ pub(super) enum LeftRow {
     },
     Branch {
         idx: usize,
-        branch: Branch,
         is_remote: bool,
     },
     Tag {
         idx: usize,
-        tag: Tag,
     },
     Remote {
         idx: usize,
-        remote: Remote,
     },
     CreateBranch,
     CreateTag,
@@ -59,18 +55,31 @@ impl VcsView {
                 collapsed,
                 section,
             } => section_header(title, *count, *collapsed, *section, cx),
-            LeftRow::Branch {
-                idx,
-                branch,
-                is_remote,
-            } => super::sidebar_branches::branch_row(*idx, branch, self.busy, *is_remote, cx)
-                .into_any_element(),
-            LeftRow::Tag { idx, tag } => {
-                super::sidebar_tags::tag_row(*idx, tag, self.busy, cx).into_any_element()
+            LeftRow::Branch { idx, is_remote } => {
+                let branch = if *is_remote {
+                    self.remote_branches.get(*idx)
+                } else {
+                    self.local_branches.get(*idx)
+                };
+                branch.map_or_else(
+                    || div().h(px(LEFT_ROW_H)).into_any_element(),
+                    |branch| {
+                        super::sidebar_branches::branch_row(*idx, branch, self.busy, *is_remote, cx)
+                            .into_any_element()
+                    },
+                )
             }
-            LeftRow::Remote { idx, remote } => {
-                super::sidebar_remotes::remote_row(*idx, remote, self.busy, cx).into_any_element()
-            }
+            LeftRow::Tag { idx } => self.tags.get(*idx).map_or_else(
+                || div().h(px(LEFT_ROW_H)).into_any_element(),
+                |tag| super::sidebar_tags::tag_row(*idx, tag, self.busy, cx).into_any_element(),
+            ),
+            LeftRow::Remote { idx } => self.remotes.get(*idx).map_or_else(
+                || div().h(px(LEFT_ROW_H)).into_any_element(),
+                |remote| {
+                    super::sidebar_remotes::remote_row(*idx, remote, self.busy, cx)
+                        .into_any_element()
+                },
+            ),
             LeftRow::CreateBranch => self.render_create_branch_row(cx),
             LeftRow::CreateTag => self.render_create_tag_row(cx),
             LeftRow::CreateRemote => self.render_create_remote_row(cx),

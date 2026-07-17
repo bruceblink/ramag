@@ -13,6 +13,7 @@ use gpui_component::{
     notification::Notification,
     v_flex,
 };
+use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
 use ramag_ui::platform::primary_shortcut;
 
 use super::QueryTab;
@@ -33,7 +34,7 @@ fn format_thousands(n: usize) -> String {
 use crate::actions::{
     ExplainQuery, ExportCsv, ExportJson, ExportMarkdown, FormatSql, RunQuery, RunStatementAtCursor,
 };
-use crate::views::result_panel::ResultState;
+use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultState};
 
 impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -322,6 +323,18 @@ impl Render for QueryTab {
                                     let cols = svc.list_columns(&conn, &schema, &table).await;
                                     let _ = cx.update_window(handle, |_, window, app| match cols {
                                         Ok(cols) => {
+                                            if cols.len() > MAX_INSERT_COLUMNS {
+                                                window.push_notification(
+                                                    Notification::warning(format!(
+                                                        "该表有 {} 列，超过行内新增的 {} 列上限；请使用 INSERT SQL",
+                                                        cols.len(),
+                                                        MAX_INSERT_COLUMNS
+                                                    ))
+                                                    .autohide(true),
+                                                    app,
+                                                );
+                                                return;
+                                            }
                                             let inputs: Vec<Entity<InputState>> = cols
                                                 .iter()
                                                 .map(|col| {
@@ -336,6 +349,10 @@ impl Render for QueryTab {
                                                     );
                                                     app.new(|cx_inner| {
                                                         InputState::new(window, cx_inner)
+                                                            .validate(|value, _| {
+                                                                value.len()
+                                                                    <= MAX_SQL_QUERY_BYTES
+                                                            })
                                                             .placeholder(placeholder)
                                                     })
                                                 })
@@ -385,6 +402,13 @@ impl Render for QueryTab {
                                     None
                                 };
                                 let _ = panel_ref;
+                                if let Some((indices, _)) = &multi
+                                    && !this.result.update(cx, |panel, cx| {
+                                        panel.guard_batch_delete_count(indices.len(), cx)
+                                    })
+                                {
+                                    return;
+                                }
                                 let result = this.result.clone();
                                 let (title, preview, on_ok_indices, on_ok_single): (
                                     &'static str,

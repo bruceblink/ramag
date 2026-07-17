@@ -120,7 +120,7 @@ pub(super) fn branch_row(
                 .text_color(name_color)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(name.clone()),
+                .child(super::inline_text_preview(&name, 160)),
         )
         .child(
             div()

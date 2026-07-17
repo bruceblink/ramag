@@ -28,11 +28,12 @@ use gpui_component::{
 };
 use parking_lot::RwLock;
 use ramag_app::MongoService;
-use ramag_domain::entities::{ConnectionConfig, MongoQueryResult};
+use ramag_domain::entities::{ConnectionConfig, MongoQueryResult, json_pretty_bounded};
 use serde_json::Value;
 
 pub use flatten::FlatTable;
 
+use crate::views::inline_text_preview;
 use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for};
 
 /// 过滤列补全收集的最大嵌套深度（支持 consume.detail.x 这类多层）
@@ -148,13 +149,14 @@ impl ResultPanel {
             column_completion_source.clone(),
         );
         let column_filter = cx.new(|cx| {
-            let mut state =
-                InputState::new(window, cx).placeholder("过滤列（列名或路径，逗号分隔）");
+            let mut state = ramag_ui::bounded_search_input(window, cx)
+                .placeholder("过滤列（列名或路径，逗号分隔）");
             state.lsp.completion_provider = Some(provider);
             state
         });
-        let row_filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("过滤行（任意单元格包含）"));
+        let row_filter = cx.new(|cx| {
+            ramag_ui::bounded_search_input(window, cx).placeholder("过滤行（任意单元格包含）")
+        });
 
         let subs = vec![
             cx.subscribe(&column_filter, |_this, _, _e: &InputEvent, cx| {
@@ -527,12 +529,16 @@ impl ResultPanel {
         {
             serde_json::from_str::<Value>(&text)
                 .ok()
-                .and_then(|v| serde_json::to_string_pretty(&v).ok())
-                .unwrap_or_else(|| text.clone())
+                .and_then(|value| json_pretty_bounded(&value, MAX_DIALOG_PRETTY_BYTES))
+                .unwrap_or(text)
         } else {
-            text.clone()
+            text
         };
-        let title: SharedString = SharedString::from(format!("{column_path}  ({kind})"));
+        let display = bounded_cell_dialog_text(display, MAX_DIALOG_PRETTY_BYTES);
+        let title: SharedString = SharedString::from(format!(
+            "{}  ({kind})",
+            inline_text_preview(&column_path, 96)
+        ));
         let input: Entity<InputState> = cx.new(|cx_inner| {
             InputState::new(window, cx_inner)
                 .multi_line(true)
@@ -556,6 +562,21 @@ impl ResultPanel {
                 })
         });
     }
+}
+
+fn bounded_cell_dialog_text(mut text: String, max_bytes: usize) -> String {
+    const TRUNCATED_NOTICE: &str = "\n\n[内容过大，仅显示开头部分]";
+    if text.len() <= max_bytes {
+        return text;
+    }
+
+    let mut end = max_bytes.saturating_sub(TRUNCATED_NOTICE.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str(TRUNCATED_NOTICE);
+    text
 }
 
 impl Render for ResultPanel {
@@ -712,7 +733,7 @@ impl Render for ResultPanel {
                     .text_xs()
                     .text_color(warn)
                     .child(format!(
-                        "⚠ 字段较多，表格仅展示前 {total_cols} / {discovered_cols} 列；完整文档详情仍保留，表格筛选与 CSV 导出基于已展示列。"
+                        "⚠ 字段较多，表格仅展示前 {total_cols} 列；完整文档详情仍保留，表格筛选与 CSV 导出基于已展示列。"
                     )),
             );
         }
@@ -845,5 +866,14 @@ mod row_view_tests {
         let mut stale = key;
         stale.generation += 1;
         assert_ne!(cache.key, stale);
+    }
+
+    #[test]
+    fn cell_dialog_text_is_unicode_safe_and_bounded() {
+        let display = bounded_cell_dialog_text("你".repeat(40), 64);
+
+        assert!(display.len() <= 64);
+        assert!(display.is_char_boundary(display.len()));
+        assert!(display.contains("[内容过大"));
     }
 }

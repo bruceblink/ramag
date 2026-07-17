@@ -5,12 +5,18 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
     v_flex,
 };
+use ramag_domain::entities::MAX_REDIS_COMMAND_ARG_BYTES;
+
+use crate::views::{bounded_input, reserve_command_input_bytes};
+
+const MAX_EDITOR_ROWS: usize = 200;
+const MAX_SCORE_INPUT_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairsKind {
@@ -43,9 +49,18 @@ impl PairsEditor {
     }
 
     fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rows.len() >= MAX_EDITOR_ROWS {
+            return;
+        }
         let (lph, rph) = placeholders(self.kind);
-        let left = cx.new(|cx| InputState::new(window, cx).placeholder(lph));
-        let right = cx.new(|cx| InputState::new(window, cx).placeholder(rph));
+        let left_limit = if matches!(self.kind, PairsKind::ZSet) {
+            MAX_SCORE_INPUT_BYTES
+        } else {
+            MAX_REDIS_COMMAND_ARG_BYTES
+        };
+        let left = cx.new(|cx| bounded_input(left_limit, window, cx).placeholder(lph));
+        let right =
+            cx.new(|cx| bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx).placeholder(rph));
         let id = self.next_id;
         self.next_id += 1;
         self.rows.push(PairRow { id, left, right });
@@ -65,10 +80,14 @@ impl PairsEditor {
     /// - 否则按 kind 校验 left；失败返回带行号的错误
     pub fn collect(&self, cx: &App) -> Result<Vec<(String, String)>, String> {
         let mut out = Vec::new();
+        let mut total_bytes = 0usize;
         for (idx, row) in self.rows.iter().enumerate() {
-            let left_raw = row.left.read(cx).value().to_string();
-            let left = left_raw.trim().to_string();
-            let right = row.right.read(cx).value().to_string();
+            let left_input = row.left.read(cx);
+            let right_input = row.right.read(cx);
+            let left_value = left_input.value();
+            let right_value = right_input.value();
+            let left = left_value.trim();
+            let right = right_value.as_ref();
             if left.is_empty() && right.is_empty() {
                 continue;
             }
@@ -93,7 +112,15 @@ impl PairsEditor {
                     }
                 }
             }
-            out.push((left, right));
+            let pair_bytes = left
+                .len()
+                .checked_add(right.len())
+                .ok_or_else(|| format!("第 {} 行：字段和值的总长度溢出", idx + 1))?;
+            let Some(next_bytes) = reserve_command_input_bytes(total_bytes, pair_bytes) else {
+                return Err("本次批量输入超过 16 MiB 总上限，请拆分提交".into());
+            };
+            total_bytes = next_bytes;
+            out.push((left.to_string(), right.to_string()));
         }
         Ok(out)
     }
@@ -120,6 +147,12 @@ impl Render for PairsEditor {
                     .small()
                     .icon(IconName::Plus)
                     .label(add_label)
+                    .disabled(self.rows.len() >= MAX_EDITOR_ROWS)
+                    .tooltip(if self.rows.len() >= MAX_EDITOR_ROWS {
+                        "单次最多添加 200 行；更大批量请使用脚本"
+                    } else {
+                        add_label
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.add_row(window, cx);
                     })),

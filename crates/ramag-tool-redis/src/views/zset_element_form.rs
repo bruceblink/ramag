@@ -12,10 +12,13 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COMMAND_ARG_BYTES};
 use tracing::{error, info};
 
+use crate::views::bounded_input;
 use crate::views::form_shell::{SubmitState, form_footer};
+
+const MAX_SCORE_INPUT_BYTES: usize = 128;
 
 #[derive(Debug, Clone)]
 pub enum ZSetElementFormMode {
@@ -59,12 +62,12 @@ impl ZSetElementForm {
             ZSetElementFormMode::EditScore { member } => member.clone(),
         };
         let score_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_SCORE_INPUT_BYTES, window, cx)
                 .placeholder("数字（如 3.14）")
                 .default_value(initial_score)
         });
         let member_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .placeholder("成员名")
                 .default_value(initial_member)
         });

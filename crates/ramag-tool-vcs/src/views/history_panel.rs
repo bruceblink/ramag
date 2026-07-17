@@ -86,7 +86,10 @@ impl VcsView {
                         .font_family(mono.clone())
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(format!("正在看 {path} 的历史")),
+                        .child(format!(
+                            "正在看 {} 的历史",
+                            super::inline_text_preview(path, 200)
+                        )),
                 )
                 .child(
                     Button::new("vcs-history-clear-path")
@@ -317,10 +320,9 @@ impl VcsView {
             section: SidebarSection::Local,
         });
         if !self.collapsed_local {
-            for (idx, b) in self.local_branches.iter().enumerate() {
+            for idx in 0..self.local_branches.len() {
                 rows.push(LeftRow::Branch {
                     idx,
-                    branch: b.clone(),
                     is_remote: false,
                 });
             }
@@ -338,10 +340,9 @@ impl VcsView {
             if self.remote_branches.is_empty() {
                 rows.push(LeftRow::Empty("暂无远程分支（Fetch 后显示）"));
             } else {
-                for (idx, b) in self.remote_branches.iter().enumerate() {
+                for idx in 0..self.remote_branches.len() {
                     rows.push(LeftRow::Branch {
                         idx,
-                        branch: b.clone(),
                         is_remote: true,
                     });
                 }
@@ -359,11 +360,8 @@ impl VcsView {
             if self.remotes.is_empty() {
                 rows.push(LeftRow::Empty("暂无远程仓库（下方输入框添加）"));
             } else {
-                for (idx, r) in self.remotes.iter().enumerate() {
-                    rows.push(LeftRow::Remote {
-                        idx,
-                        remote: r.clone(),
-                    });
+                for idx in 0..self.remotes.len() {
+                    rows.push(LeftRow::Remote { idx });
                 }
             }
             rows.push(LeftRow::CreateRemote);
@@ -380,11 +378,8 @@ impl VcsView {
             if self.tags.is_empty() {
                 rows.push(LeftRow::Empty("暂无 tag（下方输入框创建）"));
             } else {
-                for (idx, t) in self.tags.iter().enumerate() {
-                    rows.push(LeftRow::Tag {
-                        idx,
-                        tag: t.clone(),
-                    });
+                for idx in 0..self.tags.len() {
+                    rows.push(LeftRow::Tag { idx });
                 }
             }
             rows.push(LeftRow::CreateTag);

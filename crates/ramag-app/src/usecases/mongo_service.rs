@@ -120,16 +120,16 @@ impl MongoService {
                 };
                 QueryRecord::new_success(
                     config.id.clone(),
-                    config.name.clone(),
-                    command_text,
+                    &config.name,
+                    &command_text,
                     r.elapsed_ms,
                     rows,
                 )
             }
             Err(e) => QueryRecord::new_failed(
                 config.id.clone(),
-                config.name.clone(),
-                command_text,
+                &config.name,
+                &command_text,
                 e.to_string(),
             ),
         };

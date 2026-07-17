@@ -279,12 +279,19 @@ impl VcsView {
             .as_ref()
             .and_then(|s| s.head_branch.clone())
             .unwrap_or_else(|| "(detached)".into());
-        let label = format!("{head} ▾");
+        let label = format!("{} ▾", super::inline_text_preview(&head, 80));
         let busy = self.busy;
         let entity = cx.entity();
+        let (local_limit, remote_limit) = super::branch_picker::branch_picker_limits(
+            self.local_branches.len(),
+            self.remote_branches.len(),
+        );
         let local: Vec<(String, bool, Option<String>)> = self
             .local_branches
             .iter()
+            .filter(|branch| branch.is_head)
+            .chain(self.local_branches.iter().filter(|branch| !branch.is_head))
+            .take(local_limit)
             .map(|b| {
                 let sync = match (b.ahead, b.behind) {
                     (Some(a), Some(d)) if a > 0 || d > 0 => Some(format!("↑{a} ↓{d}")),
@@ -296,8 +303,14 @@ impl VcsView {
         let remote: Vec<String> = self
             .remote_branches
             .iter()
+            .take(remote_limit)
             .map(|b| b.name.clone())
             .collect();
+        let total_branches = self
+            .local_branches
+            .len()
+            .saturating_add(self.remote_branches.len());
+        let shown_branches = local.len().saturating_add(remote.len());
         let has_head = self
             .status
             .as_ref()
@@ -320,6 +333,12 @@ impl VcsView {
                     // 多分支的 prefix（如 origin/*）放进各自 submenu，submenu 自身可 scrollable
                     // max_w 限宽防止超长分支名撑破菜单（叶子内部已做中间省略截断）
                     m = m.max_w(px(420.0));
+                    if shown_branches < total_branches {
+                        m = m.item(PopupMenuItem::label(format!(
+                            "快捷菜单仅显示 {shown_branches} / {total_branches} 个分支；完整列表请使用 History 侧栏"
+                        )));
+                        m = m.separator();
+                    }
                     // 操作分组
                     m = m.item(PopupMenuItem::label("操作"));
                     let ent_new = entity.clone();
@@ -435,11 +454,12 @@ impl VcsView {
             )
             .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                 let entity = cx.entity();
-                ramag_ui::open_prompt(
+                ramag_ui::open_optional_bounded_prompt(
                     "Stash 工作区改动",
                     "输入 stash 说明（可留空，默认用 git 自动描述）",
                     "",
                     "Stash",
+                    ramag_domain::entities::MAX_GIT_STASH_MESSAGE_BYTES,
                     move |msg, _, app| {
                         entity.update(app, |this, cx| this.run_stash_save(msg, cx));
                     },

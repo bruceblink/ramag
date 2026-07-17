@@ -280,30 +280,55 @@ async fn warm_once(
     config: &ConnectionConfig,
     cache: &Arc<RwLock<SchemaCache>>,
 ) {
-    let target_schemas: Vec<String> = if let Some(db) = &config.database {
-        vec![db.clone()]
+    let target_schema = if let Some(db) = &config.database {
+        Some(db.clone())
     } else {
         match service.list_schemas(config).await {
-            Ok(ss) => ss
-                .into_iter()
-                .map(|s| s.name)
-                .filter(|n| !is_system_schema(n))
-                .collect(),
+            Ok(schemas) => {
+                let preferred = (config.driver == DriverKind::Postgres)
+                    .then(|| {
+                        schemas
+                            .iter()
+                            .find(|schema| schema.name == "public")
+                            .map(|schema| schema.name.clone())
+                    })
+                    .flatten();
+                preferred.or_else(|| {
+                    schemas
+                        .into_iter()
+                        .find(|schema| !is_system_schema(&schema.name))
+                        .map(|schema| schema.name)
+                })
+            }
             Err(e) => {
                 warn!(error = %e, "warm cache: list_schemas failed");
                 return;
             }
         }
     };
-    for schema in target_schemas {
-        match service.list_tables(config, &schema).await {
-            Ok(tables) => {
-                let names: Vec<String> = tables.into_iter().map(|t| t.name).collect();
-                cache.write().tables.insert(schema, names);
+    let Some(schema) = target_schema else {
+        return;
+    };
+    let generation = cache.write().begin_table_refresh(&schema);
+    match service.list_tables(config, &schema).await {
+        Ok(tables) => {
+            let names = tables.iter().map(|table| table.name.clone()).collect();
+            let views = tables
+                .into_iter()
+                .filter(|table| table.is_view)
+                .map(|table| table.name)
+                .collect();
+            let refreshed = cache
+                .write()
+                .finish_table_refresh(schema, generation, names, views);
+            if !refreshed {
+                warn!("warm cache result superseded or exceeded cache budget");
+                return;
             }
-            Err(e) => {
-                warn!(error = %e, "warm cache: list_tables failed");
-            }
+        }
+        Err(e) => {
+            cache.write().cancel_table_refresh(&schema, generation);
+            warn!(error = %e, schema = %schema, "warm cache: list_tables failed");
         }
     }
     info!(

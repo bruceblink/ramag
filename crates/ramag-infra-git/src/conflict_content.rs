@@ -5,12 +5,15 @@ use std::path::Path;
 use ramag_domain::entities::ConflictContent;
 use ramag_domain::error::{DomainError, Result};
 
-use crate::git_cmd::{ensure_git_list_room, ensure_git_record_size, run_git_bytes};
+use crate::git_cmd::{
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_path_arg,
+};
 
 const MAX_CONFLICT_STAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// stage 不存在（add/delete 冲突）时对应侧返回空 Vec
 pub fn get_content(repo_path: &Path, file_path: &str) -> Result<ConflictContent> {
+    validate_path_arg(file_path, "冲突文件路径")?;
     let stages_raw = run_git_bytes(repo_path, &["ls-files", "-u", "-z", "--", file_path])?;
     let stages = parse_stages(&stages_raw)?;
     if stages.is_empty() {

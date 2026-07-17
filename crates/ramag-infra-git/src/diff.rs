@@ -8,8 +8,11 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{
-    ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_positional_arg,
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_output_path,
+    validate_path_arg, validate_positional_arg,
 };
+
+const MAX_DIFF_CONTEXT_LINES: u32 = 1_000_000;
 
 pub fn run_diff(repo_path: &Path, path: &str, kind: &DiffKind) -> Result<FileDiff> {
     run_diff_opts(repo_path, path, kind, false)
@@ -32,6 +35,12 @@ pub fn run_diff_full_opts(
     ignore_whitespace: bool,
     context_lines: u32,
 ) -> Result<FileDiff> {
+    validate_path_arg(path, "diff 文件路径")?;
+    if context_lines > MAX_DIFF_CONTEXT_LINES {
+        return Err(DomainError::InvalidConfig(format!(
+            "diff 上下文行数超过 {MAX_DIFF_CONTEXT_LINES} 上限"
+        )));
+    }
     let mut args_strings = build_diff_args(path, kind, context_lines)?;
     if ignore_whitespace {
         args_strings.insert(1, "-w".into());
@@ -117,7 +126,9 @@ fn parse_unified_diff(text: &str, path: &str) -> Result<FileDiff> {
         }
         if line.starts_with("rename from ") {
             change_kind = FileChangeKind::Renamed;
-            old_path = Some(line.trim_start_matches("rename from ").to_string());
+            let path = line.trim_start_matches("rename from ");
+            validate_output_path(path, "Git diff 旧路径", line_index + 1)?;
+            old_path = Some(path.to_string());
             continue;
         }
         if line.starts_with("@@") {

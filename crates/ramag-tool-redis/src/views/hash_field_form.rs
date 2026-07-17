@@ -12,9 +12,10 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COMMAND_ARG_BYTES};
 use tracing::{error, info};
 
+use crate::views::bounded_input;
 use crate::views::form_shell::{SubmitState, form_footer};
 
 #[derive(Debug, Clone)]
@@ -62,16 +63,30 @@ impl HashFieldForm {
             HashFieldFormMode::Edit { field } => field.clone(),
         };
         let field_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .placeholder("字段名（如 name）")
                 .default_value(initial_field)
         });
         let value_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
                 .placeholder("字段值（任意文本，可多行）")
                 .default_value(initial_value)
         });
+        ramag_ui::enforce_multiline_input_byte_limit(
+            &value_input,
+            MAX_REDIS_COMMAND_ARG_BYTES,
+            window,
+            cx,
+            |this, _, cx| {
+                this.state = SubmitState::Failed(format!(
+                    "字段值最多保留 {} MiB，超出部分已截断",
+                    MAX_REDIS_COMMAND_ARG_BYTES / 1024 / 1024
+                ));
+                cx.notify();
+            },
+        )
+        .detach();
         Self {
             service,
             config,

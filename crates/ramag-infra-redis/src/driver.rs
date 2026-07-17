@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use ramag_domain::entities::{
-    ConnectionConfig, KeyMeta, RedisType, RedisValue, RedisValueLoad, ScanResult,
+    ConnectionConfig, DriverKind, KeyMeta, MAX_REDIS_COLLECTION_BYTES, RedisType, RedisValue,
+    RedisValueLoad, ScanResult, validate_redis_collection_limit, validate_redis_command,
+    validate_redis_key, validate_redis_match_pattern, validate_redis_scan_count,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
@@ -50,6 +52,17 @@ fn ensure_writable(config: &ConnectionConfig, op: &str) -> Result<()> {
     Ok(())
 }
 
+fn ensure_redis_config(config: &ConnectionConfig) -> Result<()> {
+    config.validate().map_err(DomainError::InvalidConfig)?;
+    if config.driver != DriverKind::Redis {
+        return Err(DomainError::InvalidConfig(format!(
+            "RedisDriver 不支持 {:?} 类型连接",
+            config.driver
+        )));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl KvDriver for RedisDriver {
     fn name(&self) -> &'static str {
@@ -61,6 +74,7 @@ impl KvDriver for RedisDriver {
     }
 
     async fn test_connection(&self, config: &ConnectionConfig) -> Result<()> {
+        ensure_redis_config(config)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         run_in_tokio(async move {
@@ -71,6 +85,7 @@ impl KvDriver for RedisDriver {
     }
 
     async fn server_version(&self, config: &ConnectionConfig) -> Result<String> {
+        ensure_redis_config(config)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         run_in_tokio(async move {
@@ -82,6 +97,7 @@ impl KvDriver for RedisDriver {
     }
 
     async fn db_size(&self, config: &ConnectionConfig, db: u8) -> Result<u64> {
+        ensure_redis_config(config)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         run_in_tokio(async move {
@@ -104,6 +120,11 @@ impl KvDriver for RedisDriver {
         type_filter: Option<RedisType>,
         count: u32,
     ) -> Result<ScanResult> {
+        ensure_redis_config(config)?;
+        validate_redis_scan_count(count)?;
+        if let Some(pattern) = match_pattern {
+            validate_redis_match_pattern(pattern)?;
+        }
         let config = config.clone();
         let pools = self.pools.clone_handle();
         let pattern = match_pattern.map(str::to_owned);
@@ -126,6 +147,8 @@ impl KvDriver for RedisDriver {
     }
 
     async fn key_type(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<RedisType> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         let key = key.to_owned();
@@ -142,6 +165,8 @@ impl KvDriver for RedisDriver {
     }
 
     async fn key_ttl(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<i64> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         let key = key.to_owned();
@@ -171,10 +196,12 @@ impl KvDriver for RedisDriver {
         key: &str,
         limit: usize,
     ) -> Result<RedisValueLoad> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
+        validate_redis_collection_limit(limit)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         let key = key.to_owned();
-        let limit = limit.max(1);
         run_in_tokio(async move {
             let mut mgr = pools.get_or_create(&config, db).await?;
             // 先 TYPE 再按类型 dispatch
@@ -186,8 +213,8 @@ impl KvDriver for RedisDriver {
             let kind = RedisType::parse(&t);
             debug!(?key, ?kind, "get_value dispatch");
             let total = fetch_value_len(&mut mgr, &key, kind).await?;
-            let value = match kind {
-                RedisType::None => Ok(RedisValue::Nil),
+            let (value, byte_limited) = match kind {
+                RedisType::None => Ok((RedisValue::Nil, false)),
                 RedisType::String => fetch_string(&mut mgr, &key, total.unwrap_or_default()).await,
                 RedisType::List => fetch_list(&mut mgr, &key, limit).await,
                 RedisType::Hash => fetch_hash(&mut mgr, &key, limit).await,
@@ -195,12 +222,18 @@ impl KvDriver for RedisDriver {
                 RedisType::ZSet => fetch_zset(&mut mgr, &key, limit).await,
                 RedisType::Stream => fetch_stream(&mut mgr, &key, limit).await,
             }?;
-            Ok(RedisValueLoad { value, total })
+            Ok(RedisValueLoad {
+                value,
+                total,
+                byte_limited,
+            })
         })
         .await
     }
 
     async fn delete_key(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<bool> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
         ensure_writable(config, "DEL")?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
@@ -220,6 +253,8 @@ impl KvDriver for RedisDriver {
         key: &str,
         ttl_secs: Option<i64>,
     ) -> Result<bool> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
         ensure_writable(config, "TTL change")?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
@@ -250,11 +285,8 @@ impl KvDriver for RedisDriver {
         db: u8,
         argv: Vec<String>,
     ) -> Result<RedisValue> {
-        if argv.is_empty() {
-            return Err(DomainError::InvalidConfig(
-                "命令为空，至少需要命令名".into(),
-            ));
-        }
+        ensure_redis_config(config)?;
+        validate_redis_command(&argv)?;
         if is_write_command(&argv[0]) {
             ensure_writable(config, &argv[0])?;
         }
@@ -274,6 +306,8 @@ impl KvDriver for RedisDriver {
     }
 
     async fn info(&self, config: &ConnectionConfig, sections: &[&str]) -> Result<String> {
+        ensure_redis_config(config)?;
+        validate_info_sections(sections)?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
         let sections: Vec<String> = sections.iter().map(|s| s.to_string()).collect();
@@ -291,6 +325,31 @@ impl KvDriver for RedisDriver {
         // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
         ramag_infra_tunnel::evict(id);
     }
+}
+
+fn validate_info_sections(sections: &[&str]) -> Result<()> {
+    const MAX_INFO_SECTIONS: usize = 32;
+    const MAX_INFO_SECTION_BYTES: usize = 256;
+
+    if sections.len() > MAX_INFO_SECTIONS {
+        return Err(DomainError::InvalidConfig(format!(
+            "Redis INFO section 超过 {MAX_INFO_SECTIONS} 个上限"
+        )));
+    }
+    for section in sections {
+        if section.is_empty()
+            || section.len() > MAX_INFO_SECTION_BYTES
+            || !section.is_ascii()
+            || section
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        {
+            return Err(DomainError::InvalidConfig(
+                "Redis INFO section 必须是至多 256 bytes 的无空白 ASCII 文本".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn ping(mgr: &mut ConnectionManager) -> Result<()> {
@@ -366,7 +425,7 @@ async fn fetch_string(
     mgr: &mut ConnectionManager,
     key: &str,
     total_bytes: u64,
-) -> Result<RedisValue> {
+) -> Result<(RedisValue, bool)> {
     let v: RV = redis::cmd("GETRANGE")
         .arg(key)
         .arg(0)
@@ -375,7 +434,8 @@ async fn fetch_string(
         .await
         .map_err(map_redis_error)?;
     ensure_response_budget(&v, "GETRANGE")?;
-    Ok(decode_string_prefix(v, total_bytes > MAX_STRING_BYTES))
+    let truncated = total_bytes > MAX_STRING_BYTES;
+    Ok((decode_string_prefix(v, truncated), truncated))
 }
 
 fn decode_string_prefix(value: RV, truncated: bool) -> RedisValue {
@@ -397,7 +457,11 @@ fn decode_string_prefix(value: RV, truncated: bool) -> RedisValue {
     }
 }
 
-async fn fetch_list(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+async fn fetch_list(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    limit: usize,
+) -> Result<(RedisValue, bool)> {
     // LRANGE 0 N-1 只取前 N，避免 `0 -1` 全量拉取
     let v: RV = redis::cmd("LRANGE")
         .arg(key)
@@ -409,26 +473,33 @@ async fn fetch_list(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Res
     ensure_response_budget(&v, "LRANGE")?;
     let elems = match v {
         RV::Array(a) => a.into_iter().map(decode_value).collect(),
-        RV::Nil => return Ok(RedisValue::Nil),
+        RV::Nil => return Ok((RedisValue::Nil, false)),
         other => {
             return Err(DomainError::QueryFailed(format!(
                 "LRANGE 应答非数组：{other:?}"
             )));
         }
     };
-    Ok(RedisValue::List(elems))
+    Ok((RedisValue::List(elems), false))
 }
 
-async fn fetch_hash(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+async fn fetch_hash(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    limit: usize,
+) -> Result<(RedisValue, bool)> {
     // COUNT 只是 hint，必须续扫游标，不能把第一批误当成完整结果。
+    const SCAN_BATCH: usize = 500;
     let mut cursor = 0u64;
     let mut pairs = Vec::with_capacity(limit.min(DEFAULT_COLLECTION_LIMIT));
+    let mut retained_bytes = 0usize;
+    let mut byte_limited = false;
     loop {
         let v: RV = redis::cmd("HSCAN")
             .arg(key)
             .arg(cursor)
             .arg("COUNT")
-            .arg(limit.saturating_sub(pairs.len()).max(1))
+            .arg(limit.saturating_sub(pairs.len()).clamp(1, SCAN_BATCH))
             .query_async(&mut *mgr)
             .await
             .map_err(map_redis_error)?;
@@ -437,35 +508,68 @@ async fn fetch_hash(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Res
         let RedisValue::Hash(batch) = decode_hash_pairs(payload)? else {
             return Err(DomainError::QueryFailed("HSCAN 解码结果类型异常".into()));
         };
-        pairs.extend(batch.into_iter().take(limit.saturating_sub(pairs.len())));
+        for (field, value) in batch.into_iter().take(limit.saturating_sub(pairs.len())) {
+            let item_bytes = std::mem::size_of::<(String, RedisValue)>()
+                .saturating_add(field.len())
+                .saturating_add(redis_value_retained_bytes(&value));
+            let Some(next_bytes) =
+                reserve_retained_bytes(retained_bytes, item_bytes, MAX_REDIS_COLLECTION_BYTES)
+            else {
+                byte_limited = true;
+                break;
+            };
+            retained_bytes = next_bytes;
+            pairs.push((field, value));
+        }
         cursor = next;
-        if cursor == 0 || pairs.len() >= limit {
+        if cursor == 0 || pairs.len() >= limit || byte_limited {
             break;
         }
     }
-    Ok(RedisValue::Hash(pairs))
+    Ok((RedisValue::Hash(pairs), byte_limited))
 }
 
-async fn fetch_set(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+async fn fetch_set(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    limit: usize,
+) -> Result<(RedisValue, bool)> {
+    const SCAN_BATCH: usize = 500;
     let mut cursor = 0u64;
     let mut elems = Vec::with_capacity(limit.min(DEFAULT_COLLECTION_LIMIT));
+    let mut retained_bytes = 0usize;
+    let mut byte_limited = false;
     loop {
         let v: RV = redis::cmd("SSCAN")
             .arg(key)
             .arg(cursor)
             .arg("COUNT")
-            .arg(limit.saturating_sub(elems.len()).max(1))
+            .arg(limit.saturating_sub(elems.len()).clamp(1, SCAN_BATCH))
             .query_async(&mut *mgr)
             .await
             .map_err(map_redis_error)?;
         ensure_response_budget(&v, "SSCAN")?;
         let (next, payload) = scan_parts(v, "SSCAN")?;
         match payload {
-            RV::Array(a) => elems.extend(
-                a.into_iter()
+            RV::Array(a) => {
+                for value in a
+                    .into_iter()
                     .map(decode_value)
-                    .take(limit.saturating_sub(elems.len())),
-            ),
+                    .take(limit.saturating_sub(elems.len()))
+                {
+                    let item_bytes = redis_value_retained_bytes(&value);
+                    let Some(next_bytes) = reserve_retained_bytes(
+                        retained_bytes,
+                        item_bytes,
+                        MAX_REDIS_COLLECTION_BYTES,
+                    ) else {
+                        byte_limited = true;
+                        break;
+                    };
+                    retained_bytes = next_bytes;
+                    elems.push(value);
+                }
+            }
             RV::Nil => {}
             other => {
                 return Err(DomainError::QueryFailed(format!(
@@ -474,14 +578,18 @@ async fn fetch_set(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Resu
             }
         }
         cursor = next;
-        if cursor == 0 || elems.len() >= limit {
+        if cursor == 0 || elems.len() >= limit || byte_limited {
             break;
         }
     }
-    Ok(RedisValue::Set(elems))
+    Ok((RedisValue::Set(elems), byte_limited))
 }
 
-async fn fetch_zset(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+async fn fetch_zset(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    limit: usize,
+) -> Result<(RedisValue, bool)> {
     // ZRANGE 0 N-1 只取前 N（按 score 升序），避免 `0 -1` 全量拉取
     let v: RV = redis::cmd("ZRANGE")
         .arg(key)
@@ -492,10 +600,14 @@ async fn fetch_zset(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Res
         .await
         .map_err(map_redis_error)?;
     ensure_response_budget(&v, "ZRANGE")?;
-    decode_zset_with_scores(v)
+    decode_zset_with_scores(v).map(|value| (value, false))
 }
 
-async fn fetch_stream(mgr: &mut ConnectionManager, key: &str, limit: usize) -> Result<RedisValue> {
+async fn fetch_stream(
+    mgr: &mut ConnectionManager,
+    key: &str,
+    limit: usize,
+) -> Result<(RedisValue, bool)> {
     // XRANGE - + COUNT N 只取前 N 条
     let v: RV = redis::cmd("XRANGE")
         .arg(key)
@@ -507,7 +619,43 @@ async fn fetch_stream(mgr: &mut ConnectionManager, key: &str, limit: usize) -> R
         .await
         .map_err(map_redis_error)?;
     ensure_response_budget(&v, "XRANGE")?;
-    decode_stream_entries(v)
+    decode_stream_entries(v).map(|value| (value, false))
+}
+
+fn reserve_retained_bytes(current: usize, added: usize, limit: usize) -> Option<usize> {
+    current.checked_add(added).filter(|next| *next <= limit)
+}
+
+fn redis_value_retained_bytes(value: &RedisValue) -> usize {
+    let dynamic = match value {
+        RedisValue::Nil | RedisValue::Int(_) | RedisValue::Float(_) | RedisValue::Bool(_) => 0,
+        RedisValue::Text(text) => text.len(),
+        RedisValue::Bytes(bytes) => bytes.len(),
+        RedisValue::List(values) | RedisValue::Set(values) | RedisValue::Array(values) => {
+            values.iter().fold(0usize, |total, value| {
+                total.saturating_add(redis_value_retained_bytes(value))
+            })
+        }
+        RedisValue::Hash(values) => values.iter().fold(0usize, |total, (key, value)| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(redis_value_retained_bytes(value))
+        }),
+        RedisValue::ZSet(values) => values.iter().fold(0usize, |total, (value, _)| {
+            total.saturating_add(redis_value_retained_bytes(value))
+        }),
+        RedisValue::Stream(entries) => entries.iter().fold(0usize, |total, entry| {
+            entry.fields.iter().fold(
+                total.saturating_add(entry.id.len()),
+                |entry_total, (key, value)| {
+                    entry_total
+                        .saturating_add(key.len())
+                        .saturating_add(value.len())
+                },
+            )
+        }),
+    };
+    std::mem::size_of::<RedisValue>().saturating_add(dynamic)
 }
 
 /// SCAN 系列（HSCAN/SSCAN）应答 `Array([cursor, Array([...])])`，取出成员数组部分
@@ -571,6 +719,9 @@ fn parse_scan_response(v: RV) -> Result<ScanResult> {
                     )));
                 }
             };
+            validate_redis_key(&key).map_err(|error| {
+                DomainError::QueryFailed(format!("SCAN 返回了当前版本无法安全操作的键：{error}"))
+            })?;
             Ok(KeyMeta::bare(key))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -774,5 +925,28 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn info_sections_have_explicit_argument_boundaries() {
+        assert!(validate_info_sections(&[]).is_ok());
+        assert!(validate_info_sections(&["server", "memory"]).is_ok());
+        assert!(validate_info_sections(&[""]).is_err());
+        assert!(validate_info_sections(&["bad section"]).is_err());
+        let oversized = "x".repeat(257);
+        assert!(validate_info_sections(&[oversized.as_str()]).is_err());
+        let excessive = ["server"; 33];
+        assert!(validate_info_sections(&excessive).is_err());
+    }
+
+    #[test]
+    fn retained_collection_budget_accepts_boundary_and_rejects_overflow() {
+        assert_eq!(reserve_retained_bytes(3, 2, 5), Some(5));
+        assert_eq!(reserve_retained_bytes(3, 3, 5), None);
+        assert_eq!(reserve_retained_bytes(usize::MAX, 1, usize::MAX), None);
+
+        let short = redis_value_retained_bytes(&RedisValue::Text("a".into()));
+        let long = redis_value_retained_bytes(&RedisValue::Text("abcd".into()));
+        assert_eq!(long - short, 3);
     }
 }

@@ -73,7 +73,8 @@ impl ConnectionListPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索连接"));
+        let search =
+            cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索连接"));
 
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(

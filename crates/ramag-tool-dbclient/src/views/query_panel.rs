@@ -152,6 +152,7 @@ impl QueryPanel {
             );
             return false;
         }
+        self.draft_load_pending = false;
         // 找出未使用的最小编号（这样关闭"查询 1"再新建会重新得到"查询 1"）
         let title = {
             let mut n = 1usize;
@@ -214,6 +215,7 @@ impl QueryPanel {
         if index >= self.tabs.len() {
             return;
         }
+        self.draft_load_pending = false;
         // 执行中的查询先取消（含后端 KILL），避免关 Tab 后语句仍占用数据库
         if let Some(tab) = self.tabs.get(index) {
             tab.update(cx, |t, cx| t.cancel_if_running(window, cx));
@@ -237,6 +239,7 @@ impl QueryPanel {
 
     fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index < self.tabs.len() && self.active != index {
+            self.draft_load_pending = false;
             self.active = index;
             self.focus_active_editor(window, cx);
             self.schedule_draft_persist(cx);
@@ -263,8 +266,10 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.draft_load_pending = false;
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
+                t.cancel_if_running(window, cx);
                 t.set_sql(sql.clone(), window, cx);
                 t.mark_injected(sql);
                 t.run(window, cx);
@@ -282,6 +287,7 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.draft_load_pending = false;
         // 草稿保护：活动 Tab 存在手写内容（非空且非上次自动注入）时不覆盖，
         // 另开 Tab 浏览；未手改的浏览 SQL / 示例则原地复用，连点切表不膨胀 Tab
         let has_draft = self
@@ -293,6 +299,7 @@ impl QueryPanel {
         }
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
+                t.cancel_if_running(window, cx);
                 // set_sql 内会清 pinned_target，所以必须先 set_sql 再 set_pinned_target
                 t.set_sql(sql.clone(), window, cx);
                 t.mark_injected(sql);
@@ -334,6 +341,7 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.draft_load_pending = false;
         if self.active_has_draft(cx) && !self.add_tab(window, cx) {
             return;
         }
@@ -346,6 +354,7 @@ impl QueryPanel {
     /// 把 SQL 填入当前活动 Tab 的编辑器并聚焦（不执行）。
     /// 有手写草稿时另开 Tab，不覆盖；面板恒保持至少一个 Tab，空列表仅是兜底防御
     fn fill_active_sql(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_load_pending = false;
         let needs_new_tab = self.tabs.is_empty() || self.active_has_draft(cx);
         if needs_new_tab && !self.add_tab(window, cx) {
             return;

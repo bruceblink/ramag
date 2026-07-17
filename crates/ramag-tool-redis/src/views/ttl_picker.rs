@@ -10,12 +10,15 @@ use gpui_component::{
     input::{Input, InputState},
 };
 
+use crate::views::bounded_input;
+
 const PRESETS: &[(&str, i64)] = &[
     ("5 分钟", 300),
     ("1 小时", 3600),
     ("1 天", 86_400),
     ("7 天", 604_800),
 ];
+const MAX_TTL_INPUT_BYTES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -31,7 +34,8 @@ pub struct TtlPicker {
 
 impl TtlPicker {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let custom = cx.new(|cx| InputState::new(window, cx).placeholder("自定义秒数"));
+        let custom =
+            cx.new(|cx| bounded_input(MAX_TTL_INPUT_BYTES, window, cx).placeholder("自定义秒数"));
         Self {
             mode: Mode::Forever,
             custom,

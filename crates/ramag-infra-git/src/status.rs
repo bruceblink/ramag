@@ -9,7 +9,9 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, Result};
 
 use crate::errors::{map_branch_error, map_status_error};
-use crate::git_cmd::{ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_text};
+use crate::git_cmd::{
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_text, validate_output_path,
+};
 
 pub fn collect_status(repo: &gix::Repository, repo_path: &Path) -> Result<WorkingTreeStatus> {
     let head = repo.head().map_err(map_status_error)?;
@@ -291,6 +293,7 @@ fn parse_ordinary(record: &[u8], index: usize) -> Result<FileStatus> {
     if path.is_empty() {
         return Err(status_parse_error(index, "普通记录路径为空"));
     }
+    validate_output_path(path, "Git 工作区路径", index)?;
     let (staged, unstaged) = parse_xy(parts[1], index)?;
     Ok(FileStatus {
         path: path.to_string(),
@@ -313,6 +316,8 @@ fn parse_rename(record: &[u8], old_path: &[u8], index: usize) -> Result<FileStat
     let (staged, unstaged) = parse_xy(parts[1], index)?;
     let old_path = std::str::from_utf8(old_path)
         .map_err(|error| status_parse_error(index, &format!("旧路径非 UTF-8：{error}")))?;
+    validate_output_path(parts[9], "Git 工作区新路径", index)?;
+    validate_output_path(old_path, "Git 工作区旧路径", index)?;
     Ok(FileStatus {
         path: parts[9].to_string(),
         old_path: Some(old_path.to_string()),
@@ -330,6 +335,7 @@ fn parse_untracked(record: &[u8], index: usize) -> Result<FileStatus> {
     if path.is_empty() {
         return Err(status_parse_error(index, "未跟踪路径为空"));
     }
+    validate_output_path(path, "Git 未跟踪路径", index)?;
     Ok(FileStatus {
         path: path.to_string(),
         old_path: None,
@@ -348,6 +354,7 @@ fn parse_unmerged(record: &[u8], index: usize) -> Result<FileStatus> {
     if parts[10].is_empty() {
         return Err(status_parse_error(index, "冲突路径为空"));
     }
+    validate_output_path(parts[10], "Git 冲突路径", index)?;
     parse_xy(parts[1], index)?;
     Ok(FileStatus {
         path: parts[10].to_string(),

@@ -7,9 +7,11 @@ use gpui::{Context, Entity};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::Notification;
 use ramag_app::RedisService;
-use ramag_domain::entities::{ConnectionConfig, RedisValue};
+use ramag_domain::entities::{
+    ConnectionConfig, MAX_REDIS_KEY_BYTES, RedisValue, validate_redis_key,
+};
 use ramag_domain::error::Result;
-use ramag_ui::{open_confirm, open_prompt};
+use ramag_ui::{open_bounded_prompt, open_confirm};
 
 use super::{DeletedScope, KeyTreeEvent, KeyTreePanel};
 
@@ -34,11 +36,12 @@ pub(super) fn node_context_menu(
         menu = menu.item(
             PopupMenuItem::new("重命名 key").on_click(move |_, window, app| {
                 let (key, ent) = (key.clone(), ent.clone());
-                open_prompt(
+                open_bounded_prompt(
                     "重命名 Key",
                     format!("输入「{}」的新名称", truncate_label(&key, 60)),
                     &key.clone(),
                     "重命名",
+                    MAX_REDIS_KEY_BYTES,
                     move |new_name, _, app| {
                         ent.update(app, |this, cx| this.rename_key_op(key, new_name, cx));
                     },
@@ -135,6 +138,12 @@ impl KeyTreePanel {
     /// RENAMENX：目标 key 已存在则返回 0 不覆盖，避免静默吞掉别人的数据
     pub(super) fn rename_key_op(&mut self, old: String, new: String, cx: &mut Context<Self>) {
         if new == old {
+            return;
+        }
+        if let Err(error) = validate_redis_key(&new) {
+            self.pending_notification =
+                Some(Notification::error(error.message().to_string()).autohide(true));
+            cx.notify();
             return;
         }
         let Some(config) = self.config.clone() else {

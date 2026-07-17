@@ -8,15 +8,7 @@ use ramag_domain::error::{DomainError, Result};
 use crate::git_cmd::{run_git_bytes, run_git_stdin, run_git_text};
 
 pub fn run(repo_path: &Path, message: &str, amend: bool, sign: bool) -> Result<CommitId> {
-    if message.len() > MAX_COMMIT_MESSAGE_BYTES {
-        return Err(DomainError::InvalidConfig(format!(
-            "提交消息超过 {} MiB 上限",
-            MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
-        )));
-    }
-    if message.contains('\0') {
-        return Err(DomainError::InvalidConfig("提交消息包含 NUL 字符".into()));
-    }
+    validate_message(message)?;
     let mut args: Vec<&str> = vec!["commit"];
     if amend {
         args.push("--amend");
@@ -37,6 +29,19 @@ pub fn run(repo_path: &Path, message: &str, amend: bool, sign: bool) -> Result<C
     }
     let id = run_git_text(repo_path, &["rev-parse", "HEAD"])?;
     Ok(CommitId(id.trim().to_string()))
+}
+
+pub(crate) fn validate_message(message: &str) -> Result<()> {
+    if message.len() > MAX_COMMIT_MESSAGE_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "提交消息超过 {} MiB 上限",
+            MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
+        )));
+    }
+    if message.contains('\0') {
+        return Err(DomainError::InvalidConfig("提交消息包含 NUL 字符".into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -51,6 +51,9 @@ pub trait ClipboardDriver: Send + Sync {
     /// 删除落盘媒体文件（容忍文件不存在）
     fn remove_media(&self, path: &str) -> Result<()>;
 
+    /// 流式清空受管媒体目录，不把全部路径先收集到内存。
+    fn clear_media(&self) -> Result<()>;
+
     /// 自动粘贴所需的系统权限是否已授予；prompt=true 时弹系统授权引导
     fn accessibility_trusted(&self, prompt: bool) -> bool;
 

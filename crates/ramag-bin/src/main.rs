@@ -145,6 +145,41 @@ struct MainWindowGlobal(gpui::AnyWindowHandle);
 
 impl gpui::Global for MainWindowGlobal {}
 
+/// `open_window` 在异步任务中完成；句柄写入全局前，重复唤起必须被合并。
+#[derive(Default)]
+struct MainWindowOpenGate {
+    opening: bool,
+}
+
+impl gpui::Global for MainWindowOpenGate {}
+
+impl MainWindowOpenGate {
+    fn try_begin(&mut self) -> bool {
+        if self.opening {
+            return false;
+        }
+        self.opening = true;
+        true
+    }
+
+    fn finish(&mut self) {
+        self.opening = false;
+    }
+}
+
+fn begin_main_window_open(cx: &mut App) -> bool {
+    if !cx.has_global::<MainWindowOpenGate>() {
+        cx.set_global(MainWindowOpenGate::default());
+    }
+    cx.global_mut::<MainWindowOpenGate>().try_begin()
+}
+
+fn finish_main_window_open(cx: &mut App) {
+    if cx.has_global::<MainWindowOpenGate>() {
+        cx.global_mut::<MainWindowOpenGate>().finish();
+    }
+}
+
 /// 唤起主窗口：已有则前台激活（含最小化恢复），已关闭则重开
 fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
     if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|g| g.0)
@@ -453,25 +488,41 @@ fn main() {
 
 /// 采集间隔。两平台统一轮询系统剪贴板序列号，仅在变化时读取内容。
 const CAPTURE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+/// 持久化或系统剪贴板持续失败时指数退避，避免每 400ms 重复占用 CPU 与刷日志。
+const CAPTURE_MAX_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn next_capture_retry_interval(current: std::time::Duration) -> std::time::Duration {
+    current.saturating_mul(2).min(CAPTURE_MAX_RETRY_INTERVAL)
+}
 
 /// App 级采集循环：启动预热一次设置；之后仅在 changeCount 变化时读取内存快照并处理。
 /// driver 读取在前台 executor 执行，满足 macOS AppKit 的主线程约束。
 fn spawn_clipboard_capture(service: Arc<ClipboardService>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last_count = service.driver().change_count();
+        let mut poll_interval = CAPTURE_INTERVAL;
         service.load_settings().await;
         loop {
-            cx.background_executor().timer(CAPTURE_INTERVAL).await;
+            cx.background_executor().timer(poll_interval).await;
             let count = service.driver().change_count();
             if count == last_count {
+                poll_interval = CAPTURE_INTERVAL;
                 continue;
             }
             let settings = service.capture_settings_snapshot().await;
             match service.capture_tick(&settings).await {
-                Ok(_) => last_count = count,
+                Ok(_) => {
+                    last_count = count;
+                    poll_interval = CAPTURE_INTERVAL;
+                }
                 Err(e) => {
                     // 读取失败时保留旧序列号，下个周期重试同一份内容，避免 Windows 剪贴板占用导致漏采。
-                    tracing::warn!(error = %e, "clipboard capture tick failed");
+                    poll_interval = next_capture_retry_interval(poll_interval);
+                    tracing::warn!(
+                        error = %e,
+                        retry_ms = poll_interval.as_millis(),
+                        "clipboard capture tick failed"
+                    );
                 }
             }
         }
@@ -543,19 +594,24 @@ fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
             }
 
             // 失焦自动隐藏：曾激活过又失去激活态 = 用户点了别处
-            if let Some(handle) = &drawer {
-                let active = cx.update(|cx| {
-                    handle
-                        .update(cx, |_, window, _| window.is_window_active())
-                        .unwrap_or(false)
-                });
-                if active {
-                    was_active = true;
-                } else if was_active {
-                    let _ =
-                        cx.update(|cx| handle.update(cx, |_, window, _| window.remove_window()));
-                    drawer = None;
-                    was_active = false;
+            if let Some(handle) = drawer {
+                let active =
+                    cx.update(|cx| handle.update(cx, |_, window, _| window.is_window_active()));
+                match active {
+                    Ok(true) => was_active = true,
+                    Ok(false) if was_active => {
+                        let _ = cx
+                            .update(|cx| handle.update(cx, |_, window, _| window.remove_window()));
+                        drawer = None;
+                        was_active = false;
+                    }
+                    // 窗口已被系统或用户关闭：立即丢弃失效句柄，否则下一次热键只会清句柄，
+                    // 需要按第二次才重新打开。
+                    Err(_) => {
+                        drawer = None;
+                        was_active = false;
+                    }
+                    Ok(false) => {}
                 }
             }
 
@@ -627,6 +683,9 @@ fn open_drawer_window(
 
 /// init / on_reopen / 托盘唤起共用；成功后把窗口句柄记入 MainWindowGlobal
 fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
+    if !begin_main_window_open(cx) {
+        return;
+    }
     let window_preferences = read_preferences(
         &deps.storage,
         &["last_tool", ramag_ui::WindowBoundsPref::PREF_KEY],
@@ -788,9 +847,15 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
         );
         match result {
             Ok(handle) => {
-                cx.update(|cx| cx.set_global(MainWindowGlobal(handle.into())));
+                cx.update(|cx| {
+                    finish_main_window_open(cx);
+                    cx.set_global(MainWindowGlobal(handle.into()));
+                });
             }
-            Err(err) => error!(error = %err, "open window failed"),
+            Err(err) => {
+                cx.update(finish_main_window_open);
+                error!(error = %err, "open window failed");
+            }
         }
     })
     .detach();
@@ -1026,4 +1091,39 @@ fn build_mongo_service(storage: Arc<dyn Storage>) -> Arc<MongoService> {
 fn build_clipboard_service(storage: Arc<dyn Storage>) -> Arc<ClipboardService> {
     let driver: Arc<dyn ClipboardDriver> = Arc::new(PlatformClipboardDriver::new());
     Arc::new(ClipboardService::new(driver, storage))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CAPTURE_INTERVAL, CAPTURE_MAX_RETRY_INTERVAL, MainWindowOpenGate,
+        next_capture_retry_interval,
+    };
+
+    #[test]
+    fn main_window_open_gate_coalesces_repeated_requests() {
+        let mut gate = MainWindowOpenGate::default();
+
+        assert!(gate.try_begin());
+        assert!(!gate.try_begin());
+        gate.finish();
+        assert!(gate.try_begin());
+    }
+
+    #[test]
+    fn clipboard_capture_retry_backoff_is_bounded() {
+        let mut interval = CAPTURE_INTERVAL;
+        assert_eq!(
+            next_capture_retry_interval(interval),
+            CAPTURE_INTERVAL.saturating_mul(2)
+        );
+        for _ in 0..16 {
+            interval = next_capture_retry_interval(interval);
+        }
+        assert_eq!(interval, CAPTURE_MAX_RETRY_INTERVAL);
+        assert_eq!(
+            next_capture_retry_interval(interval),
+            CAPTURE_MAX_RETRY_INTERVAL
+        );
+    }
 }

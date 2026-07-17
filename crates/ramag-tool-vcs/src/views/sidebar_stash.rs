@@ -122,7 +122,7 @@ fn stash_row(s: &Stash, busy: bool, cx: &mut Context<VcsView>) -> impl IntoEleme
                         .text_color(fg)
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(s.message.clone()),
+                        .child(super::inline_text_preview(&s.message, 240)),
                 ),
         )
         .child(

@@ -2,7 +2,9 @@
 
 use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
 use ramag_domain::error::Result;
-use ramag_infra_sql_shared::{METADATA_FETCH_LIMIT, ensure_metadata_item_limit};
+use ramag_infra_sql_shared::{
+    METADATA_FETCH_LIMIT, ensure_metadata_item_limit, ensure_metadata_result_limit,
+};
 use sqlx::PgPool;
 use tracing::debug;
 
@@ -27,7 +29,7 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
     .map_err(|e| map_postgres_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "Schema")?;
 
-    Ok(rows
+    let schemas = rows
         .into_iter()
         .map(|(name, charset)| Schema {
             name,
@@ -35,7 +37,9 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
             // PG 的 collation 是列 / 表级，schema 无此概念
             collation: None,
         })
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&schemas, "Schema")?;
+    Ok(schemas)
 }
 
 /// 列出 BASE TABLE / VIEW / MATERIALIZED VIEW。matview 不在 information_schema.tables，需 union pg_matviews
@@ -47,7 +51,7 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
         SELECT
             t.table_name::text,
             t.table_type::text,
-            obj_description(c.oid, 'pg_class') AS table_comment
+            LEFT(obj_description(c.oid, 'pg_class'), 4096) AS table_comment
         FROM information_schema.tables t
         LEFT JOIN pg_namespace n ON n.nspname = t.table_schema
         LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
@@ -57,7 +61,7 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
         SELECT
             mv.matviewname::text AS table_name,
             'MATERIALIZED VIEW'::text AS table_type,
-            obj_description(c.oid, 'pg_class') AS table_comment
+            LEFT(obj_description(c.oid, 'pg_class'), 4096) AS table_comment
         FROM pg_matviews mv
         LEFT JOIN pg_namespace n ON n.nspname = mv.schemaname
         LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = mv.matviewname
@@ -73,7 +77,7 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
     .map_err(|e| map_postgres_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "表与视图")?;
 
-    Ok(rows
+    let tables = rows
         .into_iter()
         .map(|(name, table_type, comment)| {
             let is_view = !table_type.eq_ignore_ascii_case("BASE TABLE");
@@ -84,7 +88,9 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
                 is_view,
             }
         })
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&tables, "表与视图")?;
+    Ok(tables)
 }
 
 /// COLUMNS 一行：column_name / data_type / udt_name / default / comment / char_max_len / nullable
@@ -108,8 +114,8 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             c.column_name::text,
             c.data_type::text,
             c.udt_name::text,
-            c.column_default,
-            col_description(pgc.oid, c.ordinal_position::int) AS column_comment,
+            LEFT(c.column_default, 4096),
+            LEFT(col_description(pgc.oid, c.ordinal_position::int), 4096) AS column_comment,
             c.character_maximum_length::int,
             (c.is_nullable = 'YES') AS nullable
         FROM information_schema.columns c
@@ -150,7 +156,7 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
     ensure_metadata_item_limit(pk_cols.len(), "主键列")?;
     let pk_names: std::collections::HashSet<String> = pk_cols.into_iter().map(|(n,)| n).collect();
 
-    Ok(rows
+    let columns = rows
         .into_iter()
         .map(
             |(name, data_type, udt_name, default_value, comment, char_max_len, nullable)| {
@@ -166,7 +172,9 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
                 }
             },
         )
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&columns, "列")?;
+    Ok(columns)
 }
 
 /// 例：data_type=character varying / udt=varchar / char_max=255 → "varchar(255)"
@@ -209,7 +217,7 @@ pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
     .map_err(|e| map_postgres_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "索引")?;
 
-    Ok(rows
+    let indexes = rows
         .into_iter()
         .map(|(name, unique, primary, columns)| Index {
             name,
@@ -217,7 +225,9 @@ pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             primary,
             columns,
         })
-        .collect())
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&indexes, "索引")?;
+    Ok(indexes)
 }
 
 pub async fn list_foreign_keys(
@@ -269,7 +279,9 @@ pub async fn list_foreign_keys(
         entry.columns.push(col);
         entry.ref_columns.push(ref_col);
     }
-    Ok(grouped.into_values().collect())
+    let foreign_keys = grouped.into_values().collect::<Vec<_>>();
+    ensure_metadata_result_limit(&foreign_keys, "外键")?;
+    Ok(foreign_keys)
 }
 
 /// `SHOW server_version`，形如 "13.5"

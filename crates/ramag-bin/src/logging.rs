@@ -1,5 +1,6 @@
 //! 应用日志初始化：首选用户数据目录，失败时回退临时目录。
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use tracing::{error, info};
@@ -8,6 +9,82 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
+/// 运行期按大小轮转；仅启动时检查文件大小会让长期托盘进程的日志继续无界增长。
+struct RotatingLogWriter {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    written: u64,
+    max_bytes: u64,
+}
+
+impl RotatingLogWriter {
+    fn new(path: PathBuf, file: std::fs::File, max_bytes: u64) -> io::Result<Self> {
+        if max_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "log size limit must be positive",
+            ));
+        }
+        let written = file.metadata()?.len();
+        Ok(Self {
+            path,
+            file: Some(file),
+            written,
+            max_bytes,
+        })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        // Windows 不能重命名仍被当前进程打开的文件，必须先释放句柄。
+        self.file.take();
+        match rotate_log_file(&self.path) {
+            Ok(()) => {
+                self.file = Some(open_log_handle(&self.path, false)?);
+            }
+            Err(rotate_error) => {
+                // 备份文件被占用等情况下仍要守住磁盘上限；退化为截断当前日志。
+                let file = open_log_handle(&self.path, true).map_err(|truncate_error| {
+                    io::Error::other(format!(
+                        "rotate log failed: {rotate_error}; truncate fallback failed: {truncate_error}"
+                    ))
+                })?;
+                eprintln!("ramag log rotation failed; truncated current log: {rotate_error}");
+                self.file = Some(file);
+            }
+        }
+        self.written = 0;
+        Ok(())
+    }
+
+    fn file_mut(&mut self) -> io::Result<&mut std::fs::File> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log file is unavailable"))
+    }
+}
+
+impl Write for RotatingLogWriter {
+    fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
+        let consumed = buf.len();
+        while !buf.is_empty() {
+            if self.written >= self.max_bytes {
+                self.rotate()?;
+            }
+            let remaining = usize::try_from(self.max_bytes - self.written)
+                .unwrap_or(usize::MAX)
+                .min(buf.len());
+            self.file_mut()?.write_all(&buf[..remaining])?;
+            self.written = self.written.saturating_add(remaining as u64);
+            buf = &buf[remaining..];
+        }
+        Ok(consumed)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file_mut()?.flush()
+    }
+}
 
 pub(crate) fn init() -> Option<PathBuf> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -53,7 +130,7 @@ fn install_panic_hook() {
     }));
 }
 
-fn open_log_file() -> (PathBuf, Option<std::fs::File>, Option<String>) {
+fn open_log_file() -> (PathBuf, Option<RotatingLogWriter>, Option<String>) {
     let preferred_dir = directories::ProjectDirs::from("com", "ramag", "ramag")
         .map(|project| project.data_dir().join("logs"))
         .unwrap_or_else(|| std::env::temp_dir().join("ramag-logs"));
@@ -66,7 +143,7 @@ fn open_log_file() -> (PathBuf, Option<std::fs::File>, Option<String>) {
 fn open_fallback_log(
     preferred_dir: PathBuf,
     preferred_error: std::io::Error,
-) -> (PathBuf, Option<std::fs::File>, Option<String>) {
+) -> (PathBuf, Option<RotatingLogWriter>, Option<String>) {
     let fallback_dir = std::env::temp_dir().join("ramag-logs");
     match try_open_log_file(&fallback_dir) {
         Ok((path, file)) => (
@@ -87,21 +164,36 @@ fn open_fallback_log(
     }
 }
 
-fn try_open_log_file(dir: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+fn try_open_log_file(dir: &Path) -> io::Result<(PathBuf, RotatingLogWriter)> {
+    try_open_log_file_at(dir, MAX_LOG_BYTES)
+}
+
+fn try_open_log_file_at(dir: &Path, max_bytes: u64) -> io::Result<(PathBuf, RotatingLogWriter)> {
     std::fs::create_dir_all(dir)?;
     set_private_dir_permissions(dir)?;
     let path = dir.join("ramag.log");
-    rotate_if_oversized(&path)?;
+    rotate_if_oversized_at(&path, max_bytes)?;
+    let file = open_log_handle(&path, false)?;
+    let writer = RotatingLogWriter::new(path.clone(), file, max_bytes)?;
+    Ok((path, writer))
+}
+
+fn open_log_handle(path: &Path, truncate: bool) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
+    options.create(true).write(true);
+    if truncate {
+        options.truncate(true);
+    } else {
+        options.append(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let file = options.open(&path)?;
-    set_private_file_permissions(&path)?;
-    Ok((path, file))
+    let file = options.open(path)?;
+    set_private_file_permissions(path)?;
+    Ok(file)
 }
 
 #[cfg(unix)]
@@ -128,10 +220,6 @@ fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn rotate_if_oversized(path: &Path) -> std::io::Result<()> {
-    rotate_if_oversized_at(path, MAX_LOG_BYTES)
-}
-
 fn rotate_if_oversized_at(path: &Path, max_bytes: u64) -> std::io::Result<()> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -139,6 +227,13 @@ fn rotate_if_oversized_at(path: &Path, max_bytes: u64) -> std::io::Result<()> {
         Err(error) => return Err(error),
     };
     if metadata.len() < max_bytes {
+        return Ok(());
+    }
+    rotate_log_file(path)
+}
+
+fn rotate_log_file(path: &Path) -> io::Result<()> {
+    if !path.exists() {
         return Ok(());
     }
     let backup = path.with_extension("log.old");
@@ -152,9 +247,10 @@ fn rotate_if_oversized_at(path: &Path, max_bytes: u64) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{rotate_if_oversized_at, try_open_log_file};
+    use super::{rotate_if_oversized_at, try_open_log_file, try_open_log_file_at};
 
     #[test]
     fn oversized_log_is_rotated_once() -> std::io::Result<()> {
@@ -170,6 +266,30 @@ mod tests {
         rotate_if_oversized_at(&path, 4)?;
         assert!(!path.exists());
         assert_eq!(std::fs::read(path.with_extension("log.old"))?, b"12345");
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn long_running_writer_rotates_without_restart() -> std::io::Result<()> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-runtime-log-rotation-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let (path, mut writer) = try_open_log_file_at(&dir, 4)?;
+
+        writer.write_all(b"1234")?;
+        writer.flush()?;
+        writer.write_all(b"5678")?;
+        writer.flush()?;
+
+        assert_eq!(std::fs::read(path.with_extension("log.old"))?, b"1234");
+        assert_eq!(std::fs::read(&path)?, b"5678");
+        drop(writer);
         std::fs::remove_dir_all(dir)?;
         Ok(())
     }

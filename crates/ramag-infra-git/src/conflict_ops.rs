@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ramag_domain::error::Result;
 
-use crate::git_cmd::run_git_bytes;
+use crate::git_cmd::run_git_pathspecs;
 
 /// HEAD 侧
 pub fn use_ours(repo_path: &Path, paths: &[String]) -> Result<()> {
@@ -17,14 +17,19 @@ pub fn use_theirs(repo_path: &Path, paths: &[String]) -> Result<()> {
 }
 
 fn apply_side(repo_path: &Path, side: &str, paths: &[String]) -> Result<()> {
-    let mut args1: Vec<&str> = vec!["checkout", side, "--"];
-    for p in paths {
-        args1.push(p);
-    }
-    run_git_bytes(repo_path, &args1)?;
-    let mut args2: Vec<&str> = vec!["add", "--"];
-    for p in paths {
-        args2.push(p);
-    }
-    run_git_bytes(repo_path, &args2).map(|_| ())
+    run_git_pathspecs(
+        repo_path,
+        &[
+            "checkout",
+            side,
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+        ],
+        paths,
+    )?;
+    run_git_pathspecs(
+        repo_path,
+        &["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        paths,
+    )
 }

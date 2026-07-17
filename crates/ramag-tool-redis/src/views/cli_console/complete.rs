@@ -13,6 +13,9 @@ use lsp_types::{
 };
 use ropey::Rope;
 
+/// 命令名只可能出现在行首；光标已深入超长输入时不再为补全复制整份命令。
+const MAX_COMMAND_COMPLETION_PREFIX_BYTES: usize = 4 * 1024;
+
 /// 单条命令元数据：名、语法、一句话说明
 struct CmdMeta {
     name: &'static str,
@@ -136,23 +139,10 @@ impl CompletionProvider for RedisCompletionProvider {
         _window: &mut Window,
         _cx: &mut Context<InputState>,
     ) -> Task<Result<CompletionResponse>> {
-        let text = rope.to_string();
-        let bytes = text.as_bytes();
-        let real_offset = offset.min(bytes.len());
-
-        // 光标前的命令字（字母/数字）
-        let mut start = real_offset;
-        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric()) {
-            start -= 1;
-        }
-        let prefix = &text[start..real_offset];
-
-        // 仅命令位补全：前缀之前须全是空白（否则是参数位，不补）
-        if prefix.is_empty() || !text[..start].trim().is_empty() {
+        let Some((start, real_offset, prefix_upper)) = command_completion_prefix(rope, offset)
+        else {
             return Task::ready(Ok(CompletionResponse::Array(vec![])));
-        }
-
-        let prefix_upper = prefix.to_ascii_uppercase();
+        };
         let replace_range = lsp_types::Range::new(
             rope.offset_to_position(start),
             rope.offset_to_position(real_offset),
@@ -176,6 +166,26 @@ impl CompletionProvider for RedisCompletionProvider {
         // 字母 / 数字触发（命令名只含字母数字）
         new_text.chars().all(|c| c.is_ascii_alphanumeric())
     }
+}
+
+fn command_completion_prefix(rope: &Rope, offset: usize) -> Option<(usize, usize, String)> {
+    let real_offset = rope.floor_char_boundary(offset.min(rope.len()));
+    if real_offset > MAX_COMMAND_COMPLETION_PREFIX_BYTES {
+        return None;
+    }
+
+    // 只复制行首到光标，避免长参数或粘贴内容让每次按键产生整份 String。
+    let text = rope.slice(..real_offset).to_string();
+    let bytes = text.as_bytes();
+    let mut start = bytes.len();
+    while start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+        start -= 1;
+    }
+    let prefix = &text[start..];
+    if prefix.is_empty() || !text[..start].trim().is_empty() {
+        return None;
+    }
+    Some((start, real_offset, prefix.to_ascii_uppercase()))
 }
 
 /// 命令名 → CompletionItem。语法只放 documentation（选中时在侧边文档面板显示，可读）；
@@ -221,5 +231,29 @@ mod tests {
         for must in ["GET", "SET", "HGETALL", "KEYS", "CONFIG", "PING"] {
             assert!(names.contains(&must), "缺常用命令: {must}");
         }
+    }
+
+    #[test]
+    fn completion_prefix_does_not_copy_a_large_suffix() {
+        let mut text = String::from("  ge");
+        text.push_str(&"x".repeat(64 * 1024));
+        let rope = Rope::from_str(&text);
+
+        assert_eq!(
+            command_completion_prefix(&rope, 4),
+            Some((2, 4, "GE".to_string()))
+        );
+    }
+
+    #[test]
+    fn completion_prefix_skips_deep_or_argument_positions() {
+        let deep = Rope::from_str(&format!(
+            "{}GET",
+            " ".repeat(MAX_COMMAND_COMPLETION_PREFIX_BYTES + 1)
+        ));
+        assert!(command_completion_prefix(&deep, deep.len()).is_none());
+
+        let argument = Rope::from_str("GET ke");
+        assert!(command_completion_prefix(&argument, argument.len()).is_none());
     }
 }

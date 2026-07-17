@@ -445,9 +445,9 @@ fn build_middle_list(
                                 li.and_then(|i| diff_rc.hunks[hunk_idx].lines[i].new_lineno)
                                     .and_then(|ln| {
                                         blame_rc.as_ref().and_then(|bs| {
-                                            bs.iter().find(|b| b.line_no == ln).map(|b| {
-                                                b.author.chars().take(10).collect::<String>()
-                                            })
+                                            bs.iter()
+                                                .find(|b| b.line_no == ln)
+                                                .map(|b| super::inline_text_preview(&b.author, 10))
                                         })
                                     })
                             };

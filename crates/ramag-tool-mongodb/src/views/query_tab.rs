@@ -20,13 +20,14 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::MongoService;
-use ramag_domain::entities::{ConnectionConfig, MongoQueryResult};
+use ramag_domain::entities::{ConnectionConfig, MongoQueryResult, json_pretty_bounded};
 use ramag_domain::error::DomainError;
 use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::actions::{FormatMongoJson, RunMongoQuery};
 use crate::views::result_panel::{ResultEvent, ResultPanel};
+use crate::views::{MAX_MONGO_INTERACTIVE_INPUT_BYTES, bounded_input};
 use command::{
     command_response_kind, dangerous_command_reason, default_command_template, extract_collection,
     parse_run_command_response, truncate_chars,
@@ -85,7 +86,7 @@ impl MongoQueryTab {
 
         // code_editor("json") 提供 JSON 语法高亮 + 行号 + 自动缩进；命令补全挂 lsp.completion_provider
         let editor = cx.new(|cx| {
-            let mut state = InputState::new(window, cx)
+            let mut state = bounded_input(window, cx)
                 .code_editor("json")
                 .multi_line(true)
                 .line_number(true)
@@ -109,11 +110,31 @@ impl MongoQueryTab {
                 ResultEvent::Cancel => this.cancel_if_running(cx),
             },
         );
-        let editor_sub = cx.subscribe(&editor, |_this: &mut Self, _, e: &InputEvent, cx| {
-            if matches!(e, InputEvent::Change) {
+        let editor_for_sub = editor.clone();
+        let editor_sub = cx.subscribe_in(
+            &editor,
+            window,
+            move |this: &mut Self, _, e: &InputEvent, window, cx| {
+                if !matches!(e, InputEvent::Change) {
+                    return;
+                }
+                if ramag_ui::clamp_multiline_input_value(
+                    &editor_for_sub,
+                    MAX_MONGO_INTERACTIVE_INPUT_BYTES,
+                    window,
+                    cx,
+                ) {
+                    this.pending_notification = Some(
+                        Notification::warning(format!(
+                            "MongoDB 编辑器最多保留 {} MiB，超出部分已截断",
+                            MAX_MONGO_INTERACTIVE_INPUT_BYTES / 1024 / 1024
+                        ))
+                        .autohide(true),
+                    );
+                }
                 cx.emit(MongoQueryTabEvent::DraftChanged);
-            }
-        });
+            },
+        );
 
         Self {
             service,
@@ -158,6 +179,18 @@ impl MongoQueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if text.len() > MAX_MONGO_INTERACTIVE_INPUT_BYTES {
+            self.result.update(cx, |panel, cx| {
+                panel.set_error(
+                    format!(
+                        "MongoDB 草稿超过 {} MiB 安全上限，未写入编辑器",
+                        MAX_MONGO_INTERACTIVE_INPUT_BYTES / 1024 / 1024
+                    ),
+                    cx,
+                );
+            });
+            return;
+        }
         if let Some(database) = database.filter(|db| !db.is_empty()) {
             self.database = database;
         }
@@ -188,12 +221,11 @@ impl MongoQueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 连点切集合时，停止等待旧命令后立即运行新集合，不能让 request_run 因旧 busy 状态静默失效。
+        self.cancel_if_running(cx);
         self.database = database;
         self.collection = Some(collection.clone());
-        let cmd = format!(
-            "{{\n  \"find\": \"{}\",\n  \"filter\": {{}},\n  \"limit\": 10000\n}}",
-            collection
-        );
+        let cmd = find_command_template(&collection);
         self.editor.update(cx, |s, cx| {
             s.set_value(cmd.clone(), window, cx);
         });
@@ -322,7 +354,8 @@ impl MongoQueryTab {
         }
         if let Some(reason) = dangerous_command_reason(&cmd) {
             let command_preview = if text.len() <= MAX_CONFIRM_PRETTY_BYTES {
-                let pretty = serde_json::to_string_pretty(&cmd).unwrap_or_else(|_| text.clone());
+                let pretty = json_pretty_bounded(&cmd, MAX_CONFIRM_PRETTY_BYTES)
+                    .unwrap_or_else(|| text.clone());
                 truncate_chars(&pretty, 1_000)
             } else {
                 format!(
@@ -503,8 +536,12 @@ impl MongoQueryTab {
                 let parsed: Value = serde_json::from_str(&text).map_err(|error| {
                     DomainError::InvalidConfig(format!("格式化失败（JSON 无效）：{error}"))
                 })?;
-                serde_json::to_string_pretty(&parsed)
-                    .map_err(|error| DomainError::Other(format!("生成格式化 JSON 失败：{error}")))
+                json_pretty_bounded(&parsed, MAX_MONGO_INTERACTIVE_INPUT_BYTES).ok_or_else(|| {
+                    DomainError::InvalidConfig(format!(
+                        "格式化结果超过 {} MiB 安全上限",
+                        MAX_MONGO_INTERACTIVE_INPUT_BYTES / 1024 / 1024
+                    ))
+                })
             })
             .await;
             let _ = this.update_in(async_cx, move |this, window, cx| {
@@ -518,6 +555,15 @@ impl MongoQueryTab {
                     return;
                 }
                 match formatted {
+                    Ok(pretty) if pretty.len() > MAX_MONGO_INTERACTIVE_INPUT_BYTES => {
+                        this.pending_notification = Some(
+                            Notification::error(format!(
+                                "格式化结果超过 {} MiB 安全上限，已保留原命令",
+                                MAX_MONGO_INTERACTIVE_INPUT_BYTES / 1024 / 1024
+                            ))
+                            .autohide(true),
+                        );
+                    }
                     Ok(pretty) if pretty != source_text => {
                         this.editor.update(cx, |state, cx| {
                             state.set_value(pretty, window, cx);
@@ -536,6 +582,12 @@ impl MongoQueryTab {
         })
         .detach();
     }
+}
+
+fn find_command_template(collection: &str) -> String {
+    let collection =
+        serde_json::to_string(collection).unwrap_or_else(|_| "\"invalid collection\"".to_string());
+    format!("{{\n  \"find\": {collection},\n  \"filter\": {{}},\n  \"limit\": 10000\n}}")
 }
 
 impl Render for MongoQueryTab {
@@ -578,5 +630,17 @@ impl Render for MongoQueryTab {
                 )
             })
             .child(div().flex_1().min_h_0().child(self.result.clone()))
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::find_command_template;
+
+    #[test]
+    fn collection_template_escapes_json_string_characters() {
+        let template = find_command_template("quotes\"and\\slashes");
+        let parsed: serde_json::Value = serde_json::from_str(&template).unwrap();
+        assert_eq!(parsed["find"], "quotes\"and\\slashes");
     }
 }

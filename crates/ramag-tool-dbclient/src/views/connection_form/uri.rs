@@ -1,6 +1,9 @@
 //! MongoDB 连接 URI 解析：`mongodb://[user[:pass]@]host[:port][/db][?k=v]` → 表单字段。
 //! 纯函数便于测试；`mongodb+srv` 需 DNS SRV 查询，明确报不支持而非静默错连
 
+/// URI 可能包含百分号编码后的凭证，预留密码上限约四倍空间并阻断异常粘贴。
+pub(super) const MAX_MONGO_URI_BYTES: usize = 256 * 1024;
+
 /// URI 解析出的表单字段集
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct MongoUriParts {
@@ -15,6 +18,12 @@ pub(super) struct MongoUriParts {
 
 /// 解析单主机 mongodb URI；多主机（副本集）与拓扑类参数显式报错，不静默降级
 pub(super) fn parse_mongo_uri(raw: &str) -> Result<MongoUriParts, String> {
+    if raw.len() > MAX_MONGO_URI_BYTES {
+        return Err(format!(
+            "MongoDB URI 过长：{} bytes，最多 {MAX_MONGO_URI_BYTES} bytes",
+            raw.len()
+        ));
+    }
     let raw = raw.trim();
     if let Some(rest) = raw.strip_prefix("mongodb+srv://") {
         let _ = rest;
@@ -256,5 +265,11 @@ mod tests {
         assert!(parse_mongo_uri("mongodb://user:%GG@host").is_err());
         assert!(parse_mongo_uri("mongodb://user:%FF@host").is_err());
         assert!(parse_mongo_uri("mongodb://host/?tls=yes").is_err());
+    }
+
+    #[test]
+    fn oversized_uri_is_rejected_before_parsing() {
+        let raw = "x".repeat(MAX_MONGO_URI_BYTES + 1);
+        assert!(parse_mongo_uri(&raw).is_err());
     }
 }

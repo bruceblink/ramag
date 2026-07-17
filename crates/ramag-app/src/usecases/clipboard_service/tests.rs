@@ -290,6 +290,37 @@ fn failed_restore_keeps_original_cleanup_token_valid() {
 }
 
 #[test]
+fn clearing_history_invalidates_pending_media_restores() {
+    let pending = PendingMediaDeletes::default();
+    let id = ClipId::new();
+    let token = pending.stage(id.clone(), vec!["image.img".into()]);
+
+    pending.clear();
+
+    assert_eq!(pending.take_for_restore(&id), None);
+    assert_eq!(pending.expire(&id, token), None);
+}
+
+#[test]
+fn reused_media_is_removed_from_old_physical_delete_timer() {
+    let pending = PendingMediaDeletes::default();
+    let id = ClipId::new();
+    let token = pending.stage(
+        id.clone(),
+        vec!["shared.img".into(), "old-only.thumb".into()],
+    );
+
+    assert!(pending.contains_path("shared.img"));
+    pending.protect_paths(["shared.img"]);
+
+    assert!(!pending.contains_path("shared.img"));
+    assert_eq!(
+        pending.expire(&id, token),
+        Some(vec!["old-only.thumb".into()])
+    );
+}
+
+#[test]
 fn touching_item_preserves_rich_text_payload() {
     let created_at = Utc::now() - chrono::Duration::minutes(1);
     let item = ClipItem {
@@ -362,4 +393,40 @@ fn inline_payload_match_rejects_same_hash_with_different_content() {
         &text_clip("second"),
         ClipKind::Text
     ));
+}
+
+#[test]
+fn restore_dedup_only_merges_the_same_payload() {
+    let first = ClipItem {
+        id: ClipId::new(),
+        kind: ClipKind::Text,
+        text: Some("same".into()),
+        rtf: None,
+        image_path: None,
+        thumb_path: None,
+        image_dims: None,
+        files: Vec::new(),
+        preview: "same".into(),
+        source: None,
+        byte_size: 4,
+        content_hash: "same-hash".into(),
+        created_at: Utc::now(),
+        last_used_at: Utc::now(),
+    };
+    let mut duplicate = first.clone();
+    duplicate.id = ClipId::new();
+    assert!(super::media_ops::clip_items_share_payload(
+        &first, &duplicate
+    ));
+
+    duplicate.text = Some("collision".into());
+    assert!(!super::media_ops::clip_items_share_payload(
+        &first, &duplicate
+    ));
+}
+
+#[test]
+fn clipboard_search_query_has_explicit_resource_boundary() {
+    assert!(validate_search_query(&"x".repeat(MAX_CLIPBOARD_SEARCH_BYTES)).is_ok());
+    assert!(validate_search_query(&"x".repeat(MAX_CLIPBOARD_SEARCH_BYTES + 1)).is_err());
 }

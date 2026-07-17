@@ -11,7 +11,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
 };
-use ramag_domain::entities::RedisValue;
+use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
 
 use super::{KeyDetailEvent, KeyDetailPanel};
 
@@ -70,8 +70,9 @@ fn list_row(
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
     let preview = item.display_preview(256);
+    let value_is_text = matches!(item, RedisValue::Text(_));
     let raw_value = match item {
-        RedisValue::Text(s) => Some(s.clone()),
+        RedisValue::Text(text) if text.len() <= MAX_REDIS_COMMAND_ARG_BYTES => Some(text.clone()),
         _ => None,
     };
     let delete_disabled = read_only || raw_value.is_none();
@@ -114,7 +115,11 @@ fn list_row(
                 .tooltip(if read_only {
                     "生产连接为只读"
                 } else if raw_value.is_none() {
-                    "二进制元素暂不支持安全删除"
+                    if value_is_text {
+                        "元素过大，请使用脚本处理"
+                    } else {
+                        "二进制元素暂不支持安全删除"
+                    }
                 } else {
                     "删除该元素"
                 })

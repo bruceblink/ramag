@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext as _, Context, Window};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
-use ramag_domain::entities::Query;
+use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query};
 use ramag_domain::error::DomainError;
 use tracing::{error, info};
 
@@ -32,14 +32,14 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) -> Option<gpui::SharedString> {
         let sql = self.current_sql(cx);
-        if sql.len() <= ramag_ui::MAX_EDITOR_DRAFT_BYTES {
+        if sql.len() <= MAX_SQL_QUERY_BYTES {
             return Some(sql);
         }
         self.result.update(cx, |result, cx| {
             result.set_state(
                 ResultState::Error(format!(
                     "SQL 内容超过 {} MiB 安全上限，无法{operation}；请拆分脚本后重试",
-                    ramag_ui::MAX_EDITOR_DRAFT_BYTES / 1024 / 1024
+                    MAX_SQL_QUERY_BYTES / 1024 / 1024
                 )),
                 cx,
             );
@@ -127,6 +127,9 @@ impl QueryTab {
         };
         if !risks.is_empty() {
             let entity = cx.entity();
+            let confirmed_connection_id = conn.id.clone();
+            let confirmed_schema = self.active_schema.clone();
+            let confirmed_editor = self.current_sql(cx);
             let message =
                 build_danger_prompt(&conn, self.active_schema.as_deref(), &risks, &sql_to_run);
             ramag_ui::open_confirm(
@@ -136,6 +139,22 @@ impl QueryTab {
                 true,
                 move |_, app| {
                     entity.update(app, |this, cx| {
+                        let context_changed = this
+                            .connection
+                            .as_ref()
+                            .is_none_or(|current| current.id != confirmed_connection_id)
+                            || this.active_schema != confirmed_schema
+                            || this.current_sql(cx) != confirmed_editor;
+                        if context_changed {
+                            this.pending_notification = Some(
+                                Notification::warning(
+                                    "连接、数据库或 SQL 已变更，已取消执行；请重新确认",
+                                )
+                                .autohide(true),
+                            );
+                            cx.notify();
+                            return;
+                        }
                         this.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
                     });
                 },
@@ -213,6 +232,8 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) {
         self.running = true;
+        self.run_seq = self.run_seq.wrapping_add(1);
+        let request_seq = self.run_seq;
         self.query_start = Some(Instant::now());
         // 生产只读拦截（Forbidden）时需要恢复的原结果快照：不能让结果区停留在"执行中"
         let prev_state = self.result.read(cx).state().clone();
@@ -229,7 +250,7 @@ impl QueryTab {
                     .await;
                 let still_running = this
                     .update(cx, |this, cx| {
-                        if this.running {
+                        if this.running && this.run_seq == request_seq {
                             cx.notify();
                             true
                         } else {
@@ -247,6 +268,8 @@ impl QueryTab {
         let svc = self.service.clone();
         let result_handle = self.result.clone();
         let active_schema = self.active_schema.clone();
+        // 结果的可编辑目标必须绑定到“发起查询时”的表，不能在回包时读取用户后来点击的表。
+        let request_pinned_target = self.pinned_target.clone();
         let handle: ramag_domain::traits::CancelHandle =
             Arc::new(std::sync::atomic::AtomicU64::new(0));
         self.cancel_handle = Some(handle.clone());
@@ -260,6 +283,9 @@ impl QueryTab {
                 .execute_cancellable_with_history(&conn, &query, handle)
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if this.run_seq != request_seq {
+                    return;
+                }
                 this.running = false;
                 this.current_task = None;
                 this.cancel_handle = None;
@@ -276,8 +302,7 @@ impl QueryTab {
                         if is_run {
                             this.maybe_refresh_cache_after_ddl(&title_sql, cx);
                         }
-                        let target_for_result = this
-                            .pinned_target
+                        let target_for_result = request_pinned_target
                             .as_ref()
                             .map(|(s, t)| (Some(s.clone()), t.clone()));
                         result_handle.update(cx, |r, cx| {
@@ -287,7 +312,7 @@ impl QueryTab {
                         });
                         // 表树单表数据：异步拉真实主键 / 唯一索引作为行定位键，
                         // 就绪前增删改保持禁用（绝不按列名猜键）
-                        if let Some((schema, table)) = this.pinned_target.clone() {
+                        if let Some((schema, table)) = request_pinned_target {
                             this.fetch_row_identity(schema, table, cx);
                         }
                     }
@@ -383,14 +408,34 @@ impl QueryTab {
         };
         let svc = self.service.clone();
         let cache = self.schema_cache.clone();
+        let cache_generation = {
+            let mut cache = cache.write();
+            cache.invalidate_schema(&schema);
+            cache.begin_table_refresh(&schema)
+        };
         cx.background_spawn(async move {
             match svc.list_tables(&conn, &schema).await {
                 Ok(tables) => {
-                    let names: Vec<String> = tables.into_iter().map(|t| t.name).collect();
-                    cache.write().tables.insert(schema, names);
-                    info!("schema cache refreshed after DDL");
+                    let names = tables.iter().map(|table| table.name.clone()).collect();
+                    let views = tables
+                        .into_iter()
+                        .filter(|table| table.is_view)
+                        .map(|table| table.name)
+                        .collect();
+                    let refreshed =
+                        cache
+                            .write()
+                            .finish_table_refresh(schema, cache_generation, names, views);
+                    if refreshed {
+                        info!("schema cache refreshed after DDL");
+                    } else {
+                        tracing::debug!("DDL schema refresh superseded or exceeded cache budget");
+                    }
                 }
                 Err(e) => {
+                    cache
+                        .write()
+                        .cancel_table_refresh(&schema, cache_generation);
                     error!(error = %e, "DDL refresh: list_tables failed");
                 }
             }
@@ -441,6 +486,15 @@ impl QueryTab {
                     return;
                 }
                 match formatted {
+                    Ok(formatted) if formatted.len() > MAX_SQL_QUERY_BYTES => {
+                        this.pending_notification = Some(
+                            Notification::error(format!(
+                                "格式化结果超过 {} MiB 安全上限，已保留原 SQL",
+                                MAX_SQL_QUERY_BYTES / 1024 / 1024
+                            ))
+                            .autohide(true),
+                        );
+                    }
                     Ok(formatted) if formatted != source_sql => {
                         this.editor.update(cx, |state, cx| {
                             state.set_value(formatted, window, cx);
@@ -500,6 +554,7 @@ impl QueryTab {
         if self.current_task.take().is_none() {
             return;
         }
+        self.run_seq = self.run_seq.wrapping_add(1);
         let cancel_target = self.cancel_handle.take().and_then(|h| {
             let tid = h.load(std::sync::atomic::Ordering::SeqCst);
             if tid > 0 { Some(tid) } else { None }
@@ -570,7 +625,7 @@ impl QueryTab {
             return;
         };
         let sql = self.editor.read(cx).value();
-        if sql.len() > ramag_ui::MAX_EDITOR_DRAFT_BYTES {
+        if sql.len() > MAX_SQL_QUERY_BYTES {
             return;
         }
         let tables = extract_tables_in_use_for_prefetch(&sql);
@@ -598,7 +653,7 @@ impl QueryTab {
                     continue;
                 };
                 let key = (schema, table);
-                if cache.columns.contains_key(&key) || !cache.loading_columns.insert(key.clone()) {
+                if !cache.begin_column_load(key.clone()) {
                     continue;
                 }
                 resolved.push(key);
@@ -616,16 +671,13 @@ impl QueryTab {
                     Ok(cols) => {
                         let names: Vec<String> = cols.into_iter().map(|c| c.name).collect();
                         let mut cache = cache.write();
-                        cache
-                            .loading_columns
-                            .remove(&(schema.clone(), table.clone()));
-                        cache.columns.insert((schema, table), names);
+                        cache.finish_column_load(&(schema.clone(), table.clone()));
+                        cache.cache_columns((schema, table), names);
                     }
                     Err(e) => {
                         cache
                             .write()
-                            .loading_columns
-                            .remove(&(schema.clone(), table.clone()));
+                            .finish_column_load(&(schema.clone(), table.clone()));
                         tracing::warn!(
                             error = %e, schema = %schema, table = %table,
                             "prefetch columns failed"

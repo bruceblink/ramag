@@ -6,7 +6,8 @@ use ramag_domain::entities::{FileChangeKind, FileStatus};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{
-    ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_positional_arg,
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_output_path,
+    validate_positional_arg,
 };
 
 pub fn list(repo_path: &Path, commit: &str) -> Result<Vec<FileStatus>> {
@@ -107,8 +108,10 @@ fn decode_diff_path(path: &[u8], index: usize) -> Result<&str> {
     if path.is_empty() {
         return Err(diff_tree_parse_error(index, "文件路径为空"));
     }
-    std::str::from_utf8(path)
-        .map_err(|error| diff_tree_parse_error(index, &format!("文件路径非 UTF-8：{error}")))
+    let path = std::str::from_utf8(path)
+        .map_err(|error| diff_tree_parse_error(index, &format!("文件路径非 UTF-8：{error}")))?;
+    validate_output_path(path, "Git commit 文件路径", index)?;
+    Ok(path)
 }
 
 fn diff_tree_parse_error(index: usize, reason: &str) -> DomainError {

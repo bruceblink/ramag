@@ -29,7 +29,7 @@ use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
 use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 
-use tree::{TreeNode, VisibleRow, build_tree};
+use tree::{TreeNode, VisibleRow, build_tree, collect_namespace_paths};
 
 #[derive(Clone, PartialEq, Eq)]
 struct VisibleRowsCacheKey {
@@ -52,6 +52,9 @@ impl VisibleRowsCacheEntry {
 
 /// 每次追加加载的 key 数（防止首次进入大库即占用过多内存）
 const KEYS_PAGE_SIZE: usize = 5_000;
+/// Key 树同时持有列表、去重集合与 Trie，多份索引共同受此计数和原始名称字节预算约束。
+const MAX_LOADED_KEYS: usize = 50_000;
+const MAX_LOADED_KEY_BYTES: usize = 16 * 1024 * 1024;
 
 /// 命名空间分隔符（业界事实标准）
 const NAMESPACE_SEP: char = ':';
@@ -93,6 +96,8 @@ pub struct KeyTreePanel {
     /// 已加载 key 名集合：SCAN 弱一致会跨批重复返回同一 key，追加前据此去重
     /// （否则计数虚高、Trie 重复插入）
     seen_keys: HashSet<String>,
+    /// `keys` 中原始 Key 名的总字节数；避免超长名称在多份树索引中放大内存。
+    key_bytes: usize,
     /// 已加载 key 的 Trie 树（按 NAMESPACE_SEP 分层）
     tree: Vec<TreeNode>,
     /// 已展开的命名空间路径集合（按 full_path 索引）
@@ -121,6 +126,8 @@ pub struct KeyTreePanel {
     selected: Option<String>,
     /// 是否在本次分页目标处暂停，仍可继续扫描。
     truncated: bool,
+    /// 达到全局资源上限后不再提供继续加载，需用 MATCH 缩小范围。
+    resource_limited: bool,
     /// 下一次应继续使用的 SCAN cursor；None 表示已经完整扫完。
     resume_cursor: Option<u64>,
     /// 当前这轮扫描允许累计到的 key 数，点“继续加载”后按页增加。
@@ -139,8 +146,9 @@ impl EventEmitter<KeyTreeEvent> for KeyTreePanel {}
 
 impl KeyTreePanel {
     pub fn new(service: Arc<RedisService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("全库搜索 key（支持 * ? [）"));
+        let search = cx.new(|cx| {
+            ramag_ui::bounded_search_input(window, cx).placeholder("全库搜索 key（支持 * ? [）")
+        });
 
         let subs = vec![cx.subscribe_in(
             &search,
@@ -166,6 +174,7 @@ impl KeyTreePanel {
             db: 0,
             keys: Vec::new(),
             seen_keys: HashSet::new(),
+            key_bytes: 0,
             tree: Vec::new(),
             expanded: HashSet::new(),
             tree_revision: 0,
@@ -183,6 +192,7 @@ impl KeyTreePanel {
             last_rebuilt_count: 0,
             selected: None,
             truncated: false,
+            resource_limited: false,
             resume_cursor: None,
             scan_target: KEYS_PAGE_SIZE,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -206,10 +216,12 @@ impl KeyTreePanel {
         self.error = None;
         self.keys.clear();
         self.seen_keys.clear();
+        self.key_bytes = 0;
         self.clear_tree();
         self.expanded.clear();
         self.expanded_revision = self.expanded_revision.wrapping_add(1);
         self.truncated = false;
+        self.resource_limited = false;
         self.resume_cursor = None;
         self.scan_target = KEYS_PAGE_SIZE;
         self.search_pending = false;
@@ -241,12 +253,16 @@ impl KeyTreePanel {
     fn rebuild_tree(&mut self) {
         self.tree = build_tree(&self.keys);
         self.last_rebuilt_count = self.keys.len();
+        let expanded_changed = prune_expanded_for_tree(&self.tree, &mut self.expanded);
         if self.expanded.is_empty() {
             for n in &self.tree {
                 if n.is_namespace() {
-                    self.expanded.insert(n.full_path.clone());
+                    self.expanded.insert(n.label.clone());
                 }
             }
+        }
+        if expanded_changed {
+            self.expanded_revision = self.expanded_revision.wrapping_add(1);
         }
         self.tree_revision = self.tree_revision.wrapping_add(1);
         self.visible_rows_cache.get_mut().take();
@@ -287,6 +303,16 @@ impl KeyTreePanel {
     pub(super) fn operation_context_matches(&self, config: &ConnectionConfig, db: u8) -> bool {
         self.db == db && self.config.as_ref().map(|current| &current.id) == Some(&config.id)
     }
+}
+
+fn prune_expanded_for_tree(tree: &[TreeNode], expanded: &mut HashSet<String>) -> bool {
+    let mut current = HashSet::new();
+    for node in tree {
+        collect_namespace_paths(node, &mut current);
+    }
+    let before = expanded.len();
+    expanded.retain(|path| current.contains(path));
+    expanded.len() != before
 }
 
 fn should_ensure_loaded(configured: bool, has_loaded: bool, loading: bool) -> bool {
@@ -341,6 +367,9 @@ impl Render for KeyTreePanel {
         } else {
             format!("{pattern_note}匹配 {visible_leaf_count} / {total}")
         };
+        if self.resource_limited {
+            count_label.push_str(" · 已达到安全上限，请用 MATCH 缩小范围");
+        }
         if mutating {
             count_label.push_str(" · 写操作执行中…");
         }
@@ -391,12 +420,13 @@ impl Render for KeyTreePanel {
                         m = m.item(PopupMenuItem::new("  其他 DB…").on_click(
                             move |_, window, app| {
                                 let entity = entity_for_prompt.clone();
-                                ramag_ui::open_prompt(
+                                ramag_ui::open_bounded_prompt(
                                     "切换 DB",
                                     "输入 DB 序号（0-255，须不超过服务端 databases 配置）"
                                         .to_string(),
                                     "",
                                     "切换",
+                                    3,
                                     move |value, _window, app| match value.trim().parse::<u8>() {
                                         Ok(db) => {
                                             entity.update(app, |this, cx| {
@@ -608,7 +638,10 @@ impl Render for KeyTreePanel {
             .into_any_element()
         };
 
-        let can_load_more = self.truncated && self.resume_cursor.is_some() && !self.loading;
+        let can_load_more = self.truncated
+            && !self.resource_limited
+            && self.resume_cursor.is_some()
+            && !self.loading;
         let status_bar = h_flex()
             .flex_none()
             .w_full()
@@ -645,7 +678,12 @@ impl Render for KeyTreePanel {
 
 #[cfg(test)]
 mod load_state_tests {
-    use super::{VisibleRowsCacheEntry, VisibleRowsCacheKey, should_ensure_loaded};
+    use super::{
+        VisibleRowsCacheEntry, VisibleRowsCacheKey, build_tree, prune_expanded_for_tree,
+        should_ensure_loaded,
+    };
+    use ramag_domain::entities::KeyMeta;
+    use std::collections::HashSet;
     use std::rc::Rc;
 
     #[test]
@@ -680,5 +718,14 @@ mod load_state_tests {
         let mut changed = key;
         changed.expanded_revision += 1;
         assert!(cache.get(&changed).is_none());
+    }
+
+    #[test]
+    fn rebuilding_tree_drops_expansion_paths_from_old_searches() {
+        let tree = build_tree(&[KeyMeta::bare("user:1")]);
+        let mut expanded = HashSet::from(["user".to_string(), "old:path".to_string()]);
+
+        assert!(prune_expanded_for_tree(&tree, &mut expanded));
+        assert_eq!(expanded, HashSet::from(["user".to_string()]));
     }
 }

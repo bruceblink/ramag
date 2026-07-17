@@ -12,11 +12,20 @@ use tracing::warn;
 use crate::errors::map_mysql_error;
 
 pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
+    config.validate().map_err(DomainError::InvalidConfig)?;
     if config.driver != DriverKind::Mysql {
         return Err(DomainError::InvalidConfig(format!(
             "MysqlDriver 不支持 {:?} 类型连接",
             config.driver
         )));
+    }
+    if config.tls
+        && let Some(ca) = config
+            .ca_cert_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+    {
+        ramag_infra_tunnel::validate_ca_certificate_file(ca)?;
     }
 
     // SSH 隧道：启用时先确保系统 ssh 转发就绪，DB 改连 127.0.0.1:本地端口；

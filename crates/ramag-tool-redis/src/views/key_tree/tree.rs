@@ -7,15 +7,13 @@ use ramag_domain::entities::{KeyMeta, RedisType};
 use super::NAMESPACE_SEP;
 
 /// UI 命名空间最大深度；更深的合法 key 将剩余后缀折叠到最后一层，完整 key 不变。
-const MAX_NAMESPACE_DEPTH: usize = 64;
+const MAX_NAMESPACE_DEPTH: usize = 16;
 
 /// 树节点：可同时是命名空间（有子节点）和叶子（对应实际 key）
 #[derive(Debug, Clone)]
 pub(super) struct TreeNode {
     /// 当前层显示标签（路径中的一段）
     pub(super) label: String,
-    /// 完整路径（叶子时是完整 key 名；中间节点是路径前缀）
-    pub(super) full_path: String,
     /// 子节点（按 label 排序：命名空间在前，叶子在后；同类按字母升序）
     pub(super) children: Vec<TreeNode>,
     /// 该节点本身是否对应实际 key（SCAN 不查类型，bare key 的 leaf_type 为 None，
@@ -45,7 +43,6 @@ pub(super) struct VisibleRow {
 
 #[derive(Default)]
 struct NodeBuilder {
-    full_path: String,
     children: BTreeMap<String, NodeBuilder>,
     is_key: bool,
     leaf_type: Option<RedisType>,
@@ -59,23 +56,13 @@ pub(super) fn build_tree(keys: &[KeyMeta]) -> Vec<TreeNode> {
             continue;
         }
         let mut siblings = &mut roots;
-        let mut full_path = String::new();
         let mut parts = key
             .key
             .splitn(MAX_NAMESPACE_DEPTH, NAMESPACE_SEP)
             .peekable();
         while let Some(part) = parts.next() {
-            if !full_path.is_empty() {
-                full_path.push(NAMESPACE_SEP);
-            }
-            full_path.push_str(part);
             let is_last = parts.peek().is_none();
-            let node = siblings
-                .entry(part.to_string())
-                .or_insert_with(|| NodeBuilder {
-                    full_path: full_path.clone(),
-                    ..NodeBuilder::default()
-                });
+            let node = siblings.entry(part.to_string()).or_default();
             if is_last {
                 node.is_key = true;
                 node.leaf_type = key.key_type;
@@ -93,7 +80,6 @@ fn finish_nodes(builders: BTreeMap<String, NodeBuilder>) -> Vec<TreeNode> {
         let children = finish_nodes(builder.children);
         let node = TreeNode {
             label,
-            full_path: builder.full_path,
             is_key: builder.is_key,
             leaf_type: builder.leaf_type,
             children,
@@ -109,12 +95,28 @@ fn finish_nodes(builders: BTreeMap<String, NodeBuilder>) -> Vec<TreeNode> {
 }
 
 pub(super) fn collect_namespace_paths(node: &TreeNode, out: &mut HashSet<String>) {
+    collect_namespace_paths_from(node, "", out);
+}
+
+fn collect_namespace_paths_from(node: &TreeNode, parent: &str, out: &mut HashSet<String>) {
+    let full_path = joined_path(parent, &node.label);
     if node.is_namespace() {
-        out.insert(node.full_path.clone());
+        out.insert(full_path.clone());
         for c in &node.children {
-            collect_namespace_paths(c, out);
+            collect_namespace_paths_from(c, &full_path, out);
         }
     }
+}
+
+fn joined_path(parent: &str, label: &str) -> String {
+    if parent.is_empty() {
+        return label.to_string();
+    }
+    let mut path = String::with_capacity(parent.len().saturating_add(label.len() + 1));
+    path.push_str(parent);
+    path.push(NAMESPACE_SEP);
+    path.push_str(label);
+    path
 }
 
 #[cfg(test)]
@@ -217,15 +219,17 @@ mod tests {
 
         let mut depth = 0;
         let mut node = &tree[0];
+        let mut rebuilt = Vec::new();
         loop {
             depth += 1;
+            rebuilt.push(node.label.as_str());
             if node.children.is_empty() {
                 break;
             }
             node = &node.children[0];
         }
         assert_eq!(depth, MAX_NAMESPACE_DEPTH);
-        assert_eq!(node.full_path, key);
+        assert_eq!(rebuilt.join(":"), key);
         assert!(node.is_key);
     }
 }

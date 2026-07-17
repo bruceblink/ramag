@@ -5,16 +5,16 @@ use std::path::Path;
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{
-    ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_probe, validate_name_arg,
-    validate_positional_arg,
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_pathspecs, run_git_probe,
+    validate_name_arg, validate_output_path, validate_positional_arg,
 };
 
 pub fn stage(repo_path: &Path, paths: &[String]) -> Result<()> {
-    let mut args: Vec<&str> = vec!["add", "--"];
-    for p in paths {
-        args.push(p);
-    }
-    run_git_bytes(repo_path, &args).map(|_| ())
+    run_git_pathspecs(
+        repo_path,
+        &["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        paths,
+    )
 }
 
 /// `git ls-files --cached --others --exclude-standard -z`
@@ -48,6 +48,7 @@ fn parse_file_list(bytes: &[u8]) -> Result<Vec<String>> {
                 index + 1
             ))
         })?;
+        validate_output_path(path, "Git 文件路径", index + 1)?;
         files.push(path.to_string());
     }
     Ok(files)
@@ -58,24 +59,31 @@ pub fn unstage(repo_path: &Path, paths: &[String]) -> Result<()> {
     // 首次 commit 前没有 HEAD，`git reset HEAD` 会报 ambiguous argument。
     // 此时从 index 移除即可，`--cached` 保留工作区文件不丢内容。
     let has_head = run_git_probe(repo_path, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
-    let mut args: Vec<&str> = if has_head {
-        vec!["reset", "HEAD", "--"]
+    let args: &[&str] = if has_head {
+        &[
+            "reset",
+            "HEAD",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+        ]
     } else {
-        vec!["rm", "--cached", "--"]
+        &[
+            "rm",
+            "--cached",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+        ]
     };
-    for p in paths {
-        args.push(p);
-    }
-    run_git_bytes(repo_path, &args).map(|_| ())
+    run_git_pathspecs(repo_path, args, paths)
 }
 
 /// 工作区还原到暂存区版本（仅 tracked 文件）
 pub fn discard(repo_path: &Path, paths: &[String]) -> Result<()> {
-    let mut args: Vec<&str> = vec!["checkout", "--"];
-    for p in paths {
-        args.push(p);
-    }
-    run_git_bytes(repo_path, &args).map(|_| ())
+    run_git_pathspecs(
+        repo_path,
+        &["checkout", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        paths,
+    )
 }
 
 pub fn checkout(repo_path: &Path, target: &str) -> Result<()> {

@@ -5,12 +5,17 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
     v_flex,
 };
+use ramag_domain::entities::MAX_REDIS_COMMAND_ARG_BYTES;
+
+use crate::views::{bounded_input, reserve_command_input_bytes};
+
+const MAX_EDITOR_ROWS: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinesKind {
@@ -55,11 +60,16 @@ impl LinesEditor {
     }
 
     fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rows.len() >= MAX_EDITOR_ROWS {
+            return;
+        }
         let placeholder = match self.kind {
             LinesKind::List => "元素值",
             LinesKind::Set => "成员",
         };
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let input = cx.new(|cx| {
+            bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx).placeholder(placeholder)
+        });
         let id = self.next_id;
         self.next_id += 1;
         self.rows.push(LineRow { id, input });
@@ -83,19 +93,23 @@ impl LinesEditor {
     }
 
     /// 收集所有非空行（trim 末尾 \r）
-    pub fn collect(&self, cx: &App) -> Vec<String> {
-        self.rows
-            .iter()
-            .filter_map(|r| {
-                let raw = r.input.read(cx).value().to_string();
-                let trimmed = raw.trim_end_matches('\r').to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            })
-            .collect()
+    pub fn collect(&self, cx: &App) -> Result<Vec<String>, String> {
+        let mut output = Vec::new();
+        let mut total_bytes = 0usize;
+        for row in &self.rows {
+            let input = row.input.read(cx);
+            let value = input.value();
+            let trimmed = value.trim_end_matches('\r');
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Some(next_bytes) = reserve_command_input_bytes(total_bytes, trimmed.len()) else {
+                return Err("本次批量输入超过 16 MiB 总上限，请拆分提交".into());
+            };
+            total_bytes = next_bytes;
+            output.push(trimmed.to_string());
+        }
+        Ok(output)
     }
 }
 
@@ -133,6 +147,12 @@ impl Render for LinesEditor {
                     .small()
                     .icon(IconName::Plus)
                     .label(label_add)
+                    .disabled(self.rows.len() >= MAX_EDITOR_ROWS)
+                    .tooltip(if self.rows.len() >= MAX_EDITOR_ROWS {
+                        "单次最多添加 200 行；更大批量请使用脚本"
+                    } else {
+                        label_add
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.add_row(window, cx);
                     })),

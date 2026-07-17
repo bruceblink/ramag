@@ -16,6 +16,7 @@ pub(super) fn render_row(
     checkbox: gpui::AnyElement,
     row_num_width: gpui::Pixels,
     row_idx_in_view: usize,
+    source_row_idx: usize,
     cells: &[Cell],
     visible_cols: &[usize],
     columns: &[Column],
@@ -78,14 +79,9 @@ pub(super) fn render_row(
         // 捕获列信息 + 单元格值，双击 → 弹单元格 dialog（与 dbclient 单元格编辑器同款交互）
         let path_for_click = column.path.clone();
         let kind_for_click = column.kind;
-        let text_for_click = cell.text.clone();
         // 嵌套对象/数组单元格显示的是摘要（{N 字段}/[N 项]），双击取该行该字段原值下钻
         let is_nested = matches!(cell.kind, "object" | "array");
-        let nested_for_click = if is_nested {
-            doc.get(column.path.as_str()).cloned()
-        } else {
-            None
-        };
+        let column_index = ci;
         row = row.child(
             div()
                 .id(SharedString::from(format!(
@@ -105,19 +101,26 @@ pub(super) fn render_row(
                         if e.click_count() < 2 {
                             return;
                         }
+                        let Some(text_for_click) = panel
+                            .table
+                            .as_ref()
+                            .and_then(|table| table.rows.get(source_row_idx))
+                            .and_then(|row| row.get(column_index))
+                            .map(|cell| cell.text.clone())
+                        else {
+                            return;
+                        };
                         // 嵌套对象/数组：下钻查看（对象层进去可编辑，数组层只读），
                         // 传当前行 _id 作回写定位上下文 + 行标识作下钻层前导列
                         if is_nested {
-                            if let Some(v) = nested_for_click.clone() {
-                                panel.drill_into(
-                                    path_for_click.clone(),
-                                    id_for_click.clone(),
-                                    ident_for_click.clone(),
-                                    v,
-                                    window,
-                                    cx,
-                                );
-                            }
+                            panel.drill_into(
+                                path_for_click.clone(),
+                                source_row_idx,
+                                id_for_click.clone(),
+                                ident_for_click.clone(),
+                                window,
+                                cx,
+                            );
                             return;
                         }
                         // 标量编辑（仅 allow_edit 视图）：
@@ -128,14 +131,14 @@ pub(super) fn render_row(
                         if allow_edit
                             && panel.can_write()
                             && !panel.is_drilled()
-                            && super::edit::kind_is_editable(kind_for_click)
+                            && super::edit::cell_is_editable(kind_for_click, text_for_click.len())
                             && let Some(id) = &id_for_click
                         {
                             panel.open_cell_edit_dialog(
                                 id.clone(),
                                 path_for_click.clone(),
                                 kind_for_click,
-                                text_for_click.clone(),
+                                text_for_click,
                                 window,
                                 cx,
                             );
@@ -144,14 +147,14 @@ pub(super) fn render_row(
                         if allow_edit
                             && panel.can_write()
                             && panel.drill_editable()
-                            && super::edit::kind_is_editable(kind_for_click)
+                            && super::edit::cell_is_editable(kind_for_click, text_for_click.len())
                             && let Some(pid) = panel.drill_parent_id()
                         {
                             panel.open_cell_edit_dialog(
                                 pid,
                                 panel.drill_full_path(&path_for_click),
                                 kind_for_click,
-                                text_for_click.clone(),
+                                text_for_click,
                                 window,
                                 cx,
                             );
@@ -160,7 +163,7 @@ pub(super) fn render_row(
                         panel.open_cell_dialog(
                             path_for_click.clone(),
                             kind_for_click,
-                            text_for_click.clone(),
+                            text_for_click,
                             window,
                             cx,
                         );

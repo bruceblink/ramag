@@ -12,8 +12,11 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
+    notification::Notification,
     v_flex,
 };
+
+const MAX_PROMPT_INPUT_BYTES: usize = 1024 * 1024;
 
 pub fn open_prompt(
     title: impl Into<SharedString>,
@@ -24,10 +27,116 @@ pub fn open_prompt(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let title: SharedString = title.into();
-    let description: SharedString = description.into();
-    let confirm_label: SharedString = confirm_label.into();
-    let input: Entity<InputState> = cx.new(|cx| InputState::new(window, cx).default_value(initial));
+    open_prompt_impl(
+        title.into(),
+        description.into(),
+        initial,
+        confirm_label.into(),
+        MAX_PROMPT_INPUT_BYTES,
+        false,
+        on_confirm,
+        window,
+        cx,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn open_bounded_prompt(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    initial: &str,
+    confirm_label: impl Into<SharedString>,
+    max_bytes: usize,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_prompt_impl(
+        title.into(),
+        description.into(),
+        initial,
+        confirm_label.into(),
+        max_bytes,
+        false,
+        on_confirm,
+        window,
+        cx,
+    );
+}
+
+/// 允许提交空字符串，用于“留空即采用后端默认值”的场景。
+pub fn open_optional_prompt(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    initial: &str,
+    confirm_label: impl Into<SharedString>,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_prompt_impl(
+        title.into(),
+        description.into(),
+        initial,
+        confirm_label.into(),
+        MAX_PROMPT_INPUT_BYTES,
+        true,
+        on_confirm,
+        window,
+        cx,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn open_optional_bounded_prompt(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    initial: &str,
+    confirm_label: impl Into<SharedString>,
+    max_bytes: usize,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_prompt_impl(
+        title.into(),
+        description.into(),
+        initial,
+        confirm_label.into(),
+        max_bytes,
+        true,
+        on_confirm,
+        window,
+        cx,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_prompt_impl(
+    title: SharedString,
+    description: SharedString,
+    initial: &str,
+    confirm_label: SharedString,
+    max_bytes: usize,
+    allow_empty: bool,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if max_bytes == 0 || initial.len() > max_bytes {
+        window.push_notification(
+            Notification::error(format!(
+                "输入内容超过 {max_bytes} bytes 上限，无法打开编辑对话框"
+            )),
+            cx,
+        );
+        return;
+    }
+    let input: Entity<InputState> = cx.new(|cx| {
+        InputState::new(window, cx)
+            .validate(move |value, _| value.len() <= max_bytes)
+            .default_value(initial)
+    });
     // 打开即聚焦输入框：重命名类操作无需先点一下即可编辑
     input.update(cx, |state, cx| {
         state.focus(window, cx);
@@ -55,10 +164,11 @@ pub fn open_prompt(
                 let cell = on_confirm_cell.clone();
                 let input = input.clone();
                 move |_: &ClickEvent, window, app| {
-                    let value = input.read(app).value().trim().to_string();
-                    if value.is_empty() {
+                    let Some(value) =
+                        normalize_prompt_value(input.read(app).value().as_ref(), allow_empty)
+                    else {
                         return;
-                    }
+                    };
                     if let Some(cb) = cell.borrow_mut().take() {
                         cb(value, window, app);
                     }
@@ -76,10 +186,11 @@ pub fn open_prompt(
                 let cell = on_confirm_cell.clone();
                 let input = input.clone();
                 move |_, window, app| {
-                    let value = input.read(app).value().trim().to_string();
-                    if value.is_empty() {
+                    let Some(value) =
+                        normalize_prompt_value(input.read(app).value().as_ref(), allow_empty)
+                    else {
                         return false;
-                    }
+                    };
                     if let Some(cb) = cell.borrow_mut().take() {
                         cb(value, window, app);
                     }
@@ -106,4 +217,27 @@ pub fn open_prompt(
                     .child(ok_btn),
             )
     });
+}
+
+fn normalize_prompt_value(value: &str, allow_empty: bool) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() && !allow_empty {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_prompt_value;
+
+    #[test]
+    fn required_and_optional_prompts_handle_empty_values_differently() {
+        assert_eq!(
+            normalize_prompt_value("  name  ", false).as_deref(),
+            Some("name")
+        );
+        assert_eq!(normalize_prompt_value("   ", false), None);
+        assert_eq!(normalize_prompt_value("   ", true).as_deref(), Some(""));
+    }
 }

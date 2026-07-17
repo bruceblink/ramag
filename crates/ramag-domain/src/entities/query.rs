@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::contains_case_insensitive;
 
+pub const MAX_SQL_QUERY_BYTES: usize = 4 * 1024 * 1024;
+
 /// 一次 SQL 查询请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
@@ -33,6 +35,30 @@ impl Query {
     pub fn with_auto_limit(mut self, limit: Option<u32>) -> Self {
         self.auto_limit = limit;
         self
+    }
+
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.sql.len() > MAX_SQL_QUERY_BYTES {
+            return Err(crate::error::DomainError::InvalidConfig(format!(
+                "SQL 内容超过 {} MiB 安全上限",
+                MAX_SQL_QUERY_BYTES / 1024 / 1024
+            )));
+        }
+        if self.sql.contains('\0') {
+            return Err(crate::error::DomainError::InvalidConfig(
+                "SQL 内容不能包含 NUL 字符".into(),
+            ));
+        }
+        if let Some(schema) = &self.default_schema
+            && (schema.len() > super::connection::MAX_CONNECTION_IDENTIFIER_BYTES
+                || schema.chars().any(char::is_control))
+        {
+            return Err(crate::error::DomainError::InvalidConfig(format!(
+                "默认 schema 超过 {} KiB 上限或包含控制字符",
+                super::connection::MAX_CONNECTION_IDENTIFIER_BYTES / 1024
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -145,7 +171,11 @@ impl Value {
             Value::Text(s) => sanitize_inline(&truncate(s, max_len)),
             Value::Bytes(b) => format!("[{} bytes]", b.len()),
             Value::DateTime(dt) => dt.to_rfc3339(),
-            Value::Json(v) => truncate(&v.to_string(), max_len),
+            Value::Json(v) => {
+                let byte_limit = max_len.saturating_mul(4).saturating_add(1);
+                let (text, _) = serialize_json_prefix(v, false, byte_limit);
+                truncate(&text, max_len)
+            }
         }
     }
 
@@ -163,7 +193,7 @@ impl Value {
                 contains_case_insensitive(&format!("[{} bytes]", value.len()), query_lower)
             }
             Value::DateTime(value) => contains_case_insensitive(&value.to_rfc3339(), query_lower),
-            Value::Json(value) => contains_case_insensitive(&value.to_string(), query_lower),
+            Value::Json(value) => json_contains_query(value, query_lower),
         }
     }
 
@@ -208,11 +238,55 @@ impl Value {
         }
     }
 
+    /// 在不构造完整 SQL 字面量的前提下计算长度；超过 `max_bytes` 返回 `None`。
+    pub fn bounded_sql_literal_len_for(
+        &self,
+        driver: super::connection::DriverKind,
+        max_bytes: usize,
+    ) -> Option<usize> {
+        use super::connection::DriverKind;
+        let is_pg = matches!(driver, DriverKind::Postgres);
+        let length = match self {
+            Value::Null => 4,
+            Value::Bool(true) => 4,
+            Value::Bool(false) => 5,
+            Value::Int(value) => value.to_string().len(),
+            Value::Float(value) => value.to_string().len(),
+            Value::Text(value) => escaped_sql_literal_len(value.as_bytes(), is_pg, max_bytes)?,
+            Value::Bytes(value) => {
+                value
+                    .len()
+                    .checked_mul(2)?
+                    .checked_add(if is_pg { 4 } else { 2 })?
+            }
+            Value::DateTime(value) => value.format("%Y-%m-%d %H:%M:%S%.6f").to_string().len() + 2,
+            Value::Json(value) => json_sql_literal_len(value, is_pg, max_bytes)?,
+        };
+        (length <= max_bytes).then_some(length)
+    }
+
     /// 单元格编辑初值：JSON 走 pretty 多行，其余等价 clipboard 形式
     pub fn display_for_edit(&self) -> String {
         match self {
             Value::Json(v) => serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
             other => other.to_clipboard_string(),
+        }
+    }
+
+    /// 编辑弹框初值的有界版本；第二个返回值表示内容已截断，只能只读展示。
+    pub fn display_for_edit_bounded(&self, max_bytes: usize) -> (String, bool) {
+        match self {
+            Value::Text(text) => bounded_text(text, max_bytes),
+            Value::Bytes(bytes) => bounded_hex(bytes, max_bytes),
+            Value::Json(value) => {
+                let (text, truncated) = serialize_json_prefix(value, true, max_bytes);
+                if truncated {
+                    (with_truncation_notice(text, max_bytes), true)
+                } else {
+                    (text, false)
+                }
+            }
+            other => bounded_text(&other.to_clipboard_string(), max_bytes),
         }
     }
 
@@ -231,6 +305,81 @@ impl Value {
     }
 }
 
+fn escaped_sql_literal_len(bytes: &[u8], is_pg: bool, max_bytes: usize) -> Option<usize> {
+    let mut length = 2usize;
+    for byte in bytes {
+        let added = usize::from(*byte == b'\'' || (!is_pg && *byte == b'\\')) + 1;
+        length = length.checked_add(added)?;
+        if length > max_bytes {
+            return None;
+        }
+    }
+    Some(length)
+}
+
+fn json_sql_literal_len(value: &serde_json::Value, is_pg: bool, max_bytes: usize) -> Option<usize> {
+    let mut writer = SqlLiteralLengthWriter {
+        length: 2,
+        limit: max_bytes,
+        is_pg,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut writer, value);
+    (result.is_ok() && !writer.exceeded).then_some(writer.length)
+}
+
+struct SqlLiteralLengthWriter {
+    length: usize,
+    limit: usize,
+    is_pg: bool,
+    exceeded: bool,
+}
+
+impl std::io::Write for SqlLiteralLengthWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        for byte in buffer {
+            let added = usize::from(*byte == b'\'' || (!self.is_pg && *byte == b'\\')) + 1;
+            let Some(next) = self.length.checked_add(added) else {
+                self.exceeded = true;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "SQL literal length overflow",
+                ));
+            };
+            if next > self.limit {
+                self.exceeded = true;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "SQL literal length limit reached",
+                ));
+            }
+            self.length = next;
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_contains_query(value: &serde_json::Value, query_lower: &str) -> bool {
+    match value {
+        serde_json::Value::Null => contains_case_insensitive("null", query_lower),
+        serde_json::Value::Bool(value) => {
+            contains_case_insensitive(if *value { "true" } else { "false" }, query_lower)
+        }
+        serde_json::Value::Number(value) => value.to_string().contains(query_lower),
+        serde_json::Value::String(value) => contains_case_insensitive(value, query_lower),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| json_contains_query(value, query_lower)),
+        serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
+            contains_case_insensitive(key, query_lower) || json_contains_query(value, query_lower)
+        }),
+    }
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len().saturating_mul(2));
@@ -239,6 +388,124 @@ fn encode_hex(bytes: &[u8]) -> String {
         output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
     }
     output
+}
+
+fn bounded_hex(bytes: &[u8], max_bytes: usize) -> (String, bool) {
+    let full_len = bytes.len().saturating_mul(2);
+    if full_len <= max_bytes {
+        return (encode_hex(bytes), false);
+    }
+    let mut output = String::with_capacity(max_bytes);
+    let take = bytes.len().min(max_bytes / 2);
+    for &byte in &bytes[..take] {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        output.push(char::from(DIGITS[(byte >> 4) as usize]));
+        output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
+    }
+    (with_truncation_notice(output, max_bytes), true)
+}
+
+fn bounded_text(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+    let end = floor_char_boundary(text, max_bytes);
+    (
+        with_truncation_notice(text[..end].to_string(), max_bytes),
+        true,
+    )
+}
+
+fn with_truncation_notice(mut text: String, max_bytes: usize) -> String {
+    const NOTICE: &str = "\n\n[内容过大，仅显示开头部分]";
+    if max_bytes <= NOTICE.len() {
+        let end = floor_char_boundary(&text, max_bytes);
+        text.truncate(end);
+        return text;
+    }
+    let content_limit = max_bytes - NOTICE.len();
+    if text.len() > content_limit {
+        let end = floor_char_boundary(&text, content_limit);
+        text.truncate(end);
+    }
+    text.push_str(NOTICE);
+    text
+}
+
+fn floor_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn serialize_json_prefix(
+    value: &serde_json::Value,
+    pretty: bool,
+    max_bytes: usize,
+) -> (String, bool) {
+    let mut writer = BoundedJsonWriter::new(max_bytes);
+    let result = if pretty {
+        serde_json::to_writer_pretty(&mut writer, value)
+    } else {
+        serde_json::to_writer(&mut writer, value)
+    };
+    if result.is_err() && !writer.truncated {
+        return ("[JSON 序列化失败]".to_string(), false);
+    }
+    let truncated = writer.truncated;
+    let valid_len = std::str::from_utf8(&writer.bytes)
+        .map(|text| text.len())
+        .unwrap_or_else(|error| error.valid_up_to());
+    writer.bytes.truncate(valid_len);
+    let text = String::from_utf8(writer.bytes).unwrap_or_default();
+    (text, truncated)
+}
+
+/// 完整 pretty JSON 仅在不超过字节上限时返回，序列化过程本身也不会越界分配。
+pub fn json_pretty_bounded(value: &serde_json::Value, max_bytes: usize) -> Option<String> {
+    let mut writer = BoundedJsonWriter::new(max_bytes);
+    if serde_json::to_writer_pretty(&mut writer, value).is_err() || writer.truncated {
+        return None;
+    }
+    String::from_utf8(writer.bytes).ok()
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit.min(64 * 1024)),
+            limit,
+            truncated: false,
+        }
+    }
+}
+
+impl std::io::Write for BoundedJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        if buffer.len() <= remaining {
+            self.bytes.extend_from_slice(buffer);
+            return Ok(buffer.len());
+        }
+        self.bytes.extend_from_slice(&buffer[..remaining]);
+        self.truncated = true;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "JSON preview limit reached",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// SQL 字符串字面量转义。单引号一律双写（两方言通用）；
@@ -298,12 +565,30 @@ mod tests {
         assert!(Value::Text("Hello Rust".into()).contains_query_lower("hello"));
         assert!(Value::Text("你好世界".into()).contains_query_lower("世界"));
         assert!(!Value::Text("Hello".into()).contains_query_lower("world"));
+        let json = Value::Json(serde_json::json!({"UserName": ["Alice", "你好世界"]}));
+        assert!(json.contains_query_lower("username"));
+        assert!(json.contains_query_lower("alice"));
+        assert!(json.contains_query_lower("世界"));
     }
 
     #[test]
     fn preview_truncates_without_splitting_unicode() {
         assert_eq!(Value::Text("你好世界".into()).display_preview(2), "你好…");
         assert_eq!(Value::Text("你好".into()).display_preview(2), "你好");
+    }
+
+    #[test]
+    fn pretty_json_limit_is_enforced_during_serialization()
+    -> std::result::Result<(), serde_json::Error> {
+        let value = serde_json::json!({"name": "alice", "items": [1, 2]});
+        let expected = serde_json::to_string_pretty(&value)?;
+
+        assert_eq!(
+            json_pretty_bounded(&value, expected.len()),
+            Some(expected.clone())
+        );
+        assert!(json_pretty_bounded(&value, expected.len() - 1).is_none());
+        Ok(())
     }
 
     #[test]
@@ -385,6 +670,29 @@ mod tests {
     }
 
     #[test]
+    fn sql_literal_length_is_checked_without_building_large_output() {
+        use super::super::connection::DriverKind;
+
+        let text = Value::Text("a'\\b".into());
+        let mysql = text.to_sql_literal_for(DriverKind::Mysql);
+        assert_eq!(
+            text.bounded_sql_literal_len_for(DriverKind::Mysql, mysql.len()),
+            Some(mysql.len())
+        );
+        assert!(
+            text.bounded_sql_literal_len_for(DriverKind::Mysql, mysql.len() - 1)
+                .is_none()
+        );
+
+        let json = Value::Json(serde_json::json!({"text": "O'Reilly\\path"}));
+        let postgres = json.to_sql_literal_for(DriverKind::Postgres);
+        assert_eq!(
+            json.bounded_sql_literal_len_for(DriverKind::Postgres, postgres.len()),
+            Some(postgres.len())
+        );
+    }
+
+    #[test]
     fn preview_text_strips_newlines() {
         // 含换行的文本预览必须压成单行，否则结果表格渲染 panic
         let v = Value::Text("line1\nline2\r\nline3".to_string());
@@ -414,5 +722,39 @@ mod tests {
         };
 
         assert!(large.retained_bytes() > small.retained_bytes() + 3_000);
+    }
+
+    #[test]
+    fn sql_query_and_schema_have_explicit_boundaries() {
+        let valid = Query::new("x".repeat(MAX_SQL_QUERY_BYTES));
+        assert!(valid.validate().is_ok());
+        assert!(
+            Query::new("x".repeat(MAX_SQL_QUERY_BYTES + 1))
+                .validate()
+                .is_err()
+        );
+        assert!(Query::new("select\0 1").validate().is_err());
+
+        let mut bad_schema = Query::new("select 1");
+        bad_schema.default_schema = Some("bad\nschema".into());
+        assert!(bad_schema.validate().is_err());
+    }
+
+    #[test]
+    fn edit_display_is_bounded_before_large_hex_or_json_allocations() {
+        for value in [
+            Value::Text("你".repeat(100)),
+            Value::Bytes(vec![0xab; 100]),
+            Value::Json(serde_json::json!({"items": vec!["value"; 100]})),
+        ] {
+            let (display, truncated) = value.display_for_edit_bounded(64);
+            assert!(truncated);
+            assert!(display.len() <= 64);
+        }
+
+        let (small, truncated) =
+            Value::Json(serde_json::json!({"a": 1})).display_for_edit_bounded(128);
+        assert!(!truncated);
+        assert!(small.contains('\n'));
     }
 }

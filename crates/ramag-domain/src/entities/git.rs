@@ -5,6 +5,21 @@ use uuid::Uuid;
 
 /// Git 提交消息安全上限；UI 草稿、提交入口与 infra 执行共用，避免边界漂移。
 pub const MAX_COMMIT_MESSAGE_BYTES: usize = 1024 * 1024;
+/// 分支、tag 与 remote 名称会成为命令参数 / ref 路径。
+pub const MAX_GIT_NAME_ARG_BYTES: usize = 1024;
+/// revision、远程 URL 等单个位置参数的统一边界。
+pub const MAX_GIT_POSITIONAL_ARG_BYTES: usize = 4 * 1024;
+/// Git 路径来自仓库内容，可含空白与换行；仅限制单条与批次资源占用。
+pub const MAX_GIT_PATH_BYTES: usize = 64 * 1024;
+pub const MAX_GIT_PATH_DEPTH: usize = 256;
+pub const MAX_GIT_PATH_ARGS: usize = 50_000;
+pub const MAX_GIT_PATH_ARGS_BYTES: usize = 16 * 1024 * 1024;
+/// 行级暂存 / 回滚 patch 通过 stdin 传递，限制克隆与子进程写入的峰值内存。
+pub const MAX_GIT_PATCH_BYTES: usize = 16 * 1024 * 1024;
+/// Tag 备注通过 stdin 传给 git，仍限制异常输入的内存占用。
+pub const MAX_GIT_TAG_MESSAGE_BYTES: usize = 64 * 1024;
+/// Stash 说明同样通过单个 argv 传递。
+pub const MAX_GIT_STASH_MESSAGE_BYTES: usize = 16 * 1024;
 
 /// 仓库运行时 UUID（不持久化进 git；上层用 path 去重）
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -140,11 +155,7 @@ pub struct CommitId(pub String);
 impl CommitId {
     /// 短 hash（前 7 位）
     pub fn short(&self) -> &str {
-        if self.0.len() > 7 {
-            &self.0[..7]
-        } else {
-            &self.0
-        }
+        char_prefix(&self.0, 7)
     }
 }
 
@@ -353,12 +364,15 @@ pub struct RebaseTodo {
 
 impl RebaseTodo {
     pub fn short_hash(&self) -> &str {
-        if self.hash.len() > 7 {
-            &self.hash[..7]
-        } else {
-            &self.hash
-        }
+        char_prefix(&self.hash, 7)
     }
+}
+
+fn char_prefix(value: &str, max_chars: usize) -> &str {
+    value
+        .char_indices()
+        .nth(max_chars)
+        .map_or(value, |(end, _)| &value[..end])
 }
 
 /// 三方冲突文件内容
@@ -420,4 +434,22 @@ pub struct Tag {
     /// 仅 annotated tag 有
     pub message: Option<String>,
     pub tagger: Option<Signature>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CommitId, RebaseAction, RebaseTodo};
+
+    #[test]
+    fn short_hash_helpers_preserve_utf8_boundaries() {
+        let commit = CommitId("提交编号一二三四五六七八".into());
+        let todo = RebaseTodo {
+            action: RebaseAction::Pick,
+            hash: "哈希一二三四五六七八".into(),
+            subject: String::new(),
+        };
+
+        assert_eq!(commit.short().chars().count(), 7);
+        assert_eq!(todo.short_hash().chars().count(), 7);
+    }
 }

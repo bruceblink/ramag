@@ -15,8 +15,26 @@ use gpui_component::{
 use super::helpers::{BranchOp, checkout_remote_branch_op};
 use super::vcs_view::VcsView;
 
+pub(super) const MAX_BRANCH_PICKER_ITEMS: usize = 1_000;
+
 /// 分支 leaf：(完整名 / 是否 HEAD / 上游同步信息文本如 "↑3 ↓1"，None=无)
 pub(super) type BranchLeaf = (String, bool, Option<String>);
+
+pub(super) fn branch_picker_limits(local: usize, remote: usize) -> (usize, usize) {
+    if local.saturating_add(remote) <= MAX_BRANCH_PICKER_ITEMS {
+        return (local, remote);
+    }
+    let remote_reserve = if remote > 0 {
+        MAX_BRANCH_PICKER_ITEMS / 4
+    } else {
+        0
+    };
+    let mut local_limit = local.min(MAX_BRANCH_PICKER_ITEMS - remote_reserve);
+    let remote_limit = remote.min(MAX_BRANCH_PICKER_ITEMS - local_limit);
+    let remaining = MAX_BRANCH_PICKER_ITEMS - local_limit - remote_limit;
+    local_limit = local_limit.saturating_add(local.saturating_sub(local_limit).min(remaining));
+    (local_limit, remote_limit)
+}
 
 /// 超长分支名中间省略 `头22…尾15`，避免撑破 PopupMenu 宽度
 fn truncate_branch_display(s: &str) -> String {
@@ -120,7 +138,8 @@ pub(super) fn open_new_branch_dialog(
                 let head_name = head_name.clone();
                 move |c, _, app| {
                     let cur_base = view.read(app).create_branch_base.clone();
-                    let base_label = cur_base.unwrap_or_else(|| head_name.clone());
+                    let base_label =
+                        truncate_branch_display(&cur_base.unwrap_or_else(|| head_name.clone()));
                     let inp = view.read(app).create_branch_input.clone();
                     let local_for_dd = local.clone();
                     let remote_for_dd = remote.clone();
@@ -322,4 +341,17 @@ fn push_branch_leaf(
             this.confirm_branch_op(op, w, cx);
         });
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_picker_budget_reuses_unused_reserve() {
+        assert_eq!(branch_picker_limits(10, 2), (10, 2));
+        assert_eq!(branch_picker_limits(10, 10_000), (10, 990));
+        assert_eq!(branch_picker_limits(10_000, 10), (990, 10));
+        assert_eq!(branch_picker_limits(10_000, 10_000), (750, 250));
+    }
 }

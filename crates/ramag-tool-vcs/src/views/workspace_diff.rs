@@ -165,13 +165,10 @@ impl VcsView {
 
         for (idx, tab) in self.file_tabs.iter().enumerate() {
             let is_active = self.active_file_tab_idx == Some(idx);
-            let filename = SharedString::from(
-                tab.path
-                    .split('/')
-                    .next_back()
-                    .unwrap_or(&tab.path)
-                    .to_string(),
-            );
+            let filename = SharedString::from(super::inline_text_preview(
+                tab.path.split('/').next_back().unwrap_or(&tab.path),
+                160,
+            ));
             let tab_id = SharedString::from(format!("vcs-ftab-{idx}"));
             let close_id = SharedString::from(format!("vcs-ftab-close-{idx}"));
             let dot_color = match &tab.source {

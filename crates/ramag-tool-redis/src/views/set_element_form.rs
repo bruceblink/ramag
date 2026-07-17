@@ -53,7 +53,14 @@ impl SetElementForm {
     }
 
     fn handle_save(&mut self, cx: &mut Context<Self>) {
-        let elems = self.editor.read(cx).collect(cx);
+        let elems = match self.editor.read(cx).collect(cx) {
+            Ok(elements) => elements,
+            Err(error) => {
+                self.state = SubmitState::Failed(error);
+                cx.notify();
+                return;
+            }
+        };
         if elems.is_empty() {
             self.state = SubmitState::Failed("至少填写 1 个成员".into());
             cx.notify();

@@ -18,7 +18,7 @@ use gpui_component::notification::Notification;
 use parking_lot::RwLock;
 
 use ramag_app::ConnectionService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES};
 use ramag_ui::platform::primary_shortcut;
 
 use crate::sql_completion::SchemaCache;
@@ -37,6 +37,8 @@ pub struct QueryTab {
     pub(super) result: Entity<ResultPanel>,
     /// 是否在执行中
     pub(super) running: bool,
+    /// 查询请求代际；取消后快速重跑时，旧回包与旧耗时 ticker 不得跟随新查询。
+    pub(super) run_seq: u64,
     /// SQL 格式化防重入；CPU 工作在共享有界 worker 中执行。
     pub(super) formatting: bool,
     /// 当前正在跑的任务句柄（drop 后取消异步任务）
@@ -112,8 +114,28 @@ impl QueryTab {
         });
 
         // 订阅编辑器内容变化：发现新提到的表 → 后台预拉它的列结构
-        let editor_sub = cx.subscribe(&editor, |this: &mut Self, _, e: &InputEvent, cx| {
-            if matches!(e, InputEvent::Change) {
+        let editor_for_sub = editor.clone();
+        let editor_sub = cx.subscribe_in(
+            &editor,
+            window,
+            move |this: &mut Self, _, e: &InputEvent, window, cx| {
+                if !matches!(e, InputEvent::Change) {
+                    return;
+                }
+                if ramag_ui::clamp_multiline_input_value(
+                    &editor_for_sub,
+                    MAX_SQL_QUERY_BYTES,
+                    window,
+                    cx,
+                ) {
+                    this.pending_notification = Some(
+                        Notification::warning(format!(
+                            "SQL 编辑器最多保留 {} MiB，超出部分已截断",
+                            MAX_SQL_QUERY_BYTES / 1024 / 1024
+                        ))
+                        .autohide(true),
+                    );
+                }
                 // 手改 SQL 即失去"表树单表数据"资格：清目标表，当前结果立即转只读
                 // （程序注入走 set_value 不发 Change，不会误触）
                 if this.pinned_target.is_some() && this.has_user_draft(cx) {
@@ -122,8 +144,8 @@ impl QueryTab {
                 }
                 this.schedule_column_prefetch(cx);
                 cx.emit(QueryTabEvent::DraftChanged);
-            }
-        });
+            },
+        );
 
         let initial_schema = connection
             .as_ref()
@@ -136,6 +158,7 @@ impl QueryTab {
             editor,
             result,
             running: false,
+            run_seq: 0,
             formatting: false,
             current_task: None,
             column_prefetch_task: None,
@@ -250,6 +273,19 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let sql = sql.into();
+        if sql.len() > MAX_SQL_QUERY_BYTES {
+            self.result.update(cx, |result, cx| {
+                result.set_state(
+                    crate::views::result_panel::ResultState::Error(format!(
+                        "SQL 内容超过 {} MiB 安全上限，未写入编辑器",
+                        MAX_SQL_QUERY_BYTES / 1024 / 1024
+                    )),
+                    cx,
+                );
+            });
+            return;
+        }
         self.editor
             .update(cx, |state, cx| state.set_value(sql, window, cx));
         // 用户改了 SQL 就清掉之前的 pinned_target：行内编辑不应再用旧目标表
@@ -287,6 +323,9 @@ impl QueryTab {
             state.set_value(sql.to_string(), window, cx);
             state.focus(window, cx);
         });
+        // 示例不是表树的单表浏览结果，不能沿用旧表的行级增删改目标或分页基线。
+        self.pinned_target = None;
+        self.pager = None;
         // 示例模板属自动注入：未手改前点表树仍可原地覆盖
         self.last_injected_sql = Some(sql.to_string());
         // set_value 不发 Change 事件，手动触发列结构预拉（与 set_sql 一致）

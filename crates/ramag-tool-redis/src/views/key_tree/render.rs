@@ -14,6 +14,7 @@ use ramag_domain::entities::{RedisType, contains_case_insensitive};
 
 use super::tree::{TreeNode, VisibleRow, collect_namespace_paths};
 use super::{INDENT_PX, KeyTreePanel, VisibleRowsCacheEntry, VisibleRowsCacheKey};
+use crate::views::inline_text_preview;
 
 impl KeyTreePanel {
     /// 当前可见行与叶子数；选中态等普通重渲染直接复用，不重复克隆整棵树。
@@ -164,7 +165,7 @@ impl KeyTreePanel {
                     .text_color(label_color)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(row.label.clone()),
+                    .child(inline_text_preview(&row.label, 256)),
             )
             .on_click(on_row_click);
 
@@ -206,11 +207,11 @@ fn flatten_visible_rows(
     let mut rows = Vec::new();
     if query.is_empty() {
         for node in tree {
-            collect_expanded_rows(node, 0, expanded, &mut rows);
+            collect_expanded_rows(node, 0, "", expanded, &mut rows);
         }
     } else {
         for node in tree {
-            collect_search_rows(node, 0, query, &mut rows);
+            collect_search_rows(node, 0, "", query, &mut rows);
         }
     }
     rows
@@ -219,15 +220,17 @@ fn flatten_visible_rows(
 fn collect_expanded_rows(
     node: &TreeNode,
     depth: usize,
+    parent_path: &str,
     expanded: &std::collections::HashSet<String>,
     rows: &mut Vec<VisibleRow>,
 ) {
+    let full_path = joined_path(parent_path, &node.label);
     let is_namespace = node.is_namespace();
-    let is_expanded = is_namespace && expanded.contains(&node.full_path);
-    rows.push(visible_row(node, depth, is_expanded));
+    let is_expanded = is_namespace && expanded.contains(&full_path);
+    rows.push(visible_row(node, depth, is_expanded, full_path.clone()));
     if is_expanded {
         for child in &node.children {
-            collect_expanded_rows(child, depth + 1, expanded, rows);
+            collect_expanded_rows(child, depth + 1, &full_path, expanded, rows);
         }
     }
 }
@@ -236,16 +239,18 @@ fn collect_expanded_rows(
 fn collect_search_rows(
     node: &TreeNode,
     depth: usize,
+    parent_path: &str,
     query: &str,
     rows: &mut Vec<VisibleRow>,
 ) -> bool {
+    let full_path = joined_path(parent_path, &node.label);
     let row_index = rows.len();
-    rows.push(visible_row(node, depth, false));
+    rows.push(visible_row(node, depth, false, full_path.clone()));
 
-    let self_matches = node.is_key && contains_case_insensitive(&node.full_path, query);
+    let self_matches = node.is_key && contains_case_insensitive(&full_path, query);
     let mut descendant_matches = false;
     for child in &node.children {
-        descendant_matches |= collect_search_rows(child, depth + 1, query, rows);
+        descendant_matches |= collect_search_rows(child, depth + 1, &full_path, query, rows);
     }
 
     if self_matches || descendant_matches {
@@ -257,16 +262,27 @@ fn collect_search_rows(
     }
 }
 
-fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool) -> VisibleRow {
+fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool, full_path: String) -> VisibleRow {
     VisibleRow {
         depth,
         label: node.label.clone(),
-        full_path: node.full_path.clone(),
+        full_path,
         is_key: node.is_key,
         leaf_type: node.leaf_type,
         is_namespace: node.is_namespace(),
         is_expanded,
     }
+}
+
+fn joined_path(parent: &str, label: &str) -> String {
+    if parent.is_empty() {
+        return label.to_string();
+    }
+    let mut path = String::with_capacity(parent.len().saturating_add(label.len() + 1));
+    path.push_str(parent);
+    path.push(super::NAMESPACE_SEP);
+    path.push_str(label);
+    path
 }
 
 /// 不同类型用不同色块（与 RedisInsight / zedis 配色靠拢）

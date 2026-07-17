@@ -13,6 +13,8 @@ use ramag_domain::entities::{Commit, ResetKind};
 use super::super::commit_graph::{CommitGraphRow, lane_color, render_lane_gutter};
 use super::super::vcs_view::VcsView;
 
+const MAX_VISIBLE_REF_CHIPS: usize = 8;
+
 /// History 单行：lane gutter + subject + refs + author + date + hash。左键打开详情，右键菜单
 #[allow(clippy::too_many_arguments)]
 pub(in crate::views) fn render_commit_row(
@@ -26,7 +28,7 @@ pub(in crate::views) fn render_commit_row(
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let time_str = relative_time(&c.author.timestamp);
-    let author_short: String = c.author.name.chars().take(20).collect::<String>();
+    let author_short = super::super::inline_text_preview(&c.author.name, 20);
     let dot_color = lane_color(graph.lane);
     let hover_bg = cx.theme().muted;
     let mut sel_bg = accent;
@@ -37,11 +39,18 @@ pub(in crate::views) fn render_commit_row(
 
     // refs chips（紧贴 subject 后）
     let mut refs_row = h_flex().gap(px(4.0)).flex_none();
-    for r in &c.refs {
+    for r in c.refs.iter().take(MAX_VISIBLE_REF_CHIPS) {
         refs_row = refs_row.child(ref_chip(r, accent));
     }
+    if c.refs.len() > MAX_VISIBLE_REF_CHIPS {
+        refs_row = refs_row.child(ref_chip(
+            &format!("… +{}", c.refs.len() - MAX_VISIBLE_REF_CHIPS),
+            accent,
+        ));
+    }
 
-    let row_id = SharedString::from(format!("vcs-commit-row-{}", &cid[..cid.len().min(12)]));
+    let row_key: String = cid.chars().take(12).collect();
+    let row_id = SharedString::from(format!("vcs-commit-row-{row_key}"));
 
     // 左键：打开 commit 详情（右侧面板）
     let cid_click = cid.clone();
@@ -75,7 +84,7 @@ pub(in crate::views) fn render_commit_row(
                         .text_color(fg)
                         .overflow_hidden()
                         .text_ellipsis()
-                        .child(c.subject.clone()),
+                        .child(super::super::inline_text_preview(&c.subject, 240)),
                 )
                 .child(refs_row),
         )
@@ -247,14 +256,23 @@ fn relative_time(ts: &chrono::DateTime<chrono::Utc>) -> String {
 fn ref_chip(name: &str, accent: gpui::Hsla) -> AnyElement {
     // tag 名习惯以 "tag: " 前缀（git log --decorate）
     let (label, tone) = if let Some(rest) = name.strip_prefix("tag: ") {
-        (rest.to_string(), gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0))
+        (
+            super::super::inline_text_preview(rest, 80),
+            gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0),
+        )
     } else if name.starts_with("HEAD") {
-        (name.to_string(), gpui::hsla(140.0 / 360.0, 0.55, 0.45, 1.0))
+        (
+            super::super::inline_text_preview(name, 80),
+            gpui::hsla(140.0 / 360.0, 0.55, 0.45, 1.0),
+        )
     } else if name.contains('/') {
         // remote-tracking：origin/main 等
-        (name.to_string(), gpui::hsla(220.0 / 360.0, 0.6, 0.55, 1.0))
+        (
+            super::super::inline_text_preview(name, 80),
+            gpui::hsla(220.0 / 360.0, 0.6, 0.55, 1.0),
+        )
     } else {
-        (name.to_string(), accent)
+        (super::super::inline_text_preview(name, 80), accent)
     };
     let mut bg = tone;
     bg.a = 0.16;

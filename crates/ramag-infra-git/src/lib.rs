@@ -24,6 +24,7 @@ pub mod runtime;
 pub mod stash;
 pub mod status;
 pub mod tag;
+mod temp_file;
 pub mod work_ops;
 
 use std::path::{Path, PathBuf};

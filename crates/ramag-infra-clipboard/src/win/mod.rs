@@ -126,6 +126,10 @@ impl ClipboardDriver for WinClipboardDriver {
         self.media.remove(path)
     }
 
+    fn clear_media(&self) -> Result<()> {
+        self.media.clear()
+    }
+
     fn accessibility_trusted(&self, _prompt: bool) -> bool {
         // Windows 的 SendInput 无需辅助功能授权
         true

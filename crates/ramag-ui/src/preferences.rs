@@ -89,7 +89,10 @@ pub fn persist_preference_latest_with_storage(
         cx.set_global(PreferenceWriterGlobal(writer.clone()));
         writer
     };
-    let revision = writer.next_revision.fetch_add(1, Ordering::Relaxed) + 1;
+    let revision = writer
+        .next_revision
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
     writer.latest_by_key.write().insert(key, revision);
 
     cx.background_executor()

@@ -6,8 +6,10 @@ use std::time::Instant;
 use bson::{Bson, Document, doc};
 use futures::TryStreamExt;
 use mongodb::Client;
-use ramag_domain::entities::{MongoDocument, MongoQueryResult, MongoQuerySpec};
-use ramag_domain::error::Result;
+use ramag_domain::entities::{
+    MAX_MONGO_DOCUMENT_BYTES, MongoDocument, MongoQueryResult, MongoQuerySpec,
+};
+use ramag_domain::error::{DomainError, Result};
 use serde_json::Value;
 
 use crate::errors::map_mongo_error;
@@ -52,20 +54,28 @@ pub async fn find(
     } else {
         json_to_document(spec.filter.clone())?
     };
+    let sort_doc = optional_document(spec.sort.as_ref())?;
+    let projection_doc = optional_document(spec.projection.as_ref())?;
+    ensure_command_document_budget(
+        [&filter_doc]
+            .into_iter()
+            .chain(sort_doc.iter())
+            .chain(projection_doc.iter()),
+        "MongoDB find",
+    )?;
 
     let collection = client.database(db).collection::<Document>(coll);
-    let mut find_action = collection.find(filter_doc);
+    let mut find_action = collection
+        .find(filter_doc)
+        .limit(effective_find_limit(spec.limit));
 
     if let Some(skip) = spec.skip {
         find_action = find_action.skip(skip);
     }
-    if let Some(limit) = spec.limit {
-        find_action = find_action.limit(limit);
-    }
-    if let Some(doc) = optional_document(spec.sort.as_ref())? {
+    if let Some(doc) = sort_doc {
         find_action = find_action.sort(doc);
     }
-    if let Some(doc) = optional_document(spec.projection.as_ref())? {
+    if let Some(doc) = projection_doc {
         find_action = find_action.projection(doc);
     }
 
@@ -95,6 +105,7 @@ pub async fn count(client: &Client, db: &str, coll: &str, filter: MongoDocument)
     } else {
         json_to_document(filter)?
     };
+    ensure_command_document_budget([&filter_doc], "MongoDB count")?;
     let collection = client.database(db).collection::<Document>(coll);
     let n = collection
         .count_documents(filter_doc)
@@ -111,8 +122,16 @@ pub async fn aggregate(
 ) -> Result<MongoQueryResult> {
     let start = Instant::now();
     let mut docs_pipeline: Vec<Document> = Vec::with_capacity(pipeline.len());
+    let mut command_bytes = 0usize;
     for stage in pipeline {
-        docs_pipeline.push(json_to_document(stage)?);
+        let document = json_to_document(stage)?;
+        command_bytes = reserve_command_document_bytes(
+            command_bytes,
+            &document,
+            "MongoDB aggregate",
+            MAX_MONGO_DOCUMENT_BYTES,
+        )?;
+        docs_pipeline.push(document);
     }
     let collection = client.database(db).collection::<Document>(coll);
     let mut cursor = collection
@@ -144,6 +163,7 @@ pub async fn insert_one(
     document: MongoDocument,
 ) -> Result<String> {
     let doc = json_to_document(document)?;
+    ensure_command_document_budget([&doc], "MongoDB insert")?;
     let collection = client.database(db).collection::<Document>(coll);
     let r = collection.insert_one(doc).await.map_err(map_mongo_error)?;
     Ok(format_bson_id(&r.inserted_id))
@@ -159,6 +179,7 @@ pub async fn update_one(
     let start = Instant::now();
     let filter_doc = json_to_document(filter)?;
     let update_doc = json_to_document(update)?;
+    ensure_command_document_budget([&filter_doc, &update_doc], "MongoDB update")?;
     let collection = client.database(db).collection::<Document>(coll);
     let r = collection
         .update_one(filter_doc, update_doc)
@@ -188,6 +209,7 @@ pub async fn delete_one(
 ) -> Result<MongoQueryResult> {
     let start = Instant::now();
     let filter_doc = json_to_document(filter)?;
+    ensure_command_document_budget([&filter_doc], "MongoDB delete")?;
     let collection = client.database(db).collection::<Document>(coll);
     let r = collection
         .delete_one(filter_doc)
@@ -212,6 +234,7 @@ pub async fn run_command(
     command: MongoDocument,
 ) -> Result<MongoDocument> {
     let cmd_doc = json_to_document(command)?;
+    ensure_command_document_budget([&cmd_doc], "MongoDB command")?;
     if is_cursor_command(&cmd_doc) {
         return collect_cursor_command(client, db, cmd_doc).await;
     }
@@ -261,6 +284,45 @@ async fn collect_cursor_command(client: &Client, db: &str, cmd: Document) -> Res
 
 fn optional_document(value: Option<&Value>) -> Result<Option<Document>> {
     value.cloned().map(json_to_document).transpose()
+}
+
+fn effective_find_limit(limit: Option<i64>) -> i64 {
+    const SAFETY_LIMIT: i64 = MAX_RESULT_DOCS as i64 + 1;
+    match limit {
+        Some(value) if value != 0 && value.unsigned_abs() <= SAFETY_LIMIT as u64 => value,
+        Some(value) if value < 0 => -SAFETY_LIMIT,
+        _ => SAFETY_LIMIT,
+    }
+}
+
+fn ensure_command_document_budget<'a>(
+    documents: impl IntoIterator<Item = &'a Document>,
+    label: &str,
+) -> Result<()> {
+    let mut total = 0usize;
+    for document in documents {
+        total = reserve_command_document_bytes(total, document, label, MAX_MONGO_DOCUMENT_BYTES)?;
+    }
+    Ok(())
+}
+
+fn reserve_command_document_bytes(
+    current: usize,
+    document: &Document,
+    label: &str,
+    limit: usize,
+) -> Result<usize> {
+    let bytes = document_size(document)?;
+    let total = current
+        .checked_add(bytes)
+        .ok_or_else(|| DomainError::InvalidConfig(format!("{label} BSON 总长度溢出")))?;
+    if total > limit {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label} BSON 超过 {} MiB 上限",
+            limit / 1024 / 1024
+        )));
+    }
+    Ok(total)
 }
 
 #[derive(Debug, Default)]
@@ -377,6 +439,27 @@ mod tests {
             document_size(&document).unwrap(),
             bson::to_vec(&document).unwrap().len()
         );
+    }
+
+    #[test]
+    fn find_limit_is_capped_server_side_but_preserves_small_signed_limits() {
+        assert_eq!(effective_find_limit(None), 50_001);
+        assert_eq!(effective_find_limit(Some(0)), 50_001);
+        assert_eq!(effective_find_limit(Some(100)), 100);
+        assert_eq!(effective_find_limit(Some(-100)), -100);
+        assert_eq!(effective_find_limit(Some(100_000)), 50_001);
+        assert_eq!(effective_find_limit(Some(-100_000)), -50_001);
+    }
+
+    #[test]
+    fn command_bson_budget_accepts_boundary_and_rejects_overflow() {
+        let document = bson::doc! { "a": "b" };
+        let bytes = document_size(&document).unwrap();
+        assert_eq!(
+            reserve_command_document_bytes(0, &document, "test", bytes).unwrap(),
+            bytes
+        );
+        assert!(reserve_command_document_bytes(1, &document, "test", bytes).is_err());
     }
 
     #[test]

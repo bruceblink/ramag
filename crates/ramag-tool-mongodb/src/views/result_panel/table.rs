@@ -143,6 +143,7 @@ pub(super) fn render(
                         checkbox,
                         row_num_width,
                         i,
+                        row_idx,
                         row,
                         &cols_for_list,
                         &table_for_list.columns,

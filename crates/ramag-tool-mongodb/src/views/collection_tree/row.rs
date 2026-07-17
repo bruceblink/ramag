@@ -17,24 +17,17 @@ use super::{CollectionTreePanel, ExpandedState, is_system_db};
 #[derive(Clone)]
 pub(super) enum TreeRow {
     Database {
-        name: String,
+        database_index: usize,
         is_expanded: bool,
     },
     /// db 展开后的占位行：loading / error
-    DbPlaceholder {
-        text: String,
-        is_error: bool,
-    },
+    DbPlaceholder { text: String, is_error: bool },
     Collection {
-        db: String,
-        name: String,
-        is_view: bool,
+        database_index: usize,
+        collection_index: usize,
     },
     /// 全局占位：加载 / 错误 / 空
-    GlobalPlaceholder {
-        text: String,
-        is_error: bool,
-    },
+    GlobalPlaceholder { text: String, is_error: bool },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -103,7 +96,17 @@ impl CollectionTreePanel {
         let danger = theme.danger;
 
         match row {
-            TreeRow::Database { name, is_expanded } => {
+            TreeRow::Database {
+                database_index,
+                is_expanded,
+            } => {
+                let Some(name) = self
+                    .databases
+                    .get(*database_index)
+                    .map(|database| &database.name)
+                else {
+                    return div().h(px(28.0)).into_any_element();
+                };
                 let arrow = if *is_expanded { "▾" } else { "▸" };
                 let name_for_click = name.clone();
                 let name_for_menu = name.clone();
@@ -158,7 +161,26 @@ impl CollectionTreePanel {
                 .text_color(if *is_error { danger } else { muted_fg })
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
-            TreeRow::Collection { db, name, is_view } => {
+            TreeRow::Collection {
+                database_index,
+                collection_index,
+            } => {
+                let Some(db) = self
+                    .databases
+                    .get(*database_index)
+                    .map(|database| &database.name)
+                else {
+                    return div().h(px(28.0)).into_any_element();
+                };
+                let Some(collection) = self
+                    .expanded
+                    .get(db)
+                    .and_then(|state| state.collections.get(*collection_index))
+                else {
+                    return div().h(px(28.0)).into_any_element();
+                };
+                let name = &collection.name;
+                let is_view = collection.is_view;
                 let selected =
                     self.selected
                         .as_ref()
@@ -169,7 +191,7 @@ impl CollectionTreePanel {
                 let name_for_click = name.clone();
                 let db_for_menu = db.clone();
                 let name_for_menu = name.clone();
-                let is_view_for_menu = *is_view;
+                let is_view_for_menu = is_view;
                 let entity_for_menu = cx.entity().clone();
                 let mut row = h_flex()
                     .id(SharedString::from(format!("mongo-coll-row-{db}-{name}")))
@@ -183,7 +205,7 @@ impl CollectionTreePanel {
                     .cursor_pointer()
                     .hover(move |s| s.bg(muted_bg))
                     .child(
-                        Icon::new(if *is_view {
+                        Icon::new(if is_view {
                             IconName::Frame
                         } else {
                             IconName::MemoryStick
@@ -268,7 +290,7 @@ fn build_tree_rows(
 
     let has_filter = !filter.is_empty();
     let mut visible_databases = 0;
-    for database in databases {
+    for (database_index, database) in databases.iter().enumerate() {
         let name = &database.name;
         if !show_system && is_system_db(name) {
             continue;
@@ -288,7 +310,7 @@ fn build_tree_rows(
         visible_databases += 1;
         let is_expanded = open_databases.contains(name) || (has_filter && state.is_some());
         rows.push(TreeRow::Database {
-            name: name.clone(),
+            database_index,
             is_expanded,
         });
         let Some(state) = state.filter(|_| is_expanded) else {
@@ -313,7 +335,7 @@ fn build_tree_rows(
                 is_error: false,
             });
         }
-        for collection in &state.collections {
+        for (collection_index, collection) in state.collections.iter().enumerate() {
             if has_filter
                 && !database_matches
                 && !contains_case_insensitive(&collection.name, filter)
@@ -321,9 +343,8 @@ fn build_tree_rows(
                 continue;
             }
             rows.push(TreeRow::Collection {
-                db: name.clone(),
-                name: collection.name.clone(),
-                is_view: collection.is_view,
+                database_index,
+                collection_index,
             });
         }
     }
@@ -361,9 +382,13 @@ mod tests {
         let open = HashSet::new();
 
         let searching = build_tree_rows(&databases, &expanded, &open, false, None, false, "über");
-        assert!(searching.rows.iter().any(|row| {
-            matches!(row, TreeRow::Collection { name, .. } if name == "ÜBERblick")
-        }));
+        assert!(searching.rows.iter().any(|row| matches!(
+            row,
+            TreeRow::Collection {
+                database_index: 0,
+                collection_index: 0,
+            }
+        )));
 
         let cleared = build_tree_rows(&databases, &expanded, &open, false, None, false, "");
         assert_eq!(cleared.rows.len(), 1);

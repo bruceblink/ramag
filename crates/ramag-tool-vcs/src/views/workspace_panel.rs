@@ -1,6 +1,7 @@
 //! 工作区文件分组渲染（IDE Files 内容）。4 组（冲突/已暂存/未暂存/未跟踪）扁平为
 //! 单个 uniform_list（分组表头行 + 目录行 + 文件行，全 28px 等高），万级变更也只渲染可见行
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -29,7 +30,7 @@ enum ChangeRow {
     Header {
         title: &'static str,
         kind: GroupKind,
-        paths: Rc<Vec<String>>,
+        file_indices: Rc<Vec<usize>>,
     },
     Dir {
         display_name: String,
@@ -39,7 +40,7 @@ enum ChangeRow {
         file_count: usize,
     },
     File {
-        file: FileStatus,
+        file_index: usize,
         depth: usize,
         kind: GroupKind,
     },
@@ -66,6 +67,26 @@ impl WorkspaceRowsCacheEntry {
 }
 
 impl VcsView {
+    /// 状态刷新后移除已不存在目录的折叠记录，避免长期运行中重命名路径持续累积。
+    pub(super) fn prune_changes_collapsed_dirs(&mut self) {
+        if self.changes_collapsed_dirs.is_empty() {
+            return;
+        }
+        let current = self
+            .status
+            .as_ref()
+            .map(|status| collect_parent_dirs(status.files.iter().map(|file| file.path.as_str())))
+            .unwrap_or_default();
+        let before = self.changes_collapsed_dirs.len();
+        self.changes_collapsed_dirs
+            .retain(|path| current.contains(path));
+        if self.changes_collapsed_dirs.len() != before {
+            self.changes_collapsed_dirs_version =
+                self.changes_collapsed_dirs_version.wrapping_add(1);
+            self.changes_rows_cache.get_mut().take();
+        }
+    }
+
     /// 工作区文件分组：4 组扁平为单 uniform_list（分组表头行 + 目录 / 文件行）
     pub(super) fn render_file_groups(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
@@ -145,33 +166,57 @@ impl VcsView {
         key: WorkspaceRowsCacheKey,
     ) -> Rc<Vec<ChangeRow>> {
         let path_match = |path: &str| contains_case_insensitive(path, query);
-        let mut staged: Vec<FileStatus> = Vec::new();
-        let mut unstaged: Vec<FileStatus> = Vec::new();
-        let mut untracked: Vec<FileStatus> = Vec::new();
-        let mut conflicted: Vec<FileStatus> = Vec::new();
-        for file in &status.files {
+        let mut staged: Vec<usize> = Vec::new();
+        let mut unstaged: Vec<usize> = Vec::new();
+        let mut untracked: Vec<usize> = Vec::new();
+        let mut conflicted: Vec<usize> = Vec::new();
+        for (file_index, file) in status.files.iter().enumerate() {
             if !path_match(&file.path) {
                 continue;
             }
             if file.is_conflicted() {
-                conflicted.push(file.clone());
+                conflicted.push(file_index);
                 continue;
             }
             if file.staged.is_some() {
-                staged.push(file.clone());
+                staged.push(file_index);
             }
             match file.unstaged {
-                Some(FileChangeKind::Untracked) => untracked.push(file.clone()),
-                Some(_) => unstaged.push(file.clone()),
+                Some(FileChangeKind::Untracked) => untracked.push(file_index),
+                Some(_) => unstaged.push(file_index),
                 None => {}
             }
         }
 
         let mut rows: Vec<ChangeRow> = Vec::new();
-        self.append_change_group("冲突", GroupKind::Conflict, conflicted, &mut rows);
-        self.append_change_group("已暂存", GroupKind::Staged, staged, &mut rows);
-        self.append_change_group("未暂存", GroupKind::Unstaged, unstaged, &mut rows);
-        self.append_change_group("未跟踪", GroupKind::Untracked, untracked, &mut rows);
+        self.append_change_group(
+            "冲突",
+            GroupKind::Conflict,
+            &status.files,
+            conflicted,
+            &mut rows,
+        );
+        self.append_change_group(
+            "已暂存",
+            GroupKind::Staged,
+            &status.files,
+            staged,
+            &mut rows,
+        );
+        self.append_change_group(
+            "未暂存",
+            GroupKind::Unstaged,
+            &status.files,
+            unstaged,
+            &mut rows,
+        );
+        self.append_change_group(
+            "未跟踪",
+            GroupKind::Untracked,
+            &status.files,
+            untracked,
+            &mut rows,
+        );
 
         let rows = Rc::new(rows);
         *self.changes_rows_cache.borrow_mut() = Some(WorkspaceRowsCacheEntry {
@@ -186,16 +231,21 @@ impl VcsView {
         &self,
         title: &'static str,
         kind: GroupKind,
-        files: Vec<FileStatus>,
+        files: &[FileStatus],
+        file_indices: Vec<usize>,
         out: &mut Vec<ChangeRow>,
     ) {
-        if files.is_empty() {
+        if file_indices.is_empty() {
             return;
         }
-        let paths = Rc::new(files.iter().map(|f| f.path.clone()).collect());
-        out.push(ChangeRow::Header { title, kind, paths });
-        let tree = super::file_tree::build_tree(&files);
-        let mut trows: Vec<super::file_tree::Row> = Vec::with_capacity(files.len() * 2);
+        let file_indices = Rc::new(file_indices);
+        out.push(ChangeRow::Header {
+            title,
+            kind,
+            file_indices: file_indices.clone(),
+        });
+        let tree = super::file_tree::build_tree_for_indices(files, &file_indices);
+        let mut trows: Vec<super::file_tree::Row> = Vec::with_capacity(file_indices.len() * 2);
         super::file_tree::flatten(&tree, 0, "", &self.changes_collapsed_dirs, &mut trows);
         for r in trows {
             match r {
@@ -213,7 +263,7 @@ impl VcsView {
                     file_count,
                 }),
                 super::file_tree::Row::File { idx, depth } => out.push(ChangeRow::File {
-                    file: files[idx].clone(),
+                    file_index: idx,
                     depth,
                     kind,
                 }),
@@ -224,9 +274,11 @@ impl VcsView {
     /// uniform_list 单行分发：表头 / 目录 / 文件
     fn render_change_row(&self, i: usize, row: &ChangeRow, cx: &mut Context<Self>) -> AnyElement {
         match row {
-            ChangeRow::Header { title, kind, paths } => {
-                self.render_change_header_row(title, *kind, paths, cx)
-            }
+            ChangeRow::Header {
+                title,
+                kind,
+                file_indices,
+            } => self.render_change_header_row(title, *kind, file_indices, cx),
             ChangeRow::Dir {
                 display_name,
                 dir_path,
@@ -242,13 +294,26 @@ impl VcsView {
                 *file_count,
                 cx,
             ),
-            ChangeRow::File { file, depth, kind } => div()
-                .w_full()
-                .h(px(ROW_H))
-                .flex_none()
-                .pl(px((*depth as f32) * 12.0))
-                .child(self.render_file_row(i, file.clone(), *kind, cx))
-                .into_any_element(),
+            ChangeRow::File {
+                file_index,
+                depth,
+                kind,
+            } => self
+                .status
+                .as_ref()
+                .and_then(|status| status.files.get(*file_index))
+                .map_or_else(
+                    || div().h(px(ROW_H)).into_any_element(),
+                    |file| {
+                        div()
+                            .w_full()
+                            .h(px(ROW_H))
+                            .flex_none()
+                            .pl(px((*depth as f32) * 12.0))
+                            .child(self.render_file_row(i, file, *kind, cx))
+                            .into_any_element()
+                    },
+                ),
         }
     }
 
@@ -257,14 +322,14 @@ impl VcsView {
         &self,
         title: &'static str,
         kind: GroupKind,
-        paths: &Rc<Vec<String>>,
+        file_indices: &Rc<Vec<usize>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
         let busy = self.busy;
-        let count = paths.len();
+        let count = file_indices.len();
         let badge_color = match kind {
             GroupKind::Conflict => theme.danger,
             GroupKind::Staged => theme.accent,
@@ -276,25 +341,25 @@ impl VcsView {
 
         // 按组提供"全部 stage / unstage"批量操作
         let bulk_btn: Option<AnyElement> = match kind {
-            GroupKind::Unstaged | GroupKind::Untracked if !paths.is_empty() => {
+            GroupKind::Unstaged | GroupKind::Untracked if !file_indices.is_empty() => {
                 Some(bulk_op_button(
                     "stage-all",
                     title,
                     "全部暂存",
                     FileOp::Stage,
                     IconName::Plus,
-                    paths.clone(),
+                    file_indices.clone(),
                     busy,
                     cx,
                 ))
             }
-            GroupKind::Staged if !paths.is_empty() => Some(bulk_op_button(
+            GroupKind::Staged if !file_indices.is_empty() => Some(bulk_op_button(
                 "unstage-all",
                 title,
                 "全部取消暂存",
                 FileOp::Unstage,
                 IconName::Minus,
-                paths.clone(),
+                file_indices.clone(),
                 busy,
                 cx,
             )),
@@ -350,7 +415,7 @@ impl VcsView {
         let fg = theme.foreground;
         let muted_fg = theme.muted_foreground;
         let hover_bg = theme.muted;
-        let id = SharedString::from(format!("vcs-ch-dir-{i}-{dir_path}"));
+        let id = SharedString::from(format!("vcs-ch-dir-{i}"));
         let icon = if is_collapsed { "▸" } else { "▾" };
         let dir_clone = dir_path.to_string();
         h_flex()
@@ -384,7 +449,7 @@ impl VcsView {
                     .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(display_name.to_string()),
+                    .child(super::inline_text_preview(display_name, 160)),
             )
             .child(
                 div()
@@ -398,6 +463,7 @@ impl VcsView {
 
     /// 切换 Changes 文件树某目录的折叠状态
     pub(super) fn toggle_changes_dir(&mut self, dir_path: String, cx: &mut Context<Self>) {
+        self.prune_changes_collapsed_dirs();
         if !self.changes_collapsed_dirs.remove(&dir_path) {
             self.changes_collapsed_dirs.insert(dir_path);
         }
@@ -410,7 +476,7 @@ impl VcsView {
     pub(super) fn render_file_row(
         &self,
         idx: usize,
-        f: FileStatus,
+        f: &FileStatus,
         kind: GroupKind,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -444,7 +510,7 @@ impl VcsView {
             .unwrap_or(false);
         let buttons: Vec<AnyElement> = match kind {
             GroupKind::Staged => vec![file_op_button(
-                ("unstage", idx, &f.path),
+                ("unstage", idx),
                 "取消暂存",
                 FileOp::Unstage,
                 path_for_buttons.clone(),
@@ -453,7 +519,7 @@ impl VcsView {
             )],
             GroupKind::Unstaged => vec![
                 file_op_button(
-                    ("stage", idx, &f.path),
+                    ("stage", idx),
                     "暂存",
                     FileOp::Stage,
                     path_for_buttons.clone(),
@@ -461,7 +527,7 @@ impl VcsView {
                     cx,
                 ),
                 file_op_button(
-                    ("discard", idx, &f.path),
+                    ("discard", idx),
                     "丢弃",
                     FileOp::Discard,
                     path_for_buttons.clone(),
@@ -470,7 +536,7 @@ impl VcsView {
                 ),
             ],
             GroupKind::Untracked => vec![file_op_button(
-                ("stage-u", idx, &f.path),
+                ("stage-u", idx),
                 "暂存",
                 FileOp::Stage,
                 path_for_buttons.clone(),
@@ -491,7 +557,7 @@ impl VcsView {
             None
         } else {
             let path_for_history = f.path.clone();
-            let id = SharedString::from(format!("vcs-file-history-{idx}-{}", f.path));
+            let id = SharedString::from(format!("vcs-file-history-{idx}-{kind:?}"));
             Some(
                 Button::new(id)
                     .ghost()
@@ -510,7 +576,7 @@ impl VcsView {
             buttons.insert(0, b);
         }
 
-        let row_id = SharedString::from(format!("vcs-file-{}-{}-{:?}", idx, f.path, kind));
+        let row_id = SharedString::from(format!("vcs-file-{idx}-{kind:?}"));
         let mut row = h_flex()
             .id(row_id)
             .h(px(ROW_H))
@@ -546,7 +612,7 @@ impl VcsView {
                     .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(path_label),
+                    .child(super::inline_text_preview(&path_label, 240)),
             )
             .child(
                 h_flex()
@@ -563,6 +629,25 @@ impl VcsView {
     }
 }
 
+fn collect_parent_dirs<'a>(paths: impl IntoIterator<Item = &'a str>) -> HashSet<String> {
+    let mut dirs = HashSet::new();
+    for path in paths {
+        let mut parent = String::new();
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            if !parent.is_empty() {
+                parent.push('/');
+            }
+            parent.push_str(part);
+            dirs.insert(parent.clone());
+        }
+    }
+    dirs
+}
+
 /// 「全部 Stage」「全部 Unstage」按钮：同组所有文件批量执行 file_op
 #[allow(clippy::too_many_arguments)]
 fn bulk_op_button(
@@ -571,7 +656,7 @@ fn bulk_op_button(
     label: &'static str,
     op: FileOp,
     icon: IconName,
-    paths: Rc<Vec<String>>,
+    file_indices: Rc<Vec<usize>>,
     busy: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
@@ -583,7 +668,15 @@ fn bulk_op_button(
         .label(label)
         .disabled(busy)
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.run_file_op(op, paths.as_ref().clone(), cx);
+            let paths = this.status.as_ref().map_or_else(Vec::new, |status| {
+                file_indices
+                    .iter()
+                    .filter_map(|index| status.files.get(*index).map(|file| file.path.clone()))
+                    .collect()
+            });
+            if !paths.is_empty() {
+                this.run_file_op(op, paths, cx);
+            }
         }))
         .into_any_element()
 }
@@ -619,5 +712,15 @@ mod tests {
         changed = key;
         changed.collapsed_version += 1;
         assert!(cache.get(&changed).is_none());
+    }
+
+    #[test]
+    fn parent_directory_set_excludes_file_names() {
+        let dirs = collect_parent_dirs(["src/ui/view.rs", "README.md"]);
+
+        assert_eq!(
+            dirs,
+            HashSet::from(["src".to_string(), "src/ui".to_string()])
+        );
     }
 }

@@ -4,6 +4,156 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::{DomainError, Result};
+
+/// MongoDB 数据库名服务端限制为少于 64 bytes。
+pub const MAX_MONGO_DATABASE_NAME_BYTES: usize = 63;
+/// 集合名与数据库名组成 namespace；单段先限制为 255 bytes，完整 namespace 由驱动再校验。
+pub const MAX_MONGO_COLLECTION_NAME_BYTES: usize = 255;
+/// 结果区 `$set` 使用 dotted path；限制异常路径在日志、弹窗和命令文档中的放大成本。
+pub const MAX_MONGO_FIELD_PATH_BYTES: usize = 1024;
+/// MongoDB 单 BSON 文档的协议上限为 16 MiB；领域层先按动态 JSON 内容做前置预算。
+pub const MAX_MONGO_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_MONGO_VALUE_NODES: usize = 100_000;
+pub const MAX_MONGO_NESTING_DEPTH: usize = 100;
+pub const MAX_MONGO_PIPELINE_STAGES: usize = 1_000;
+
+pub fn validate_mongo_database_name(name: &str) -> Result<()> {
+    validate_mongo_name("MongoDB 数据库名", name, MAX_MONGO_DATABASE_NAME_BYTES)
+}
+
+pub fn validate_mongo_collection_name(name: &str) -> Result<()> {
+    validate_mongo_name("MongoDB 集合名", name, MAX_MONGO_COLLECTION_NAME_BYTES)
+}
+
+pub fn validate_mongo_field_path(path: &str) -> Result<()> {
+    validate_mongo_name("MongoDB 字段路径", path, MAX_MONGO_FIELD_PATH_BYTES)
+}
+
+fn validate_mongo_name(label: &str, name: &str, max_bytes: usize) -> Result<()> {
+    if name.is_empty() {
+        return Err(DomainError::InvalidConfig(format!("{label}不能为空")));
+    }
+    if name.len() > max_bytes {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}超过 {max_bytes} bytes 上限"
+        )));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}不能包含控制字符"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_mongo_document(value: &Value, label: &str) -> Result<()> {
+    if !value.is_object() {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}必须是 JSON 对象"
+        )));
+    }
+    validate_mongo_values([value], label, MongoValueLimits::production())
+}
+
+pub fn validate_mongo_pipeline(pipeline: &[MongoDocument]) -> Result<()> {
+    if pipeline.len() > MAX_MONGO_PIPELINE_STAGES {
+        return Err(DomainError::InvalidConfig(format!(
+            "MongoDB pipeline 超过 {MAX_MONGO_PIPELINE_STAGES} 个 stage 上限"
+        )));
+    }
+    if pipeline.iter().any(|stage| !stage.is_object()) {
+        return Err(DomainError::InvalidConfig(
+            "MongoDB pipeline 的每个 stage 都必须是 JSON 对象".into(),
+        ));
+    }
+    validate_mongo_values(
+        pipeline.iter(),
+        "MongoDB pipeline",
+        MongoValueLimits::production(),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct MongoValueLimits {
+    bytes: usize,
+    nodes: usize,
+    depth: usize,
+}
+
+impl MongoValueLimits {
+    const fn production() -> Self {
+        Self {
+            bytes: MAX_MONGO_DOCUMENT_BYTES,
+            nodes: MAX_MONGO_VALUE_NODES,
+            depth: MAX_MONGO_NESTING_DEPTH,
+        }
+    }
+}
+
+fn validate_mongo_values<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+    label: &str,
+    limits: MongoValueLimits,
+) -> Result<()> {
+    let mut stack: Vec<(&Value, usize)> = values.into_iter().map(|value| (value, 0)).collect();
+    let mut nodes = 0usize;
+    let mut bytes = 0usize;
+
+    while let Some((value, depth)) = stack.pop() {
+        if depth > limits.depth {
+            return Err(DomainError::InvalidConfig(format!(
+                "{label}嵌套超过 {} 层上限",
+                limits.depth
+            )));
+        }
+        nodes = nodes
+            .checked_add(1)
+            .ok_or_else(|| DomainError::InvalidConfig(format!("{label}节点数量溢出")))?;
+        if nodes > limits.nodes {
+            return Err(DomainError::InvalidConfig(format!(
+                "{label}超过 {} 个节点上限",
+                limits.nodes
+            )));
+        }
+
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    if key.contains('\0') {
+                        return Err(DomainError::InvalidConfig(format!(
+                            "{label}字段名不能包含 NUL 字符"
+                        )));
+                    }
+                    bytes = reserve_mongo_bytes(bytes, key.len(), label, limits.bytes)?;
+                    stack.push((child, depth.saturating_add(1)));
+                }
+            }
+            Value::Array(items) => {
+                stack.extend(items.iter().map(|child| (child, depth.saturating_add(1))));
+            }
+            Value::String(text) => {
+                bytes = reserve_mongo_bytes(bytes, text.len(), label, limits.bytes)?;
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn reserve_mongo_bytes(current: usize, added: usize, label: &str, limit: usize) -> Result<usize> {
+    let next = current
+        .checked_add(added)
+        .ok_or_else(|| DomainError::InvalidConfig(format!("{label}动态内容长度溢出")))?;
+    if next > limit {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}动态内容超过 {} MiB 上限",
+            limit / 1024 / 1024
+        )));
+    }
+    Ok(next)
+}
+
 /// 数据库
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MongoDatabase {
@@ -52,6 +202,39 @@ pub struct MongoQuerySpec {
     pub skip: Option<u64>,
     /// 返回上限。None 走 UI 默认值
     pub limit: Option<i64>,
+}
+
+impl MongoQuerySpec {
+    pub fn validate(&self) -> Result<()> {
+        if !self.filter.is_null() && !self.filter.is_object() {
+            return Err(DomainError::InvalidConfig(
+                "MongoDB filter 必须是 JSON 对象或 null".into(),
+            ));
+        }
+        for (label, value) in [
+            ("MongoDB projection", self.projection.as_ref()),
+            ("MongoDB sort", self.sort.as_ref()),
+        ] {
+            if value.is_some_and(|value| !value.is_object()) {
+                return Err(DomainError::InvalidConfig(format!(
+                    "{label}必须是 JSON 对象"
+                )));
+            }
+        }
+        if self.limit == Some(i64::MIN) {
+            return Err(DomainError::InvalidConfig(
+                "MongoDB limit 不能是 i64::MIN".into(),
+            ));
+        }
+
+        validate_mongo_values(
+            std::iter::once(&self.filter)
+                .chain(self.projection.iter())
+                .chain(self.sort.iter()),
+            "MongoDB 查询参数",
+            MongoValueLimits::production(),
+        )
+    }
 }
 
 /// 查询结果。无论 read / write 都用同一结构上报
@@ -137,5 +320,51 @@ mod tests {
         let r = MongoQueryResult::write(3, 12, "updateOne");
         assert!(r.summary.contains("updateOne"));
         assert!(r.summary.contains("affected=3"));
+    }
+
+    #[test]
+    fn mongo_names_and_query_spec_have_explicit_boundaries() {
+        assert!(validate_mongo_database_name(&"d".repeat(MAX_MONGO_DATABASE_NAME_BYTES)).is_ok());
+        assert!(
+            validate_mongo_database_name(&"d".repeat(MAX_MONGO_DATABASE_NAME_BYTES + 1)).is_err()
+        );
+        assert!(validate_mongo_collection_name("users").is_ok());
+        assert!(validate_mongo_collection_name("line\nitems").is_err());
+        assert!(validate_mongo_field_path("profile.name").is_ok());
+
+        let valid = MongoQuerySpec {
+            filter: json!({"active": true}),
+            projection: Some(json!({"name": 1})),
+            sort: Some(json!({"created_at": -1})),
+            skip: Some(0),
+            limit: Some(100),
+        };
+        assert!(valid.validate().is_ok());
+
+        let invalid = MongoQuerySpec {
+            filter: json!([]),
+            ..MongoQuerySpec::default()
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn mongo_value_budget_bounds_bytes_nodes_depth_and_pipeline_stages() {
+        let limits = MongoValueLimits {
+            bytes: 3,
+            nodes: 4,
+            depth: 2,
+        };
+        assert!(validate_mongo_values([&json!({"a": "bc"})], "test", limits).is_ok());
+        assert!(validate_mongo_values([&json!({"a": "bcd"})], "test", limits).is_err());
+        assert!(validate_mongo_values([&json!([1, 2, 3, 4])], "test", limits).is_err());
+        assert!(validate_mongo_values([&json!([[[1]]])], "test", limits).is_err());
+
+        assert!(validate_mongo_document(&json!({"a": 1}), "文档").is_ok());
+        assert!(validate_mongo_document(&json!([1]), "文档").is_err());
+        assert!(validate_mongo_document(&json!({"bad\0key": 1}), "文档").is_err());
+
+        let too_many = vec![json!({"$match": {}}); MAX_MONGO_PIPELINE_STAGES + 1];
+        assert!(validate_mongo_pipeline(&too_many).is_err());
     }
 }

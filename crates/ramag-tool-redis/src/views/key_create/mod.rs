@@ -15,9 +15,13 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::{ConnectionConfig, RedisType};
+use ramag_domain::entities::{
+    ConnectionConfig, MAX_REDIS_COMMAND_ARG_BYTES, MAX_REDIS_KEY_BYTES, RedisType,
+    validate_redis_key,
+};
 use tracing::{error, info};
 
+use crate::views::bounded_input;
 use crate::views::form_shell::{SubmitState, form_footer};
 use crate::views::lines_editor::{LinesEditor, LinesKind, PushDir};
 use crate::views::pairs_editor::{PairsEditor, PairsKind};
@@ -66,14 +70,30 @@ impl KeyCreateForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let key_name = cx.new(|cx| InputState::new(window, cx).placeholder("如 user:1001:cache"));
+        let key_name = cx.new(|cx| {
+            bounded_input(MAX_REDIS_KEY_BYTES, window, cx).placeholder("如 user:1001:cache")
+        });
         // String multi_line input 的高度必须通过 Input view 的 .h() 设置，
         // 不能靠外层 div h() ——后者在 multi_line 渲染路径中被忽略
         let string_input = cx.new(|cx| {
-            InputState::new(window, cx)
+            bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
                 .placeholder("字符串值（任意文本，可多行）")
         });
+        ramag_ui::enforce_multiline_input_byte_limit(
+            &string_input,
+            MAX_REDIS_COMMAND_ARG_BYTES,
+            window,
+            cx,
+            |this, _, cx| {
+                this.state = SubmitState::Failed(format!(
+                    "字符串值最多保留 {} MiB，超出部分已截断",
+                    MAX_REDIS_COMMAND_ARG_BYTES / 1024 / 1024
+                ));
+                cx.notify();
+            },
+        )
+        .detach();
         let list_editor = cx.new(|cx| LinesEditor::new(LinesKind::List, window, cx));
         let set_editor = cx.new(|cx| LinesEditor::new(LinesKind::Set, window, cx));
         let hash_editor = cx.new(|cx| PairsEditor::new(PairsKind::Hash, window, cx));
@@ -115,6 +135,7 @@ impl KeyCreateForm {
         if key.is_empty() {
             return Err("请填写 Key 名".into());
         }
+        validate_redis_key(&key).map_err(|error| error.message().to_string())?;
 
         let argv: Vec<String> = match self.selected_type {
             RedisType::String => {
@@ -123,7 +144,7 @@ impl KeyCreateForm {
             }
             RedisType::List => {
                 let editor = self.list_editor.read(cx);
-                let elems = editor.collect(cx);
+                let elems = editor.collect(cx)?;
                 if elems.is_empty() {
                     return Err("List 至少需要 1 个元素".into());
                 }
@@ -136,7 +157,7 @@ impl KeyCreateForm {
                 argv
             }
             RedisType::Set => {
-                let elems = self.set_editor.read(cx).collect(cx);
+                let elems = self.set_editor.read(cx).collect(cx)?;
                 if elems.is_empty() {
                     return Err("Set 至少需要 1 个成员".into());
                 }

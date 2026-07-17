@@ -2,15 +2,15 @@
 //! 每批回包做（代际, db, 连接）三重身份校验，换代 / 切库 / 切连接后在途批次一律作废
 
 use gpui::Context;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConnectionConfig, KeyMeta};
 use tracing::{error, info};
 
-use super::{KEYS_PAGE_SIZE, KeyTreePanel};
+use super::{KEYS_PAGE_SIZE, KeyTreePanel, MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS};
 
 /// 单批 SCAN 的 COUNT hint
 const SCAN_BATCH: u32 = 500;
 /// 单次刷新/继续最多发出的批次数；到达后保留 cursor，防异常游标或超大库导致无限请求。
-const MAX_SCAN_BATCHES_PER_PAGE: usize = 2_000;
+const MAX_SCAN_BATCHES_PER_PAGE: usize = 200;
 /// 分批加载期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次
 const REBUILD_STEP: usize = 2_000;
 /// 输入停顿后自动把过滤词下推到服务端，避免旧 MATCH 子集造成假“无结果”。
@@ -22,15 +22,17 @@ impl KeyTreePanel {
         let Some(config) = self.config.clone() else {
             return;
         };
-        self.scan_generation += 1;
+        self.scan_generation = self.scan_generation.wrapping_add(1);
         self.loading = true;
         self.has_loaded = false;
         self.error = None;
         self.keys.clear();
         self.seen_keys.clear();
+        self.key_bytes = 0;
         self.clear_tree();
         self.last_rebuilt_count = 0;
         self.truncated = false;
+        self.resource_limited = false;
         self.resume_cursor = Some(0);
         self.scan_target = KEYS_PAGE_SIZE;
         cx.notify();
@@ -40,7 +42,7 @@ impl KeyTreePanel {
 
     /// 停止扫描：换代终止续扫，保留并展示已加载部分（如实标注未扫完）
     pub(super) fn stop_scan(&mut self, cx: &mut Context<Self>) {
-        self.scan_generation += 1;
+        self.scan_generation = self.scan_generation.wrapping_add(1);
         if self.loading {
             self.loading = false;
             self.truncated = true;
@@ -96,7 +98,7 @@ impl KeyTreePanel {
 
     /// 从上次暂停的 cursor 再加载一页，保留已加载 key 与树状态。
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
+        if self.loading || self.resource_limited {
             return;
         }
         let (Some(config), Some(cursor)) = (self.config.clone(), self.resume_cursor) else {
@@ -139,16 +141,37 @@ impl KeyTreePanel {
                     Ok(r) => {
                         this.has_loaded = true;
                         // SCAN 弱一致：同一 key 可能跨批重复返回，按 key 名去重追加
+                        let mut resource_capped = false;
                         for meta in r.keys {
-                            if this.seen_keys.insert(meta.key.clone()) {
-                                this.keys.push(meta);
+                            if !insert_key_with_budget(
+                                &mut this.keys,
+                                &mut this.seen_keys,
+                                &mut this.key_bytes,
+                                meta,
+                            ) {
+                                resource_capped = true;
+                                break;
                             }
                         }
                         let done = r.cursor == 0;
-                        this.resume_cursor = (!done).then_some(r.cursor);
+                        resource_capped |= !done
+                            && (this.keys.len() >= MAX_LOADED_KEYS
+                                || this.key_bytes >= MAX_LOADED_KEY_BYTES);
+                        this.resume_cursor = (!done && !resource_capped).then_some(r.cursor);
                         let capped = this.keys.len() >= this.scan_target;
                         let batch_budget_exhausted = batches_left <= 1;
-                        if scan_page_finished(done, capped, batches_left) {
+                        if resource_capped {
+                            this.loading = false;
+                            this.truncated = true;
+                            this.resource_limited = true;
+                            this.rebuild_tree();
+                            info!(
+                                count = this.keys.len(),
+                                key_bytes = this.key_bytes,
+                                db,
+                                "redis scan stopped at resource limit"
+                            );
+                        } else if scan_page_finished(done, capped, batches_left) {
                             this.loading = false;
                             this.truncated = !done && (capped || batch_budget_exhausted);
                             this.rebuild_tree();
@@ -211,7 +234,28 @@ fn server_match_pattern(raw: &str) -> Option<String> {
 }
 
 fn next_scan_target(loaded: usize) -> usize {
-    loaded.saturating_add(KEYS_PAGE_SIZE)
+    loaded.saturating_add(KEYS_PAGE_SIZE).min(MAX_LOADED_KEYS)
+}
+
+fn insert_key_with_budget(
+    keys: &mut Vec<KeyMeta>,
+    seen: &mut std::collections::HashSet<String>,
+    key_bytes: &mut usize,
+    meta: KeyMeta,
+) -> bool {
+    if seen.contains(&meta.key) {
+        return true;
+    }
+    let Some(next_bytes) = key_bytes.checked_add(meta.key.len()) else {
+        return false;
+    };
+    if keys.len() >= MAX_LOADED_KEYS || next_bytes > MAX_LOADED_KEY_BYTES {
+        return false;
+    }
+    seen.insert(meta.key.clone());
+    keys.push(meta);
+    *key_bytes = next_bytes;
+    true
 }
 
 fn scan_page_finished(done: bool, key_cap_reached: bool, batches_left: usize) -> bool {
@@ -220,7 +264,12 @@ fn scan_page_finished(done: bool, key_cap_reached: bool, batches_left: usize) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{next_scan_target, scan_page_finished, server_match_pattern};
+    use super::{
+        MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS, insert_key_with_budget, next_scan_target,
+        scan_page_finished, server_match_pattern,
+    };
+    use ramag_domain::entities::KeyMeta;
+    use std::collections::HashSet;
 
     #[test]
     fn plain_search_becomes_contains_match() {
@@ -232,7 +281,8 @@ mod tests {
     #[test]
     fn load_more_adds_one_page_without_overflow() {
         assert_eq!(next_scan_target(5_123), 10_123);
-        assert_eq!(next_scan_target(usize::MAX), usize::MAX);
+        assert_eq!(next_scan_target(MAX_LOADED_KEYS - 1), MAX_LOADED_KEYS);
+        assert_eq!(next_scan_target(usize::MAX), MAX_LOADED_KEYS);
     }
 
     #[test]
@@ -241,5 +291,45 @@ mod tests {
         assert!(scan_page_finished(false, true, 10));
         assert!(scan_page_finished(false, false, 1));
         assert!(!scan_page_finished(false, false, 2));
+    }
+
+    #[test]
+    fn key_cache_rejects_count_and_byte_overflow_without_charging_duplicates() {
+        let mut keys = Vec::new();
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+
+        assert!(insert_key_with_budget(
+            &mut keys,
+            &mut seen,
+            &mut bytes,
+            KeyMeta::bare("alpha"),
+        ));
+        assert!(insert_key_with_budget(
+            &mut keys,
+            &mut seen,
+            &mut bytes,
+            KeyMeta::bare("alpha"),
+        ));
+        assert_eq!(keys.len(), 1);
+        assert_eq!(bytes, 5);
+
+        bytes = MAX_LOADED_KEY_BYTES;
+        assert!(!insert_key_with_budget(
+            &mut keys,
+            &mut seen,
+            &mut bytes,
+            KeyMeta::bare("beta"),
+        ));
+
+        let mut count_keys = vec![KeyMeta::bare("k"); MAX_LOADED_KEYS];
+        let mut count_seen = HashSet::new();
+        let mut count_bytes = MAX_LOADED_KEYS;
+        assert!(!insert_key_with_budget(
+            &mut count_keys,
+            &mut count_seen,
+            &mut count_bytes,
+            KeyMeta::bare("overflow"),
+        ));
     }
 }

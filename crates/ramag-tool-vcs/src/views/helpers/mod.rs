@@ -304,14 +304,14 @@ pub(super) enum TagOp {
 
 /// 行尾操作小按钮：触发 self.run_file_op（已转图标按钮 + tooltip）
 pub(super) fn file_op_button(
-    id_parts: (&'static str, usize, &str),
+    id_parts: (&'static str, usize),
     label: &'static str,
     op: FileOp,
     path: String,
     busy: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    let id = SharedString::from(format!("vcs-{}-{}-{}", id_parts.0, id_parts.1, id_parts.2));
+    let id = SharedString::from(format!("vcs-{}-{}", id_parts.0, id_parts.1));
     let mut btn = Button::new(id)
         .ghost()
         .xsmall()

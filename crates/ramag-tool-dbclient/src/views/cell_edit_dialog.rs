@@ -28,6 +28,7 @@ pub(super) fn open(
     cx: &mut Context<ResultPanel>,
 ) {
     let read_only = read_only_reason.is_some();
+    let col_name = super::inline_text_preview(&col_name, 80);
     let title: SharedString = if read_only {
         format!("查看 行 {} · {}", ri + 1, col_name).into()
     } else {

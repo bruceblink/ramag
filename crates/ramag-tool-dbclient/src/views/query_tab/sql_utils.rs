@@ -336,7 +336,12 @@ pub(super) fn split_sql_statements(
         }
         _ => ramag_infra_sql_shared::sql::SplitOptions::mysql(),
     };
-    ramag_infra_sql_shared::sql::split_statements(sql, opts)
+    ramag_infra_sql_shared::sql::split_statements_bounded(
+        sql,
+        opts,
+        ramag_infra_sql_shared::sql::MAX_SQL_STATEMENTS,
+    )
+    .unwrap_or_else(|_| vec![sql.to_string()])
 }
 
 /// MySQL `at line N` / PG `LINE N:` 格式提取行号
