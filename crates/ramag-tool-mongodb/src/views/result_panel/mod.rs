@@ -670,8 +670,12 @@ impl ResultPanel {
             let input = input.clone();
             let title = title.clone();
             dialog
-                .title(title)
-                .close_button(true)
+                .title(ramag_ui::closable_dialog_title(
+                    "mongo-value-detail-close",
+                    title,
+                    |_, _| {},
+                ))
+                .close_button(false)
                 .w(px(720.0))
                 .p(px(20.0))
                 .content(move |content, _, _| {

@@ -7,12 +7,13 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::Input,
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
+    menu::{ContextMenuExt as _, PopupMenu},
 };
 use ramag_domain::entities::Branch;
+use ramag_ui::PointerDropdownMenu as _;
 
 use super::confirm_dialogs::open_confirm_dialog;
 use super::helpers::{BranchOp, checkout_remote_branch_op};
@@ -41,7 +42,7 @@ impl VcsView {
                 ),
             )
             .child(
-                Button::new("vcs-branch-create")
+                ramag_ui::clickable_button("vcs-branch-create")
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
@@ -134,19 +135,20 @@ pub(super) fn branch_row(
     if is_head {
         return row.into_any_element();
     }
+    row = row.cursor_pointer();
 
     // 行尾「⋯」：与右键菜单同一份操作，给不习惯右键的用户一个可见入口
     let more_btn = {
         let ent = entity.clone();
         let n = name.clone();
-        Button::new(SharedString::from(format!(
+        ramag_ui::clickable_button(SharedString::from(format!(
             "vcs-side-br-more-{idx}-{is_remote}"
         )))
         .ghost()
         .xsmall()
         .icon(ramag_ui::icons::ellipsis())
         .tooltip("分支操作（切换 / 合并 / Rebase…）")
-        .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
+        .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
             branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
         })
     };
@@ -179,7 +181,7 @@ fn branch_actions_menu(
     if !is_remote {
         // 切换
         m = m.item(
-            PopupMenuItem::new("切换到此分支").on_click(move |_, w, app| {
+            ramag_ui::menu_item("切换到此分支").on_click(move |_, w, app| {
                 e1.update(app, |this, cx| {
                     this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
                 });
@@ -187,7 +189,7 @@ fn branch_actions_menu(
         );
     } else {
         m = m.item(
-            PopupMenuItem::new("切到此远程分支（创建本地副本）").on_click(move |_, w, app| {
+            ramag_ui::menu_item("切到此远程分支（创建本地副本）").on_click(move |_, w, app| {
                 e1.update(app, |this, cx| {
                     let op = match checkout_remote_branch_op(&n1, &this.local_branches) {
                         Ok(op) => op,
@@ -204,7 +206,7 @@ fn branch_actions_menu(
     }
     // 合并
     m = m.item(
-        PopupMenuItem::new("合并到当前 HEAD（--no-ff）").on_click(move |_, w, app| {
+        ramag_ui::menu_item("合并到当前 HEAD（--no-ff）").on_click(move |_, w, app| {
             e2.update(app, |this, cx| {
                 this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);
             });
@@ -212,7 +214,7 @@ fn branch_actions_menu(
     );
     // Rebase
     m = m.item(
-        PopupMenuItem::new("Rebase 当前 HEAD 到此分支").on_click(move |_, w, app| {
+        ramag_ui::menu_item("Rebase 当前 HEAD 到此分支").on_click(move |_, w, app| {
             e3.update(app, |this, cx| {
                 this.confirm_branch_op(BranchOp::Rebase(n3.clone()), w, cx);
             });
@@ -222,7 +224,7 @@ fn branch_actions_menu(
         // 交互式 Rebase（仅本地分支）
         let (ei, ni) = (ent.clone(), n.clone());
         m = m.item(
-            PopupMenuItem::new("交互式 Rebase（编辑 commit 序列）").on_click(move |_, _, app| {
+            ramag_ui::menu_item("交互式 Rebase（编辑 commit 序列）").on_click(move |_, _, app| {
                 if !busy {
                     ei.update(app, |this, cx| {
                         this.start_interactive_rebase(ni.clone(), cx);
@@ -233,7 +235,7 @@ fn branch_actions_menu(
         m = m.separator();
         // 删除分支
         let ed = ent.clone();
-        m = m.item(PopupMenuItem::new("删除分支").on_click(move |_, w, app| {
+        m = m.item(ramag_ui::menu_item("删除分支").on_click(move |_, w, app| {
             let view = ed.clone();
             let branch_name = n4.clone();
             open_confirm_dialog(

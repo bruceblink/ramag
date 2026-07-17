@@ -956,8 +956,12 @@ fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
     ];
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("快捷键一览")
-            .close_button(true)
+            .title(ramag_ui::closable_dialog_title(
+                "shortcuts-dialog-close",
+                "快捷键一览",
+                |_, _| {},
+            ))
+            .close_button(false)
             .width(gpui::px(560.0))
             .content(move |content, _, cx| {
                 let muted = gpui_component::ActiveTheme::theme(cx).muted_foreground;
@@ -1006,8 +1010,12 @@ fn open_about_dialog(
         let version = version.clone();
         let log_text = log_text.clone();
         dialog
-            .title("关于 Ramag")
-            .close_button(true)
+            .title(ramag_ui::closable_dialog_title(
+                "about-dialog-close",
+                "关于 Ramag",
+                |_, _| {},
+            ))
+            .close_button(false)
             .width(gpui::px(520.0))
             .content(move |content, _, cx| {
                 let muted = gpui_component::ActiveTheme::theme(cx).muted_foreground;

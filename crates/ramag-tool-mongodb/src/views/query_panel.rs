@@ -14,14 +14,11 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
-    v_flex,
+    button::ButtonVariants as _, h_flex, notification::Notification, v_flex,
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::ConnectionConfig;
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{
     CloseTab, MAX_EDITOR_TABS, can_open_editor_tab, icons,
     platform::{primary_shift_shortcut, primary_shortcut},
@@ -283,9 +280,16 @@ impl MongoQueryPanel {
         window.open_dialog(cx, move |dialog, _, _| {
             let list = list.clone();
             let panel_for_close = panel_for_close.clone();
+            let panel_for_title_close = panel_for_close.clone();
             dialog
-                .title(title.clone())
-                .close_button(true)
+                .title(ramag_ui::closable_dialog_title(
+                    "mongo-history-dialog-close",
+                    title.clone(),
+                    move |_, app| {
+                        panel_for_title_close.update(app, |this, _| this.history_sub = None);
+                    },
+                ))
+                .close_button(false)
                 .on_close(move |_, _, app| {
                     panel_for_close.update(app, |this, _| this.history_sub = None);
                 })
@@ -462,13 +466,17 @@ impl Render for MongoQueryPanel {
                     .child(SharedString::from(title))
                     .when(!only_one, |tab| {
                         tab.child(
-                            Button::new(SharedString::from(format!("mongo-tab-close-{i}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            ramag_ui::clickable_button(SharedString::from(format!(
+                                "mongo-tab-close-{i}"
+                            )))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
                                     this.close_tab(i, window, cx);
-                                })),
+                                },
+                            )),
                         )
                     })
                     .on_mouse_down(
@@ -535,7 +543,7 @@ impl Render for MongoQueryPanel {
                                 ))),
                         )
                         .child(
-                            Button::new("mongo-draft-persist-retry")
+                            ramag_ui::clickable_button("mongo-draft-persist-retry")
                                 .ghost()
                                 .small()
                                 .label("重试")
@@ -581,7 +589,7 @@ impl Render for MongoQueryPanel {
                                 .track_scroll(&self.tabs_scroll)
                                 .children(tab_items)
                                 .child(
-                                    Button::new("mongo-tab-add")
+                                    ramag_ui::clickable_button("mongo-tab-add")
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
@@ -608,7 +616,7 @@ impl Render for MongoQueryPanel {
                                 .border_l_1()
                                 .border_color(border)
                                 .child(
-                                    Button::new("mongo-history")
+                                    ramag_ui::clickable_button("mongo-history")
                                         .ghost()
                                         .small()
                                         .icon(IconName::Calendar)
@@ -627,18 +635,18 @@ impl Render for MongoQueryPanel {
                                         .get(self.active)
                                         .and_then(|t| t.read(cx).collection.clone())
                                         .unwrap_or_default();
-                                    Button::new("mongo-examples")
+                                    ramag_ui::clickable_button("mongo-examples")
                                         .ghost()
                                         .small()
                                         .icon(icons::scroll_text())
                                         .tooltip("常用命令示例（有手写草稿时新建标签）")
-                                        .dropdown_menu(move |menu, _, _| {
+                                        .pointer_dropdown_menu(move |menu, _, _| {
                                             let mut m = menu;
                                             for (label, cmd) in
                                                 crate::views::examples::mongo_examples(&coll)
                                             {
                                                 let e = entity.clone();
-                                                m = m.item(PopupMenuItem::new(label).on_click(
+                                                m = m.item(ramag_ui::menu_item(label).on_click(
                                                     move |_, window, app| {
                                                         e.update(app, |panel, cx| {
                                                             panel.apply_example(&cmd, window, cx);
@@ -650,7 +658,7 @@ impl Render for MongoQueryPanel {
                                         })
                                 })
                                 .child(
-                                    Button::new("mongo-format")
+                                    ramag_ui::clickable_button("mongo-format")
                                         .ghost()
                                         .small()
                                         .icon(icons::wand_sparkles())

@@ -8,8 +8,7 @@ use gpui::{
     UniformListScrollHandle, div, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
     h_flex, v_flex,
 };
 
@@ -70,7 +69,7 @@ impl VcsView {
             .border_color(border)
             .bg(bg)
             .child(
-                Button::new("vcs-conflict-close")
+                ramag_ui::clickable_button("vcs-conflict-close")
                     .ghost()
                     .small()
                     .icon(IconName::ArrowLeft)
@@ -98,7 +97,7 @@ impl VcsView {
                     )),
             )
             .child(
-                Button::new("vcs-conflict-use-ours")
+                ramag_ui::clickable_button("vcs-conflict-use-ours")
                     .outline()
                     .small()
                     .label(format!("采纳 {ours_label}"))
@@ -112,7 +111,7 @@ impl VcsView {
                     }),
             )
             .child(
-                Button::new("vcs-conflict-use-theirs")
+                ramag_ui::clickable_button("vcs-conflict-use-theirs")
                     .outline()
                     .small()
                     .label(format!("采纳 {theirs_label}"))
@@ -126,7 +125,7 @@ impl VcsView {
                     }),
             )
             .child(
-                Button::new("vcs-conflict-mark-resolved")
+                ramag_ui::clickable_button("vcs-conflict-mark-resolved")
                     .primary()
                     .small()
                     .icon(IconName::Check)

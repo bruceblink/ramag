@@ -8,7 +8,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, Sizable as _, button::Button, button::ButtonVariants as _, h_flex, v_flex,
+    ActiveTheme, Icon, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::{ClipItem, ClipKind, parse_hex_color};
 use ramag_ui::icons;
@@ -192,7 +192,7 @@ fn card_action_btn(
     tooltip: &'static str,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    Button::new(id)
+    ramag_ui::clickable_button(id)
         .ghost()
         .xsmall()
         .icon(icon.size_3())

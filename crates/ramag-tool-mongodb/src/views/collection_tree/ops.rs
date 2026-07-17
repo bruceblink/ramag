@@ -2,7 +2,7 @@
 //! 右键菜单 → open_confirm 二次确认 → run_command → 刷新 + toast
 
 use gpui::{Context, Entity};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use ramag_domain::entities::{MAX_MONGO_COLLECTION_NAME_BYTES, validate_mongo_collection_name};
 use ramag_ui::{open_bounded_prompt, open_confirm};
@@ -26,7 +26,7 @@ pub(super) fn collection_context_menu(
     } else {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("重命名").on_click(move |_, window, app| {
+            ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
                 let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
                 open_bounded_prompt(
                     "重命名集合",
@@ -49,7 +49,7 @@ pub(super) fn collection_context_menu(
     } else {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("清空集合").on_click(move |_, window, app| {
+            ramag_ui::menu_item("清空集合").on_click(move |_, window, app| {
                 let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
                 open_confirm(
                     "清空集合",
@@ -79,7 +79,7 @@ pub(super) fn collection_context_menu(
             format!("将永久删除集合 {db}.{coll}（文档与索引一并删除），此操作不可恢复。"),
         )
     };
-    menu.item(PopupMenuItem::new(label).on_click(move |_, window, app| {
+    menu.item(ramag_ui::menu_item(label).on_click(move |_, window, app| {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
         open_confirm(
             title,
@@ -102,7 +102,7 @@ pub(super) fn database_context_menu(
     db: String,
 ) -> PopupMenu {
     menu.item(
-        PopupMenuItem::new("删除数据库").on_click(move |_, window, app| {
+        ramag_ui::menu_item("删除数据库").on_click(move |_, window, app| {
             let (db, ent) = (db.clone(), entity.clone());
             open_confirm(
                 "删除数据库",

@@ -15,14 +15,14 @@ use gpui::{
 
 use gpui_component::{
     ActiveTheme, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
-    input::{Input, InputEvent, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    input::{InputEvent, InputState},
     v_flex,
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoCollection, MongoDatabase};
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 use row::TreeRowsCacheEntry;
 use tracing::{error, info};
@@ -775,11 +775,11 @@ impl Render for CollectionTreePanel {
             .items_center()
             .gap(px(8.0))
             .child(
-                Button::new("mongo-db-picker")
+                ramag_ui::clickable_button("mongo-db-picker")
                     .ghost()
                     .small()
                     .label(picker_label)
-                    .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
+                    .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
                         let mut m = menu;
                         let active = active_for_menu.clone();
                         for d in &picker_dbs {
@@ -791,7 +791,7 @@ impl Render for CollectionTreePanel {
                                 format!("  {d}")
                             };
                             let entity = entity_for_picker.clone();
-                            m = m.item(PopupMenuItem::new(label).on_click(move |_, _, app| {
+                            m = m.item(ramag_ui::menu_item(label).on_click(move |_, _, app| {
                                 let d = d_owned.clone();
                                 entity.update(app, |this, cx| this.select_database(d, cx));
                             }));
@@ -823,15 +823,17 @@ impl Render for CollectionTreePanel {
             .gap(px(6.0))
             .child(
                 div().flex_1().min_w_0().child(
-                    Input::new(&self.search).small().cleanable(true).prefix(
-                        gpui_component::Icon::new(gpui_component::IconName::Search)
-                            .small()
-                            .text_color(muted_fg),
-                    ),
+                    ramag_ui::cleanable_input(&self.search, "mongo-tree-search-clear", false, cx)
+                        .small()
+                        .prefix(
+                            gpui_component::Icon::new(gpui_component::IconName::Search)
+                                .small()
+                                .text_color(muted_fg),
+                        ),
                 ),
             )
             .child(
-                Button::new("toggle-system-dbs")
+                ramag_ui::clickable_button("toggle-system-dbs")
                     .ghost()
                     .xsmall()
                     .icon(if show_system {
@@ -843,7 +845,7 @@ impl Render for CollectionTreePanel {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_show_system(cx))),
             )
             .child(
-                Button::new("refresh-mongo-tree")
+                ramag_ui::clickable_button("refresh-mongo-tree")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
@@ -851,7 +853,7 @@ impl Render for CollectionTreePanel {
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .child(
-                Button::new("toggle-mongo-editor")
+                ramag_ui::clickable_button("toggle-mongo-editor")
                     .ghost()
                     .xsmall()
                     .icon(gpui_component::IconName::SquareTerminal)

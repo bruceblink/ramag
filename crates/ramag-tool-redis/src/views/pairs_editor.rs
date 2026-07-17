@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
     v_flex,
@@ -151,7 +151,7 @@ impl Render for PairsEditor {
             .items_center()
             .gap(px(10.0))
             .child(
-                Button::new("pe-add")
+                ramag_ui::clickable_button("pe-add")
                     .outline()
                     .small()
                     .icon(IconName::Plus)
@@ -194,7 +194,7 @@ impl Render for PairsEditor {
                 );
             if self.rows.len() > 1 {
                 line = line.child(
-                    Button::new(SharedString::from(format!("pe-rm-{id}")))
+                    ramag_ui::clickable_button(SharedString::from(format!("pe-rm-{id}")))
                         .ghost()
                         .small()
                         .icon(IconName::Close)

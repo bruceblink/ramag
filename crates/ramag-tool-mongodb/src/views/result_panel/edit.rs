@@ -3,11 +3,8 @@
 
 use gpui::{ClickEvent, Context, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    notification::Notification,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    h_flex, input::Input, notification::Notification,
 };
 use serde_json::Value;
 
@@ -64,7 +61,7 @@ impl ResultPanel {
             let id_apply = id.clone();
             let path_apply = path.clone();
             let dml_busy = panel.read(app).doc_dml_busy;
-            let cancel = Button::new("mongo-edit-cancel")
+            let cancel = ramag_ui::clickable_button("mongo-edit-cancel")
                 .ghost()
                 .small()
                 .label("取消")
@@ -72,7 +69,7 @@ impl ResultPanel {
                 .on_click(move |_: &ClickEvent, window, app| {
                     super::ops::close_dialog_if_dml_idle(&panel_cancel, window, app);
                 });
-            let apply = Button::new("mongo-edit-apply")
+            let apply = ramag_ui::clickable_button("mongo-edit-apply")
                 .primary()
                 .small()
                 .label("保存")

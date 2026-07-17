@@ -5,11 +5,7 @@ use std::collections::HashSet;
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
 };
-use gpui_component::{
-    Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-};
+use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 
 /// 表单提交态：空闲 / 提交中 / 失败（带错误文案）
 #[derive(Debug, Clone)]
@@ -84,7 +80,7 @@ pub fn form_footer<V: 'static>(
                 .gap(px(8.0))
                 .flex_none()
                 .child(
-                    Button::new(SharedString::from(format!("{id_prefix}-cancel")))
+                    ramag_ui::clickable_button(SharedString::from(format!("{id_prefix}-cancel")))
                         .ghost()
                         .small()
                         .label("取消")
@@ -92,7 +88,7 @@ pub fn form_footer<V: 'static>(
                         .on_click(cx.listener(on_cancel)),
                 )
                 .child(
-                    Button::new(SharedString::from(format!("{id_prefix}-save")))
+                    ramag_ui::clickable_button(SharedString::from(format!("{id_prefix}-save")))
                         .primary()
                         .small()
                         .label(save_text)

@@ -8,7 +8,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
     v_flex,
@@ -182,7 +182,7 @@ impl Render for ValueEditForm {
                             .gap(px(8.0))
                             .flex_none()
                             .child(
-                                Button::new("ve-cancel")
+                                ramag_ui::clickable_button("ve-cancel")
                                     .ghost()
                                     .small()
                                     .label("取消")
@@ -192,7 +192,7 @@ impl Render for ValueEditForm {
                                     })),
                             )
                             .child(
-                                Button::new("ve-save")
+                                ramag_ui::clickable_button("ve-save")
                                     .primary()
                                     .small()
                                     .label(if submitting { "保存中…" } else { "保存" })

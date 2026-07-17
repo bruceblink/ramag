@@ -9,7 +9,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
     notification::Notification,
@@ -148,7 +148,7 @@ fn open_prompt_impl(
         let desc = description.clone();
         let confirm_label_inner = confirm_label.clone();
 
-        let cancel_btn = Button::new("ramag-prompt-cancel")
+        let cancel_btn = crate::clickable_button("ramag-prompt-cancel")
             .ghost()
             .small()
             .label("取消")
@@ -156,7 +156,7 @@ fn open_prompt_impl(
                 window.close_dialog(app);
             });
 
-        let ok_btn = Button::new("ramag-prompt-ok")
+        let ok_btn = crate::clickable_button("ramag-prompt-ok")
             .small()
             .primary()
             .label(confirm_label_inner)
@@ -178,7 +178,12 @@ fn open_prompt_impl(
 
         let input_for_content = input.clone();
         dialog
-            .title(title.clone())
+            .title(crate::closable_dialog_title(
+                "ramag-prompt-close",
+                title.clone(),
+                |_, _| {},
+            ))
+            .close_button(false)
             .margin_top(px(180.0))
             // 键盘 Enter：与 ok 按钮同逻辑（读输入、空则不关、非空执行）。
             // 返回 false 时对话框不关闭——空输入下回车保持打开，等用户填内容

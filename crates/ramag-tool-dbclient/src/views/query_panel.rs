@@ -13,15 +13,12 @@ use gpui::{
 use crate::actions::NewQueryTab;
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    menu::{DropdownMenu as _, PopupMenuItem},
-    notification::Notification,
-    v_flex,
+    button::ButtonVariants as _, h_flex, notification::Notification, v_flex,
 };
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::ConnectionConfig;
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{
     CloseTab, MAX_EDITOR_TABS, can_open_editor_tab,
     platform::{primary_shift_shortcut, primary_shortcut},
@@ -428,7 +425,7 @@ impl Render for QueryPanel {
                     )
                     .when(!only_one, |tab| {
                         tab.child(
-                            Button::new(id_close)
+                            ramag_ui::clickable_button(id_close)
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Close)
@@ -487,7 +484,7 @@ impl Render for QueryPanel {
                                 )),
                         )
                         .child(
-                            Button::new("draft-persist-retry")
+                            ramag_ui::clickable_button("draft-persist-retry")
                                 .ghost()
                                 .small()
                                 .label("重试")
@@ -526,7 +523,7 @@ impl Render for QueryPanel {
                                 .children(tab_bar_items)
                                 // + 新建按钮跟在最后一个 tab 之后
                                 .child(
-                                    Button::new("tab-add")
+                                    ramag_ui::clickable_button("tab-add")
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
@@ -564,13 +561,13 @@ impl Render for QueryPanel {
                                                 .map(|(_, table)| table.clone())
                                         })
                                         .unwrap_or_default();
-                                    Button::new("sql-examples")
+                                    ramag_ui::clickable_button("sql-examples")
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::scroll_text())
                                         .tooltip("常用 SQL 示例（插入编辑器）")
                                         .disabled(driver.is_none())
-                                        .dropdown_menu(move |menu, _, _| {
+                                        .pointer_dropdown_menu(move |menu, _, _| {
                                             let Some(driver) = driver else {
                                                 return menu;
                                             };
@@ -579,7 +576,7 @@ impl Render for QueryPanel {
                                                 super::query_tab::sql_examples(driver, &table)
                                             {
                                                 let e = entity.clone();
-                                                m = m.item(PopupMenuItem::new(label).on_click(
+                                                m = m.item(ramag_ui::menu_item(label).on_click(
                                                     move |_, window, app| {
                                                         e.update(app, |panel, cx| {
                                                             panel.insert_example_into_active(
@@ -593,7 +590,7 @@ impl Render for QueryPanel {
                                         })
                                 })
                                 .child(
-                                    Button::new("format-sql")
+                                    ramag_ui::clickable_button("format-sql")
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::wand_sparkles())
@@ -614,7 +611,7 @@ impl Render for QueryPanel {
                                         )),
                                 )
                                 .child(
-                                    Button::new("explain-sql")
+                                    ramag_ui::clickable_button("explain-sql")
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::gauge())
@@ -636,7 +633,7 @@ impl Render for QueryPanel {
                                 )
                                 .child(
                                     // 上游 IconName 无 History 变体，用旧版历史入口同款日历图标
-                                    Button::new("query-history")
+                                    ramag_ui::clickable_button("query-history")
                                         .ghost()
                                         .small()
                                         .icon(IconName::Calendar)

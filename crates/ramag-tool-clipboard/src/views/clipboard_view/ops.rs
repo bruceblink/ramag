@@ -315,17 +315,15 @@ impl ClipboardView {
                                     .detach();
                                 }
                                 if remaining.is_none() {
-                                    return gpui_component::button::Button::new(
-                                        "clip-undo-delete-expired",
-                                    )
-                                    .label("撤销已过期")
-                                    .disabled(true);
+                                    return ramag_ui::clickable_button("clip-undo-delete-expired")
+                                        .label("撤销已过期")
+                                        .disabled(true);
                                 }
                                 let svc = svc_for_undo.clone();
                                 let view = view.clone();
                                 let item = item_for_undo.clone();
                                 let notif = cx.entity().clone();
-                                gpui_component::button::Button::new("clip-undo-delete")
+                                ramag_ui::clickable_button("clip-undo-delete")
                                     .label("撤销（30 秒内）")
                                     .on_click(move |_, window, app| {
                                         let svc = svc.clone();

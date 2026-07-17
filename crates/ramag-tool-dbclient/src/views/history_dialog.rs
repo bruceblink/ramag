@@ -14,12 +14,8 @@ use gpui::{
     Render, SharedString, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::InputEvent,
-    notification::Notification,
-    v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    h_flex, input::InputEvent, notification::Notification, v_flex,
 };
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConnectionId, QueryRecord, QueryStatus, compact_text_preview};
@@ -288,7 +284,7 @@ impl HistoryList {
                     .flex_none()
                     .gap_1()
                     .child(
-                        Button::new(SharedString::from(format!("hist-copy-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("hist-copy-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("复制")
@@ -309,7 +305,7 @@ impl HistoryList {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("hist-fill-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("hist-fill-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("填入编辑器")
@@ -324,7 +320,7 @@ impl HistoryList {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("hist-run-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("hist-run-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("重跑")
@@ -339,7 +335,7 @@ impl HistoryList {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("hist-del-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("hist-del-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("删除")
@@ -396,7 +392,7 @@ impl Render for HistoryList {
                 this.child(div().text_xs().text_color(muted_fg).child("正在更新…"))
             })
             .child(
-                Button::new("hist-clear-all")
+                ramag_ui::clickable_button("hist-clear-all")
                     .ghost()
                     .xsmall()
                     .label("清空")
@@ -433,7 +429,7 @@ impl Render for HistoryList {
                         .child(format!("加载失败：{e}")),
                 )
                 .child(
-                    Button::new("hist-load-retry")
+                    ramag_ui::clickable_button("hist-load-retry")
                         .ghost()
                         .xsmall()
                         .label("重试")
@@ -452,7 +448,7 @@ impl Render for HistoryList {
                 .gap_2()
                 .child(div().text_sm().text_color(danger).child(error.clone()))
                 .child(
-                    Button::new("hist-filter-retry")
+                    ramag_ui::clickable_button("hist-filter-retry")
                         .ghost()
                         .xsmall()
                         .label("重试")

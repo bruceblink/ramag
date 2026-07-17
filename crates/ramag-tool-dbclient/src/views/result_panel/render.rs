@@ -5,11 +5,8 @@ use gpui::{
     SharedString, Styled, Window, div, prelude::*,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    notification::Notification,
-    v_flex,
+    ActiveTheme, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
+    notification::Notification, v_flex,
 };
 use ramag_ui::platform::primary_shortcut;
 
@@ -83,7 +80,7 @@ impl Render for ResultPanel {
                             )
                             .child(div().flex_1())
                             .child(
-                                Button::new("copy-error")
+                                ramag_ui::clickable_button("copy-error")
                                     .ghost()
                                     .small()
                                     .icon(IconName::Copy)

@@ -2,13 +2,12 @@
 
 use gpui::{AnyElement, ClickEvent, Context, IntoElement, ParentElement as _, Styled as _, div};
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _,
 };
 
 use super::helpers::RemoteOp;
 use super::vcs_view::VcsView;
+use ramag_ui::PointerDropdownMenu as _;
 
 impl VcsView {
     /// 同步快捷主按钮：待拉取时显示「Pull ↓N」、待推送时显示「Push ↑N」，一键可达；
@@ -36,7 +35,7 @@ impl VcsView {
                         .child(line),
                 )
                 .child(
-                    Button::new("vcs-remote-cancel")
+                    ramag_ui::clickable_button("vcs-remote-cancel")
                         .danger()
                         .xsmall()
                         .icon(IconName::Close)
@@ -80,7 +79,7 @@ impl VcsView {
         } else {
             return div().into_any_element();
         };
-        Button::new(id)
+        ramag_ui::clickable_button(id)
             .primary()
             .xsmall()
             .label(label)
@@ -120,49 +119,51 @@ impl VcsView {
             format!("Push（{push_shortcut}）")
         };
 
-        Button::new("vcs-ops-menu")
+        ramag_ui::clickable_button("vcs-ops-menu")
             .ghost()
             .xsmall()
             .icon(IconName::EllipsisVertical)
             .tooltip("Git 操作（Fetch / Pull / Push / 强推）")
             .disabled(busy)
-            .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
+            .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let entity1 = entity.clone();
                 let entity2 = entity.clone();
                 let entity3 = entity.clone();
                 let entity4 = entity.clone();
                 m = m
-                    .item(PopupMenuItem::new("Fetch").on_click(move |_, _, app| {
+                    .item(ramag_ui::menu_item("Fetch").on_click(move |_, _, app| {
                         entity1.update(app, |this, cx| {
                             this.run_remote_op(RemoteOp::Fetch, cx);
                         });
                     }))
                     .item(
-                        PopupMenuItem::new(pull_label.clone())
-                            .disabled(!has_head)
-                            .on_click(move |_, window, app| {
+                        ramag_ui::menu_item_with_disabled(pull_label.clone(), !has_head).on_click(
+                            move |_, window, app| {
                                 entity2.update(app, |this, cx| {
                                     this.confirm_remote_op(RemoteOp::Pull, window, cx);
                                 });
-                            }),
+                            },
+                        ),
                     )
                     .item(
-                        PopupMenuItem::new(push_label.clone())
-                            .disabled(!has_head)
-                            .on_click(move |_, window, app| {
+                        ramag_ui::menu_item_with_disabled(push_label.clone(), !has_head).on_click(
+                            move |_, window, app| {
                                 entity3.update(app, |this, cx| {
                                     this.confirm_remote_op(RemoteOp::Push, window, cx);
                                 });
-                            }),
+                            },
+                        ),
                     )
                     .separator()
-                    .item(PopupMenuItem::new("⚠ 强推").disabled(!has_head).on_click(
-                        move |_, w, app| {
-                            entity4.update(app, |this, cx| {
-                                this.confirm_remote_op(RemoteOp::PushForce, w, cx);
-                            });
-                        },
-                    ));
+                    .item(
+                        ramag_ui::menu_item_with_disabled("⚠ 强推", !has_head).on_click(
+                            move |_, w, app| {
+                                entity4.update(app, |this, cx| {
+                                    this.confirm_remote_op(RemoteOp::PushForce, w, cx);
+                                });
+                            },
+                        ),
+                    );
                 m
             })
             .into_any_element()

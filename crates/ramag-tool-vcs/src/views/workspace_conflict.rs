@@ -5,8 +5,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
     h_flex,
 };
 use ramag_domain::entities::RepoOperation;
@@ -69,7 +68,7 @@ impl VcsView {
                     .child(title),
             )
             .child(
-                Button::new("vcs-op-continue")
+                ramag_ui::clickable_button("vcs-op-continue")
                     .primary()
                     .small()
                     .icon(IconName::Check)
@@ -86,7 +85,7 @@ impl VcsView {
             )
             .when(supports_skip, |this| {
                 this.child(
-                    Button::new("vcs-op-skip")
+                    ramag_ui::clickable_button("vcs-op-skip")
                         .ghost()
                         .small()
                         .icon(IconName::ArrowRight)
@@ -99,7 +98,7 @@ impl VcsView {
                 )
             })
             .child(
-                Button::new("vcs-op-abort")
+                ramag_ui::clickable_button("vcs-op-abort")
                     .ghost()
                     .small()
                     .icon(IconName::Close)
@@ -126,7 +125,7 @@ pub(super) fn conflict_buttons(
     let path_for_view = path.to_string();
     let view_btn = {
         let id = SharedString::from(format!("vcs-conflict-view-{idx}"));
-        Button::new(id)
+        ramag_ui::clickable_button(id)
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::columns_2())
@@ -185,7 +184,7 @@ fn conflict_btn(
 ) -> AnyElement {
     let id = SharedString::from(format!("vcs-conflict-{kind}-{idx}"));
     let path_owned = path.to_string();
-    Button::new(id)
+    ramag_ui::clickable_button(id)
         .ghost()
         .xsmall()
         .icon(icon)

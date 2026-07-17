@@ -6,10 +6,9 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
-    input::Input,
-    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
     resizable::{h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement as _,
     v_flex,
@@ -17,6 +16,7 @@ use gpui_component::{
 
 use super::helpers::FilesViewMode;
 use super::vcs_view::VcsView;
+use ramag_ui::PointerDropdownMenu as _;
 
 /// 上半区初始高度（上半 = 工作区 + diff；下半 = history）
 const TOP_HEIGHT_INITIAL: f32 = 600.0;
@@ -180,10 +180,14 @@ impl VcsView {
             .gap(px(6.0))
             .child(
                 div().flex_1().min_w_0().child(
-                    Input::new(&self.files_search_input)
-                        .small()
-                        .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
+                    ramag_ui::cleanable_input(
+                        &self.files_search_input,
+                        "vcs-files-search-clear",
+                        false,
+                        cx,
+                    )
+                    .small()
+                    .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             );
         if matches!(active, FilesViewMode::Project) {
@@ -194,7 +198,7 @@ impl VcsView {
                 (IconName::FolderClosed, "全部展开目录")
             };
             search_row = search_row.child(
-                Button::new("vcs-pf-toggle-all")
+                ramag_ui::clickable_button("vcs-pf-toggle-all")
                     .ghost()
                     .xsmall()
                     .icon(icon)
@@ -211,7 +215,7 @@ impl VcsView {
         // 手动刷新：外部（终端 / 编辑器）改动后立即同步；窗口重新激活时也会自动刷
         if self.repo.is_some() {
             search_row = search_row.child(
-                Button::new("vcs-refresh")
+                ramag_ui::clickable_button("vcs-refresh")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
@@ -230,7 +234,7 @@ impl VcsView {
         if self.repo.is_some() {
             let history_visible = self.history_pane_visible;
             search_row = search_row.child(
-                Button::new("vcs-history-pane-toggle")
+                ramag_ui::clickable_button("vcs-history-pane-toggle")
                     .ghost()
                     .xsmall()
                     .icon(if history_visible {
@@ -318,14 +322,14 @@ impl VcsView {
             .is_some();
         // 加边框 + 深色文字，比纯 ghost+蓝字更醒目（用户反馈纯文字辨识度低）
         let _ = accent;
-        Button::new("vcs-branch-picker")
+        ramag_ui::clickable_button("vcs-branch-picker")
             .outline()
             .small()
             .label(label)
             .text_color(cx.theme().foreground)
             .tooltip("切换分支 / 创建分支")
             .disabled(busy)
-            .dropdown_menu_with_anchor(
+            .pointer_dropdown_menu_with_anchor(
                 gpui::Anchor::BottomRight,
                 move |mut m: PopupMenu, window, cx| {
                     // 父菜单不能 scrollable —— 否则 submenu 不工作（gpui-component 限制）。
@@ -348,8 +352,7 @@ impl VcsView {
                         .map(|(n, _, _)| n.clone())
                         .unwrap_or_else(|| "(HEAD)".into());
                     m = m.item(
-                        PopupMenuItem::new("新建分支")
-                            .disabled(!has_head)
+                        ramag_ui::menu_item_with_disabled("新建分支", !has_head)
                             .on_click({
                                 let ent = ent_new.clone();
                                 let hdlg = head_for_dlg.clone();
@@ -413,7 +416,7 @@ impl VcsView {
         let id = gpui::SharedString::from(format!("vcs-files-tab-{}", mode.id_str()));
         let is_active = mode == active;
         // mode 与图标的映射：folder 表项目，file 表本地变更，inbox 表 stash，git-branch 走 ramag-ui
-        let mut btn = Button::new(id)
+        let mut btn = ramag_ui::clickable_button(id)
             .ghost()
             .small()
             .selected(is_active)
@@ -437,7 +440,7 @@ impl VcsView {
             .as_ref()
             .map(|s| s.files.iter().any(|f| !f.is_conflicted()))
             .unwrap_or(false);
-        let save_btn = Button::new("vcs-stash-save")
+        let save_btn = ramag_ui::clickable_button("vcs-stash-save")
             .outline()
             .xsmall()
             .icon(IconName::Inbox)

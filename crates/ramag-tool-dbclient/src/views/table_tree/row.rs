@@ -9,7 +9,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
@@ -248,7 +248,7 @@ impl TableTreePanel {
                                 cx.stop_propagation()
                             })
                             .child(
-                                Button::new(chevron_id)
+                                ramag_ui::clickable_button(chevron_id)
                                     .ghost()
                                     .xsmall()
                                     .icon(chevron_icon)

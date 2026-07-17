@@ -19,7 +19,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputEvent, InputState, MoveDown, MoveUp},
     scroll::ScrollableElement as _,
@@ -430,7 +430,7 @@ impl Render for CliConsole {
             })
             .child(div().flex_1())
             .child(
-                Button::new("cli-clear")
+                ramag_ui::clickable_button("cli-clear")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::trash())
@@ -465,7 +465,7 @@ impl Render for CliConsole {
             .child(div().text_xs().text_color(muted_fg).child("⏵"))
             .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
             .child(
-                Button::new("cli-run")
+                ramag_ui::clickable_button("cli-run")
                     .primary()
                     .small()
                     .icon(IconName::Play)

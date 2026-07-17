@@ -9,11 +9,8 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
+    h_flex, input::Input, v_flex,
 };
 
 use ramag_domain::entities::Commit;
@@ -92,7 +89,7 @@ impl VcsView {
                         )),
                 )
                 .child(
-                    Button::new("vcs-history-clear-path")
+                    ramag_ui::clickable_button("vcs-history-clear-path")
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
@@ -130,7 +127,7 @@ impl VcsView {
         muted_fg: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let reflog_btn = Button::new("vcs-history-reflog-toggle")
+        let reflog_btn = ramag_ui::clickable_button("vcs-history-reflog-toggle")
             .ghost()
             .small()
             .icon(ramag_ui::icons::scroll_text())
@@ -162,7 +159,7 @@ impl VcsView {
                 // commit 模式：搜索走 git（grep/author/since），需显式应用；
                 // reflog 模式为客户端即时过滤，无需应用按钮
                 row.child(
-                    Button::new("vcs-history-search")
+                    ramag_ui::clickable_button("vcs-history-search")
                         .ghost()
                         .small()
                         .icon(IconName::ArrowRight)

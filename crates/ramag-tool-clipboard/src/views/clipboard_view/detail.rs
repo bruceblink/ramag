@@ -6,11 +6,7 @@ use chrono::Utc;
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
-use gpui_component::{
-    ActiveTheme, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use ramag_domain::entities::{ClipItem, ClipKind, blacklist_matches};
 use ramag_ui::platform::file_manager_reveal_label;
 
@@ -92,7 +88,7 @@ impl ClipboardView {
             ClipKind::Link if item.text.is_some() => {
                 let item = item.clone();
                 Some(
-                    Button::new("detail-open")
+                    ramag_ui::clickable_button("detail-open")
                         .small()
                         .label("在浏览器打开")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -106,7 +102,7 @@ impl ClipboardView {
             ClipKind::Files => {
                 let item = item.clone();
                 Some(
-                    Button::new("detail-reveal")
+                    ramag_ui::clickable_button("detail-reveal")
                         .small()
                         .label(file_manager_reveal_label())
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -118,7 +114,7 @@ impl ClipboardView {
             _ if item.rtf.is_some() => {
                 let item_plain = item.clone();
                 Some(
-                    Button::new("detail-plain")
+                    ramag_ui::clickable_button("detail-plain")
                         .small()
                         .label("复制为纯文本")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -142,7 +138,7 @@ impl ClipboardView {
         {
             let source_id = source.bundle_id.clone();
             buttons.push(
-                Button::new("detail-blacklist-source")
+                ramag_ui::clickable_button("detail-blacklist-source")
                     .danger()
                     .small()
                     .label("不再记录此应用")

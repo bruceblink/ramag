@@ -7,11 +7,7 @@ use gpui::{
     uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    v_flex,
+    ActiveTheme, Icon, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::row::connection_row;
@@ -54,15 +50,19 @@ impl Render for ConnectionListPanel {
             .child(
                 div().flex_1().min_w_0().child(
                     div().max_w(px(360.0)).child(
-                        Input::new(&self.search)
-                            .small()
-                            .cleanable(true)
-                            .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
+                        ramag_ui::cleanable_input(
+                            &self.search,
+                            "connection-search-clear",
+                            false,
+                            cx,
+                        )
+                        .small()
+                        .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                     ),
                 ),
             )
             .child(
-                Button::new("add-connection")
+                ramag_ui::clickable_button("add-connection")
                     .outline()
                     .small()
                     .icon(IconName::Plus)
@@ -99,7 +99,7 @@ impl Render for ConnectionListPanel {
                     .gap(px(10.0))
                     .child(div().text_sm().text_color(theme.danger).child(err))
                     .child(
-                        Button::new("conn-list-retry")
+                        ramag_ui::clickable_button("conn-list-retry")
                             .small()
                             .label("重试")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -221,7 +221,7 @@ fn empty_state(
                 .child("点击下方按钮创建第一个数据库连接"),
         )
         .child(
-            Button::new("empty-add")
+            ramag_ui::clickable_button("empty-add")
                 .primary()
                 .icon(IconName::Plus)
                 .label("新建连接")

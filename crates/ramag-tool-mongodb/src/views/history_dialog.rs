@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputEvent, InputState},
     notification::Notification,
@@ -279,7 +279,7 @@ impl MongoHistoryList {
                     .flex_none()
                     .gap_1()
                     .child(
-                        Button::new(SharedString::from(format!("mhist-copy-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("mhist-copy-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("复制")
@@ -300,7 +300,7 @@ impl MongoHistoryList {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("mhist-fill-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("mhist-fill-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("填入编辑器")
@@ -315,7 +315,7 @@ impl MongoHistoryList {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("mhist-run-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("mhist-run-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("重跑")
@@ -330,7 +330,7 @@ impl MongoHistoryList {
                             })),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("mhist-del-{ix}")))
+                        ramag_ui::clickable_button(SharedString::from(format!("mhist-del-{ix}")))
                             .ghost()
                             .xsmall()
                             .label("删除")
@@ -386,7 +386,7 @@ impl Render for MongoHistoryList {
                 this.child(div().text_xs().text_color(muted_fg).child("正在更新…"))
             })
             .child(
-                Button::new("mhist-clear-all")
+                ramag_ui::clickable_button("mhist-clear-all")
                     .ghost()
                     .xsmall()
                     .label("清空")
@@ -423,7 +423,7 @@ impl Render for MongoHistoryList {
                         .child(format!("加载失败：{e}")),
                 )
                 .child(
-                    Button::new("mhist-load-retry")
+                    ramag_ui::clickable_button("mhist-load-retry")
                         .ghost()
                         .xsmall()
                         .label("重试")
@@ -442,7 +442,7 @@ impl Render for MongoHistoryList {
                 .gap_2()
                 .child(div().text_sm().text_color(danger).child(error.clone()))
                 .child(
-                    Button::new("mhist-filter-retry")
+                    ramag_ui::clickable_button("mhist-filter-retry")
                         .ghost()
                         .xsmall()
                         .label("重试")

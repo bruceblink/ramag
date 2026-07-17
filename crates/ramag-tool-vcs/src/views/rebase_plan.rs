@@ -7,13 +7,11 @@ use gpui::{
     SharedString, Styled, Window, div, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
+    h_flex, menu::PopupMenu, v_flex,
 };
 use ramag_domain::entities::RebaseAction;
+use ramag_ui::PointerDropdownMenu as _;
 
 use super::vcs_view::VcsView;
 
@@ -73,7 +71,7 @@ impl VcsView {
                     .child(format!("{} 个 commit", self.rebase_todos.len())),
             )
             .child(
-                Button::new("vcs-rb-cancel-top")
+                ramag_ui::clickable_button("vcs-rb-cancel-top")
                     .ghost()
                     .small()
                     .icon(IconName::Close)
@@ -193,7 +191,7 @@ impl VcsView {
                     .child("修改操作或调整顺序，点击「执行 Rebase」应用"),
             )
             .child(
-                Button::new("vcs-rb-abort")
+                ramag_ui::clickable_button("vcs-rb-abort")
                     .ghost()
                     .small()
                     .label("取消")
@@ -205,7 +203,7 @@ impl VcsView {
                     })),
             )
             .child(
-                Button::new("vcs-rb-execute")
+                ramag_ui::clickable_button("vcs-rb-execute")
                     .primary()
                     .small()
                     .icon(IconName::Play)
@@ -302,23 +300,27 @@ fn rebase_todo_row(
     };
 
     let entity_a = entity.clone();
-    let action_btn = Button::new(SharedString::from(format!("vcs-rb-action-{idx}")))
+    let action_btn = ramag_ui::clickable_button(SharedString::from(format!("vcs-rb-action-{idx}")))
         .ghost()
         .xsmall()
         .label(action.label_zh())
         .w(px(72.0))
         .text_color(action_label_color)
-        .dropdown_menu(move |mut menu: PopupMenu, _: &mut Window, _| {
+        .pointer_dropdown_menu(move |mut menu: PopupMenu, _: &mut Window, _| {
             for a in all_rebase_actions() {
                 let ent = entity_a.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(a.label_zh())
-                        .disabled(!is_rebase_action_valid(idx, a))
-                        .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
+                    ramag_ui::menu_item_with_disabled(
+                        a.label_zh(),
+                        !is_rebase_action_valid(idx, a),
+                    )
+                    .on_click(
+                        move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             ent.update(app, |this, cx| {
                                 this.change_rebase_action(idx, a, cx);
                             });
-                        }),
+                        },
+                    ),
                 );
             }
             menu
@@ -363,7 +365,7 @@ fn rebase_todo_row(
                 .gap(px(2.0))
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
-                    Button::new(SharedString::from(format!("vcs-rb-up-{idx}")))
+                    ramag_ui::clickable_button(SharedString::from(format!("vcs-rb-up-{idx}")))
                         .ghost()
                         .xsmall()
                         .icon(IconName::ArrowUp)
@@ -376,7 +378,7 @@ fn rebase_todo_row(
                         }),
                 )
                 .child(
-                    Button::new(SharedString::from(format!("vcs-rb-dn-{idx}")))
+                    ramag_ui::clickable_button(SharedString::from(format!("vcs-rb-dn-{idx}")))
                         .ghost()
                         .xsmall()
                         .icon(IconName::ArrowDown)

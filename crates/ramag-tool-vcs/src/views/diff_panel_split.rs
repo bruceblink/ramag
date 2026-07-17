@@ -12,9 +12,7 @@ use gpui::{
     ScrollHandle, SharedString, Styled, UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex,
 };
 use ramag_domain::entities::{DiffLineKind, FileDiff};
 
@@ -554,7 +552,7 @@ fn render_middle_revert(
         .gap(px(2.0));
     if !staged {
         row = row.child(
-            Button::new(SharedString::from(format!("vcs-hunk-stage-{hunk_idx}")))
+            ramag_ui::clickable_button(SharedString::from(format!("vcs-hunk-stage-{hunk_idx}")))
                 .ghost()
                 .xsmall()
                 .icon(gpui_component::IconName::Plus)
@@ -571,7 +569,7 @@ fn render_middle_revert(
         "丢弃此 hunk 的工作区改动（不可恢复）"
     };
     row.child(
-        Button::new(SharedString::from(format!("vcs-hunk-discard-{hunk_idx}")))
+        ramag_ui::clickable_button(SharedString::from(format!("vcs-hunk-discard-{hunk_idx}")))
             .ghost()
             .xsmall()
             .icon(gpui_component::IconName::Undo)

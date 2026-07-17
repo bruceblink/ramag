@@ -3,12 +3,9 @@
 
 use gpui::{Anchor, Context, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
 };
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::platform::primary_shortcut;
 
 use super::{ResultEvent, ResultPanel};
@@ -61,20 +58,28 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                             },
                         )
                         .child(
-                            Input::new(&panel.column_filter)
-                                .small()
-                                .bordered(false)
-                                .focus_bordered(false)
-                                .cleanable(true),
+                            ramag_ui::cleanable_input(
+                                &panel.column_filter,
+                                "mongo-column-filter-clear",
+                                false,
+                                cx,
+                            )
+                            .small()
+                            .bordered(false)
+                            .focus_bordered(false),
                         )
                 })
                 .child(
                     div().flex_1().min_w_0().child(
-                        Input::new(&panel.row_filter)
-                            .small()
-                            .bordered(false)
-                            .focus_bordered(false)
-                            .cleanable(true),
+                        ramag_ui::cleanable_input(
+                            &panel.row_filter,
+                            "mongo-row-filter-clear",
+                            false,
+                            cx,
+                        )
+                        .small()
+                        .bordered(false)
+                        .focus_bordered(false),
                     ),
                 ),
         )
@@ -96,7 +101,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
         })
         .child({
             let can = panel.can_write();
-            Button::new("mongo-insert")
+            ramag_ui::clickable_button("mongo-insert")
                 .ghost()
                 .small()
                 .icon(IconName::Plus)
@@ -118,7 +123,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 && !panel.is_drilled()
                 && !panel.row_view_building
                 && panel.row_view_error.is_none();
-            Button::new("mongo-delete")
+            ramag_ui::clickable_button("mongo-delete")
                 .ghost()
                 .small()
                 .icon(IconName::Minus)
@@ -139,7 +144,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
         .child({
             let entity = cx.entity().clone();
             let has_data = panel.docs_arc.as_ref().is_some_and(|docs| !docs.is_empty());
-            Button::new("mongo-export")
+            ramag_ui::clickable_button("mongo-export")
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::download())
@@ -159,19 +164,19 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                         || panel.row_view_error.is_some()
                         || panel.exporting,
                 )
-                .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
+                .pointer_dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
                     let e_json = entity.clone();
                     let e_csv = entity.clone();
-                    menu.item(PopupMenuItem::new("导出 JSON").on_click(move |_, _, app| {
+                    menu.item(ramag_ui::menu_item("导出 JSON").on_click(move |_, _, app| {
                         e_json.update(app, |this, cx| this.export_documents(false, cx));
                     }))
-                    .item(PopupMenuItem::new("导出 CSV").on_click(move |_, _, app| {
+                    .item(ramag_ui::menu_item("导出 CSV").on_click(move |_, _, app| {
                         e_csv.update(app, |this, cx| this.export_documents(true, cx));
                     }))
                 })
         })
         .child(if panel.running {
-            Button::new("mongo-cancel-result")
+            ramag_ui::clickable_button("mongo-cancel-result")
                 .danger()
                 .small()
                 .icon(IconName::CircleX)
@@ -180,7 +185,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Cancel)))
         } else {
             // 运行：与 dbclient 同位（结果区工具栏最右）、同快捷键（⌘↵）。
-            Button::new("mongo-run-result")
+            ramag_ui::clickable_button("mongo-run-result")
                 .primary()
                 .small()
                 .icon(IconName::Play)

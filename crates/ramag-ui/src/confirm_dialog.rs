@@ -5,9 +5,7 @@ use std::rc::Rc;
 
 use gpui::{App, ClickEvent, ParentElement, SharedString, Styled, Window, div, px};
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
 };
 
 pub fn open_confirm(
@@ -29,7 +27,7 @@ pub fn open_confirm(
         let desc = description.clone();
         let confirm_label_inner = confirm_label.clone();
 
-        let cancel_btn = Button::new("ramag-confirm-cancel")
+        let cancel_btn = crate::clickable_button("ramag-confirm-cancel")
             .ghost()
             .small()
             .label("取消")
@@ -37,7 +35,7 @@ pub fn open_confirm(
                 window.close_dialog(app);
             });
 
-        let mut ok_btn = Button::new("ramag-confirm-ok")
+        let mut ok_btn = crate::clickable_button("ramag-confirm-ok")
             .small()
             .label(confirm_label_inner);
         ok_btn = if danger {
@@ -57,7 +55,12 @@ pub fn open_confirm(
         });
 
         dialog
-            .title(title.clone())
+            .title(crate::closable_dialog_title(
+                "ramag-confirm-close",
+                title.clone(),
+                |_, _| {},
+            ))
+            .close_button(false)
             .margin_top(px(180.0))
             // 键盘 Enter 走 ConfirmDialog action → button_props.on_ok；设了 footer 后
             // 库会忽略 button_props 的按钮渲染，但 on_ok 仍是 Enter 的回调，必须显式绑定，

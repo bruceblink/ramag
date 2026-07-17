@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, h_flex,
-    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
+    menu::{ContextMenuExt as _, PopupMenu},
 };
 use ramag_domain::entities::{Commit, ResetKind};
 
@@ -141,13 +141,13 @@ pub(in crate::views) fn render_commit_row(
             let (e_sha, c_sha) = (entity.clone(), cid.clone());
             let (e_msg, c_msg) = (entity.clone(), cid.clone());
             menu.item(
-                PopupMenuItem::new("复制完整 SHA").on_click(move |_, _, app| {
+                ramag_ui::menu_item("复制完整 SHA").on_click(move |_, _, app| {
                     app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
                     e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
                 }),
             )
             .item(
-                PopupMenuItem::new("复制提交信息").on_click(move |_, _, app| {
+                ramag_ui::menu_item("复制提交信息").on_click(move |_, _, app| {
                     e_msg.update(app, |this, cx| {
                         let message = this
                             .history_commits
@@ -165,7 +165,7 @@ pub(in crate::views) fn render_commit_row(
             )
             .separator()
             .item(
-                PopupMenuItem::new("Cherry-pick 到当前 HEAD").on_click(move |_, window, app| {
+                ramag_ui::menu_item("Cherry-pick 到当前 HEAD").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c1.chars().take(7).collect();
                     let c = c1.clone();
@@ -184,7 +184,7 @@ pub(in crate::views) fn render_commit_row(
                     );
                 }),
             )
-            .item(PopupMenuItem::new("Revert（生成反向 commit）").on_click(
+            .item(ramag_ui::menu_item("Revert（生成反向 commit）").on_click(
                 move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c2.chars().take(7).collect();
@@ -205,7 +205,7 @@ pub(in crate::views) fn render_commit_row(
                 },
             ))
             .item(
-                PopupMenuItem::new("Reset --mixed 到此").on_click(move |_, window, app| {
+                ramag_ui::menu_item("Reset --mixed 到此").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c3.chars().take(7).collect();
                     let c = c3.clone();

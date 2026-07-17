@@ -6,9 +6,7 @@ use gpui::{
     ClickEvent, Context, EventEmitter, IntoElement, ParentElement, Render, SharedString, Styled,
     Window, div, hsla, prelude::*, px,
 };
-use gpui_component::{
-    ActiveTheme, Sizable as _, button::Button, scroll::ScrollableElement as _, v_flex,
-};
+use gpui_component::{ActiveTheme, Sizable as _, scroll::ScrollableElement as _, v_flex};
 
 use ramag_app::{ConnectionService, ToolRegistry};
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
@@ -170,7 +168,7 @@ impl Render for HomeView {
             .enumerate()
             .map(|(index, tool)| {
                 let id = tool.meta().id.clone();
-                Button::new(("home-tool", index))
+                crate::clickable_button(("home-tool", index))
                     .small()
                     .label(format!("打开 {}", tool.meta().name))
                     .tooltip(tool.meta().description.clone())
@@ -196,7 +194,7 @@ impl Render for HomeView {
                         .child(format!("连接列表加载失败：{error}")),
                 )
                 .child(
-                    Button::new("home-connections-retry")
+                    crate::clickable_button("home-connections-retry")
                         .small()
                         .label("重试")
                         .on_click(
@@ -226,7 +224,7 @@ impl Render for HomeView {
                     }
                 );
                 connection_body = connection_body.child(
-                    Button::new(("home-connection", index))
+                    crate::clickable_button(("home-connection", index))
                         .small()
                         .label(label)
                         .tooltip(tooltip)
@@ -264,7 +262,7 @@ impl Render for HomeView {
                             .justify_center();
                         if let Some((id, name)) = self.last_tool.clone() {
                             row = row.child(
-                                Button::new("home-continue")
+                                crate::clickable_button("home-continue")
                                     .small()
                                     .label(format!("继续上次：{name}"))
                                     .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
@@ -290,7 +288,7 @@ impl Render for HomeView {
                                 .child("任意应用内按 ⌘/Ctrl ⇧ V 唤起剪贴板历史抽屉。")
                                 .child("菜单「帮助 → 快捷键一览」可查看全部键位。")
                                 .child(
-                                    Button::new("onboarding-dismiss")
+                                    crate::clickable_button("onboarding-dismiss")
                                         .small()
                                         .label("知道了")
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -322,7 +320,7 @@ impl Render for HomeView {
                                         gpui_component::h_flex()
                                             .gap_2()
                                             .child(
-                                                Button::new("home-connections-refresh")
+                                                crate::clickable_button("home-connections-refresh")
                                                     .small()
                                                     .label("刷新")
                                                     .on_click(cx.listener(
@@ -332,7 +330,7 @@ impl Render for HomeView {
                                                     )),
                                             )
                                             .child(
-                                                Button::new("home-connections-manage")
+                                                crate::clickable_button("home-connections-manage")
                                                     .small()
                                                     .label("管理连接")
                                                     .on_click(cx.listener(
@@ -349,7 +347,7 @@ impl Render for HomeView {
                     )
                     .when(!self.show_onboarding, |view| {
                         view.child(
-                            Button::new("home-reshow-onboarding")
+                            crate::clickable_button("home-reshow-onboarding")
                                 .small()
                                 .label("重新查看快速上手")
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

@@ -5,15 +5,16 @@ use std::collections::BTreeMap;
 use gpui::{ClickEvent, Entity, ParentElement, SharedString, Styled, Window, px};
 use gpui_component::{
     Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::Input,
-    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
     v_flex,
 };
 
 use super::helpers::{BranchOp, checkout_remote_branch_op};
 use super::vcs_view::VcsView;
+use ramag_ui::PointerDropdownMenu as _;
 
 pub(super) const MAX_BRANCH_PICKER_ITEMS: usize = 1_000;
 
@@ -131,7 +132,12 @@ pub(super) fn open_new_branch_dialog(
         let local = local.clone();
         let remote = remote.clone();
         dialog
-            .title(title.clone())
+            .title(ramag_ui::closable_dialog_title(
+                "vcs-new-branch-close",
+                title.clone(),
+                |_, _| {},
+            ))
+            .close_button(false)
             .margin_top(px(180.0))
             .content({
                 let view = view.clone();
@@ -146,11 +152,11 @@ pub(super) fn open_new_branch_dialog(
                     let view_for_dd = view.clone();
                     let head_for_reset = head_name.clone();
                     let _ = app;
-                    let base_btn = Button::new("vcs-new-br-base")
+                    let base_btn = ramag_ui::clickable_button("vcs-new-br-base")
                         .outline()
                         .small()
                         .label(format!("基于：{base_label} ▾"))
-                        .dropdown_menu_with_anchor(
+                        .pointer_dropdown_menu_with_anchor(
                             gpui::Anchor::TopLeft,
                             move |mut m, window, cx| {
                                 // 父级不可 scrollable —— 否则 submenu 不工作（gpui-component 限制）
@@ -160,7 +166,7 @@ pub(super) fn open_new_branch_dialog(
                                 let v_reset = view_for_dd.clone();
                                 let h_reset = head_for_reset.clone();
                                 m = m.item(
-                                    PopupMenuItem::new(format!("✓  {h_reset}（当前 HEAD）"))
+                                    ramag_ui::menu_item(format!("✓  {h_reset}（当前 HEAD）"))
                                         .on_click(move |_, _, app| {
                                             v_reset.update(app, |this, cx| {
                                                 this.set_create_branch_base(None, cx);
@@ -210,14 +216,14 @@ pub(super) fn open_new_branch_dialog(
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        Button::new("vcs-new-br-cancel")
+                        ramag_ui::clickable_button("vcs-new-br-cancel")
                             .ghost()
                             .small()
                             .label("取消")
                             .on_click(|_: &ClickEvent, w, app| w.close_dialog(app)),
                     )
                     .child(
-                        Button::new("vcs-new-br-ok")
+                        ramag_ui::clickable_button("vcs-new-br-ok")
                             .primary()
                             .small()
                             .label("创建")
@@ -289,7 +295,7 @@ fn push_base_leaf(
     let prefix = if is_remote { "↗  " } else { "    " };
     let label = format!("{prefix}{}", truncate_branch_display(display));
     let n = full_name.to_string();
-    m.item(PopupMenuItem::new(label).on_click(move |_, _, app| {
+    m.item(ramag_ui::menu_item(label).on_click(move |_, _, app| {
         let n = n.clone();
         view.update(app, |this, cx| {
             this.set_create_branch_base(Some(n), cx);
@@ -320,7 +326,7 @@ fn push_branch_leaf(
     };
     let label = format!("{prefix}{}{suffix}", truncate_branch_display(display));
     let n = full_name.to_string();
-    m.item(PopupMenuItem::new(label).on_click(move |_, w, app| {
+    m.item(ramag_ui::menu_item(label).on_click(move |_, w, app| {
         if is_head && !is_remote {
             return;
         }

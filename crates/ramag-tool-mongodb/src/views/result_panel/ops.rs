@@ -64,7 +64,7 @@ impl ResultPanel {
             let inputs_apply = inputs.clone();
             let inputs_content = inputs.clone();
             let dml_busy = panel.read(app).doc_dml_busy;
-            let cancel = Button::new("mongo-insert-cancel")
+            let cancel = ramag_ui::clickable_button("mongo-insert-cancel")
                 .ghost()
                 .small()
                 .label("取消")
@@ -72,7 +72,7 @@ impl ResultPanel {
                 .on_click(move |_: &ClickEvent, window, app| {
                     close_dialog_if_dml_idle(&panel_cancel, window, app);
                 });
-            let apply = Button::new("mongo-insert-apply")
+            let apply = ramag_ui::clickable_button("mongo-insert-apply")
                 .primary()
                 .small()
                 .label("插入")
@@ -176,7 +176,7 @@ impl ResultPanel {
             let input_apply = input.clone();
             let input_content = input.clone();
             let dml_busy = panel.read(app).doc_dml_busy;
-            let cancel = Button::new("mongo-rawinsert-cancel")
+            let cancel = ramag_ui::clickable_button("mongo-rawinsert-cancel")
                 .ghost()
                 .small()
                 .label("取消")
@@ -184,7 +184,7 @@ impl ResultPanel {
                 .on_click(move |_: &ClickEvent, window, app| {
                     close_dialog_if_dml_idle(&panel_cancel, window, app);
                 });
-            let apply = Button::new("mongo-rawinsert-apply")
+            let apply = ramag_ui::clickable_button("mongo-rawinsert-apply")
                 .primary()
                 .small()
                 .label("插入")
@@ -343,12 +343,12 @@ impl ResultPanel {
             let ids_apply = ids.clone();
             let coll_hint = coll.clone();
             let hidden_hint = hidden_hint.clone();
-            let cancel = Button::new("mongo-del-cancel")
+            let cancel = ramag_ui::clickable_button("mongo-del-cancel")
                 .ghost()
                 .small()
                 .label("取消")
                 .on_click(move |_: &ClickEvent, window, app| window.close_dialog(app));
-            let apply = Button::new("mongo-del-apply")
+            let apply = ramag_ui::clickable_button("mongo-del-apply")
                 .danger()
                 .small()
                 .label("删除")
@@ -361,7 +361,12 @@ impl ResultPanel {
                     }
                 });
             dialog
-                .title(title.clone())
+                .title(ramag_ui::closable_dialog_title(
+                    "mongo-delete-close",
+                    title.clone(),
+                    |_, _| {},
+                ))
+                .close_button(false)
                 .width(px(460.0))
                 .margin_top(px(160.0))
                 .content(move |content, _, cx| {

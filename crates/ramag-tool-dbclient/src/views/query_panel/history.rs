@@ -40,9 +40,16 @@ impl QueryPanel {
         window.open_dialog(cx, move |dialog, _, _| {
             let list = list.clone();
             let panel_for_close = panel_for_close.clone();
+            let panel_for_title_close = panel_for_close.clone();
             dialog
-                .title(title.clone())
-                .close_button(true)
+                .title(ramag_ui::closable_dialog_title(
+                    "sql-history-dialog-close",
+                    title.clone(),
+                    move |_, app| {
+                        panel_for_title_close.update(app, |this, _| this.history_sub = None);
+                    },
+                ))
+                .close_button(false)
                 .on_close(move |_, _, app| {
                     panel_for_close.update(app, |this, _| this.history_sub = None);
                 })

@@ -19,14 +19,14 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
-    input::{Input, InputEvent, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    input::{InputEvent, InputState},
     v_flex,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 
 use tree::{TreeNode, VisibleRow, build_tree, collect_namespace_paths};
@@ -387,11 +387,11 @@ impl Render for KeyTreePanel {
             .gap(px(8.0))
             .items_center()
             .child(
-                Button::new("kt-db-picker")
+                ramag_ui::clickable_button("kt-db-picker")
                     .ghost()
                     .small()
                     .label(db_picker_label)
-                    .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
+                    .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
                         let mut m = menu;
                         let entity = session_entity.clone();
                         // 常规列 0-15；当前 db 更高（自建实例 databases > 16）时并入列表可回切
@@ -407,7 +407,7 @@ impl Render for KeyTreePanel {
                                 format!("  DB {db}")
                             };
                             let entity = entity.clone();
-                            m = m.item(PopupMenuItem::new(label).on_click(move |_, _, app| {
+                            m = m.item(ramag_ui::menu_item(label).on_click(move |_, _, app| {
                                 entity.update(app, |this, cx| {
                                     if this.db != db {
                                         cx.emit(KeyTreeEvent::DbSelected(db));
@@ -417,7 +417,7 @@ impl Render for KeyTreePanel {
                         }
                         // 自建实例可配 databases > 16：提供自由输入入口（0-255）
                         let entity_for_prompt = session_entity.clone();
-                        m = m.item(PopupMenuItem::new("  其他 DB…").on_click(
+                        m = m.item(ramag_ui::menu_item("  其他 DB…").on_click(
                             move |_, window, app| {
                                 let entity = entity_for_prompt.clone();
                                 ramag_ui::open_bounded_prompt(
@@ -466,14 +466,13 @@ impl Render for KeyTreePanel {
             .items_center()
             .child(
                 div().flex_1().min_w_0().child(
-                    Input::new(&self.search)
+                    ramag_ui::cleanable_input(&self.search, "redis-key-search-clear", false, cx)
                         .small()
-                        .cleanable(true)
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             )
             .child(
-                Button::new("redis-key-create")
+                ramag_ui::clickable_button("redis-key-create")
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
@@ -496,7 +495,7 @@ impl Render for KeyTreePanel {
                 } else {
                     (IconName::FolderClosed, "全部展开命名空间")
                 };
-                Button::new("redis-key-toggle-all")
+                ramag_ui::clickable_button("redis-key-toggle-all")
                     .ghost()
                     .xsmall()
                     .icon(icon)
@@ -517,7 +516,7 @@ impl Render for KeyTreePanel {
                 } else {
                     (ramag_ui::icons::refresh_cw(), "重新扫描")
                 };
-                Button::new("redis-key-refresh")
+                ramag_ui::clickable_button("redis-key-refresh")
                     .ghost()
                     .xsmall()
                     .icon(icon)
@@ -531,7 +530,7 @@ impl Render for KeyTreePanel {
                     }))
             })
             .child(
-                Button::new("redis-open-console")
+                ramag_ui::clickable_button("redis-open-console")
                     .ghost()
                     .xsmall()
                     .icon(IconName::SquareTerminal)
@@ -544,7 +543,7 @@ impl Render for KeyTreePanel {
                 // DB 级毁灭性操作独立入口（清空当前 DB），不与 key 右键菜单混排
                 let entity_for_menu = cx.entity().clone();
                 let current_db = self.db;
-                Button::new("redis-key-more")
+                ramag_ui::clickable_button("redis-key-more")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::ellipsis())
@@ -554,9 +553,12 @@ impl Render for KeyTreePanel {
                         "更多操作"
                     })
                     .disabled(read_only || mutating)
-                    .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
-                        ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
-                    })
+                    .pointer_dropdown_menu_with_anchor(
+                        gpui::Anchor::BottomRight,
+                        move |menu, _, _| {
+                            ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
+                        },
+                    )
             });
 
         let theme_bg = theme.background;
@@ -657,7 +659,7 @@ impl Render for KeyTreePanel {
             .child(count_label)
             .when(can_load_more, |bar| {
                 bar.child(
-                    Button::new("redis-key-load-more")
+                    ramag_ui::clickable_button("redis-key-load-more")
                         .ghost()
                         .xsmall()
                         .label(format!("继续加载 {KEYS_PAGE_SIZE}"))

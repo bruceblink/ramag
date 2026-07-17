@@ -7,11 +7,7 @@ use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
     px,
 };
-use gpui_component::{
-    Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
+use gpui_component::{Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use ramag_domain::entities::RedisValue;
 
 use super::{KeyDetailEvent, KeyDetailPanel};
@@ -129,7 +125,7 @@ pub(super) fn render_scalar(
         ]
         .into_iter()
         .map(|(m, label)| {
-            Button::new(label)
+            ramag_ui::clickable_button(label)
                 .xsmall()
                 .ghost()
                 .selected(m == mode)

@@ -7,13 +7,10 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    menu::{DropdownMenu as _, PopupMenuItem},
-    v_flex,
+    button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::DriverKind;
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::platform::primary_shortcut;
 
 use super::{TableTreePanel, TreeEvent};
@@ -63,7 +60,7 @@ impl Render for TableTreePanel {
                         .child(format!("加载失败：{err}")),
                 )
                 .child(
-                    Button::new("retry")
+                    ramag_ui::clickable_button("retry")
                         .small()
                         .label("重试")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -151,36 +148,41 @@ impl Render for TableTreePanel {
             .gap(px(8.0))
             .items_center()
             .child(
-                Button::new("schema-picker")
+                ramag_ui::clickable_button("schema-picker")
                     .ghost()
                     .small()
                     .label(picker_label)
-                    .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
-                        let mut m = menu;
-                        let entity = entity_for_picker.clone();
-                        let active = active_for_menu.clone();
-                        for s in &picker_schemas {
-                            let s_owned = s.clone();
-                            let is_active = active.as_deref() == Some(s.as_str());
-                            let label = if is_active {
-                                format!("✓ {s}")
-                            } else {
-                                format!("  {s}")
-                            };
-                            let entity = entity.clone();
-                            m = m.item(PopupMenuItem::new(label).on_click(move |_, _, app| {
-                                let s = s_owned.clone();
-                                entity.update(app, |this, cx| {
-                                    if this.active_schema.as_deref() != Some(s.as_str()) {
-                                        this.active_schema = Some(s.clone());
-                                        cx.emit(TreeEvent::SchemaActivated { schema: s });
-                                        cx.notify();
-                                    }
-                                });
-                            }));
-                        }
-                        m
-                    }),
+                    .pointer_dropdown_menu_with_anchor(
+                        gpui::Anchor::BottomLeft,
+                        move |menu, _, _| {
+                            let mut m = menu;
+                            let entity = entity_for_picker.clone();
+                            let active = active_for_menu.clone();
+                            for s in &picker_schemas {
+                                let s_owned = s.clone();
+                                let is_active = active.as_deref() == Some(s.as_str());
+                                let label = if is_active {
+                                    format!("✓ {s}")
+                                } else {
+                                    format!("  {s}")
+                                };
+                                let entity = entity.clone();
+                                m = m.item(ramag_ui::menu_item(label).on_click(
+                                    move |_, _, app| {
+                                        let s = s_owned.clone();
+                                        entity.update(app, |this, cx| {
+                                            if this.active_schema.as_deref() != Some(s.as_str()) {
+                                                this.active_schema = Some(s.clone());
+                                                cx.emit(TreeEvent::SchemaActivated { schema: s });
+                                                cx.notify();
+                                            }
+                                        });
+                                    },
+                                ));
+                            }
+                            m
+                        },
+                    ),
             );
 
         // 顶部第 2 行：搜索框 + 三个工具按钮
@@ -194,14 +196,13 @@ impl Render for TableTreePanel {
             .gap(px(6.0))
             .child(
                 div().flex_1().min_w_0().child(
-                    Input::new(&self.search)
+                    ramag_ui::cleanable_input(&self.search, "table-search-clear", false, cx)
                         .small()
-                        .cleanable(true)
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             )
             .child(
-                Button::new("toggle-system")
+                ramag_ui::clickable_button("toggle-system")
                     .ghost()
                     .xsmall()
                     .icon(toggle_icon)
@@ -211,7 +212,7 @@ impl Render for TableTreePanel {
                     })),
             )
             .child(
-                Button::new("refresh-schemas")
+                ramag_ui::clickable_button("refresh-schemas")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
@@ -221,7 +222,7 @@ impl Render for TableTreePanel {
                     })),
             )
             .child(
-                Button::new("toggle-query-panel")
+                ramag_ui::clickable_button("toggle-query-panel")
                     .ghost()
                     .xsmall()
                     .icon(IconName::SquareTerminal)
@@ -237,7 +238,7 @@ impl Render for TableTreePanel {
             if has_filter && search_incomplete && (total_schemas > 50 || can_retry_failed) {
                 if let Some(progress) = self.full_search {
                     header_bar.child(
-                        Button::new("stop-full-schema-search")
+                        ramag_ui::clickable_button("stop-full-schema-search")
                             .small()
                             .label(format!("停止 {}/{}", progress.completed, progress.total))
                             .tooltip(format!(
@@ -252,7 +253,7 @@ impl Render for TableTreePanel {
                     let retry_only = failed_schemas > 0
                         && searchable_schemas.saturating_add(failed_schemas) == total_schemas;
                     header_bar.child(
-                        Button::new("search-all-schemas")
+                        ramag_ui::clickable_button("search-all-schemas")
                             .small()
                             .label(if retry_only {
                                 "重试失败"

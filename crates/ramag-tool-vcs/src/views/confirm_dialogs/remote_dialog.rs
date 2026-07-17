@@ -2,9 +2,7 @@
 
 use gpui::{ClickEvent, Context, ParentElement, Styled, Window, div, px};
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::super::helpers::RemoteOp;
@@ -35,7 +33,7 @@ impl VcsView {
             "选择首次推送的远程仓库"
         };
         window.open_dialog(cx, move |dialog, _, _| {
-            let cancel = Button::new("vcs-first-push-cancel")
+            let cancel = ramag_ui::clickable_button("vcs-first-push-cancel")
                 .ghost()
                 .small()
                 .label("取消")
@@ -46,7 +44,12 @@ impl VcsView {
                 "当前分支没有 upstream，且仓库存在多个 remote。请选择目标；成功后会设置 upstream："
             };
             dialog
-                .title(title)
+                .title(ramag_ui::closable_dialog_title(
+                    "vcs-first-push-close",
+                    title,
+                    |_, _| {},
+                ))
+                .close_button(false)
                 .width(px(520.0))
                 .margin_top(px(150.0))
                 .content({
@@ -59,11 +62,13 @@ impl VcsView {
                             let remote_for_click = remote.clone();
                             let branch_for_click = branch.clone();
                             let view_for_click = view.clone();
-                            let button = Button::new(format!("vcs-first-push-remote-{index}"))
-                                .small()
-                                .w_full()
-                                .label(format!("{remote}/{branch}"))
-                                .ghost();
+                            let button = ramag_ui::clickable_button(format!(
+                                "vcs-first-push-remote-{index}"
+                            ))
+                            .small()
+                            .w_full()
+                            .label(format!("{remote}/{branch}"))
+                            .ghost();
                             choices = choices.child(button.on_click(
                                 move |_: &ClickEvent, window, app| {
                                     window.close_dialog(app);

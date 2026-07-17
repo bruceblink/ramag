@@ -139,11 +139,12 @@ impl Render for TtlPicker {
                         .bg(secondary_bg)
                         .border_color(border)
                         .text_color(fg)
-                        .cursor_pointer()
                         .hover(move |this| this.border_color(accent_border));
                 }
                 if self.disabled {
                     c = c.opacity(0.55);
+                } else {
+                    c = c.cursor_pointer();
                 }
                 c
             };

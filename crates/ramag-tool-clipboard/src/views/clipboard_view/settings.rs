@@ -2,11 +2,7 @@
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    switch::Switch,
-    v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::MAX_CLIPBOARD_BLACKLIST_ENTRIES;
 use ramag_ui::{
@@ -148,7 +144,7 @@ impl ClipboardView {
                             .child(source_display_name(source_id)),
                     )
                     .child(
-                        Button::new(("clip-unblock-source", index))
+                        ramag_ui::clickable_button(("clip-unblock-source", index))
                             .ghost()
                             .small()
                             .label("恢复记录")
@@ -162,7 +158,7 @@ impl ClipboardView {
             // 清空历史（移入设置，避免顶栏误触）
             .child(
                 h_flex().w_full().items_center().justify_between().child(
-                    Button::new("clip-clear-all")
+                    ramag_ui::clickable_button("clip-clear-all")
                         .danger()
                         .small()
                         .label("清空历史")
@@ -207,7 +203,7 @@ impl ClipboardView {
                     .child(div().text_xs().text_color(muted).child(desc.to_string())),
             )
             .child(
-                Switch::new(id)
+                ramag_ui::clickable_switch(id)
                     .checked(checked)
                     .disabled(disabled)
                     .on_click(on_click),

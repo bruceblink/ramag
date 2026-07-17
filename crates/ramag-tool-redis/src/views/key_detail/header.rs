@@ -2,9 +2,7 @@
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
-    Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::{MAX_REDIS_COLLECTION_BYTES, RedisValue};
 
@@ -65,7 +63,7 @@ pub(super) fn render_header(
     // TTL 读取失败与 key 内容分开呈现，并提供局部重试。
     info_row = if panel.ttl_loading {
         info_row.child(
-            Button::new("ttl-loading")
+            ramag_ui::clickable_button("ttl-loading")
                 .ghost()
                 .xsmall()
                 .label("TTL 获取中…")
@@ -73,7 +71,7 @@ pub(super) fn render_header(
         )
     } else if let Some(error) = panel.ttl_error.as_ref() {
         info_row.child(
-            Button::new("ttl-retry")
+            ramag_ui::clickable_button("ttl-retry")
                 .ghost()
                 .xsmall()
                 .label("TTL 获取失败 · 重试")
@@ -83,7 +81,7 @@ pub(super) fn render_header(
         )
     } else {
         info_row.child(
-            Button::new("ttl-edit-trigger")
+            ramag_ui::clickable_button("ttl-edit-trigger")
                 .ghost()
                 .xsmall()
                 .label(format!("TTL {ttl_label} ✎"))
@@ -116,7 +114,7 @@ pub(super) fn render_header(
                 .saturating_sub(loaded as u64)
                 .min(super::COLLECTION_PAGE_SIZE as u64);
             info_row = info_row.child(
-                Button::new("redis-load-more-members")
+                ramag_ui::clickable_button("redis-load-more-members")
                     .ghost()
                     .xsmall()
                     .label(if panel.loading_more {
@@ -230,7 +228,7 @@ pub(super) fn render_header(
 
     let key_for_del = key_owned.clone();
     header.child(
-        Button::new("redis-key-delete")
+        ramag_ui::clickable_button("redis-key-delete")
             .danger()
             .small()
             .icon(ramag_ui::icons::trash())
@@ -256,7 +254,7 @@ fn add_btn<F>(
 where
     F: Fn() -> KeyDetailEvent + 'static,
 {
-    Button::new(id)
+    ramag_ui::clickable_button(id)
         .outline()
         .small()
         .icon(IconName::Plus)
@@ -307,7 +305,7 @@ fn render_size_chip(
             .child("估算中…")
             .into_any_element()
     } else if let Some(message) = error {
-        Button::new("size-retry")
+        ramag_ui::clickable_button("size-retry")
             .ghost()
             .xsmall()
             .label("大小估算失败 · 重试")
@@ -316,7 +314,7 @@ fn render_size_chip(
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.estimate_size(cx)))
             .into_any_element()
     } else {
-        Button::new("size-trigger")
+        ramag_ui::clickable_button("size-trigger")
             .ghost()
             .xsmall()
             .label("估算大小")

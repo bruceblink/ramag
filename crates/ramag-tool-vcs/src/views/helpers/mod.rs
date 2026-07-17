@@ -5,10 +5,7 @@ mod commit_row;
 pub(super) use commit_row::render_commit_row;
 
 use gpui::{AnyElement, ClickEvent, Context, IntoElement, SharedString, Window};
-use gpui_component::{
-    Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-};
+use gpui_component::{Disableable as _, IconName, Sizable as _, button::ButtonVariants as _};
 use ramag_domain::entities::{Branch, FileChangeKind, FileDiff, Remote};
 
 use super::vcs_view::VcsView;
@@ -320,7 +317,7 @@ pub(super) fn file_op_button(
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let id = SharedString::from(format!("vcs-{}-{}", id_parts.0, id_parts.1));
-    let mut btn = Button::new(id)
+    let mut btn = ramag_ui::clickable_button(id)
         .ghost()
         .xsmall()
         .tooltip(label)
@@ -346,7 +343,7 @@ pub(super) fn side_op_button(
     on_click: impl Fn(&mut VcsView, &mut Window, &mut Context<VcsView>) + 'static,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    Button::new(id.into())
+    ramag_ui::clickable_button(id.into())
         .ghost()
         .xsmall()
         .icon(icon)

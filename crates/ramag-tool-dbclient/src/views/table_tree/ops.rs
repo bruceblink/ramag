@@ -2,7 +2,7 @@
 //! 右键菜单 → open_confirm 二次确认 → 异步 DDL（走 execute_with_history 留痕）→ 刷新 + toast
 
 use gpui::{Context, Entity};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use ramag_domain::entities::{DriverKind, MAX_CONNECTION_IDENTIFIER_BYTES, Query};
 use ramag_ui::{open_bounded_prompt, open_confirm};
@@ -39,7 +39,7 @@ pub(super) fn table_context_menu(
     };
     let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
     let menu = menu
-        .item(PopupMenuItem::new(ddl_label).on_click(move |_, _, app| {
+        .item(ramag_ui::menu_item(ddl_label).on_click(move |_, _, app| {
             let (s, t) = (s.clone(), t.clone());
             ent.update(app, |this, cx| this.handle_show_ddl(s, t, is_view, cx));
         }))
@@ -52,7 +52,7 @@ pub(super) fn table_context_menu(
     };
     let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
     let menu = menu.item(
-        PopupMenuItem::new("重命名").on_click(move |_, window, app| {
+        ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
             let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
             open_bounded_prompt(
                 rename_title,
@@ -76,7 +76,7 @@ pub(super) fn table_context_menu(
     } else {
         let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("清空表").on_click(move |_, window, app| {
+            ramag_ui::menu_item("清空表").on_click(move |_, window, app| {
                 let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
                 open_confirm(
                     "清空表",
@@ -106,7 +106,7 @@ pub(super) fn table_context_menu(
             format!("将永久删除表 {schema}.{table}（表结构与数据一并删除），此操作不可恢复。"),
         )
     };
-    menu.item(PopupMenuItem::new(label).on_click(move |_, window, app| {
+    menu.item(ramag_ui::menu_item(label).on_click(move |_, window, app| {
         let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
         open_confirm(
             title,
@@ -133,7 +133,7 @@ pub(super) fn schema_context_menu(
     let menu = if matches!(driver, DriverKind::Postgres) {
         let (s, ent) = (schema.clone(), entity.clone());
         menu.item(
-            PopupMenuItem::new("重命名 Schema").on_click(move |_, window, app| {
+            ramag_ui::menu_item("重命名 Schema").on_click(move |_, window, app| {
                 let (s, ent) = (s.clone(), ent.clone());
                 open_bounded_prompt(
                     "重命名 Schema",
@@ -167,7 +167,7 @@ pub(super) fn schema_context_menu(
             format!("将永久删除数据库 {schema} 及其中全部表与数据，此操作不可恢复。"),
         ),
     };
-    menu.item(PopupMenuItem::new(label).on_click(move |_, window, app| {
+    menu.item(ramag_ui::menu_item(label).on_click(move |_, window, app| {
         let (schema, ent) = (schema.clone(), entity.clone());
         open_confirm(
             title,

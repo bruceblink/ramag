@@ -5,9 +5,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::{CenterMode, DbClientView};
@@ -225,7 +223,7 @@ impl Render for DbClientView {
                     tab.child(div().text_xs().text_color(metadata_color).child(label))
                 })
                 .child(
-                    Button::new(close_id)
+                    ramag_ui::clickable_button(close_id)
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
@@ -336,7 +334,7 @@ impl DbClientView {
                     .pt_2()
                     .gap_2()
                     .child(
-                        Button::new("stale-reconnect")
+                        ramag_ui::clickable_button("stale-reconnect")
                             .primary()
                             .small()
                             .label("重新连接")
@@ -345,7 +343,7 @@ impl DbClientView {
                             })),
                     )
                     .child(
-                        Button::new("stale-close")
+                        ramag_ui::clickable_button("stale-close")
                             .ghost()
                             .small()
                             .label("关闭标签")

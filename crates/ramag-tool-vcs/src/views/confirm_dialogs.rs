@@ -5,9 +5,7 @@ mod remote_dialog;
 
 use gpui::{ClickEvent, Context, Entity, ParentElement, SharedString, Styled, Window, div, px};
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
 };
 use ramag_domain::entities::{MAX_GIT_NAME_ARG_BYTES, MAX_GIT_POSITIONAL_ARG_BYTES, RepoOperation};
 
@@ -532,7 +530,12 @@ pub(super) fn open_checkout_dirty_dialog(
         let target_discard = target.clone();
         let desc = desc.clone();
         dialog
-            .title(title.clone())
+            .title(ramag_ui::closable_dialog_title(
+                "vcs-checkout-dirty-close",
+                title.clone(),
+                |_, _| {},
+            ))
+            .close_button(false)
             .margin_top(px(180.0))
             .content(move |c, _, cx| {
                 let muted_fg = cx.theme().muted_foreground;
@@ -551,7 +554,7 @@ pub(super) fn open_checkout_dirty_dialog(
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        Button::new("vcs-co-cancel")
+                        ramag_ui::clickable_button("vcs-co-cancel")
                             .ghost()
                             .small()
                             .label("取消")
@@ -561,7 +564,7 @@ pub(super) fn open_checkout_dirty_dialog(
                             }),
                     )
                     .child(
-                        Button::new("vcs-co-discard")
+                        ramag_ui::clickable_button("vcs-co-discard")
                             .danger()
                             .small()
                             .label("丢弃后切换")
@@ -578,7 +581,7 @@ pub(super) fn open_checkout_dirty_dialog(
                             }),
                     )
                     .child(
-                        Button::new("vcs-co-stash")
+                        ramag_ui::clickable_button("vcs-co-stash")
                             .primary()
                             .small()
                             .label("Stash 后切换")

@@ -10,9 +10,7 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::{Commit, FileStatus};
 
@@ -105,7 +103,7 @@ fn render_left_sidebar(
     border: gpui::Hsla,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
-    let close_btn = Button::new("vcs-commit-detail-close")
+    let close_btn = ramag_ui::clickable_button("vcs-commit-detail-close")
         .ghost()
         .xsmall()
         .icon(IconName::Close)
@@ -142,7 +140,7 @@ fn render_left_sidebar(
         )
         .child({
             let full_sha = commit.id.0.clone();
-            Button::new("vcs-commit-copy-sha")
+            ramag_ui::clickable_button("vcs-commit-copy-sha")
                 .ghost()
                 .xsmall()
                 .icon(ramag_ui::icons::copy())

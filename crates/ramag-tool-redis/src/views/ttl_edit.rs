@@ -7,9 +7,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::ConnectionConfig;
@@ -199,7 +197,7 @@ impl Render for TtlEditForm {
                             .gap(px(8.0))
                             .flex_none()
                             .child(
-                                Button::new("ttl-cancel")
+                                ramag_ui::clickable_button("ttl-cancel")
                                     .ghost()
                                     .small()
                                     .label("取消")
@@ -209,7 +207,7 @@ impl Render for TtlEditForm {
                                     })),
                             )
                             .child(
-                                Button::new("ttl-save")
+                                ramag_ui::clickable_button("ttl-save")
                                     .primary()
                                     .small()
                                     .label(if submitting { "保存中…" } else { "保存" })

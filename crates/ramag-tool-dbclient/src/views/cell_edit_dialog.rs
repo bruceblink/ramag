@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
 };
@@ -47,10 +47,11 @@ pub(super) fn open(
 
     window.open_dialog(cx, move |dialog, _, _| {
         let panel_btn = panel_for_dialog.clone();
+        let panel_close = panel_for_dialog.clone();
         let input_btn = input_for_dialog.clone();
         let reason = reason_for_dialog.clone();
 
-        let cancel_btn = Button::new("cell-edit-cancel")
+        let cancel_btn = ramag_ui::clickable_button("cell-edit-cancel")
             .ghost()
             .small()
             .label(if read_only { "关闭" } else { "取消" })
@@ -62,7 +63,7 @@ pub(super) fn open(
                 }
             });
 
-        let apply_btn = Button::new("cell-edit-apply")
+        let apply_btn = ramag_ui::clickable_button("cell-edit-apply")
             .primary()
             .small()
             .label("确认")
@@ -92,7 +93,14 @@ pub(super) fn open(
 
         let input_for_content = input_for_dialog.clone();
         dialog
-            .title(title.clone())
+            .title(ramag_ui::closable_dialog_title(
+                "cell-edit-close",
+                title.clone(),
+                move |_, app| {
+                    panel_close.update(app, |this, _| this.set_cell_edit_input(None));
+                },
+            ))
+            .close_button(false)
             // 显式宽度让 Dialog 在水平方向居中（gpui-component 内部用 width/2 算 x）
             .width(px(560.0))
             .margin_top(px(140.0))

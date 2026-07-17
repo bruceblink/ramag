@@ -5,8 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
     h_flex,
 };
 
@@ -125,7 +124,7 @@ impl VcsView {
                         ),
                 )
                 .child(
-                    Button::new(close_id)
+                    ramag_ui::clickable_button(close_id)
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)

@@ -76,6 +76,8 @@ pub struct ConnectionFormPanel {
     pub(super) port: Entity<InputState>,
     pub(super) username: Entity<InputState>,
     pub(super) password: Entity<InputState>,
+    /// 密码显示状态仅影响界面，不属于连接配置或脏检测内容。
+    pub(super) password_masked: bool,
     pub(super) database: Entity<InputState>,
     /// MongoDB 认证库（authSource）输入框；仅 MongoDB 渲染，留空 = admin
     pub(super) auth_source: Entity<InputState>,
@@ -315,6 +317,7 @@ impl ConnectionFormPanel {
             port,
             username,
             password,
+            password_masked: true,
             database,
             auth_source,
             remark,

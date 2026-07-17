@@ -114,7 +114,7 @@ impl Render for VcsView {
                 })
                 .filter(|s| !s.is_empty());
             let cancel_btn = self.clone_cancel.clone().map(|cancel| {
-                gpui_component::button::Button::new("vcs-clone-cancel")
+                ramag_ui::clickable_button("vcs-clone-cancel")
                     .label("取消 Clone")
                     .on_click(move |_: &gpui::ClickEvent, _, _| {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);

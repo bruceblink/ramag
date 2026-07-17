@@ -5,12 +5,8 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    scroll::ScrollableElement as _,
-    v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    input::Input, scroll::ScrollableElement as _, v_flex,
 };
 
 use super::{ConnectionFormPanel, FormMode, TestState, field_row, section_title};
@@ -139,7 +135,7 @@ impl Render for ConnectionFormPanel {
                             Input::new(&self.mongo_uri).disabled(self.saving),
                         )))
                         .child(
-                            Button::new("apply-mongo-uri")
+                            ramag_ui::clickable_button("apply-mongo-uri")
                                 .small()
                                 .label("填充")
                                 .tooltip("解析 mongodb:// 地址并回填下方字段")
@@ -200,7 +196,36 @@ impl Render for ConnectionFormPanel {
                     .child(field_row(
                         "密码",
                         Input::new(&self.password)
-                            .mask_toggle()
+                            .suffix(
+                                ramag_ui::clickable_button("password-mask-toggle")
+                                    .ghost()
+                                    .xsmall()
+                                    .tab_stop(false)
+                                    .icon(if self.password_masked {
+                                        IconName::Eye
+                                    } else {
+                                        IconName::EyeOff
+                                    })
+                                    .tooltip(if self.password_masked {
+                                        "显示密码"
+                                    } else {
+                                        "隐藏密码"
+                                    })
+                                    .disabled(self.saving)
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, window, cx| {
+                                            if this.saving {
+                                                return;
+                                            }
+                                            this.password_masked = !this.password_masked;
+                                            let password_masked = this.password_masked;
+                                            this.password.update(cx, |state, cx| {
+                                                state.set_masked(password_masked, window, cx);
+                                            });
+                                            cx.notify();
+                                        },
+                                    )),
+                            )
                             .disabled(self.saving),
                     ))
                     // MongoDB 专属：认证库 authSource（独立于"默认打开的库"）
@@ -230,7 +255,7 @@ impl Render for ConnectionFormPanel {
                                     )),
                             )
                             .child(
-                                gpui_component::switch::Switch::new("conn-tls")
+                                ramag_ui::clickable_switch("conn-tls")
                                     .checked(self.tls)
                                     .disabled(self.saving)
                                     .on_click(cx.listener(|this, _: &bool, _, cx| {
@@ -257,7 +282,7 @@ impl Render for ConnectionFormPanel {
                         ] {
                             let selected = current == mode;
                             verify_row = verify_row.child(
-                                Button::new(SharedString::from(format!("tls-verify-{mode:?}")))
+                                ramag_ui::clickable_button(SharedString::from(format!("tls-verify-{mode:?}")))
                                     .small()
                                     .label(label)
                                     .disabled(self.saving)
@@ -338,7 +363,7 @@ impl Render for ConnectionFormPanel {
                             .items_center()
                             .gap(px(12.0))
                             .child(
-                                Button::new("test")
+                                ramag_ui::clickable_button("test")
                                     .small()
                                     .label(if matches!(self.test_state, TestState::Testing) {
                                         "测试中…"
@@ -366,7 +391,7 @@ impl Render for ConnectionFormPanel {
                                     .child(msg);
                                 if test_failed {
                                     this.child(msg_el).child(
-                                        Button::new("copy-test-err")
+                                        ramag_ui::clickable_button("copy-test-err")
                                             .ghost()
                                             .xsmall()
                                             .flex_none()
@@ -393,7 +418,7 @@ impl Render for ConnectionFormPanel {
                             .gap(px(8.0))
                             .flex_none()
                             .child(
-                                Button::new("cancel")
+                                ramag_ui::clickable_button("cancel")
                                     .ghost()
                                     .small()
                                     .label("取消")
@@ -403,7 +428,7 @@ impl Render for ConnectionFormPanel {
                                     })),
                             )
                             .child(
-                                Button::new("save")
+                                ramag_ui::clickable_button("save")
                                     .primary()
                                     .small()
                                     .label(if self.saving {

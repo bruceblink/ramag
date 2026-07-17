@@ -9,9 +9,7 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::{ReflogEntry, contains_case_insensitive};
 
@@ -237,7 +235,7 @@ fn render_reflog_row(
                 .child(time_str),
         )
         .child(
-            Button::new(SharedString::from(format!("vcs-reflog-checkout-{idx}")))
+            ramag_ui::clickable_button(SharedString::from(format!("vcs-reflog-checkout-{idx}")))
                 .ghost()
                 .xsmall()
                 .icon(gpui_component::IconName::ArrowRight)

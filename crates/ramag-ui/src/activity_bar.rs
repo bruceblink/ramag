@@ -6,11 +6,7 @@ use gpui::{
     ClickEvent, Context, EventEmitter, IntoElement, ParentElement, Render, SharedString, Styled,
     Window, div, hsla, px,
 };
-use gpui_component::{
-    ActiveTheme, Icon, IconName,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme, Icon, IconName, button::ButtonVariants as _, h_flex, v_flex};
 use ramag_app::ToolRegistry;
 
 use crate::icons;
@@ -215,7 +211,7 @@ fn activity_item(
     tooltip: Option<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    let mut button = Button::new(SharedString::from(id.to_string()))
+    let mut button = crate::clickable_button(SharedString::from(id.to_string()))
         .ghost()
         .icon(icon);
     if let Some(tip) = tooltip {

@@ -5,7 +5,7 @@ use gpui::{
     MouseButton, ParentElement, SharedString, Styled, div, prelude::*, px,
 };
 use gpui_component::{
-    IconName, Sizable as _, checkbox::Checkbox, h_flex, input::Input, menu::ContextMenuExt as _,
+    IconName, Sizable as _, h_flex, input::Input, menu::ContextMenuExt as _,
     notification::Notification,
 };
 use ramag_domain::entities::Value;
@@ -164,8 +164,16 @@ pub(super) fn render_data_row(
                     }),
                 )
                 .context_menu(|menu, _, _| {
-                    menu.menu_with_icon("复制单元格", IconName::Copy, Box::new(CopyCellValue))
-                        .menu_with_icon("复制列名", IconName::Copy, Box::new(CopySelectedColumn))
+                    menu.item(
+                        ramag_ui::menu_item("复制单元格")
+                            .icon(IconName::Copy)
+                            .action(Box::new(CopyCellValue)),
+                    )
+                    .item(
+                        ramag_ui::menu_item("复制列名")
+                            .icon(IconName::Copy)
+                            .action(Box::new(CopySelectedColumn)),
+                    )
                 })
                 .child(
                     div()
@@ -216,7 +224,7 @@ pub(super) fn render_data_row(
                     .items_center()
                     .justify_center()
                     .child(
-                        Checkbox::new(SharedString::from(format!("row-cb-{idx}")))
+                        ramag_ui::clickable_checkbox(SharedString::from(format!("row-cb-{idx}")))
                             .checked(is_row_selected)
                             .on_click(move |_: &bool, _, app| {
                                 panel.update(app, |this, cx| {

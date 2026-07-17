@@ -53,6 +53,7 @@ impl ClipboardDrawer {
             .border_2()
             .border_color(if selected { blue } else { border })
             .bg(secondary)
+            .cursor_pointer()
             // 单击选中，双击粘贴
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                 if ev.click_count() >= 2 {

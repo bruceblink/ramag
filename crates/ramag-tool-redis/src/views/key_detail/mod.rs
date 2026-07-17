@@ -17,7 +17,7 @@ use gpui::{
     SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _, button::Button, notification::Notification,
+    ActiveTheme, Sizable as _, WindowExt as _, notification::Notification,
     scroll::ScrollableElement as _, v_flex,
 };
 use ramag_app::RedisService;
@@ -291,7 +291,7 @@ impl Render for KeyDetailPanel {
                     .items_start()
                     .child(div().text_sm().text_color(gpui::red()).child(err))
                     .child(
-                        Button::new("redis-key-load-retry")
+                        ramag_ui::clickable_button("redis-key-load-retry")
                             .outline()
                             .small()
                             .label("重试")

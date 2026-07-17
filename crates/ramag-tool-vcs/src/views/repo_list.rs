@@ -8,11 +8,8 @@ use gpui::{
     div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
+    h_flex, input::Input, v_flex,
 };
 
 impl VcsView {
@@ -49,7 +46,7 @@ impl VcsView {
                 .child({
                     // 长诊断（网络 / git stderr）单行难读全，支持一键复制出去排查
                     let err_for_copy = err.clone();
-                    Button::new("vcs-error-copy")
+                    ramag_ui::clickable_button("vcs-error-copy")
                         .ghost()
                         .xsmall()
                         .label("复制")
@@ -61,7 +58,7 @@ impl VcsView {
                         })
                 })
                 .child(
-                    Button::new("vcs-error-clear")
+                    ramag_ui::clickable_button("vcs-error-clear")
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
@@ -126,15 +123,19 @@ impl VcsView {
             .child(
                 div().flex_1().min_w_0().child(
                     div().max_w(px(360.0)).child(
-                        Input::new(&self.repo_search_input)
-                            .small()
-                            .cleanable(true)
-                            .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
+                        ramag_ui::cleanable_input(
+                            &self.repo_search_input,
+                            "vcs-repo-search-clear",
+                            false,
+                            cx,
+                        )
+                        .small()
+                        .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                     ),
                 ),
             )
             .child(
-                Button::new("vcs-repo-clone")
+                ramag_ui::clickable_button("vcs-repo-clone")
                     .ghost()
                     .small()
                     .icon(ramag_ui::icons::download())
@@ -146,7 +147,7 @@ impl VcsView {
                     })),
             )
             .child(
-                Button::new("vcs-repo-init")
+                ramag_ui::clickable_button("vcs-repo-init")
                     .ghost()
                     .small()
                     .icon(IconName::Plus)
@@ -157,7 +158,7 @@ impl VcsView {
                     })),
             )
             .child(
-                Button::new("vcs-repo-add")
+                ramag_ui::clickable_button("vcs-repo-add")
                     .ghost()
                     .small()
                     .icon(IconName::FolderOpen)
@@ -317,7 +318,7 @@ impl VcsView {
                     .child(Input::new(&self.clone_url_input).small()),
             )
             .child(
-                Button::new("vcs-clone-pick-dest")
+                ramag_ui::clickable_button("vcs-clone-pick-dest")
                     .ghost()
                     .small()
                     .icon(IconName::Folder)
@@ -329,7 +330,7 @@ impl VcsView {
                     })),
             )
             .child(
-                Button::new("vcs-clone-execute")
+                ramag_ui::clickable_button("vcs-clone-execute")
                     .primary()
                     .small()
                     .icon(ramag_ui::icons::download())
@@ -356,7 +357,7 @@ impl VcsView {
                     })),
             )
             .child(
-                Button::new("vcs-clone-cancel")
+                ramag_ui::clickable_button("vcs-clone-cancel")
                     .ghost()
                     .small()
                     .label("取消")
@@ -477,7 +478,7 @@ fn repo_row(
                 .justify_end()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
-                    Button::new(favorite_id)
+                    ramag_ui::clickable_button(favorite_id)
                         .ghost()
                         .small()
                         .icon(if is_favorite {
@@ -496,7 +497,7 @@ fn repo_row(
                         })),
                 )
                 .child(
-                    Button::new(del_id)
+                    ramag_ui::clickable_button(del_id)
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())
@@ -551,7 +552,7 @@ fn empty_state(
                 .child("点击下方按钮选择第一个本地 Git 仓库目录"),
         )
         .child(
-            Button::new("vcs-repo-empty-pick")
+            ramag_ui::clickable_button("vcs-repo-empty-pick")
                 .primary()
                 .icon(IconName::Plus)
                 .label("打开仓库")

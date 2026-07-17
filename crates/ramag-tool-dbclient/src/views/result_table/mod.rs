@@ -22,10 +22,7 @@ trait RestrictScrollExt: Styled + Sized {
 }
 impl<T: Styled> RestrictScrollExt for T {}
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
-    h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use ramag_domain::entities::{QueryResult, contains_case_insensitive};
@@ -449,7 +446,7 @@ pub(super) fn render_table(
             .child(message);
         if error.is_some() {
             placeholder = placeholder.child(
-                Button::new("result-view-retry")
+                ramag_ui::clickable_button("result-view-retry")
                     .ghost()
                     .small()
                     .label("重试")
@@ -542,7 +539,7 @@ pub(super) fn render_table(
                     .items_center()
                     .justify_center()
                     .child(
-                        Checkbox::new("rows-toggle-all")
+                        ramag_ui::clickable_checkbox("rows-toggle-all")
                             .checked(all_selected)
                             .on_click(move |_: &bool, _, app| {
                                 panel.update(app, |this, cx| {
@@ -691,7 +688,7 @@ pub(super) fn render_table(
             let panel_for_submit = panel_entity.clone();
             this.child(div().flex_1())
                 .child(
-                    Button::new("insert-cancel-bar")
+                    ramag_ui::clickable_button("insert-cancel-bar")
                         .ghost()
                         .small()
                         .label("取消")
@@ -701,7 +698,7 @@ pub(super) fn render_table(
                         }),
                 )
                 .child(
-                    Button::new("insert-submit-bar")
+                    ramag_ui::clickable_button("insert-submit-bar")
                         .primary()
                         .small()
                         .label(if dml_busy { "提交中…" } else { "提交" })

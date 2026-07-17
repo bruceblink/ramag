@@ -5,11 +5,7 @@
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
-use gpui_component::{
-    Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-};
+use gpui_component::{Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::{ConnectionListPanel, ListEvent};
@@ -210,7 +206,7 @@ pub(super) fn connection_row(
                 .justify_end()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
-                    Button::new(edit_id)
+                    ramag_ui::clickable_button(edit_id)
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::pencil())
@@ -220,7 +216,7 @@ pub(super) fn connection_row(
                         })),
                 )
                 .child(
-                    Button::new(del_id)
+                    ramag_ui::clickable_button(del_id)
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())

@@ -9,6 +9,7 @@ pub mod home_view;
 pub mod icons;
 pub mod mutation_gate;
 pub mod platform;
+pub mod pointer_menu;
 pub mod preferences;
 pub mod prompt_dialog;
 pub mod resizable_persist;
@@ -33,12 +34,125 @@ pub use editor_workspace::{
 };
 pub use home_view::{HomeEvent, HomeView};
 pub use mutation_gate::{AsyncMutationGate, MutationToken};
+pub use pointer_menu::PointerDropdownMenu;
 pub use resizable_persist::persist_resizable_sizes;
 pub use settings_view::{SettingsEvent, SettingsView};
 pub use shell::{Shell, WindowBoundsPref};
 pub use theme::{
     Mode, StorageGlobal, apply_theme, current_mode, init_theme, on_system_appearance_changed,
 };
+
+/// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
+pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {
+    use gpui::Styled as _;
+
+    gpui_component::button::Button::new(id).cursor_pointer()
+}
+
+/// 创建带手型光标的复选框。
+pub fn clickable_checkbox(id: impl Into<gpui::ElementId>) -> gpui_component::checkbox::Checkbox {
+    use gpui::Styled as _;
+
+    gpui_component::checkbox::Checkbox::new(id).cursor_pointer()
+}
+
+/// 创建带手型光标的开关。
+pub fn clickable_switch(id: impl Into<gpui::ElementId>) -> gpui_component::switch::Switch {
+    use gpui::Styled as _;
+
+    gpui_component::switch::Switch::new(id).cursor_pointer()
+}
+
+/// 创建带手型清除按钮的单行输入框。
+pub fn cleanable_input(
+    state: &gpui::Entity<gpui_component::input::InputState>,
+    clear_id: impl Into<gpui::ElementId>,
+    disabled: bool,
+    cx: &gpui::App,
+) -> gpui_component::input::Input {
+    use gpui::Styled as _;
+    use gpui_component::{
+        ActiveTheme as _, Icon, IconName, Sizable as _, button::ButtonVariants as _, input::Input,
+    };
+
+    let input = Input::new(state).disabled(disabled);
+    if disabled || state.read(cx).value().is_empty() {
+        return input;
+    }
+
+    let state = state.clone();
+    input.suffix(
+        clickable_button(clear_id)
+            .icon(Icon::new(IconName::CircleX))
+            .ghost()
+            .xsmall()
+            .tab_stop(false)
+            .text_color(cx.theme().muted_foreground)
+            .on_click(move |_, window, cx| {
+                state.update(cx, |state, cx| {
+                    state.set_value("", window, cx);
+                    state.focus(window, cx);
+                });
+            }),
+    )
+}
+
+/// 创建带手型关闭按钮的对话框标题；调用方仍可用 `on_close` 处理 Esc 等关闭路径。
+pub fn closable_dialog_title(
+    id: impl Into<gpui::ElementId>,
+    title: impl gpui::IntoElement,
+    on_close: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> impl gpui::IntoElement {
+    use gpui::{ParentElement as _, Styled as _};
+    use gpui_component::{
+        IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
+    };
+
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .child(title)
+        .child(
+            clickable_button(id)
+                .ghost()
+                .xsmall()
+                .icon(IconName::Close)
+                .tooltip("关闭")
+                .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    on_close(window, cx);
+                }),
+        )
+}
+
+/// 创建带手型光标的菜单项。
+pub fn menu_item(label: impl Into<gpui::SharedString>) -> gpui_component::menu::PopupMenuItem {
+    menu_item_with_disabled(label, false)
+}
+
+/// 创建可禁用菜单项；禁用时保持箭头。
+pub fn menu_item_with_disabled(
+    label: impl Into<gpui::SharedString>,
+    disabled: bool,
+) -> gpui_component::menu::PopupMenuItem {
+    use gpui::{ParentElement as _, Styled as _, div, prelude::FluentBuilder as _};
+
+    let label = label.into();
+    gpui_component::menu::PopupMenuItem::element(move |_, _| {
+        div()
+            .w_full()
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .when(disabled, |this| this.cursor_default())
+                    .when(!disabled, |this| this.cursor_pointer()),
+            )
+            .child(label.clone())
+    })
+    .disabled(disabled)
+}
 
 /// 即时搜索 / 过滤会在每次输入后重算，限制异常粘贴造成的重复分配与全表扫描成本。
 pub const MAX_SEARCH_INPUT_BYTES: usize = 4 * 1024;
@@ -104,12 +218,49 @@ fn byte_prefix(value: &str, max_bytes: usize) -> &str {
 
 #[cfg(test)]
 mod input_limit_tests {
-    use super::byte_prefix;
+    use super::{
+        byte_prefix, clickable_button, clickable_checkbox, clickable_switch,
+        menu_item_with_disabled,
+    };
+    use gpui::{CursorStyle, Styled as _};
+    use gpui_component::menu::PopupMenuItem;
 
     #[test]
     fn byte_prefix_preserves_utf8_boundaries() {
         assert_eq!(byte_prefix("你好世界", 7), "你好");
         assert_eq!(byte_prefix("abc", 99), "abc");
         assert_eq!(byte_prefix("abc", 0), "");
+    }
+
+    #[test]
+    fn clickable_components_use_pointing_hand_cursor() {
+        let mut button = clickable_button("cursor-test-button");
+        let mut checkbox = clickable_checkbox("cursor-test-checkbox");
+        let mut switch = clickable_switch("cursor-test-switch");
+
+        assert_eq!(button.style().mouse_cursor, Some(CursorStyle::PointingHand));
+        assert_eq!(
+            checkbox.style().mouse_cursor,
+            Some(CursorStyle::PointingHand)
+        );
+        assert_eq!(switch.style().mouse_cursor, Some(CursorStyle::PointingHand));
+    }
+
+    #[test]
+    fn menu_item_preserves_disabled_state() {
+        let enabled = menu_item_with_disabled("enabled", false);
+        let disabled = menu_item_with_disabled("disabled", true);
+
+        assert!(matches!(
+            enabled,
+            PopupMenuItem::ElementItem {
+                disabled: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            disabled,
+            PopupMenuItem::ElementItem { disabled: true, .. }
+        ));
     }
 }

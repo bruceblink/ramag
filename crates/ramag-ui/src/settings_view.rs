@@ -8,8 +8,8 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Selectable as _, Sizable as _, WindowExt as _, button::Button,
-    h_flex, notification::Notification, scroll::ScrollableElement as _, switch::Switch, v_flex,
+    ActiveTheme, Disableable as _, Selectable as _, Sizable as _, WindowExt as _, h_flex,
+    notification::Notification, scroll::ScrollableElement as _, v_flex,
 };
 use ramag_app::{ClipboardService, HotkeyState};
 use ramag_domain::entities::ClipboardSettings;
@@ -144,7 +144,7 @@ impl SettingsView {
                     .child(div().text_xs().text_color(muted).child(description)),
             )
             .child(
-                Switch::new(id)
+                crate::clickable_switch(id)
                     .checked(checked)
                     .disabled(disabled)
                     .on_click(on_click),
@@ -207,7 +207,7 @@ impl Render for SettingsView {
                                 let mut row = h_flex().gap_2().flex_wrap();
                                 for limit in SQL_AUTO_LIMIT_CHOICES {
                                     row = row.child(
-                                        Button::new(("sql-limit", limit))
+                                        crate::clickable_button(("sql-limit", limit))
                                             .small()
                                             .label(format_limit(limit))
                                             .selected(sql_limit == Some(limit))
@@ -215,7 +215,7 @@ impl Render for SettingsView {
                                     );
                                 }
                                 row.child(
-                                    Button::new("sql-limit-off")
+                                    crate::clickable_button("sql-limit-off")
                                         .small()
                                         .label("关闭（不推荐）")
                                         .selected(sql_limit.is_none())
@@ -279,7 +279,7 @@ impl Render for SettingsView {
                                     .items_center()
                                     .gap_2()
                                     .child(
-                                        Button::new("open-clipboard-settings")
+                                        crate::clickable_button("open-clipboard-settings")
                                             .small()
                                             .label("管理热键、排除应用与历史")
                                             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
@@ -315,7 +315,7 @@ fn theme_button(
     selected: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    Button::new(id)
+    crate::clickable_button(id)
         .small()
         .label(label)
         .selected(selected)

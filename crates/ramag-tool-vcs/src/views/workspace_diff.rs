@@ -6,8 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::helpers::{FileTabSource, GroupKind};
@@ -203,7 +202,7 @@ impl VcsView {
                         .child(filename),
                 )
                 .child(
-                    Button::new(close_id)
+                    ramag_ui::clickable_button(close_id)
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
@@ -253,7 +252,7 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // 当前 driver 只支持 HEAD blame；commit 历史 diff 禁用，避免把当前作者冒充历史作者。
-        let blame_btn = Button::new("vcs-diff-blame-toggle")
+        let blame_btn = ramag_ui::clickable_button("vcs-diff-blame-toggle")
             .ghost()
             .xsmall()
             .icon(IconName::Eye)
@@ -272,7 +271,7 @@ impl VcsView {
             }));
         // Diff 视图模式：图标 toggle（点击在「标准」与「全文件」间切换）
         let is_full = matches!(self.diff_view_mode, super::helpers::DiffViewMode::FullFile);
-        let view_mode_btn = Button::new("vcs-diff-view-mode")
+        let view_mode_btn = ramag_ui::clickable_button("vcs-diff-view-mode")
             .ghost()
             .xsmall()
             .icon(if is_full {
@@ -288,7 +287,7 @@ impl VcsView {
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.set_diff_view_mode(this.diff_view_mode.toggled(), cx);
             }));
-        let ignore_whitespace_btn = Button::new("vcs-diff-ignore-whitespace")
+        let ignore_whitespace_btn = ramag_ui::clickable_button("vcs-diff-ignore-whitespace")
             .ghost()
             .xsmall()
             .label("−ws")
@@ -444,7 +443,7 @@ fn render_inline_blame_banner(
                 .child(text),
         )
         .child(
-            Button::new("vcs-inline-blame-close")
+            ramag_ui::clickable_button("vcs-inline-blame-close")
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)

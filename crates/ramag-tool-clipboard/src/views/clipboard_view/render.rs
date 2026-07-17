@@ -5,11 +5,8 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Selectable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    v_flex,
+    ActiveTheme, Selectable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    h_flex, input::Input, v_flex,
 };
 use ramag_domain::entities::ClipKind;
 use ramag_ui::icons;
@@ -120,7 +117,7 @@ impl ClipboardView {
                             .child(Input::new(&self.search).small()),
                     )
                     .child(
-                        Button::new("clip-settings")
+                        ramag_ui::clickable_button("clip-settings")
                             .ghost()
                             .small()
                             .icon(icons::settings())
@@ -150,7 +147,7 @@ impl ClipboardView {
 
         // 全部
         row = row.child(
-            Button::new("filter-all")
+            ramag_ui::clickable_button("filter-all")
                 .ghost()
                 .xsmall()
                 .label("全部")
@@ -165,7 +162,7 @@ impl ClipboardView {
         for &kind in ClipKind::all() {
             let active = self.filter == Some(kind);
             row = row.child(
-                Button::new(SharedString::from(format!("filter-{}", kind.label())))
+                ramag_ui::clickable_button(SharedString::from(format!("filter-{}", kind.label())))
                     .ghost()
                     .xsmall()
                     .label(kind.label())

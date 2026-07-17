@@ -6,11 +6,7 @@ use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, UniformListScrollHandle,
     div, prelude::*, px, uniform_list,
 };
-use gpui_component::{
-    Disableable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-};
+use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
 
 use super::{KeyDetailEvent, KeyDetailPanel};
@@ -144,7 +140,7 @@ fn hash_row(
                 .child(value_preview),
         )
         .child(
-            Button::new(del_id)
+            ramag_ui::clickable_button(del_id)
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::trash())

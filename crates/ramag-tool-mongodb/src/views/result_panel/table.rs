@@ -8,7 +8,7 @@ use gpui::{
     Context, Hsla, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px, uniform_list,
 };
-use gpui_component::{ActiveTheme, checkbox::Checkbox, h_flex, v_flex};
+use gpui_component::{ActiveTheme, h_flex, v_flex};
 
 use super::flatten::{Column, FlatTable};
 use super::{ResultPanel, SortDir};
@@ -69,7 +69,7 @@ pub(super) fn render(
         .border_r_1()
         .border_color(border)
         .child(
-            Checkbox::new("mongo-cb-all")
+            ramag_ui::clickable_checkbox("mongo-cb-all")
                 .checked(all_selected)
                 .on_click(move |_: &bool, _, app| {
                     entity_for_all.update(app, |this, cx| this.toggle_all(&all_data_idx, cx))
@@ -122,12 +122,13 @@ pub(super) fn render(
                         .border_r_1()
                         .border_color(border)
                         .child(
-                            Checkbox::new(SharedString::from(format!("mongo-cb-{i}")))
-                                .checked(selected)
-                                .on_click(move |_: &bool, _, app| {
-                                    entity_for_row
-                                        .update(app, |this, cx| this.toggle_row(row_idx, cx))
-                                }),
+                            ramag_ui::clickable_checkbox(SharedString::from(format!(
+                                "mongo-cb-{i}"
+                            )))
+                            .checked(selected)
+                            .on_click(move |_: &bool, _, app| {
+                                entity_for_row.update(app, |this, cx| this.toggle_row(row_idx, cx))
+                            }),
                         )
                         .into_any_element();
                     super::row::render_row(

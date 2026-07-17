@@ -6,14 +6,14 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     v_flex,
 };
 use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
+use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::platform::primary_shortcut;
 
 use super::QueryTab;
@@ -192,20 +192,28 @@ impl Render for QueryTab {
                                         },
                                     )
                                     .child(
-                                        Input::new(&col_input)
+                                        ramag_ui::cleanable_input(
+                                            &col_input,
+                                            "sql-column-filter-clear",
+                                            false,
+                                            cx,
+                                        )
                                             .small()
                                             .bordered(false)
-                                            .focus_bordered(false)
-                                            .cleanable(true),
+                                            .focus_bordered(false),
                                     ),
                             )
                             .child(
                                 div().flex_1().min_w_0().child(
-                                    Input::new(&row_input)
+                                    ramag_ui::cleanable_input(
+                                        &row_input,
+                                        "sql-row-filter-clear",
+                                        false,
+                                        cx,
+                                    )
                                         .small()
                                         .bordered(false)
-                                        .focus_bordered(false)
-                                        .cleanable(true),
+                                        .focus_bordered(false),
                                 ),
                             )
                     })
@@ -231,18 +239,18 @@ impl Render for QueryTab {
                     .child({
                         // 自动 LIMIT 档位切换：裸 SELECT 注入 LIMIT 的上限；关闭后按语句原样执行
                         let entity = cx.entity();
-                        Button::new("auto-limit")
+                        ramag_ui::clickable_button("auto-limit")
                             .ghost()
                             .small()
                             .label(auto_limit_label)
                             .tooltip("未写 LIMIT 的 SELECT 自动补上限，防止误拉全表；点击切换档位")
-                            .dropdown_menu(move |menu, _, _| {
+                            .pointer_dropdown_menu(move |menu, _, _| {
                                 let mut m = menu;
                                 for n in ramag_ui::preferences::SQL_AUTO_LIMIT_CHOICES {
                                     let e = entity.clone();
                                     m =
                                         m.item(
-                                            PopupMenuItem::new(format!(
+                                            ramag_ui::menu_item(format!(
                                                 "自动限制 {}",
                                                 format_thousands(n)
                                             ))
@@ -254,7 +262,7 @@ impl Render for QueryTab {
                                         );
                                 }
                                 let e = entity.clone();
-                                m.item(PopupMenuItem::new("关闭自动限制").on_click(
+                                m.item(ramag_ui::menu_item("关闭自动限制").on_click(
                                     move |_, _, app| {
                                         e.update(app, |this, cx| this.set_auto_limit(None, cx));
                                     },
@@ -267,7 +275,7 @@ impl Render for QueryTab {
                                 .items_center()
                                 .gap_1()
                                 .child(
-                                    Button::new("pager-prev")
+                                    ramag_ui::clickable_button("pager-prev")
                                         .ghost()
                                         .small()
                                         .icon(IconName::ChevronLeft)
@@ -281,7 +289,7 @@ impl Render for QueryTab {
                                 )
                                 .child(div().text_xs().text_color(muted_fg).child(label))
                                 .child(
-                                    Button::new("pager-next")
+                                    ramag_ui::clickable_button("pager-next")
                                         .ghost()
                                         .small()
                                         .icon(IconName::ChevronRight)
@@ -303,7 +311,7 @@ impl Render for QueryTab {
                                 (None, true) => "新增行（已在草稿中，先提交或取消）".into(),
                                 (None, false) => "新增行".into(),
                             };
-                        Button::new("toolbar-insert")
+                        ramag_ui::clickable_button("toolbar-insert")
                             .ghost()
                             .small()
                             .icon(IconName::Plus)
@@ -380,7 +388,7 @@ impl Render for QueryTab {
                             }))
                     })
                     .child(
-                        Button::new("toolbar-delete")
+                        ramag_ui::clickable_button("toolbar-delete")
                             .ghost()
                             .small()
                             .icon(IconName::Minus)
@@ -429,14 +437,14 @@ impl Render for QueryTab {
                                     let preview_for_content = preview.clone();
                                     let on_ok_indices = on_ok_indices.clone();
                                     let on_ok_single = on_ok_single;
-                                    let cancel = Button::new("del-row-cancel")
+                                    let cancel = ramag_ui::clickable_button("del-row-cancel")
                                         .ghost()
                                         .small()
                                         .label("取消")
                                         .on_click(|_: &ClickEvent, window, app| {
                                             window.close_dialog(app);
                                         });
-                                    let ok = Button::new("del-row-ok")
+                                    let ok = ramag_ui::clickable_button("del-row-ok")
                                         .danger()
                                         .small()
                                         .label("删除")
@@ -458,9 +466,14 @@ impl Render for QueryTab {
                                                     window.close_dialog(app);
                                                 }
                                             }
-                                        });
+                                    });
                                     dialog
-                                        .title(title)
+                                        .title(ramag_ui::closable_dialog_title(
+                                            "delete-row-close",
+                                            title,
+                                            |_, _| {},
+                                        ))
+                                        .close_button(false)
                                         .width(px(520.0))
                                         .margin_top(px(180.0))
                                         .content(move |c, _, cx| {
@@ -481,21 +494,28 @@ impl Render for QueryTab {
                             })),
                     )
                     .child(
-                        Button::new("export-btn")
+                        ramag_ui::clickable_button("export-btn")
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::download())
                             .tooltip("导出")
                             .disabled(!has_result)
-                            .dropdown_menu(|menu, _, _| {
-                                menu.menu("CSV", Box::new(ExportCsv))
-                                    .menu("JSON", Box::new(ExportJson))
-                                    .menu("Markdown", Box::new(ExportMarkdown))
+                            .pointer_dropdown_menu(|menu, _, _| {
+                                menu.item(
+                                    ramag_ui::menu_item("CSV").action(Box::new(ExportCsv)),
+                                )
+                                .item(
+                                    ramag_ui::menu_item("JSON").action(Box::new(ExportJson)),
+                                )
+                                .item(
+                                    ramag_ui::menu_item("Markdown")
+                                        .action(Box::new(ExportMarkdown)),
+                                )
                             }),
                     )
                     .when(running, |this| {
                         this.child(
-                            Button::new("cancel-query")
+                            ramag_ui::clickable_button("cancel-query")
                                 .danger()
                                 .small()
                                 .icon(IconName::Close)
@@ -507,7 +527,7 @@ impl Render for QueryTab {
                     })
                     .when(!running, |this| {
                         this.child(
-                            Button::new("run-query")
+                            ramag_ui::clickable_button("run-query")
                                 .primary()
                                 .small()
                                 .icon(IconName::Play)

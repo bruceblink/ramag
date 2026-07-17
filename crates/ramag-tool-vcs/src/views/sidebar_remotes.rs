@@ -7,10 +7,8 @@ use gpui::{
     Styled, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
+    h_flex, input::Input,
 };
 use ramag_domain::entities::Remote;
 
@@ -42,7 +40,7 @@ impl VcsView {
                 ),
             )
             .child(
-                Button::new("vcs-remote-create")
+                ramag_ui::clickable_button("vcs-remote-create")
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)

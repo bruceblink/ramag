@@ -4,14 +4,11 @@ use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::Input,
-    menu::{DropdownMenu as _, PopupMenuItem},
-    v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
+    h_flex, input::Input, v_flex,
 };
 use ramag_domain::entities::MAX_COMMIT_MESSAGE_BYTES;
+use ramag_ui::PointerDropdownMenu as _;
 
 use super::vcs_view::VcsView;
 
@@ -50,7 +47,7 @@ impl VcsView {
 
         // 主按钮：普通模式提交暂存区；Amend 模式改写上一次 commit
         let committing = self.busy_label == Some("提交中…");
-        let commit_btn = Button::new("vcs-commit")
+        let commit_btn = ramag_ui::clickable_button("vcs-commit")
             .primary()
             .small()
             .icon(ramag_ui::icons::git_commit())
@@ -82,12 +79,12 @@ impl VcsView {
         let amend_on = self.commit_amend;
         let sign_on = self.commit_sign;
         let entity = cx.entity();
-        let more_btn = Button::new("vcs-commit-more")
+        let more_btn = ramag_ui::clickable_button("vcs-commit-more")
             .primary()
             .small()
             .icon(IconName::ChevronDown)
             .tooltip("更多提交方式")
-            .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
+            .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let ent = entity.clone();
                 let label = if !has_head {
                     "Amend 上一次提交（暂无 commit）"
@@ -96,18 +93,20 @@ impl VcsView {
                 } else {
                     "Amend 上一次提交"
                 };
-                m = m.item(PopupMenuItem::new(label).disabled(!has_head).on_click(
-                    move |_, _, app| {
-                        ent.update(app, |this, cx| this.toggle_commit_amend(cx));
-                    },
-                ));
+                m = m.item(
+                    ramag_ui::menu_item_with_disabled(label, !has_head).on_click(
+                        move |_, _, app| {
+                            ent.update(app, |this, cx| this.toggle_commit_amend(cx));
+                        },
+                    ),
+                );
                 let ent = entity.clone();
                 let sign_label = if sign_on {
                     "✓ GPG 签名提交（点击关闭）"
                 } else {
                     "GPG 签名提交"
                 };
-                m = m.item(PopupMenuItem::new(sign_label).on_click(move |_, _, app| {
+                m = m.item(ramag_ui::menu_item(sign_label).on_click(move |_, _, app| {
                     ent.update(app, |this, cx| {
                         this.commit_sign = !this.commit_sign;
                         cx.notify();

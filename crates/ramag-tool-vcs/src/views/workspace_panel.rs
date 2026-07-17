@@ -10,9 +10,8 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    v_flex,
 };
 use ramag_domain::entities::{
     FileChangeKind, FileStatus, WorkingTreeStatus, contains_case_insensitive,
@@ -559,7 +558,7 @@ impl VcsView {
             let path_for_history = f.path.clone();
             let id = SharedString::from(format!("vcs-file-history-{idx}-{kind:?}"));
             Some(
-                Button::new(id)
+                ramag_ui::clickable_button(id)
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::scroll_text())
@@ -661,7 +660,7 @@ fn bulk_op_button(
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let id = SharedString::from(format!("vcs-bulk-{kind}-{title}"));
-    Button::new(id)
+    ramag_ui::clickable_button(id)
         .ghost()
         .xsmall()
         .icon(icon)

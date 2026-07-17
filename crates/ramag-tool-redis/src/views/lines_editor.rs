@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
     v_flex,
@@ -154,7 +154,7 @@ impl Render for LinesEditor {
             .items_center()
             .gap(px(10.0))
             .child(
-                Button::new("le-add")
+                ramag_ui::clickable_button("le-add")
                     .outline()
                     .small()
                     .icon(IconName::Plus)
@@ -195,11 +195,12 @@ impl Render for LinesEditor {
                         .bg(secondary_bg)
                         .border_color(border)
                         .text_color(fg)
-                        .cursor_pointer()
                         .hover(move |this| this.border_color(accent_border));
                 }
                 if self.disabled {
                     chip = chip.opacity(0.55);
+                } else {
+                    chip = chip.cursor_pointer();
                 }
                 chip
             };
@@ -243,7 +244,7 @@ impl Render for LinesEditor {
             // 仅在 >1 行时显示删除按钮（保留至少 1 行，无空态）
             if self.rows.len() > 1 {
                 line = line.child(
-                    Button::new(SharedString::from(format!("le-rm-{id}")))
+                    ramag_ui::clickable_button(SharedString::from(format!("le-rm-{id}")))
                         .ghost()
                         .small()
                         .icon(IconName::Close)

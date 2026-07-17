@@ -4,7 +4,7 @@
 //! 删除完成 emit KeysDeleted，上层据此清理详情面板
 
 use gpui::{Context, Entity};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use ramag_app::RedisService;
 use ramag_domain::entities::{
@@ -34,7 +34,7 @@ pub(super) fn node_context_menu(
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            PopupMenuItem::new("重命名 key").on_click(move |_, window, app| {
+            ramag_ui::menu_item("重命名 key").on_click(move |_, window, app| {
                 let (key, ent) = (key.clone(), ent.clone());
                 open_bounded_prompt(
                     "重命名 Key",
@@ -52,7 +52,7 @@ pub(super) fn node_context_menu(
         );
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            PopupMenuItem::new("删除 key").on_click(move |_, window, app| {
+            ramag_ui::menu_item("删除 key").on_click(move |_, window, app| {
                 let (key, ent) = (key.clone(), ent.clone());
                 open_confirm(
                     "删除 Key",
@@ -74,7 +74,7 @@ pub(super) fn node_context_menu(
     if is_namespace {
         let (prefix, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            PopupMenuItem::new("删除该前缀下全部 key").on_click(move |_, window, app| {
+            ramag_ui::menu_item("删除该前缀下全部 key").on_click(move |_, window, app| {
                 let (prefix, ent) = (prefix.clone(), ent.clone());
                 open_confirm(
                     "删除前缀下全部 Key",
@@ -104,7 +104,7 @@ pub(super) fn toolbar_more_menu(
     db: u8,
 ) -> PopupMenu {
     menu.item(
-        PopupMenuItem::new(format!("清空当前 DB {db}")).on_click(move |_, window, app| {
+        ramag_ui::menu_item(format!("清空当前 DB {db}")).on_click(move |_, window, app| {
             let ent = entity.clone();
             open_confirm(
                 "清空当前 DB",
