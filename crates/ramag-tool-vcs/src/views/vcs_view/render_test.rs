@@ -175,21 +175,23 @@ fn inject_file_content_session(v: &mut VcsView) {
     v.repo = Some(repo);
     v.active_view = ActiveView::Session;
 
-    let lines = (0..200)
+    let text = (0..200)
         .map(|index| format!("fn item_{index}() {{\tprintln!(\"{index}\"); }}"))
-        .collect::<Vec<_>>();
-    let document =
-        super::super::syntax::SyntaxDocument::new(lines.iter().map(String::as_str), Some("rust"));
+        .collect::<Vec<_>>()
+        .join("\n");
     let snapshot = FileContentSnapshot {
         path: "src/generated.rs".into(),
-        max_chars: document.max_cols(),
-        document: std::rc::Rc::new(document),
+        text: std::rc::Rc::new(text),
+        line_count: 200,
+        revision: 0,
+        dirty: false,
         truncated: false,
         binary: false,
         error: None,
     };
     v.selected_pf_path = Some(snapshot.path.clone());
     v.current_file_content = Some(snapshot.clone());
+    v.queue_project_editor_load(&snapshot);
     v.file_tabs = vec![FileTab {
         path: snapshot.path.clone(),
         source: FileTabSource::ProjectFiles,
@@ -255,7 +257,25 @@ fn vcs_view_renders_full_file_diff_mode(cx: &mut TestAppContext) {
     });
 }
 
-/// Project Files 直接查看同样走持久语法快照，重复渲染不重新解析且不 panic。
+/// Diff 全屏只改变布局，既有 Diff 快照仍可直接渲染。
+#[gpui::test]
+fn vcs_view_renders_diff_fullscreen_without_reloading(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    view.update(cx, |v, cx| {
+        inject_diff_session(v);
+        v.diff_fullscreen = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |v, _| {
+        assert!(v.diff_fullscreen);
+        assert!(v.current_diff.is_some());
+        assert!(!v.loading_diff);
+    });
+}
+
+/// Project Files 直接查看走原生 Code Editor，重复渲染不 panic。
 #[gpui::test]
 fn vcs_view_renders_project_file_content_without_panic(cx: &mut TestAppContext) {
     let (view, cx) = add_vcs_window(cx);
@@ -269,9 +289,10 @@ fn vcs_view_renders_project_file_content_without_panic(cx: &mut TestAppContext) 
         assert_eq!(
             v.current_file_content
                 .as_ref()
-                .map(|snapshot| snapshot.document.len()),
+                .map(|snapshot| snapshot.line_count),
             Some(200)
         );
+        assert_eq!(v.pf_editor_loaded_path.as_deref(), Some("src/generated.rs"));
     });
 
     view.update(cx, |_, cx| cx.notify());

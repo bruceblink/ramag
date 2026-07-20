@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gpui::{App, Global, Hsla, hsla};
-use gpui_component::{Theme, ThemeMode};
+use gpui_component::{Theme, ThemeMode, highlighter::HighlightTheme};
 use ramag_domain::traits::Storage;
 
 /// 让 UI 层切主题时访问 Storage 做持久化
@@ -42,20 +42,30 @@ pub fn apply_theme(mode: Mode, cx: &mut App) {
         }
     }
     // 命令编辑器背景对齐主背景：gpui 默认 editor.background 是纯黑，浮在主背景上显突兀
-    unify_editor_background(cx);
+    normalize_editor_highlight_theme(mode, cx);
 }
 
-/// 命令编辑器（code_editor）背景对齐主背景：gpui 默认 highlight 的 editor.background
-/// 是纯黑 #0a0a0a，浮在 ramag 主背景（深灰 / 白）上很突兀；这里只改背景、保留语法配色
-fn unify_editor_background(cx: &mut App) {
+/// 编辑器背景对齐主背景；浅色默认主题把注释设成亮蓝色，这里改为更常见的绿色注释。
+fn normalize_editor_highlight_theme(mode: Mode, cx: &mut App) {
     let theme = Theme::global_mut(cx);
     let bg = theme.background;
-    if theme.highlight_theme.style.editor_background == Some(bg) {
-        return;
-    }
-    let mut hl = (*theme.highlight_theme).clone();
-    hl.style.editor_background = Some(bg);
+    let hl = normalized_editor_highlight_theme(mode, bg, &theme.highlight_theme);
     theme.highlight_theme = Arc::new(hl);
+}
+
+fn normalized_editor_highlight_theme(
+    mode: Mode,
+    bg: Hsla,
+    source: &HighlightTheme,
+) -> HighlightTheme {
+    let mut hl = source.clone();
+    hl.style.editor_background = Some(bg);
+    if matches!(mode, Mode::Light) {
+        let comment = hl.style.syntax.string;
+        hl.style.syntax.comment = comment;
+        hl.style.syntax.comment_doc = comment;
+    }
+    hl
 }
 
 pub fn current_mode(cx: &App) -> Mode {
@@ -203,5 +213,41 @@ impl Opacity for Hsla {
     fn opacity(mut self, alpha: f32) -> Self {
         self.a = alpha.clamp(0.0, 1.0);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_editor_comments_are_readable_and_background_matches_app() {
+        let source = HighlightTheme::default_light();
+        let bg = hsl(0.0, 0.0, 100.0);
+
+        let normalized = normalized_editor_highlight_theme(Mode::Light, bg, &source);
+
+        assert_eq!(normalized.style.editor_background, Some(bg));
+        assert_eq!(
+            normalized.style.syntax.comment,
+            normalized.style.syntax.string
+        );
+        assert_eq!(
+            normalized.style.syntax.comment_doc,
+            normalized.style.syntax.string
+        );
+    }
+
+    #[test]
+    fn dark_editor_keeps_existing_comment_style() {
+        let source = HighlightTheme::default_dark();
+        let normalized =
+            normalized_editor_highlight_theme(Mode::Dark, hsl(0.0, 0.0, 12.0), &source);
+
+        assert_eq!(normalized.style.syntax.comment, source.style.syntax.comment);
+        assert_eq!(
+            normalized.style.syntax.comment_doc,
+            source.style.syntax.comment_doc
+        );
     }
 }

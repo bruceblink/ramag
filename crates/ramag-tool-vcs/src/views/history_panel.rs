@@ -170,6 +170,8 @@ impl VcsView {
                         })),
                 )
             })
+            .child(self.render_sync_quick_action(cx))
+            .child(self.render_remote_actions(cx))
             .into_any_element()
     }
 

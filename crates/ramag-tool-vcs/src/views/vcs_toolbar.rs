@@ -1,4 +1,4 @@
-//! Files toolbar 远端操作：dropdown（Fetch / Pull / Push / 强推）
+//! History / Graph 工具栏远端操作：快捷同步 + dropdown（Fetch / Pull / Push / 强推）
 
 use gpui::{AnyElement, ClickEvent, Context, IntoElement, ParentElement as _, Styled as _, div};
 use gpui_component::{

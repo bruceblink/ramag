@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, ScrollHandle, UniformListScrollHandle, Window};
 use gpui_component::{
-    input::{InputEvent, InputState},
+    input::{InputEvent, InputState, TabSize},
     notification::Notification,
     resizable::ResizableState,
 };
@@ -78,6 +78,18 @@ impl VcsView {
         let files_search_input = cx.new(|cx_inner| {
             ramag_ui::bounded_search_input(window, cx_inner).placeholder("搜索文件路径")
         });
+        let pf_editor = cx.new(|cx_inner| {
+            InputState::new(window, cx_inner)
+                .code_editor("text")
+                .line_number(true)
+                .soft_wrap(false)
+                .tab_size(TabSize {
+                    tab_size: 4,
+                    hard_tabs: false,
+                })
+                .indent_guides(false)
+                .folding(false)
+        });
         // 提交草稿输入即防抖持久化（重启后可恢复；切仓恢复走 session cache）。
         // 恢复写回用 set_value（不发 Change），不会触发本订阅形成回写环
         let commit_input_for_sub = commit_input.clone();
@@ -135,6 +147,38 @@ impl VcsView {
                     this.apply_history_search(cx);
                 }
                 _ => {}
+            },
+        )
+        .detach();
+        // Code Editor 的 set_value 不发 Change；这里收到的均是用户编辑。
+        let pf_editor_for_sub = pf_editor.clone();
+        cx.subscribe_in(
+            &pf_editor,
+            window,
+            move |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::Change)
+                    || this.pf_editor_loaded_path != this.selected_pf_path
+                {
+                    return;
+                }
+                if ramag_ui::clamp_multiline_input_value(
+                    &pf_editor_for_sub,
+                    super::super::vcs_view_ops_repo::PF_FILE_MAX_BYTES as usize,
+                    window,
+                    cx,
+                ) {
+                    this.pending_notification = Some(
+                        Notification::warning("文件编辑最多保留 4 MiB，超出部分已截断")
+                            .autohide(true),
+                    );
+                }
+                this.pf_editor_revision = this.pf_editor_revision.wrapping_add(1);
+                this.pf_editor_dirty = true;
+                this.pf_editor_line_count = pf_editor_for_sub
+                    .read(cx)
+                    .text()
+                    .len_lines(ropey::LineType::LF);
+                cx.notify();
             },
         )
         .detach();
@@ -265,9 +309,16 @@ impl VcsView {
             project_scroll: UniformListScrollHandle::new(),
             selected_pf_path: None,
             current_file_content: None,
+            pf_editor,
+            pending_pf_editor_load: None,
+            pf_editor_loaded_path: None,
+            pf_editor_dirty: false,
+            pf_editor_revision: 0,
+            pf_editor_line_count: 0,
             loading_file_content: false,
             file_content_request_seq: 0,
-            pf_content_scroll: UniformListScrollHandle::new(),
+            saving_file_content: false,
+            file_save_request_seq: 0,
             diff_scroll: UniformListScrollHandle::new(),
             commit_files_scroll: UniformListScrollHandle::new(),
             changes_scroll: UniformListScrollHandle::new(),
@@ -278,9 +329,10 @@ impl VcsView {
             reflog_scroll: UniformListScrollHandle::new(),
             stash_scroll: UniformListScrollHandle::new(),
             rebase_scroll: UniformListScrollHandle::new(),
-            pf_content_h_scroll: ScrollHandle::new(),
+            file_tabs_h_scroll: ScrollHandle::new(),
             diff_h_scroll: ScrollHandle::new(),
             history_pane_visible: false,
+            diff_fullscreen: false,
             open_repos: Vec::new(),
             startup_repo_restore_allowed: true,
             repos_scroll: ScrollHandle::new(),

@@ -36,8 +36,8 @@ use ramag_tool_dbclient::{
 };
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
 use ramag_tool_vcs::{
-    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, ToggleHistoryPane, VcsTool,
-    create_vcs_view,
+    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
+    ToggleHistoryPane, VcsTool, create_vcs_view,
 };
 use ramag_ui::{
     CloseTab, CycleSection, CycleSectionReverse, HomeEvent, HomeView, NavTarget, RamagAssets,
@@ -370,6 +370,7 @@ fn main() {
             KeyBinding::new("secondary-shift-k", PushNow, Some("VcsView")),
             KeyBinding::new("secondary-t", PullNow, Some("VcsView")),
             KeyBinding::new("secondary-r", RefreshWorkspace, Some("VcsView")),
+            KeyBinding::new("secondary-s", SaveProjectFile, Some("VcsView")),
             KeyBinding::new("secondary-shift-h", ToggleHistoryPane, Some("VcsView")),
             // 剪贴板视图快捷键（KeyContext=ClipboardView，焦点在剪贴板视图时生效）
             KeyBinding::new("secondary-f", FocusClipSearch, Some("ClipboardView")),

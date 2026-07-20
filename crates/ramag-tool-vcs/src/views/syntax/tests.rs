@@ -49,23 +49,23 @@ fn unknown_or_no_extension_is_none() {
 }
 
 #[test]
-fn display_line_expands_tabs_and_bounds_long_utf8_text() {
+fn display_line_expands_tabs_and_keeps_long_utf8_text() {
     let short = prepare_display_line("a\tb");
     assert_eq!(short.text, "a   b");
     assert_eq!(short.cols, 5);
 
-    let long = prepare_display_line(&"中".repeat(MAX_RENDER_LINE_BYTES));
-    assert!(long.text.len() <= MAX_RENDER_LINE_BYTES);
-    assert!(long.text.ends_with(TRUNCATED_LINE_SUFFIX));
-    assert!(long.text.is_char_boundary(long.highlight_len));
+    let source = "中".repeat(MAX_HIGHLIGHT_LINE_BYTES);
+    let long = prepare_display_line(&source);
+    assert_eq!(long.text, source);
+    assert_eq!(long.highlight_len, None);
 }
 
 #[test]
 fn syntax_document_keeps_lines_and_bounded_width() {
     let lines = ["fn main() {", "\tprintln!(\"ok\");", "}"];
     let document = SyntaxDocument::new(lines, Some("rust"));
-    assert_eq!(document.len(), 3);
-    assert_eq!(document.max_cols(), 19);
+    assert_eq!(document.lines.len(), 3);
+    assert_eq!(display_cols(lines[1]), 19);
 
     let theme = HighlightTheme::default_dark();
     let key = highlight_theme_key(&theme);

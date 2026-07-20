@@ -1,4 +1,4 @@
-//! 文件读盘 + 大文件截断 + 二进制识别 + worker 语法快照 + 主线程 finalize
+//! 文件读盘 + 大文件截断 + 二进制识别 + 安全写回 + 主线程 finalize
 
 use super::{PF_FILE_MAX_BYTES, RawFileContent};
 use crate::views::helpers::FileContentSnapshot;
@@ -6,8 +6,8 @@ use crate::views::helpers::FileContentSnapshot;
 /// worker 构建完成、尚未包 Rc 的文件快照，可安全跨线程返回 UI。
 pub(super) struct PreparedFileContent {
     path: String,
-    document: crate::views::syntax::SyntaxDocument,
-    max_chars: usize,
+    text: String,
+    line_count: usize,
     truncated: bool,
     binary: bool,
     error: Option<String>,
@@ -131,15 +131,14 @@ fn decode_preview_text(bytes: Vec<u8>, truncated: bool) -> Option<String> {
     }
 }
 
-/// worker 阶段：一次完成语法解析、Tab 展开和长行保护。
+/// worker 阶段：把按行读盘结果恢复为完整正文；语法解析交给 Code Editor 增量完成。
 pub(super) fn prepare_file_snapshot(raw: RawFileContent) -> PreparedFileContent {
-    let lang = crate::views::syntax::lang_for_path(&raw.path);
-    let document =
-        crate::views::syntax::SyntaxDocument::new(raw.lines.iter().map(String::as_str), lang);
+    let line_count = raw.lines.len();
+    let text = raw.lines.join("\n");
     PreparedFileContent {
         path: raw.path,
-        max_chars: document.max_cols(),
-        document,
+        text,
+        line_count,
         truncated: raw.truncated,
         binary: raw.binary,
         error: raw.error,
@@ -150,12 +149,56 @@ pub(super) fn prepare_file_snapshot(raw: RawFileContent) -> PreparedFileContent 
 pub(super) fn finalize_file_snapshot(prepared: PreparedFileContent) -> FileContentSnapshot {
     FileContentSnapshot {
         path: prepared.path,
-        document: std::rc::Rc::new(prepared.document),
-        max_chars: prepared.max_chars,
+        text: std::rc::Rc::new(prepared.text),
+        line_count: prepared.line_count,
+        revision: 0,
+        dirty: false,
         truncated: prepared.truncated,
         binary: prepared.binary,
         error: prepared.error,
     }
+}
+
+/// 将编辑器正文写回仓库内的既有普通文件。
+pub(in crate::views) fn write_project_file(
+    repo_root: &std::path::Path,
+    rel: &str,
+    text: &str,
+) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let abs = resolve_repo_file(repo_root, rel)?;
+    let root = repo_root
+        .canonicalize()
+        .map_err(|error| format!("无法确认仓库目录: {error}"))?;
+    let parent = abs
+        .parent()
+        .ok_or_else(|| "文件缺少父目录".to_string())?
+        .canonicalize()
+        .map_err(|error| format!("无法确认文件目录: {error}"))?;
+    if !parent.starts_with(&root) {
+        return Err("文件路径试图越出仓库目录".into());
+    }
+
+    let metadata =
+        std::fs::symlink_metadata(&abs).map_err(|error| format!("无法访问待保存文件: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("为保护本地文件，不写入符号链接".into());
+    }
+    if !metadata.is_file() {
+        return Err("保存目标不是普通文件".into());
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&abs)
+        .map_err(|error| format!("打开待保存文件失败: {error}"))?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| format!("写入文件失败: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("同步文件到磁盘失败: {error}"))?;
+    Ok(())
 }
 
 /// 读取文件前 `limit` 字节（用于大文件截断预览）
@@ -169,7 +212,10 @@ fn read_first_bytes(path: &std::path::Path, limit: usize) -> std::io::Result<Vec
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_preview_text, read_raw_file_content, resolve_repo_file};
+    use super::{
+        decode_preview_text, prepare_file_snapshot, read_raw_file_content, resolve_repo_file,
+        write_project_file,
+    };
 
     #[test]
     fn repository_file_path_cannot_escape_root() {
@@ -189,6 +235,45 @@ mod tests {
             Some("a")
         );
         assert!(decode_preview_text(vec![b'a', 0xff, b'b'], false).is_none());
+    }
+
+    #[test]
+    fn prepared_snapshot_preserves_long_lines_and_trailing_newline() {
+        let long_line = "a".repeat(4096);
+        let prepared = prepare_file_snapshot(super::RawFileContent {
+            path: "config.json".into(),
+            lines: vec![long_line.clone(), "第二行".into(), String::new()],
+            truncated: false,
+            binary: false,
+            error: None,
+        });
+
+        assert_eq!(prepared.text, format!("{long_line}\n第二行\n"));
+        assert_eq!(prepared.line_count, 3);
+    }
+
+    #[test]
+    fn project_file_write_updates_regular_file() -> std::io::Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ramag-vcs-write-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let file = root.join("main.rs");
+        std::fs::write(&file, b"old")?;
+
+        assert!(write_project_file(&root, "main.rs", "new\n").is_ok());
+        assert_eq!(std::fs::read_to_string(&file)?, "new\n");
+
+        std::fs::remove_file(file)?;
+        std::fs::remove_dir(root)?;
+        Ok(())
     }
 
     #[cfg(unix)]

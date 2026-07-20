@@ -33,3 +33,8 @@ pub struct RefreshWorkspace;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct ToggleHistoryPane;
+
+/// 保存 Project Files 当前编辑文件（默认主修饰键+S）
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag_vcs)]
+pub struct SaveProjectFile;

@@ -5,7 +5,8 @@ pub mod views;
 mod watcher;
 
 pub use actions::{
-    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, ToggleHistoryPane,
+    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
+    ToggleHistoryPane,
 };
 pub use views::vcs_view::VcsView;
 

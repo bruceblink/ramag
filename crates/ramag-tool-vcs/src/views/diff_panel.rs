@@ -57,7 +57,8 @@ pub(super) fn render_file_diff(
     }
     // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
     let diff_rc: Rc<FileDiff> = diff.clone();
-    let total = keys.len();
+    // 末尾追加一行空白，让最后一行代码不会紧贴面板底边。
+    let total = keys.len().saturating_add(1);
     let scroll = scroll.clone();
     let h_scroll = h_scroll.clone();
 
@@ -79,44 +80,49 @@ pub(super) fn render_file_diff(
                 let highlight_theme = theme.highlight_theme.clone();
                 let theme_key = super::syntax::highlight_theme_key(&highlight_theme);
                 range
-                    .map(|i| match keys[i] {
-                        UnifiedKey::Header { hunk_idx } => render_hunk_header_unified(
-                            &diff_rc.hunks[hunk_idx],
-                            hunk_idx,
-                            false,
-                            mono.clone(),
-                            muted_fg,
-                            muted_bg,
-                            cx,
-                        )
-                        .into_any_element(),
-                        UnifiedKey::Line { hunk_idx, line_idx } => {
-                            let line = &diff_rc.hunks[hunk_idx].lines[line_idx];
-                            let code_line = syntax
-                                .as_ref()
-                                .and_then(|syntax| {
-                                    syntax.unified_line(
-                                        hunk_idx,
-                                        line_idx,
-                                        line.kind,
-                                        &highlight_theme,
-                                        theme_key,
-                                    )
-                                })
-                                .unwrap_or_else(|| super::syntax::plain_code_line(&line.text));
-                            render_diff_line(
-                                line,
+                    .map(|i| {
+                        if i == keys.len() {
+                            return div().w_full().h(px(DIFF_ROW_H)).into_any_element();
+                        }
+                        match keys[i] {
+                            UnifiedKey::Header { hunk_idx } => render_hunk_header_unified(
+                                &diff_rc.hunks[hunk_idx],
                                 hunk_idx,
-                                line_idx,
-                                code_line,
+                                false,
                                 mono.clone(),
-                                fg,
                                 muted_fg,
-                                content_w,
-                                allow_blame,
+                                muted_bg,
                                 cx,
                             )
-                            .into_any_element()
+                            .into_any_element(),
+                            UnifiedKey::Line { hunk_idx, line_idx } => {
+                                let line = &diff_rc.hunks[hunk_idx].lines[line_idx];
+                                let code_line = syntax
+                                    .as_ref()
+                                    .and_then(|syntax| {
+                                        syntax.unified_line(
+                                            hunk_idx,
+                                            line_idx,
+                                            line.kind,
+                                            &highlight_theme,
+                                            theme_key,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| super::syntax::plain_code_line(&line.text));
+                                render_diff_line(
+                                    line,
+                                    hunk_idx,
+                                    line_idx,
+                                    code_line,
+                                    mono.clone(),
+                                    fg,
+                                    muted_fg,
+                                    content_w,
+                                    allow_blame,
+                                    cx,
+                                )
+                                .into_any_element()
+                            }
                         }
                     })
                     .collect::<Vec<_>>()

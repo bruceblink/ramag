@@ -96,14 +96,20 @@ pub(super) fn node_context_menu(
     menu
 }
 
-/// 工具栏「更多操作」下拉菜单：只放 DB 级毁灭性操作，
-/// 与 key 节点右键菜单隔离，避免误触
+/// 工具栏「更多」下拉菜单：新建 Key + DB 级毁灭性操作（清空 DB）。
+/// 毁灭性操作与 key 节点右键菜单隔离，避免误触
 pub(super) fn toolbar_more_menu(
     menu: PopupMenu,
     entity: Entity<KeyTreePanel>,
     db: u8,
 ) -> PopupMenu {
+    let entity_for_create = entity.clone();
     menu.item(
+        ramag_ui::menu_item("新建 Key").on_click(move |_, _window, app| {
+            entity_for_create.update(app, |_this, cx| cx.emit(KeyTreeEvent::RequestCreate));
+        }),
+    )
+    .item(
         ramag_ui::menu_item(format!("清空当前 DB {db}")).on_click(move |_, window, app| {
             let ent = entity.clone();
             open_confirm(

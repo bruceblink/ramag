@@ -98,6 +98,25 @@ impl Render for VcsView {
                 }
             });
         }
+        if let Some(load) = self.pending_pf_editor_load.take() {
+            let super::super::helpers::PendingFileEditorLoad {
+                path,
+                text,
+                language,
+            } = load;
+            let editor = self.pf_editor.clone();
+            cx.defer_in(window, move |this, window, cx| {
+                if this.selected_pf_path.as_deref() != Some(path.as_str()) {
+                    return;
+                }
+                editor.update(cx, |state, cx| {
+                    state.set_highlighter(language, cx);
+                    state.set_value(text.as_ref().clone(), window, cx);
+                });
+                this.pf_editor_loaded_path = Some(path);
+                cx.notify();
+            });
+        }
         let theme = cx.theme();
         let bg = theme.background;
         let muted_fg = theme.muted_foreground;
@@ -181,6 +200,11 @@ impl Render for VcsView {
                     if this.repo.is_some() && !this.loading && !this.busy {
                         this.refresh_workspace_silent(cx);
                     }
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::SaveProjectFile, _, cx| {
+                    this.save_project_file(cx);
                 }),
             )
             // cmd-shift-k / cmd-t：push / pull 当前分支

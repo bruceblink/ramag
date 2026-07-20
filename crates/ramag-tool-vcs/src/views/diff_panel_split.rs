@@ -213,7 +213,8 @@ pub(super) fn render_file_diff_split(
 
     // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
     let diff_rc: Rc<FileDiff> = diff.clone();
-    let total = keys.len();
+    // 末尾追加一行空白，让最后一行代码不会紧贴面板底边。
+    let total = keys.len().saturating_add(1);
 
     let scroll_v = scroll.clone();
     let h_shared = h_scroll.clone();
@@ -362,27 +363,32 @@ fn build_gutter_list(
             let muted_fg = theme.muted_foreground;
             let muted_bg = theme.muted;
             range
-                .map(|i| match keys[i] {
-                    SplitKey::Header { .. } => render_gutter_header(muted_bg),
-                    SplitKey::Pair {
-                        hunk_idx,
-                        left,
-                        right,
-                    } => {
-                        let line_idx = if is_left { left } else { right };
-                        let line = line_idx.map(|li| (li, &diff_rc.hunks[hunk_idx].lines[li]));
-                        render_gutter_cell(
-                            side,
-                            line,
-                            hunk_idx,
-                            is_left,
-                            muted_fg,
-                            mono.clone(),
-                            allow_blame,
-                            cx,
-                        )
+                .map(|i| {
+                    if i == keys.len() {
+                        return div().w_full().h(px(DIFF_ROW_H)).into_any_element();
                     }
-                    SplitKey::Spacer { .. } => render_gutter_spacer(side, muted_bg),
+                    match keys[i] {
+                        SplitKey::Header { .. } => render_gutter_header(muted_bg),
+                        SplitKey::Pair {
+                            hunk_idx,
+                            left,
+                            right,
+                        } => {
+                            let line_idx = if is_left { left } else { right };
+                            let line = line_idx.map(|li| (li, &diff_rc.hunks[hunk_idx].lines[li]));
+                            render_gutter_cell(
+                                side,
+                                line,
+                                hunk_idx,
+                                is_left,
+                                muted_fg,
+                                mono.clone(),
+                                allow_blame,
+                                cx,
+                            )
+                        }
+                        SplitKey::Spacer { .. } => render_gutter_spacer(side, muted_bg),
+                    }
                 })
                 .collect::<Vec<_>>()
         }),
@@ -417,49 +423,56 @@ fn build_content_list(
             let highlight_theme = theme.highlight_theme.clone();
             let theme_key = super::syntax::highlight_theme_key(&highlight_theme);
             range
-                .map(|i| match keys[i] {
-                    SplitKey::Header { hunk_idx } => render_content_header(
-                        &diff_rc.hunks[hunk_idx],
-                        mono.clone(),
-                        muted_fg,
-                        muted_bg,
-                    ),
-                    SplitKey::Pair {
-                        hunk_idx,
-                        left,
-                        right,
-                    } => {
-                        let line_idx = if is_left { left } else { right };
-                        let line = line_idx.map(|li| (li, &diff_rc.hunks[hunk_idx].lines[li]));
-                        let code_line = line.map(|(line_idx, line)| {
-                            syntax
-                                .as_ref()
-                                .and_then(|syntax| {
-                                    syntax.side_line(
-                                        hunk_idx,
-                                        line_idx,
-                                        is_left,
-                                        &highlight_theme,
-                                        theme_key,
-                                    )
-                                })
-                                .unwrap_or_else(|| super::syntax::plain_code_line(&line.text))
-                        });
-                        render_content_cell(
-                            side,
-                            line,
-                            hunk_idx,
-                            code_line,
-                            fg,
-                            mono.clone(),
-                            content_w,
-                        )
+                .map(|i| {
+                    if i == keys.len() {
+                        return div().w_full().h(px(DIFF_ROW_H)).into_any_element();
                     }
-                    SplitKey::Spacer {
-                        hunk_idx,
-                        run_start,
-                        skipped,
-                    } => render_content_spacer(side, hunk_idx, run_start, skipped, muted_fg, cx),
+                    match keys[i] {
+                        SplitKey::Header { hunk_idx } => render_content_header(
+                            &diff_rc.hunks[hunk_idx],
+                            mono.clone(),
+                            muted_fg,
+                            muted_bg,
+                        ),
+                        SplitKey::Pair {
+                            hunk_idx,
+                            left,
+                            right,
+                        } => {
+                            let line_idx = if is_left { left } else { right };
+                            let line = line_idx.map(|li| (li, &diff_rc.hunks[hunk_idx].lines[li]));
+                            let code_line = line.map(|(line_idx, line)| {
+                                syntax
+                                    .as_ref()
+                                    .and_then(|syntax| {
+                                        syntax.side_line(
+                                            hunk_idx,
+                                            line_idx,
+                                            is_left,
+                                            &highlight_theme,
+                                            theme_key,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| super::syntax::plain_code_line(&line.text))
+                            });
+                            render_content_cell(
+                                side,
+                                line,
+                                hunk_idx,
+                                code_line,
+                                fg,
+                                mono.clone(),
+                                content_w,
+                            )
+                        }
+                        SplitKey::Spacer {
+                            hunk_idx,
+                            run_start,
+                            skipped,
+                        } => {
+                            render_content_spacer(side, hunk_idx, run_start, skipped, muted_fg, cx)
+                        }
+                    }
                 })
                 .collect::<Vec<_>>()
         }),
@@ -505,6 +518,9 @@ fn build_middle_list(
             let busy = this.busy;
             range
                 .map(|i| {
+                    if i == keys.len() {
+                        return div().w_full().h(px(DIFF_ROW_H)).into_any_element();
+                    }
                     // hunk 中点行 + 可回滚：渲染居中回滚按钮（替换该行 blame，仿 VSCode）
                     if enable_discard && let Some(&hunk_idx) = button_rows.get(&i) {
                         return render_middle_revert(hunk_idx, staged_diff, busy, cx);

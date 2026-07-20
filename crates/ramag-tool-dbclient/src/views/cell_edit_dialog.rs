@@ -102,8 +102,8 @@ pub(super) fn open(
             ))
             .close_button(false)
             // 显式宽度让 Dialog 在水平方向居中（gpui-component 内部用 width/2 算 x）
-            .width(px(560.0))
-            .margin_top(px(140.0))
+            .width(px(760.0))
+            .margin_top(px(120.0))
             .content(move |content, _, cx| {
                 let theme = cx.theme();
                 let muted_fg = theme.muted_foreground;
@@ -130,7 +130,7 @@ pub(super) fn open(
                         .child(hint)
                         // 显式给 Input 一个固定高度才能真正渲染成多行文本域
                         // 否则被 dialog content 的默认布局压成单行
-                        .child(Input::new(&input_for_content).h(px(220.0))),
+                        .child(Input::new(&input_for_content).h(px(420.0))),
                 )
             })
             .footer(

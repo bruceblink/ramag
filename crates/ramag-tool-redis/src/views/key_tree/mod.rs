@@ -417,7 +417,7 @@ impl Render for KeyTreePanel {
                         }
                         // 自建实例可配 databases > 16：提供自由输入入口（0-255）
                         let entity_for_prompt = session_entity.clone();
-                        m = m.item(ramag_ui::menu_item("  其他 DB…").on_click(
+                        m = m.item(ramag_ui::menu_item("  自定义").on_click(
                             move |_, window, app| {
                                 let entity = entity_for_prompt.clone();
                                 ramag_ui::open_bounded_prompt(
@@ -455,7 +455,7 @@ impl Render for KeyTreePanel {
                     }),
             );
 
-        // 顶部第 2 行：搜索 + 新建 Key + 全展开 / 全折叠 / 刷新
+        // 顶部第 2 行：搜索 + 刷新 + 展开/折叠 + 命令行 + 更多（新建与清空 DB 收进「更多」）
         let header = h_flex()
             .w_full()
             .px(px(10.0))
@@ -471,44 +471,8 @@ impl Render for KeyTreePanel {
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             )
-            .child(
-                ramag_ui::clickable_button("redis-key-create")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .disabled(read_only || mutating)
-                    .tooltip(if read_only {
-                        "生产连接为只读，不能新建 Key"
-                    } else if mutating {
-                        "上一项写操作尚未完成"
-                    } else {
-                        "新建 Key"
-                    })
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                        cx.emit(KeyTreeEvent::RequestCreate);
-                    })),
-            )
             .child({
-                let any_expanded = !self.expanded.is_empty();
-                let (icon, tip) = if any_expanded {
-                    (IconName::FolderOpen, "全部折叠命名空间")
-                } else {
-                    (IconName::FolderClosed, "全部展开命名空间")
-                };
-                ramag_ui::clickable_button("redis-key-toggle-all")
-                    .ghost()
-                    .xsmall()
-                    .icon(icon)
-                    .tooltip(tip)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if any_expanded {
-                            this.collapse_all(cx);
-                        } else {
-                            this.expand_all(cx);
-                        }
-                    }))
-            })
-            .child({
+                // 刷新 / 停止扫描移到最前：高频操作触手可及。
                 // 扫描中该位变「停止」：保留已加载部分，随时可中断大库扫描
                 let scanning = self.loading;
                 let (icon, tip) = if scanning {
@@ -529,6 +493,26 @@ impl Render for KeyTreePanel {
                         }
                     }))
             })
+            .child({
+                let any_expanded = !self.expanded.is_empty();
+                let (icon, tip) = if any_expanded {
+                    (IconName::FolderOpen, "全部折叠命名空间")
+                } else {
+                    (IconName::FolderClosed, "全部展开命名空间")
+                };
+                ramag_ui::clickable_button("redis-key-toggle-all")
+                    .ghost()
+                    .xsmall()
+                    .icon(icon)
+                    .tooltip(tip)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if any_expanded {
+                            this.collapse_all(cx);
+                        } else {
+                            this.expand_all(cx);
+                        }
+                    }))
+            })
             .child(
                 ramag_ui::clickable_button("redis-open-console")
                     .ghost()
@@ -540,21 +524,26 @@ impl Render for KeyTreePanel {
                     })),
             )
             .child({
-                // DB 级毁灭性操作独立入口（清空当前 DB），不与 key 右键菜单混排
+                // 新建 Key + DB 级毁灭性操作收进「更多」菜单，工具栏更清爽
                 let entity_for_menu = cx.entity().clone();
                 let current_db = self.db;
+                // 正常态不显示 tooltip；禁用时才说明原因（只读 / 写操作进行中）
+                let more_tip: Option<&'static str> = if read_only {
+                    Some("生产连接为只读")
+                } else if mutating {
+                    Some("上一项写操作尚未完成")
+                } else {
+                    None
+                };
                 ramag_ui::clickable_button("redis-key-more")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::ellipsis())
-                    .tooltip(if mutating {
-                        "上一项写操作尚未完成"
-                    } else {
-                        "更多操作"
-                    })
                     .disabled(read_only || mutating)
+                    .when_some(more_tip, |b, tip| b.tooltip(tip))
+                    // 菜单顶部左角锚在按钮上，向右下方展开（不往上弹遮挡工具栏）
                     .pointer_dropdown_menu_with_anchor(
-                        gpui::Anchor::BottomRight,
+                        gpui::Anchor::TopLeft,
                         move |menu, _, _| {
                             ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
                         },

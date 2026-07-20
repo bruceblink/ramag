@@ -179,8 +179,8 @@ impl VcsView {
             .and_then(|i| self.file_tabs.get(i))
             .map(|t| (t.path.clone(), t.source.clone()));
 
-        // 文件标签最多 32 个，但仓库变更文件可能很多；预建借用索引把 O(tabs × files)
-        // 的重复线性搜索降为 O(files + tabs)，同时不克隆路径与整份 FileStatus。
+        // 预建借用索引，把 O(tabs × files) 的重复线性搜索降为 O(files + tabs)，
+        // 同时不克隆路径与整份 FileStatus。
         let files_by_path: HashMap<&str, &FileStatus> = status
             .files
             .iter()

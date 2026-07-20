@@ -185,6 +185,7 @@ fn render_reflog_row(
         .flex_none()
         .gap(px(8.0))
         .items_center()
+        .overflow_hidden()
         .px(px(6.0))
         .rounded(px(3.0))
         .hover(move |this| this.bg(hover_bg))
@@ -195,6 +196,9 @@ fn render_reflog_row(
                 .font_family(mono.clone())
                 .text_xs()
                 .text_color(accent)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
                 .child(short_hash.to_string()),
         )
         .child(
@@ -204,15 +208,21 @@ fn render_reflog_row(
                 .font_family(mono.clone())
                 .text_xs()
                 .text_color(muted_fg)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
                 .child(super::inline_text_preview(&e.selector, 80)),
         )
         .child(
             div()
                 .flex_none()
-                .w(px(72.0))
+                .w(px(104.0))
                 .text_xs()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(action_color)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
                 .child(super::inline_text_preview(&e.action, 60)),
         )
         .child(
@@ -223,6 +233,7 @@ fn render_reflog_row(
                 .text_color(fg)
                 .overflow_hidden()
                 .text_ellipsis()
+                .whitespace_nowrap()
                 .child(super::inline_text_preview(&e.subject, 240)),
         )
         .child(
@@ -232,6 +243,9 @@ fn render_reflog_row(
                 .text_xs()
                 .text_color(muted_fg)
                 .font_family(mono)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
                 .child(time_str),
         )
         .child(

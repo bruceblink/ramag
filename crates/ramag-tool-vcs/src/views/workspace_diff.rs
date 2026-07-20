@@ -159,7 +159,8 @@ impl VcsView {
             .flex_none()
             .border_b_1()
             .border_color(border)
-            .overflow_x_scroll();
+            .overflow_x_scroll()
+            .track_scroll(&self.file_tabs_h_scroll);
 
         for (idx, tab) in self.file_tabs.iter().enumerate() {
             let is_active = self.active_file_tab_idx == Some(idx);
@@ -298,6 +299,22 @@ impl VcsView {
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_diff_ignore_whitespace(cx);
             }));
+        let fullscreen_btn = ramag_ui::clickable_button("vcs-diff-fullscreen")
+            .ghost()
+            .xsmall()
+            .icon(if self.diff_fullscreen {
+                IconName::Minimize
+            } else {
+                IconName::Maximize
+            })
+            .tooltip(if self.diff_fullscreen {
+                "退出 Diff 全屏"
+            } else {
+                "Diff 全屏"
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.toggle_diff_fullscreen(cx);
+            }));
         h_flex()
             .gap(px(6.0))
             .items_center()
@@ -337,6 +354,7 @@ impl VcsView {
             .child(blame_btn)
             .child(ignore_whitespace_btn)
             .child(view_mode_btn)
+            .child(fullscreen_btn)
             .into_any_element()
     }
 

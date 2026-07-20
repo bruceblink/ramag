@@ -23,7 +23,7 @@ use ramag_domain::traits::{GitDriver, Storage};
 use super::commit_detail::CommitFilesRowsCacheEntry;
 use super::helpers::{
     ActiveView, DiffViewMode, FileContentSnapshot, FileTab, FileTabSource, FilesViewMode,
-    GroupKind, ViewMode,
+    GroupKind, PendingFileEditorLoad, ViewMode,
 };
 use super::history_panel::HistoryLeftRowsCacheEntry;
 use super::project_files::{ProjectRowsCacheEntry, ProjectStatusCacheEntry};
@@ -268,12 +268,25 @@ pub struct VcsView {
     pub(super) selected_pf_path: Option<String>,
     /// Project Files 当前选中文件的内容快照（None = 未加载 / 未选中）
     pub(super) current_file_content: Option<FileContentSnapshot>,
+    /// Project Files 主区使用原生 Code Editor：支持编辑、增量解析与可见行渲染。
+    pub(super) pf_editor: Entity<InputState>,
+    /// 异步读盘完成后，Render 持有 Window 时把正文和语言写入编辑器。
+    pub(super) pending_pf_editor_load: Option<PendingFileEditorLoad>,
+    /// 编辑器当前实际承载的路径；与 selected_pf_path 不同表示 defer 尚未完成。
+    pub(super) pf_editor_loaded_path: Option<String>,
+    /// 当前编辑器是否有未保存修改。
+    pub(super) pf_editor_dirty: bool,
+    /// 用户编辑代际，用于避免异步保存把后续修改误标成已保存。
+    pub(super) pf_editor_revision: u64,
+    /// 当前编辑正文行数。
+    pub(super) pf_editor_line_count: usize,
     /// 文件内容是否正在读盘
     pub(super) loading_file_content: bool,
     /// Project 文件内容请求代际号：同一路径重复打开时旧读盘结果不得覆盖新结果
     pub(super) file_content_request_seq: u64,
-    /// Project Files 文件内容渲染的虚拟列表滚动句柄（垂直方向，uniform_list 行级虚拟化）
-    pub(super) pf_content_scroll: UniformListScrollHandle,
+    /// 文件保存是否进行中；保存期间禁用编辑，避免同一路径并发写。
+    pub(super) saving_file_content: bool,
+    pub(super) file_save_request_seq: u64,
     /// Diff 视图的虚拟化列表滚动 handle（unified / split 共用一个）
     pub(super) diff_scroll: UniformListScrollHandle,
     /// commit 文件列表 / 冲突编辑器滚动
@@ -289,12 +302,14 @@ pub struct VcsView {
     pub(super) reflog_scroll: UniformListScrollHandle,
     pub(super) stash_scroll: UniformListScrollHandle,
     pub(super) rebase_scroll: UniformListScrollHandle,
-    /// pf_content / diff 横向滚动句柄：uniform_list 管 Y，外层 overflow_x_scroll 管 X
-    pub(super) pf_content_h_scroll: ScrollHandle,
+    /// 文件标签栏横向滚动；新标签追加后自动滚到末尾。
+    pub(super) file_tabs_h_scroll: ScrollHandle,
     /// diff 横滚 handle（unified 单栏 + split 左右两栏共享，两栏一起横滚）
     pub(super) diff_h_scroll: ScrollHandle,
     /// 下半区 history pane 是否显示（默认隐藏，工具栏 PanelBottom 图标 toggle）
     pub(super) history_pane_visible: bool,
+    /// Diff 最大化：隐藏左侧 Files 与底部 History，仅保留文件标签和 Diff 主区。
+    pub(super) diff_fullscreen: bool,
 
     // ---- 多仓库 Tabs ----
     pub(super) open_repos: Vec<RepoConfig>,
@@ -380,6 +395,7 @@ impl VcsView {
     /// 切到 Project 模式时若列表还没加载，触发一次异步拉取
     pub(super) fn set_files_view_mode(&mut self, mode: FilesViewMode, cx: &mut Context<Self>) {
         if self.files_view_mode != mode {
+            self.capture_active_project_draft(cx);
             self.files_view_mode = mode;
             // 切 mode 时清掉「另一边」的选中态，避免主区残留旧视图
             // - 离开 Project：清 selected_pf_path / current_file_content
@@ -424,8 +440,18 @@ impl VcsView {
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         self.selected_pf_path = None;
         self.current_file_content = None;
+        self.pending_pf_editor_load = None;
+        self.pf_editor_loaded_path = None;
+        self.pf_editor_dirty = false;
+        self.pf_editor_revision = 0;
+        self.pf_editor_line_count = 0;
         self.loading_file_content = false;
         self.file_content_request_seq = self.file_content_request_seq.wrapping_add(1);
+        self.saving_file_content = false;
+        self.file_save_request_seq = self.file_save_request_seq.wrapping_add(1);
+        self.file_tabs_h_scroll
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+        self.diff_fullscreen = false;
         self.viewing_commit = None;
         self.reset_commit_files_tree();
         self.changes_collapsed_dirs.clear();
@@ -503,6 +529,12 @@ impl VcsView {
         {
             self.load_history_page(0, cx);
         }
+        cx.notify();
+    }
+
+    /// Diff 主区最大化：只改变布局，不重建 Diff 与滚动状态。
+    pub(super) fn toggle_diff_fullscreen(&mut self, cx: &mut Context<Self>) {
+        self.diff_fullscreen = !self.diff_fullscreen;
         cx.notify();
     }
 

@@ -70,13 +70,12 @@ pub(super) fn lang_for_path(path: &str) -> Option<&'static str> {
 
 /// 制表位宽度：tab 展开到 4 列边界（与等宽渲染一致）
 const TAB_W: usize = 4;
-/// 与 Zed 编辑器同级的单行布局保护：只把前 1024 UTF-8 字节交给文本 shaping。
-pub(super) const MAX_RENDER_LINE_BYTES: usize = 1024;
+/// 超长行完整显示，但跳过语法高亮；与 gpui-component Code Editor 的保护一致。
+pub(super) const MAX_HIGHLIGHT_LINE_BYTES: usize = 10_000;
 /// 单份语法树最多解析 8 MiB；更大 Diff 仍可流畅查看，但退化为纯文本。
 const MAX_HIGHLIGHT_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 /// 只缓存最近查询过的行，避免极端多行文件把 `Option<Vec<_>>` 预分配到数十 MiB。
 const MAX_CACHED_HIGHLIGHT_LINES: usize = 8 * 1024;
-const TRUNCATED_LINE_SUFFIX: &str = " …";
 
 /// 单字符显示列宽：CJK / 全角 / emoji ≈ 2 列，其余 1 列（近似，不引第三方 crate）
 fn char_cols(c: char) -> usize {
@@ -97,21 +96,7 @@ fn char_cols(c: char) -> usize {
     }
 }
 
-/// 文本显示列数：tab 按制表位展开、CJK/全角按 2 列计。
-/// 决定横向内容宽度——`chars().count()` 把 Tab/中文都算 1 会让宽度偏小、滚到底仍截断
-fn display_cols_unbounded(text: &str) -> usize {
-    let mut col = 0usize;
-    for c in text.chars() {
-        if c == '\t' {
-            col += TAB_W - (col % TAB_W);
-        } else {
-            col += char_cols(c);
-        }
-    }
-    col
-}
-
-/// 文本显示列数：与实际渲染使用同一份截断、Tab 展开规则。
+/// 文本显示列数：与实际渲染使用同一份 Tab 展开规则。
 pub(super) fn display_cols(text: &str) -> usize {
     prepare_display_line(text).cols
 }
@@ -119,53 +104,30 @@ pub(super) fn display_cols(text: &str) -> usize {
 #[derive(Debug)]
 struct PreparedDisplayLine {
     text: String,
-    /// 可从语法树取样式的前缀长度；不包含人为追加的省略标记。
-    highlight_len: usize,
+    /// 超长行不查询高亮，但正文必须完整显示。
+    highlight_len: Option<usize>,
     cols: usize,
 }
 
-/// 展开 Tab，并限制交给 GPUI shaping 的单行长度。
+/// 只展开 Tab，不截断用户内容；极端长行仅关闭高亮。
 fn prepare_display_line(text: &str) -> PreparedDisplayLine {
-    let mut out = String::with_capacity(text.len().min(MAX_RENDER_LINE_BYTES));
+    let mut out = String::with_capacity(text.len());
     let mut col = 0usize;
-    let mut truncated = false;
     for c in text.chars() {
         if c == '\t' {
             let spaces = TAB_W - (col % TAB_W);
-            if out.len().saturating_add(spaces) > MAX_RENDER_LINE_BYTES {
-                truncated = true;
-                break;
-            }
             for _ in 0..spaces {
                 out.push(' ');
             }
             col += spaces;
         } else {
-            if out.len().saturating_add(c.len_utf8()) > MAX_RENDER_LINE_BYTES {
-                truncated = true;
-                break;
-            }
             out.push(c);
             col += char_cols(c);
         }
     }
 
-    if truncated {
-        let prefix_limit = MAX_RENDER_LINE_BYTES.saturating_sub(TRUNCATED_LINE_SUFFIX.len());
-        while out.len() > prefix_limit {
-            out.pop();
-        }
-        let highlight_len = out.len();
-        out.push_str(TRUNCATED_LINE_SUFFIX);
-        return PreparedDisplayLine {
-            cols: display_cols_unbounded(&out),
-            text: out,
-            highlight_len,
-        };
-    }
-
     PreparedDisplayLine {
-        highlight_len: out.len(),
+        highlight_len: (out.len() <= MAX_HIGHLIGHT_LINE_BYTES).then_some(out.len()),
         cols: col,
         text: out,
     }
@@ -236,7 +198,6 @@ pub(super) struct SyntaxDocument {
     lines: Vec<SyntaxLine>,
     highlighter: Option<SyntaxHighlighter>,
     style_cache: RefCell<LineStyleCache>,
-    max_cols: usize,
     retained_bytes: usize,
 }
 
@@ -244,23 +205,21 @@ impl SyntaxDocument {
     pub(super) fn new<'a>(lines: impl IntoIterator<Item = &'a str>, lang: Option<&str>) -> Self {
         let mut syntax_lines = Vec::new();
         let mut source = lang.map(|_| String::new());
-        let mut max_cols = 0usize;
         let mut display_bytes = 0usize;
 
         for text in lines {
             let display = prepare_display_line(text);
-            max_cols = max_cols.max(display.cols);
             display_bytes = display_bytes.saturating_add(display.text.len());
 
             let source_range = if let Some(source_text) = source.as_mut() {
                 match append_expanded_line(source_text, text) {
-                    Some(full_range) => Some(
+                    Some(full_range) => display.highlight_len.map(|highlight_len| {
                         full_range.start
                             ..full_range
                                 .start
-                                .saturating_add(display.highlight_len)
-                                .min(full_range.end),
-                    ),
+                                .saturating_add(highlight_len)
+                                .min(full_range.end)
+                    }),
                     None => {
                         source = None;
                         None
@@ -305,17 +264,8 @@ impl SyntaxDocument {
                 styles: HashMap::new(),
                 order: VecDeque::new(),
             }),
-            max_cols,
             retained_bytes,
         }
-    }
-
-    pub(super) fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    pub(super) fn max_cols(&self) -> usize {
-        self.max_cols
     }
 
     pub(super) fn retained_bytes(&self) -> usize {

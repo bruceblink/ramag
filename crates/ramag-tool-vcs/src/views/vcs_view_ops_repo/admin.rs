@@ -115,7 +115,8 @@ impl VcsView {
             self.notify_warning("当前 Git 写操作尚未完成，完成后再 Clone 仓库", cx);
             return;
         }
-        if !self.ensure_commit_draft_within_limit(cx) {
+        if !self.ensure_commit_draft_within_limit(cx) || !self.ensure_project_file_drafts_saved(cx)
+        {
             return;
         }
         if !self.ensure_open_repo_capacity(&dest.to_string_lossy(), cx) {
@@ -293,7 +294,8 @@ impl VcsView {
             self.notify_warning("当前 Git 写操作尚未完成，完成后再初始化仓库", cx);
             return;
         }
-        if !self.ensure_commit_draft_within_limit(cx) {
+        if !self.ensure_commit_draft_within_limit(cx) || !self.ensure_project_file_drafts_saved(cx)
+        {
             return;
         }
         if !self.ensure_open_repo_capacity(&path.to_string_lossy(), cx) {

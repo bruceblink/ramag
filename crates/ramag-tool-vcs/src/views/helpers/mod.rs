@@ -118,21 +118,32 @@ pub(super) enum GroupKind {
     Conflict,
 }
 
-/// 文件内容快照。读盘、语法解析、Tab 展开与长行保护均在 worker 一次完成。
+/// Project Files 文件内容快照。正文完整保留，编辑器负责增量解析和可见行渲染。
 #[derive(Clone)]
 pub(super) struct FileContentSnapshot {
     /// 仓库根的相对路径（与 ls-files 输出一致）
     pub path: String,
-    /// 持久语法文档；渲染只读取可见行，不再创建 parser / Rope。
-    pub document: std::rc::Rc<super::syntax::SyntaxDocument>,
-    /// 最长可渲染行的显示列数（已经应用单行长度保护）
-    pub max_chars: usize,
-    /// 是否被 4MB 阈值截断（true 时 lines 仅含前 N 行）
+    /// 当前正文；未保存编辑也保存在对应文件标签中，切换标签不会丢失。
+    pub text: std::rc::Rc<String>,
+    /// 当前正文行数，避免渲染标题时重复扫描全文。
+    pub line_count: usize,
+    /// 编辑代际；异步保存只可清理同一代草稿的 dirty 状态。
+    pub revision: u64,
+    /// 是否含尚未写回磁盘的用户修改。
+    pub dirty: bool,
+    /// 是否被 4MB 阈值截断；截断预览禁止编辑，避免保存时破坏未加载的尾部。
     pub truncated: bool,
     /// 是否被识别为二进制（前 8KB 含 NUL 字节即视为二进制）
     pub binary: bool,
     /// 读盘失败时的错误描述（None = 成功）
     pub error: Option<String>,
+}
+
+/// Render 持有 Window 时写入 Code Editor；路径校验防止旧的 defer 覆盖新标签。
+pub(super) struct PendingFileEditorLoad {
+    pub path: String,
+    pub text: std::rc::Rc<String>,
+    pub language: gpui::SharedString,
 }
 
 /// 文件 tab 来源：Changes（工作区 diff）/ ProjectFiles（内容）/ Commit（commit diff），共用一套主区渲染

@@ -37,9 +37,20 @@ impl VcsView {
         if let Some(banner) = self.render_error_banner(cx) {
             main_layout = main_layout.child(banner);
         }
-        // 历史 pane 默认隐藏：仅渲染上半区独占整屏；用户从工具栏 toggle 才出现
+        // Diff 全屏时只保留文件标签与 Diff 主区，隐藏 Files / History 两侧辅助区域。
         let main_layout = main_layout.child(self.render_op_banner(cx));
-        let main_layout = if self.history_pane_visible {
+        let fullscreen_diff = self.diff_fullscreen
+            && !self.show_rebase_plan
+            && self.conflict_editor_path.is_none()
+            && self
+                .active_file_tab_idx
+                .and_then(|index| self.file_tabs.get(index))
+                .is_some_and(|tab| {
+                    !matches!(&tab.source, super::helpers::FileTabSource::ProjectFiles)
+                });
+        let main_layout = if fullscreen_diff {
+            main_layout.child(div().flex_1().min_h_0().child(self.render_main_area(cx)))
+        } else if self.history_pane_visible {
             main_layout.child(
                 v_resizable("vcs-ide-main")
                     .with_state(&self.ide_files_resize)
@@ -252,10 +263,6 @@ impl VcsView {
                     })),
             );
         }
-        // 末尾：Git 操作聚合菜单（Fetch / Pull / Push / 强推）
-        search_row = search_row.child(self.render_sync_quick_action(cx));
-        search_row = search_row.child(self.render_remote_actions(cx));
-
         v_flex()
             .child(mode_row)
             .child(search_row)

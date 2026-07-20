@@ -41,6 +41,7 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
+        self.capture_active_project_draft(cx);
         let driver = self.driver.clone();
         let commit = self
             .history_commits
@@ -89,6 +90,7 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
+        self.capture_active_project_draft(cx);
         let change_kind = self
             .commit_files
             .iter()
@@ -108,9 +110,7 @@ impl VcsView {
                     } if existing_commit == &commit_id
                 )
         });
-        if existing.is_none() && !self.ensure_file_tab_capacity(cx) {
-            return;
-        }
+        let is_new_tab = existing.is_none();
         let idx = existing.unwrap_or_else(|| {
             self.file_tabs.push(super::helpers::FileTab {
                 path: path.clone(),
@@ -121,12 +121,20 @@ impl VcsView {
             });
             self.file_tabs.len() - 1
         });
+        if is_new_tab {
+            self.scroll_file_tabs_to_end();
+        }
         // 文件类型信息可能在恢复 session 后才重新加载；复用 tab 时补齐最新值。
         self.file_tabs[idx].source = source.clone();
         let same_target = self.active_file_tab_idx == Some(idx)
             && self.selected_commit_file.as_deref() == Some(path.as_str());
         if !same_target {
             self.reset_blame_context();
+            self.expanded_diff_spacers.clear();
+            self.diff_scroll
+                .scroll_to_item(0, gpui::ScrollStrategy::Top);
+            self.diff_h_scroll
+                .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
         }
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         let request_seq = self.diff_request_seq;
@@ -135,11 +143,6 @@ impl VcsView {
         self.selected_file = None;
         self.selected_pf_path = None;
         self.current_file_content = None;
-        // 切换 commit 文件 → 清 spacer 展开态（hunk_idx 跨文件无复用价值）
-        self.expanded_diff_spacers.clear();
-        // 横滚归位，否则新文件停在上个文件的横滚位置、看不到行首
-        self.diff_h_scroll
-            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
         if let Some(cached) = self.file_tabs[idx].cached_diff.clone() {
             self.current_diff = Some(cached.clone());
             self.current_diff_syntax = self.file_tabs[idx].cached_diff_syntax.clone();
