@@ -8,6 +8,9 @@ COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
 SEED_DIR="$SCRIPT_DIR/seed"
 ENV_FILE="${RAMAG_DB_TEST_ENV_FILE:-$REPO_DIR/.ramag/db-test.env}"
 PROJECT_NAME="ramag-db-test"
+# 仅用于绑定 127.0.0.1 的本地测试容器，不得复用到其他环境。
+FIXED_TEST_PASSWORD="ramag_test_only"
+FIXED_MYSQL_ROOT_PASSWORD="ramag_root_test_only"
 
 log() {
     printf '[db-test] %s\n' "$*"
@@ -20,10 +23,6 @@ fail() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
-}
-
-random_secret() {
-    od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
 }
 
 managed_volumes_exist() {
@@ -40,38 +39,79 @@ managed_volumes_exist() {
     return 1
 }
 
-# 凭据仅保存在 Git 已忽略的 .ramag 目录，数据库卷与凭据必须成对保留。
+environment_uses_fixed_credentials() {
+    (
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        [[ "${RAMAG_DB_TEST_MYSQL_PASSWORD:-}" == "$FIXED_TEST_PASSWORD" ]] \
+            && [[ "${RAMAG_DB_TEST_MYSQL_ROOT_PASSWORD:-}" == "$FIXED_MYSQL_ROOT_PASSWORD" ]] \
+            && [[ "${RAMAG_DB_TEST_POSTGRES_PASSWORD:-}" == "$FIXED_TEST_PASSWORD" ]] \
+            && [[ "${RAMAG_DB_TEST_REDIS_PASSWORD:-}" == "$FIXED_TEST_PASSWORD" ]] \
+            && [[ "${RAMAG_DB_TEST_MONGO_PASSWORD:-}" == "$FIXED_TEST_PASSWORD" ]]
+    )
+}
+
+read_environment_value() {
+    local wanted="$1"
+    local name value
+    while IFS='=' read -r name value; do
+        if [[ "$name" == "$wanted" ]]; then
+            printf '%s' "$value"
+            return
+        fi
+    done <"$ENV_FILE"
+}
+
+# 默认凭据固定，确保本地连接配置可重复使用；显式指定环境文件时尊重调用方配置。
 create_environment() {
     local allow_existing_volumes="${1:-false}"
-    if [[ -f "$ENV_FILE" ]]; then
+    if [[ -n "${RAMAG_DB_TEST_ENV_FILE:-}" ]]; then
+        [[ -f "$ENV_FILE" ]] || fail "Custom environment file does not exist: $ENV_FILE"
         chmod 600 "$ENV_FILE"
         return
     fi
-    if [[ "$allow_existing_volumes" != "true" ]] && managed_volumes_exist; then
-        fail "Credentials are missing while managed volumes still exist. Run 'make db-test-clean' to remove the isolated test data, then retry."
+    if [[ -f "$ENV_FILE" ]] && environment_uses_fixed_credentials; then
+        chmod 600 "$ENV_FILE"
+        return
+    fi
+    if [[ -f "$ENV_FILE" ]] \
+        && [[ "$allow_existing_volumes" != "true" ]] \
+        && managed_volumes_exist; then
+        fail "Existing db-test volumes use legacy random credentials. Run 'make db-test-clean' once, then retry."
+    fi
+
+    local mysql_port="${RAMAG_DB_TEST_MYSQL_PORT:-}"
+    local postgres_port="${RAMAG_DB_TEST_POSTGRES_PORT:-}"
+    local redis_port="${RAMAG_DB_TEST_REDIS_PORT:-}"
+    local mongo_port="${RAMAG_DB_TEST_MONGO_PORT:-}"
+    if [[ -f "$ENV_FILE" ]]; then
+        mysql_port="${mysql_port:-$(read_environment_value RAMAG_DB_TEST_MYSQL_PORT)}"
+        postgres_port="${postgres_port:-$(read_environment_value RAMAG_DB_TEST_POSTGRES_PORT)}"
+        redis_port="${redis_port:-$(read_environment_value RAMAG_DB_TEST_REDIS_PORT)}"
+        mongo_port="${mongo_port:-$(read_environment_value RAMAG_DB_TEST_MONGO_PORT)}"
     fi
 
     mkdir -p "$(dirname "$ENV_FILE")"
     umask 077
     {
-        printf 'RAMAG_DB_TEST_MYSQL_PORT=%s\n' "${RAMAG_DB_TEST_MYSQL_PORT:-13306}"
+        printf 'RAMAG_DB_TEST_MYSQL_PORT=%s\n' "${mysql_port:-13306}"
         printf 'RAMAG_DB_TEST_MYSQL_DATABASE=ramag_test\n'
         printf 'RAMAG_DB_TEST_MYSQL_USER=ramag\n'
-        printf 'RAMAG_DB_TEST_MYSQL_PASSWORD=%s\n' "$(random_secret)"
-        printf 'RAMAG_DB_TEST_MYSQL_ROOT_PASSWORD=%s\n' "$(random_secret)"
-        printf 'RAMAG_DB_TEST_POSTGRES_PORT=%s\n' "${RAMAG_DB_TEST_POSTGRES_PORT:-15432}"
+        printf 'RAMAG_DB_TEST_MYSQL_PASSWORD=%s\n' "$FIXED_TEST_PASSWORD"
+        printf 'RAMAG_DB_TEST_MYSQL_ROOT_PASSWORD=%s\n' "$FIXED_MYSQL_ROOT_PASSWORD"
+        printf 'RAMAG_DB_TEST_POSTGRES_PORT=%s\n' "${postgres_port:-15432}"
         printf 'RAMAG_DB_TEST_POSTGRES_DATABASE=ramag_test\n'
         printf 'RAMAG_DB_TEST_POSTGRES_USER=ramag\n'
-        printf 'RAMAG_DB_TEST_POSTGRES_PASSWORD=%s\n' "$(random_secret)"
-        printf 'RAMAG_DB_TEST_REDIS_PORT=%s\n' "${RAMAG_DB_TEST_REDIS_PORT:-16379}"
-        printf 'RAMAG_DB_TEST_REDIS_PASSWORD=%s\n' "$(random_secret)"
-        printf 'RAMAG_DB_TEST_MONGO_PORT=%s\n' "${RAMAG_DB_TEST_MONGO_PORT:-27018}"
+        printf 'RAMAG_DB_TEST_POSTGRES_PASSWORD=%s\n' "$FIXED_TEST_PASSWORD"
+        printf 'RAMAG_DB_TEST_REDIS_PORT=%s\n' "${redis_port:-16379}"
+        printf 'RAMAG_DB_TEST_REDIS_PASSWORD=%s\n' "$FIXED_TEST_PASSWORD"
+        printf 'RAMAG_DB_TEST_MONGO_PORT=%s\n' "${mongo_port:-27018}"
         printf 'RAMAG_DB_TEST_MONGO_DATABASE=ramag_demo\n'
         printf 'RAMAG_DB_TEST_MONGO_USER=ramag\n'
-        printf 'RAMAG_DB_TEST_MONGO_PASSWORD=%s\n' "$(random_secret)"
+        printf 'RAMAG_DB_TEST_MONGO_PASSWORD=%s\n' "$FIXED_TEST_PASSWORD"
     } >"$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    log "Created local credentials at .ramag/db-test.env"
+    log "Prepared fixed local test credentials at .ramag/db-test.env"
 }
 
 load_environment() {
