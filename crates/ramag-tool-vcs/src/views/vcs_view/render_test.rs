@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gpui::TestAppContext;
+use gpui::{AppContext, Entity, TestAppContext, VisualTestContext};
 use ramag_domain::entities::{
     Branch, BranchKind, Commit, ConnectionConfig, ConnectionId, DiffKind, DiffLine, DiffLineKind,
     FileChangeKind, FileDiff, FileStatus, Hunk, LogOptions, QueryRecord, QueryRecordId, RepoConfig,
@@ -161,16 +161,26 @@ fn inject_diff_session(v: &mut VcsView) {
     v.active_file_tab_idx = Some(0);
 }
 
+/// 输入框绘制依赖 gpui-component 的窗口根节点，测试必须复刻生产环境的 Root 包装。
+fn add_vcs_window(cx: &mut TestAppContext) -> (Entity<VcsView>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+
+    let mut view = None;
+    let (_, visual_cx) = cx.add_window_view(|window, cx| {
+        let vcs_view =
+            cx.new(|cx| VcsView::new(Arc::new(MockGit), Arc::new(MockStorage), window, cx));
+        view = Some(vcs_view.clone());
+        gpui_component::Root::new(vcs_view, window, cx)
+    });
+
+    (view.expect("VcsView should be initialized"), visual_cx)
+}
+
 /// 渲染整条 IDE 布局（含 diff split 5-list：左 gutter/content + 中间列 + 右 gutter/content + 行配对 + scroll）不 panic。
 /// 能跑完 add_window_view（内部 draw）+ run_until_parked 即证明渲染管线健康。
 #[gpui::test]
 fn vcs_view_renders_diff_split_without_panic(cx: &mut TestAppContext) {
-    // 渲染 gpui-component 视图前必须 init（cx.theme() 取 Theme 全局，缺则 panic）
-    cx.update(gpui_component::init);
-
-    let (view, cx) = cx.add_window_view(|window, cx| {
-        VcsView::new(Arc::new(MockGit), Arc::new(MockStorage), window, cx)
-    });
+    let (view, cx) = add_vcs_window(cx);
 
     view.update(cx, |v, cx| {
         inject_diff_session(v);
@@ -191,10 +201,7 @@ fn vcs_view_renders_diff_split_without_panic(cx: &mut TestAppContext) {
 /// 切到「全文件」diff 视图模式后仍能渲染（context_lines 路径）
 #[gpui::test]
 fn vcs_view_renders_full_file_diff_mode(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
-    let (view, cx) = cx.add_window_view(|window, cx| {
-        VcsView::new(Arc::new(MockGit), Arc::new(MockStorage), window, cx)
-    });
+    let (view, cx) = add_vcs_window(cx);
     view.update(cx, |v, cx| {
         inject_diff_session(v);
         v.diff_view_mode = super::super::helpers::DiffViewMode::FullFile;
