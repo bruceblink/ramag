@@ -63,12 +63,14 @@ impl VcsView {
             if let Some(cached) = self.file_tabs[idx].cached_diff.clone() {
                 // 命中缓存，直接展示
                 self.current_diff = Some(cached);
+                self.current_diff_syntax = self.file_tabs[idx].cached_diff_syntax.clone();
                 self.loading_diff = false;
                 cx.notify();
                 return;
             }
             // Tab 存在但无缓存（如切换 ignore-whitespace 后清掉了）→ 继续拉取
             self.current_diff = None;
+            self.current_diff_syntax = None;
             self.loading_diff = true;
         } else {
             // 新 tab
@@ -76,6 +78,7 @@ impl VcsView {
                 path: path.clone(),
                 source: FileTabSource::Changes(kind),
                 cached_diff: None,
+                cached_diff_syntax: None,
                 cached_content: None,
             });
             self.active_file_tab_idx = Some(self.file_tabs.len() - 1);
@@ -83,6 +86,7 @@ impl VcsView {
             self.selected_pf_path = None;
             self.current_file_content = None;
             self.current_diff = None;
+            self.current_diff_syntax = None;
             self.loading_diff = true;
         }
         cx.notify();
@@ -111,6 +115,20 @@ impl VcsView {
             let result = driver
                 .diff_file_full_opts(&repo, &path_for_diff, diff_kind, ignore_ws, context_lines)
                 .await;
+            let result = match result {
+                Ok(diff) => {
+                    let syntax_path = path_for_diff.clone();
+                    ramag_app::run_blocking(move || {
+                        let syntax = super::syntax::DiffSyntaxSnapshot::new(
+                            &diff,
+                            super::syntax::lang_for_path(&syntax_path),
+                        );
+                        Ok((diff, syntax))
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            };
             let _ =
                 this.update(cx, |this, cx| {
                     if !this.is_current_repo(&repo) || this.diff_request_seq != request_seq {
@@ -118,18 +136,21 @@ impl VcsView {
                     }
                     this.loading_diff = false;
                     match result {
-                        Ok(d) => {
+                        Ok((d, syntax)) => {
                             let d = std::rc::Rc::new(d);
+                            let syntax = std::rc::Rc::new(syntax);
                             let still_current =
                                 this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind));
                             if still_current {
                                 this.current_diff = Some(d.clone());
+                                this.current_diff_syntax = Some(syntax.clone());
                             }
                             // 不缓存到捕获的索引：关 tab 后索引可能位移，必须按完整来源定位。
                             if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
                                 tab.path == path_for_diff && tab.source == source_for_diff
                             }) {
                                 tab.cached_diff = Some(d);
+                                tab.cached_diff_syntax = Some(syntax);
                             }
                             this.prune_file_tab_payloads();
                         }
@@ -158,6 +179,7 @@ impl VcsView {
             self.active_file_tab_idx = None;
             self.selected_file = None;
             self.current_diff = None;
+            self.current_diff_syntax = None;
             self.loading_diff = false;
             self.selected_pf_path = None;
             self.current_file_content = None;
@@ -199,7 +221,14 @@ impl VcsView {
                 let raw = read_raw_file_content(&repo_root, &rel_for_worker);
                 match raw.error.clone() {
                     Some(error) => Err(ramag_domain::error::DomainError::Other(error)),
-                    None => Ok(build_untracked_diff(raw)),
+                    None => {
+                        let diff = build_untracked_diff(raw);
+                        let syntax = super::syntax::DiffSyntaxSnapshot::new(
+                            &diff,
+                            super::syntax::lang_for_path(&rel_for_worker),
+                        );
+                        Ok((diff, syntax))
+                    }
                 }
             })
             .await
@@ -210,13 +239,15 @@ impl VcsView {
                 }
                 this.loading_diff = false;
                 match result {
-                    Ok(diff) => {
+                    Ok((diff, syntax)) => {
                         let d = std::rc::Rc::new(diff);
+                        let syntax = std::rc::Rc::new(syntax);
                         if let Some(tab) = this.file_tabs.iter_mut().find(|t| {
                             t.path == path
                                 && t.source == FileTabSource::Changes(GroupKind::Untracked)
                         }) {
                             tab.cached_diff = Some(d.clone());
+                            tab.cached_diff_syntax = Some(syntax.clone());
                         }
                         this.prune_file_tab_payloads();
                         let is_selected = this
@@ -225,6 +256,7 @@ impl VcsView {
                             .is_some_and(|(p, k)| p == &path && *k == GroupKind::Untracked);
                         if is_selected {
                             this.current_diff = Some(d);
+                            this.current_diff_syntax = Some(syntax);
                         }
                     }
                     Err(msg) => {
@@ -248,6 +280,7 @@ impl VcsView {
             FileTabSource::Changes(kind) => {
                 self.selected_file = Some((tab.path.clone(), *kind));
                 self.current_diff = tab.cached_diff.clone();
+                self.current_diff_syntax = tab.cached_diff_syntax.clone();
                 self.loading_diff = tab.cached_diff.is_none()
                     && matches!(kind, GroupKind::Staged | GroupKind::Unstaged);
                 self.selected_pf_path = None;
@@ -261,6 +294,7 @@ impl VcsView {
                 self.loading_file_content = tab.cached_content.is_none();
                 self.selected_file = None;
                 self.current_diff = None;
+                self.current_diff_syntax = None;
                 self.loading_diff = false;
                 self.selected_commit_file = None;
             }
@@ -268,6 +302,7 @@ impl VcsView {
                 // commit tab：复用 current_diff 渲染（与 Changes 同一路径）
                 self.selected_file = None;
                 self.current_diff = tab.cached_diff.clone();
+                self.current_diff_syntax = tab.cached_diff_syntax.clone();
                 self.loading_diff = tab.cached_diff.is_none();
                 self.selected_pf_path = None;
                 self.current_file_content = None;
@@ -330,6 +365,7 @@ fn prune_file_tab_payloads_to_budget(tabs: &mut [FileTab], active: Option<usize>
 
 fn clear_file_tab_payload(tab: &mut FileTab) {
     tab.cached_diff = None;
+    tab.cached_diff_syntax = None;
     tab.cached_content = None;
 }
 
@@ -337,6 +373,11 @@ fn file_tab_payload_bytes(tab: &FileTab) -> usize {
     tab.cached_diff
         .as_deref()
         .map_or(0, file_diff_payload_bytes)
+        .saturating_add(
+            tab.cached_diff_syntax
+                .as_deref()
+                .map_or(0, super::syntax::DiffSyntaxSnapshot::retained_bytes),
+        )
         .saturating_add(
             tab.cached_content
                 .as_ref()
@@ -369,19 +410,10 @@ fn file_diff_payload_bytes(diff: &FileDiff) -> usize {
 }
 
 fn file_content_payload_bytes(content: &FileContentSnapshot) -> usize {
-    let mut total = std::mem::size_of::<FileContentSnapshot>()
+    std::mem::size_of::<FileContentSnapshot>()
         .saturating_add(content.path.capacity())
-        .saturating_add(
-            content
-                .lines
-                .capacity()
-                .saturating_mul(std::mem::size_of::<String>()),
-        )
-        .saturating_add(content.error.as_ref().map_or(0, String::capacity));
-    for line in content.lines.iter() {
-        total = total.saturating_add(line.capacity());
-    }
-    total
+        .saturating_add(content.document.retained_bytes())
+        .saturating_add(content.error.as_ref().map_or(0, String::capacity))
 }
 
 /// 文件内容 → 「全新增」伪 diff：单 hunk，每行 Add；二进制走 FileDiff.binary 占位；
@@ -431,7 +463,6 @@ mod tests {
         RawFileContent {
             path: "new.rs".into(),
             lines: lines.into_iter().map(str::to_owned).collect(),
-            max_chars: 0,
             truncated,
             binary,
             error: None,
@@ -467,14 +498,17 @@ mod tests {
     }
 
     fn project_tab(path: &str, bytes: usize) -> FileTab {
+        let text = "x".repeat(bytes);
+        let document = crate::views::syntax::SyntaxDocument::new([text.as_str()], None);
         FileTab {
             path: path.to_string(),
             source: FileTabSource::ProjectFiles,
             cached_diff: None,
+            cached_diff_syntax: None,
             cached_content: Some(FileContentSnapshot {
                 path: path.to_string(),
-                lines: std::rc::Rc::new(vec!["x".repeat(bytes)]),
-                max_chars: bytes,
+                max_chars: document.max_cols(),
+                document: std::rc::Rc::new(document),
                 truncated: false,
                 binary: false,
                 error: None,

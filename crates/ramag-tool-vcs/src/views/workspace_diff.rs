@@ -105,13 +105,10 @@ impl VcsView {
             border,
             cx,
         );
-        // 当前文件路径决定语法高亮语言（不支持的扩展名为 None → 纯文本）
-        let lang = super::syntax::lang_for_path(&path).map(SharedString::from);
         let body = self.render_diff_body(
             kind_copy,
             blame_supported,
             enable_hunk_ops,
-            lang,
             mono.clone(),
             fg,
             muted_fg,
@@ -350,7 +347,6 @@ impl VcsView {
         kind: GroupKind,
         blame_supported: bool,
         enable_hunk_ops: bool,
-        lang: Option<SharedString>,
         mono: SharedString,
         fg: gpui::Hsla,
         muted_fg: gpui::Hsla,
@@ -386,9 +382,9 @@ impl VcsView {
         );
         super::diff_panel_split::render_file_diff_split(
             d,
+            self.current_diff_syntax.clone(),
             layout,
             enable_discard,
-            lang,
             mono,
             fg,
             muted_fg,

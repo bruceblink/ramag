@@ -118,14 +118,14 @@ pub(super) enum GroupKind {
     Conflict,
 }
 
-/// 文件内容快照。读盘 / 截断 / 二进制判断在 file_io 一次完成；lines 用 `Rc<Vec<String>>` clone O(1)
+/// 文件内容快照。读盘、语法解析、Tab 展开与长行保护均在 worker 一次完成。
 #[derive(Clone)]
 pub(super) struct FileContentSnapshot {
     /// 仓库根的相对路径（与 ls-files 输出一致）
     pub path: String,
-    /// 按行拆分后的内容；二进制 / 读失败时为空
-    pub lines: std::rc::Rc<Vec<String>>,
-    /// 最长行字符数（select_pf_file 时算一次缓存，render 直接读，省 100 万次 chars()）
+    /// 持久语法文档；渲染只读取可见行，不再创建 parser / Rope。
+    pub document: std::rc::Rc<super::syntax::SyntaxDocument>,
+    /// 最长可渲染行的显示列数（已经应用单行长度保护）
     pub max_chars: usize,
     /// 是否被 4MB 阈值截断（true 时 lines 仅含前 N 行）
     pub truncated: bool,
@@ -154,6 +154,8 @@ pub(super) struct FileTab {
     pub source: FileTabSource,
     /// Changes 来源拉到的 diff（ProjectFiles 始终 None）
     pub cached_diff: Option<std::rc::Rc<FileDiff>>,
+    /// 与 cached_diff 同代的持久语法树；内容超限或不支持语言时仍保留纯文本快照。
+    pub cached_diff_syntax: Option<std::rc::Rc<super::syntax::DiffSyntaxSnapshot>>,
     /// ProjectFiles 来源读到的文件内容快照（Changes 始终 None）
     pub cached_content: Option<FileContentSnapshot>,
 }

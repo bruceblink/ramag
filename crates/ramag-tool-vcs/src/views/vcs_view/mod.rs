@@ -114,6 +114,8 @@ pub struct VcsView {
     pub(super) selected_file: Option<(String, GroupKind)>,
     /// 当前文件的 diff 快照（Rc：渲染层多列表零拷贝共享，不每帧 clone 全量 diff）
     pub(super) current_diff: Option<std::rc::Rc<FileDiff>>,
+    /// 与 current_diff 同代的旧/新侧持久语法树；滚动渲染只查询可见范围。
+    pub(super) current_diff_syntax: Option<std::rc::Rc<super::syntax::DiffSyntaxSnapshot>>,
     /// 当前 diff 的扁平行索引与宽度派生缓存，普通重渲染不再重复扫描整份 diff。
     pub(super) diff_layout_cache: RefCell<Option<super::diff_panel_split::DiffLayoutCacheEntry>>,
     /// diff 是否正在拉取中
@@ -391,6 +393,7 @@ impl VcsView {
             } else {
                 self.selected_file = None;
                 self.current_diff = None;
+                self.current_diff_syntax = None;
                 self.loading_diff = false;
             }
             if !matches!(mode, FilesViewMode::Changes) {
@@ -415,6 +418,7 @@ impl VcsView {
     pub(super) fn clear_session_data(&mut self) {
         self.selected_file = None;
         self.current_diff = None;
+        self.current_diff_syntax = None;
         self.diff_layout_cache.get_mut().take();
         self.loading_diff = false;
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
@@ -623,8 +627,10 @@ impl VcsView {
             && let Some(tab) = self.file_tabs.get_mut(idx)
         {
             tab.cached_diff = None;
+            tab.cached_diff_syntax = None;
         }
         self.current_diff = None;
+        self.current_diff_syntax = None;
         match active_tab.map(|tab| (tab.path, tab.source)) {
             Some((path, FileTabSource::Changes(kind))) => self.select_file(path, kind, cx),
             Some((path, FileTabSource::Commit { commit_id, .. })) => {

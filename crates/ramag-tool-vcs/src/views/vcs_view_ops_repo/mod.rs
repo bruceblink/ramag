@@ -21,7 +21,6 @@ const REPO_SESSION_CACHE_LIMIT: usize = 32;
 pub(super) struct RawFileContent {
     pub(super) path: String,
     pub(super) lines: Vec<String>,
-    pub(super) max_chars: usize,
     pub(super) truncated: bool,
     pub(super) binary: bool,
     pub(super) error: Option<String>,
@@ -32,7 +31,6 @@ impl RawFileContent {
         Self {
             path,
             lines: Vec::new(),
-            max_chars: 0,
             truncated: false,
             binary: false,
             error: Some(error),
@@ -312,6 +310,7 @@ impl VcsView {
                 path: path.clone(),
                 source: FileTabSource::ProjectFiles,
                 cached_diff: None,
+                cached_diff_syntax: None,
                 cached_content: None,
             });
             self.file_tabs.len() - 1
@@ -327,15 +326,17 @@ impl VcsView {
         let repo_root = std::path::PathBuf::from(&repo_path);
         cx.spawn(async move |this, cx| {
             let path_for_worker = path.clone();
-            let raw = match ramag_app::run_blocking(move || {
-                Ok(read_raw_file_content(&repo_root, &path_for_worker))
+            let prepared = match ramag_app::run_blocking(move || {
+                let raw = read_raw_file_content(&repo_root, &path_for_worker);
+                Ok(prepare_file_snapshot(raw))
             })
             .await
             {
-                Ok(raw) => raw,
-                Err(e) => {
-                    RawFileContent::with_error(path.clone(), format!("文件读取任务失败: {e}"))
-                }
+                Ok(prepared) => prepared,
+                Err(e) => prepare_file_snapshot(RawFileContent::with_error(
+                    path.clone(),
+                    format!("文件读取任务失败: {e}"),
+                )),
             };
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo_id)
@@ -344,7 +345,7 @@ impl VcsView {
                 {
                     return;
                 }
-                let snapshot = Some(finalize_file_snapshot(raw));
+                let snapshot = Some(finalize_file_snapshot(prepared));
                 if let Some(tab) = this
                     .file_tabs
                     .iter_mut()
@@ -598,6 +599,7 @@ impl VcsView {
                 // 切回仓库时磁盘 / HEAD 可能已被终端或其它工具修改；保留 tab，丢弃内容缓存。
                 for tab in &mut state.file_tabs {
                     tab.cached_diff = None;
+                    tab.cached_diff_syntax = None;
                     tab.cached_content = None;
                 }
                 self.file_tabs = state.file_tabs;
@@ -836,6 +838,7 @@ pub(super) fn commit_draft_pref_key(path: &str) -> String {
 fn strip_file_tab_payloads(file_tabs: &mut [FileTab]) {
     for tab in file_tabs {
         tab.cached_diff = None;
+        tab.cached_diff_syntax = None;
         tab.cached_content = None;
     }
 }
@@ -899,14 +902,16 @@ mod tests {
 
     #[test]
     fn repo_session_drops_loaded_file_payloads() {
+        let document = crate::views::syntax::SyntaxDocument::new(["content"], None);
         let mut tabs = vec![FileTab {
             path: "src/lib.rs".into(),
             source: FileTabSource::ProjectFiles,
             cached_diff: None,
+            cached_diff_syntax: None,
             cached_content: Some(super::super::helpers::FileContentSnapshot {
                 path: "src/lib.rs".into(),
-                lines: std::rc::Rc::new(vec!["content".into()]),
-                max_chars: 7,
+                max_chars: document.max_cols(),
+                document: std::rc::Rc::new(document),
                 truncated: false,
                 binary: false,
                 error: None,
@@ -921,8 +926,8 @@ mod tests {
 }
 
 mod admin;
-/// 在 worker 线程同步读盘 + 二进制 / 截断检测 → 跨线程 Send 的 [`RawFileContent`]
+/// worker 线程完成读盘、二进制 / 截断检测与语法快照准备。
 mod file_io;
-use file_io::finalize_file_snapshot;
+use file_io::{finalize_file_snapshot, prepare_file_snapshot};
 // untracked 伪 diff 预览（vcs_view_ops_file_tab）复用同一读盘函数
 pub(in crate::views) use file_io::read_raw_file_content;

@@ -1,11 +1,18 @@
-//! 代码行语法高亮：按文件扩展名选 tree-sitter 语言，逐行切成多色片段。
-//! diff 内容与 Project Files 内容共用；不支持的扩展名退化为纯文本单色渲染。
+//! 代码语法快照：文件加载时一次解析，滚动时只查询并绘制可见行。
+//! Diff 与 Project Files 共用；不支持的扩展名退化为有界纯文本渲染。
 
-use gpui::{AnyElement, Hsla, IntoElement, ParentElement, SharedString, Styled, div, prelude::*};
-use gpui_component::{ActiveTheme, h_flex, highlighter::SyntaxHighlighter};
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
+use std::hash::{Hash as _, Hasher as _};
+use std::ops::Range;
+
+use gpui::{
+    AnyElement, HighlightStyle, Hsla, IntoElement, ParentElement, SharedString, Styled, StyledText,
+    div,
+};
+use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
+use ramag_domain::entities::{DiffLineKind, FileDiff};
 use ropey::Rope;
-
-use super::vcs_view::VcsView;
 
 /// 文件路径 → tree-sitter 语言名（均为 gpui-component `tree-sitter-languages` 内置）。
 ///
@@ -63,6 +70,13 @@ pub(super) fn lang_for_path(path: &str) -> Option<&'static str> {
 
 /// 制表位宽度：tab 展开到 4 列边界（与等宽渲染一致）
 const TAB_W: usize = 4;
+/// 与 Zed 编辑器同级的单行布局保护：只把前 1024 UTF-8 字节交给文本 shaping。
+pub(super) const MAX_RENDER_LINE_BYTES: usize = 1024;
+/// 单份语法树最多解析 8 MiB；更大 Diff 仍可流畅查看，但退化为纯文本。
+const MAX_HIGHLIGHT_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+/// 只缓存最近查询过的行，避免极端多行文件把 `Option<Vec<_>>` 预分配到数十 MiB。
+const MAX_CACHED_HIGHLIGHT_LINES: usize = 8 * 1024;
+const TRUNCATED_LINE_SUFFIX: &str = " …";
 
 /// 单字符显示列宽：CJK / 全角 / emoji ≈ 2 列，其余 1 列（近似，不引第三方 crate）
 fn char_cols(c: char) -> usize {
@@ -85,7 +99,7 @@ fn char_cols(c: char) -> usize {
 
 /// 文本显示列数：tab 按制表位展开、CJK/全角按 2 列计。
 /// 决定横向内容宽度——`chars().count()` 把 Tab/中文都算 1 会让宽度偏小、滚到底仍截断
-pub(super) fn display_cols(text: &str) -> usize {
+fn display_cols_unbounded(text: &str) -> usize {
     let mut col = 0usize;
     for c in text.chars() {
         if c == '\t' {
@@ -97,129 +111,418 @@ pub(super) fn display_cols(text: &str) -> usize {
     col
 }
 
-/// 把 tab 展开成空格（制表位 4），让渲染宽度与 [`display_cols`] 一致、可预测
-/// （GPUI 原生 tab 宽不确定，展开后横向宽度才能精确算）
-fn expand_tabs(text: &str) -> String {
-    if !text.contains('\t') {
-        return text.to_string();
-    }
-    let mut out = String::with_capacity(text.len() + 8);
+/// 文本显示列数：与实际渲染使用同一份截断、Tab 展开规则。
+pub(super) fn display_cols(text: &str) -> usize {
+    prepare_display_line(text).cols
+}
+
+#[derive(Debug)]
+struct PreparedDisplayLine {
+    text: String,
+    /// 可从语法树取样式的前缀长度；不包含人为追加的省略标记。
+    highlight_len: usize,
+    cols: usize,
+}
+
+/// 展开 Tab，并限制交给 GPUI shaping 的单行长度。
+fn prepare_display_line(text: &str) -> PreparedDisplayLine {
+    let mut out = String::with_capacity(text.len().min(MAX_RENDER_LINE_BYTES));
     let mut col = 0usize;
+    let mut truncated = false;
     for c in text.chars() {
         if c == '\t' {
             let spaces = TAB_W - (col % TAB_W);
+            if out.len().saturating_add(spaces) > MAX_RENDER_LINE_BYTES {
+                truncated = true;
+                break;
+            }
             for _ in 0..spaces {
                 out.push(' ');
             }
             col += spaces;
         } else {
+            if out.len().saturating_add(c.len_utf8()) > MAX_RENDER_LINE_BYTES {
+                truncated = true;
+                break;
+            }
             out.push(c);
             col += char_cols(c);
         }
     }
-    out
-}
 
-/// 渲染一行代码内容为内联元素。
-///
-/// - `lang = None` 或文本为空 → 单个 div（颜色 `fg`），与未高亮时完全一致。
-/// - 否则用 `SyntaxHighlighter` 逐行解析，按 tree-sitter 给出的字节区间切片着色；
-///   片段无颜色时回退 `fg`。区间是字节偏移，切片用 `str::get` 保证非 ASCII 不 panic。
-///
-/// 字号 `text_xs` + 等宽字体 + `whitespace_nowrap`，与原渲染保持一致，仅多了着色。
-pub(super) fn render_code_line(
-    text: &str,
-    lang: Option<&str>,
-    fg: Hsla,
-    mono: SharedString,
-    cx: &mut Context<VcsView>,
-) -> AnyElement {
-    // tab 展开成空格：渲染宽度与 display_cols 一致，避免横向截断
-    let expanded = expand_tabs(text);
-    let text: &str = &expanded;
-    let Some(lang) = lang.filter(|_| !text.is_empty()) else {
-        return plain_line(text, fg, mono);
-    };
-
-    let mut hl = SyntaxHighlighter::new(lang);
-    hl.update(None, &Rope::from_str(text), None);
-    let theme = cx.theme().highlight_theme.clone();
-    let styles = hl.styles(&(0..text.len()), &theme);
-
-    let mut row = h_flex().text_xs().font_family(mono).whitespace_nowrap();
-    for (range, style) in styles {
-        // tree-sitter 区间是字节偏移；非字符边界时跳过该段，宁可少一段也不 panic
-        let Some(seg) = text.get(range) else {
-            continue;
-        };
-        if seg.is_empty() {
-            continue;
+    if truncated {
+        let prefix_limit = MAX_RENDER_LINE_BYTES.saturating_sub(TRUNCATED_LINE_SUFFIX.len());
+        while out.len() > prefix_limit {
+            out.pop();
         }
-        let color = style.color.unwrap_or(fg);
-        row = row.child(div().text_color(color).child(seg.to_string()));
+        let highlight_len = out.len();
+        out.push_str(TRUNCATED_LINE_SUFFIX);
+        return PreparedDisplayLine {
+            cols: display_cols_unbounded(&out),
+            text: out,
+            highlight_len,
+        };
     }
-    row.into_any_element()
+
+    PreparedDisplayLine {
+        highlight_len: out.len(),
+        cols: col,
+        text: out,
+    }
 }
 
-/// 纯文本单色行（未高亮 / 空行 / 不支持语言）
-fn plain_line(text: &str, fg: Hsla, mono: SharedString) -> AnyElement {
+fn append_expanded_line(source: &mut String, text: &str) -> Option<Range<usize>> {
+    let start = source.len();
+    let mut col = 0usize;
+    for c in text.chars() {
+        if c == '\t' {
+            let spaces = TAB_W - (col % TAB_W);
+            if source.len().saturating_add(spaces).saturating_add(1) > MAX_HIGHLIGHT_SOURCE_BYTES {
+                return None;
+            }
+            for _ in 0..spaces {
+                source.push(' ');
+            }
+            col += spaces;
+        } else {
+            if source.len().saturating_add(c.len_utf8()).saturating_add(1)
+                > MAX_HIGHLIGHT_SOURCE_BYTES
+            {
+                return None;
+            }
+            source.push(c);
+            col += char_cols(c);
+        }
+    }
+    let end = source.len();
+    source.push('\n');
+    Some(start..end)
+}
+
+#[derive(Debug)]
+struct SyntaxLine {
+    text: SharedString,
+    source_range: Option<Range<usize>>,
+}
+
+struct LineStyleCache {
+    theme_key: Option<u64>,
+    styles: HashMap<usize, Vec<(Range<usize>, HighlightStyle)>>,
+    order: VecDeque<usize>,
+}
+
+impl LineStyleCache {
+    fn reset(&mut self, theme_key: u64) {
+        self.theme_key = Some(theme_key);
+        self.styles.clear();
+        self.order.clear();
+    }
+
+    fn insert(&mut self, index: usize, styles: Vec<(Range<usize>, HighlightStyle)>) {
+        while self.styles.len() >= MAX_CACHED_HIGHLIGHT_LINES {
+            let Some(oldest) = self.order.pop_front() else {
+                self.styles.clear();
+                break;
+            };
+            self.styles.remove(&oldest);
+        }
+        self.order.push_back(index);
+        self.styles.insert(index, styles);
+    }
+}
+
+/// 只读文本的持久语法状态。生产数据应在线程池构造，渲染阶段不得调用构造函数。
+pub(super) struct SyntaxDocument {
+    lines: Vec<SyntaxLine>,
+    highlighter: Option<SyntaxHighlighter>,
+    style_cache: RefCell<LineStyleCache>,
+    max_cols: usize,
+    retained_bytes: usize,
+}
+
+impl SyntaxDocument {
+    pub(super) fn new<'a>(lines: impl IntoIterator<Item = &'a str>, lang: Option<&str>) -> Self {
+        let mut syntax_lines = Vec::new();
+        let mut source = lang.map(|_| String::new());
+        let mut max_cols = 0usize;
+        let mut display_bytes = 0usize;
+
+        for text in lines {
+            let display = prepare_display_line(text);
+            max_cols = max_cols.max(display.cols);
+            display_bytes = display_bytes.saturating_add(display.text.len());
+
+            let source_range = if let Some(source_text) = source.as_mut() {
+                match append_expanded_line(source_text, text) {
+                    Some(full_range) => Some(
+                        full_range.start
+                            ..full_range
+                                .start
+                                .saturating_add(display.highlight_len)
+                                .min(full_range.end),
+                    ),
+                    None => {
+                        source = None;
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            syntax_lines.push(SyntaxLine {
+                text: SharedString::from(display.text),
+                source_range,
+            });
+        }
+
+        let highlighter = source.and_then(|source_text| {
+            if source_text.is_empty() {
+                return None;
+            }
+            let mut highlighter = SyntaxHighlighter::new(lang.unwrap_or("text"));
+            highlighter.update(None, &Rope::from_str(&source_text), None);
+            Some(highlighter)
+        });
+        if highlighter.is_none() {
+            for line in &mut syntax_lines {
+                line.source_range = None;
+            }
+        }
+
+        let source_bytes = highlighter
+            .as_ref()
+            .map_or(0, |highlighter| highlighter.text().len());
+        let retained_bytes = display_bytes.saturating_add(source_bytes).saturating_add(
+            syntax_lines
+                .capacity()
+                .saturating_mul(std::mem::size_of::<SyntaxLine>()),
+        );
+        Self {
+            lines: syntax_lines,
+            highlighter,
+            style_cache: RefCell::new(LineStyleCache {
+                theme_key: None,
+                styles: HashMap::new(),
+                order: VecDeque::new(),
+            }),
+            max_cols,
+            retained_bytes,
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub(super) fn max_cols(&self) -> usize {
+        self.max_cols
+    }
+
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
+    pub(super) fn line(
+        &self,
+        index: usize,
+        theme: &HighlightTheme,
+        theme_key: u64,
+    ) -> Option<CodeLine> {
+        let line = self.lines.get(index)?;
+        let highlights = self.line_styles(index, line, theme, theme_key);
+        Some(CodeLine {
+            text: line.text.clone(),
+            highlights,
+        })
+    }
+
+    fn line_styles(
+        &self,
+        index: usize,
+        line: &SyntaxLine,
+        theme: &HighlightTheme,
+        theme_key: u64,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let Some(highlighter) = self.highlighter.as_ref() else {
+            return Vec::new();
+        };
+        let Some(source_range) = line.source_range.as_ref() else {
+            return Vec::new();
+        };
+
+        {
+            let mut cache = self.style_cache.borrow_mut();
+            if cache.theme_key != Some(theme_key) {
+                cache.reset(theme_key);
+            }
+            if let Some(styles) = cache.styles.get(&index) {
+                return styles.clone();
+            }
+        }
+
+        let styles = highlighter
+            .styles(source_range, theme)
+            .into_iter()
+            .filter_map(|(range, style)| {
+                let start = range.start.max(source_range.start);
+                let end = range.end.min(source_range.end);
+                (start < end).then(|| {
+                    (
+                        start.saturating_sub(source_range.start)
+                            ..end.saturating_sub(source_range.start),
+                        style,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        self.style_cache.borrow_mut().insert(index, styles.clone());
+        styles
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct DiffLineSyntax {
+    old: Option<usize>,
+    new: Option<usize>,
+}
+
+/// 一份 Diff 的旧侧、新侧持久语法树，以及 domain 行到两侧文档行的映射。
+pub(super) struct DiffSyntaxSnapshot {
+    old: SyntaxDocument,
+    new: SyntaxDocument,
+    line_map: Vec<Vec<DiffLineSyntax>>,
+    retained_bytes: usize,
+}
+
+impl DiffSyntaxSnapshot {
+    pub(super) fn new(diff: &FileDiff, lang: Option<&str>) -> Self {
+        let mut old_lines = Vec::new();
+        let mut new_lines = Vec::new();
+        let mut line_map = Vec::with_capacity(diff.hunks.len());
+
+        for (hunk_index, hunk) in diff.hunks.iter().enumerate() {
+            if hunk_index > 0 {
+                old_lines.push("");
+                new_lines.push("");
+            }
+            let mut hunk_map = Vec::with_capacity(hunk.lines.len());
+            for line in &hunk.lines {
+                let mut mapped = DiffLineSyntax::default();
+                match line.kind {
+                    DiffLineKind::Delete => {
+                        mapped.old = Some(old_lines.len());
+                        old_lines.push(line.text.as_str());
+                    }
+                    DiffLineKind::Add => {
+                        mapped.new = Some(new_lines.len());
+                        new_lines.push(line.text.as_str());
+                    }
+                    DiffLineKind::Context => {
+                        mapped.old = Some(old_lines.len());
+                        old_lines.push(line.text.as_str());
+                        mapped.new = Some(new_lines.len());
+                        new_lines.push(line.text.as_str());
+                    }
+                }
+                hunk_map.push(mapped);
+            }
+            line_map.push(hunk_map);
+        }
+
+        let old = SyntaxDocument::new(old_lines, lang);
+        let new = SyntaxDocument::new(new_lines, lang);
+        let retained_bytes = old
+            .retained_bytes()
+            .saturating_add(new.retained_bytes())
+            .saturating_add(
+                line_map
+                    .iter()
+                    .map(|lines| {
+                        lines
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<DiffLineSyntax>())
+                    })
+                    .sum::<usize>(),
+            );
+        Self {
+            old,
+            new,
+            line_map,
+            retained_bytes,
+        }
+    }
+
+    pub(super) fn unified_line(
+        &self,
+        hunk_index: usize,
+        line_index: usize,
+        kind: DiffLineKind,
+        theme: &HighlightTheme,
+        theme_key: u64,
+    ) -> Option<CodeLine> {
+        match kind {
+            DiffLineKind::Delete => self.side_line(hunk_index, line_index, true, theme, theme_key),
+            DiffLineKind::Add | DiffLineKind::Context => {
+                self.side_line(hunk_index, line_index, false, theme, theme_key)
+            }
+        }
+    }
+
+    pub(super) fn side_line(
+        &self,
+        hunk_index: usize,
+        line_index: usize,
+        old_side: bool,
+        theme: &HighlightTheme,
+        theme_key: u64,
+    ) -> Option<CodeLine> {
+        let mapped = self.line_map.get(hunk_index)?.get(line_index)?;
+        if old_side {
+            self.old.line(mapped.old?, theme, theme_key)
+        } else {
+            self.new.line(mapped.new?, theme, theme_key)
+        }
+    }
+
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+}
+
+pub(super) struct CodeLine {
+    text: SharedString,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+pub(super) fn plain_code_line(text: &str) -> CodeLine {
+    CodeLine {
+        text: SharedString::from(prepare_display_line(text).text),
+        highlights: Vec::new(),
+    }
+}
+
+pub(super) fn highlight_theme_key(theme: &HighlightTheme) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    theme.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// 渲染阶段只创建一个 StyledText；语法解析和 Token UI 节点均不在滚动热路径。
+pub(super) fn render_code_line(line: CodeLine, fg: Hsla, mono: SharedString) -> AnyElement {
+    let text = if line.highlights.is_empty() {
+        StyledText::new(line.text)
+    } else {
+        StyledText::new(line.text).with_highlights(line.highlights)
+    };
     div()
         .text_xs()
         .font_family(mono)
         .text_color(fg)
         .whitespace_nowrap()
-        .child(text.to_string())
+        .child(text)
         .into_any_element()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::lang_for_path;
-
-    #[test]
-    fn maps_known_extensions() {
-        assert_eq!(lang_for_path("src/main.rs"), Some("rust"));
-        assert_eq!(lang_for_path("a/b/util.go"), Some("go"));
-        assert_eq!(lang_for_path("script.py"), Some("python"));
-        assert_eq!(lang_for_path("data.json"), Some("json"));
-        assert_eq!(lang_for_path("mod.mjs"), Some("javascript"));
-        assert_eq!(lang_for_path("config.yml"), Some("yaml"));
-        assert_eq!(lang_for_path("header.hpp"), Some("cpp"));
-        assert_eq!(lang_for_path("Main.java"), Some("java"));
-        assert_eq!(lang_for_path("App.kt"), Some("kotlin"));
-        assert_eq!(lang_for_path("View.swift"), Some("swift"));
-        assert_eq!(lang_for_path("index.html"), Some("html"));
-        assert_eq!(lang_for_path("style.css"), Some("css"));
-        assert_eq!(lang_for_path("schema.graphql"), Some("graphql"));
-        assert_eq!(lang_for_path("api.proto"), Some("proto"));
-        assert_eq!(lang_for_path("fix.patch"), Some("diff"));
-    }
-
-    /// tsx 用独立 grammar（TSX 的 JSX 语法 typescript grammar 解析不了）
-    #[test]
-    fn tsx_uses_dedicated_grammar() {
-        assert_eq!(lang_for_path("app.tsx"), Some("tsx"));
-        assert_eq!(lang_for_path("util.ts"), Some("typescript"));
-    }
-
-    #[test]
-    fn filename_without_extension_matches() {
-        assert_eq!(lang_for_path("Makefile"), Some("make"));
-        assert_eq!(lang_for_path("scripts/GNUmakefile"), Some("make"));
-        assert_eq!(lang_for_path("CMakeLists.txt"), Some("cmake"));
-    }
-
-    #[test]
-    fn case_insensitive_extension() {
-        assert_eq!(lang_for_path("README.MD"), Some("markdown"));
-        assert_eq!(lang_for_path("Build.SQL"), Some("sql"));
-    }
-
-    #[test]
-    fn unknown_or_no_extension_is_none() {
-        // 无扩展名 / 仅前缀点 / 不在表内 → 纯文本
-        assert_eq!(lang_for_path("Cargo.lock"), None);
-        assert_eq!(lang_for_path(".gitignore"), None);
-        assert_eq!(lang_for_path("path/to/dir.with.dots/file"), None);
-    }
-}
+#[path = "syntax/tests.rs"]
+mod tests;

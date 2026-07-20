@@ -79,17 +79,16 @@ pub(super) fn render_gutter_cell(
     row.into_any_element()
 }
 
-/// content 单元格：渲染代码文本（按 lang 语法高亮），宽度由外层 list `w(content_w)` 撑开
+/// content 单元格：渲染已准备好的代码行，宽度由外层 list `w(content_w)` 撑开。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_content_cell(
     side: &'static str,
     line: Option<(usize, &DiffLine)>,
     hunk_idx: usize,
-    lang: Option<&str>,
+    code_line: Option<super::syntax::CodeLine>,
     fg: gpui::Hsla,
     mono: SharedString,
     content_w: f32,
-    cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let Some((line_idx, line)) = line else {
         return h_flex()
@@ -100,15 +99,13 @@ pub(super) fn render_content_cell(
     };
     let (bg, _, _) = line_palette(line.kind);
     let row_id = SharedString::from(format!("vcs-diff-cnt-{side}-{hunk_idx}-{line_idx}"));
+    let code_line = code_line.unwrap_or_else(|| super::syntax::plain_code_line(&line.text));
 
-    let text_div =
-        div()
-            .flex_1()
-            .min_w(px(content_w))
-            .px(px(4.0))
-            .child(super::syntax::render_code_line(
-                &line.text, lang, fg, mono, cx,
-            ));
+    let text_div = div()
+        .flex_1()
+        .min_w(px(content_w))
+        .px(px(4.0))
+        .child(super::syntax::render_code_line(code_line, fg, mono));
 
     let mut row = h_flex()
         .id(row_id)

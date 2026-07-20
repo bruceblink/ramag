@@ -183,6 +183,7 @@ impl VcsView {
             pending_clear_creation_inputs: false,
             selected_file: None,
             current_diff: None,
+            current_diff_syntax: None,
             diff_layout_cache: RefCell::new(None),
             loading_diff: false,
             diff_request_seq: 0,

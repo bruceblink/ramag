@@ -170,10 +170,9 @@ fn hunk_button_rows(keys: &[SplitKey]) -> HashMap<usize, usize> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_file_diff_split(
     diff: &Rc<FileDiff>,
+    syntax: Option<Rc<super::syntax::DiffSyntaxSnapshot>>,
     layout: DiffLayout,
     enable_discard: bool,
-    // 语法高亮语言（None=纯文本，由调用方按文件扩展名算）
-    lang: Option<SharedString>,
     mono: SharedString,
     _fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
@@ -194,7 +193,7 @@ pub(super) fn render_file_diff_split(
                 diff,
                 keys,
                 max_chars,
-                lang,
+                syntax,
                 mono,
                 _fg,
                 muted_fg,
@@ -242,7 +241,7 @@ pub(super) fn render_file_diff_split(
         total,
         diff_rc.clone(),
         keys.clone(),
-        lang.clone(),
+        syntax.clone(),
         mono.clone(),
         content_w,
         scroll_v.clone(),
@@ -271,7 +270,7 @@ pub(super) fn render_file_diff_split(
         cx,
     );
     let right_content_list = build_content_list(
-        "R", false, total, diff_rc, keys, lang, mono, content_w, scroll_v, cx,
+        "R", false, total, diff_rc, keys, syntax, mono, content_w, scroll_v, cx,
     );
 
     h_flex()
@@ -401,7 +400,7 @@ fn build_content_list(
     total: usize,
     diff_rc: Rc<FileDiff>,
     keys: Rc<Vec<SplitKey>>,
-    lang: Option<SharedString>,
+    syntax: Option<Rc<super::syntax::DiffSyntaxSnapshot>>,
     mono: SharedString,
     content_w: f32,
     scroll_v: UniformListScrollHandle,
@@ -415,7 +414,8 @@ fn build_content_list(
             let fg = theme.foreground;
             let muted_fg = theme.muted_foreground;
             let muted_bg = theme.muted;
-            let lang_ref = lang.as_deref();
+            let highlight_theme = theme.highlight_theme.clone();
+            let theme_key = super::syntax::highlight_theme_key(&highlight_theme);
             range
                 .map(|i| match keys[i] {
                     SplitKey::Header { hunk_idx } => render_content_header(
@@ -431,15 +431,28 @@ fn build_content_list(
                     } => {
                         let line_idx = if is_left { left } else { right };
                         let line = line_idx.map(|li| (li, &diff_rc.hunks[hunk_idx].lines[li]));
+                        let code_line = line.map(|(line_idx, line)| {
+                            syntax
+                                .as_ref()
+                                .and_then(|syntax| {
+                                    syntax.side_line(
+                                        hunk_idx,
+                                        line_idx,
+                                        is_left,
+                                        &highlight_theme,
+                                        theme_key,
+                                    )
+                                })
+                                .unwrap_or_else(|| super::syntax::plain_code_line(&line.text))
+                        });
                         render_content_cell(
                             side,
                             line,
                             hunk_idx,
-                            lang_ref,
+                            code_line,
                             fg,
                             mono.clone(),
                             content_w,
-                            cx,
                         )
                     }
                     SplitKey::Spacer {

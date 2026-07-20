@@ -2,7 +2,6 @@
 //! 行号 + 内容两列 mono；uniform_list 处理 Y 虚拟化，外层 `overflow_x_scroll` 处理 X 横滚
 
 use std::ops::Range;
-use std::rc::Rc;
 
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled,
@@ -51,18 +50,15 @@ impl VcsView {
         }
 
         let mono = theme.mono_font_family.clone();
-        // 文件扩展名决定语法高亮语言（None=纯文本）
-        let lang = super::syntax::lang_for_path(&snapshot.path).map(SharedString::from);
-        // Rc clone 是引用计数 +1（O(1)），不再每帧拷贝整文件内容
-        let lines_rc: Rc<Vec<String>> = snapshot.lines.clone();
-        let total = lines_rc.len();
+        // 文档已在 worker 完成解析、Tab 展开与长行保护；Rc clone 为 O(1)。
+        let document = snapshot.document.clone();
+        let total = document.len();
 
         // gutter 列宽随总行数位数动态
         let digit_count = total.to_string().len().max(2);
         let gutter_w = (digit_count as f32) * 8.0 + 16.0;
 
-        // max_chars 在 select_pf_file 异步路径里算过一次缓存到 snapshot；
-        // render 直接读，省去万行文件每帧 100 万次 chars() 迭代
+        // max_chars 已在 worker 按最终显示文本算好；render 只读缓存。
         let content_w = (snapshot.max_chars as f32) * MONO_CHAR_W + 32.0; // 32 = padding
         let total_w = gutter_w + content_w;
 
@@ -70,24 +66,27 @@ impl VcsView {
             "vcs-pf-content",
             total,
             cx.processor({
-                let lines_rc = lines_rc.clone();
+                let document = document.clone();
                 let mono = mono.clone();
                 move |_this, range: Range<usize>, _w, cx| {
-                    let muted_fg = cx.theme().muted_foreground;
-                    let fg = cx.theme().foreground;
-                    let lang_ref = lang.as_deref();
+                    let theme = cx.theme();
+                    let muted_fg = theme.muted_foreground;
+                    let fg = theme.foreground;
+                    let highlight_theme = theme.highlight_theme.clone();
+                    let theme_key = super::syntax::highlight_theme_key(&highlight_theme);
                     range
                         .map(|i| {
+                            let code_line = document
+                                .line(i, &highlight_theme, theme_key)
+                                .unwrap_or_else(|| super::syntax::plain_code_line(""));
                             render_content_row(
                                 i,
-                                &lines_rc[i],
+                                code_line,
                                 gutter_w,
                                 content_w,
-                                lang_ref,
                                 mono.clone(),
                                 fg,
                                 muted_fg,
-                                cx,
                             )
                         })
                         .collect::<Vec<_>>()
@@ -171,14 +170,12 @@ fn truncated_banner(muted_fg: gpui::Hsla, _fg: gpui::Hsla) -> AnyElement {
 #[allow(clippy::too_many_arguments)]
 fn render_content_row(
     idx: usize,
-    text: &str,
+    code_line: super::syntax::CodeLine,
     gutter_w: f32,
     content_w: f32,
-    lang: Option<&str>,
     mono: SharedString,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
-    cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let line_no = idx + 1;
     h_flex()
@@ -199,7 +196,7 @@ fn render_content_row(
                 .flex_none()
                 .w(px(content_w))
                 .px(px(8.0))
-                .child(super::syntax::render_code_line(text, lang, fg, mono, cx)),
+                .child(super::syntax::render_code_line(code_line, fg, mono)),
         )
         .into_any_element()
 }

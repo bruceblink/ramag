@@ -204,6 +204,7 @@ impl VcsView {
             }
             tab.source = FileTabSource::Changes(new_kind);
             tab.cached_diff = None;
+            tab.cached_diff_syntax = None;
             new_tabs.push(tab);
         }
         self.file_tabs = new_tabs;
@@ -246,6 +247,7 @@ impl VcsView {
                 } else {
                     self.selected_file = None;
                     self.current_diff = None;
+                    self.current_diff_syntax = None;
                     self.loading_diff = false;
                     self.selected_pf_path = None;
                     self.current_file_content = None;

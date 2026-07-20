@@ -126,9 +126,11 @@ impl VcsView {
     pub(in crate::views) fn refresh_after_head_change(&mut self, cx: &mut Context<Self>) {
         for tab in &mut self.file_tabs {
             tab.cached_diff = None;
+            tab.cached_diff_syntax = None;
             tab.cached_content = None;
         }
         self.current_diff = None;
+        self.current_diff_syntax = None;
         self.current_file_content = None;
         self.commit_file_diff = None;
         self.blame_lines = std::rc::Rc::new(Vec::new());

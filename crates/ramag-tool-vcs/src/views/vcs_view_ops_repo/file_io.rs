@@ -1,7 +1,17 @@
-//! 文件读盘 + 大文件截断 + 二进制识别 + 主线程 finalize
+//! 文件读盘 + 大文件截断 + 二进制识别 + worker 语法快照 + 主线程 finalize
 
 use super::{PF_FILE_MAX_BYTES, RawFileContent};
 use crate::views::helpers::FileContentSnapshot;
+
+/// worker 构建完成、尚未包 Rc 的文件快照，可安全跨线程返回 UI。
+pub(super) struct PreparedFileContent {
+    path: String,
+    document: crate::views::syntax::SyntaxDocument,
+    max_chars: usize,
+    truncated: bool,
+    binary: bool,
+    error: Option<String>,
+}
 
 /// 读盘失败（路径不存在 / 权限不足）→ raw.error 携带消息，UI 渲染层提示
 pub(in crate::views) fn read_raw_file_content(
@@ -19,7 +29,6 @@ pub(in crate::views) fn read_raw_file_content(
             return RawFileContent {
                 path: rel.to_string(),
                 lines: Vec::new(),
-                max_chars: 0,
                 truncated: false,
                 binary: false,
                 error: Some(format!("无法访问文件: {e}")),
@@ -36,7 +45,6 @@ pub(in crate::views) fn read_raw_file_content(
         return RawFileContent {
             path: rel.to_string(),
             lines: Vec::new(),
-            max_chars: 0,
             truncated: false,
             binary: false,
             error: Some("不是普通文件（可能是软链接 / 设备文件）".into()),
@@ -49,7 +57,6 @@ pub(in crate::views) fn read_raw_file_content(
             return RawFileContent {
                 path: rel.to_string(),
                 lines: Vec::new(),
-                max_chars: 0,
                 truncated: false,
                 binary: false,
                 error: Some(format!("读取文件失败: {e}")),
@@ -64,7 +71,6 @@ pub(in crate::views) fn read_raw_file_content(
         return RawFileContent {
             path: rel.to_string(),
             lines: Vec::new(),
-            max_chars: 0,
             truncated: false,
             binary: true,
             error: None,
@@ -74,22 +80,15 @@ pub(in crate::views) fn read_raw_file_content(
         return RawFileContent {
             path: rel.to_string(),
             lines: Vec::new(),
-            max_chars: 0,
             truncated,
             binary: true,
             error: None,
         };
     };
     let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-    let max_chars = lines
-        .iter()
-        .map(|line| super::super::syntax::display_cols(line))
-        .max()
-        .unwrap_or(0);
     RawFileContent {
         path: rel.to_string(),
         lines,
-        max_chars,
         truncated,
         binary: false,
         error: None,
@@ -132,15 +131,30 @@ fn decode_preview_text(bytes: Vec<u8>, truncated: bool) -> Option<String> {
     }
 }
 
-/// 主线程 finalize：仅包 Rc；列宽已在 worker 线程计算
-pub(super) fn finalize_file_snapshot(raw: RawFileContent) -> FileContentSnapshot {
-    FileContentSnapshot {
+/// worker 阶段：一次完成语法解析、Tab 展开和长行保护。
+pub(super) fn prepare_file_snapshot(raw: RawFileContent) -> PreparedFileContent {
+    let lang = crate::views::syntax::lang_for_path(&raw.path);
+    let document =
+        crate::views::syntax::SyntaxDocument::new(raw.lines.iter().map(String::as_str), lang);
+    PreparedFileContent {
         path: raw.path,
-        lines: std::rc::Rc::new(raw.lines),
-        max_chars: raw.max_chars,
+        max_chars: document.max_cols(),
+        document,
         truncated: raw.truncated,
         binary: raw.binary,
         error: raw.error,
+    }
+}
+
+/// 主线程 finalize：只包 Rc，不执行解析或全量文本扫描。
+pub(super) fn finalize_file_snapshot(prepared: PreparedFileContent) -> FileContentSnapshot {
+    FileContentSnapshot {
+        path: prepared.path,
+        document: std::rc::Rc::new(prepared.document),
+        max_chars: prepared.max_chars,
+        truncated: prepared.truncated,
+        binary: prepared.binary,
+        error: prepared.error,
     }
 }
 

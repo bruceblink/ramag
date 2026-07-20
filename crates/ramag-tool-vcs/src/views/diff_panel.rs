@@ -42,8 +42,7 @@ pub(super) fn render_file_diff(
     diff: &Rc<FileDiff>,
     keys: Rc<Vec<UnifiedKey>>,
     max_chars: usize,
-    // 语法高亮语言（None=纯文本）
-    lang: Option<SharedString>,
+    syntax: Option<Rc<super::syntax::DiffSyntaxSnapshot>>,
     mono: SharedString,
     _fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
@@ -77,7 +76,8 @@ pub(super) fn render_file_diff(
                 let fg = theme.foreground;
                 let muted_fg = theme.muted_foreground;
                 let muted_bg = theme.muted;
-                let lang_ref = lang.as_deref();
+                let highlight_theme = theme.highlight_theme.clone();
+                let theme_key = super::syntax::highlight_theme_key(&highlight_theme);
                 range
                     .map(|i| match keys[i] {
                         UnifiedKey::Header { hunk_idx } => render_hunk_header_unified(
@@ -92,11 +92,23 @@ pub(super) fn render_file_diff(
                         .into_any_element(),
                         UnifiedKey::Line { hunk_idx, line_idx } => {
                             let line = &diff_rc.hunks[hunk_idx].lines[line_idx];
+                            let code_line = syntax
+                                .as_ref()
+                                .and_then(|syntax| {
+                                    syntax.unified_line(
+                                        hunk_idx,
+                                        line_idx,
+                                        line.kind,
+                                        &highlight_theme,
+                                        theme_key,
+                                    )
+                                })
+                                .unwrap_or_else(|| super::syntax::plain_code_line(&line.text));
                             render_diff_line(
                                 line,
                                 hunk_idx,
                                 line_idx,
-                                lang_ref,
+                                code_line,
                                 mono.clone(),
                                 fg,
                                 muted_fg,
@@ -229,7 +241,7 @@ fn render_diff_line(
     line: &DiffLine,
     hunk_idx: usize,
     line_idx: usize,
-    lang: Option<&str>,
+    code_line: super::syntax::CodeLine,
     mono: SharedString,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
@@ -272,9 +284,13 @@ fn render_diff_line(
                 .text_color(marker_color)
                 .child(marker),
         )
-        .child(div().flex_1().min_w(px(content_w)).px(px(4.0)).child(
-            super::syntax::render_code_line(&line.text, lang, fg, mono, cx),
-        ));
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(content_w))
+                .px(px(4.0))
+                .child(super::syntax::render_code_line(code_line, fg, mono)),
+        );
 
     if let Some(c) = bg {
         row = row.bg(c);

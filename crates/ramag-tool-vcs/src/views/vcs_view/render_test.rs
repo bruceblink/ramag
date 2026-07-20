@@ -16,7 +16,7 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{GitDriver, Storage};
 
-use super::super::helpers::{ActiveView, FileTab, FileTabSource, GroupKind};
+use super::super::helpers::{ActiveView, FileContentSnapshot, FileTab, FileTabSource, GroupKind};
 use super::VcsView;
 
 /// 空壳 GitDriver：render 是纯展示、不调 driver，方法只需可编译且不 panic
@@ -150,13 +150,52 @@ fn inject_diff_session(v: &mut VcsView) {
     v.repo = Some(repo);
     v.active_view = ActiveView::Session;
     v.status = Some(mock_status());
-    v.current_diff = Some(std::rc::Rc::new(test_diff()));
+    let diff = std::rc::Rc::new(test_diff());
+    let syntax = std::rc::Rc::new(super::super::syntax::DiffSyntaxSnapshot::new(
+        &diff,
+        Some("rust"),
+    ));
+    v.current_diff = Some(diff.clone());
+    v.current_diff_syntax = Some(syntax.clone());
     v.selected_file = Some(("a.rs".into(), GroupKind::Unstaged));
     v.file_tabs = vec![FileTab {
         path: "a.rs".into(),
         source: FileTabSource::Changes(GroupKind::Unstaged),
-        cached_diff: Some(std::rc::Rc::new(test_diff())),
+        cached_diff: Some(diff),
+        cached_diff_syntax: Some(syntax),
         cached_content: None,
+    }];
+    v.active_file_tab_idx = Some(0);
+}
+
+/// 注入 Project Files 直接查看文件内容的 Session 态。
+fn inject_file_content_session(v: &mut VcsView) {
+    let repo = mock_repo();
+    v.open_repos = vec![repo.clone()];
+    v.repo = Some(repo);
+    v.active_view = ActiveView::Session;
+
+    let lines = (0..200)
+        .map(|index| format!("fn item_{index}() {{\tprintln!(\"{index}\"); }}"))
+        .collect::<Vec<_>>();
+    let document =
+        super::super::syntax::SyntaxDocument::new(lines.iter().map(String::as_str), Some("rust"));
+    let snapshot = FileContentSnapshot {
+        path: "src/generated.rs".into(),
+        max_chars: document.max_cols(),
+        document: std::rc::Rc::new(document),
+        truncated: false,
+        binary: false,
+        error: None,
+    };
+    v.selected_pf_path = Some(snapshot.path.clone());
+    v.current_file_content = Some(snapshot.clone());
+    v.file_tabs = vec![FileTab {
+        path: snapshot.path.clone(),
+        source: FileTabSource::ProjectFiles,
+        cached_diff: None,
+        cached_diff_syntax: None,
+        cached_content: Some(snapshot),
     }];
     v.active_file_tab_idx = Some(0);
 }
@@ -214,4 +253,27 @@ fn vcs_view_renders_full_file_diff_mode(cx: &mut TestAppContext) {
             super::super::helpers::DiffViewMode::FullFile
         ));
     });
+}
+
+/// Project Files 直接查看同样走持久语法快照，重复渲染不重新解析且不 panic。
+#[gpui::test]
+fn vcs_view_renders_project_file_content_without_panic(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    view.update(cx, |v, cx| {
+        inject_file_content_session(v);
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |v, _| {
+        assert_eq!(
+            v.current_file_content
+                .as_ref()
+                .map(|snapshot| snapshot.document.len()),
+            Some(200)
+        );
+    });
+
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
 }

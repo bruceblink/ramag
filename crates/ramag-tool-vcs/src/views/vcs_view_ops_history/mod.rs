@@ -116,6 +116,7 @@ impl VcsView {
                 path: path.clone(),
                 source: source.clone(),
                 cached_diff: None,
+                cached_diff_syntax: None,
                 cached_content: None,
             });
             self.file_tabs.len() - 1
@@ -141,12 +142,14 @@ impl VcsView {
             .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
         if let Some(cached) = self.file_tabs[idx].cached_diff.clone() {
             self.current_diff = Some(cached.clone());
+            self.current_diff_syntax = self.file_tabs[idx].cached_diff_syntax.clone();
             self.commit_file_diff = Some(cached);
             self.loading_diff = false;
             cx.notify();
             return;
         }
         self.current_diff = None;
+        self.current_diff_syntax = None;
         self.commit_file_diff = None;
         self.loading_diff = true;
         cx.notify();
@@ -167,6 +170,20 @@ impl VcsView {
                     context_lines,
                 )
                 .await;
+            let result = match result {
+                Ok(diff) => {
+                    let syntax_path = path_for_diff.clone();
+                    ramag_app::run_blocking(move || {
+                        let syntax = super::syntax::DiffSyntaxSnapshot::new(
+                            &diff,
+                            super::syntax::lang_for_path(&syntax_path),
+                        );
+                        Ok((diff, syntax))
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            };
             let _ =
                 this.update(cx, |this, cx| {
                     if !this.is_current_repo(&repo) || this.diff_request_seq != request_seq {
@@ -174,8 +191,9 @@ impl VcsView {
                     }
                     this.loading_diff = false;
                     match result {
-                        Ok(d) => {
+                        Ok((d, syntax)) => {
                             let d = std::rc::Rc::new(d);
+                            let syntax = std::rc::Rc::new(syntax);
                             let still_current = this.active_file_tab_idx.is_some_and(|idx| {
                                 this.file_tabs.get(idx).is_some_and(|tab| {
                                     tab.path == path_for_diff && tab.source == source_for_diff
@@ -183,12 +201,14 @@ impl VcsView {
                             });
                             if still_current {
                                 this.current_diff = Some(d.clone());
+                                this.current_diff_syntax = Some(syntax.clone());
                                 this.commit_file_diff = Some(d.clone());
                             }
                             if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
                                 tab.path == path_for_diff && tab.source == source_for_diff
                             }) {
                                 tab.cached_diff = Some(d);
+                                tab.cached_diff_syntax = Some(syntax);
                             }
                             this.prune_file_tab_payloads();
                         }
