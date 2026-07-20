@@ -43,6 +43,17 @@ impl ConnectionService {
         self.storage.save_connection(config).await
     }
 
+    /// 原子保存一批连接；用于配置导入，避免中途失败留下半份结果。
+    pub async fn save_many(&self, configs: &[ConnectionConfig]) -> Result<()> {
+        if configs.is_empty() {
+            return Ok(());
+        }
+        for config in configs {
+            config.validate().map_err(DomainError::InvalidConfig)?;
+        }
+        self.storage.save_connections(configs).await
+    }
+
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
         self.storage.delete_connection(id).await?;
         // 连接删除已由用户确认；同步清理不可再访问的查询历史与本地草稿，避免敏感文本残留。

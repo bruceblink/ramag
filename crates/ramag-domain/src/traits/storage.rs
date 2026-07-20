@@ -18,6 +18,12 @@ pub trait Storage: Send + Sync {
     async fn get_connection(&self, id: &ConnectionId) -> Result<Option<ConnectionConfig>>;
     /// 新增或更新
     async fn save_connection(&self, config: &ConnectionConfig) -> Result<()>;
+    /// 原子新增或更新一批连接；任一条失败时不得留下部分写入。
+    async fn save_connections(&self, _configs: &[ConnectionConfig]) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "save_connections".into(),
+        ))
+    }
     async fn delete_connection(&self, id: &ConnectionId) -> Result<()>;
 
     // Git 仓库（VCS 最近仓库列表）

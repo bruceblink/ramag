@@ -37,6 +37,11 @@ schemars = { workspace = true }
 
 # 时间显示（历史面板）
 chrono = { workspace = true }
+# 连接配置导出加密：口令 PBKDF2 派生密钥 + AES-GCM
+aes-gcm = { workspace = true }
+hex = { workspace = true }
+pbkdf2 = { workspace = true }
+sha2 = { workspace = true }
 
 # 系统文件对话框（导出 CSV / JSON）
 rfd = { workspace = true }

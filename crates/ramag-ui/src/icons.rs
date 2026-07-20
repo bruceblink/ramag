@@ -38,6 +38,11 @@ pub fn download() -> Icon {
 }
 
 #[inline]
+pub fn upload() -> Icon {
+    Icon::default().path("icons/upload.svg")
+}
+
+#[inline]
 pub fn pencil() -> Icon {
     Icon::default().path("icons/pencil.svg")
 }

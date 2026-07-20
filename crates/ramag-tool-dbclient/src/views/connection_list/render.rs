@@ -7,7 +7,8 @@ use gpui::{
     uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::row::connection_row;
@@ -15,6 +16,9 @@ use super::{ConnectionListPanel, ListEvent};
 
 impl Render for ConnectionListPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(notification) = self.pending_notification.take() {
+            window.push_notification(notification, cx);
+        }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;
@@ -60,6 +64,28 @@ impl Render for ConnectionListPanel {
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                     ),
                 ),
+            )
+            .child(
+                ramag_ui::clickable_button("export-connections")
+                    .ghost()
+                    .small()
+                    .icon(ramag_ui::icons::upload())
+                    .tooltip("导出配置")
+                    .disabled(self.transferring)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.prompt_export_passphrase(window, cx);
+                    })),
+            )
+            .child(
+                ramag_ui::clickable_button("import-connections")
+                    .ghost()
+                    .small()
+                    .icon(ramag_ui::icons::download())
+                    .tooltip("导入配置")
+                    .disabled(self.transferring)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.import_connections(window, cx);
+                    })),
             )
             .child(
                 ramag_ui::clickable_button("add-connection")

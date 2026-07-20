@@ -5,7 +5,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    App, AppContext as _, ClickEvent, Entity, ParentElement, SharedString, Styled, Window, div, px,
+    App, AppContext as _, ClickEvent, Entity, ParentElement, SharedString, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _,
@@ -34,6 +35,7 @@ pub fn open_prompt(
         confirm_label.into(),
         MAX_PROMPT_INPUT_BYTES,
         false,
+        false,
         on_confirm,
         window,
         cx,
@@ -58,6 +60,57 @@ pub fn open_bounded_prompt(
         confirm_label.into(),
         max_bytes,
         false,
+        false,
+        on_confirm,
+        window,
+        cx,
+    );
+}
+
+/// 掩码输入对话框（口令类输入不回显）；空输入不触发确认，可预填默认值
+pub fn open_masked_prompt(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    initial: &str,
+    confirm_label: impl Into<SharedString>,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_prompt_impl(
+        title.into(),
+        description.into(),
+        initial,
+        confirm_label.into(),
+        MAX_PROMPT_INPUT_BYTES,
+        false,
+        true,
+        on_confirm,
+        window,
+        cx,
+    );
+}
+
+/// 带字节上限的掩码输入；口令保留首尾空格，纯空白仍视为空输入。
+#[allow(clippy::too_many_arguments)]
+pub fn open_bounded_masked_prompt(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    initial: &str,
+    confirm_label: impl Into<SharedString>,
+    max_bytes: usize,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_prompt_impl(
+        title.into(),
+        description.into(),
+        initial,
+        confirm_label.into(),
+        max_bytes,
+        false,
+        true,
         on_confirm,
         window,
         cx,
@@ -81,6 +134,7 @@ pub fn open_optional_prompt(
         confirm_label.into(),
         MAX_PROMPT_INPUT_BYTES,
         true,
+        false,
         on_confirm,
         window,
         cx,
@@ -105,6 +159,7 @@ pub fn open_optional_bounded_prompt(
         confirm_label.into(),
         max_bytes,
         true,
+        false,
         on_confirm,
         window,
         cx,
@@ -119,6 +174,7 @@ fn open_prompt_impl(
     confirm_label: SharedString,
     max_bytes: usize,
     allow_empty: bool,
+    masked: bool,
     on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
@@ -133,16 +189,20 @@ fn open_prompt_impl(
         return;
     }
     let input: Entity<InputState> = cx.new(|cx| {
-        InputState::new(window, cx)
-            .validate(move |value, _| value.len() <= max_bytes)
-            .default_value(initial)
+        let state = InputState::new(window, cx).validate(move |value, _| value.len() <= max_bytes);
+        if masked { state.masked(true) } else { state }
     });
-    // 打开即聚焦输入框：重命名类操作无需先点一下即可编辑
+    // 预填走运行时 set_value（完整更新路径，掩码输入同样生效）；打开即聚焦无需先点一下
     input.update(cx, |state, cx| {
+        if !initial.is_empty() {
+            state.set_value(initial, window, cx);
+        }
         state.focus(window, cx);
     });
     // FnOnce 包成可 Clone 的 Fn 句柄
     let on_confirm_cell = Rc::new(RefCell::new(Some(on_confirm)));
+    // 空输入错误：确认时置位；输入框有内容即自动隐藏，再次清空则复显
+    let empty_error = Rc::new(RefCell::new(false));
 
     window.open_dialog(cx, move |dialog, _, _| {
         let desc = description.clone();
@@ -163,10 +223,15 @@ fn open_prompt_impl(
             .on_click({
                 let cell = on_confirm_cell.clone();
                 let input = input.clone();
+                let empty_error_for_btn = empty_error.clone();
                 move |_: &ClickEvent, window, app| {
-                    let Some(value) =
-                        normalize_prompt_value(input.read(app).value().as_ref(), allow_empty)
-                    else {
+                    let Some(value) = normalize_prompt_value(
+                        input.read(app).value().as_ref(),
+                        allow_empty,
+                        !masked,
+                    ) else {
+                        *empty_error_for_btn.borrow_mut() = true;
+                        input.update(app, |_, cx| cx.notify());
                         return;
                     };
                     if let Some(cb) = cell.borrow_mut().take() {
@@ -190,10 +255,15 @@ fn open_prompt_impl(
             .on_ok({
                 let cell = on_confirm_cell.clone();
                 let input = input.clone();
+                let empty_error_for_enter = empty_error.clone();
                 move |_, window, app| {
-                    let Some(value) =
-                        normalize_prompt_value(input.read(app).value().as_ref(), allow_empty)
-                    else {
+                    let Some(value) = normalize_prompt_value(
+                        input.read(app).value().as_ref(),
+                        allow_empty,
+                        !masked,
+                    ) else {
+                        *empty_error_for_enter.borrow_mut() = true;
+                        input.update(app, |_, cx| cx.notify());
                         return false;
                     };
                     if let Some(cb) = cell.borrow_mut().take() {
@@ -202,15 +272,28 @@ fn open_prompt_impl(
                     true
                 }
             })
-            .content(move |content, _, cx| {
-                let muted_fg = cx.theme().muted_foreground;
-                content.child(
-                    v_flex()
-                        .gap(px(8.0))
-                        .py(px(4.0))
-                        .child(div().text_sm().text_color(muted_fg).child(desc.clone()))
-                        .child(Input::new(&input_for_content).small()),
-                )
+            .content({
+                let empty_error = empty_error.clone();
+                move |content, _, cx| {
+                    let muted_fg = cx.theme().muted_foreground;
+                    let show_empty_error = *empty_error.borrow()
+                        && input_for_content.read(cx).value().trim().is_empty();
+                    content.child(
+                        v_flex()
+                            .gap(px(8.0))
+                            .py(px(4.0))
+                            .child(div().text_sm().text_color(muted_fg).child(desc.clone()))
+                            .child(Input::new(&input_for_content).small())
+                            .when(show_empty_error, |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(gpui::red())
+                                        .child("输入不能为空"),
+                                )
+                            }),
+                    )
+                }
             })
             .footer(
                 h_flex()
@@ -224,9 +307,9 @@ fn open_prompt_impl(
     });
 }
 
-fn normalize_prompt_value(value: &str, allow_empty: bool) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() && !allow_empty {
+fn normalize_prompt_value(value: &str, allow_empty: bool, trim_value: bool) -> Option<String> {
+    let value = if trim_value { value.trim() } else { value };
+    if value.trim().is_empty() && !allow_empty {
         return None;
     }
     Some(value.to_string())
@@ -239,10 +322,18 @@ mod tests {
     #[test]
     fn required_and_optional_prompts_handle_empty_values_differently() {
         assert_eq!(
-            normalize_prompt_value("  name  ", false).as_deref(),
+            normalize_prompt_value("  name  ", false, true).as_deref(),
             Some("name")
         );
-        assert_eq!(normalize_prompt_value("   ", false), None);
-        assert_eq!(normalize_prompt_value("   ", true).as_deref(), Some(""));
+        assert_eq!(normalize_prompt_value("   ", false, true), None);
+        assert_eq!(
+            normalize_prompt_value("   ", true, true).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            normalize_prompt_value("  secret  ", false, false).as_deref(),
+            Some("  secret  ")
+        );
+        assert_eq!(normalize_prompt_value("   ", false, false), None);
     }
 }

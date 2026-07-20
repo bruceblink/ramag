@@ -17,7 +17,7 @@ pub use clipboard::{
     normalize_blacklist_source, parse_hex_color,
 };
 pub use connection::{
-    ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_HOST_BYTES,
+    ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_CONFIGS, MAX_CONNECTION_HOST_BYTES,
     MAX_CONNECTION_IDENTIFIER_BYTES, MAX_CONNECTION_NAME_BYTES, MAX_CONNECTION_PASSWORD_BYTES,
     MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_REMARK_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
     TlsVerify,

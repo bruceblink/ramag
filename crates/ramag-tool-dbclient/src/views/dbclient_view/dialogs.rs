@@ -141,7 +141,7 @@ impl DbClientView {
 
     /// 保存连接后同步新配置到同 id 的打开槽位：有实体的丢弃实体并置 stale（暂停使用），
     /// 惰性占位只更新配置（下次激活自然按新配置连）。返回是否有槽位被置 stale
-    fn mark_sessions_stale(&mut self, conn: &ConnectionConfig) -> bool {
+    pub(super) fn mark_sessions_stale(&mut self, conn: &ConnectionConfig) -> bool {
         let mut any_stale = false;
         for slot in self.sessions.iter_mut().filter(|s| s.config.id == conn.id) {
             slot.config = conn.clone();

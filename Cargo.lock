@@ -6407,13 +6407,16 @@ dependencies = [
 name = "ramag-tool-dbclient"
 version = "0.0.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "chrono",
  "futures",
  "gpui",
  "gpui-component",
+ "hex",
  "lsp-types",
  "parking_lot",
+ "pbkdf2",
  "ramag-app",
  "ramag-domain",
  "ramag-infra-sql-shared",
@@ -6425,6 +6428,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "sqlformat",
  "tracing",
 ]

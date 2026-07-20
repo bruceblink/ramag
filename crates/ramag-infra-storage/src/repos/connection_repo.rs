@@ -1,5 +1,6 @@
 //! 连接配置 CRUD。密码经 Cipher 加密为 hex 落盘；密钥变化 / 数据损坏读取时抛 Storage 错
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -7,14 +8,13 @@ use redb::{Database, ReadableDatabase as _, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use ramag_domain::entities::{ConnectionConfig, ConnectionId};
+use ramag_domain::entities::{ConnectionConfig, ConnectionId, MAX_CONNECTION_CONFIGS};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::encryption::Cipher;
 use crate::repos::bounded_json;
 
 const MAX_CONNECTION_RECORD_BYTES: usize = 1024 * 1024;
-const MAX_CONNECTION_RECORDS: usize = 2048;
 const MAX_CONNECTION_LIST_BYTES: usize = 64 * 1024 * 1024;
 
 /// key=ConnectionId UUID，value=`EncryptedConnection` JSON
@@ -135,7 +135,7 @@ pub(crate) fn list(
             out.len(),
             retained_bytes,
             value.value().len(),
-            MAX_CONNECTION_RECORDS,
+            MAX_CONNECTION_CONFIGS,
             MAX_CONNECTION_LIST_BYTES,
             "连接列表",
         )?;
@@ -176,10 +176,40 @@ pub(crate) fn save(
     cipher: Arc<RwLock<Cipher>>,
     config: ConnectionConfig,
 ) -> Result<()> {
+    save_many(db, cipher, vec![config])
+}
+
+/// 单事务批量新增或更新连接；预处理、容量校验或写入任一步失败都会整体回滚。
+pub(crate) fn save_many(
+    db: Arc<Database>,
+    cipher: Arc<RwLock<Cipher>>,
+    configs: Vec<ConnectionConfig>,
+) -> Result<()> {
+    if configs.is_empty() {
+        return Ok(());
+    }
+    if configs.len() > MAX_CONNECTION_CONFIGS {
+        return Err(DomainError::InvalidConfig(format!(
+            "单次保存连接数量超过 {MAX_CONNECTION_CONFIGS} 条上限"
+        )));
+    }
+
     let cipher = cipher.read();
-    let enc = EncryptedConnection::from_plain(&config, &cipher)?;
-    let json = bounded_json::serialize(&enc, MAX_CONNECTION_RECORD_BYTES, "连接记录")?;
-    let id_str = config.id.to_string();
+    let mut batch_ids = HashSet::with_capacity(configs.len());
+    let mut prepared = Vec::with_capacity(configs.len());
+    for config in configs {
+        let id_str = config.id.to_string();
+        if !batch_ids.insert(id_str.clone()) {
+            return Err(DomainError::InvalidConfig(format!(
+                "批量保存包含重复连接 ID：{}",
+                config.id
+            )));
+        }
+        let enc = EncryptedConnection::from_plain(&config, &cipher)?;
+        let json = bounded_json::serialize(&enc, MAX_CONNECTION_RECORD_BYTES, "连接记录")?;
+        prepared.push((config.id, config.name, id_str, json));
+    }
+    drop(cipher);
 
     let write_txn = db
         .begin_write()
@@ -191,7 +221,7 @@ pub(crate) fn save(
 
         let mut item_count = 0usize;
         let mut total_bytes = 0usize;
-        let mut replaced_bytes = None;
+        let mut replaced_bytes = HashMap::with_capacity(prepared.len());
         for entry in table
             .iter()
             .map_err(|error| DomainError::Storage(format!("遍历连接记录失败：{error}")))?
@@ -207,35 +237,54 @@ pub(crate) fn save(
                 item_count,
                 total_bytes,
                 value.value().len(),
-                MAX_CONNECTION_RECORDS,
+                MAX_CONNECTION_CONFIGS,
                 MAX_CONNECTION_LIST_BYTES,
                 "连接列表",
             )?;
-            if key.value() == id_str {
-                replaced_bytes = Some(value.value().len());
+            if batch_ids.contains(key.value()) {
+                replaced_bytes.insert(key.value().to_string(), value.value().len());
             }
         }
-        let final_count = item_count.saturating_add(usize::from(replaced_bytes.is_none()));
+        let added_count = prepared.len().saturating_sub(replaced_bytes.len());
+        let final_count = item_count
+            .checked_add(added_count)
+            .ok_or_else(|| DomainError::Storage("连接列表数量溢出".into()))?;
+        let replaced_total = replaced_bytes.values().try_fold(0usize, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or_else(|| DomainError::Storage("连接列表替换数据大小溢出".into()))
+        })?;
+        let inserted_total = prepared.iter().try_fold(0usize, |total, (_, _, _, json)| {
+            total
+                .checked_add(json.len())
+                .ok_or_else(|| DomainError::Storage("连接列表新增数据大小溢出".into()))
+        })?;
         let final_bytes = total_bytes
-            .saturating_sub(replaced_bytes.unwrap_or(0))
-            .checked_add(json.len())
+            .checked_sub(replaced_total)
+            .and_then(|bytes| bytes.checked_add(inserted_total))
             .ok_or_else(|| DomainError::Storage("连接列表总数据大小溢出".into()))?;
         bounded_json::ensure_collection_budget(
             final_count,
             final_bytes,
-            MAX_CONNECTION_RECORDS,
+            MAX_CONNECTION_CONFIGS,
             MAX_CONNECTION_LIST_BYTES,
             "连接列表",
         )?;
-        table
-            .insert(id_str.as_str(), json.as_str())
-            .map_err(|e| DomainError::Storage(format!("写入失败：{e}")))?;
+        for (_, _, id, json) in &prepared {
+            table
+                .insert(id.as_str(), json.as_str())
+                .map_err(|e| DomainError::Storage(format!("写入连接 {id} 失败：{e}")))?;
+        }
     }
     write_txn
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
-    info!(connection_id = %config.id, name = %config.name, "connection saved");
+    if let [(id, name, _, _)] = prepared.as_slice() {
+        info!(connection_id = %id, name = %name, "connection saved");
+    } else {
+        info!(count = prepared.len(), "connections saved atomically");
+    }
     Ok(())
 }
 

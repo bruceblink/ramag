@@ -179,6 +179,13 @@ impl Storage for RedbStorage {
         run_blocking(move || repos::connection_repo::save(db, cipher, config)).await
     }
 
+    async fn save_connections(&self, configs: &[ConnectionConfig]) -> Result<()> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let configs = configs.to_vec();
+        run_blocking(move || repos::connection_repo::save_many(db, cipher, configs)).await
+    }
+
     async fn delete_connection(&self, id: &ConnectionId) -> Result<()> {
         let db = self.db.clone();
         let id_str = id.to_string();
@@ -536,6 +543,62 @@ mod tests {
 
         let got = storage.get_connection(&cfg.id).await.unwrap().unwrap();
         assert_eq!(got.host, "10.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn batch_save_inserts_and_updates_atomically() {
+        let (storage, _tmp) = make_test_storage();
+        let mut existing = sample_config("existing");
+        storage.save_connection(&existing).await.unwrap();
+
+        existing.host = "10.0.0.8".into();
+        let added = sample_config("added");
+        storage
+            .save_connections(&[existing.clone(), added.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .get_connection(&existing.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .host,
+            "10.0.0.8"
+        );
+        assert!(storage.get_connection(&added.id).await.unwrap().is_some());
+        assert_eq!(storage.list_connections().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn invalid_batch_does_not_leave_partial_connection_updates() {
+        let (storage, _tmp) = make_test_storage();
+        let original = sample_config("original");
+        storage.save_connection(&original).await.unwrap();
+
+        let mut update = original.clone();
+        update.host = "10.0.0.9".into();
+        let mut invalid = sample_config("invalid");
+        invalid.port = 0;
+
+        assert!(
+            storage
+                .save_connections(&[update, invalid.clone()])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            storage
+                .get_connection(&original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .host,
+            "127.0.0.1"
+        );
+        assert!(storage.get_connection(&invalid.id).await.unwrap().is_none());
+        assert_eq!(storage.list_connections().await.unwrap().len(), 1);
     }
 
     fn sample_history(connection_id: ConnectionId, sql: &str) -> QueryRecord {

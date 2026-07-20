@@ -17,6 +17,8 @@ pub const MAX_CONNECTION_REMARK_BYTES: usize = 16 * 1024;
 pub const MAX_CONNECTION_PATH_BYTES: usize = 32 * 1024;
 /// SSH 目标仅需容纳 user@host 或 config 别名。
 pub const MAX_CONNECTION_SSH_TARGET_BYTES: usize = 4 * 1024;
+/// 本地最多保存的连接配置数量；导入与存储共用，避免边界在不同层漂移。
+pub const MAX_CONNECTION_CONFIGS: usize = 2048;
 
 /// 连接唯一标识
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
