@@ -1,11 +1,14 @@
-//! PG 行解码：PgRow → Domain Value。NUMERIC 用 BigDecimal 转 Text 保精度；array/interval/inet/uuid 等 fallback Text
+//! PG 行解码：PgRow → Domain Value。常见原生类型转可读文本，未知二进制类型保留为 Bytes
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use ramag_domain::entities::{ColumnKind, ColumnType, Value};
 use ramag_domain::error::{DomainError, Result};
 use sqlx::Column as _;
 use sqlx::TypeInfo as _;
-use sqlx::postgres::{PgColumn, PgRow};
+use sqlx::postgres::types::{PgInterval, PgRange, PgTimeTz};
+use sqlx::postgres::{PgColumn, PgRow, PgTypeKind, PgValueFormat, PgValueRef};
 use sqlx::types::BigDecimal;
 use sqlx::types::Json as SqlxJson;
 use sqlx::{Row, ValueRef};
@@ -19,14 +22,8 @@ pub fn decode_row(row: &PgRow) -> Result<Vec<Value>> {
 
 fn decode_column(row: &PgRow, col: &PgColumn) -> Result<Value> {
     let type_name = col.type_info().name();
-    let idx = col.ordinal();
 
-    let raw = row.try_get_raw(idx).map_err(|error| {
-        DomainError::QueryFailed(format!(
-            "读取列「{}」({type_name}) 原始值失败：{error}",
-            col.name()
-        ))
-    })?;
+    let raw = raw_value(row, col)?;
     if raw.is_null() {
         return Ok(Value::Null);
     }
@@ -62,6 +59,19 @@ fn decode_column(row: &PgRow, col: &PgColumn) -> Result<Value> {
         "TIME" => decode_as::<NaiveTime, _>(row, col, |value| {
             Value::Text(value.format("%H:%M:%S").to_string())
         }),
+        "TIMETZ" => decode_as::<PgTimeTz<NaiveTime, FixedOffset>, _>(row, col, |value| {
+            Value::Text(format!(
+                "{}{}",
+                value.time.format("%H:%M:%S%.f"),
+                value.offset
+            ))
+        }),
+        "INTERVAL" => decode_as::<PgInterval, _>(row, col, |value| {
+            Value::Text(format!(
+                "{} mons {} days {} microseconds",
+                value.months, value.days, value.microseconds
+            ))
+        }),
 
         "JSON" | "JSONB" => {
             decode_as::<SqlxJson<serde_json::Value>, _>(row, col, |value| Value::Json(value.0))
@@ -69,9 +79,29 @@ fn decode_column(row: &PgRow, col: &PgColumn) -> Result<Value> {
 
         "UUID" => decode_as::<uuid::Uuid, _>(row, col, |value| Value::Text(value.to_string())),
 
-        // PG 特有类型（array / range / interval / inet / cidr / macaddr / time tz）走 String 文本兜底
-        _ => fallback_text(row, col, format!("不支持的 PostgreSQL 类型 {type_name}")),
+        "INT4[]" => decode_int_array(row, col),
+        "TEXT[]" => decode_text_array(row, col),
+        "INT4RANGE" => {
+            decode_as::<PgRange<i32>, _>(row, col, |value| Value::Text(value.to_string()))
+        }
+        "INET" | "CIDR" => decode_network(row, col),
+        "MACADDR" | "MACADDR8" => decode_mac_address(row, col),
+        "BIT" | "VARBIT" => decode_bit_string(row, col),
+        name if name.eq_ignore_ascii_case("xml") => decode_raw_utf8(row, col),
+
+        // 自定义 enum 的二进制表示就是标签文本；其它未知类型保留原始字节，避免整条查询失败。
+        _ => decode_unknown(row, col),
     }
+}
+
+fn raw_value<'r>(row: &'r PgRow, col: &PgColumn) -> Result<PgValueRef<'r>> {
+    row.try_get_raw(col.ordinal()).map_err(|error| {
+        DomainError::QueryFailed(format!(
+            "读取列「{}」({}) 原始值失败：{error}",
+            col.name(),
+            col.type_info().name()
+        ))
+    })
 }
 
 fn decode_as<T, F>(row: &PgRow, col: &PgColumn, convert: F) -> Result<Value>
@@ -100,6 +130,170 @@ fn fallback_text(
                 col.type_info().name()
             ))
         })
+}
+
+fn decode_int_array(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    match row.try_get::<Vec<Option<i32>>, _>(col.ordinal()) {
+        Ok(value) => serde_json::to_string(&value)
+            .map(Value::Text)
+            .map_err(|error| {
+                DomainError::QueryFailed(format!(
+                    "序列化列「{}」(INT4[]) 失败：{error}",
+                    col.name()
+                ))
+            }),
+        Err(error) => fallback_text(row, col, error),
+    }
+}
+
+fn decode_text_array(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    match row.try_get::<Vec<Option<String>>, _>(col.ordinal()) {
+        Ok(value) => serde_json::to_string(&value)
+            .map(Value::Text)
+            .map_err(|error| {
+                DomainError::QueryFailed(format!(
+                    "序列化列「{}」(TEXT[]) 失败：{error}",
+                    col.name()
+                ))
+            }),
+        Err(error) => fallback_text(row, col, error),
+    }
+}
+
+fn decode_network(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    let raw = raw_value(row, col)?;
+    if raw.format() == PgValueFormat::Text {
+        return raw
+            .as_str()
+            .map(|value| Value::Text(value.to_string()))
+            .map_err(|error| decode_raw_error(col, error));
+    }
+
+    let bytes = raw
+        .as_bytes()
+        .map_err(|error| decode_raw_error(col, error))?;
+    if bytes.len() < 4 {
+        return Err(decode_data_error(col, "网络值长度不足"));
+    }
+    let prefix = bytes[1];
+    let address_len = usize::from(bytes[3]);
+    if bytes.len() != 4 + address_len {
+        return Err(decode_data_error(col, "网络值地址长度不匹配"));
+    }
+
+    let (address, full_prefix) = match (bytes[0], address_len) {
+        (2, 4) => (
+            Ipv4Addr::new(bytes[4], bytes[5], bytes[6], bytes[7]).to_string(),
+            32,
+        ),
+        (3, 16) => {
+            let octets: [u8; 16] = bytes[4..]
+                .try_into()
+                .map_err(|_| decode_data_error(col, "IPv6 地址长度不正确"))?;
+            (Ipv6Addr::from(octets).to_string(), 128)
+        }
+        _ => return Err(decode_data_error(col, "未知网络地址族或长度")),
+    };
+
+    if col.type_info().name() == "CIDR" || prefix != full_prefix {
+        Ok(Value::Text(format!("{address}/{prefix}")))
+    } else {
+        Ok(Value::Text(address))
+    }
+}
+
+fn decode_mac_address(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    let raw = raw_value(row, col)?;
+    if raw.format() == PgValueFormat::Text {
+        return raw
+            .as_str()
+            .map(|value| Value::Text(value.to_string()))
+            .map_err(|error| decode_raw_error(col, error));
+    }
+
+    let bytes = raw
+        .as_bytes()
+        .map_err(|error| decode_raw_error(col, error))?;
+    if !matches!(bytes.len(), 6 | 8) {
+        return Err(decode_data_error(col, "MAC 地址长度应为 6 或 8 bytes"));
+    }
+    Ok(Value::Text(
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    ))
+}
+
+fn decode_bit_string(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    let raw = raw_value(row, col)?;
+    if raw.format() == PgValueFormat::Text {
+        return raw
+            .as_str()
+            .map(|value| Value::Text(value.to_string()))
+            .map_err(|error| decode_raw_error(col, error));
+    }
+
+    let bytes = raw
+        .as_bytes()
+        .map_err(|error| decode_raw_error(col, error))?;
+    let length_bytes: [u8; 4] = bytes
+        .get(..4)
+        .ok_or_else(|| decode_data_error(col, "位串长度字段缺失"))?
+        .try_into()
+        .map_err(|_| decode_data_error(col, "位串长度字段不正确"))?;
+    let bit_len = usize::try_from(u32::from_be_bytes(length_bytes))
+        .map_err(|_| decode_data_error(col, "位串长度超出平台范围"))?;
+    let value_bytes = bit_len.div_ceil(8);
+    if bytes.len() != 4 + value_bytes {
+        return Err(decode_data_error(col, "位串数据长度不匹配"));
+    }
+
+    let mut text = String::with_capacity(bit_len);
+    for index in 0..bit_len {
+        let byte = bytes[4 + index / 8];
+        let mask = 1_u8 << (7 - index % 8);
+        text.push(if byte & mask == 0 { '0' } else { '1' });
+    }
+    Ok(Value::Text(text))
+}
+
+fn decode_raw_utf8(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    raw_value(row, col)?
+        .as_str()
+        .map(|value| Value::Text(value.to_string()))
+        .map_err(|error| decode_raw_error(col, error))
+}
+
+fn decode_unknown(row: &PgRow, col: &PgColumn) -> Result<Value> {
+    let raw = raw_value(row, col)?;
+    if raw.format() == PgValueFormat::Text || matches!(col.type_info().kind(), PgTypeKind::Enum(_))
+    {
+        return raw
+            .as_str()
+            .map(|value| Value::Text(value.to_string()))
+            .map_err(|error| decode_raw_error(col, error));
+    }
+    raw.as_bytes()
+        .map(|value| Value::Bytes(value.to_vec()))
+        .map_err(|error| decode_raw_error(col, error))
+}
+
+fn decode_raw_error(col: &PgColumn, error: impl std::fmt::Display) -> DomainError {
+    DomainError::QueryFailed(format!(
+        "读取列「{}」({}) 原始值失败：{error}",
+        col.name(),
+        col.type_info().name()
+    ))
+}
+
+fn decode_data_error(col: &PgColumn, detail: &str) -> DomainError {
+    DomainError::QueryFailed(format!(
+        "解码列「{}」({}) 失败：{detail}",
+        col.name(),
+        col.type_info().name()
+    ))
 }
 
 /// 把 information_schema 的 (data_type, full_type) 映射到 ColumnKind

@@ -1,0 +1,125 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ramag-db-test-mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --max-allowed-packet=64M
+    environment:
+      MYSQL_DATABASE: ${RAMAG_DB_TEST_MYSQL_DATABASE}
+      MYSQL_USER: ${RAMAG_DB_TEST_MYSQL_USER}
+      MYSQL_PASSWORD: ${RAMAG_DB_TEST_MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${RAMAG_DB_TEST_MYSQL_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:${RAMAG_DB_TEST_MYSQL_PORT}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysqladmin ping --host=127.0.0.1 --user=root --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    labels:
+      ramag.test-suite: "true"
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: ramag-db-test-postgres
+    environment:
+      POSTGRES_DB: ${RAMAG_DB_TEST_POSTGRES_DATABASE}
+      POSTGRES_USER: ${RAMAG_DB_TEST_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${RAMAG_DB_TEST_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${RAMAG_DB_TEST_POSTGRES_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username="$${POSTGRES_USER}" --dbname="$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    labels:
+      ramag.test-suite: "true"
+
+  redis:
+    image: redis:7-alpine
+    container_name: ramag-db-test-redis
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --databases 16 --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: ${RAMAG_DB_TEST_REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:${RAMAG_DB_TEST_REDIS_PORT}:6379"
+    volumes:
+      - redis-data:/data
+      - ./seed:/opt/ramag-db-test/seed:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli --no-auth-warning ping | grep -q PONG
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    labels:
+      ramag.test-suite: "true"
+
+  mongo:
+    image: mongo:8.2
+    container_name: ramag-db-test-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${RAMAG_DB_TEST_MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${RAMAG_DB_TEST_MONGO_PASSWORD}
+      RAMAG_DB_TEST_MONGO_DATABASE: ${RAMAG_DB_TEST_MONGO_DATABASE}
+    ports:
+      - "127.0.0.1:${RAMAG_DB_TEST_MONGO_PORT}:27017"
+    volumes:
+      - mongo-data:/data/db
+      - ./seed:/opt/ramag-db-test/seed:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --username="$${MONGO_INITDB_ROOT_USERNAME}"
+          --password="$${MONGO_INITDB_ROOT_PASSWORD}"
+          --authenticationDatabase=admin
+          --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 2)'
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    labels:
+      ramag.test-suite: "true"
+
+volumes:
+  mysql-data:
+    name: ramag-db-test-mysql-data
+    labels:
+      ramag.test-suite: "true"
+  postgres-data:
+    name: ramag-db-test-postgres-data
+    labels:
+      ramag.test-suite: "true"
+  redis-data:
+    name: ramag-db-test-redis-data
+    labels:
+      ramag.test-suite: "true"
+  mongo-data:
+    name: ramag-db-test-mongo-data
+    labels:
+      ramag.test-suite: "true"
+
+networks:
+  default:
+    name: ramag-db-test
+    labels:
+      ramag.test-suite: "true"

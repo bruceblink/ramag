@@ -17,8 +17,8 @@ ramag-domain = { workspace = true }
 # 关系型 DB 共享层：runtime 桥接 / SqlBackend trait / impl_driver_for! 宏
 ramag-infra-sql-shared = { workspace = true }
 
-# MySQL 驱动
-sqlx = { workspace = true }
+# MySQL 驱动；DECIMAL 用 BigDecimal 精确解码，避免浮点丢精度
+sqlx = { workspace = true, features = ["bigdecimal"] }
 
 # trait 上的 async fn
 async-trait = { workspace = true }

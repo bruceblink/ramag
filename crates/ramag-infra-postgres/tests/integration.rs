@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind, Query};
+use ramag_domain::entities::{ConnectionConfig, DriverKind, Query, Value};
 use ramag_domain::traits::Driver;
 use ramag_infra_postgres::PostgresDriver;
 
@@ -15,23 +15,15 @@ fn config_from_env() -> Option<ConnectionConfig> {
     let database = std::env::var("RAMAG_TEST_PG_DB").ok()?;
 
     Some(ConnectionConfig {
-        id: ConnectionId::new(),
-        name: "integration-test".into(),
         driver: DriverKind::Postgres,
-        host,
-        port,
-        username: user,
         password,
         database: Some(database),
-        auth_source: None,
-        remark: None,
-        production: false,
-        tls: false,
-        tls_verify: Default::default(),
-        ca_cert_path: None,
-        ssh_target: None,
-        ssh_port: None,
+        ..ConnectionConfig::new_mysql("integration-test", host, port, user)
     })
+}
+
+fn seeded_dataset_enabled() -> bool {
+    std::env::var("RAMAG_TEST_DATASET").as_deref() == Ok("full")
 }
 
 /// 缺环境变量时打印 skip 提示再 return
@@ -148,6 +140,49 @@ async fn execute_select_with_pg_types() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn execute_select_with_pg_native_types() {
+    let config = require_env!();
+    let driver = PostgresDriver::new();
+
+    let result = driver
+        .execute(
+            &config,
+            &Query::new(
+                "SELECT \
+                    '23:59:59.999999+08'::timetz AS tz, \
+                    '1 day 02:03:04.000005'::interval AS iv, \
+                    ARRAY[1, 2, NULL]::int4[] AS ints, \
+                    ARRAY['a', '中文', NULL]::text[] AS texts, \
+                    '[1,10)'::int4range AS range_value, \
+                    '2001:db8::1/64'::inet AS inet_value, \
+                    '10.0.0.0/8'::cidr AS cidr_value, \
+                    '08:00:2b:01:02:03'::macaddr AS mac_value, \
+                    B'10101010'::bit(8) AS bit_value, \
+                    B'10101'::varbit AS varbit_value, \
+                    '<root><item>数据</item></root>'::xml AS xml_value, \
+                    to_tsvector('simple', 'ramag database') AS search_value",
+            ),
+        )
+        .await
+        .expect("PG 原生类型查询失败");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.columns.len(), 12);
+    assert!(
+        result.rows[0].values[..11]
+            .iter()
+            .all(|value| matches!(value, Value::Text(_))),
+        "前 11 个原生类型应转换为可读文本：{:?}",
+        result.rows[0]
+    );
+    assert!(
+        matches!(&result.rows[0].values[11], Value::Bytes(value) if !value.is_empty()),
+        "未知二进制类型应保留原始字节：{:?}",
+        result.rows[0].values[11]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn invalid_sql_returns_error() {
     let config = require_env!();
     let driver = PostgresDriver::new();
@@ -218,4 +253,45 @@ async fn dollar_quoted_function_body_treated_as_one_statement() {
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.columns[0], "final_value");
     println!("dollar-quoted result: {:?}", result.rows[0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seeded_dataset_handles_bulk_large_and_native_values() {
+    let config = require_env!();
+    if !seeded_dataset_enabled() {
+        eprintln!("[SKIP] seeded dataset test skipped: RAMAG_TEST_DATASET != full");
+        return;
+    }
+    let driver = PostgresDriver::new();
+
+    let matrix = driver
+        .execute(
+            &config,
+            &Query::new("SELECT * FROM public.type_matrix ORDER BY id"),
+        )
+        .await
+        .expect("type_matrix 查询失败");
+    assert_eq!(matrix.rows.len(), 3);
+
+    let page = driver
+        .execute(
+            &config,
+            &Query::new(
+                "SELECT id, group_id, status, amount, title, payload, tags, binary_token, created_at \
+                 FROM public.bulk_records ORDER BY id LIMIT 5000",
+            ),
+        )
+        .await
+        .expect("bulk_records 大分页查询失败");
+    assert_eq!(page.rows.len(), 5000);
+
+    let large = driver
+        .execute(
+            &config,
+            &Query::new("SELECT text_value, bytea_value FROM public.large_values WHERE id = 1"),
+        )
+        .await
+        .expect("large_values 查询失败");
+    assert!(matches!(&large.rows[0].values[0], Value::Text(value) if value.len() > 1_000_000));
+    assert!(matches!(&large.rows[0].values[1], Value::Bytes(value) if value.len() == 1_048_576));
 }

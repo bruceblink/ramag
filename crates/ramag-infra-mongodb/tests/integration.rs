@@ -34,6 +34,10 @@ fn build_config_from_env() -> Option<ConnectionConfig> {
     Some(cfg)
 }
 
+fn seeded_dataset_enabled() -> bool {
+    std::env::var("RAMAG_TEST_DATASET").as_deref() == Ok("full")
+}
+
 #[tokio::test]
 async fn test_connection_and_list() {
     let Some(cfg) = build_config_from_env() else {
@@ -418,4 +422,72 @@ async fn test_id_type_roundtrip_matrix() {
         failed.is_empty(),
         "这些 _id 类型往返后 filter 匹配不上（更新不了）: {failed:?}"
     );
+}
+
+#[tokio::test]
+async fn test_seeded_dataset_large_and_special_documents() {
+    let Some(cfg) = build_config_from_env() else {
+        eprintln!("skip: env not set");
+        return;
+    };
+    let Some(db) = cfg.database.clone() else {
+        return;
+    };
+    if !seeded_dataset_enabled() || db != "ramag_demo" {
+        eprintln!("skip: seeded dataset is not enabled");
+        return;
+    }
+    let driver = MongoDriver::new();
+
+    for (collection, expected) in [
+        ("users", 20_000),
+        ("products", 15_000),
+        ("orders", 60_000),
+        ("large_documents", 100),
+        ("metrics", 20_000),
+        ("capped_events", 10_000),
+    ] {
+        let actual = driver
+            .count(&cfg, &db, collection, &json!({}))
+            .await
+            .expect("count seeded collection failed");
+        assert_eq!(actual, expected, "{collection} 数量不正确");
+    }
+
+    use ramag_domain::entities::MongoQuerySpec;
+    let large = driver
+        .find(
+            &cfg,
+            &db,
+            "large_documents",
+            &MongoQuerySpec {
+                filter: json!({"_id": 0}),
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("large document query failed");
+    let payload = large.documents[0]["payload"]
+        .as_str()
+        .expect("payload should be text");
+    assert!(payload.len() > 1_000_000);
+
+    let matrix = driver
+        .find(
+            &cfg,
+            &db,
+            "type_matrix",
+            &MongoQuerySpec {
+                filter: json!({"_id": 1}),
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("type matrix query failed");
+    let encoded = matrix.documents[0].to_string();
+    assert!(encoded.contains("$numberDecimal"));
+    assert!(encoded.contains("$numberLong"));
+    assert!(encoded.contains("$binary"));
 }

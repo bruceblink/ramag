@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind, Query};
+use ramag_domain::entities::{ConnectionConfig, Query, Value};
 use ramag_domain::traits::Driver;
 use ramag_infra_mysql::MysqlDriver;
 
@@ -15,23 +15,14 @@ fn config_from_env() -> Option<ConnectionConfig> {
     let database = std::env::var("RAMAG_TEST_MYSQL_DB").ok();
 
     Some(ConnectionConfig {
-        id: ConnectionId::new(),
-        name: "integration-test".into(),
-        driver: DriverKind::Mysql,
-        host,
-        port,
-        username: user,
         password,
         database,
-        auth_source: None,
-        remark: None,
-        production: false,
-        tls: false,
-        tls_verify: Default::default(),
-        ca_cert_path: None,
-        ssh_target: None,
-        ssh_port: None,
+        ..ConnectionConfig::new_mysql("integration-test", host, port, user)
     })
+}
+
+fn seeded_dataset_enabled() -> bool {
+    std::env::var("RAMAG_TEST_DATASET").as_deref() == Ok("full")
 }
 
 /// 缺环境变量时打印 skip 提示再 return
@@ -147,14 +138,25 @@ async fn execute_select_with_types() {
                     'text' AS t, \
                     NULL AS n, \
                     NOW() AS dt, \
-                    JSON_OBJECT('k', 'v') AS j",
+                    JSON_OBJECT('k', 'v') AS j, \
+                    b'10101010' AS bits",
             ),
         )
         .await
         .expect("execute 失败");
 
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.columns.len(), 6);
+    assert_eq!(result.columns.len(), 7);
+    assert!(
+        matches!(&result.rows[0].values[1], Value::Text(value) if value == "1.5"),
+        "DECIMAL 应精确解码为文本，实际：{:?}",
+        result.rows[0].values[1]
+    );
+    assert!(
+        matches!(&result.rows[0].values[6], Value::Bytes(value) if value == &[0xAA]),
+        "BIT 应保留原始位字节，实际：{:?}",
+        result.rows[0].values[6]
+    );
     println!("typed result: {:#?}", result.rows[0]);
 }
 
@@ -187,5 +189,61 @@ async fn wrong_password_returns_friendly_error() {
     assert!(
         msg.contains("用户名或密码") || msg.contains("Access denied") || msg.contains("1045"),
         "错误消息应包含认证错误线索，实际：{msg}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seeded_dataset_handles_bulk_large_and_spatial_values() {
+    let config = require_env!();
+    if !seeded_dataset_enabled() {
+        eprintln!("[SKIP] seeded dataset test skipped: RAMAG_TEST_DATASET != full");
+        return;
+    }
+    let driver = MysqlDriver::new();
+
+    let matrix = driver
+        .execute(
+            &config,
+            &Query::new("SELECT * FROM type_matrix ORDER BY id"),
+        )
+        .await
+        .expect("type_matrix 查询失败");
+    assert_eq!(matrix.rows.len(), 3);
+
+    let page = driver
+        .execute(
+            &config,
+            &Query::new(
+                "SELECT id, group_id, status, amount, title, payload, binary_token, created_at \
+                 FROM bulk_records ORDER BY id LIMIT 5000",
+            ),
+        )
+        .await
+        .expect("bulk_records 大分页查询失败");
+    assert_eq!(page.rows.len(), 5000);
+
+    let large = driver
+        .execute(
+            &config,
+            &Query::new("SELECT text_value, blob_value FROM large_values WHERE id = 1"),
+        )
+        .await
+        .expect("large_values 查询失败");
+    assert!(matches!(&large.rows[0].values[0], Value::Text(value) if value.len() > 1_000_000));
+    assert!(matches!(&large.rows[0].values[1], Value::Bytes(value) if value.len() == 1_048_576));
+
+    let spatial = driver
+        .execute(
+            &config,
+            &Query::new("SELECT location, area FROM spatial_samples WHERE id = 1"),
+        )
+        .await
+        .expect("spatial_samples 查询失败");
+    assert_eq!(spatial.rows.len(), 1);
+    assert!(
+        spatial.rows[0]
+            .values
+            .iter()
+            .all(|value| matches!(value, Value::Bytes(bytes) if !bytes.is_empty()))
     );
 }

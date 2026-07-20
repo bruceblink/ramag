@@ -3,7 +3,9 @@
 //! 集成测试：连接真实 Redis。缺 RAMAG_TEST_REDIS_HOST/PORT 时跳过。
 //! 用 db 15 避免污染 0 号库；测试尾 FLUSHDB 清场
 
-use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind, RedisType, RedisValue};
+use std::collections::HashSet;
+
+use ramag_domain::entities::{ConnectionConfig, RedisType, RedisValue};
 use ramag_domain::traits::KvDriver;
 use ramag_infra_redis::RedisDriver;
 
@@ -17,23 +19,14 @@ fn config_from_env() -> Option<ConnectionConfig> {
     let username = std::env::var("RAMAG_TEST_REDIS_USERNAME").unwrap_or_default();
 
     Some(ConnectionConfig {
-        id: ConnectionId::new(),
-        name: "redis-integration-test".into(),
-        driver: DriverKind::Redis,
-        host,
-        port,
         username,
         password,
-        database: None,
-        auth_source: None,
-        remark: None,
-        production: false,
-        tls: false,
-        tls_verify: Default::default(),
-        ca_cert_path: None,
-        ssh_target: None,
-        ssh_port: None,
+        ..ConnectionConfig::new_redis("redis-integration-test", host, port)
     })
+}
+
+fn seeded_dataset_enabled() -> bool {
+    std::env::var("RAMAG_TEST_DATASET").as_deref() == Ok("full")
 }
 
 macro_rules! require_env {
@@ -134,14 +127,20 @@ async fn oversized_string_load_is_bounded_and_reports_total_bytes() {
     let config = require_env!();
     let driver = RedisDriver::new();
     cleanup(&driver, &config).await;
-    let value = format!("{}界", "a".repeat(STRING_PREFIX_LIMIT - 1));
-    let total = value.len() as u64;
+    let total = (STRING_PREFIX_LIMIT - 1 + "界".len()) as u64;
 
     driver
         .execute_command(
             &config,
             TEST_DB,
-            vec!["SET".into(), "large-text".into(), value],
+            vec![
+                "EVAL".into(),
+                "return redis.call('SET', KEYS[1], string.rep('a', tonumber(ARGV[1])) .. '界')"
+                    .into(),
+                "1".into(),
+                "large-text".into(),
+                (STRING_PREFIX_LIMIT - 1).to_string(),
+            ],
         )
         .await
         .unwrap();
@@ -384,4 +383,46 @@ async fn missing_key_returns_nil() {
         .await
         .unwrap();
     assert_eq!(t, RedisType::None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seeded_dataset_scans_full_keyspace_and_bounds_large_values() {
+    let config = require_env!();
+    if !seeded_dataset_enabled() {
+        eprintln!("[SKIP] seeded dataset test skipped: RAMAG_TEST_DATASET != full");
+        return;
+    }
+    let driver = RedisDriver::new();
+    let expected = driver.db_size(&config, 0).await.unwrap();
+    assert!(expected >= 46_000);
+
+    let mut cursor = 0;
+    let mut keys = HashSet::new();
+    loop {
+        let result = driver
+            .scan(&config, 0, cursor, None, None, 1000)
+            .await
+            .unwrap();
+        keys.extend(result.keys.into_iter().map(|key| key.key));
+        cursor = result.cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(keys.len() as u64, expected);
+
+    let string = driver
+        .get_value_limited(&config, 0, "large:string", 100)
+        .await
+        .unwrap();
+    assert_eq!(string.total, Some(8 * 1024 * 1024));
+    assert!(string.has_more());
+
+    let list = driver
+        .get_value_limited(&config, 0, "large:list", 100)
+        .await
+        .unwrap();
+    assert_eq!(list.total, Some(20_000));
+    assert_eq!(list.loaded_len(), Some(100));
+    assert!(list.has_more());
 }

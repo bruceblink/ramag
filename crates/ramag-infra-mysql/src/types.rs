@@ -6,6 +6,7 @@ use ramag_domain::error::{DomainError, Result};
 use sqlx::Column as _;
 use sqlx::TypeInfo as _;
 use sqlx::mysql::{MySqlColumn, MySqlRow};
+use sqlx::types::BigDecimal;
 use sqlx::{Row, ValueRef};
 
 pub fn decode_row(row: &MySqlRow) -> Result<Vec<Value>> {
@@ -56,16 +57,23 @@ fn decode_column(row: &MySqlRow, col: &MySqlColumn) -> Result<Value> {
         "FLOAT" => decode_as::<f32, _>(row, col, |value| Value::Float(value as f64)),
         "DOUBLE" => decode_as::<f64, _>(row, col, Value::Float),
 
-        // DECIMAL：字符串保精度
-        "DECIMAL" | "NUMERIC" => decode_as::<String, _>(row, col, Value::Text),
+        // DECIMAL：BigDecimal 精确解码后转字符串保精度
+        "DECIMAL" | "NUMERIC" => {
+            decode_as::<BigDecimal, _>(row, col, |value| Value::Text(value.to_string()))
+        }
 
         "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => {
             decode_as::<String, _>(row, col, Value::Text)
         }
 
-        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BIT" => {
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
             decode_as::<Vec<u8>, _>(row, col, Value::Bytes)
         }
+        // SQLx 将 BIT 视为无符号整数，但线协议值本身是原始大端字节；跳过类型兼容检查保留位模式。
+        "BIT" => decode_wire_bytes(row, col),
+        // SQLx 未提供 MySQL 空间类型解码；保留包含 SRID/WKB 的原始线协议字节供上层展示或导出。
+        "GEOMETRY" | "POINT" | "LINESTRING" | "POLYGON" | "MULTIPOINT" | "MULTILINESTRING"
+        | "MULTIPOLYGON" | "GEOMETRYCOLLECTION" => decode_wire_bytes(row, col),
 
         "DATETIME" => decode_as::<NaiveDateTime, _>(row, col, |value| {
             Value::DateTime(DateTime::<Utc>::from_naive_utc_and_offset(value, Utc))
@@ -105,6 +113,18 @@ where
 {
     let col = &row.columns()[idx];
     decode_as::<T, _>(row, col, |value| Value::Int(value.into()))
+}
+
+fn decode_wire_bytes(row: &MySqlRow, col: &MySqlColumn) -> Result<Value> {
+    row.try_get_unchecked::<Vec<u8>, _>(col.ordinal())
+        .map(Value::Bytes)
+        .map_err(|error| {
+            DomainError::QueryFailed(format!(
+                "解码列「{}」({}) 原始字节失败：{error}",
+                col.name(),
+                col.type_info().name()
+            ))
+        })
 }
 
 /// 类型解码失败后尝试读取原始文本；两种方式都失败则显式中止查询，不能伪装成 NULL。

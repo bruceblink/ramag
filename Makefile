@@ -4,6 +4,9 @@
 .PHONY: help \
         develop release \
         check fmt fmt-check clippy test \
+        db-test db-test-up db-test-seed db-test-run db-test-workspace \
+        db-test-status db-test-down db-test-clean \
+        _db-test-test _db-test-check _db-test-clippy _db-test-fmt \
         dmg dmg-x86 dmg-arm64 dmg-universal \
         win-debug \
         clean clean-all \
@@ -22,6 +25,15 @@ help:
 	@printf "    make fmt-check      cargo fmt --all -- --check（CI 用）\n"
 	@printf "    make clippy         cargo clippy --all-targets -- -D warnings\n"
 	@printf "    make test           cargo test --all\n"
+	@printf "\n  \033[36m四数据库集成测试（Docker）\033[0m\n"
+	@printf "    make db-test        启动四库 → 重建大数据 → 四库测试与质量门禁\n"
+	@printf "    make db-test-up     仅启动四库并等待健康检查\n"
+	@printf "    make db-test-seed   重建专用测试卷中的全部测试数据\n"
+	@printf "    make db-test-run    复用现有数据运行四个数据库 crate 测试\n"
+	@printf "    make db-test-workspace 复用现有数据运行全工作区测试\n"
+	@printf "    make db-test-status 查看容器健康状态与本地端口\n"
+	@printf "    make db-test-down   停止容器，保留数据卷与本地凭据\n"
+	@printf "    make db-test-clean  删除专用容器、数据卷与本地凭据\n"
 	@printf "\n  \033[36m打包（macOS）\033[0m\n"
 	@printf "    make dmg            当前架构：svg → icns → cargo build → Ramag.app → Ramag.dmg\n"
 	@printf "    make dmg-x86        交叉编译 Intel mac\n"
@@ -60,6 +72,63 @@ clippy:
 
 test:
 	cargo test --all
+
+# === 四数据库集成测试 ===============================================
+# 编排、凭据生成与数据构建均集中在 scripts/db-test，避免 Makefile 承载实现细节。
+db-test:
+	./scripts/db-test/db-test.sh all
+
+db-test-up:
+	./scripts/db-test/db-test.sh up
+
+db-test-seed:
+	./scripts/db-test/db-test.sh seed
+
+db-test-run:
+	./scripts/db-test/db-test.sh test
+
+db-test-workspace:
+	./scripts/db-test/db-test.sh workspace
+
+db-test-status:
+	./scripts/db-test/db-test.sh status
+
+db-test-down:
+	./scripts/db-test/db-test.sh down
+
+db-test-clean:
+	./scripts/db-test/db-test.sh clean
+
+# 脚本内部复用的数据库范围门禁；下划线 target 不作为日常入口展示。
+_db-test-test:
+	cargo test \
+		-p ramag-infra-mysql \
+		-p ramag-infra-postgres \
+		-p ramag-infra-redis \
+		-p ramag-infra-mongodb
+
+_db-test-check:
+	cargo check --all-targets \
+		-p ramag-infra-mysql \
+		-p ramag-infra-postgres \
+		-p ramag-infra-redis \
+		-p ramag-infra-mongodb
+
+_db-test-clippy:
+	cargo clippy --all-targets \
+		-p ramag-infra-mysql \
+		-p ramag-infra-postgres \
+		-p ramag-infra-redis \
+		-p ramag-infra-mongodb \
+		-- -D warnings
+
+_db-test-fmt:
+	cargo fmt \
+		-p ramag-infra-mysql \
+		-p ramag-infra-postgres \
+		-p ramag-infra-redis \
+		-p ramag-infra-mongodb \
+		-- --check
 
 # === 打包（macOS）====================================================
 # build-dmg.sh 内部：svg→icns、cargo build、组装 .app、打 dmg 全流程。
