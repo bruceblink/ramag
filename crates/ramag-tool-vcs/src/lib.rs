@@ -33,12 +33,8 @@ impl VcsTool {
 
     pub fn new() -> Self {
         Self {
-            meta: ToolMeta::new(
-                Self::ID,
-                "版本管理",
-                "Git 可视化客户端：仓库管理 / commit / 分支 / 推拉合并",
-            )
-            .with_icon("git_branch"),
+            meta: ToolMeta::new(Self::ID, "版本管理", "Git 可视化：提交 / 分支 / 合并与推拉")
+                .with_icon("git_branch"),
         }
     }
 }

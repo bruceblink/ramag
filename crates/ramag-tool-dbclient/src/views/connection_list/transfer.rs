@@ -261,6 +261,7 @@ mod tests {
         config.database = Some("ramag_test".into());
         config.auth_source = Some("admin".into());
         config.remark = Some("roundtrip".into());
+        config.environment = Some("dev".into());
         config.production = true;
         config.tls = true;
         config.tls_verify = ramag_domain::entities::TlsVerify::Ca;
@@ -278,6 +279,7 @@ mod tests {
         assert!(skipped.is_empty());
         assert_eq!(valid[0].name, "a");
         assert_eq!(valid[0].password, "secret");
+        assert_eq!(valid[0].environment.as_deref(), Some("dev"));
         assert_eq!(valid[0].auth_source.as_deref(), Some("admin"));
         assert!(valid[0].production);
         assert!(valid[0].tls);

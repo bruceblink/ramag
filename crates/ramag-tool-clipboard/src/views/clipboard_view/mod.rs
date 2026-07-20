@@ -53,6 +53,8 @@ pub struct ClipboardView {
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     /// 图片解密缓存（缩略图 / 原图）
     pub(super) img_cache: crate::views::image_cache::ImageCache,
+    /// 首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
+    pub(super) focused_search_once: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -69,11 +71,6 @@ impl Drop for ClipboardView {
 }
 
 impl ClipboardView {
-    pub fn show_settings(&mut self, cx: &mut Context<Self>) {
-        self.show_settings = true;
-        cx.notify();
-    }
-
     pub fn new(
         service: Arc<ClipboardService>,
         window: &mut Window,
@@ -111,6 +108,7 @@ impl ClipboardView {
             search_gen: 0,
             search_cancel: Arc::new(AtomicBool::new(false)),
             show_settings: false,
+            focused_search_once: false,
             list_scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             pending_notification: None,

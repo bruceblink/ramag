@@ -239,6 +239,8 @@ pub struct VcsView {
     pub(super) repo_list_rows_cache: RefCell<Option<RepoListRowsCacheEntry>>,
     /// 仓库管理页搜索框
     pub(super) repo_search_input: Entity<InputState>,
+    /// 仓库管理页首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
+    pub(super) focused_repo_search_once: bool,
     /// IDE 左侧 Files panel 当前显示模式（Changes / Project / Stash）
     pub(super) files_view_mode: FilesViewMode,
     /// IDE 左侧 Files panel 文件搜索框（按 path substring 过滤当前 mode 列表）

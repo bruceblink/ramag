@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
-    input::Input, scroll::ScrollableElement as _, v_flex,
+    input::Input, v_flex,
 };
 
 use super::{ConnectionFormPanel, FormMode, TestState, field_row, section_title};
@@ -67,15 +67,62 @@ impl ConnectionFormPanel {
     }
 }
 
+impl ConnectionFormPanel {
+    /// 环境标签：dev / test / prod 预设快捷填充 + 自定义输入；再点已选中的预设可清除
+    fn render_environment_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.environment.read(cx).value().trim().to_string();
+        let mut row = h_flex().w_full().items_center().gap(px(8.0));
+        for preset in ["dev", "test", "prod"] {
+            let selected = current == preset;
+            row = row.child(
+                ramag_ui::clickable_button(SharedString::from(format!("conn-env-{preset}")))
+                    .small()
+                    .label(preset)
+                    .disabled(self.saving)
+                    .when(selected, |b| b.primary())
+                    .when(!selected, |b| b.ghost())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        let value = if this.environment.read(cx).value().trim() == preset {
+                            ""
+                        } else {
+                            preset
+                        };
+                        this.environment.update(cx, |state, cx| {
+                            state.set_value(value, window, cx);
+                        });
+                        cx.notify();
+                    })),
+            );
+        }
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Input::new(&self.environment).disabled(self.saving)),
+        );
+
+        v_flex()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child("环境标签（可选，列表中显示为徽章）"),
+            )
+            .child(row)
+    }
+}
+
 impl Render for ConnectionFormPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
         // 主体最大高度按窗口计算：小窗口时表单主体滚动、底部按钮区固定可见，
-        // 避免长表单（TLS + SSH 展开）把保存 / 取消按钮挤出屏幕
+        // 避免长表单（TLS + SSH 展开）把保存 / 取消按钮挤出屏幕。
+        // Dialog 自身不限高且从视口 1/10 处起排，可用高 ≈ 视口 90% 减去标题 / 按钮区 / 内边距
         let viewport_h = window.viewport_size().height;
-        let body_max_h = (viewport_h * 0.8 - px(190.0)).max(px(160.0));
+        let body_max_h = (viewport_h * 0.9 - px(210.0)).max(px(200.0));
 
         // 失败时须能读全 + 复制诊断，故单列 test_failed 标记：失败文案换行展开、附复制按钮，
         // 成功 / 测试中沿用单行省略
@@ -96,7 +143,7 @@ impl Render for ConnectionFormPanel {
         // PG 协议要求连接时必须绑定具体 database，单独标"必填"以区别 MySQL 的可选
         let is_redis = self.driver_id == "redis";
         let database_label = match self.driver_id {
-            "redis" => "DB（默认 0-15，自建实例可更高）",
+            "redis" => "DB（默认 0-15）",
             "postgres" => "默认库（必填）",
             "mongodb" => "默认打开的库（可选）",
             _ => "默认库（可选）",
@@ -110,131 +157,141 @@ impl Render for ConnectionFormPanel {
         v_flex()
             .w_full()
             .pt(px(4.0))
-            .pb(px(4.0))
             .child(
+                // max_h 与滚动放在同一元素上，溢出量即可滚动量
+                // （不渲染滚动条：滚轮 / 触控板直接滚，避免常显轨道贯穿表单）
                 div()
                     .id("conn-form-body")
                     .w_full()
                     .max_h(body_max_h)
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
                     .child(
                         v_flex()
                             .w_full()
                             .gap(px(18.0))
             // —— 数据库类型（仅新建时显示，编辑模式 driver 不可变更）——
             .children(driver_selector)
-            // —— MongoDB：粘贴连接 URI 一键填充（副本集多主机取首个；+srv 不支持） ——
-            .when(self.driver_id == "mongodb", |this| {
-                this.child(
-                    h_flex()
-                        .w_full()
-                        .items_end()
-                        .gap(px(8.0))
-                        .child(div().flex_1().min_w_0().child(field_row(
-                            "从 URI 填充（可选）",
-                            Input::new(&self.mongo_uri).disabled(self.saving),
-                        )))
-                        .child(
-                            ramag_ui::clickable_button("apply-mongo-uri")
-                                .small()
-                                .label("填充")
-                                .tooltip("解析 mongodb:// 地址并回填下方字段")
-                                .disabled(self.saving)
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.apply_mongo_uri(window, cx);
-                                })),
-                        ),
-                )
-            })
-            // —— 连接信息 ——
+            // —— 从 URI 填充：任意支持的连接地址回填；新建时按 scheme 自动切换类型 ——
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_end()
+                    .gap(px(8.0))
+                    .child(div().flex_1().min_w_0().child(field_row(
+                        "从 URI 填充（可选）",
+                        Input::new(&self.uri).disabled(self.saving),
+                    )))
+                    .child(
+                        ramag_ui::clickable_button("apply-uri")
+                            .small()
+                            .label("填充")
+                            .tooltip("解析连接地址并回填下方字段")
+                            .disabled(self.saving)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.apply_uri(window, cx);
+                            })),
+                    ),
+            )
+            // —— 连接信息（两列紧凑排布）——
             .child(
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("连接信息", muted_fg))
-                    .child(field_row(
-                        "名称",
-                        Input::new(&self.name).disabled(self.saving),
-                    ))
                     .child(
                         h_flex()
                             .w_full()
                             .gap(px(12.0))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(field_row(
-                                        "Host",
-                                        Input::new(&self.host).disabled(self.saving),
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .w(px(110.0))
-                                    .child(field_row(
-                                        "Port",
-                                        Input::new(&self.port).disabled(self.saving),
-                                    )),
-                            ),
+                            .child(div().flex_1().min_w_0().child(field_row(
+                                "Host",
+                                Input::new(&self.host).disabled(self.saving),
+                            )))
+                            .child(div().w(px(110.0)).child(field_row(
+                                "Port",
+                                Input::new(&self.port).disabled(self.saving),
+                            ))),
                     )
-                    .child(field_row(
-                        database_label,
-                        Input::new(&self.database).disabled(self.saving),
-                    ))
-                    .child(self.render_production_toggle(cx)),
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(px(12.0))
+                            .child(div().flex_1().min_w_0().child(field_row(
+                                "名称",
+                                Input::new(&self.name).disabled(self.saving),
+                            )))
+                            .child(div().flex_1().min_w_0().child(field_row(
+                                database_label,
+                                Input::new(&self.database).disabled(self.saving),
+                            ))),
+                    ),
             )
-            // —— 认证 ——
+            // —— 认证（用户名 / 密码同行；MongoDB 追加 authSource 列）——
             .child(
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("认证", muted_fg))
-                    .child(field_row(
-                        username_label,
-                        Input::new(&self.username).disabled(self.saving),
-                    ))
-                    // 密码默认掩码显示，右侧提供显示/隐藏切换按钮
-                    .child(field_row(
-                        "密码",
-                        Input::new(&self.password)
-                            .suffix(
-                                ramag_ui::clickable_button("password-mask-toggle")
-                                    .ghost()
-                                    .xsmall()
-                                    .tab_stop(false)
-                                    .icon(if self.password_masked {
-                                        IconName::Eye
-                                    } else {
-                                        IconName::EyeOff
-                                    })
-                                    .tooltip(if self.password_masked {
-                                        "显示密码"
-                                    } else {
-                                        "隐藏密码"
-                                    })
-                                    .disabled(self.saving)
-                                    .on_click(cx.listener(
-                                        |this, _: &ClickEvent, window, cx| {
-                                            if this.saving {
-                                                return;
-                                            }
-                                            this.password_masked = !this.password_masked;
-                                            let password_masked = this.password_masked;
-                                            this.password.update(cx, |state, cx| {
-                                                state.set_masked(password_masked, window, cx);
-                                            });
-                                            cx.notify();
-                                        },
-                                    )),
-                            )
-                            .disabled(self.saving),
-                    ))
-                    // MongoDB 专属：认证库 authSource（独立于"默认打开的库"）
-                    .when(self.driver_id == "mongodb", |this| {
-                        this.child(field_row(
-                            "认证库 authSource（可选，留空 = admin）",
-                            Input::new(&self.auth_source).disabled(self.saving),
-                        ))
-                    }),
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(px(12.0))
+                            .child(div().flex_1().min_w_0().child(field_row(
+                                username_label,
+                                Input::new(&self.username).disabled(self.saving),
+                            )))
+                            // 密码默认掩码显示，右侧提供显示/隐藏切换按钮
+                            .child(div().flex_1().min_w_0().child(field_row(
+                                "密码",
+                                Input::new(&self.password)
+                                    .suffix(
+                                        ramag_ui::clickable_button("password-mask-toggle")
+                                            .ghost()
+                                            .xsmall()
+                                            .tab_stop(false)
+                                            .icon(if self.password_masked {
+                                                IconName::Eye
+                                            } else {
+                                                IconName::EyeOff
+                                            })
+                                            .tooltip(if self.password_masked {
+                                                "显示密码"
+                                            } else {
+                                                "隐藏密码"
+                                            })
+                                            .disabled(self.saving)
+                                            .on_click(cx.listener(
+                                                |this, _: &ClickEvent, window, cx| {
+                                                    if this.saving {
+                                                        return;
+                                                    }
+                                                    this.password_masked = !this.password_masked;
+                                                    let password_masked = this.password_masked;
+                                                    this.password.update(cx, |state, cx| {
+                                                        state.set_masked(
+                                                            password_masked,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                    .disabled(self.saving),
+                            )))
+                            .when(self.driver_id == "mongodb", |row| {
+                                row.child(div().flex_1().min_w_0().child(field_row(
+                                    "authSource（留空 = admin）",
+                                    Input::new(&self.auth_source).disabled(self.saving),
+                                )))
+                            }),
+                    ),
+            )
+            // —— 标签与保护（元信息置于凭证之后，密码不被挤出首屏）——
+            .child(
+                v_flex()
+                    .gap(px(12.0))
+                    .child(section_title("标签与保护", muted_fg))
+                    .child(self.render_environment_row(cx))
+                    .child(self.render_production_toggle(cx)),
             )
             // —— 传输安全 ——
             .child(
@@ -349,8 +406,8 @@ impl Render for ConnectionFormPanel {
             )
                     ),
             )
-            // —— 分隔 + 按钮区（固定在滚动区外，小窗口下始终可见）——
-            .child(div().h(px(1.0)).bg(border).my(px(2.0)))
+            // —— 分隔 + 按钮区（固定在滚动区外，小窗口下始终可见；上下留白对称）——
+            .child(div().h(px(1.0)).bg(border).my(px(10.0)))
             .child(
                 h_flex()
                     .w_full()

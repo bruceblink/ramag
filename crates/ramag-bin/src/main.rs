@@ -40,9 +40,8 @@ use ramag_tool_vcs::{
     create_vcs_view,
 };
 use ramag_ui::{
-    CloseTab, CycleSection, CycleSectionReverse, HomeEvent, HomeView, Mode, NavTarget, RamagAssets,
-    SelectTool1, SelectTool2, SelectTool3, SettingsEvent, SettingsView, Shell, ShowOnboarding,
-    StorageGlobal, apply_theme, init_theme,
+    CloseTab, CycleSection, CycleSectionReverse, HomeEvent, HomeView, NavTarget, RamagAssets,
+    SelectTool1, SelectTool2, SelectTool3, SettingsView, Shell, StorageGlobal, init_theme,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -189,9 +188,7 @@ fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
     {
         return;
     }
-    // 重开时再读主题，期间用户可能改过偏好
-    let pref = read_theme_preference(&deps.storage);
-    open_main_window(deps.clone(), pref, cx);
+    open_main_window(deps.clone(), cx);
 }
 
 fn main() {
@@ -233,7 +230,7 @@ fn main() {
     // 剪贴板共用同一 storage（历史与设置走同一份加密 redb）
     let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
 
-    // 主题偏好。None / "system" 跟随系统，"dark"/"light" 用户固定
+    // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
     let startup_preferences = read_preferences(
         &storage,
         &["theme_mode", ramag_ui::preferences::SQL_AUTO_LIMIT_PREF],
@@ -245,7 +242,20 @@ fn main() {
             .map(String::as_str),
     );
 
+    // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
+    let clipboard_enabled = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(clipboard_service.prime_capture_enabled()),
+        Err(error) => {
+            warn!(error = %error, "read clipboard settings failed; keep tool visible");
+            true
+        }
+    };
+
     let registry = build_tool_registry();
+    registry.set_enabled(ClipboardTool::ID, clipboard_enabled);
     info!(tool_count = registry.count(), "tools registered");
 
     let deps = AppDeps {
@@ -269,8 +279,8 @@ fn main() {
 
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
-        // 先 apply 占位主题避免窗口空白闪烁；正式主题在 open_main_window 拿 appearance 后定
-        apply_theme(Mode::Dark, cx);
+        // 主题两态（浅 / 深），默认浅色；开窗前初始化避免首帧闪烁
+        init_theme(initial_pref.as_deref(), cx);
         // storage 注入 cx 全局，ActivityBar 切主题用它持久化
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.set_global(ramag_ui::preferences::SqlAutoLimitGlobal(initial_sql_limit));
@@ -396,8 +406,9 @@ fn main() {
         }
         // App 级剪贴板采集循环：独立于窗口生死（Windows 托盘常驻期间同样持续记录）
         spawn_clipboard_capture(deps.clipboard_service.clone(), cx);
-        // 平台全局热键（macOS Command+Shift+V / Windows Ctrl+Shift+V）唤起抽屉
-        spawn_clipboard_hotkey(deps.clipboard_service.clone(), cx);
+        // 平台全局热键（macOS Command+Shift+V / Windows Ctrl+Shift+V）唤起抽屉；
+        // 同一循环把总开关同步到工具入口可见性
+        spawn_clipboard_hotkey(deps.clipboard_service.clone(), deps.registry.clone(), cx);
 
         // 帮助入口：快捷键一览 / 关于（active window 上开 dialog；无窗口时静默）
         cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
@@ -471,7 +482,6 @@ fn main() {
                 name: "帮助".into(),
                 items: vec![
                     MenuItem::action("快捷键一览", ShowShortcuts),
-                    MenuItem::action("重新查看快速上手", ShowOnboarding),
                     MenuItem::separator(),
                     MenuItem::action("复制诊断信息", CopyDiagnostics),
                     MenuItem::action("打开日志目录", OpenLogDir),
@@ -482,7 +492,7 @@ fn main() {
             },
         ]);
 
-        open_main_window(deps.clone(), initial_pref.clone(), cx);
+        open_main_window(deps.clone(), cx);
     });
 }
 
@@ -533,13 +543,26 @@ fn spawn_clipboard_capture(service: Arc<ClipboardService>, cx: &mut App) {
 /// 热键轮询间隔：channel 有事件即触发，间隔短以保证唤起手感
 const HOTKEY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
 
+/// 剪贴板总开关 → 工具入口可见性；变化时刷新全部窗口，ActivityBar 与首页即时增删入口
+fn sync_clipboard_tool_visibility(registry: &Arc<ToolRegistry>, enabled: bool, cx: &mut App) {
+    if registry.set_enabled(ClipboardTool::ID, enabled) {
+        cx.refresh_windows();
+    }
+}
+
 /// 注册全局热键并轮询：触发切换抽屉；并在每拍检测失焦自动隐藏（点击外部即关）。
-/// 热键随“启用采集”开关动态注册/注销，关闭采集即释放平台全局热键。
+/// 热键随「启用剪贴板」总开关动态注册/注销，关闭即释放平台全局热键，
+/// 并同步工具入口可见性（侧边栏 / 首页卡片随开关增删）。
 /// 注册失败（缺权限等）仅记日志，不影响其余功能
-fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
+fn spawn_clipboard_hotkey(
+    service: Arc<ClipboardService>,
+    registry: Arc<ToolRegistry>,
+    cx: &mut App,
+) {
     cx.spawn(async move |cx| {
-        // 启动读持久化设置：采集关闭则不注册，避免抢占平台全局热键
+        // 启动读持久化设置：总开关关闭则不注册，避免抢占平台全局热键
         let mut enabled = service.prime_capture_enabled().await;
+        cx.update(|cx| sync_clipboard_tool_visibility(&registry, enabled, cx));
         let mut alternate = service.alternate_hotkey();
         let mut listener = if enabled {
             let l = HotkeyListener::register_clipboard_hotkey(alternate);
@@ -564,12 +587,13 @@ fn spawn_clipboard_hotkey(service: Arc<ClipboardService>, cx: &mut App) {
         loop {
             cx.background_executor().timer(HOTKEY_POLL_INTERVAL).await;
 
-            // 采集开关或热键组合变化 → 动态注册/注销热键
+            // 总开关或热键组合变化 → 动态注册/注销热键 + 同步工具入口可见性
             let now_enabled = service.capture_enabled();
             let now_alternate = service.alternate_hotkey();
             if now_enabled != enabled || (now_enabled && now_alternate != alternate) {
                 enabled = now_enabled;
                 alternate = now_alternate;
+                cx.update(|cx| sync_clipboard_tool_visibility(&registry, enabled, cx));
                 // 先置 None 触发 Drop 注销旧热键（切换组合时避免新旧并存）
                 listener = None;
                 if enabled {
@@ -682,7 +706,7 @@ fn open_drawer_window(
 }
 
 /// init / on_reopen / 托盘唤起共用；成功后把窗口句柄记入 MainWindowGlobal
-fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
+fn open_main_window(deps: AppDeps, cx: &mut App) {
     if !begin_main_window_open(cx) {
         return;
     }
@@ -756,17 +780,7 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                 ..Default::default()
             },
             move |window, cx| {
-                // 拿 window.appearance 后才能正式 init 主题
-                init_theme(theme_pref.as_deref(), window.appearance(), cx);
-                // 「跟随系统」时运行中系统深浅切换需实时同步；用户显式选过 dark/light 则内部忽略
-                window
-                    .observe_window_appearance(|window, cx| {
-                        ramag_ui::theme::on_system_appearance_changed(window.appearance(), cx);
-                    })
-                    .detach();
-
-                let home_view =
-                    cx.new(|cx| HomeView::new(registry.clone(), conn_service.clone(), cx));
+                let home_view = cx.new(|_| HomeView::new(registry.clone()));
 
                 let dbclient_view = create_dbclient_view(
                     conn_service.clone(),
@@ -786,13 +800,10 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                     let mut shell = Shell::new(registry.clone(), window, cx);
                     shell.set_home_view(home_view.clone().into());
                     shell.set_settings_view(settings_view.clone().into());
-                    // 首页强类型句柄：菜单「重新查看快速上手」经 Shell 转发重开引导
-                    shell.set_home_entity(home_view.clone());
                     shell.register_tool_view(DbClientTool::ID, dbclient_view.clone().into());
                     shell.register_tool_view(VcsTool::ID, vcs_view.into());
                     shell.register_tool_view(ClipboardTool::ID, clipboard_view.clone().into());
 
-                    let dbclient_for_home = dbclient_view.clone();
                     let home_subscription: Subscription = cx.subscribe_in(
                         &home_view,
                         window,
@@ -800,37 +811,9 @@ fn open_main_window(deps: AppDeps, theme_pref: Option<String>, cx: &mut App) {
                             HomeEvent::OpenTool(tool_id) => {
                                 this.navigate_to(NavTarget::Tool(tool_id.clone()), window, cx);
                             }
-                            HomeEvent::OpenConnection(connection) => {
-                                this.navigate_to(
-                                    NavTarget::Tool(DbClientTool::ID.to_string()),
-                                    window,
-                                    cx,
-                                );
-                                dbclient_for_home.update(cx, |view, cx| {
-                                    view.open_connection((**connection).clone(), window, cx);
-                                });
-                            }
                         },
                     );
                     shell.retain_subscription(home_subscription);
-
-                    let clipboard_for_settings = clipboard_view.clone();
-                    let settings_subscription: Subscription = cx.subscribe_in(
-                        &settings_view,
-                        window,
-                        move |this: &mut Shell, _, event: &SettingsEvent, window, cx| match event {
-                            SettingsEvent::OpenClipboardDetails => {
-                                this.navigate_to(
-                                    NavTarget::Tool(ClipboardTool::ID.to_string()),
-                                    window,
-                                    cx,
-                                );
-                                clipboard_for_settings
-                                    .update(cx, |view, cx| view.show_settings(cx));
-                            }
-                        },
-                    );
-                    shell.retain_subscription(settings_subscription);
 
                     shell
                 });
@@ -1066,15 +1049,6 @@ fn read_preferences(
         }
     }
     preferences
-}
-
-fn read_preference(storage: &Arc<dyn Storage>, key: &'static str) -> Option<String> {
-    read_preferences(storage, &[key]).remove(key)
-}
-
-/// 读取失败时跟随系统主题
-fn read_theme_preference(storage: &Arc<dyn Storage>) -> Option<String> {
-    read_preference(storage, "theme_mode")
 }
 
 /// MySQL / Postgres / Redis 共用 DbClient 入口，driver 在表单选择器内

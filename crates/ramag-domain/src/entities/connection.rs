@@ -13,6 +13,8 @@ pub const MAX_CONNECTION_IDENTIFIER_BYTES: usize = 4 * 1024;
 pub const MAX_CONNECTION_PASSWORD_BYTES: usize = 64 * 1024;
 /// 备注允许多行，但不应让单条连接记录无界增长。
 pub const MAX_CONNECTION_REMARK_BYTES: usize = 16 * 1024;
+/// 环境标签仅用于列表徽章展示（dev / test / prod 或自定义短词）。
+pub const MAX_CONNECTION_ENVIRONMENT_BYTES: usize = 64;
 /// Windows 长路径与 Unix 路径均留有余量，同时约束 CA 路径复制成本。
 pub const MAX_CONNECTION_PATH_BYTES: usize = 32 * 1024;
 /// SSH 目标仅需容纳 user@host 或 config 别名。
@@ -92,6 +94,9 @@ pub struct ConnectionConfig {
     #[serde(default)]
     pub auth_source: Option<String>,
     pub remark: Option<String>,
+    /// 环境标签（dev / test / prod 或自定义）：仅列表徽章展示，不影响连接行为
+    #[serde(default)]
+    pub environment: Option<String>,
     /// 生产模式：开启后由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     #[serde(default)]
     pub production: bool,
@@ -148,6 +153,11 @@ impl ConnectionConfig {
             MAX_CONNECTION_REMARK_BYTES,
         )?;
         validate_optional_single_line(
+            "环境标签",
+            self.environment.as_deref(),
+            MAX_CONNECTION_ENVIRONMENT_BYTES,
+        )?;
+        validate_optional_single_line(
             "CA 证书路径",
             self.ca_cert_path.as_deref(),
             MAX_CONNECTION_PATH_BYTES,
@@ -180,6 +190,7 @@ impl ConnectionConfig {
             database: None,
             auth_source: None,
             remark: None,
+            environment: None,
             production: false,
             tls: false,
             tls_verify: TlsVerify::default(),
@@ -202,6 +213,7 @@ impl ConnectionConfig {
             database: None,
             auth_source: None,
             remark: None,
+            environment: None,
             production: false,
             tls: false,
             tls_verify: TlsVerify::default(),
@@ -224,6 +236,7 @@ impl ConnectionConfig {
             database: None,
             auth_source: None,
             remark: None,
+            environment: None,
             production: false,
             tls: false,
             tls_verify: TlsVerify::default(),
@@ -301,6 +314,7 @@ mod tests {
         config.database = Some("d".repeat(MAX_CONNECTION_IDENTIFIER_BYTES));
         config.auth_source = Some("a".repeat(MAX_CONNECTION_IDENTIFIER_BYTES));
         config.remark = Some("r".repeat(MAX_CONNECTION_REMARK_BYTES));
+        config.environment = Some("e".repeat(MAX_CONNECTION_ENVIRONMENT_BYTES));
         config.ca_cert_path = Some("c".repeat(MAX_CONNECTION_PATH_BYTES));
         config.ssh_target = Some("s".repeat(MAX_CONNECTION_SSH_TARGET_BYTES));
         config.ssh_port = Some(u16::MAX);
@@ -330,6 +344,9 @@ mod tests {
         });
         assert_oversized_rejected(MAX_CONNECTION_REMARK_BYTES, |config, value| {
             config.remark = Some(value);
+        });
+        assert_oversized_rejected(MAX_CONNECTION_ENVIRONMENT_BYTES, |config, value| {
+            config.environment = Some(value);
         });
         assert_oversized_rejected(MAX_CONNECTION_PATH_BYTES, |config, value| {
             config.ca_cert_path = Some(value);
@@ -364,5 +381,9 @@ mod tests {
         config = valid_config();
         config.remark = Some("multi\nline".to_string());
         assert!(config.validate().is_ok());
+
+        config = valid_config();
+        config.environment = Some("bad\nenv".to_string());
+        assert!(config.validate().is_err());
     }
 }

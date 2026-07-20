@@ -18,6 +18,11 @@ use crate::actions::{
 
 impl Render for ClipboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 首次显示即聚焦搜索框，进入页面直接可打字过滤
+        if !self.focused_search_once {
+            self.focused_search_once = true;
+            self.search.update(cx, |state, cx| state.focus(window, cx));
+        }
         if let Some(n) = self.pending_notification.take() {
             window.push_notification(n, cx);
         }

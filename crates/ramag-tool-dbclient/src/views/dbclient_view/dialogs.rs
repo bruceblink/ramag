@@ -90,7 +90,9 @@ impl DbClientView {
                     view_for_close.update(app, |this, _| this.form_subscription = None);
                 })
                 .w(px(720.0))
-                .p(px(24.0))
+                .pt(px(24.0))
+                .px(px(24.0))
+                .pb(px(14.0))
                 .content(move |content, _, _| content.child(form.clone()))
         });
     }

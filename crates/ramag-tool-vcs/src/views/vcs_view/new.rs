@@ -249,8 +249,9 @@ impl VcsView {
             recent_repos: std::rc::Rc::new(Vec::new()),
             repo_list_rows_cache: RefCell::new(None),
             repo_search_input,
+            focused_repo_search_once: false,
             // 默认进 Changes：打开仓库最常见的任务是看改动与提交（Project 树按需切换）
-            files_view_mode: FilesViewMode::Changes,
+            files_view_mode: FilesViewMode::Project,
             files_search_input,
             project_files: Vec::new(),
             loading_project_files: false,

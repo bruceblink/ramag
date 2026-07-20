@@ -40,6 +40,16 @@ pub(super) fn database_placeholder(driver_id: &str) -> &'static str {
     }
 }
 
+/// URI 粘贴框虚影：按 driver 显示对应 scheme 示例
+pub(super) fn uri_placeholder(driver_id: &str) -> &'static str {
+    match driver_id {
+        "postgres" => "postgres://user:pass@host:5432/db?sslmode=require",
+        "redis" => "redis://user:pass@host:6379/0（rediss:// 为 TLS）",
+        "mongodb" => "mongodb://user:pass@host:27017/db?tls=true",
+        _ => "mysql://user:pass@host:3306/db",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +70,14 @@ mod tests {
         assert_eq!(default_username("mongodb"), "");
         assert_eq!(username_placeholder("postgres"), "postgres");
         assert_eq!(username_placeholder("redis"), "（可选）");
+    }
+
+    #[test]
+    fn uri_placeholder_matches_scheme() {
+        assert!(uri_placeholder("mysql").starts_with("mysql://"));
+        assert!(uri_placeholder("postgres").starts_with("postgres://"));
+        assert!(uri_placeholder("redis").starts_with("redis://"));
+        assert!(uri_placeholder("mongodb").starts_with("mongodb://"));
     }
 
     #[test]

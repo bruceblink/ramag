@@ -1,8 +1,8 @@
-//! VSCode 风格暗 / 亮主题。`init_theme` 启动时初始化，ActivityBar 主题按钮三态循环（浅 / 暗 / 跟随系统）
+//! VSCode 风格暗 / 亮主题。`init_theme` 启动时初始化，ActivityBar 主题按钮两态切换（浅 / 暗）
 
 use std::sync::Arc;
 
-use gpui::{App, Global, Hsla, WindowAppearance, hsla};
+use gpui::{App, Global, Hsla, hsla};
 use gpui_component::{Theme, ThemeMode};
 use ramag_domain::traits::Storage;
 
@@ -15,54 +15,19 @@ pub fn storage_from_cx(cx: &App) -> Option<Arc<dyn Storage>> {
     cx.try_global::<StorageGlobal>().map(|g| g.0.clone())
 }
 
-/// 跟随系统时系统外观变化会自动同步；用户显式选过 dark/light 后忽略
-pub struct FollowSystem(pub bool);
-impl Global for FollowSystem {}
-
-pub fn is_following_system(cx: &App) -> bool {
-    cx.try_global::<FollowSystem>()
-        .map(|g| g.0)
-        .unwrap_or(false)
-}
-
-pub fn set_following_system(cx: &mut App, follow: bool) {
-    cx.set_global(FollowSystem(follow));
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Dark,
     Light,
 }
 
-pub fn mode_from_appearance(appearance: WindowAppearance) -> Mode {
-    match appearance {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => Mode::Dark,
+/// preference "dark" 用暗色；其余（缺省 / 旧版 "system" 残值）一律默认浅色
+pub fn init_theme(preference: Option<&str>, cx: &mut App) {
+    let mode = match preference {
+        Some("dark") => Mode::Dark,
         _ => Mode::Light,
-    }
-}
-
-/// preference None/"system" 跟随系统，"dark"/"light" 用户固定
-pub fn init_theme(preference: Option<&str>, appearance: WindowAppearance, cx: &mut App) {
-    let (mode, follow) = match preference {
-        Some("dark") => (Mode::Dark, false),
-        Some("light") => (Mode::Light, false),
-        _ => (mode_from_appearance(appearance), true),
     };
     apply_theme(mode, cx);
-    set_following_system(cx, follow);
-}
-
-/// 仅 follow_system=true 时重应用，用户显式选过的不动
-pub fn on_system_appearance_changed(appearance: WindowAppearance, cx: &mut App) {
-    if !is_following_system(cx) {
-        return;
-    }
-    let mode = mode_from_appearance(appearance);
-    if current_mode(cx) != mode {
-        apply_theme(mode, cx);
-        cx.refresh_windows();
-    }
 }
 
 pub fn apply_theme(mode: Mode, cx: &mut App) {
@@ -238,25 +203,5 @@ impl Opacity for Hsla {
     fn opacity(mut self, alpha: f32) -> Self {
         self.a = alpha.clamp(0.0, 1.0);
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 系统外观 → 主题模式映射：暗系（含 VibrantDark）归 Dark，其余归 Light
-    #[test]
-    fn appearance_maps_to_mode() {
-        assert_eq!(mode_from_appearance(WindowAppearance::Dark), Mode::Dark);
-        assert_eq!(
-            mode_from_appearance(WindowAppearance::VibrantDark),
-            Mode::Dark
-        );
-        assert_eq!(mode_from_appearance(WindowAppearance::Light), Mode::Light);
-        assert_eq!(
-            mode_from_appearance(WindowAppearance::VibrantLight),
-            Mode::Light
-        );
     }
 }

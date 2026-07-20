@@ -73,6 +73,7 @@ pub(super) fn connection_row(
     let conn_for_edit = conn.clone();
     let conn_id_for_del = conn.id.clone();
     let is_production = conn.production;
+    let environment = conn.environment.clone().unwrap_or_default();
 
     let host_port = format!("{}:{}", conn.host, conn.port);
 
@@ -157,6 +158,28 @@ pub(super) fn connection_row(
                 .text_ellipsis()
                 .child(primary_label),
         )
+        // 环境徽章槽（固定宽；dev/test/prod 一档一色、自定义灰，空白占位 → 整列对齐）
+        .child({
+            let slot = div().flex_none().w(px(64.0)).flex().justify_center();
+            if environment.trim().is_empty() {
+                slot
+            } else {
+                let (env_fg, env_bg) = environment_badge_colors(&environment, muted_fg);
+                slot.child(
+                    div()
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .text_xs()
+                        .text_color(env_fg)
+                        .bg(env_bg)
+                        .max_w_full()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(environment),
+                )
+            }
+        })
         // 类型胶囊移到名称之后的固定列（一类一色，保留扫读区分度）
         .child(
             div().flex_none().w(px(84.0)).flex().justify_center().child(
@@ -234,4 +257,20 @@ pub(super) fn connection_row(
     }
 
     row
+}
+
+/// 环境徽章配色：dev 绿 / test 琥珀 / prod 红（与只读同域警示色），自定义值用中性灰
+fn environment_badge_colors(
+    environment: &str,
+    fallback_fg: gpui::Hsla,
+) -> (gpui::Hsla, gpui::Hsla) {
+    let fg = match environment.trim().to_ascii_lowercase().as_str() {
+        "dev" => gpui::hsla(140.0 / 360.0, 0.55, 0.42, 1.0),
+        "test" => gpui::hsla(35.0 / 360.0, 0.80, 0.45, 1.0),
+        "prod" => gpui::hsla(0.0, 0.70, 0.55, 1.0),
+        _ => fallback_fg,
+    };
+    let mut bg = fg;
+    bg.a = 0.12;
+    (fg, bg)
 }

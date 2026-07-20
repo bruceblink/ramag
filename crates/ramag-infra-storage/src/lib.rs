@@ -469,6 +469,7 @@ mod tests {
             database: Some("test".into()),
             auth_source: None,
             remark: None,
+            environment: None,
             production: false,
             tls: false,
             tls_verify: Default::default(),

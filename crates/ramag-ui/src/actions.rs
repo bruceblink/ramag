@@ -29,8 +29,3 @@ pub struct CycleSection;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 pub struct CycleSectionReverse;
-
-/// 菜单「帮助 → 重新查看快速上手」：Shell 切回首页并重开引导卡片
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-pub struct ShowOnboarding;

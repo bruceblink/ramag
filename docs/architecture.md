@@ -235,7 +235,7 @@ features = ["rustls-tls", "bson-2", "compat-3-3-0"]
 | Infra（Storage / Git） | 单元测试 + tempdir | 不依赖外部服务 |
 | UI | 不强测，靠手动验证 | — |
 
-CI（`.github/workflows/ci.yml`）跑 `600-line-gate + fmt-check + check + clippy + test`。集成测试需手动配 `RAMAG_TEST_*` 环境变量启用。
+仓库当前未配置 CI；提交前本地跑 `make fmt-check`、`make check`、`make clippy`、`make test` 作为门禁（单文件 ≤ 600 行为约定）。集成测试需手动配 `RAMAG_TEST_*` 环境变量启用。
 
 ## 参考资料
 

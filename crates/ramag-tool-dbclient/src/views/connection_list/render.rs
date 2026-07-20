@@ -19,6 +19,11 @@ impl Render for ConnectionListPanel {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
+        // 首次显示即聚焦搜索框，进入页面直接可打字过滤
+        if !self.focused_search_once {
+            self.focused_search_once = true;
+            self.search.update(cx, |state, cx| state.focus(window, cx));
+        }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;
@@ -134,7 +139,7 @@ impl Render for ConnectionListPanel {
                     )
                     .into_any_element()
             } else {
-                empty_state(border, muted_fg, fg, accent, cx).into_any_element()
+                empty_state(cx).into_any_element()
             }
         } else if visible_count == 0 {
             v_flex()
@@ -206,59 +211,15 @@ impl Render for ConnectionListPanel {
     }
 }
 
-/// 空状态：一个大引导块，主按钮"新建连接"
-fn empty_state(
-    border: gpui::Hsla,
-    muted_fg: gpui::Hsla,
-    fg: gpui::Hsla,
-    accent: gpui::Hsla,
-    cx: &mut Context<ConnectionListPanel>,
-) -> impl IntoElement {
-    let mut tinted_accent = accent;
-    tinted_accent.a = 0.12;
-
-    v_flex()
-        .size_full()
-        .items_center()
-        .justify_center()
-        .gap(px(20.0))
-        .child(
-            div()
-                .w(px(64.0))
-                .h(px(64.0))
-                .rounded(px(14.0))
-                .bg(tinted_accent)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(ramag_ui::icons::database().text_color(accent)),
-        )
-        .child(
-            div()
-                .text_lg()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(fg)
-                .child("还没有连接"),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(muted_fg)
-                .child("点击下方按钮创建第一个数据库连接"),
-        )
-        .child(
-            ramag_ui::clickable_button("empty-add")
-                .primary()
-                .icon(IconName::Plus)
-                .label("新建连接")
-                .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                    cx.emit(ListEvent::RequestNew);
-                })),
-        )
-        .pb(px(64.0))
-        .pt(px(64.0))
-        .mx(px(40.0))
-        .border_1()
-        .border_color(border)
-        .rounded_lg()
+/// 空状态：只放一个居中主按钮
+fn empty_state(cx: &mut Context<ConnectionListPanel>) -> impl IntoElement {
+    v_flex().size_full().items_center().justify_center().child(
+        ramag_ui::clickable_button("empty-add")
+            .primary()
+            .icon(IconName::Plus)
+            .label("新建连接")
+            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
+                cx.emit(ListEvent::RequestNew);
+            })),
+    )
 }

@@ -19,8 +19,6 @@ pub struct Shell {
     tool_views: HashMap<String, AnyView>,
     home_view: Option<AnyView>,
     settings_view: Option<AnyView>,
-    /// 首页的强类型句柄（同 crate）：菜单「重新查看快速上手」经此重开引导
-    home_entity: Option<Entity<crate::home_view::HomeView>>,
     /// None=首页，Some(tool_id)=某工具
     selected: Option<String>,
     settings_selected: bool,
@@ -81,10 +79,6 @@ impl Shell {
                 }
             },
         ));
-        // 跟随系统主题：用户显式选过则忽略
-        subs.push(cx.observe_window_appearance(window, |_this, window, cx| {
-            crate::theme::on_system_appearance_changed(window.appearance(), cx);
-        }));
         // 窗口移动 / 缩放 → 防抖持久化位置尺寸（重启恢复）
         subs.push(cx.observe_window_bounds(window, |this, window, cx| {
             this.schedule_persist_bounds(window, cx);
@@ -96,7 +90,6 @@ impl Shell {
             tool_views: HashMap::new(),
             home_view: None,
             settings_view: None,
-            home_entity: None,
             selected: None,
             settings_selected: false,
             bounds_gen: 0,
@@ -206,11 +199,6 @@ impl Shell {
 
     pub fn set_settings_view(&mut self, view: AnyView) {
         self.settings_view = Some(view);
-    }
-
-    /// 注入首页强类型句柄（同 crate）：菜单「重新查看快速上手」经此重开引导
-    pub fn set_home_entity(&mut self, entity: Entity<crate::home_view::HomeView>) {
-        self.home_entity = Some(entity);
     }
 
     pub fn register_tool_view(&mut self, tool_id: impl Into<String>, view: AnyView) {
@@ -340,15 +328,6 @@ impl Render for Shell {
                     this.cycle_section(true, window, cx);
                 },
             ))
-            // 菜单「重新查看快速上手」：切回首页并重开引导卡片
-            .on_action(
-                cx.listener(|this, _: &crate::actions::ShowOnboarding, window, cx| {
-                    this.navigate_to(NavTarget::Home, window, cx);
-                    if let Some(home) = this.home_entity.clone() {
-                        home.update(cx, |h, cx| h.reshow_onboarding(cx));
-                    }
-                }),
-            )
             .child(
                 h_flex()
                     .flex_1()

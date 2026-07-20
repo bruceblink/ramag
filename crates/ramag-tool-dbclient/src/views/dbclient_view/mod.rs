@@ -486,16 +486,6 @@ impl DbClientView {
         cx.notify();
     }
 
-    /// 首页快捷入口：打开指定已保存连接；若已打开则切换到现有标签。
-    pub fn open_connection(
-        &mut self,
-        config: ConnectionConfig,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_session(config, window, cx);
-    }
-
     /// 关闭某个 Session Tab
     pub(super) fn close_session(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx >= self.sessions.len() {

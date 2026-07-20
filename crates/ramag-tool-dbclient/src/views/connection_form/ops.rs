@@ -9,22 +9,23 @@ use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
 use tracing::{error, info};
 
 use super::{
-    ConnectionFormPanel, DRIVERS, FormEvent, FormMode, TestState, defaults, id_to_driver_kind,
-    section_title,
+    ConnectionFormPanel, DRIVERS, FormEvent, FormMode, TestState, defaults, driver_display_name,
+    id_to_driver_kind, section_title,
 };
 
 impl ConnectionFormPanel {
-    /// 「从 URI 填充」：解析 mongodb:// 地址回填表单各字段。
+    /// 「从 URI 填充」：解析连接地址回填表单各字段；scheme 决定数据库类型。
+    /// 新建模式按 scheme 自动切换类型；编辑模式类型固定，URI 不符时显式报错。
     /// 解析失败复用测试结论区显示红字；副本集多主机明确拒绝，避免静默改变拓扑。
-    pub(super) fn apply_mongo_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn apply_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
-        let raw = self.mongo_uri.read(cx).value().trim().to_string();
+        let raw = self.uri.read(cx).value().trim().to_string();
         if raw.is_empty() {
             return;
         }
-        let parts = match super::uri::parse_mongo_uri(&raw) {
+        let parts = match super::uri::parse_connection_uri(&raw) {
             Ok(p) => p,
             Err(msg) => {
                 self.test_state = TestState::Failed(format!("URI 解析失败：{msg}"));
@@ -32,6 +33,18 @@ impl ConnectionFormPanel {
                 return;
             }
         };
+        if parts.driver_id != self.driver_id {
+            if matches!(self.mode, FormMode::Create) {
+                self.set_driver(parts.driver_id, window, cx);
+            } else {
+                self.test_state = TestState::Failed(format!(
+                    "这是 {} 连接地址，与当前连接类型（不可变更）不符",
+                    driver_display_name(parts.driver_id)
+                ));
+                cx.notify();
+                return;
+            }
+        }
         self.host
             .update(cx, |s, cx| s.set_value(parts.host, window, cx));
         self.port.update(cx, |s, cx| {
@@ -49,7 +62,7 @@ impl ConnectionFormPanel {
             s.set_value(parts.auth_source.unwrap_or_default(), window, cx)
         });
         self.tls = parts.tls;
-        info!("mongo uri applied to form");
+        info!("connection uri applied to form");
         self.invalidate_test(cx);
         cx.notify();
     }
@@ -87,6 +100,9 @@ impl ConnectionFormPanel {
         });
         self.database.update(cx, |state, cx| {
             state.set_placeholder(defaults::database_placeholder(id), window, cx);
+        });
+        self.uri.update(cx, |state, cx| {
+            state.set_placeholder(defaults::uri_placeholder(id), window, cx);
         });
         self.invalidate_test(cx);
         cx.notify();
@@ -157,6 +173,11 @@ impl ConnectionFormPanel {
         } else {
             None
         };
+        // 环境标签：仅列表徽章展示；留空不打标
+        let environment = {
+            let v = self.environment.read(cx).value().trim().to_string();
+            if v.is_empty() { None } else { Some(v) }
+        };
         // SSH 跳板：target 非空即启用；端口须为数字
         let ssh_target = {
             let v = self.ssh_target.read(cx).value().trim().to_string();
@@ -180,6 +201,7 @@ impl ConnectionFormPanel {
             database,
             auth_source,
             remark: self.remark.clone(),
+            environment,
             production: self.production,
             tls: self.tls,
             tls_verify: self.tls_verify,

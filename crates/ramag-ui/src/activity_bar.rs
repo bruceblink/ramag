@@ -54,8 +54,9 @@ impl ActivityBar {
         cx.notify();
     }
 
-    /// MySQL/Redis/Postgres 共用 dbclient 入口，driver 在连接表单内选
-    fn icon_for_tool(tool_id: &str) -> Icon {
+    /// MySQL/Redis/Postgres 共用 dbclient 入口，driver 在连接表单内选。
+    /// 首页工具卡片复用同一映射，保证入口图标一致
+    pub(crate) fn icon_for_tool(tool_id: &str) -> Icon {
         match tool_id {
             "dbclient" => icons::database(),
             "vcs" => icons::git_branch(),
@@ -127,13 +128,12 @@ impl Render for ActivityBar {
 
         // 底部：主题快捷切换 + 完整设置中心。
         container = container.child(div().flex_1());
-        let (theme_icon, theme_tip) = if crate::theme::is_following_system(cx) {
-            (IconName::Palette, "外观：跟随系统 · 点击切为 浅色")
-        } else if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
-            (IconName::Sun, "外观：浅色 · 点击切为 深色")
-        } else {
-            (IconName::Moon, "外观：深色 · 点击切为 跟随系统")
-        };
+        let (theme_icon, theme_tip) =
+            if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
+                (IconName::Sun, "外观：浅色 · 点击切为 深色")
+            } else {
+                (IconName::Moon, "外观：深色 · 点击切为 浅色")
+            };
         container = container.child(activity_item(
             "theme-toggle",
             Icon::new(theme_icon),
@@ -141,15 +141,13 @@ impl Render for ActivityBar {
             accent,
             transparent,
             Some(SharedString::from(theme_tip)),
-            |_: &ClickEvent, window, app| {
-                // 三态循环：跟随系统 → 浅色 → 深色 → 跟随系统。现取状态避免与系统外观联动错步
-                if crate::theme::is_following_system(app) {
-                    set_theme(crate::theme::Mode::Light, app);
-                } else if matches!(crate::theme::current_mode(app), crate::theme::Mode::Light) {
-                    set_theme(crate::theme::Mode::Dark, app);
-                } else {
-                    set_follow_system(window, app);
-                }
+            |_: &ClickEvent, _, app| {
+                // 两态互切：浅色 ↔ 深色
+                let next = match crate::theme::current_mode(app) {
+                    crate::theme::Mode::Light => crate::theme::Mode::Dark,
+                    crate::theme::Mode::Dark => crate::theme::Mode::Light,
+                };
+                set_theme(next, app);
             },
         ));
         let settings_selected = matches!(selected, NavTarget::Settings);
@@ -169,13 +167,12 @@ impl Render for ActivityBar {
     }
 }
 
-/// 显式切浅 / 深主题 + 持久化。显式选过即 follow_system=false（不再随系统外观变）
+/// 切浅 / 深主题 + 持久化
 fn set_theme(mode: crate::theme::Mode, app: &mut gpui::App) {
-    if crate::theme::current_mode(app) == mode && !crate::theme::is_following_system(app) {
+    if crate::theme::current_mode(app) == mode {
         return;
     }
     crate::theme::apply_theme(mode, app);
-    crate::theme::set_following_system(app, false);
     app.refresh_windows();
     persist_theme_pref(
         app,
@@ -184,16 +181,6 @@ fn set_theme(mode: crate::theme::Mode, app: &mut gpui::App) {
             crate::theme::Mode::Light => "light",
         },
     );
-}
-
-/// 切回「跟随系统」：按当前系统外观定明暗 + 标记跟随 + 持久化 "system"，
-/// 之后系统深浅变化会经 on_system_appearance_changed 自动同步
-fn set_follow_system(window: &Window, app: &mut gpui::App) {
-    let mode = crate::theme::mode_from_appearance(window.appearance());
-    crate::theme::apply_theme(mode, app);
-    crate::theme::set_following_system(app, true);
-    app.refresh_windows();
-    persist_theme_pref(app, "system");
 }
 
 /// 主题偏好落 redb（后台异步，失败仅告警不阻断 UI）

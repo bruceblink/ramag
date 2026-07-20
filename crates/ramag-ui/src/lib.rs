@@ -19,7 +19,6 @@ pub mod theme;
 
 pub use actions::{
     CloseTab, CycleSection, CycleSectionReverse, SelectTool1, SelectTool2, SelectTool3,
-    ShowOnboarding,
 };
 pub use assets::RamagAssets;
 pub use confirm_dialog::open_confirm;
@@ -37,11 +36,9 @@ pub use home_view::{HomeEvent, HomeView};
 pub use mutation_gate::{AsyncMutationGate, MutationToken};
 pub use pointer_menu::PointerDropdownMenu;
 pub use resizable_persist::persist_resizable_sizes;
-pub use settings_view::{SettingsEvent, SettingsView};
+pub use settings_view::SettingsView;
 pub use shell::{Shell, WindowBoundsPref};
-pub use theme::{
-    Mode, StorageGlobal, apply_theme, current_mode, init_theme, on_system_appearance_changed,
-};
+pub use theme::{Mode, StorageGlobal, apply_theme, current_mode, init_theme};
 
 /// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
 pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {

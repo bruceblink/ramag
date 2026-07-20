@@ -1,4 +1,4 @@
-//! 设置面板：采集开关 / 图片采集 / 自动粘贴 / 清空
+//! 设置面板：热键 / 图片采集 / 自动粘贴 / 排除应用 / 清空（总开关在全局设置中心）
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div, prelude::*, px};
 use gpui_component::{
@@ -40,26 +40,9 @@ impl ClipboardView {
                     "设置读取异常，采集已自动暂停（不会记录新内容）；重新保存任一设置可尝试修复",
                 ))
             })
-            // 启用采集为总开关，关闭后下面几项均失效（变灰不可点）
-            .child(self.toggle_row(
-                "clip-enabled",
-                "启用采集",
-                &format!(
-                    "关闭后停止记录新内容，并释放全局快捷键 {}",
-                    clipboard_hotkey(s.alternate_hotkey)
-                ),
-                s.enabled,
-                self.settings_saving,
-                muted,
-                cx.listener(|this, _: &bool, _, cx| {
-                    let mut next = this.settings.clone();
-                    next.enabled = !next.enabled;
-                    this.save_settings(next, cx);
-                }),
-            ))
             // 热键注册失败对用户可见（常见原因：组合键被其它应用占用），成功时不打扰
             .when(
-                s.enabled && matches!(self.service.hotkey_state(), ramag_app::HotkeyState::Failed),
+                matches!(self.service.hotkey_state(), ramag_app::HotkeyState::Failed),
                 |view| {
                     view.child(
                         div()
@@ -81,7 +64,7 @@ impl ClipboardView {
                     clipboard_hotkey(false)
                 ),
                 s.alternate_hotkey,
-                self.settings_saving || !s.enabled,
+                self.settings_saving,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
@@ -94,7 +77,7 @@ impl ClipboardView {
                 "采集图片",
                 "记录复制的图片（占用磁盘较多）",
                 s.capture_images,
-                self.settings_saving || !s.enabled,
+                self.settings_saving,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();
@@ -107,7 +90,7 @@ impl ClipboardView {
                 "自动粘贴",
                 auto_paste_description(),
                 s.auto_paste,
-                self.settings_saving || !s.enabled,
+                self.settings_saving,
                 muted,
                 cx.listener(|this, _: &bool, _, cx| {
                     let mut next = this.settings.clone();

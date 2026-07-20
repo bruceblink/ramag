@@ -13,9 +13,9 @@ use gpui_component::{
 };
 use ramag_app::{ConnectionService, MongoService, RedisService};
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_HOST_BYTES,
-    MAX_CONNECTION_IDENTIFIER_BYTES, MAX_CONNECTION_NAME_BYTES, MAX_CONNECTION_PASSWORD_BYTES,
-    MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
+    ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_ENVIRONMENT_BYTES,
+    MAX_CONNECTION_HOST_BYTES, MAX_CONNECTION_IDENTIFIER_BYTES, MAX_CONNECTION_NAME_BYTES,
+    MAX_CONNECTION_PASSWORD_BYTES, MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
 };
 
 /// 表单模式：新增 or 编辑
@@ -83,6 +83,8 @@ pub struct ConnectionFormPanel {
     pub(super) auth_source: Entity<InputState>,
     /// 当前表单不渲染备注字段；编辑时仍需原样保留，避免静默丢失历史数据。
     pub(super) remark: Option<String>,
+    /// 环境标签输入框（dev / test / prod 预设快捷填充或自定义；留空不打标）
+    pub(super) environment: Entity<InputState>,
     /// 生产模式：开启后该连接由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     pub(super) production: bool,
     /// 启用 TLS 加密传输
@@ -91,8 +93,8 @@ pub struct ConnectionFormPanel {
     pub(super) tls_verify: ramag_domain::entities::TlsVerify,
     /// 自定义 CA 证书路径输入框（PEM，可选；仅 tls 开启时渲染）
     pub(super) ca_cert_path: Entity<InputState>,
-    /// MongoDB URI 粘贴框（仅 MongoDB 渲染）：解析回填 host/port/凭证/库/authSource/tls
-    pub(super) mongo_uri: Entity<InputState>,
+    /// 连接 URI 粘贴框（各 driver 通用）：解析回填地址 / 凭证 / 库 / TLS，MongoDB 额外 authSource
+    pub(super) uri: Entity<InputState>,
     /// SSH 跳板目标（user@host / 别名；留空不走隧道，认证由系统 ssh 处理）
     pub(super) ssh_target: Entity<InputState>,
     /// SSH 跳板端口（留空 = 22 或 ~/.ssh/config 决定）
@@ -180,6 +182,7 @@ impl ConnectionFormPanel {
             database: None,
             auth_source: None,
             remark: None,
+            environment: None,
             production: false,
             tls: false,
             tls_verify: Default::default(),
@@ -238,16 +241,22 @@ impl ConnectionFormPanel {
                 .placeholder("admin")
                 .default_value(p.auth_source.unwrap_or_default())
         });
+        // 环境标签：预设按钮快捷填充或直接输入自定义值；仅列表徽章展示，不影响连接
+        let environment = cx.new(|cx| {
+            bounded_input(MAX_CONNECTION_ENVIRONMENT_BYTES, window, cx)
+                .placeholder("自定义，如 staging（留空不打标）")
+                .default_value(p.environment.unwrap_or_default())
+        });
         // 自定义 CA 证书路径（仅 TLS 开启时渲染；留空用系统信任链）
         let ca_cert_path = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_PATH_BYTES, window, cx)
                 .placeholder("CA 证书路径（PEM，可选；留空用系统信任链）")
                 .default_value(p.ca_cert_path.unwrap_or_default())
         });
-        // MongoDB URI 粘贴框（仅 MongoDB 渲染，粘贴后点「填充」解析回填表单）
-        let mongo_uri = cx.new(|cx| {
-            bounded_input(uri::MAX_MONGO_URI_BYTES, window, cx)
-                .placeholder("mongodb://user:pass@host:27017/db?tls=true")
+        // 连接 URI 粘贴框（各 driver 通用）：粘贴后点「填充」解析回填表单
+        let uri = cx.new(|cx| {
+            bounded_input(uri::MAX_URI_BYTES, window, cx)
+                .placeholder(defaults::uri_placeholder(driver_id))
         });
         // SSH 跳板：target 非空即启用；认证走系统 ssh（密钥 / agent / config 别名）
         let ssh_target = cx.new(|cx| {
@@ -276,6 +285,17 @@ impl ConnectionFormPanel {
                 this.name.update(cx, |state, cx| {
                     state.set_placeholder(preview, window, cx);
                 });
+            },
+        ));
+
+        // 环境标签输入变化 → 刷新预设按钮选中态；标签不影响连通性，不重置测试结论
+        subscriptions.push(cx.subscribe_in(
+            &environment,
+            window,
+            |_this: &mut Self, _, e: &InputEvent, _, cx| {
+                if matches!(e, InputEvent::Change) {
+                    cx.notify();
+                }
             },
         ));
 
@@ -321,11 +341,12 @@ impl ConnectionFormPanel {
             database,
             auth_source,
             remark,
+            environment,
             production: initial_production,
             tls: initial_tls,
             tls_verify: initial_tls_verify,
             ca_cert_path,
-            mongo_uri,
+            uri,
             ssh_target,
             ssh_port,
             test_state: TestState::Idle,
@@ -355,8 +376,9 @@ impl ConnectionFormPanel {
             &self.password,
             &self.database,
             &self.auth_source,
+            &self.environment,
             &self.ca_cert_path,
-            &self.mongo_uri,
+            &self.uri,
             &self.ssh_target,
             &self.ssh_port,
         ]
@@ -431,6 +453,14 @@ fn driver_kind_to_id(kind: DriverKind) -> &'static str {
         DriverKind::Redis => "redis",
         DriverKind::Mongodb => "mongodb",
     }
+}
+
+/// driver id → 显示名（查 DRIVERS 表）；未知 id 原样返回
+pub(super) fn driver_display_name(id: &str) -> &str {
+    DRIVERS
+        .iter()
+        .find(|(driver_id, _, _)| *driver_id == id)
+        .map_or(id, |(_, name, _)| *name)
 }
 
 /// driver_id → DriverKind；不可用 / 未来 driver 返回 None

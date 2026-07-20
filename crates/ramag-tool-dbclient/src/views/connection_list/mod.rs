@@ -1,5 +1,5 @@
 //! 连接管理页：行点击=打开（emit Selected），行内按钮独立 emit。
-//! 搜索按 名称 / host / 用户名 / 数据库 不区分大小写子串匹配
+//! 搜索按 名称 / 环境标签 / 类型 不区分大小写混合匹配
 
 mod render;
 mod row;
@@ -41,6 +41,8 @@ pub struct ConnectionListPanel {
     /// 请求结束后会再次清池，确保旧任务不能把资源建回来。
     version_requests: HashMap<ConnectionId, VersionRequest>,
     refresh_generation: u64,
+    /// 首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
+    pub(super) focused_search_once: bool,
     /// 导入 / 导出进行中：按钮禁用防重入
     pub(super) transferring: bool,
     /// 待展示的导入导出结果通知（render 时取出弹出）
@@ -99,8 +101,9 @@ impl ConnectionListPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search =
-            cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索连接"));
+        let search = cx.new(|cx| {
+            ramag_ui::bounded_search_input(window, cx).placeholder("搜索连接（名称 / 环境 / 类型）")
+        });
 
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(
@@ -128,6 +131,7 @@ impl ConnectionListPanel {
             versions: HashMap::new(),
             version_requests: HashMap::new(),
             refresh_generation: 0,
+            focused_search_once: false,
             transferring: false,
             pending_notification: None,
             _subscriptions: subs,
@@ -686,11 +690,10 @@ impl ConnectionListPanel {
                 .enumerate()
                 .filter(|(_, c)| {
                     contains_case_insensitive(&c.name, q)
-                        || contains_case_insensitive(&c.host, q)
-                        || contains_case_insensitive(&c.username, q)
-                        || c.database
+                        || c.environment
                             .as_deref()
-                            .is_some_and(|database| contains_case_insensitive(database, q))
+                            .is_some_and(|environment| contains_case_insensitive(environment, q))
+                        || contains_case_insensitive(driver_search_label(c.driver), q)
                 })
                 .map(|(index, _)| index)
                 .collect(),
@@ -720,6 +723,16 @@ fn import_change_counts(
                 (added + 1, overwritten)
             }
         })
+}
+
+/// 搜索用类型名（与列表类型徽章文案一致，支持按 "mysql" / "redis" 等过滤）
+fn driver_search_label(driver: DriverKind) -> &'static str {
+    match driver {
+        DriverKind::Mysql => "MySQL",
+        DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Redis => "Redis",
+        DriverKind::Mongodb => "MongoDB",
+    }
 }
 
 fn evict_version_resources(

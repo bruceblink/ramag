@@ -180,7 +180,7 @@ impl VcsView {
             .child(div().w_full().max_w(px(CONTENT_MAX_W)).child(header_inner));
 
         let body: AnyElement = if total == 0 {
-            empty_state(border, muted_fg, fg, accent, cx)
+            empty_state(cx)
         } else if visible_count == 0 {
             v_flex()
                 .size_full()
@@ -511,46 +511,12 @@ fn repo_row(
         )
 }
 
-/// 空状态：大圆角块 + 主按钮「选择本地仓库」
-fn empty_state(
-    border: gpui::Hsla,
-    muted_fg: gpui::Hsla,
-    fg: gpui::Hsla,
-    accent: gpui::Hsla,
-    cx: &mut Context<VcsView>,
-) -> AnyElement {
-    let mut tinted_accent = accent;
-    tinted_accent.a = 0.12;
-
+/// 空状态：只放一个居中主按钮
+fn empty_state(cx: &mut Context<VcsView>) -> AnyElement {
     v_flex()
         .size_full()
         .items_center()
         .justify_center()
-        .gap(px(20.0))
-        .child(
-            div()
-                .w(px(64.0))
-                .h(px(64.0))
-                .rounded(px(14.0))
-                .bg(tinted_accent)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(ramag_ui::icons::git_branch().text_color(accent)),
-        )
-        .child(
-            div()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(fg)
-                .child("还没打开过 Git 仓库"),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(muted_fg)
-                .child("点击下方按钮选择第一个本地 Git 仓库目录"),
-        )
         .child(
             ramag_ui::clickable_button("vcs-repo-empty-pick")
                 .primary()
@@ -560,12 +526,6 @@ fn empty_state(
                     this.pick_directory(cx);
                 })),
         )
-        .pb(px(64.0))
-        .pt(px(64.0))
-        .mx(px(40.0))
-        .border_1()
-        .border_color(border)
-        .rounded_lg()
         .into_any_element()
 }
 

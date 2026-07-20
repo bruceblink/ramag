@@ -17,6 +17,12 @@ impl Render for VcsView {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
         }
+        // 仓库管理页首次显示即聚焦搜索框，进入页面直接可打字过滤
+        if !self.focused_repo_search_once && matches!(self.active_view, ActiveView::RepoList) {
+            self.focused_repo_search_once = true;
+            self.repo_search_input
+                .update(cx, |state, cx| state.focus(window, cx));
+        }
         // Clone 取消后的半成品目录：弹确认交用户决定删除或保留（删除是不可逆文件操作，
         // 只对本次 clone 创建的目录发起，绝不触碰既有目录）
         if let Some(dir) = self.pending_clone_cleanup.take() {

@@ -36,6 +36,9 @@ struct EncryptedConnection {
     #[serde(default)]
     auth_source: Option<String>,
     remark: Option<String>,
+    /// 环境标签（明文元数据，非机密；老数据缺省 = 无标签）
+    #[serde(default)]
+    environment: Option<String>,
     #[serde(default)]
     production: bool,
     /// TLS 开关、验证等级与自定义 CA 路径（明文元数据，非机密；老数据缺省 = 关 / Full）
@@ -66,6 +69,7 @@ impl EncryptedConnection {
             database: plain.database.clone(),
             auth_source: plain.auth_source.clone(),
             remark: plain.remark.clone(),
+            environment: plain.environment.clone(),
             production: plain.production,
             tls: plain.tls,
             tls_verify: plain.tls_verify,
@@ -87,6 +91,7 @@ impl EncryptedConnection {
             database: self.database,
             auth_source: self.auth_source,
             remark: self.remark,
+            environment: self.environment,
             production: self.production,
             tls: self.tls,
             tls_verify: self.tls_verify,
