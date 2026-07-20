@@ -57,62 +57,6 @@ fn parse_postgres_line() {
 use ramag_domain::entities::DriverKind;
 
 #[test]
-fn inject_limit_plain_select() {
-    let s = inject_limits("SELECT * FROM t", 1000, DriverKind::Mysql);
-    assert_eq!(s, "SELECT * FROM t LIMIT 1000");
-}
-
-#[test]
-fn inject_limit_skips_existing_limit() {
-    let s = inject_limits("SELECT * FROM t LIMIT 10", 1000, DriverKind::Mysql);
-    assert_eq!(s, "SELECT * FROM t LIMIT 10");
-    let s = inject_limits("select * from t limit 10", 1000, DriverKind::Mysql);
-    assert_eq!(s, "select * from t limit 10");
-}
-
-#[test]
-fn inject_limit_skips_non_select() {
-    assert_eq!(
-        inject_limits("UPDATE t SET a=1", 1000, DriverKind::Mysql),
-        "UPDATE t SET a=1"
-    );
-    assert_eq!(
-        inject_limits("SHOW TABLES", 1000, DriverKind::Mysql),
-        "SHOW TABLES"
-    );
-}
-
-#[test]
-fn inject_limit_keeps_subquery_limit_alone() {
-    let s = inject_limits(
-        "SELECT * FROM (SELECT * FROM t LIMIT 10) x",
-        1000,
-        DriverKind::Mysql,
-    );
-    assert!(s.ends_with("LIMIT 1000"));
-}
-
-#[test]
-fn inject_limit_strips_trailing_semicolon() {
-    let s = inject_limits("SELECT * FROM t;", 1000, DriverKind::Mysql);
-    assert_eq!(s, "SELECT * FROM t LIMIT 1000;");
-}
-
-#[test]
-fn inject_limit_postgres_dollar_quoted_function_body_not_split() {
-    let sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
-    let s = inject_limits(sql, 1000, DriverKind::Postgres);
-    assert_eq!(s, sql);
-}
-
-#[test]
-fn inject_limit_ignores_keyword_inside_postgres_dollar_quoted_text() {
-    let sql = "SELECT $$ LIMIT 1 $$ AS text FROM t";
-    let s = inject_limits(sql, 100, DriverKind::Postgres);
-    assert_eq!(s, "SELECT $$ LIMIT 1 $$ AS text FROM t LIMIT 100");
-}
-
-#[test]
 fn extract_stmt_postgres_dollar_quoted_keeps_function_body_intact() {
     let sql =
         "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql; SELECT 2";

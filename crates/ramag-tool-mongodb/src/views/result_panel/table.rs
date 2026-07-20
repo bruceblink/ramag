@@ -39,6 +39,8 @@ pub(super) fn render(
     col_indices: Option<Vec<usize>>,
     row_indices: Arc<Vec<usize>>,
     allow_edit: bool,
+    // Some = 只读钻取视图：逐行提供源文档供查看，且不参与勾选删除
+    drill_docs: Option<Arc<Vec<serde_json::Value>>>,
     cx: &mut Context<ResultPanel>,
 ) -> impl IntoElement {
     let border = cx.theme().border;
@@ -47,6 +49,7 @@ pub(super) fn render(
     let secondary_bg = cx.theme().secondary;
     let mono_font = cx.theme().mono_font_family.clone();
 
+    let drill_view = drill_docs.is_some();
     let visible_cols: Vec<usize> =
         col_indices.unwrap_or_else(|| (0..table.columns.len()).collect());
     let visible_rows = row_indices;
@@ -55,27 +58,31 @@ pub(super) fn render(
     let row_num_width =
         px((table.rows.len().to_string().len() as f32 * 9.0 + 16.0).clamp(40.0, 70.0));
 
-    // 全选复选框：勾选 / 取消当前可见的全部行
-    let all_data_idx = visible_rows.clone();
-    let all_selected = panel.all_visible_rows_selected(&all_data_idx);
-    let entity_for_all = cx.entity().clone();
-    let header_checkbox = div()
-        .w(px(CHECKBOX_WIDTH))
-        .flex_none()
-        .h_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .border_r_1()
-        .border_color(border)
-        .child(
-            ramag_ui::clickable_checkbox("mongo-cb-all")
-                .checked(all_selected)
-                .on_click(move |_: &bool, _, app| {
-                    entity_for_all.update(app, |this, cx| this.toggle_all(&all_data_idx, cx))
-                }),
-        )
-        .into_any_element();
+    // 全选复选框：勾选 / 取消当前可见的全部行；钻取只读视图不参与勾选，用占位保持列对齐
+    let header_checkbox = if drill_view {
+        checkbox_placeholder(border)
+    } else {
+        let all_data_idx = visible_rows.clone();
+        let all_selected = panel.all_visible_rows_selected(&all_data_idx);
+        let entity_for_all = cx.entity().clone();
+        div()
+            .w(px(CHECKBOX_WIDTH))
+            .flex_none()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .border_r_1()
+            .border_color(border)
+            .child(
+                ramag_ui::clickable_checkbox("mongo-cb-all")
+                    .checked(all_selected)
+                    .on_click(move |_: &bool, _, app| {
+                        entity_for_all.update(app, |this, cx| this.toggle_all(&all_data_idx, cx))
+                    }),
+            )
+            .into_any_element()
+    };
 
     let header_row = render_header(
         header_checkbox,
@@ -96,6 +103,8 @@ pub(super) fn render(
     let table_for_list = table.clone();
     let cols_for_list = visible_cols.clone();
     let rows_for_list = visible_rows;
+    // 钻取视图逐行提供源文档：供只读双击查看该单元格完整内容
+    let drill_docs_for_list = drill_docs.clone();
     let body = uniform_list(
         "mongo-result-rows",
         rows_for_list.len(),
@@ -110,27 +119,37 @@ pub(super) fn render(
                 .map(|i| {
                     let row_idx = rows_for_list[i];
                     let row = &table_for_list.rows[row_idx];
-                    let selected = panel.is_row_selected(row_idx);
-                    let entity_for_row = cx.entity().clone();
-                    let checkbox = div()
-                        .w(px(CHECKBOX_WIDTH))
-                        .flex_none()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_r_1()
-                        .border_color(border)
-                        .child(
-                            ramag_ui::clickable_checkbox(SharedString::from(format!(
-                                "mongo-cb-{i}"
-                            )))
-                            .checked(selected)
-                            .on_click(move |_: &bool, _, app| {
-                                entity_for_row.update(app, |this, cx| this.toggle_row(row_idx, cx))
-                            }),
-                        )
-                        .into_any_element();
+                    let checkbox = if drill_view {
+                        checkbox_placeholder(border)
+                    } else {
+                        let selected = panel.is_row_selected(row_idx);
+                        let entity_for_row = cx.entity().clone();
+                        div()
+                            .w(px(CHECKBOX_WIDTH))
+                            .flex_none()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .border_r_1()
+                            .border_color(border)
+                            .child(
+                                ramag_ui::clickable_checkbox(SharedString::from(format!(
+                                    "mongo-cb-{i}"
+                                )))
+                                .checked(selected)
+                                .on_click(
+                                    move |_: &bool, _, app| {
+                                        entity_for_row
+                                            .update(app, |this, cx| this.toggle_row(row_idx, cx))
+                                    },
+                                ),
+                            )
+                            .into_any_element()
+                    };
+                    let drill_doc = drill_docs_for_list
+                        .as_ref()
+                        .and_then(|docs| docs.get(row_idx));
                     super::row::render_row(
                         checkbox,
                         row_num_width,
@@ -145,6 +164,7 @@ pub(super) fn render(
                         muted_bg,
                         mono.clone(),
                         allow_edit,
+                        drill_doc,
                         cx,
                     )
                 })
@@ -177,6 +197,17 @@ pub(super) fn render(
                     .child(body),
             ),
     )
+}
+
+/// 钻取只读视图的复选框列占位：保持与数据表相同的列宽和右边框对齐
+fn checkbox_placeholder(border: Hsla) -> gpui::AnyElement {
+    div()
+        .w(px(CHECKBOX_WIDTH))
+        .flex_none()
+        .h_full()
+        .border_r_1()
+        .border_color(border)
+        .into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]

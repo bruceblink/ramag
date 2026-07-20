@@ -181,7 +181,7 @@ impl ResultPanel {
         );
         let column_filter = cx.new(|cx| {
             let mut state = ramag_ui::bounded_search_input(window, cx)
-                .placeholder("过滤列（列名或路径，逗号分隔）");
+                .placeholder("过滤列（列名逗号分隔；填 object/array 字段或 a.b 路径则钻取）");
             state.lsp.completion_provider = Some(provider);
             state
         });
@@ -414,10 +414,15 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// 解析过滤列框；规则见 classify_filter。
+    /// 解析过滤列框（结合当前层 docs 判字段类型）；规则见 classify_filter。
     pub(crate) fn parse_column_filter(&self, cx: &gpui::App) -> ParsedFilter {
         let raw = self.column_filter.read(cx).value().to_string();
-        classify_filter(&raw)
+        let docs = self
+            .drill_stack
+            .last()
+            .map(|level| level.documents.as_slice())
+            .unwrap_or(&[]);
+        classify_filter(&raw, docs)
     }
 
     /// 后台重建基础表格（不钻取）与补全源；钻取/投影在 render 时按过滤框派生。
@@ -780,6 +785,57 @@ impl Render for ResultPanel {
             return root.child(empty_hint(hint, muted)).into_any_element();
         };
 
+        // 过滤列输入 object/array 字段或 a.b 路径 → 钻取视图：把该嵌套内容展平成只读表格展示。
+        // 这是"过滤框输入路径"这条额外入口，与双击单元格下钻并存、互不影响；清空过滤列即恢复。
+        if let Some((flat_docs, flat_table, drill_path)) = self.try_drill_path(cx) {
+            let n = flat_docs.len();
+            // 钻取视图内仍支持列/行子过滤：列过滤取分号后的投影 token，行过滤同步扫描展平表
+            let filters = self.parse_column_filter(cx).filters;
+            let col_indices = column_indices_for(&flat_table, &filters);
+            let row_q = self.row_filter.read(cx).value().trim().to_string();
+            let mut row_indices = row_indices_for_cancellable(&flat_table, &row_q, None)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| (0..flat_table.rows.len()).collect());
+            // 钻取视图内点列头排序：复用列 path 定位 + 通用排序
+            if let Some((sort_path, dir)) = self.sort_by.clone()
+                && let Some(ci) = flat_table.columns.iter().position(|c| c.path == sort_path)
+            {
+                let numeric = matches!(
+                    flat_table.columns[ci].kind,
+                    "int" | "long" | "double" | "decimal"
+                );
+                table::sort_row_indices(&flat_table, ci, numeric, dir, &mut row_indices);
+            }
+            let row_indices = Arc::new(row_indices);
+            let mut root = v_flex()
+                .size_full()
+                .bg(bg)
+                .child(toolbar::render(self, cx))
+                .child(div().h(px(1.0)).bg(border))
+                .child(flatten_hint(&drill_path, n, border, muted, bg));
+            if self.is_drilled() {
+                root = root.child(self.render_breadcrumb(cx));
+            }
+            return root
+                .child(div().flex_1().min_h_0().child(table::render(
+                    self,
+                    flat_table,
+                    col_indices,
+                    row_indices,
+                    false,
+                    Some(flat_docs),
+                    cx,
+                )))
+                .child(render_status_bar(
+                    format!("钻取「{drill_path}」· {n} 条"),
+                    border,
+                    muted,
+                    bg,
+                ))
+                .into_any_element();
+        }
+
         let col_indices = self.filtered_column_indices(cx);
         let Some((row_indices, rows_filtered)) = self.display_row_indices(cx) else {
             let hint = if self.row_view_building {
@@ -879,6 +935,7 @@ impl Render for ResultPanel {
             col_indices,
             row_indices,
             true,
+            None,
             cx,
         )))
         .child(render_status_bar(summary, border, muted, bg))
@@ -905,6 +962,30 @@ fn render_status_bar(
         .text_xs()
         .text_color(muted)
         .child(SharedString::from(summary))
+}
+
+/// 钻取视图顶部提示条：已钻取某路径 + 元素数 + 恢复方式
+fn flatten_hint(
+    path: &str,
+    n: usize,
+    border: gpui::Hsla,
+    muted: gpui::Hsla,
+    bg: gpui::Hsla,
+) -> impl IntoElement {
+    div()
+        .id("mongo-flatten-hint")
+        .w_full()
+        .flex_none()
+        .px(px(12.0))
+        .py(px(5.0))
+        .border_b_1()
+        .border_color(border)
+        .bg(bg)
+        .text_xs()
+        .text_color(muted)
+        .child(SharedString::from(format!(
+            "已钻取「{path}」· {n} 条（清空上方过滤列恢复）"
+        )))
 }
 
 fn empty_hint(text: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Stateful<gpui::Div> {

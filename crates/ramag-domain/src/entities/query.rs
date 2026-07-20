@@ -13,7 +13,8 @@ pub struct Query {
     /// 会话默认库，driver 执行前发 USE 切换
     #[serde(default)]
     pub default_schema: Option<String>,
-    /// 自动 LIMIT 注入：Some(n) 给未带 LIMIT 的最外层 SELECT/WITH 追加 `LIMIT n`；None 不注入
+    /// driver 层可选的自动 LIMIT 注入能力：Some(n) 给未带 LIMIT 的最外层 SELECT/WITH
+    /// 追加 `LIMIT n`。当前 UI 不再使用（恒传 None），保留供 driver 兜底与未来复用
     #[serde(default)]
     pub auto_limit: Option<u32>,
 }

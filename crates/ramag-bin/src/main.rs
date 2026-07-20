@@ -231,16 +231,8 @@ fn main() {
     let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
-    let startup_preferences = read_preferences(
-        &storage,
-        &["theme_mode", ramag_ui::preferences::SQL_AUTO_LIMIT_PREF],
-    );
+    let startup_preferences = read_preferences(&storage, &["theme_mode"]);
     let initial_pref = startup_preferences.get("theme_mode").cloned();
-    let initial_sql_limit = ramag_ui::preferences::parse_sql_auto_limit(
-        startup_preferences
-            .get(ramag_ui::preferences::SQL_AUTO_LIMIT_PREF)
-            .map(String::as_str),
-    );
 
     // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
     let clipboard_enabled = match tokio::runtime::Builder::new_current_thread()
@@ -283,7 +275,6 @@ fn main() {
         init_theme(initial_pref.as_deref(), cx);
         // storage 注入 cx 全局，ActivityBar 切主题用它持久化
         cx.set_global(StorageGlobal(deps.storage.clone()));
-        cx.set_global(ramag_ui::preferences::SqlAutoLimitGlobal(initial_sql_limit));
         cx.activate(true);
 
         // 必须先 bind_keys 把退出快捷键绑到 Quit，原生菜单项才会显示快捷键

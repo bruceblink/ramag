@@ -9,13 +9,6 @@ use gpui::{App, Global};
 use parking_lot::RwLock;
 use ramag_domain::traits::Storage;
 
-pub const SQL_AUTO_LIMIT_PREF: &str = "sql_auto_limit";
-pub const SQL_AUTO_LIMIT_DEFAULT: usize = 10_000;
-pub const SQL_AUTO_LIMIT_CHOICES: [usize; 3] = [1_000, 10_000, 50_000];
-
-pub struct SqlAutoLimitGlobal(pub Option<usize>);
-impl Global for SqlAutoLimitGlobal {}
-
 #[derive(Clone)]
 struct PreferenceWriter {
     next_revision: Arc<AtomicU64>,
@@ -35,37 +28,6 @@ impl Default for PreferenceWriter {
 
 struct PreferenceWriterGlobal(PreferenceWriter);
 impl Global for PreferenceWriterGlobal {}
-
-/// 解析落盘值。未知或损坏的值回到安全默认值；`off` 才明确表示关闭。
-pub fn parse_sql_auto_limit(value: Option<&str>) -> Option<usize> {
-    match value.map(str::trim) {
-        Some("off" | "0") => None,
-        Some(value) => value
-            .parse::<usize>()
-            .ok()
-            .filter(|limit| SQL_AUTO_LIMIT_CHOICES.contains(limit))
-            .or(Some(SQL_AUTO_LIMIT_DEFAULT)),
-        None => Some(SQL_AUTO_LIMIT_DEFAULT),
-    }
-}
-
-pub fn sql_auto_limit(cx: &App) -> Option<usize> {
-    cx.try_global::<SqlAutoLimitGlobal>()
-        .map(|value| value.0)
-        .unwrap_or(Some(SQL_AUTO_LIMIT_DEFAULT))
-}
-
-/// 修改全局 SQL 自动限制并持久化。所有查询标签在渲染和执行时都直接读取该值。
-pub fn set_sql_auto_limit(limit: Option<usize>, cx: &mut App) {
-    if sql_auto_limit(cx) == limit {
-        return;
-    }
-    cx.set_global(SqlAutoLimitGlobal(limit));
-    cx.refresh_windows();
-
-    let value = limit.map_or_else(|| "off".to_string(), |n| n.to_string());
-    persist_preference_latest(SQL_AUTO_LIMIT_PREF, value, cx);
-}
 
 /// 串行写入并丢弃同 key 的过期任务，保证用户快速连续操作后“最后一次选择”最终落盘。
 pub fn persist_preference_latest(key: &'static str, value: String, cx: &mut App) {
@@ -106,22 +68,4 @@ pub fn persist_preference_latest_with_storage(
             }
         })
         .detach();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_supported_values() {
-        assert_eq!(parse_sql_auto_limit(Some("1000")), Some(1_000));
-        assert_eq!(parse_sql_auto_limit(Some("off")), None);
-    }
-
-    #[test]
-    fn rejects_corrupted_or_unsupported_values() {
-        assert_eq!(parse_sql_auto_limit(Some("abc")), Some(10_000));
-        assert_eq!(parse_sql_auto_limit(Some("999999")), Some(10_000));
-        assert_eq!(parse_sql_auto_limit(None), Some(10_000));
-    }
 }

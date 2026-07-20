@@ -24,7 +24,9 @@ pub(super) fn render_zset_block(
     border: gpui::Hsla,
 ) -> impl IntoElement + use<> {
     div()
-        .flex_1()
+        .debug_selector(|| "redis-zset-block".into())
+        .flex_col()
+        .size_full()
         .min_h_0()
         .border_1()
         .border_color(border)
@@ -50,7 +52,7 @@ pub(super) fn render_zset_block(
                 }),
             )
             .track_scroll(scroll)
-            .flex_1(),
+            .size_full(),
         )
 }
 
@@ -89,6 +91,7 @@ fn zset_row(
     let del_id = SharedString::from(format!("zset-del-{i}"));
     h_flex()
         .id(row_id)
+        .debug_selector(move || format!("redis-zset-row-{i}"))
         .h(px(ROW_H))
         .flex_none()
         .w_full()

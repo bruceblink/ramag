@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, UniformListScrollHandle,
-    div, px, uniform_list,
+    div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
@@ -24,7 +24,9 @@ pub(super) fn render_list_block(
     border: gpui::Hsla,
 ) -> impl IntoElement + use<> {
     div()
-        .flex_1()
+        .debug_selector(|| "redis-list-block".into())
+        .flex_col()
+        .size_full()
         .min_h_0()
         .border_1()
         .border_color(border)
@@ -50,7 +52,7 @@ pub(super) fn render_list_block(
                 }),
             )
             .track_scroll(scroll)
-            .flex_1(),
+            .size_full(),
         )
 }
 

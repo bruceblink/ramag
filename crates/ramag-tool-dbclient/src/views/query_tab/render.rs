@@ -20,17 +20,6 @@ use super::QueryTab;
 use super::sql_utils::format_elapsed;
 
 /// 千分位格式化（10_000 → "10,000"），自动限制档位展示用
-fn format_thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
-}
 use crate::actions::{
     ExplainQuery, ExportCsv, ExportJson, ExportMarkdown, FormatSql, RunQuery, RunStatementAtCursor,
 };
@@ -76,29 +65,6 @@ impl Render for QueryTab {
         let _ = panel_for_btn;
         let is_production = self.connection.as_ref().is_some_and(|c| c.production);
         let warning = theme.warning;
-
-        // 分页控件：只在"翻过页或还有下一页"时显示，单页结果不打扰
-        let pager_ui: Option<(usize, bool, String)> = self.pager.as_ref().and_then(|p| {
-            if p.page == 0 && !p.has_more {
-                return None;
-            }
-            let label = match self.result.read(cx).state() {
-                ResultState::Ok(qr) if !qr.rows.is_empty() => {
-                    let start = p.page * p.page_size + 1;
-                    let end = p.page * p.page_size + qr.rows.len();
-                    format!("{start}–{end} 行")
-                }
-                _ => format!("第 {} 页", p.page + 1),
-            };
-            Some((p.page, p.has_more, label))
-        });
-
-        // 自动 LIMIT 档位展示与切换入口（点击弹下拉）
-        let auto_limit = ramag_ui::preferences::sql_auto_limit(cx);
-        let auto_limit_label: gpui::SharedString = match auto_limit {
-            Some(n) => format!("自动限制 {}", format_thousands(n)).into(),
-            None => "自动限制已关闭".into(),
-        };
 
         v_flex()
             .size_full()
@@ -235,73 +201,6 @@ impl Render for QueryTab {
                     })
                     .when_some(result_summary, |this, summary| {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
-                    })
-                    .child({
-                        // 自动 LIMIT 档位切换：裸 SELECT 注入 LIMIT 的上限；关闭后按语句原样执行
-                        let entity = cx.entity();
-                        ramag_ui::clickable_button("auto-limit")
-                            .ghost()
-                            .small()
-                            .label(auto_limit_label)
-                            .tooltip("未写 LIMIT 的 SELECT 自动补上限，防止误拉全表；点击切换档位")
-                            .pointer_dropdown_menu(move |menu, _, _| {
-                                let mut m = menu;
-                                for n in ramag_ui::preferences::SQL_AUTO_LIMIT_CHOICES {
-                                    let e = entity.clone();
-                                    m =
-                                        m.item(
-                                            ramag_ui::menu_item(format!(
-                                                "自动限制 {}",
-                                                format_thousands(n)
-                                            ))
-                                            .on_click(move |_, _, app| {
-                                                e.update(app, |this, cx| {
-                                                    this.set_auto_limit(Some(n), cx)
-                                                });
-                                            }),
-                                        );
-                                }
-                                let e = entity.clone();
-                                m.item(ramag_ui::menu_item("关闭自动限制").on_click(
-                                    move |_, _, app| {
-                                        e.update(app, |this, cx| this.set_auto_limit(None, cx));
-                                    },
-                                ))
-                            })
-                    })
-                    .when_some(pager_ui, |this, (page, has_more, label)| {
-                        this.child(
-                            h_flex()
-                                .items_center()
-                                .gap_1()
-                                .child(
-                                    ramag_ui::clickable_button("pager-prev")
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::ChevronLeft)
-                                        .tooltip("上一页")
-                                        .disabled(page == 0 || running)
-                                        .on_click(cx.listener(
-                                            move |this, _: &ClickEvent, _, cx| {
-                                                this.handle_page(page.saturating_sub(1), cx);
-                                            },
-                                        )),
-                                )
-                                .child(div().text_xs().text_color(muted_fg).child(label))
-                                .child(
-                                    ramag_ui::clickable_button("pager-next")
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::ChevronRight)
-                                        .tooltip("下一页")
-                                        .disabled(!has_more || running)
-                                        .on_click(cx.listener(
-                                            move |this, _: &ClickEvent, _, cx| {
-                                                this.handle_page(page + 1, cx);
-                                            },
-                                        )),
-                                ),
-                        )
                     })
                     .child({
                         let can_insert = insert_reason.is_none() && !has_pending_insert;

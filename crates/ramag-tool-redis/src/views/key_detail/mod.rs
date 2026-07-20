@@ -5,6 +5,8 @@ mod header;
 mod helpers;
 mod list_block;
 mod ops;
+#[cfg(test)]
+mod render_test;
 mod scalar;
 mod set_block;
 mod stream_block;
@@ -343,7 +345,7 @@ impl Render for KeyDetailPanel {
         // 滚动区：外层 flex_1 + min_h_0 给出「减去 header 后的确定高度」。
         // 容器类型的 uniform_list 自带虚拟滚动，只需内边距；其余套 overflow_y_scrollbar。
         let content = if self_scrolls {
-            div().flex_1().min_h_0().p(px(14.0)).child(body)
+            div().flex_col().flex_1().min_h_0().p(px(14.0)).child(body)
         } else {
             div().flex_1().min_h_0().child(
                 div()

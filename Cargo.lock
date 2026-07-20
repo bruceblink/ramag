@@ -6460,6 +6460,7 @@ name = "ramag-tool-redis"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "flate2",
  "futures",

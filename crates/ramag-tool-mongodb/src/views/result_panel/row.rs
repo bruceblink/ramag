@@ -26,6 +26,8 @@ pub(super) fn render_row(
     muted_bg: Hsla,
     mono_font: SharedString,
     allow_edit: bool,
+    // Some = 只读钻取视图的源文档：双击仅查看该单元格完整内容
+    drill_doc: Option<&serde_json::Value>,
     cx: &mut Context<ResultPanel>,
 ) -> gpui::AnyElement {
     // 斑马纹：偶数行透明，奇数行 muted_bg 35% 透明度（与 dbclient::result_table 一致）
@@ -77,6 +79,16 @@ pub(super) fn render_row(
         // 嵌套对象/数组单元格显示的是摘要（{N 字段}/[N 项]），双击取该行该字段原值下钻
         let is_nested = matches!(cell.kind, "object" | "array");
         let column_index = ci;
+        // 钻取只读视图：预取该单元格完整内容供双击查看（嵌套取原始 JSON，标量取文本）
+        let drill_click_text: Option<String> = drill_doc.map(|doc| {
+            if is_nested {
+                doc.get(column.path.as_str())
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| cell.text.clone())
+            } else {
+                cell.text.clone()
+            }
+        });
         row = row.child(
             div()
                 .id(SharedString::from(format!(
@@ -92,6 +104,17 @@ pub(super) fn render_row(
                 .on_click({
                     cx.listener(move |panel, e: &gpui::ClickEvent, window, cx| {
                         if e.click_count() < 2 {
+                            return;
+                        }
+                        // 钻取只读视图：双击仅查看该单元格完整内容，不编辑、不再入栈
+                        if let Some(text) = drill_click_text.clone() {
+                            panel.open_cell_dialog(
+                                path_for_click.clone(),
+                                kind_for_click,
+                                text,
+                                window,
+                                cx,
+                            );
                             return;
                         }
                         // 仅在实际双击时克隆定位值；避免每帧为所有可见行复制可能很大的 _id。

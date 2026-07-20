@@ -11,9 +11,8 @@ use ramag_domain::error::DomainError;
 use tracing::{error, info};
 
 use super::QueryTab;
-use super::paging::{Pager, page_sql, paging_base_sql};
 use super::sql_utils::{
-    detect_dangerous_statements, extract_statement_at_cursor, inject_limits, make_short_title,
+    detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line,
 };
 use crate::sql_completion::extract_tables_in_use_for_prefetch;
@@ -166,7 +165,7 @@ impl QueryTab {
         self.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
     }
 
-    /// 确认后（或无需确认）的执行准备：自动 LIMIT 注入 + 分页资格判定 + 提交执行
+    /// 确认后（或无需确认）提交执行
     fn submit_prepared(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
@@ -179,56 +178,16 @@ impl QueryTab {
         if self.running {
             return;
         }
-        // 自动 LIMIT 注入：仅普通 run 走，且用户没在工具条关掉
-        // EXPLAIN 不注入；driver 端的 Query.auto_limit 作为兜底（防止其他路径漏掉）
-        let auto_limit = if is_run {
-            ramag_ui::preferences::sql_auto_limit(cx)
-        } else {
-            None
-        };
-        // 分页资格：注入 LIMIT 的单条裸 SELECT 记下原始语句，工具条翻页时以它重写 OFFSET
-        self.pager = auto_limit.and_then(|page_size| {
-            paging_base_sql(&sql_to_run, conn.driver).map(|base_sql| Pager {
-                base_sql,
-                page: 0,
-                has_more: false,
-                page_size,
-            })
-        });
-        let sql_to_run = if let Some(limit) = auto_limit {
-            inject_limits(&sql_to_run, limit, conn.driver)
-        } else {
-            sql_to_run
-        };
-        self.execute_query(conn, sql_to_run, title_sql, is_run, auto_limit, cx);
+        self.execute_query(conn, sql_to_run, title_sql, is_run, cx);
     }
 
-    /// 工具条翻页：用 pager.base_sql 重写 LIMIT/OFFSET 重跑，不重置分页状态
-    pub(super) fn handle_page(&mut self, next_page: usize, cx: &mut Context<Self>) {
-        if self.running {
-            return;
-        }
-        let Some(conn) = self.connection.clone() else {
-            return;
-        };
-        let Some(pager) = self.pager.as_mut() else {
-            return;
-        };
-        pager.page = next_page;
-        let page_size = pager.page_size;
-        let sql = page_sql(&pager.base_sql, page_size, next_page);
-        let title = pager.base_sql.clone();
-        self.execute_query(conn, sql, title, true, Some(page_size), cx);
-    }
-
-    /// submit / handle_page 共用的执行核心：状态置忙 + 后台执行 + 回调落结果
+    /// 执行核心：状态置忙 + 后台执行 + 回调落结果
     fn execute_query(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
         sql_to_run: String,
         title_sql: String,
         is_run: bool,
-        auto_limit: Option<usize>,
         cx: &mut Context<Self>,
     ) {
         self.running = true;
@@ -273,9 +232,8 @@ impl QueryTab {
         let handle: ramag_domain::traits::CancelHandle =
             Arc::new(std::sync::atomic::AtomicU64::new(0));
         self.cancel_handle = Some(handle.clone());
-        let auto_limit_for_driver: Option<u32> = auto_limit.map(|l| l as u32);
         let task = cx.spawn(async move |this, cx| {
-            let mut query = Query::new(sql_to_run).with_auto_limit(auto_limit_for_driver);
+            let mut query = Query::new(sql_to_run);
             if let Some(s) = active_schema {
                 query = query.with_schema(s);
             }
@@ -293,10 +251,6 @@ impl QueryTab {
                 match outcome {
                     Ok(qr) => {
                         info!(rows = qr.rows.len(), elapsed_ms = qr.elapsed_ms, "query ok");
-                        // 本页打满页大小 ⇒ 可能还有下一页（不跑 COUNT，按行数推断）
-                        if let Some(p) = &mut this.pager {
-                            p.has_more = qr.rows.len() >= p.page_size;
-                        }
                         this.clear_sql_diagnostics(cx);
                         this.short_title = Some(make_short_title(&title_sql));
                         if is_run {

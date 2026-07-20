@@ -14,58 +14,6 @@ pub(super) fn format_elapsed(d: Duration) -> String {
     }
 }
 
-/// 给"裸 SELECT / SHOW / DESC"自动注入 LIMIT，避免误把全表拉回来。
-/// 多语句时按 `;` 切分逐条处理；PG 切分时识别 dollar-quoted 函数体内的 `;`。
-/// 已经有顶层 `LIMIT` / 非查询语句保持原样。
-pub(crate) fn inject_limits(
-    sql: &str,
-    max_rows: usize,
-    driver: ramag_domain::entities::DriverKind,
-) -> String {
-    let stmts = split_sql_statements(sql, driver);
-    if stmts.is_empty() {
-        return sql.to_string();
-    }
-    let mut out = String::with_capacity(sql.len() + 16 * stmts.len());
-    for (i, stmt) in stmts.iter().enumerate() {
-        let s = inject_limit_one(stmt, max_rows, driver);
-        if i > 0 {
-            out.push_str(";\n");
-        }
-        out.push_str(&s);
-    }
-    if sql.trim_end().ends_with(';') {
-        out.push(';');
-    }
-    out
-}
-
-/// 单条语句 LIMIT 注入：仅 SELECT/WITH 类，且不含 LIMIT 时
-fn inject_limit_one(
-    stmt: &str,
-    max_rows: usize,
-    driver: ramag_domain::entities::DriverKind,
-) -> String {
-    let trimmed = stmt.trim();
-    if trimmed.is_empty() {
-        return stmt.to_string();
-    }
-    let upper: String = trimmed
-        .chars()
-        .skip_while(|c| c.is_whitespace())
-        .take(8)
-        .collect::<String>()
-        .to_ascii_uppercase();
-    if !(upper.starts_with("SELECT") || upper.starts_with("WITH")) {
-        return stmt.to_string();
-    }
-    if has_top_level_keyword(trimmed, "LIMIT", driver) {
-        return stmt.to_string();
-    }
-    let body = trimmed.trim_end_matches(';').trim_end();
-    format!("{body} LIMIT {max_rows}")
-}
-
 /// 检测 SQL 中是否有顶层（不在括号子查询里）的关键字。
 /// 词法扫描会跳过引号、注释与 PostgreSQL dollar-quoted 内容。
 pub(super) fn has_top_level_keyword(

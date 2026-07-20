@@ -25,7 +25,9 @@ pub(super) fn render_hash_block(
     border: gpui::Hsla,
 ) -> impl IntoElement + use<> {
     div()
-        .flex_1()
+        .debug_selector(|| "redis-hash-block".into())
+        .flex_col()
+        .size_full()
         .min_h_0()
         .border_1()
         .border_color(border)
@@ -51,7 +53,7 @@ pub(super) fn render_hash_block(
                 }),
             )
             .track_scroll(scroll)
-            .flex_1(),
+            .size_full(),
         )
 }
 

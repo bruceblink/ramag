@@ -37,3 +37,9 @@ ropey = { workspace = true }
 
 # 日志
 tracing = { workspace = true }
+
+[dev-dependencies]
+# 渲染测试：gpui test-support 提供 #[gpui::test] / TestAppContext / debug_bounds（headless 渲染）
+gpui = { workspace = true, features = ["test-support"] }
+# mock KvDriver / Storage（trait 用 #[async_trait]）
+async-trait = { workspace = true }

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled,
-    UniformListScrollHandle, div, px, uniform_list,
+    UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue, StreamEntry};
@@ -39,7 +39,9 @@ pub(super) fn render_stream_block(
     let rows_for_closure = rows.clone();
 
     div()
-        .flex_1()
+        .debug_selector(|| "redis-stream-block".into())
+        .flex_col()
+        .size_full()
         .min_h_0()
         .border_1()
         .border_color(border)
@@ -62,7 +64,7 @@ pub(super) fn render_stream_block(
                 }),
             )
             .track_scroll(scroll)
-            .flex_1(),
+            .size_full(),
         )
 }
 

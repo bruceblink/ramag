@@ -2,7 +2,6 @@
 
 mod actions;
 mod examples;
-mod paging;
 mod render;
 mod sql_utils;
 
@@ -62,7 +61,6 @@ pub struct QueryTab {
     /// 是否显示 SQL 编辑器
     pub(super) show_editor: bool,
     /// 分页状态：本次 run 命中"未手写 LIMIT 的单条 SELECT"时为 Some
-    pub(super) pager: Option<paging::Pager>,
     /// 上次自动注入的 SQL（表树浏览 / 示例）。编辑器内容仍与之相等 = 用户未手改，
     /// 表树切表可安全原地覆盖；否则视为手写草稿，浏览须另开 Tab（防丢稿）
     pub(super) last_injected_sql: Option<String>,
@@ -170,7 +168,6 @@ impl QueryTab {
             pending_notification: None,
             pinned_target: None,
             show_editor: true,
-            pager: None,
             last_injected_sql: None,
             _editor_sub: editor_sub,
         }
@@ -212,11 +209,6 @@ impl QueryTab {
         self.last_injected_sql = Some(sql);
     }
 
-    /// 工具条切换全局自动 LIMIT 档位；所有已打开查询标签立即使用同一值。
-    pub(super) fn set_auto_limit(&mut self, limit: Option<usize>, cx: &mut Context<Self>) {
-        ramag_ui::preferences::set_sql_auto_limit(limit, cx);
-    }
-
     /// 由 QueryPanel 全局同步：是否展示顶部 SQL 编辑器
     pub fn set_show_editor(&mut self, v: bool, cx: &mut Context<Self>) {
         if self.show_editor != v {
@@ -248,7 +240,6 @@ impl QueryTab {
             .filter(|s| !s.is_empty());
         self.connection = conn.clone();
         // 旧连接的分页状态不能带到新连接（base_sql 已不可信）
-        self.pager = None;
         // 同步给 ResultPanel：单元格编辑弹框需要最新的连接来发 UPDATE
         let svc = self.service.clone();
         self.result.update(cx, |r, _| {
@@ -291,7 +282,6 @@ impl QueryTab {
         // 用户改了 SQL 就清掉之前的 pinned_target：行内编辑不应再用旧目标表
         self.pinned_target = None;
         // 编辑器被整体替换后旧分页状态作废（避免"下一页"重跑已被换掉的 SQL）
-        self.pager = None;
         // 默认视为普通写入（可能是历史填入等用户内容）；自动注入路径由调用方再 mark_injected
         self.last_injected_sql = None;
         // set_value 不发 InputEvent::Change（emit_events=false），手动触发预拉
@@ -325,7 +315,6 @@ impl QueryTab {
         });
         // 示例不是表树的单表浏览结果，不能沿用旧表的行级增删改目标或分页基线。
         self.pinned_target = None;
-        self.pager = None;
         // 示例模板属自动注入：未手改前点表树仍可原地覆盖
         self.last_injected_sql = Some(sql.to_string());
         // set_value 不发 Change 事件，手动触发列结构预拉（与 set_sql 一致）
