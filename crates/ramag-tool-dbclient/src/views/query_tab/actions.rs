@@ -11,12 +11,13 @@ use ramag_domain::error::DomainError;
 use tracing::{error, info};
 
 use super::QueryTab;
+use super::paging::{PAGE_SIZE, PageRequest, Pager, page_sql, paging_base_sql, trim_page_sentinel};
 use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line,
 };
 use crate::sql_completion::extract_tables_in_use_for_prefetch;
-use crate::views::result_panel::ResultState;
+use crate::views::result_panel::{ResultPagination, ResultState};
 
 impl QueryTab {
     /// 取出当前编辑器中的 SQL
@@ -178,7 +179,86 @@ impl QueryTab {
         if self.running {
             return;
         }
-        self.execute_query(conn, sql_to_run, title_sql, is_run, cx);
+        let pager = if is_run {
+            paging_base_sql(&sql_to_run, conn.driver).map(|base_sql| Pager {
+                base_sql,
+                page: 0,
+                has_more: false,
+                page_size: PAGE_SIZE,
+            })
+        } else {
+            None
+        };
+        let (effective_sql, page_request) = if let Some(pager) = pager.as_ref() {
+            match page_sql(&pager.base_sql, pager.page_size, 0) {
+                Ok(sql) => (
+                    sql,
+                    Some(PageRequest {
+                        page: 0,
+                        page_size: pager.page_size,
+                    }),
+                ),
+                Err(message) => {
+                    self.pager = None;
+                    self.result.update(cx, |result, cx| {
+                        result.set_state(ResultState::Error(message), cx);
+                    });
+                    return;
+                }
+            }
+        } else {
+            (sql_to_run, None)
+        };
+        self.pager = pager;
+        self.execute_query(conn, effective_sql, title_sql, is_run, page_request, cx);
+    }
+
+    /// 请求相邻结果页；SQL 基线只保存在当前 QueryTab，不从可变编辑器重新读取。
+    pub(super) fn handle_page(&mut self, requested_page: usize, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
+        let Some(conn) = self.connection.clone() else {
+            self.clear_pager(cx);
+            return;
+        };
+        let Some(pager) = self.pager.as_ref() else {
+            return;
+        };
+        let is_previous = requested_page
+            .checked_add(1)
+            .is_some_and(|page| page == pager.page);
+        let is_next = pager
+            .page
+            .checked_add(1)
+            .is_some_and(|page| page == requested_page)
+            && pager.has_more;
+        if !is_previous && !is_next {
+            return;
+        }
+        let base_sql = pager.base_sql.clone();
+        let page_size = pager.page_size;
+        let effective_sql = match page_sql(&base_sql, page_size, requested_page) {
+            Ok(sql) => sql,
+            Err(message) => {
+                self.pending_notification =
+                    Some(Notification::error(format!("加载分页失败：{message}")).autohide(true));
+                self.clear_pager(cx);
+                cx.notify();
+                return;
+            }
+        };
+        self.execute_query(
+            conn,
+            effective_sql,
+            base_sql,
+            false,
+            Some(PageRequest {
+                page: requested_page,
+                page_size,
+            }),
+            cx,
+        );
     }
 
     /// 执行核心：状态置忙 + 后台执行 + 回调落结果
@@ -188,6 +268,7 @@ impl QueryTab {
         sql_to_run: String,
         title_sql: String,
         is_run: bool,
+        page_request: Option<PageRequest>,
         cx: &mut Context<Self>,
     ) {
         self.running = true;
@@ -249,7 +330,23 @@ impl QueryTab {
                 this.cancel_handle = None;
                 this.query_start = None;
                 match outcome {
-                    Ok(qr) => {
+                    Ok(mut qr) => {
+                        let pagination = if let Some(request) = page_request {
+                            let has_more = trim_page_sentinel(&mut qr, request.page_size);
+                            this.pager.as_mut().and_then(|pager| {
+                                (pager.page_size == request.page_size).then(|| {
+                                    pager.page = request.page;
+                                    pager.has_more = has_more;
+                                    ResultPagination {
+                                        page: request.page,
+                                        page_size: request.page_size,
+                                        has_more,
+                                    }
+                                })
+                            })
+                        } else {
+                            None
+                        };
                         info!(rows = qr.rows.len(), elapsed_ms = qr.elapsed_ms, "query ok");
                         this.clear_sql_diagnostics(cx);
                         this.short_title = Some(make_short_title(&title_sql));
@@ -263,6 +360,7 @@ impl QueryTab {
                             r.set_source_sql(Some(title_sql.clone()));
                             r.set_pinned_target(target_for_result);
                             r.set_state(ResultState::Ok(Arc::new(qr)), cx);
+                            r.set_pagination(pagination, cx);
                         });
                         // 表树单表数据：异步拉真实主键 / 唯一索引作为行定位键，
                         // 就绪前增删改保持禁用（绝不按列名猜键）
@@ -450,6 +548,7 @@ impl QueryTab {
                         );
                     }
                     Ok(formatted) if formatted != source_sql => {
+                        this.clear_pager(cx);
                         this.editor.update(cx, |state, cx| {
                             state.set_value(formatted, window, cx);
                         });
@@ -547,6 +646,7 @@ impl QueryTab {
         }
         self.running = false;
         self.query_start = None;
+        self.pager = None;
         self.result.update(cx, |r, cx| {
             r.set_state(ResultState::Empty, cx);
         });

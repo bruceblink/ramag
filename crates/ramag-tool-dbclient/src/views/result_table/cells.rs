@@ -203,7 +203,13 @@ pub(super) fn render_data_row(
         .text_right()
         .border_r_1()
         .border_color(frame.border)
-        .child(SharedString::from((idx + 1).to_string()))
+        .child(SharedString::from(
+            frame
+                .row_number_offset
+                .saturating_add(idx)
+                .saturating_add(1)
+                .to_string(),
+        ))
         .into_any_element();
 
     // 多选 checkbox：选中集按源下标存（供 DML 定位真实行）

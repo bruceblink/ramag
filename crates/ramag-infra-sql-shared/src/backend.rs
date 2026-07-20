@@ -24,10 +24,10 @@ use crate::sql::{
 
 /// 单次查询保留的警告上限，包含可能的截断提示。
 pub const MAX_QUERY_WARNINGS: usize = 1_000;
-/// 即使用户关闭自动 LIMIT，客户端也不会无限保留结果行。
-const MAX_QUERY_RESULT_ROWS: usize = 100_000;
+/// 超过该估算常驻内存后提示风险，但继续加载。
+const QUERY_RESULT_MEMORY_WARNING_BYTES: u64 = 128 * 1024 * 1024;
 /// 结果行与列元数据估算的常驻内存硬上限；单个在途驱动行不计入。
-const MAX_QUERY_RESULT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_QUERY_RESULT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_QUERY_RESULT_COLUMNS: usize = 4_096;
 const MAX_QUERY_RESULT_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -503,10 +503,6 @@ where
                 retained_bytes = validate_query_columns(&columns, &column_types)?;
                 saw_row = true;
             }
-            if domain_rows.len() >= MAX_QUERY_RESULT_ROWS {
-                limit_reached = Some(QueryResultLimit::Rows);
-                break;
-            }
             let row = Row {
                 values: b.decode_row(&row)?,
             };
@@ -514,7 +510,6 @@ where
                 &mut domain_rows,
                 &mut retained_bytes,
                 row,
-                MAX_QUERY_RESULT_ROWS,
                 MAX_QUERY_RESULT_BYTES,
             ) {
                 limit_reached = Some(limit);
@@ -531,25 +526,10 @@ where
         validate_query_columns(&columns, &column_types)?;
     }
 
-    let warnings = limit_reached
-        .map(|limit| {
-            let boundary = match limit {
-                QueryResultLimit::Rows => format!("{MAX_QUERY_RESULT_ROWS} 行"),
-                QueryResultLimit::Bytes => format!(
-                    "{} MiB 常驻内存",
-                    MAX_QUERY_RESULT_BYTES / (1024 * 1024)
-                ),
-            };
-            vec![Warning {
-                level: "Client".into(),
-                code: 0,
-                message: format!(
-                    "查询结果超过客户端安全上限（{boundary}），仅保留前 {} 行；请增加 WHERE 或 LIMIT 缩小范围",
-                    domain_rows.len()
-                ),
-            }]
-        })
-        .unwrap_or_default();
+    let warnings =
+        query_result_memory_warning(retained_bytes, limit_reached.is_some(), domain_rows.len())
+            .into_iter()
+            .collect();
 
     Ok(QueryResult {
         columns,
@@ -563,8 +543,32 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryResultLimit {
-    Rows,
     Bytes,
+}
+
+fn query_result_memory_warning(
+    retained_bytes: u64,
+    truncated: bool,
+    retained_rows: usize,
+) -> Option<Warning> {
+    let warning_mib = QUERY_RESULT_MEMORY_WARNING_BYTES / (1024 * 1024);
+    let maximum_mib = MAX_QUERY_RESULT_BYTES / (1024 * 1024);
+    let message = if truncated {
+        format!(
+            "查询结果超过客户端硬上限（{maximum_mib} MiB 常驻内存），仅保留前 {retained_rows} 行（已截断）；请增加 WHERE 或 LIMIT 缩小范围"
+        )
+    } else if retained_bytes >= QUERY_RESULT_MEMORY_WARNING_BYTES {
+        format!(
+            "查询结果已达到客户端内存提示线（{warning_mib} MiB 常驻内存）；本次结果未截断，达到 {maximum_mib} MiB 时将停止加载"
+        )
+    } else {
+        return None;
+    };
+    Some(Warning {
+        level: "Client".into(),
+        code: 0,
+        message,
+    })
 }
 
 fn validate_query_columns(columns: &[String], column_types: &[String]) -> Result<u64> {
@@ -615,12 +619,8 @@ fn try_push_query_row(
     rows: &mut Vec<Row>,
     retained_bytes: &mut u64,
     row: Row,
-    max_rows: usize,
     max_bytes: u64,
 ) -> std::result::Result<(), QueryResultLimit> {
-    if rows.len() >= max_rows {
-        return Err(QueryResultLimit::Rows);
-    }
     let next_bytes = retained_bytes
         .checked_add(row.retained_bytes())
         .ok_or(QueryResultLimit::Bytes)?;
@@ -660,7 +660,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_QUERY_WARNINGS, QueryResultLimit, append_warnings_bounded, try_push_query_row,
+        MAX_QUERY_RESULT_BYTES, MAX_QUERY_WARNINGS, QUERY_RESULT_MEMORY_WARNING_BYTES,
+        QueryResultLimit, append_warnings_bounded, query_result_memory_warning, try_push_query_row,
         validate_backend_config, validate_metadata_identifier, validate_query_columns_with_limits,
     };
     use ramag_domain::entities::{ConnectionConfig, DriverKind, Row, Value, Warning};
@@ -706,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn query_row_budget_enforces_count_and_bytes() {
+    fn query_row_budget_enforces_bytes() {
         let row = || Row {
             values: vec![Value::Text("x".repeat(128))],
         };
@@ -715,27 +716,56 @@ mod tests {
         let mut retained_bytes = 0;
 
         assert_eq!(
-            try_push_query_row(&mut rows, &mut retained_bytes, row(), 1, u64::MAX),
+            try_push_query_row(&mut rows, &mut retained_bytes, row(), one_row_bytes),
             Ok(())
         );
         assert_eq!(
-            try_push_query_row(&mut rows, &mut retained_bytes, row(), 1, u64::MAX),
-            Err(QueryResultLimit::Rows)
-        );
-
-        rows.clear();
-        retained_bytes = 0;
-        assert_eq!(
-            try_push_query_row(
-                &mut rows,
-                &mut retained_bytes,
-                row(),
-                usize::MAX,
-                one_row_bytes - 1,
-            ),
+            try_push_query_row(&mut rows, &mut retained_bytes, row(), one_row_bytes),
             Err(QueryResultLimit::Bytes)
         );
-        assert!(rows.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(retained_bytes, one_row_bytes);
+    }
+
+    #[test]
+    fn query_result_memory_has_distinct_warning_and_truncation_thresholds() {
+        assert!(
+            query_result_memory_warning(QUERY_RESULT_MEMORY_WARNING_BYTES - 1, false, 10).is_none()
+        );
+
+        let warning = query_result_memory_warning(QUERY_RESULT_MEMORY_WARNING_BYTES, false, 20);
+        assert!(
+            warning
+                .as_ref()
+                .is_some_and(|warning| warning.message.contains("128 MiB"))
+        );
+        assert!(
+            warning
+                .as_ref()
+                .is_some_and(|warning| warning.message.contains("未截断"))
+        );
+        assert!(
+            warning
+                .as_ref()
+                .is_some_and(|warning| warning.message.contains("256 MiB"))
+        );
+
+        let truncated = query_result_memory_warning(MAX_QUERY_RESULT_BYTES, true, 30);
+        assert!(
+            truncated
+                .as_ref()
+                .is_some_and(|warning| warning.message.contains("256 MiB"))
+        );
+        assert!(
+            truncated
+                .as_ref()
+                .is_some_and(|warning| warning.message.contains("已截断"))
+        );
+        assert!(
+            truncated
+                .as_ref()
+                .is_some_and(|warning| !warning.message.contains("未截断"))
+        );
     }
 
     #[test]

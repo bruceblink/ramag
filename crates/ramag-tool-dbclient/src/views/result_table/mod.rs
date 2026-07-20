@@ -1,4 +1,4 @@
-//! 结果集表格：uniform_list 行级虚拟化，受 driver LIMIT 与 MAX_ROWS_DISPLAY 限制
+//! 结果集表格：uniform_list 行级虚拟化；简单查询由数据库按页返回。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ use gpui_component::{
 
 use ramag_domain::entities::{QueryResult, contains_case_insensitive};
 
-use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, SortDir};
+use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, SortDir};
 
 /// 连续输入筛选词时先等待短暂停顿，避免每个按键都占用共享 CPU 工作池。
 const DISPLAY_VIEW_DEBOUNCE: Duration = Duration::from_millis(160);
@@ -43,6 +43,8 @@ struct TableRowFrame {
     visible_col_indices: Arc<Vec<usize>>,
     col_widths: Vec<gpui::Pixels>,
     right_align: Arc<Vec<bool>>,
+    /// 服务端分页造成的全局行号偏移；数据定位仍使用当前页源下标。
+    row_number_offset: usize,
     row_num_width: gpui::Pixels,
     checkbox_col_width: gpui::Pixels,
     total_content_width: gpui::Pixels,
@@ -69,7 +71,7 @@ pub(crate) struct DisplayView {
     default_col_widths: Arc<Vec<gpui::Pixels>>,
     /// 基于当前显示行样本识别的数值列。
     right_align: Arc<Vec<bool>>,
-    /// 是否因 MAX_ROWS_DISPLAY 截断
+    /// 是否因 MAX_ROWS_DISPLAY 截断未分页结果。
     pub(crate) truncated: bool,
     /// 列过滤是否激活
     pub(crate) cols_filtered: bool,
@@ -400,6 +402,10 @@ pub(super) fn render_table(
     let total_rows = result.rows.len();
     let affected = result.affected_rows;
     let elapsed = result.elapsed_ms;
+    let pagination = panel.pagination();
+    let row_number_offset = pagination
+        .map(|pagination| pagination.page.saturating_mul(pagination.page_size))
+        .unwrap_or(0);
 
     // DML/DDL：没有列，只显示 affected_rows
     if columns.is_empty() {
@@ -427,9 +433,14 @@ pub(super) fn render_table(
     let Some(view) = ensure_display_view(panel, result, cx) else {
         let error = panel.display_view_error.clone();
         let message = error.clone().unwrap_or_else(|| {
-            format!(
-                "正在准备结果视图…（最多处理 {} 行）",
-                total_rows.min(MAX_ROWS_DISPLAY)
+            pagination.map_or_else(
+                || {
+                    format!(
+                        "正在准备结果视图…（最多处理 {} 行）",
+                        total_rows.min(MAX_ROWS_DISPLAY)
+                    )
+                },
+                |pagination| format!("正在准备第 {} 页…", pagination.page + 1),
             )
         });
         let mut placeholder = v_flex()
@@ -483,7 +494,9 @@ pub(super) fn render_table(
         .enumerate()
         .map(|(ci, &default_width)| panel.col_width_override(ci).unwrap_or(default_width))
         .collect();
-    let row_num_width = px((total_rows.to_string().len() as f32 * 9.0 + 16.0).clamp(40.0, 70.0));
+    let last_row_number = row_number_offset.saturating_add(total_rows);
+    let row_num_width =
+        px((last_row_number.to_string().len() as f32 * 9.0 + 16.0).clamp(40.0, 70.0));
     let checkbox_col_width = px(32.0);
     let total_content_width = visible_col_indices
         .iter()
@@ -570,6 +583,7 @@ pub(super) fn render_table(
         visible_col_indices: visible_col_indices.clone(),
         col_widths: col_widths.clone(),
         right_align,
+        row_number_offset,
         row_num_width,
         checkbox_col_width,
         total_content_width,
@@ -619,7 +633,7 @@ pub(super) fn render_table(
         };
         Some(format!(
             "· [{}, {}] = {}{hidden_note}",
-            ri + 1,
+            row_number_offset.saturating_add(ri).saturating_add(1),
             col_name,
             preview
         ))
@@ -648,13 +662,28 @@ pub(super) fn render_table(
             "显示 {visible_cols_count} / {total_cols} 列（已截断）"
         ));
     }
+    let pagination_ui = pagination.filter(|pagination| pagination.page > 0 || pagination.has_more);
     if row_filtering {
-        if truncated {
+        if pagination_ui.is_some() {
+            let range_start = row_number_offset.saturating_add(1);
+            let range_end = row_number_offset.saturating_add(total_rows);
+            status_parts.push(format!(
+                "当前页命中 {visible_count} / {pre_filter_count} 行（数据库范围 {range_start}-{range_end}）"
+            ));
+        } else if truncated {
             status_parts.push(format!(
                 "命中 {visible_count} / {pre_filter_count} 行（仅搜索前 {pre_filter_count} / {total_rows} 行）"
             ));
         } else {
             status_parts.push(format!("命中 {visible_count} / {pre_filter_count} 行"));
+        }
+    } else if pagination_ui.is_some() {
+        if total_rows == 0 {
+            status_parts.push("当前页 0 行".to_string());
+        } else {
+            let range_start = row_number_offset.saturating_add(1);
+            let range_end = row_number_offset.saturating_add(total_rows);
+            status_parts.push(format!("显示 {range_start}-{range_end} 行"));
         }
     } else if truncated {
         status_parts.push(format!(
@@ -683,30 +712,67 @@ pub(super) fn render_table(
         .when_some(selected_info, |this, info| {
             this.child(div().overflow_hidden().text_ellipsis().child(info))
         })
+        .child(div().flex_1())
+        .when_some(pagination_ui, |this, pagination| {
+            let has_previous_page = pagination.page > 0;
+            let previous_page = pagination.page.saturating_sub(1);
+            let next_page = pagination.page.saturating_add(1);
+            let panel_for_previous = panel_entity.clone();
+            let panel_for_next = panel_entity.clone();
+            this.child(
+                ramag_ui::clickable_button("result-page-previous")
+                    .ghost()
+                    .small()
+                    .label("上一页")
+                    .disabled(!has_previous_page)
+                    .on_click(move |_, _, app| {
+                        panel_for_previous.update(app, |_, cx| {
+                            cx.emit(ResultPanelEvent::PageRequested(previous_page));
+                        });
+                    }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(format!("第 {} 页", pagination.page + 1)),
+            )
+            .child(
+                ramag_ui::clickable_button("result-page-next")
+                    .ghost()
+                    .small()
+                    .label("下一页")
+                    .tooltip("下一页；未写 ORDER BY 时数据库不保证分页顺序")
+                    .disabled(!pagination.has_more)
+                    .on_click(move |_, _, app| {
+                        panel_for_next.update(app, |_, cx| {
+                            cx.emit(ResultPanelEvent::PageRequested(next_page));
+                        });
+                    }),
+            )
+        })
         .when(has_pending, |this| {
             let panel_for_cancel = panel_entity.clone();
             let panel_for_submit = panel_entity.clone();
-            this.child(div().flex_1())
-                .child(
-                    ramag_ui::clickable_button("insert-cancel-bar")
-                        .ghost()
-                        .small()
-                        .label("取消")
-                        .disabled(dml_busy)
-                        .on_click(move |_, _, app| {
-                            panel_for_cancel.update(app, |r, cx| r.cancel_insert(cx));
-                        }),
-                )
-                .child(
-                    ramag_ui::clickable_button("insert-submit-bar")
-                        .primary()
-                        .small()
-                        .label(if dml_busy { "提交中…" } else { "提交" })
-                        .disabled(dml_busy)
-                        .on_click(move |_, _, app| {
-                            panel_for_submit.update(app, |r, cx| r.submit_insert(cx));
-                        }),
-                )
+            this.child(
+                ramag_ui::clickable_button("insert-cancel-bar")
+                    .ghost()
+                    .small()
+                    .label("取消")
+                    .disabled(dml_busy)
+                    .on_click(move |_, _, app| {
+                        panel_for_cancel.update(app, |r, cx| r.cancel_insert(cx));
+                    }),
+            )
+            .child(
+                ramag_ui::clickable_button("insert-submit-bar")
+                    .primary()
+                    .small()
+                    .label(if dml_busy { "提交中…" } else { "提交" })
+                    .disabled(dml_busy)
+                    .on_click(move |_, _, app| {
+                        panel_for_submit.update(app, |r, cx| r.submit_insert(cx));
+                    }),
+            )
         });
 
     // 外层布局：v_flex 主轴；水平滚动由外层 div 处理，垂直虚拟化由 list 处理

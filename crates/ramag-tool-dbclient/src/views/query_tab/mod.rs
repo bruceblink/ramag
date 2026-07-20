@@ -2,6 +2,7 @@
 
 mod actions;
 mod examples;
+mod paging;
 mod render;
 mod sql_utils;
 
@@ -21,7 +22,7 @@ use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES};
 use ramag_ui::platform::primary_shortcut;
 
 use crate::sql_completion::SchemaCache;
-use crate::views::result_panel::ResultPanel;
+use crate::views::result_panel::{ResultPanel, ResultPanelEvent};
 
 /// 单个查询标签
 pub struct QueryTab {
@@ -61,11 +62,14 @@ pub struct QueryTab {
     /// 是否显示 SQL 编辑器
     pub(super) show_editor: bool,
     /// 分页状态：本次 run 命中"未手写 LIMIT 的单条 SELECT"时为 Some
+    pager: Option<paging::Pager>,
     /// 上次自动注入的 SQL（表树浏览 / 示例）。编辑器内容仍与之相等 = 用户未手改，
     /// 表树切表可安全原地覆盖；否则视为手写草稿，浏览须另开 Tab（防丢稿）
     pub(super) last_injected_sql: Option<String>,
     /// 编辑器变化订阅 keep-alive
     pub(super) _editor_sub: gpui::Subscription,
+    /// 结果面板分页事件订阅 keep-alive
+    pub(super) _result_sub: gpui::Subscription,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,6 +124,7 @@ impl QueryTab {
                 if !matches!(e, InputEvent::Change) {
                     return;
                 }
+                this.clear_pager(cx);
                 if ramag_ui::clamp_multiline_input_value(
                     &editor_for_sub,
                     MAX_SQL_QUERY_BYTES,
@@ -142,6 +147,12 @@ impl QueryTab {
                 }
                 this.schedule_column_prefetch(cx);
                 cx.emit(QueryTabEvent::DraftChanged);
+            },
+        );
+        let result_sub = cx.subscribe(
+            &result,
+            |this: &mut Self, _, event: &ResultPanelEvent, cx| match event {
+                ResultPanelEvent::PageRequested(page) => this.handle_page(*page, cx),
             },
         );
 
@@ -168,8 +179,10 @@ impl QueryTab {
             pending_notification: None,
             pinned_target: None,
             show_editor: true,
+            pager: None,
             last_injected_sql: None,
             _editor_sub: editor_sub,
+            _result_sub: result_sub,
         }
     }
 
@@ -240,6 +253,7 @@ impl QueryTab {
             .filter(|s| !s.is_empty());
         self.connection = conn.clone();
         // 旧连接的分页状态不能带到新连接（base_sql 已不可信）
+        self.clear_pager(cx);
         // 同步给 ResultPanel：单元格编辑弹框需要最新的连接来发 UPDATE
         let svc = self.service.clone();
         self.result.update(cx, |r, _| {
@@ -253,6 +267,7 @@ impl QueryTab {
         let normalized = schema.filter(|s| !s.is_empty());
         if self.active_schema != normalized {
             self.active_schema = normalized;
+            self.clear_pager(cx);
             cx.notify();
         }
     }
@@ -265,6 +280,7 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) {
         let sql = sql.into();
+        self.clear_pager(cx);
         if sql.len() > MAX_SQL_QUERY_BYTES {
             self.result.update(cx, |result, cx| {
                 result.set_state(
@@ -309,6 +325,7 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.clear_pager(cx);
         self.editor.update(cx, |state, cx| {
             state.set_value(sql.to_string(), window, cx);
             state.focus(window, cx);
@@ -320,6 +337,13 @@ impl QueryTab {
         // set_value 不发 Change 事件，手动触发列结构预拉（与 set_sql 一致）
         self.prefetch_columns_now(cx);
         cx.notify();
+    }
+
+    /// SQL、连接或 schema 改变后，旧页码与分页基线必须一起失效。
+    pub(super) fn clear_pager(&mut self, cx: &mut Context<Self>) {
+        self.pager = None;
+        self.result
+            .update(cx, |result, cx| result.set_pagination(None, cx));
     }
 
     /// 聚焦编辑器（关闭 / 切换 Tab 后由 QueryPanel 调用，避免用户再点一下）

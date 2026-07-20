@@ -28,7 +28,10 @@ pub(super) fn has_top_level_keyword(
 
 /// 跳过语句开头的普通注释与空白，返回真正的语句体。
 /// MySQL 可执行注释不能被丢弃，否则会绕过高危语句检测。
-fn strip_leading_comments(stmt: &str, driver: ramag_domain::entities::DriverKind) -> &str {
+pub(super) fn strip_leading_comments(
+    stmt: &str,
+    driver: ramag_domain::entities::DriverKind,
+) -> &str {
     let mut s = stmt.trim_start();
     loop {
         if let Some(rest) = s.strip_prefix("--") {

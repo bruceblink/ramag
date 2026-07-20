@@ -16,8 +16,8 @@ use std::sync::{
 use parking_lot::RwLock;
 
 use gpui::{
-    AppContext as _, Context, Entity, Point, ScrollHandle, ScrollStrategy, UniformListScrollHandle,
-    Window, px,
+    AppContext as _, Context, Entity, EventEmitter, Point, ScrollHandle, ScrollStrategy,
+    UniformListScrollHandle, Window, px,
 };
 use gpui_component::input::InputState;
 use gpui_component::notification::Notification;
@@ -30,7 +30,7 @@ use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 // QueryTab 在查询成功后据元数据推导行定位键并注入
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
 
-/// UI 表格最多渲染行数（超出截断 + 状态栏提示"已截断"）
+/// 服务端分页的可见页大小，也是未分页结果的 UI 渲染上限。
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
 /// 行内新增最多创建的输入框数量，避免异常元数据一次生成数万控件。
 pub(super) const MAX_INSERT_COLUMNS: usize = 512;
@@ -51,6 +51,20 @@ pub enum SortDir {
     Asc,
     Desc,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResultPagination {
+    pub(crate) page: usize,
+    pub(crate) page_size: usize,
+    pub(crate) has_more: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResultPanelEvent {
+    PageRequested(usize),
+}
+
+impl EventEmitter<ResultPanelEvent> for ResultPanel {}
 
 struct VisibleSelectionCache {
     rows: Arc<Vec<usize>>,
@@ -84,6 +98,8 @@ pub struct ResultPanel {
     pub(super) exporting: bool,
     /// 当前排序列与方向：单击列头切换 None→Asc→Desc→None
     pub(super) sort_by: Option<(usize, SortDir)>,
+    /// 当前服务端结果页；None 表示本次 SQL 不具备安全分页资格。
+    pub(super) pagination: Option<ResultPagination>,
     /// 结果内容代次：状态切换或本地增删改后递增，用于派生视图缓存和异步回包校验。
     pub(super) result_revision: u64,
     /// 排序、筛选及列布局的派生缓存；选择单元格等无关重渲染可直接复用。
@@ -148,6 +164,7 @@ impl ResultPanel {
             dml_busy: false,
             exporting: false,
             sort_by: None,
+            pagination: None,
             result_revision: 0,
             display_view_cache: None,
             display_view_build_key: None,
@@ -442,6 +459,10 @@ impl ResultPanel {
     }
 
     pub fn set_state(&mut self, state: ResultState, cx: &mut Context<Self>) {
+        let has_client_warning = matches!(
+            &state,
+            ResultState::Ok(qr) if qr.warnings.iter().any(|warning| warning.level == "Client")
+        );
         match &state {
             ResultState::Ok(qr) => {
                 *self.column_completion_source.write() = qr.columns.clone();
@@ -451,6 +472,7 @@ impl ResultPanel {
             }
         }
         self.state = state;
+        self.pagination = None;
         self.mark_result_changed();
         // 数据集变更后清除选中、排序、列宽覆盖、新增草稿
         self.selected_cell = None;
@@ -458,7 +480,8 @@ impl ResultPanel {
         self.sort_by = None;
         self.col_width_overrides.clear();
         self.pending_insert = None;
-        self.warnings_expanded = false;
+        // 客户端资源警告直接展开，避免用户把已截断结果误认为完整结果。
+        self.warnings_expanded = has_client_warning;
         // 行定位键跟随结果集：新结果由 QueryTab 在查询成功后重新拉元数据注入
         self.row_identity = None;
         // 切表/重跑时双向归位：垂直回顶 + 水平回左
@@ -580,6 +603,22 @@ impl ResultPanel {
 
     pub(super) fn sort_by(&self) -> Option<(usize, SortDir)> {
         self.sort_by
+    }
+
+    pub(crate) fn pagination(&self) -> Option<ResultPagination> {
+        self.pagination
+    }
+
+    pub(crate) fn set_pagination(
+        &mut self,
+        pagination: Option<ResultPagination>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pagination == pagination {
+            return;
+        }
+        self.pagination = pagination;
+        cx.notify();
     }
 
     pub(super) fn selected_cell(&self) -> Option<(usize, usize)> {
