@@ -3,6 +3,7 @@
 mod ops;
 mod render;
 mod row;
+mod transfer_ops;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -60,6 +61,8 @@ pub struct TableTreePanel {
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     /// DDL 串行化闸门；切换连接后旧回包不能解锁新连接的操作。
     pub(super) ddl_gate: AsyncMutationGate,
+    /// 按库导出 / 导入状态（进度行 + 取消位）
+    pub(super) transfer: ramag_ui::TransferState,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -159,6 +162,7 @@ impl TableTreePanel {
             tree_rows_cache: RefCell::new(None),
             pending_notification: None,
             ddl_gate: AsyncMutationGate::default(),
+            transfer: ramag_ui::TransferState::default(),
             _subscriptions: subs,
         }
     }

@@ -491,3 +491,63 @@ async fn test_seeded_dataset_large_and_special_documents() {
     assert!(encoded.contains("$numberLong"));
     assert!(encoded.contains("$binary"));
 }
+
+#[tokio::test]
+async fn test_insert_many_skips_duplicate_ids() {
+    let Some(cfg) = build_config_from_env() else {
+        eprintln!("skip: env not set");
+        return;
+    };
+    let Some(db) = cfg.database.clone() else {
+        eprintln!("skip: db env not set");
+        return;
+    };
+    let driver = MongoDriver::new();
+    let coll = "ramag_test_insert_many";
+    let _ = driver.run_command(&cfg, &db, json!({"drop": coll})).await;
+
+    // 首次批量：全部插入
+    let docs: Vec<_> = (0..5).map(|i| json!({"_id": i, "n": i})).collect();
+    let outcome = driver
+        .insert_many(&cfg, &db, coll, docs, true)
+        .await
+        .expect("insert_many failed");
+    assert_eq!(outcome.inserted, 5);
+    assert_eq!(outcome.duplicates, 0);
+
+    // 重复导入（断点续传语义）：2 条重复计数、3 条新写入
+    let mixed: Vec<_> = (3..8).map(|i| json!({"_id": i, "n": i})).collect();
+    let outcome = driver
+        .insert_many(&cfg, &db, coll, mixed, true)
+        .await
+        .expect("insert_many mixed failed");
+    assert_eq!(outcome.inserted, 3);
+    assert_eq!(outcome.duplicates, 2);
+
+    let count = driver
+        .count(&cfg, &db, coll, &serde_json::Value::Null)
+        .await
+        .expect("count failed");
+    assert_eq!(count, 8);
+
+    // 有序模式重复 _id 直接报错
+    let dup = vec![json!({"_id": 0})];
+    assert!(
+        driver
+            .insert_many(&cfg, &db, coll, dup, false)
+            .await
+            .is_err()
+    );
+
+    // 生产（只读）模式拦截
+    let mut readonly = cfg.clone();
+    readonly.production = true;
+    assert!(
+        driver
+            .insert_many(&readonly, &db, coll, vec![json!({"_id": 99})], true)
+            .await
+            .is_err()
+    );
+
+    let _ = driver.run_command(&cfg, &db, json!({"drop": coll})).await;
+}

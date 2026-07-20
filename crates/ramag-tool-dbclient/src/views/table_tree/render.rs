@@ -274,6 +274,14 @@ impl Render for TableTreePanel {
                 header_bar
             };
 
+        // 导出 / 导入进行中：进度行 + 取消按钮
+        let transfer_row = ramag_ui::transfer_progress_row(
+            "table-transfer-cancel",
+            &self.transfer,
+            |this: &mut Self| &this.transfer,
+            cx,
+        );
+
         // uniform_list 行级虚拟化：仅渲染屏幕可见行
         let tree_rows_rc = tree_view.rows;
         let body = uniform_list(
@@ -296,6 +304,7 @@ impl Render for TableTreePanel {
             .overflow_hidden()
             .child(db_row)
             .child(header_bar)
+            .children(transfer_row)
             .child(body)
             .child(
                 div()

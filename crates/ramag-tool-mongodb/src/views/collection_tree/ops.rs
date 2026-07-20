@@ -95,12 +95,42 @@ pub(super) fn collection_context_menu(
     }))
 }
 
-/// database 行右键菜单：删除数据库
+/// database 行右键菜单：导出 / 导入 + 删除数据库
 pub(super) fn database_context_menu(
     menu: PopupMenu,
     entity: Entity<CollectionTreePanel>,
     db: String,
 ) -> PopupMenu {
+    let (d, ent) = (db.clone(), entity.clone());
+    let menu = menu.item(
+        ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
+            let (d, ent) = (d.clone(), ent.clone());
+            ent.update(app, |this, cx| this.export_database_to_file(d, cx));
+        }),
+    );
+    let (d, ent) = (db.clone(), entity.clone());
+    let menu = menu
+        .item(
+            ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+                let (d, ent) = (d.clone(), ent.clone());
+                ramag_ui::open_import_options_dialog(
+                    "导入 JSONL 文件",
+                    format!(
+                        "选择冲突策略后再选 .jsonl 文件，将导入到库 {d}。重复导入同一文件：\
+                         「跳过」按集合断点续传，「合并」按文档去重补齐，「覆盖」完全重建（幂等）。"
+                    ),
+                    true,
+                    move |policy, _, app| {
+                        ent.update(app, |this, cx| {
+                            this.import_database_from_file(d, policy, cx);
+                        });
+                    },
+                    window,
+                    app,
+                );
+            }),
+        )
+        .separator();
     menu.item(
         ramag_ui::menu_item("删除数据库").on_click(move |_, window, app| {
             let (db, ent) = (db.clone(), entity.clone());

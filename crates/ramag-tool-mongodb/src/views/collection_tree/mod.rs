@@ -2,6 +2,7 @@
 
 mod ops;
 mod row;
+mod transfer_ops;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -68,6 +69,8 @@ pub struct CollectionTreePanel {
     pending_notification: Option<gpui_component::notification::Notification>,
     /// 集合级写操作串行化闸门；连接切换会使旧任务 token 失效。
     mutation_gate: AsyncMutationGate,
+    /// 按库导出 / 导入状态（进度行 + 取消位）
+    transfer: ramag_ui::TransferState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -183,6 +186,7 @@ impl CollectionTreePanel {
             auto_expand_pending: false,
             pending_notification: None,
             mutation_gate: AsyncMutationGate::default(),
+            transfer: ramag_ui::TransferState::default(),
             _subscriptions: subs,
         }
     }
@@ -748,6 +752,7 @@ impl Render for CollectionTreePanel {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
+        let background = theme.background;
 
         let filter = self.current_filter(cx);
 
@@ -898,12 +903,20 @@ impl Render for CollectionTreePanel {
             footer_text.push_str(" · 写操作执行中…");
         }
 
+        let transfer_row = ramag_ui::transfer_progress_row(
+            "mongo-transfer-cancel",
+            &self.transfer,
+            |this: &mut Self| &this.transfer,
+            cx,
+        );
+
         v_flex()
             .size_full()
             .overflow_hidden()
-            .bg(theme.background)
+            .bg(background)
             .child(header)
             .child(search_row)
+            .children(transfer_row)
             .child(body)
             .child(
                 div()

@@ -56,6 +56,34 @@ impl RedisValueLoad {
     }
 }
 
+/// 导出用分段读取游标。与 `get_value_limited`（UI 受限预览）不同：
+/// 配合 `KvDriver::read_value_page` 从 `Start` 起逐页读完整值，不截断
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ValuePageCursor {
+    /// 首页
+    Start,
+    /// List 元素偏移 / String 字节偏移
+    Offset(u64),
+    /// Hash / Set / ZSet 的 SCAN 族游标（0 表示读完，driver 转为 next=None 不回传）
+    Scan(u64),
+    /// Stream：上一页最后一条 entry id，续读用开区间
+    AfterId(String),
+}
+
+/// 一页完整值片段
+#[derive(Debug, Clone)]
+pub struct RedisValuePage {
+    /// 与整值同构的片段：List → List 片段、Hash → Hash 片段、String → Text / Bytes 片段。
+    /// 首页未传类型时，调用方从 variant 得知 key 类型
+    pub items: RedisValue,
+    /// None = 已读完
+    pub next: Option<ValuePageCursor>,
+    /// 实体无法表达而跳过的条目数（如二进制 hash field 名）
+    pub skipped: u64,
+    /// 仅首页自动探测时返回：PTTL 毫秒（-1 永久 / -2 key 不存在）；续读页为 None
+    pub ttl_ms: Option<i64>,
+}
+
 /// Stream 单条消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamEntry {

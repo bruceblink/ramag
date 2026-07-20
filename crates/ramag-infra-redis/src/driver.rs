@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 use ramag_domain::entities::{
     ConnectionConfig, DriverKind, KeyMeta, MAX_REDIS_COLLECTION_BYTES, RedisType, RedisValue,
-    RedisValueLoad, ScanResult, validate_redis_collection_limit, validate_redis_command,
-    validate_redis_key, validate_redis_match_pattern, validate_redis_scan_count,
+    RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor, validate_redis_collection_limit,
+    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
+    validate_redis_scan_count,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
@@ -227,6 +228,49 @@ impl KvDriver for RedisDriver {
                 total,
                 byte_limited,
             })
+        })
+        .await
+    }
+
+    async fn read_value_page(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        kind: Option<RedisType>,
+        cursor: ValuePageCursor,
+        max_items: u32,
+    ) -> Result<RedisValuePage> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
+        crate::value_page::validate_page_items(max_items)?;
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let key = key.to_owned();
+        run_in_tokio(async move {
+            let mut mgr = pools.get_or_create(&config, db).await?;
+            crate::value_page::read_page(&mut mgr, &key, kind, cursor, max_items).await
+        })
+        .await
+    }
+
+    async fn write_value_items(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        items: &RedisValue,
+    ) -> Result<u64> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
+        ensure_writable(config, "IMPORT write")?;
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let key = key.to_owned();
+        let items = items.clone();
+        run_in_tokio(async move {
+            let mut mgr = pools.get_or_create(&config, db).await?;
+            crate::value_page::write_items(&mut mgr, &key, &items).await
         })
         .await
     }
@@ -659,7 +703,7 @@ fn redis_value_retained_bytes(value: &RedisValue) -> usize {
 }
 
 /// SCAN 系列（HSCAN/SSCAN）应答 `Array([cursor, Array([...])])`，取出成员数组部分
-fn scan_parts(v: RV, cmd: &str) -> Result<(u64, RV)> {
+pub(crate) fn scan_parts(v: RV, cmd: &str) -> Result<(u64, RV)> {
     match v {
         RV::Array(mut a) if a.len() == 2 => {
             let payload = a.pop().unwrap_or(RV::Nil);
@@ -784,7 +828,7 @@ impl ResponseBudget {
     }
 }
 
-fn ensure_response_budget(value: &RV, label: &str) -> Result<()> {
+pub(crate) fn ensure_response_budget(value: &RV, label: &str) -> Result<()> {
     ensure_response_with_limits(
         value,
         label,

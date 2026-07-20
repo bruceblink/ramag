@@ -122,13 +122,42 @@ pub(super) fn table_context_menu(
     }))
 }
 
-/// schema 行右键菜单：删除库（MySQL：DROP DATABASE；PG：DROP SCHEMA … CASCADE）
+/// schema 行右键菜单：导出 / 导入 + 删除库（MySQL：DROP DATABASE；PG：DROP SCHEMA … CASCADE）
 pub(super) fn schema_context_menu(
     menu: PopupMenu,
     entity: Entity<TableTreePanel>,
     schema: String,
     driver: DriverKind,
 ) -> PopupMenu {
+    let (s, ent) = (schema.clone(), entity.clone());
+    let menu = menu.item(
+        ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
+            let (s, ent) = (s.clone(), ent.clone());
+            ent.update(app, |this, cx| this.export_schema_to_file(s, cx));
+        }),
+    );
+    let (s, ent) = (schema.clone(), entity.clone());
+    let menu = menu
+        .item(
+            ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+                let (s, ent) = (s.clone(), ent.clone());
+                ramag_ui::open_import_options_dialog(
+                    "导入 SQL 文件",
+                    format!(
+                        "选择冲突策略后再选 .sql 文件。ramag 导出的文件将导入到文件内记录的库；\
+                         普通 .sql 以当前库 {s} 为默认目标。重复导入同一文件：\
+                         「跳过」按对象断点续传，「合并」按行去重补齐，「覆盖」完全重建（幂等）。"
+                    ),
+                    true,
+                    move |policy, _, app| {
+                        ent.update(app, |this, cx| this.import_schema_from_file(s, policy, cx));
+                    },
+                    window,
+                    app,
+                );
+            }),
+        )
+        .separator();
     // schema 重命名仅 PG 支持（ALTER SCHEMA … RENAME TO）；MySQL 官方已移除 RENAME DATABASE
     let menu = if matches!(driver, DriverKind::Postgres) {
         let (s, ent) = (schema.clone(), entity.clone());

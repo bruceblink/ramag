@@ -185,6 +185,11 @@ impl ConnectionService {
         result
     }
 
+    /// 无历史记录执行（导库等批量场景专用，避免成千上万条语句刷爆查询历史）
+    pub async fn execute(&self, config: &ConnectionConfig, query: &Query) -> Result<QueryResult> {
+        self.driver_for(config)?.execute(config, query).await
+    }
+
     pub async fn execute_with_history(
         &self,
         config: &ConnectionConfig,

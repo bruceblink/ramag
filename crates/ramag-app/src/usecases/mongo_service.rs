@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, MongoCollection, MongoDatabase, MongoDocument,
-    MongoQueryResult, QueryHistoryPage, QueryRecord,
+    ConnectionConfig, ConnectionId, InsertManyOutcome, MongoCollection, MongoDatabase,
+    MongoDocument, MongoQueryResult, MongoQuerySpec, QueryHistoryPage, QueryRecord,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{DocDriver, Storage};
@@ -59,7 +59,50 @@ impl MongoService {
         )
     }
 
+    // 查询
+
+    pub async fn find(
+        &self,
+        config: &ConnectionConfig,
+        db: &str,
+        coll: &str,
+        spec: &MongoQuerySpec,
+    ) -> Result<MongoQueryResult> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.find(config, db, coll, spec).await
+        )
+    }
+
+    pub async fn count(
+        &self,
+        config: &ConnectionConfig,
+        db: &str,
+        coll: &str,
+        filter: &MongoDocument,
+    ) -> Result<u64> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.count(config, db, coll, filter).await
+        )
+    }
+
     // 写
+
+    pub async fn insert_many(
+        &self,
+        config: &ConnectionConfig,
+        db: &str,
+        coll: &str,
+        documents: Vec<MongoDocument>,
+        skip_duplicates: bool,
+    ) -> Result<InsertManyOutcome> {
+        self.driver
+            .insert_many(config, db, coll, documents, skip_duplicates)
+            .await
+    }
 
     pub async fn insert_one(
         &self,

@@ -104,11 +104,38 @@ pub(super) fn toolbar_more_menu(
     db: u8,
 ) -> PopupMenu {
     let entity_for_create = entity.clone();
+    let entity_for_export = entity.clone();
+    let entity_for_import = entity.clone();
     menu.item(
         ramag_ui::menu_item("新建 Key").on_click(move |_, _window, app| {
             entity_for_create.update(app, |_this, cx| cx.emit(KeyTreeEvent::RequestCreate));
         }),
     )
+    .item(
+        ramag_ui::menu_item(format!("导出 DB {db}")).on_click(move |_, _window, app| {
+            entity_for_export.update(app, |this, cx| this.export_db_to_file(cx));
+        }),
+    )
+    .item(
+        ramag_ui::menu_item(format!("导入到 DB {db}")).on_click(move |_, window, app| {
+            let ent = entity_for_import.clone();
+            ramag_ui::open_import_options_dialog(
+                "导入 JSONL 文件",
+                format!(
+                    "选择冲突策略后再选 .jsonl 文件，将导入到 DB {db}。重复导入同一文件：\
+                     「跳过」按 key 断点续传，「覆盖」完全重建（幂等）。\
+                     （list / string 无法条目级去重，Redis 不提供合并）"
+                ),
+                false,
+                move |policy, _, app| {
+                    ent.update(app, |this, cx| this.import_db_from_file(policy, cx));
+                },
+                window,
+                app,
+            );
+        }),
+    )
+    .separator()
     .item(
         ramag_ui::menu_item(format!("清空当前 DB {db}")).on_click(move |_, window, app| {
             let ent = entity.clone();

@@ -1,6 +1,6 @@
 //! 按方言拼 DDL 查询。MySQL `SHOW CREATE TABLE/VIEW`；PG 视图走 `pg_get_viewdef`，表手拼列+约束+索引+注释
 
-use ramag_domain::entities::DriverKind;
+use super::connection::DriverKind;
 
 /// 按 driver 拼"展示表 / 视图 DDL"的 SQL
 pub fn build_ddl_query(driver: DriverKind, schema: &str, table: &str, is_view: bool) -> String {

@@ -7,7 +7,7 @@ use bson::{Bson, Document, doc};
 use futures::TryStreamExt;
 use mongodb::Client;
 use ramag_domain::entities::{
-    MAX_MONGO_DOCUMENT_BYTES, MongoDocument, MongoQueryResult, MongoQuerySpec,
+    InsertManyOutcome, MAX_MONGO_DOCUMENT_BYTES, MongoDocument, MongoQueryResult, MongoQuerySpec,
 };
 use ramag_domain::error::{DomainError, Result};
 use serde_json::Value;
@@ -167,6 +167,63 @@ pub async fn insert_one(
     let collection = client.database(db).collection::<Document>(coll);
     let r = collection.insert_one(doc).await.map_err(map_mongo_error)?;
     Ok(format_bson_id(&r.inserted_id))
+}
+
+/// MongoDB duplicate key 错误码（E11000）
+const DUPLICATE_KEY_CODE: i32 = 11000;
+
+/// 批量插入。`skip_duplicates=true` 走无序批量：重复 `_id`（E11000）不算错误只计数；
+/// 其余 write error / write concern error 照常报错。false 走有序批量，任何错误即失败
+pub async fn insert_many(
+    client: &Client,
+    db: &str,
+    coll: &str,
+    documents: Vec<MongoDocument>,
+    skip_duplicates: bool,
+) -> Result<InsertManyOutcome> {
+    let mut docs: Vec<Document> = Vec::with_capacity(documents.len());
+    for document in documents {
+        docs.push(json_to_document(document)?);
+    }
+    ensure_command_document_budget(docs.iter(), "MongoDB insertMany")?;
+    let attempted = docs.len() as u64;
+    if attempted == 0 {
+        return Ok(InsertManyOutcome::default());
+    }
+    let collection = client.database(db).collection::<Document>(coll);
+    match collection.insert_many(docs).ordered(!skip_duplicates).await {
+        Ok(result) => Ok(InsertManyOutcome {
+            inserted: result.inserted_ids.len() as u64,
+            duplicates: 0,
+        }),
+        Err(error) if skip_duplicates => match duplicates_only(&error) {
+            Some(duplicates) => Ok(InsertManyOutcome {
+                inserted: attempted.saturating_sub(duplicates),
+                duplicates,
+            }),
+            None => Err(map_mongo_error(error)),
+        },
+        Err(error) => Err(map_mongo_error(error)),
+    }
+}
+
+/// 错误若纯由重复 `_id` 组成则返回重复条数，否则 None（按真错误上抛）
+fn duplicates_only(error: &mongodb::error::Error) -> Option<u64> {
+    let mongodb::error::ErrorKind::InsertMany(bulk) = error.kind.as_ref() else {
+        return None;
+    };
+    if bulk.write_concern_error.is_some() {
+        return None;
+    }
+    let write_errors = bulk.write_errors.as_ref()?;
+    if write_errors.is_empty()
+        || write_errors
+            .iter()
+            .any(|error| error.code != DUPLICATE_KEY_CODE)
+    {
+        return None;
+    }
+    Some(write_errors.len() as u64)
 }
 
 pub async fn update_one(

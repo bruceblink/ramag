@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, DriverKind, KeyMeta, MAX_REDIS_SCAN_ALL_KEYS, RedisType,
-    RedisValue, RedisValueLoad, ScanResult,
+    RedisValue, RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{KvDriver, Storage};
@@ -163,6 +163,44 @@ impl RedisService {
             self.driver.evict_pool(&config.id),
             self.driver.get_value_limited(config, db, key, limit).await
         )
+    }
+
+    pub async fn db_size(&self, config: &ConnectionConfig, db: u8) -> Result<u64> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.db_size(config, db).await
+        )
+    }
+
+    /// 导出用全量分段读（详见 KvDriver::read_value_page）
+    pub async fn read_value_page(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        kind: Option<RedisType>,
+        cursor: ValuePageCursor,
+        max_items: u32,
+    ) -> Result<RedisValuePage> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver
+                .read_value_page(config, db, key, kind, cursor.clone(), max_items)
+                .await
+        )
+    }
+
+    /// 导入用分段写（写操作不做断连重试）
+    pub async fn write_value_items(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        items: &RedisValue,
+    ) -> Result<u64> {
+        self.driver.write_value_items(config, db, key, items).await
     }
 
     pub fn is_write_command(&self, command: &str) -> bool {

@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, DriverKind, MongoCollection, MongoCollectionStats,
-    MongoDatabase, MongoDocument, MongoIndex, MongoQueryResult, MongoQuerySpec,
-    validate_mongo_collection_name, validate_mongo_database_name, validate_mongo_document,
-    validate_mongo_pipeline,
+    ConnectionConfig, ConnectionId, DriverKind, InsertManyOutcome, MongoCollection,
+    MongoCollectionStats, MongoDatabase, MongoDocument, MongoIndex, MongoQueryResult,
+    MongoQuerySpec, validate_mongo_collection_name, validate_mongo_database_name,
+    validate_mongo_document, validate_mongo_pipeline,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::DocDriver;
@@ -250,6 +250,34 @@ impl DocDriver for MongoDriver {
         run_in_tokio(async move {
             let client = pools.get_or_create(&config).await?;
             query::insert_one(&client, &db, &coll, document).await
+        })
+        .await
+    }
+
+    async fn insert_many(
+        &self,
+        config: &ConnectionConfig,
+        db: &str,
+        coll: &str,
+        documents: Vec<MongoDocument>,
+        skip_duplicates: bool,
+    ) -> Result<InsertManyOutcome> {
+        ensure_mongo_config(config)?;
+        validate_namespace(db, Some(coll))?;
+        for document in &documents {
+            validate_mongo_document(document, "MongoDB insert document")?;
+        }
+        if config.production {
+            warn!(conn = %config.name, %db, %coll, "read-only mode: blocked insert_many");
+            return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
+        }
+        let config = config.clone();
+        let db = db.to_string();
+        let coll = coll.to_string();
+        let pools = self.pools.clone_handle();
+        run_in_tokio(async move {
+            let client = pools.get_or_create(&config).await?;
+            query::insert_many(&client, &db, &coll, documents, skip_duplicates).await
         })
         .await
     }

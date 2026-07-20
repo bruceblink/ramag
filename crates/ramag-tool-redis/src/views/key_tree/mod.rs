@@ -5,6 +5,7 @@
 mod ops;
 mod render;
 mod scan;
+mod transfer_ops;
 mod tree;
 
 use std::cell::RefCell;
@@ -139,6 +140,8 @@ pub struct KeyTreePanel {
     pending_notification: Option<gpui_component::notification::Notification>,
     /// 树级写操作串行化闸门；切换连接或 DB 后旧任务 token 失效。
     mutation_gate: AsyncMutationGate,
+    /// 按 DB 导出 / 导入状态（进度行 + 取消位）
+    transfer: ramag_ui::TransferState,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -198,6 +201,7 @@ impl KeyTreePanel {
             uniform_scroll: UniformListScrollHandle::new(),
             pending_notification: None,
             mutation_gate: AsyncMutationGate::default(),
+            transfer: ramag_ui::TransferState::default(),
             _subscriptions: subs,
         }
     }
@@ -542,12 +546,9 @@ impl Render for KeyTreePanel {
                     .disabled(read_only || mutating)
                     .when_some(more_tip, |b, tip| b.tooltip(tip))
                     // 菜单顶部左角锚在按钮上，向右下方展开（不往上弹遮挡工具栏）
-                    .pointer_dropdown_menu_with_anchor(
-                        gpui::Anchor::TopLeft,
-                        move |menu, _, _| {
-                            ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
-                        },
-                    )
+                    .pointer_dropdown_menu_with_anchor(gpui::Anchor::TopLeft, move |menu, _, _| {
+                        ops::toolbar_more_menu(menu, entity_for_menu.clone(), current_db)
+                    })
             });
 
         let theme_bg = theme.background;
@@ -658,11 +659,19 @@ impl Render for KeyTreePanel {
                 )
             });
 
+        let transfer_row = ramag_ui::transfer_progress_row(
+            "redis-transfer-cancel",
+            &self.transfer,
+            |this: &mut Self| &this.transfer,
+            cx,
+        );
+
         v_flex()
             .size_full()
             .bg(bg)
             .child(db_row)
             .child(header)
+            .children(transfer_row)
             .child(body)
             .child(status_bar)
     }

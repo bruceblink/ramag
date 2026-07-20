@@ -5,7 +5,6 @@ pub mod connection_form;
 pub mod connection_list;
 pub mod connection_session;
 pub mod dbclient_view;
-pub mod ddl;
 pub mod history_dialog;
 pub mod query_panel;
 pub mod query_tab;

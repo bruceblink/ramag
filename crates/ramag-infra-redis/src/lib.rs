@@ -9,5 +9,6 @@ pub mod errors;
 pub mod pool;
 pub mod runtime;
 pub mod value;
+pub mod value_page;
 
 pub use driver::RedisDriver;

@@ -110,7 +110,12 @@ impl ConnectionSession {
                 } => {
                     info!(schema = %schema, table = %table, is_view, "show create");
                     // 按 driver 选 DDL 查询语句（mysql SHOW CREATE / pg 拼装版）
-                    let sql = super::ddl::build_ddl_query(driver_kind, schema, table, *is_view);
+                    let sql = ramag_domain::entities::build_ddl_query(
+                        driver_kind,
+                        schema,
+                        table,
+                        *is_view,
+                    );
                     queries_clone.update(cx, |q, cx| {
                         q.open_in_new_tab_and_run(sql, window, cx);
                     });

@@ -253,6 +253,14 @@ pub struct MongoQueryResult {
     pub truncated: bool,
 }
 
+/// `insert_many` 结果：插入数与重复 `_id` 跳过数
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct InsertManyOutcome {
+    pub inserted: u64,
+    /// 重复 `_id`（E11000）跳过数，仅 skip_duplicates=true 时可能非 0
+    pub duplicates: u64,
+}
+
 /// 集合统计
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MongoCollectionStats {

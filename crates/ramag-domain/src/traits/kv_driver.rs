@@ -4,7 +4,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    ConnectionConfig, ConnectionId, RedisType, RedisValue, RedisValueLoad, ScanResult,
+    ConnectionConfig, ConnectionId, RedisType, RedisValue, RedisValueLoad, RedisValuePage,
+    ScanResult, ValuePageCursor,
 };
 use crate::error::Result;
 
@@ -50,6 +51,40 @@ pub trait KvDriver: Send + Sync {
         key: &str,
         limit: usize,
     ) -> Result<RedisValueLoad>;
+
+    /// 导出用全量分段读：`cursor` 从 [`ValuePageCursor::Start`] 起，按返回的 `next`
+    /// 续读到 None。`max_items` 为单页条目上限（String 类型按字节）。
+    /// `kind=None` 仅限首页：driver 单次往返内探测 TYPE+PTTL（页里带回 `ttl_ms`，
+    /// 类型从 `items` variant 得知）；续读页必须携带类型。
+    /// 与 `get_value_limited`（截断预览）不同：逐页覆盖完整内容
+    async fn read_value_page(
+        &self,
+        _config: &ConnectionConfig,
+        _db: u8,
+        _key: &str,
+        _kind: Option<RedisType>,
+        _cursor: ValuePageCursor,
+        _max_items: u32,
+    ) -> Result<RedisValuePage> {
+        Err(crate::error::DomainError::NotImplemented(
+            "read_value_page".into(),
+        ))
+    }
+
+    /// 导入用分段写：把片段合并进 key（List→RPUSH / Hash→HSET / Set→SADD /
+    /// ZSet→ZADD / Text·Bytes→APPEND / Stream→XADD 原 id）。二进制安全；
+    /// 生产模式由实现拦截。返回写入条目数
+    async fn write_value_items(
+        &self,
+        _config: &ConnectionConfig,
+        _db: u8,
+        _key: &str,
+        _items: &RedisValue,
+    ) -> Result<u64> {
+        Err(crate::error::DomainError::NotImplemented(
+            "write_value_items".into(),
+        ))
+    }
 
     /// 与后端只读保护使用同一分类器，供界面在发请求前禁用 / 拦截写命令。
     fn is_write_command(&self, command: &str) -> bool;

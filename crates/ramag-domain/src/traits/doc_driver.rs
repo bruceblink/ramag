@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    ConnectionConfig, ConnectionId, MongoCollection, MongoCollectionStats, MongoDatabase,
-    MongoDocument, MongoIndex, MongoQueryResult, MongoQuerySpec,
+    ConnectionConfig, ConnectionId, InsertManyOutcome, MongoCollection, MongoCollectionStats,
+    MongoDatabase, MongoDocument, MongoIndex, MongoQueryResult, MongoQuerySpec,
 };
 use crate::error::Result;
 
@@ -79,6 +79,21 @@ pub trait DocDriver: Send + Sync {
         coll: &str,
         document: MongoDocument,
     ) -> Result<String>;
+
+    /// 批量插入（导入用）。`skip_duplicates=true` 走无序批量，重复 `_id`（E11000）
+    /// 不算错误只计数；false 走有序批量，任何错误即失败
+    async fn insert_many(
+        &self,
+        _config: &ConnectionConfig,
+        _db: &str,
+        _coll: &str,
+        _documents: Vec<MongoDocument>,
+        _skip_duplicates: bool,
+    ) -> Result<InsertManyOutcome> {
+        Err(crate::error::DomainError::NotImplemented(
+            "insert_many".into(),
+        ))
+    }
 
     async fn update_one(
         &self,

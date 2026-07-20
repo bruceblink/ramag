@@ -1,0 +1,253 @@
+//! 按库导出 / 导入编排：SQL(.sql) / MongoDB(.jsonl) / Redis(.jsonl)。
+//!
+//! 导出：async 生产者分批读库 → 有界通道 → 阻塞池 `write_atomic_with` 落盘；
+//! 只有生产者显式 `finish()` 才提交文件，取消或出错都不会留下半截文件。
+//! 导入：流式读文件、分批写库。进度按批次回调，`AtomicBool` 随时取消；
+//! 取消不是错误——返回 `cancelled=true` 的汇总（导入已写入的部分保留）
+
+pub mod mongo;
+pub mod redis;
+mod sql_catalog;
+pub mod sql_export;
+pub mod sql_import;
+
+pub use mongo::{export_mongo_database, import_mongo_database};
+pub use redis::{export_redis_db, import_redis_db};
+pub use sql_export::export_sql_database;
+pub use sql_import::import_sql_database;
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::SyncSender;
+use std::time::Instant;
+
+use ramag_domain::entities::{ProgressFn, TransferProgress, TransferSummary};
+use ramag_domain::error::{DomainError, Result};
+
+/// 导出块攒到该字节数再投递写线程，减少通道往返
+const SINK_FLUSH_BYTES: usize = 256 * 1024;
+const SINK_QUEUE_BLOCKS: usize = 64;
+/// 写线程通道断开（生产端取消 / 出错提前 drop）时的内部哨兵，转成「放弃临时文件」
+const SINK_ABORT_MESSAGE: &str = "__ramag_transfer_abort__";
+const SINK_CLOSED_MESSAGE: &str = "导出写文件线程已退出";
+
+enum SinkMsg {
+    Chunk(Vec<u8>),
+    Finish,
+}
+
+/// 导出文件写入端：带本地缓冲的通道封装，统计已投递字节
+pub(crate) struct ExportSink {
+    sender: SyncSender<SinkMsg>,
+    buffer: Vec<u8>,
+    bytes: u64,
+}
+
+impl ExportSink {
+    pub(crate) fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.buffer.extend_from_slice(bytes);
+        self.bytes += bytes.len() as u64;
+        if self.buffer.len() >= SINK_FLUSH_BYTES {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_str(&mut self, text: &str) -> Result<()> {
+        self.write(text.as_bytes())
+    }
+
+    pub(crate) fn bytes_written(&self) -> u64 {
+        self.bytes
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let chunk = std::mem::take(&mut self.buffer);
+        self.buffer.reserve(SINK_FLUSH_BYTES);
+        self.sender
+            .send(SinkMsg::Chunk(chunk))
+            .map_err(|_| DomainError::Storage(SINK_CLOSED_MESSAGE.into()))
+    }
+
+    /// 提交文件。不调用（直接 drop）= 放弃：临时文件被清理，原文件不动
+    pub(crate) fn finish(mut self) -> Result<()> {
+        self.flush()?;
+        self.sender
+            .send(SinkMsg::Finish)
+            .map_err(|_| DomainError::Storage(SINK_CLOSED_MESSAGE.into()))
+    }
+}
+
+enum WriteOutcome {
+    Committed,
+    Aborted,
+}
+
+/// 组装「阻塞池写线程 + async 生产者」管道。生产者拿到 [`ExportSink`]，
+/// 成功路径必须 `finish()`；返回 Ok 但未 finish（取消场景）不算错——文件不落地
+pub(crate) async fn with_export_sink<T, F, Fut>(path: &Path, produce: F) -> Result<T>
+where
+    F: FnOnce(ExportSink) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<SinkMsg>(SINK_QUEUE_BLOCKS);
+    let target = path.to_path_buf();
+    let writer = crate::run_blocking(move || {
+        let write_result = super::export::write_atomic_with(&target, |writer| {
+            loop {
+                match receiver.recv() {
+                    Ok(SinkMsg::Chunk(chunk)) => writer.write_all(&chunk).map_err(|error| {
+                        DomainError::Storage(format!("写入导出文件失败：{error}"))
+                    })?,
+                    Ok(SinkMsg::Finish) => return Ok(()),
+                    Err(_) => return Err(DomainError::Storage(SINK_ABORT_MESSAGE.into())),
+                }
+            }
+        });
+        match write_result {
+            Ok(()) => Ok(WriteOutcome::Committed),
+            Err(error) if error.message() == SINK_ABORT_MESSAGE => Ok(WriteOutcome::Aborted),
+            Err(error) => Err(error),
+        }
+    });
+    let sink = ExportSink {
+        sender,
+        buffer: Vec::with_capacity(SINK_FLUSH_BYTES),
+        bytes: 0,
+    };
+    let (write_result, produce_result) = futures::join!(writer, produce(sink));
+    match (write_result, produce_result) {
+        (Ok(_), Ok(value)) => Ok(value),
+        // 写盘失败会让生产端 send 报「线程已退出」；此时写盘错误才是根因
+        (Err(write_error), Err(produce_error)) => {
+            if produce_error.message() == SINK_CLOSED_MESSAGE {
+                Err(write_error)
+            } else {
+                Err(produce_error)
+            }
+        }
+        (Err(write_error), Ok(_)) => Err(write_error),
+        (Ok(_), Err(produce_error)) => Err(produce_error),
+    }
+}
+
+pub(crate) fn is_cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
+}
+
+/// JSONL 一行：序列化进复用 buffer 再整体投递，避免逐行分配
+pub(crate) fn write_json_line(
+    sink: &mut ExportSink,
+    buffer: &mut Vec<u8>,
+    value: &serde_json::Value,
+) -> Result<()> {
+    buffer.clear();
+    serde_json::to_writer(&mut *buffer, value)
+        .map_err(|error| DomainError::Storage(format!("序列化导出记录失败：{error}")))?;
+    buffer.push(b'\n');
+    sink.write(buffer)
+}
+
+/// 进度上报器：持有快照，按批次边界 emit；`emit_every` 供逐 key 等高频场景节流
+pub(crate) struct Reporter<'a> {
+    emit: ProgressFn<'a>,
+    pub snapshot: TransferProgress,
+    ticks: u32,
+}
+
+impl<'a> Reporter<'a> {
+    pub(crate) fn new(emit: ProgressFn<'a>) -> Self {
+        Self {
+            emit,
+            snapshot: TransferProgress::default(),
+            ticks: 0,
+        }
+    }
+
+    pub(crate) fn stage(&mut self, stage: impl Into<String>, object: impl Into<String>) {
+        self.snapshot.stage = stage.into();
+        self.snapshot.object = object.into();
+        self.emit();
+    }
+
+    pub(crate) fn emit(&self) {
+        (self.emit)(self.snapshot.clone());
+    }
+
+    /// 每 `every` 次调用真正 emit 一次
+    pub(crate) fn emit_every(&mut self, every: u32) {
+        self.ticks = self.ticks.wrapping_add(1);
+        if self.ticks.is_multiple_of(every.max(1)) {
+            self.emit();
+        }
+    }
+}
+
+/// 统一收口：填 elapsed 后返回
+pub(crate) fn finish_summary(mut summary: TransferSummary, start: Instant) -> TransferSummary {
+    summary.elapsed_ms = start.elapsed().as_millis() as u64;
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noop_progress() -> impl Fn(TransferProgress) + Send + Sync {
+        |_| {}
+    }
+
+    #[test]
+    fn sink_commits_only_after_finish() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("ramag-transfer-sink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| DomainError::Storage(e.to_string()))?;
+        let committed = dir.join("committed.txt");
+        let aborted = dir.join("aborted.txt");
+
+        futures::executor::block_on(async {
+            let value = with_export_sink(&committed, |mut sink| async move {
+                sink.write_str("hello ")?;
+                sink.write_str("world")?;
+                assert_eq!(sink.bytes_written(), 11);
+                sink.finish()?;
+                Ok(42)
+            })
+            .await?;
+            assert_eq!(value, 42);
+
+            // 不 finish（模拟取消）：返回 Ok 但文件不落地
+            let cancelled = with_export_sink(&aborted, |mut sink| async move {
+                sink.write_str("partial")?;
+                Ok(7)
+            })
+            .await?;
+            assert_eq!(cancelled, 7);
+            Ok::<(), DomainError>(())
+        })?;
+
+        assert_eq!(
+            std::fs::read_to_string(&committed).map_err(|e| DomainError::Storage(e.to_string()))?,
+            "hello world"
+        );
+        assert!(!aborted.exists());
+        std::fs::remove_dir_all(&dir).map_err(|e| DomainError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn reporter_throttles_high_frequency_emits() {
+        let count = std::sync::atomic::AtomicU32::new(0);
+        let emit = |_p: TransferProgress| {
+            count.fetch_add(1, Ordering::Relaxed);
+        };
+        let mut reporter = Reporter::new(&emit);
+        for _ in 0..64 {
+            reporter.emit_every(16);
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 4);
+        let _ = noop_progress();
+    }
+}
