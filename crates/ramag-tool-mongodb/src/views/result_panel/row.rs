@@ -22,6 +22,8 @@ pub(super) fn render_row(
     columns: &[Column],
     fg: Hsla,
     muted: Hsla,
+    // 嵌套对象/数组摘要单元格的字色（蓝色，提示可点击下钻）
+    nested_fg: Hsla,
     border: Hsla,
     muted_bg: Hsla,
     mono_font: SharedString,
@@ -207,14 +209,20 @@ pub(super) fn render_row(
                         .when(is_right, |this| this.justify_end())
                         .text_xs()
                         .font_family(mf)
-                        .text_color(if is_null { muted } else { fg })
+                        // 嵌套摘要用蓝色（可点击下钻）；空值 muted；其余正常前景色
+                        .text_color(if is_null {
+                            muted
+                        } else if is_nested {
+                            nested_fg
+                        } else {
+                            fg
+                        })
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()
+                        // 嵌套摘要不再加 › 箭头，改由蓝色字体表达可下钻
                         .child(SharedString::from(if is_null {
                             "NULL".to_string()
-                        } else if is_nested {
-                            format!("{preview} ›")
                         } else {
                             preview
                         })),

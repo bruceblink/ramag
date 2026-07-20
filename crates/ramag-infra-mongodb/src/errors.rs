@@ -3,6 +3,16 @@
 use mongodb::error::{Error as MongoError, ErrorKind};
 use ramag_domain::error::DomainError;
 
+/// Command 错误的可读文案：受限账号常见的 code 13（Unauthorized）给出清晰权限提示，
+/// 其余用服务端 errmsg。独立函数便于测试（CommandError 含私有字段，无法在测试中直接构造）。
+fn command_error_detail(code: i32, message: &str) -> String {
+    if code == 13 {
+        "无权访问该集合，请检查账号权限".to_string()
+    } else {
+        message.to_string()
+    }
+}
+
 pub fn map_mongo_error(err: MongoError) -> DomainError {
     let raw = err.to_string();
 
@@ -21,9 +31,13 @@ pub fn map_mongo_error(err: MongoError) -> DomainError {
         ErrorKind::DnsResolve { .. } => {
             DomainError::ConnectionFailed(format!("DNS 解析失败：{raw}"))
         }
+        // 只保留可读字段（code / code_name / errmsg），避免 err.to_string() 里
+        // RawDocumentBuf 的 hex dump 噪音；受限账号常见的 code 13 给出清晰提示
         ErrorKind::Command(cmd) => DomainError::QueryFailed(format!(
-            "命令错误（code={}, name={}）：{raw}",
-            cmd.code, cmd.code_name
+            "命令错误（code={}, name={}）：{}",
+            cmd.code,
+            cmd.code_name,
+            command_error_detail(cmd.code, &cmd.message)
         )),
         ErrorKind::Write(_) => DomainError::QueryFailed(format!("写入错误：{raw}")),
         ErrorKind::BulkWrite(_) => DomainError::QueryFailed(format!("批量写入错误：{raw}")),
@@ -49,5 +63,16 @@ mod tests {
         let mapped = map_mongo_error(err);
         let msg = format!("{mapped}");
         assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn command_detail_is_clean_and_hints_unauthorized() {
+        // code 13 → 清晰权限提示，不含 RawDocumentBuf hex dump
+        assert_eq!(
+            command_error_detail(13, "not authorized on ramag_demo to execute command find"),
+            "无权访问该集合，请检查账号权限"
+        );
+        // 其它 code → 用服务端 errmsg 原文
+        assert_eq!(command_error_detail(26, "ns not found"), "ns not found");
     }
 }

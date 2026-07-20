@@ -43,6 +43,11 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
     let mut cursor = database.list_collections().await.map_err(map_mongo_error)?;
     let mut out = Vec::new();
     while let Some(spec) = cursor.try_next().await.map_err(map_mongo_error)? {
+        // 跳过 MongoDB 系统集合（system.views / system.buckets.* / system.profile / system.js 等）：
+        // 受限账号无权访问，点开会报 code=13；数据库客户端惯例不展示
+        if is_system_collection(&spec.name) {
+            continue;
+        }
         ensure_metadata_item_limit(out.len().saturating_add(1), "集合")?;
         let is_view = matches!(spec.collection_type, mongodb::results::CollectionType::View);
         validate_mongo_collection_name(&spec.name).map_err(|error| {
@@ -60,6 +65,11 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
     // listCollections 返回服务端顺序，按集合名字典序排，左侧列表稳定有序（与 SQL 的 ORDER BY 一致）
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// MongoDB 系统集合判定：名字以 `system.` 开头（system.views / system.buckets.* / system.profile / system.js 等）
+fn is_system_collection(name: &str) -> bool {
+    name.starts_with("system.")
 }
 
 fn ensure_metadata_item_limit(item_count: usize, label: &str) -> Result<()> {
@@ -206,5 +216,15 @@ mod tests {
     fn metadata_limit_allows_boundary_and_rejects_overflow() {
         assert!(ensure_metadata_item_limit(MAX_METADATA_ITEMS, "集合").is_ok());
         assert!(ensure_metadata_item_limit(MAX_METADATA_ITEMS + 1, "集合").is_err());
+    }
+
+    #[test]
+    fn system_collections_are_detected_by_prefix() {
+        assert!(is_system_collection("system.views"));
+        assert!(is_system_collection("system.buckets.metrics"));
+        assert!(is_system_collection("system.profile"));
+        assert!(!is_system_collection("users"));
+        // 仅前缀匹配：名字里含 system 但不以 system. 开头的用户集合不受影响
+        assert!(!is_system_collection("mysystem"));
     }
 }

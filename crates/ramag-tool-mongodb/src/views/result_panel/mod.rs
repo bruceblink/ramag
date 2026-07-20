@@ -466,7 +466,8 @@ impl ResultPanel {
                             } else {
                                 cell.kind
                             };
-                            (flatten::Column { path: label, kind }, cell)
+                            let path = drill::ancestor_id_column_name(&label);
+                            (flatten::Column { path, kind }, cell)
                         })
                         .collect();
                     if !ft.prepend_constant_lead_cancellable(lead, &worker_cancelled) {

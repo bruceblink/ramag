@@ -344,6 +344,16 @@ impl ResultPanel {
     }
 }
 
+/// 祖先前导列名：`对象名._id`，让用户一眼看出这列是"上层对象的 id"（值优先取 _id，无则取 id）。
+/// 对象名为空时退化为 `_id`。
+pub(super) fn ancestor_id_column_name(object_name: &str) -> String {
+    if object_name.is_empty() {
+        "_id".to_string()
+    } else {
+        format!("{object_name}._id")
+    }
+}
+
 /// 取对象的标识 id 作 cell：优先 `_id`，否则 `id`；都无则空 cell
 fn id_cell_of(m: &serde_json::Map<String, Value>) -> Cell {
     if let Some(v) = m.get("_id").or_else(|| m.get("id")) {
@@ -389,7 +399,10 @@ fn prepend_ancestor_columns(ft: &mut FlatTable, anc_rows: &[Vec<(String, Cell)>]
             .find(|(_, c)| c.kind != "null")
             .map(|(_, c)| c.kind)
             .unwrap_or("text");
-        lead_cols.push(Column { path: label, kind });
+        lead_cols.push(Column {
+            path: ancestor_id_column_name(&label),
+            kind,
+        });
         keep.push(layer);
     }
     if lead_cols.is_empty() {
@@ -511,10 +524,17 @@ mod tests {
             ],
         ];
         prepend_ancestor_columns(&mut ft, &anc_rows);
-        // 列名即对象名（不是 ‹父N›）；空层 "mid" 被丢弃
-        assert_eq!(ft.columns[0].path, "root");
-        assert!(!ft.columns.iter().any(|c| c.path == "mid"));
+        // 列名为「对象名._id」（让用户认出这是上层 id）；空层 "mid" 被丢弃
+        assert_eq!(ft.columns[0].path, "root._id");
+        assert!(!ft.columns.iter().any(|c| c.path.starts_with("mid")));
         assert_eq!(ft.rows[0][0].text, "t1");
         assert_eq!(ft.rows[1][0].text, "t2");
+    }
+
+    #[test]
+    fn ancestor_id_column_name_appends_id_suffix() {
+        assert_eq!(ancestor_id_column_name("metrics"), "metrics._id");
+        // 对象名为空 → 退化为 _id
+        assert_eq!(ancestor_id_column_name(""), "_id");
     }
 }

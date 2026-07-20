@@ -177,6 +177,38 @@ fn path_prefix_segments(name: &str, count: usize) -> String {
     name.split('.').take(count).collect::<Vec<_>>().join(".")
 }
 
+/// 点号深入补全：收集 parent 路径下的全部子字段（含标量叶子），按发现序去重、聚合可下钻性。
+/// 返回 (完整点路径, 是否可继续下钻)；seg_prefix_lower 非空时按子串过滤子字段名。
+fn dotted_child_candidates(
+    cols: &[String],
+    parent_lower: &[String],
+    seg_prefix_lower: &str,
+    limit: usize,
+) -> Vec<(String, bool)> {
+    let mut children: Vec<(String, bool)> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for name in cols {
+        let Some((seg, expandable)) = child_after_path(name, parent_lower) else {
+            continue;
+        };
+        let seg_lower = seg.to_lowercase();
+        if seg.is_empty() || !seg_lower.contains(seg_prefix_lower) {
+            continue;
+        }
+        if let Some(&i) = index.get(&seg_lower) {
+            // 同名子字段已出现：任一路径更深即标记可下钻（collect_paths 排序后叶子可能先出现）
+            children[i].1 = children[i].1 || expandable;
+        } else if children.len() < limit {
+            index.insert(seg_lower, children.len());
+            children.push((
+                path_prefix_segments(name, parent_lower.len() + 1),
+                expandable,
+            ));
+        }
+    }
+    children
+}
+
 /// 命令编辑器补全：`$` 前缀补操作符，否则补命令名 / 参数名
 pub struct CommandCompletionProvider;
 
@@ -349,29 +381,17 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
                 }
             }
         } else if prefix.contains('.') {
-            // 点号深入（分号前 = 展开条件）：只提示能再展开的对象/数组（有更深子路径），标量叶子不提示
+            // 点号深入：提示 parent 路径下的全部子字段名（含标量叶子），可再下钻的对象/数组标注类型
             let (parent, seg_prefix) = prefix.rsplit_once('.').unwrap_or(("", prefix));
             let parent_lower = normalized_path_segments(parent);
-            let seg_prefix_lower = seg_prefix.to_lowercase();
-            let mut seen = std::collections::HashSet::new();
-            for name in cols.iter() {
-                let Some((seg, expandable)) = child_after_path(name, &parent_lower) else {
-                    continue;
-                };
-                let seg_lower = seg.to_lowercase();
-                // 可展开 ⟺ 该子字段还有更深子路径（object / array-of-object）；标量叶子跳过
-                if !expandable
-                    || seg.is_empty()
-                    || !seg_lower.contains(&seg_prefix_lower)
-                    || !seen.insert(seg_lower)
-                {
-                    continue;
-                }
-                let full = path_prefix_segments(name, parent_lower.len() + 1);
-                items.push(make_item(&full, CompletionItemKind::FIELD, "object", range));
-                if items.len() >= 50 {
-                    break;
-                }
+            for (full, expandable) in dotted_child_candidates(
+                cols.as_slice(),
+                &parent_lower,
+                &seg_prefix.to_lowercase(),
+                50,
+            ) {
+                let detail = if expandable { "object" } else { "field" };
+                items.push(make_item(&full, CompletionItemKind::FIELD, detail, range));
             }
         } else {
             // 无点：只提示顶层字段名（各路径第一段，去重），子串匹配；打点后才深入子字段
@@ -447,6 +467,22 @@ mod tests {
         assert_eq!(child, "名称");
         assert!(expandable);
         assert_eq!(path_prefix_segments("İ.名称.deep", 2), "İ.名称");
+    }
+
+    #[test]
+    fn dotted_completion_includes_scalar_leaves_and_marks_drillable() {
+        let cols = vec![
+            "labels".to_string(),
+            "labels.name".to_string(), // 标量叶子
+            "labels.meta".to_string(), // 对象（有更深路径）
+            "labels.meta.x".to_string(),
+        ];
+        let out = dotted_child_candidates(&cols, &["labels".to_string()], "", 50);
+        let by_name = |n: &str| out.iter().find(|(f, _)| f == n).map(|(_, e)| *e);
+        // 叶子字段也要提示（修复"labels. 无补全"）
+        assert_eq!(by_name("labels.name"), Some(false));
+        // 对象聚合为可下钻，即使 labels.meta 在排序中先于 labels.meta.x 出现
+        assert_eq!(by_name("labels.meta"), Some(true));
     }
 
     #[test]

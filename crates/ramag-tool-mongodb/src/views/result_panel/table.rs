@@ -112,6 +112,8 @@ pub(super) fn render(
             let theme = cx.theme();
             let fg = theme.foreground;
             let muted = theme.muted_foreground;
+            // 嵌套摘要单元格用蓝色表达可点击下钻
+            let nested_fg = theme.blue;
             let border = theme.border;
             let muted_bg = theme.muted;
             let mono = mono_font.clone();
@@ -160,6 +162,7 @@ pub(super) fn render(
                         &table_for_list.columns,
                         fg,
                         muted,
+                        nested_fg,
                         border,
                         muted_bg,
                         mono.clone(),
