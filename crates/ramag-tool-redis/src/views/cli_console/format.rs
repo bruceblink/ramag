@@ -1,7 +1,7 @@
 //! CLI 纯函数层：命令行 → argv 分词（含引号）+ RedisValue → redis-cli 风格多行文本。
 //! 无 UI、无 IO，全部可单测。
 
-use ramag_domain::entities::{RedisValue, StreamEntry};
+use ramag_domain::entities::RedisValue;
 
 use crate::views::value_display::{self, ViewMode};
 
@@ -102,10 +102,13 @@ pub fn lines_of(v: &RedisValue) -> Vec<String> {
     lines_of_inner(v, 0)
 }
 
-const MAX_FORMAT_BYTES: usize = 1024 * 1024;
-const MAX_FORMAT_LINES: usize = 2_000;
+// 渲染层已行级虚拟化（uniform_list），上限只防内存失控。
+// 总预算须大于单标量上限 + 引号等包装，否则 8 MiB 标量会整行被截断标记顶掉
+const MAX_FORMAT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FORMAT_LINES: usize = 50_000;
 const MAX_FORMAT_DEPTH: usize = 16;
-const MAX_SCALAR_INPUT_BYTES: usize = 256 * 1024;
+/// 对齐值详情的 8 MiB 加载上限
+const MAX_SCALAR_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const TRUNCATION_LINE: &str = "… 响应过大，后续内容已截断";
 
 struct LineBuffer {
@@ -131,10 +134,13 @@ impl LineBuffer {
         let cost = line.len().saturating_add(1);
         if cost > MAX_FORMAT_BYTES.saturating_sub(self.bytes) {
             let marker_cost = TRUNCATION_LINE.len().saturating_add(1);
+            // 额外 -1 是部分行自身的换行开销，否则 finish 里加截断标记正好越界 1 字节，
+            // 会把刚写入的唯一内容行再弹掉
             let available = MAX_FORMAT_BYTES
                 .saturating_sub(self.bytes)
                 .saturating_sub(marker_cost)
-                .saturating_sub('…'.len_utf8());
+                .saturating_sub('…'.len_utf8())
+                .saturating_sub(1);
             let prefix = utf8_prefix(&line, available);
             if !prefix.is_empty() {
                 let partial = format!("{prefix}…");
@@ -174,6 +180,205 @@ impl LineBuffer {
     }
 }
 
+/// 分段格式化结果：`cursor` 为续展开游标（标量=已消费字节偏移，顶层容器=已消费元素数），
+/// None 表示已全部展开。原始值仍在内存（driver 已整体拉回），续展开无需重新查询
+pub struct FormattedChunk {
+    pub lines: Vec<String>,
+    pub cursor: Option<usize>,
+}
+
+/// 标量续展开的单段原文字节数；escape 最坏 4 倍膨胀，段输出仍在 MAX_FORMAT_BYTES 内
+const CONTINUE_SCALAR_CHUNK_BYTES: usize = 2 * 1024 * 1024;
+
+/// 首次格式化：未超限走完整路径（含 JSON 美化）；超限返回首段 + 游标
+pub fn lines_of_first(v: &RedisValue) -> FormattedChunk {
+    format_chunk(v, 0)
+}
+
+/// 从游标继续格式化下一段（点击「继续展开」时调用）
+pub fn lines_of_more(v: &RedisValue, cursor: usize) -> FormattedChunk {
+    format_chunk(v, cursor)
+}
+
+fn format_chunk(v: &RedisValue, start: usize) -> FormattedChunk {
+    match v {
+        RedisValue::Text(s) if s.len() > MAX_SCALAR_INPUT_BYTES => text_chunk(s, start),
+        RedisValue::Bytes(b) if b.len() > MAX_SCALAR_INPUT_BYTES => bytes_chunk(b, start),
+        _ => match container_len(v) {
+            Some(len) => container_chunk(v, len, start),
+            // 未超限标量 / 小值：完整格式化，一次到位
+            None => FormattedChunk {
+                lines: lines_of(v),
+                cursor: None,
+            },
+        },
+    }
+}
+
+/// 超限文本分段：每段一条原文大行（escape 后），渲染层再按显示宽硬切。
+/// 引号只在真正首尾；JSON 美化不适用于半截内容，超限值一律按原文展示
+fn text_chunk(s: &str, start: usize) -> FormattedChunk {
+    let total = s.len();
+    let mut end = (start.saturating_add(CONTINUE_SCALAR_CHUNK_BYTES)).min(total);
+    while !s.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let mut line = String::new();
+    if start == 0 {
+        line.push('"');
+    }
+    line.push_str(&escape_str(&s[start..end]));
+    let done = end >= total;
+    if done {
+        line.push('"');
+    }
+    FormattedChunk {
+        lines: vec![line],
+        cursor: (!done).then_some(end),
+    }
+}
+
+fn bytes_chunk(b: &[u8], start: usize) -> FormattedChunk {
+    let total = b.len();
+    let end = (start.saturating_add(CONTINUE_SCALAR_CHUNK_BYTES)).min(total);
+    let mut line = String::new();
+    if start == 0 {
+        line.push('"');
+    }
+    line.push_str(&escape_bytes(&b[start..end]));
+    let done = end >= total;
+    if done {
+        line.push('"');
+    }
+    FormattedChunk {
+        lines: vec![line],
+        cursor: (!done).then_some(end),
+    }
+}
+
+/// 顶层容器的元素数；非容器返回 None
+fn container_len(v: &RedisValue) -> Option<usize> {
+    match v {
+        RedisValue::List(items) | RedisValue::Set(items) | RedisValue::Array(items) => {
+            Some(items.len())
+        }
+        RedisValue::Hash(pairs) => Some(pairs.len()),
+        RedisValue::ZSet(pairs) => Some(pairs.len()),
+        RedisValue::Stream(entries) => Some(entries.len()),
+        _ => None,
+    }
+}
+
+/// 容器分段：从 start 元素起按元素原子填充，段预算即格式化总预算；
+/// 单个超大元素独占一段（允许该段超预算，元素内部仍有自身截断保护）
+fn container_chunk(v: &RedisValue, len: usize, start: usize) -> FormattedChunk {
+    if len == 0 {
+        return FormattedChunk {
+            lines: vec!["(empty)".into()],
+            cursor: None,
+        };
+    }
+    let mut out = LineBuffer::new();
+    let mut index = start;
+    while index < len {
+        let element = element_lines_for(v, index, 0);
+        let element_cost: usize = element.iter().map(|line| line.len() + 1).sum();
+        let fits = out.lines.len().saturating_add(element.len()) <= MAX_FORMAT_LINES
+            && out.bytes.saturating_add(element_cost) <= MAX_FORMAT_BYTES;
+        if !fits && !out.lines.is_empty() {
+            break;
+        }
+        out.bytes = out.bytes.saturating_add(element_cost);
+        out.lines.extend(element);
+        index += 1;
+    }
+    FormattedChunk {
+        cursor: (index < len).then_some(index),
+        lines: out.lines,
+    }
+}
+
+/// 生成容器第 index 个元素的完整显示行（含全局编号与缩进）；
+/// lines_of 全量路径与 chunk 分段路径共用，保证两种入口输出一致
+fn element_lines_for(v: &RedisValue, index: usize, depth: usize) -> Vec<String> {
+    let head = format!("{}) ", index + 1);
+    let pad = " ".repeat(head.len());
+    match v {
+        RedisValue::List(items) | RedisValue::Set(items) | RedisValue::Array(items) => {
+            indented_lines(&head, &pad, lines_of_inner(&items[index], depth + 1))
+        }
+        RedisValue::Hash(pairs) => {
+            let (k, val) = &pairs[index];
+            let (key, key_truncated) = text_prefix(k, MAX_SCALAR_INPUT_BYTES);
+            let key_part = format!(
+                "\"{}{}\" => ",
+                escape_str(key),
+                if key_truncated { "…" } else { "" }
+            );
+            let vlines = lines_of_inner(val, depth + 1);
+            // 值单行时 inline 到 key 行；多行才另起缩进块
+            if vlines.len() == 1 {
+                let value = vlines.into_iter().next().unwrap_or_default();
+                vec![format!("{head}{key_part}{value}")]
+            } else {
+                let mut lines = vec![format!("{head}{key_part}")];
+                for line in vlines {
+                    lines.push(format!("{pad}{line}"));
+                }
+                lines
+            }
+        }
+        RedisValue::ZSet(pairs) => {
+            let (member, score) = &pairs[index];
+            lines_of_inner(member, depth + 1)
+                .into_iter()
+                .enumerate()
+                .map(|(j, line)| {
+                    if j == 0 {
+                        format!("{head}{line} (score {score})")
+                    } else {
+                        format!("{pad}{line}")
+                    }
+                })
+                .collect()
+        }
+        RedisValue::Stream(entries) => {
+            let entry = &entries[index];
+            let (id, id_truncated) = text_prefix(&entry.id, MAX_SCALAR_INPUT_BYTES);
+            let mut lines = vec![format!("{head}{id}{}", if id_truncated { "…" } else { "" })];
+            for (j, (k, value)) in entry.fields.iter().enumerate() {
+                let (key, key_truncated) = text_prefix(k, MAX_SCALAR_INPUT_BYTES);
+                let (value, value_truncated) = text_prefix(value, MAX_SCALAR_INPUT_BYTES);
+                let mut key = escape_str(key);
+                let mut value = escape_str(value);
+                if key_truncated {
+                    key.push('…');
+                }
+                if value_truncated {
+                    value.push('…');
+                }
+                lines.push(format!("{pad}{}) \"{}\" => \"{}\"", j + 1, key, value));
+            }
+            lines
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn indented_lines(head: &str, pad: &str, child: Vec<String>) -> Vec<String> {
+    child
+        .into_iter()
+        .enumerate()
+        .map(|(j, line)| {
+            if j == 0 {
+                format!("{head}{line}")
+            } else {
+                format!("{pad}{line}")
+            }
+        })
+        .collect()
+}
+
 fn lines_of_inner(v: &RedisValue, depth: usize) -> Vec<String> {
     if depth >= MAX_FORMAT_DEPTH {
         return vec!["… 嵌套层级过深，已停止展开".into()];
@@ -186,11 +391,11 @@ fn lines_of_inner(v: &RedisValue, depth: usize) -> Vec<String> {
         RedisValue::Bool(b) => vec![format!("(boolean) {b}")],
         RedisValue::Bytes(b) => bytes_lines(b),
         RedisValue::List(items) | RedisValue::Set(items) | RedisValue::Array(items) => {
-            seq_lines(items, depth)
+            container_lines(v, items.len(), depth)
         }
-        RedisValue::Hash(pairs) => hash_lines(pairs, depth),
-        RedisValue::ZSet(pairs) => zset_lines(pairs, depth),
-        RedisValue::Stream(entries) => stream_lines(entries),
+        RedisValue::Hash(pairs) => container_lines(v, pairs.len(), depth),
+        RedisValue::ZSet(pairs) => container_lines(v, pairs.len(), depth),
+        RedisValue::Stream(entries) => container_lines(v, entries.len(), depth),
     }
 }
 
@@ -222,126 +427,18 @@ fn bytes_lines(bytes: &[u8]) -> Vec<String> {
     out.finish()
 }
 
-/// 把子节点多行接到 `head` 之后：首行带 head，续行补等宽缩进
-fn append_indented(out: &mut LineBuffer, head: &str, child: Vec<String>) {
-    let pad = " ".repeat(head.len());
-    for (j, line) in child.into_iter().enumerate() {
-        let line = if j == 0 {
-            format!("{head}{line}")
-        } else {
-            format!("{pad}{line}")
-        };
-        if !out.push(line) {
-            break;
-        }
-    }
-}
-
-fn seq_lines(items: &[RedisValue], depth: usize) -> Vec<String> {
-    if items.is_empty() {
+/// 容器全量路径共用骨架：逐元素生成行（与 chunk 分段路径同源）入预算 buffer
+fn container_lines(v: &RedisValue, len: usize, depth: usize) -> Vec<String> {
+    if len == 0 {
         return vec!["(empty)".into()];
     }
     let mut out = LineBuffer::new();
-    for (i, x) in items.iter().enumerate() {
+    for index in 0..len {
         if !out.can_continue() {
             break;
         }
-        append_indented(
-            &mut out,
-            &format!("{}) ", i + 1),
-            lines_of_inner(x, depth + 1),
-        );
-    }
-    out.finish()
-}
-
-fn hash_lines(pairs: &[(String, RedisValue)], depth: usize) -> Vec<String> {
-    if pairs.is_empty() {
-        return vec!["(empty)".into()];
-    }
-    let mut out = LineBuffer::new();
-    for (i, (k, val)) in pairs.iter().enumerate() {
-        if !out.can_continue() {
-            break;
-        }
-        let vlines = lines_of_inner(val, depth + 1);
-        let (key, key_truncated) = text_prefix(k, MAX_SCALAR_INPUT_BYTES);
-        let key = format!(
-            "\"{}{}\" => ",
-            escape_str(key),
-            if key_truncated { "…" } else { "" }
-        );
-        let head = format!("{}) ", i + 1);
-        if vlines.len() == 1 {
-            out.push(format!("{head}{key}{}", vlines[0]));
-        } else {
-            // 聚合值：键名独占一行，值整体降一层缩进
-            if !out.push(format!("{head}{key}")) {
-                break;
-            }
-            let pad = " ".repeat(head.len());
-            for line in vlines {
-                if !out.push(format!("{pad}{line}")) {
-                    break;
-                }
-            }
-        }
-    }
-    out.finish()
-}
-
-fn zset_lines(pairs: &[(RedisValue, f64)], depth: usize) -> Vec<String> {
-    if pairs.is_empty() {
-        return vec!["(empty)".into()];
-    }
-    let mut out = LineBuffer::new();
-    for (i, (m, score)) in pairs.iter().enumerate() {
-        if !out.can_continue() {
-            break;
-        }
-        let head = format!("{}) ", i + 1);
-        let pad = " ".repeat(head.len());
-        for (j, line) in lines_of_inner(m, depth + 1).into_iter().enumerate() {
-            let line = if j == 0 {
-                format!("{head}{line} (score {score})")
-            } else {
-                format!("{pad}{line}")
-            };
+        for line in element_lines_for(v, index, depth) {
             if !out.push(line) {
-                break;
-            }
-        }
-    }
-    out.finish()
-}
-
-fn stream_lines(entries: &[StreamEntry]) -> Vec<String> {
-    if entries.is_empty() {
-        return vec!["(empty)".into()];
-    }
-    let mut out = LineBuffer::new();
-    for (i, e) in entries.iter().enumerate() {
-        if !out.can_continue() {
-            break;
-        }
-        let head = format!("{}) ", i + 1);
-        let pad = " ".repeat(head.len());
-        let (id, id_truncated) = text_prefix(&e.id, MAX_SCALAR_INPUT_BYTES);
-        if !out.push(format!("{head}{id}{}", if id_truncated { "…" } else { "" })) {
-            break;
-        }
-        for (j, (k, v)) in e.fields.iter().enumerate() {
-            let (key, key_truncated) = text_prefix(k, MAX_SCALAR_INPUT_BYTES);
-            let (value, value_truncated) = text_prefix(v, MAX_SCALAR_INPUT_BYTES);
-            let mut key = escape_str(key);
-            let mut value = escape_str(value);
-            if key_truncated {
-                key.push('…');
-            }
-            if value_truncated {
-                value.push('…');
-            }
-            if !out.push(format!("{pad}{}) \"{}\" => \"{}\"", j + 1, key, value)) {
                 break;
             }
         }
@@ -483,6 +580,53 @@ mod tests {
     #[test]
     fn format_empty() {
         assert_eq!(lines_of(&RedisValue::Array(vec![])), vec!["(empty)"]);
+    }
+
+    #[test]
+    fn chunked_scalar_reassembles_full_value_via_cursor() {
+        // 超限文本分段：沿游标取完所有段，拼回完整值（首尾带引号）
+        let value = "y".repeat(MAX_SCALAR_INPUT_BYTES + MAX_SCALAR_INPUT_BYTES / 2);
+        let v = RedisValue::Text(value.clone());
+        let mut all = String::new();
+        let mut chunk = lines_of_first(&v);
+        let mut rounds = 0;
+        loop {
+            for line in &chunk.lines {
+                all.push_str(line);
+            }
+            rounds += 1;
+            match chunk.cursor {
+                Some(cursor) => chunk = lines_of_more(&v, cursor),
+                None => break,
+            }
+        }
+        assert!(rounds > 1, "超限值应分成多段");
+        assert_eq!(all, format!("\"{value}\""));
+    }
+
+    #[test]
+    fn chunked_container_resumes_at_element_boundary_with_global_numbering() {
+        // 容器分段：单元素放不下时停在元素边界，续段编号全局连续
+        let big = "z".repeat(MAX_FORMAT_BYTES / 2);
+        let items = vec![
+            RedisValue::Text(big.clone()),
+            RedisValue::Text(big),
+            RedisValue::Int(7),
+        ];
+        let v = RedisValue::Array(items);
+        let first = lines_of_first(&v);
+        let cursor = first.cursor.expect("应有续展开游标");
+        let more = lines_of_more(&v, cursor);
+        let joined = more.lines.join("\n");
+        assert!(joined.contains("3) (integer) 7"), "续段应保持全局编号");
+    }
+
+    #[test]
+    fn max_scalar_keeps_content_instead_of_marker_only() {
+        // 满上限的 8 MiB 标量必须保留内容行；此前预算 off-by-one 会把内容行弹光只剩截断标记
+        let s = "x".repeat(MAX_SCALAR_INPUT_BYTES);
+        let lines = lines_of(&RedisValue::Text(s));
+        assert!(lines.iter().any(|line| line.len() > 1_000));
     }
 
     #[test]

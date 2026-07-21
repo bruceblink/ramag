@@ -24,7 +24,10 @@ use serde_json::{Value, json};
 use super::{Reporter, finish_summary, is_cancelled, with_export_sink, write_json_line};
 use crate::usecases::RedisService;
 
-const SCAN_BATCH: u32 = 500;
+/// 枚举 key 的 SCAN COUNT：总耗时 ≈ 往返数 × RTT，取大批减少往返
+/// （服务端单次阻塞仍 ~1-2ms；与 key 树扫描取值一致）
+const SCAN_BATCH: u32 = 5_000;
+/// 单个容器 key 的值分页大小（HSCAN / LRANGE 等每页元素数）
 const PAGE_ITEMS: u32 = 4_096;
 const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
 /// 进度节流：每处理 N 个 key 上报一次

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use gpui::{
     Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
+    ScrollStrategy, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _, notification::Notification,
@@ -116,14 +116,15 @@ pub struct KeyDetailPanel {
     pub(super) loading_more: bool,
     /// 标量值视图模式：None=按内容自动（JSON 美化 / Raw），Some=用户手动选定
     value_view_mode: Option<ViewMode>,
-    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 内容文本, gzip 提示)。避免每帧重复
-    /// 解压 + JSON 解析 + pretty（大 String 值这些都在主线程）。key/value/view_mode 变化失效
+    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 按行切好的内容, gzip 提示)。
+    /// 行数组供 uniform_list 行级虚拟化（大值单文本节点渲染会卡死滚动）；
+    /// 解压 + JSON 解析 + 切行只算一次，key/value/view_mode 变化失效
     #[allow(clippy::type_complexity)]
     pub(super) scalar_cache: std::cell::RefCell<
         Option<(
             Option<ViewMode>,
             ViewMode,
-            SharedString,
+            std::sync::Arc<Vec<SharedString>>,
             Option<SharedString>,
         )>,
     >,
@@ -131,6 +132,8 @@ pub struct KeyDetailPanel {
     focus_handle: FocusHandle,
     /// 容器值（hash/list/set/zset/stream）uniform_list 行级虚拟化的滚动句柄
     value_scroll: UniformListScrollHandle,
+    /// 标量内容区横向滚动句柄（内容固定宽 + 外层 X 滚动，行尾不被视口裁掉）
+    pub(super) scalar_h_scroll: gpui::ScrollHandle,
 }
 
 impl EventEmitter<KeyDetailEvent> for KeyDetailPanel {}
@@ -167,6 +170,7 @@ impl KeyDetailPanel {
             focus_handle: cx.focus_handle(),
             estimating_size: false,
             value_scroll: UniformListScrollHandle::new(),
+            scalar_h_scroll: gpui::ScrollHandle::new(),
         }
     }
 
@@ -195,6 +199,10 @@ impl KeyDetailPanel {
         self.loading_more = false;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
+        // 换 key 后滚动归顶：uniform_list 句柄跨 key 复用，不复位会残留上个 key 的偏移
+        self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.scalar_h_scroll
+            .set_offset(gpui::Point::new(px(0.0), px(0.0)));
         cx.notify();
     }
 
@@ -222,6 +230,10 @@ impl KeyDetailPanel {
         self.loading_more = false;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
+        // 换 key 后滚动归顶：uniform_list 句柄跨 key 复用，不复位会残留上个 key 的偏移
+        self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.scalar_h_scroll
+            .set_offset(gpui::Point::new(px(0.0), px(0.0)));
         cx.notify();
     }
 
@@ -317,13 +329,23 @@ impl Render for KeyDetailPanel {
                     render_value(v, &key, cx, &self.value_scroll, fg, muted_fg, border),
                     true,
                 ),
-                // 标量 String/Bytes 走 scalar 模块（含 Gzip 提示 + 编辑按钮）
+                // 标量 String/Bytes 走 scalar 模块（含 Gzip 提示 + 编辑按钮）；
+                // 内容区 uniform_list 行级虚拟化自带滚动（大值整体滚动会卡死）
                 Some(v @ (RedisValue::Text(_) | RedisValue::Bytes(_))) => (
                     scalar::render_scalar(
-                        self, &key, v, view_mode, fg, muted_fg, border, cx, window,
+                        self,
+                        &key,
+                        v,
+                        view_mode,
+                        &self.value_scroll,
+                        fg,
+                        muted_fg,
+                        border,
+                        cx,
+                        window,
                     )
                     .into_any_element(),
-                    false,
+                    true,
                 ),
                 // Nil/Int/Float/Bool/Array：小体量，普通渲染
                 Some(v) => (

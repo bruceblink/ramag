@@ -10,25 +10,27 @@ mod danger;
 mod format;
 
 use std::collections::VecDeque;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
     ClickEvent, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div, prelude::*, px,
+    Subscription, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputEvent, InputState, MoveDown, MoveUp},
-    scroll::ScrollableElement as _,
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::{ConnectionConfig, validate_redis_command};
+use ramag_domain::entities::{ConnectionConfig, RedisValue, validate_redis_command};
 use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
+
+use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 
 /// 单条命令 + 应答历史
 struct Entry {
@@ -38,18 +40,92 @@ struct Entry {
     outcome: Outcome,
     display_lines: usize,
     elapsed_ms: u128,
+    /// 应答超限被分段时保留原始值（driver 已整体拉回内存），供「继续展开」续格式化
+    raw: Option<Arc<RedisValue>>,
+    /// 续展开游标（标量=字节偏移，顶层容器=元素索引）；None = 已全部展开
+    cursor: Option<usize>,
 }
 
 enum Outcome {
     Pending,
-    Ok(String),
+    /// 成功应答：已按显示行硬切好的行数组，供 uniform_list 等高行虚拟化
+    Ok(Arc<Vec<SharedString>>),
     Err(String),
+}
+
+/// transcript 扁平行模型：全体历史展平成等高行，单个 uniform_list 虚拟化渲染
+/// （逐条 entry 全量建 div 树在大应答下会卡死滚动）
+enum TranscriptRow {
+    /// 命令头：`> cmd` + 右侧 meta
+    Header {
+        command: SharedString,
+        meta: SharedString,
+    },
+    /// 应答行；tone 决定颜色
+    Body { line: SharedString, tone: LineTone },
+    /// 应答被分段截断：点击继续展开下一段
+    Continue { entry_id: u64, hint: SharedString },
+    /// 条目间距
+    Spacer,
+}
+
+#[derive(Clone, Copy)]
+enum LineTone {
+    Normal,
+    Muted,
+    Accent,
+    Error,
+}
+
+/// 成功按行分色：整数/浮点/布尔→强调色，nil/empty→弱化，余→前景
+fn tone_of(line: &str) -> LineTone {
+    if line.contains("(integer)") || line.contains("(double)") || line.contains("(boolean)") {
+        LineTone::Accent
+    } else if line.contains("(nil)") || line.contains("(empty)") {
+        LineTone::Muted
+    } else {
+        LineTone::Normal
+    }
+}
+
+/// 格式化行 → 硬切后的显示行（超长单行切段，供等高行虚拟化）
+fn wrap_display_lines(raw_lines: Vec<String>) -> Vec<SharedString> {
+    let mut lines: Vec<SharedString> = Vec::new();
+    for line in raw_lines {
+        lines.extend(split_display_lines(&line));
+    }
+    if lines.is_empty() {
+        lines.push(SharedString::default());
+    }
+    lines
+}
+
+/// 「继续展开」提示：未展开的剩余量（标量按字节，容器按元素数）
+fn remaining_hint(raw: &RedisValue, cursor: usize) -> String {
+    fn bytes_text(remaining: usize) -> String {
+        if remaining >= 1024 * 1024 {
+            format!("剩余 {:.1} MiB", remaining as f64 / 1024.0 / 1024.0)
+        } else {
+            format!("剩余 {} KiB", remaining.div_ceil(1024))
+        }
+    }
+    match raw {
+        RedisValue::Text(s) => bytes_text(s.len().saturating_sub(cursor)),
+        RedisValue::Bytes(b) => bytes_text(b.len().saturating_sub(cursor)),
+        RedisValue::List(items) | RedisValue::Set(items) | RedisValue::Array(items) => {
+            format!("剩余 {} 项", items.len().saturating_sub(cursor))
+        }
+        RedisValue::Hash(pairs) => format!("剩余 {} 项", pairs.len().saturating_sub(cursor)),
+        RedisValue::ZSet(pairs) => format!("剩余 {} 项", pairs.len().saturating_sub(cursor)),
+        RedisValue::Stream(entries) => format!("剩余 {} 条", entries.len().saturating_sub(cursor)),
+        _ => String::new(),
+    }
 }
 
 const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPT_ENTRIES: usize = 100;
-const MAX_TRANSCRIPT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TRANSCRIPT_LINES: usize = 5_000;
+const MAX_TRANSCRIPT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_TRANSCRIPT_LINES: usize = 200_000;
 const MAX_COMMAND_HISTORY_ENTRIES: usize = 500;
 const MAX_COMMAND_HISTORY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_COMMANDS: usize = 8;
@@ -66,6 +142,11 @@ pub struct CliConsole {
     cmd_history_bytes: usize,
     /// 当前 ↑/↓ 浏览位置：None = 停在实时输入行，Some(i) = 正显示 cmd_history[i]
     history_cursor: Option<usize>,
+    /// 展平后的 transcript 行模型（history 变化时重建）与其虚拟滚动句柄
+    transcript_rows: Vec<TranscriptRow>,
+    transcript_scroll: UniformListScrollHandle,
+    /// transcript 横向滚动句柄（内容固定宽，行尾不被窄面板裁掉）
+    transcript_h_scroll: gpui::ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -104,6 +185,9 @@ impl CliConsole {
             cmd_history: VecDeque::new(),
             cmd_history_bytes: 0,
             history_cursor: None,
+            transcript_rows: Vec::new(),
+            transcript_scroll: UniformListScrollHandle::new(),
+            transcript_h_scroll: gpui::ScrollHandle::new(),
             _subscriptions: subs,
         }
     }
@@ -272,7 +356,11 @@ impl CliConsole {
                     let outcome = match result {
                         Ok(v) => {
                             info!(elapsed_ms = elapsed, "cli command ok");
-                            Outcome::Ok(format::lines_of(&v).join("\n"))
+                            // 超限应答分段：保留原始值 + 游标，支持点击继续展开
+                            let chunk = format::lines_of_first(&v);
+                            entry.cursor = chunk.cursor;
+                            entry.raw = chunk.cursor.map(|_| Arc::new(v));
+                            Outcome::Ok(Arc::new(wrap_display_lines(chunk.lines)))
                         }
                         Err(e) => {
                             error!(error = %e, "cli command failed");
@@ -292,6 +380,7 @@ impl CliConsole {
 
     fn clear(&mut self, cx: &mut Context<Self>) {
         clear_completed_entries(&mut self.history);
+        self.rebuild_transcript_rows();
         cx.notify();
     }
 
@@ -321,6 +410,8 @@ impl CliConsole {
             outcome,
             display_lines,
             elapsed_ms,
+            raw: None,
+            cursor: None,
         });
         self.prune_transcript();
         id
@@ -328,6 +419,84 @@ impl CliConsole {
 
     fn prune_transcript(&mut self) {
         prune_transcript_entries(&mut self.history);
+        self.rebuild_transcript_rows();
+    }
+
+    /// 历史变化后重建扁平行模型（push / 回包 / 清空 / 修剪统一走 prune_transcript）
+    fn rebuild_transcript_rows(&mut self) {
+        let mut rows = Vec::new();
+        // 最新在上：刚执行的命令结果紧贴输入框下方，无需滚动
+        for entry in self.history.iter().rev() {
+            let meta = if matches!(entry.outcome, Outcome::Pending) {
+                format!("DB {}", entry.db)
+            } else {
+                format!("DB {} · {} ms", entry.db, entry.elapsed_ms)
+            };
+            rows.push(TranscriptRow::Header {
+                command: SharedString::from(format!("> {}", entry.command)),
+                meta: meta.into(),
+            });
+            match &entry.outcome {
+                Outcome::Pending => rows.push(TranscriptRow::Body {
+                    line: "执行中…".into(),
+                    tone: LineTone::Muted,
+                }),
+                Outcome::Err(message) => {
+                    for line in split_display_lines(message) {
+                        rows.push(TranscriptRow::Body {
+                            line,
+                            tone: LineTone::Error,
+                        });
+                    }
+                }
+                Outcome::Ok(lines) => {
+                    for line in lines.iter() {
+                        rows.push(TranscriptRow::Body {
+                            tone: tone_of(line),
+                            line: line.clone(),
+                        });
+                    }
+                }
+            }
+            if let (Some(raw), Some(cursor)) = (&entry.raw, entry.cursor) {
+                rows.push(TranscriptRow::Continue {
+                    entry_id: entry.id,
+                    hint: remaining_hint(raw, cursor).into(),
+                });
+            }
+            rows.push(TranscriptRow::Spacer);
+        }
+        self.transcript_rows = rows;
+    }
+
+    /// 点击「继续展开」：从游标续格式化下一段并追加；行数达 transcript 上限时终止并提示
+    fn continue_entry(&mut self, entry_id: u64, cx: &mut Context<Self>) {
+        let Some(entry) = self.history.iter_mut().find(|entry| entry.id == entry_id) else {
+            return;
+        };
+        let (Some(raw), Some(cursor)) = (entry.raw.clone(), entry.cursor) else {
+            return;
+        };
+        let chunk = format::lines_of_more(&raw, cursor);
+        let mut appended = wrap_display_lines(chunk.lines);
+        let Outcome::Ok(lines) = &mut entry.outcome else {
+            return;
+        };
+        let lines = Arc::make_mut(lines);
+        lines.append(&mut appended);
+        entry.cursor = chunk.cursor;
+        if entry.cursor.is_some() && lines.len() >= MAX_TRANSCRIPT_LINES {
+            entry.cursor = None;
+            lines.push(SharedString::from(
+                "… 已达单条展示上限，未展开部分请改用 key 详情面板查看",
+            ));
+        }
+        if entry.cursor.is_none() {
+            entry.raw = None;
+        }
+        entry.display_lines = outcome_line_count(&entry.outcome);
+        self.prune_transcript();
+        cx.notify();
     }
 
     /// 记录一条输入历史：跳过与上一条完全相同的（避免连按重复堆积），上限 500 条防无界增长；
@@ -442,17 +611,42 @@ impl Render for CliConsole {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 
-        let mut transcript = v_flex().w_full().gap(px(10.0)).p(px(12.0));
-        if self.history.is_empty() {
-            transcript = transcript.child(div().text_sm().text_color(muted_fg).child(
-                "尚无命令；输入并 Enter 执行（PING / GET foo / KEYS * / CONFIG GET maxmemory）",
-            ));
+        // transcript：扁平行模型 + uniform_list 行级虚拟化（自持滚动，滚轮不再穿透下层面板）
+        let transcript: gpui::AnyElement = if self.history.is_empty() {
+            div()
+                .p(px(12.0))
+                .text_sm()
+                .text_color(muted_fg)
+                .child(
+                    "尚无命令；输入并 Enter 执行（PING / GET foo / KEYS * / CONFIG GET maxmemory）",
+                )
+                .into_any_element()
         } else {
-            // 最新在上：刚执行的命令结果紧贴输入框下方，无需滚动
-            for entry in self.history.iter().rev() {
-                transcript = transcript.child(render_entry(entry, fg, muted_fg, accent, border));
-            }
-        }
+            // 外层横向滚动 + 内层固定内容宽：行尾不被窄面板裁掉
+            div()
+                .id("cli-transcript-hscroll")
+                .size_full()
+                .overflow_x_scroll()
+                .track_scroll(&self.transcript_h_scroll)
+                .child(
+                    uniform_list(
+                        "cli-transcript",
+                        self.transcript_rows.len(),
+                        cx.processor(move |this, range: Range<usize>, _w, cx| {
+                            range
+                                .filter_map(|index| {
+                                    let row = this.transcript_rows.get(index)?;
+                                    Some(render_transcript_row(row, fg, muted_fg, accent, cx))
+                                })
+                                .collect()
+                        }),
+                    )
+                    .track_scroll(&self.transcript_scroll)
+                    .h_full()
+                    .w(px(DISPLAY_CONTENT_WIDTH_PX)),
+                )
+                .into_any_element()
+        };
 
         let input_row = h_flex()
             .w_full()
@@ -482,9 +676,11 @@ impl Render for CliConsole {
                     })),
             );
 
-        // 顶部输入（补全朝下展开、最新结果就在其下）；下方 transcript 最新在上
+        // 顶部输入（补全朝下展开、最新结果就在其下）；下方 transcript 最新在上。
+        // occlude：本面板悬浮于 key 树 / 详情之上，拦下鼠标与滚轮事件不穿透下层
         v_flex()
             .size_full()
+            .occlude()
             .bg(bg)
             // 单行输入不挂 up/down handler（gpui-component 限制），手动把 ↑/↓ 转发给补全菜单导航
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| {
@@ -506,78 +702,74 @@ impl Render for CliConsole {
             }))
             .child(toolbar)
             .child(input_row)
-            .child(
-                // 外层 flex_1+min_h_0 给确定高度，内层 size_full+overflow 才能滚
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(div().size_full().overflow_y_scrollbar().child(transcript)),
-            )
+            // 外层 flex_1+min_h_0 给 uniform_list 确定高度
+            .child(div().flex_1().min_h_0().child(transcript))
     }
 }
 
-fn render_entry(
-    entry: &Entry,
+/// transcript 等高行高（uniform_list 行级虚拟化要求等高）
+const ROW_H: f32 = 20.0;
+
+fn render_transcript_row(
+    row: &TranscriptRow,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     accent: gpui::Hsla,
-    border: gpui::Hsla,
-) -> impl IntoElement {
-    // 应答区：成功按行分色（整数/浮点/布尔→强调色，nil/empty→弱化，余→前景）；错误整体红
-    let body = match &entry.outcome {
-        Outcome::Pending => div()
-            .text_color(muted_fg)
-            .child("执行中…")
-            .into_any_element(),
-        Outcome::Err(s) => div()
-            .text_color(gpui::red())
-            .child(s.clone())
-            .into_any_element(),
-        Outcome::Ok(s) => v_flex()
-            .w_full()
-            .children(s.lines().map(|line| {
-                div()
-                    .w_full()
-                    .text_color(line_color(line, fg, muted_fg, accent))
-                    .child(line.to_string())
-            }))
-            .into_any_element(),
-    };
-    let meta = if matches!(entry.outcome, Outcome::Pending) {
-        format!("DB {}", entry.db)
-    } else {
-        format!("DB {} · {} ms", entry.db, entry.elapsed_ms)
-    };
-    v_flex()
-        .id(SharedString::from(format!("cli-entry-{}", entry.id)))
-        .w_full()
-        .gap(px(4.0))
-        .child(
+    cx: &mut Context<CliConsole>,
+) -> gpui::AnyElement {
+    match row {
+        TranscriptRow::Continue { entry_id, hint } => {
+            let entry_id = *entry_id;
             h_flex()
+                .h(px(ROW_H))
                 .w_full()
-                .gap(px(8.0))
-                .text_xs()
-                .text_color(muted_fg)
+                .px(px(12.0))
+                .items_center()
                 .child(
-                    div()
-                        .font_family("monospace")
-                        .child(format!("> {}", entry.command)),
+                    ramag_ui::clickable_button(SharedString::from(format!(
+                        "cli-continue-{entry_id}"
+                    )))
+                    .ghost()
+                    .xsmall()
+                    .label(format!("继续展开（{hint}）"))
+                    .on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.continue_entry(entry_id, cx);
+                        },
+                    )),
                 )
-                .child(div().flex_1())
-                .child(div().child(meta)),
-        )
-        .child(
+                .into_any_element()
+        }
+        TranscriptRow::Header { command, meta } => div()
+            .h(px(ROW_H))
+            .w_full()
+            .px(px(12.0))
+            .whitespace_nowrap()
+            .text_xs()
+            .text_color(muted_fg)
+            .font_family("monospace")
+            .child(SharedString::from(format!("{command} · {meta}")))
+            .into_any_element(),
+        TranscriptRow::Body { line, tone } => {
+            let color = match tone {
+                LineTone::Normal => fg,
+                LineTone::Muted => muted_fg,
+                LineTone::Accent => accent,
+                LineTone::Error => gpui::red(),
+            };
             div()
+                .h(px(ROW_H))
                 .w_full()
-                .px(px(10.0))
-                .py(px(6.0))
-                .border_1()
-                .border_color(border)
-                .rounded(px(4.0))
+                .px(px(12.0))
+                .whitespace_nowrap()
                 .text_sm()
+                .text_color(color)
                 .font_family("monospace")
-                .child(body),
-        )
+                .child(line.clone())
+                .into_any_element()
+        }
+        TranscriptRow::Spacer => div().h(px(ROW_H)).w_full().into_any_element(),
+    }
 }
 
 fn transcript_bytes(entries: &[Entry]) -> usize {
@@ -599,6 +791,10 @@ fn prune_transcript_entries(entries: &mut Vec<Entry>) {
         else {
             break;
         };
+        // 最新一条（当前结果）不因预算清除：单条超限时保留它、停止修剪
+        if index + 1 == entries.len() {
+            break;
+        }
         let removed = entries.remove(index);
         total_bytes = total_bytes.saturating_sub(transcript_entry_bytes(&removed));
         total_lines = total_lines.saturating_sub(removed.display_lines);
@@ -608,7 +804,8 @@ fn prune_transcript_entries(entries: &mut Vec<Entry>) {
 fn transcript_entry_bytes(entry: &Entry) -> usize {
     let outcome_bytes = match &entry.outcome {
         Outcome::Pending => 0,
-        Outcome::Ok(value) | Outcome::Err(value) => value.len(),
+        Outcome::Ok(lines) => lines.iter().map(|line| line.len()).sum(),
+        Outcome::Err(value) => value.len(),
     };
     entry.command.len().saturating_add(outcome_bytes)
 }
@@ -622,7 +819,8 @@ fn transcript_line_count(entries: &[Entry]) -> usize {
 fn outcome_line_count(outcome: &Outcome) -> usize {
     match outcome {
         Outcome::Pending => 1,
-        Outcome::Ok(value) | Outcome::Err(value) => value.lines().count().max(1),
+        Outcome::Ok(lines) => lines.len().max(1),
+        Outcome::Err(value) => value.lines().count().max(1),
     }
 }
 
@@ -669,16 +867,6 @@ fn command_preview(command: &str, max_chars: usize) -> String {
 }
 
 /// 应答单行配色：按 redis-cli 类型标记粗判
-fn line_color(line: &str, fg: gpui::Hsla, muted_fg: gpui::Hsla, accent: gpui::Hsla) -> gpui::Hsla {
-    if line.contains("(integer)") || line.contains("(double)") || line.contains("(boolean)") {
-        accent
-    } else if line.contains("(nil)") || line.contains("(empty)") {
-        muted_fg
-    } else {
-        fg
-    }
-}
-
 /// ↑ 召回时的目标光标（纯逻辑，便于测试）。`len` = 历史条数，`cur` = 当前浏览位置。
 /// 返回 None 表示历史为空、无动作；Some(i) 表示定位到第 i 条：
 /// 从实时行（cur=None）首按跳到最新一条，往旧逐条递减，到最旧（0）停住
@@ -704,9 +892,14 @@ mod tests {
     use super::{
         Entry, MAX_TRANSCRIPT_ENTRIES, MAX_TRANSCRIPT_LINES, Outcome, clear_completed_entries,
         command_preview, next_cursor, outcome_line_count, pending_command_count, prev_cursor,
-        prune_transcript_entries, push_command_history, transcript_line_count,
+        prune_transcript_entries, push_command_history, split_display_lines, transcript_line_count,
     };
     use std::collections::VecDeque;
+
+    /// 测试便捷构造：文本 → 已切行的成功应答
+    fn ok_lines(text: &str) -> Outcome {
+        Outcome::Ok(std::sync::Arc::new(split_display_lines(text)))
+    }
 
     #[test]
     fn prev_from_live_jumps_to_newest() {
@@ -734,15 +927,35 @@ mod tests {
     }
 
     #[test]
+    fn pruning_never_removes_the_latest_entry_even_over_budget() {
+        // 续展开可让单条超总行数预算；最新一条（当前结果）必须保留
+        let outcome = ok_lines("x");
+        let mut entries = vec![Entry {
+            id: 1,
+            command: "GET big".into(),
+            db: 0,
+            display_lines: MAX_TRANSCRIPT_LINES + 10,
+            outcome,
+            elapsed_ms: 1,
+            raw: None,
+            cursor: None,
+        }];
+        prune_transcript_entries(&mut entries);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
     fn transcript_pruning_is_bounded_and_preserves_pending_entries() {
         let mut entries: Vec<_> = (0..=MAX_TRANSCRIPT_ENTRIES)
             .map(|id| Entry {
                 id: id as u64,
                 command: "PING".into(),
                 db: 0,
-                outcome: Outcome::Ok("PONG".into()),
+                outcome: ok_lines("PONG"),
                 display_lines: 1,
                 elapsed_ms: 1,
+                raw: None,
+                cursor: None,
             })
             .collect();
         entries[0].outcome = Outcome::Pending;
@@ -760,13 +973,18 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let mut entries: Vec<_> = (0..3)
-            .map(|id| Entry {
-                id,
-                command: "LRANGE queue 0 -1".into(),
-                db: 0,
-                display_lines: outcome_line_count(&Outcome::Ok(payload.clone())),
-                outcome: Outcome::Ok(payload.clone()),
-                elapsed_ms: 1,
+            .map(|id| {
+                let outcome = ok_lines(&payload);
+                Entry {
+                    id,
+                    command: "LRANGE queue 0 -1".into(),
+                    db: 0,
+                    display_lines: outcome_line_count(&outcome),
+                    outcome,
+                    elapsed_ms: 1,
+                    raw: None,
+                    cursor: None,
+                }
             })
             .collect();
 
@@ -811,14 +1029,18 @@ mod tests {
                 outcome: Outcome::Pending,
                 display_lines: 1,
                 elapsed_ms: 0,
+                raw: None,
+                cursor: None,
             },
             Entry {
                 id: 2,
                 command: "GET a".into(),
                 db: 0,
-                outcome: Outcome::Ok("x".into()),
+                outcome: ok_lines("x"),
                 display_lines: 1,
                 elapsed_ms: 1,
+                raw: None,
+                cursor: None,
             },
         ];
 
@@ -835,14 +1057,18 @@ mod tests {
                 outcome: Outcome::Pending,
                 display_lines: 1,
                 elapsed_ms: 0,
+                raw: None,
+                cursor: None,
             },
             Entry {
                 id: 2,
                 command: "PING".into(),
                 db: 0,
-                outcome: Outcome::Ok("PONG".into()),
+                outcome: ok_lines("PONG"),
                 display_lines: 1,
                 elapsed_ms: 1,
+                raw: None,
+                cursor: None,
             },
         ];
 

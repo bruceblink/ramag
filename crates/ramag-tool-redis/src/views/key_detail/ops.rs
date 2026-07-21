@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gpui::Context;
+use gpui::{Context, ScrollStrategy};
 use gpui_component::notification::Notification;
 use ramag_domain::entities::RedisValue;
 use ramag_domain::error::READ_ONLY_MESSAGE;
@@ -34,6 +34,10 @@ impl KeyDetailPanel {
             self.collection_total = None;
             self.value_byte_limited = false;
             self.loading = true;
+            // 换 key 滚动归顶归左（分页追加 preserve_value 时保持用户当前位置）
+            self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
+            self.scalar_h_scroll
+                .set_offset(gpui::Point::new(gpui::px(0.0), gpui::px(0.0)));
         }
         self.ttl_loading = true;
         self.ttl_error = None;

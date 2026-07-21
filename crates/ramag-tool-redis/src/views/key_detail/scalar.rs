@@ -2,10 +2,12 @@
 //! + Gzip 提示 + 内容区（双击编辑，仅 Text）
 
 use std::borrow::Cow;
+use std::ops::Range;
+use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
-    px,
+    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, UniformListScrollHandle,
+    Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use ramag_domain::entities::RedisValue;
@@ -13,13 +15,18 @@ use ramag_domain::entities::RedisValue;
 use super::{KeyDetailEvent, KeyDetailPanel};
 use crate::views::value_display::{self, ViewMode};
 
-/// 纯计算：字节流 → (生效 mode, 显示文本, gzip 提示)。解压 + JSON 解析 + pretty 都在
-/// 这里，结果由 panel.scalar_cache 缓存，避免每帧重算
+/// 等高行虚拟化的行高
+const ROW_H: f32 = 20.0;
+
+use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
+
+/// 纯计算：字节流 → (生效 mode, 按行切好的显示文本, gzip 提示)。解压 + JSON 解析 +
+/// pretty + 切行都在这里，结果由 panel.scalar_cache 缓存，避免每帧重算
 fn compute_scalar_display(
     v: &RedisValue,
     view_mode: Option<ViewMode>,
     allow_gzip: bool,
-) -> (ViewMode, SharedString, Option<SharedString>) {
+) -> (ViewMode, Arc<Vec<SharedString>>, Option<SharedString>) {
     let raw_bytes: &[u8] = match v {
         RedisValue::Text(s) => s.as_bytes(),
         RedisValue::Bytes(b) => b,
@@ -52,7 +59,11 @@ fn compute_scalar_display(
         },
         _ => value_display::render_bytes(&display_bytes, mode),
     };
-    (mode, content_text.into(), gzip_hint)
+    (
+        mode,
+        Arc::new(split_display_lines(&content_text)),
+        gzip_hint,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,6 +72,7 @@ pub(super) fn render_scalar(
     key: &str,
     v: &RedisValue,
     view_mode: Option<ViewMode>,
+    scroll: &UniformListScrollHandle,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
     border: gpui::Hsla,
@@ -70,18 +82,19 @@ pub(super) fn render_scalar(
     let scalar_truncated = panel.scalar_is_truncated();
     // 缓存命中（同 view_mode）直接取；否则计算一次并写回缓存。
     // 缓存随 load_key / 切 view_mode 清空，此处仅比对 view_mode 兜底
-    let (mode, content_text, gzip_hint) = {
+    let (mode, lines, gzip_hint) = {
         let mut cache = panel.scalar_cache.borrow_mut();
-        if let Some((cached_req, eff_mode, text, hint)) = cache.as_ref()
+        if let Some((cached_req, eff_mode, lines, hint)) = cache.as_ref()
             && *cached_req == view_mode
         {
-            (*eff_mode, text.clone(), hint.clone())
+            (*eff_mode, lines.clone(), hint.clone())
         } else {
-            let (eff_mode, text, hint) = compute_scalar_display(v, view_mode, !scalar_truncated);
-            *cache = Some((view_mode, eff_mode, text.clone(), hint.clone()));
-            (eff_mode, text, hint)
+            let (eff_mode, lines, hint) = compute_scalar_display(v, view_mode, !scalar_truncated);
+            *cache = Some((view_mode, eff_mode, lines.clone(), hint.clone()));
+            (eff_mode, lines, hint)
         }
     };
+    let line_count = lines.len();
 
     // 编辑入口仅对 Text 类型开放（Bytes 二进制不支持文本编辑）：双击内容区打开编辑窗口
     let edit_target: Option<String> = match v {
@@ -90,17 +103,16 @@ pub(super) fn render_scalar(
         _ => None,
     };
 
+    // uniform_list 行级虚拟化：只渲染可见行，大值滚动不再整体排版
     let content_div = div()
         .id("redis-scalar-content")
         .flex_1()
         .min_w_0()
-        .p(px(10.0))
+        .min_h_0()
+        .py(px(6.0))
         .border_1()
         .border_color(border)
         .rounded(px(4.0))
-        .text_sm()
-        .text_color(fg)
-        .font_family("monospace")
         .when_some(edit_target, |this, key| {
             this.cursor_pointer()
                 .on_click(cx.listener(move |panel, e: &ClickEvent, _, cx| {
@@ -111,9 +123,43 @@ pub(super) fn render_scalar(
                     }
                 }))
         })
-        .child(content_text);
-
-    let content_row = h_flex().w_full().child(content_div);
+        .child(
+            // 外层横向滚动（带 id 跨帧保位），内层固定内容宽，行尾不再被视口裁掉
+            div()
+                .id("redis-scalar-hscroll")
+                .size_full()
+                .overflow_x_scroll()
+                .track_scroll(&panel.scalar_h_scroll)
+                .child(
+                    uniform_list(
+                        "redis-scalar-lines",
+                        line_count,
+                        cx.processor(move |this, range: Range<usize>, _w, _cx| {
+                            let cache = this.scalar_cache.borrow();
+                            let Some((_, _, lines, _)) = cache.as_ref() else {
+                                return Vec::new();
+                            };
+                            range
+                                .filter_map(|index| lines.get(index).cloned())
+                                .map(|line| {
+                                    div()
+                                        .h(px(ROW_H))
+                                        .px(px(10.0))
+                                        .whitespace_nowrap()
+                                        .text_sm()
+                                        .text_color(fg)
+                                        .font_family("monospace")
+                                        .child(line)
+                                        .into_any_element()
+                                })
+                                .collect()
+                        }),
+                    )
+                    .track_scroll(scroll)
+                    .h_full()
+                    .w(px(DISPLAY_CONTENT_WIDTH_PX)),
+                ),
+        );
 
     // 视图模式切换：Raw / JSON / Hex / base64，高亮当前生效模式；点击即固定为手动模式
     let mode_row = h_flex().gap(px(4.0)).children(
@@ -137,7 +183,8 @@ pub(super) fn render_scalar(
     );
 
     v_flex()
-        .w_full()
+        .size_full()
+        .min_h_0()
         .gap(px(8.0))
         .child(mode_row)
         .when(scalar_truncated, |this| {
@@ -171,5 +218,5 @@ pub(super) fn render_scalar(
                     .child(hint),
             )
         })
-        .child(content_row)
+        .child(content_div)
 }

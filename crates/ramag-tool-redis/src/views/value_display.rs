@@ -5,6 +5,59 @@ use flate2::read::GzDecoder;
 use std::fmt;
 use std::io::{self, Read, Write};
 
+/// 行虚拟化展示的单行最大字符数：超长行硬切成段，保证等高行且避免单节点排版爆炸
+pub const MAX_DISPLAY_LINE_CHARS: usize = 200;
+/// 行虚拟化内容区固定宽度：200 字符 × ~9px（text_sm 等宽）+ 余量，
+/// 配合外层横向滚动保证行尾不被视口裁掉
+pub const DISPLAY_CONTENT_WIDTH_PX: f32 = 1840.0;
+
+/// 按行切分显示文本；超长行按字符数硬切（char 边界安全），供 uniform_list 等高行虚拟化。
+/// 大值塞进单个文本节点的整体排版是滚动卡死的根源。空文本给单个空行占位
+pub fn split_display_lines(text: &str) -> Vec<gpui::SharedString> {
+    let mut lines: Vec<gpui::SharedString> = Vec::new();
+    for raw in text.split('\n') {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        if raw.is_empty() {
+            lines.push(gpui::SharedString::default());
+            continue;
+        }
+        let mut start = 0usize;
+        let mut count = 0usize;
+        for (index, _) in raw.char_indices() {
+            if count == MAX_DISPLAY_LINE_CHARS {
+                lines.push(gpui::SharedString::from(raw[start..index].to_string()));
+                start = index;
+                count = 0;
+            }
+            count += 1;
+        }
+        lines.push(gpui::SharedString::from(raw[start..].to_string()));
+    }
+    if lines.is_empty() {
+        lines.push(gpui::SharedString::default());
+    }
+    lines
+}
+
+#[cfg(test)]
+mod split_lines_tests {
+    use super::{MAX_DISPLAY_LINE_CHARS, split_display_lines};
+
+    #[test]
+    fn display_lines_split_by_newline_and_hard_wrap_on_char_boundary() {
+        assert_eq!(split_display_lines("").len(), 1);
+        assert_eq!(split_display_lines("a\nb").len(), 2);
+        // 尾随换行保留末尾空行；\r\n 归一
+        assert_eq!(split_display_lines("a\r\nb\n").len(), 3);
+        // 超长行按字符数硬切，多字节字符不越界
+        let long = "汉".repeat(MAX_DISPLAY_LINE_CHARS + 5);
+        let lines = split_display_lines(&long);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].chars().count(), MAX_DISPLAY_LINE_CHARS);
+        assert_eq!(lines[1].chars().count(), 5);
+    }
+}
+
 const MAX_GZIP_DECOMPRESSED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RENDER_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RENDERED_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
