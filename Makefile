@@ -150,7 +150,7 @@ dmg-universal:
 # （cargo-xwin / brew llvm / rust target）与 GPUI 清单资源、lld-link 的修复。
 # 只出 x64：Windows on ARM 靠内置 x64 模拟即可运行，一个包覆盖几乎所有用户。
 win-debug:
-	./scripts/build-windows-local.sh
+	./scripts/build-windows-local.sh --debug
 
 # === 清理 ============================================================
 clean:
