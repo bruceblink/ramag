@@ -1,5 +1,5 @@
 //! GitDriver trait：Git 操作统一抽象，与 SQL Driver / KvDriver 并列。
-//! dyn-safe；底层（gix）按 RepoId 缓存仓库句柄；同步 API 经 std::thread + oneshot 桥接异步
+//! dyn-safe；底层按 RepoId 缓存仓库路径与写锁；同步 API 经 worker pool 桥接异步
 
 use std::path::Path;
 
@@ -17,7 +17,7 @@ fn not_impl<T>(method: &'static str) -> Result<T> {
 
 #[async_trait]
 pub trait GitDriver: Send + Sync {
-    /// 驱动名称，如 "gix"
+    /// 驱动名称，如 "system-git"
     fn name(&self) -> &'static str;
 
     /// 打开本地仓库目录（含 `.git`）
@@ -29,10 +29,56 @@ pub trait GitDriver: Send + Sync {
     /// 工作区状态：HEAD / 变更文件 / ahead-behind / 进行中操作
     async fn status(&self, repo: &RepoId) -> Result<WorkingTreeStatus>;
 
+    /// 只查询指定路径前缀的文件状态；供文件监听增量刷新，默认实现从完整状态中过滤。
+    async fn status_paths(&self, repo: &RepoId, paths: &[String]) -> Result<Vec<FileStatus>> {
+        if paths.is_empty() {
+            return Err(DomainError::InvalidConfig("增量状态路径不能为空".into()));
+        }
+        let status = self.status(repo).await?;
+        Ok(status
+            .files
+            .into_iter()
+            .filter(|file| {
+                paths.iter().any(|prefix| {
+                    path_matches_prefix(&file.path, prefix)
+                        || file
+                            .old_path
+                            .as_deref()
+                            .is_some_and(|path| path_matches_prefix(path, prefix))
+                })
+            })
+            .collect())
+    }
+
     async fn list_branches(&self, repo: &RepoId, kind: BranchKind) -> Result<Vec<Branch>>;
+
+    /// 一次读取本地与远程分支；高性能实现可合并为单次后端查询。
+    async fn list_all_branches(&self, repo: &RepoId) -> Result<(Vec<Branch>, Vec<Branch>)> {
+        let local = self.list_branches(repo, BranchKind::Local).await?;
+        let remote = self.list_branches(repo, BranchKind::Remote).await?;
+        Ok((local, remote))
+    }
 
     /// 提交日志，分页通过 LogOptions::skip
     async fn log(&self, repo: &RepoId, opts: LogOptions) -> Result<Vec<Commit>>;
+
+    /// 按需读取单个 commit 的完整正文；历史列表实现可只返回摘要以降低首屏开销。
+    async fn commit_details(&self, repo: &RepoId, revision: &str) -> Result<Commit> {
+        let commits = self
+            .log(
+                repo,
+                LogOptions {
+                    start: Some(revision.to_string()),
+                    limit: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        commits
+            .into_iter()
+            .next()
+            .ok_or_else(|| DomainError::QueryFailed(format!("未找到 commit：{revision}")))
+    }
 
     /// 单文件 diff，`kind` 控制对比来源
     async fn diff_file(
@@ -187,6 +233,21 @@ pub trait GitDriver: Send + Sync {
     /// 列出 git 跟踪 + 未跟踪但未 ignore 的相对路径，等价 `git ls-files --cached --others --exclude-standard`
     async fn list_files(&self, _repo: &RepoId) -> Result<Vec<String>> {
         not_impl("list_files")
+    }
+
+    /// 只重查指定路径前缀在 Project Files 中的成员；默认实现从全量列表过滤。
+    async fn list_files_paths(&self, repo: &RepoId, paths: &[String]) -> Result<Vec<String>> {
+        if paths.is_empty() {
+            return Err(DomainError::InvalidConfig(
+                "增量 Project Files 路径不能为空".into(),
+            ));
+        }
+        Ok(self
+            .list_files(repo)
+            .await?
+            .into_iter()
+            .filter(|file| paths.iter().any(|prefix| path_matches_prefix(file, prefix)))
+            .collect())
     }
 
     async fn stash_save(
@@ -416,4 +477,11 @@ pub trait GitDriver: Send + Sync {
     async fn get_conflict_content(&self, _repo: &RepoId, _path: &str) -> Result<ConflictContent> {
         not_impl("get_conflict_content")
     }
+}
+
+fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }

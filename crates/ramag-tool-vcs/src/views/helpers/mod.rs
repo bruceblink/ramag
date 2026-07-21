@@ -63,7 +63,7 @@ impl FilesViewMode {
 }
 
 /// History 面板每页加载条数
-pub(super) const HISTORY_PAGE_SIZE: usize = 100;
+pub(super) const HISTORY_PAGE_SIZE: usize = 1_000;
 
 /// Diff 视图二态：[`Standard`]=带少量上下文（git -U3，默认）/ [`FullFile`]=展示全文件（-U999999）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

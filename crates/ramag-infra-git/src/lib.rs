@@ -1,5 +1,5 @@
-//! Git driver。底层 gix（纯 Rust）+ subprocess git。
-//! 同步 API 经 std::thread + oneshot 桥接（不引入 tokio）；按 RepoId 缓存仓库句柄
+//! Git driver。gix 负责仓库发现，机器可读查询与写操作复用系统 Git。
+//! 同步 API 经固定 worker pool 桥接（不引入 tokio）；按 RepoId 缓存路径与写锁。
 
 pub mod blame;
 pub mod cherry_pick;

@@ -1,5 +1,4 @@
-//! `git` 子进程封装。写操作 + 复杂查询走 subprocess（凭证 / 钩子由系统 git 处理）；
-//! 读元数据 / 分支 / log 走 gix（更快）
+//! `git` 子进程封装。机器可读查询与写操作统一走系统 Git；gix 只负责仓库发现。
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt as _;
@@ -18,8 +17,8 @@ use crate::errors::friendly_git_error;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROGRESS_LINE_MAX_BYTES: usize = 16 * 1024;
-const MAX_STDOUT_BYTES: usize = 64 * 1024 * 1024;
-const MAX_STDERR_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_STDOUT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_STDERR_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_PARSED_GIT_ITEMS: usize = 250_000;
 pub(crate) const MAX_GIT_RECORD_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -34,6 +33,7 @@ pub(crate) fn command() -> Command {
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GIT_EDITOR", "true");
         command.env("GIT_LITERAL_PATHSPECS", "1");
+        command.env("GIT_OPTIONAL_LOCKS", "0");
         command
     }
     #[cfg(not(target_os = "windows"))]
@@ -42,6 +42,7 @@ pub(crate) fn command() -> Command {
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GIT_EDITOR", "true");
         command.env("GIT_LITERAL_PATHSPECS", "1");
+        command.env("GIT_OPTIONAL_LOCKS", "0");
         command
     }
 }
@@ -73,20 +74,32 @@ fn run_git_output(repo_path: &Path, args: &[&str]) -> Result<Output> {
         arg_count = args.len(),
         "git subprocess"
     );
+    let mut git = machine_command(repo_path);
+    git.args(args);
+    run_command_output_limited(git, args.first().copied().unwrap_or("unknown"))
+}
+
+/// 构造机器可读查询命令；流式分页与一次性查询必须复用完全相同的环境和 Git 配置。
+pub(crate) fn machine_command(repo_path: &Path) -> Command {
     let mut git = command();
     git
         // 固定机器可读输出，避免 Windows 本地化 Git 让错误和 ahead/behind 解析失效。
         .env("LC_ALL", "C")
         .env("LANG", "C")
+        .arg("--no-pager")
+        // status 不执行仓库配置的 fsmonitor hook；签名文本也不得污染格式化输出。
+        .arg("-c")
+        .arg("core.fsmonitor=false")
+        .arg("-c")
+        .arg("log.showSignature=false")
         .arg("-c")
         .arg("core.quotepath=false")
         // Git for Windows 默认可能受 MAX_PATH 限制；该配置只影响 Windows 实现，其它平台无副作用。
         .arg("-c")
         .arg("core.longpaths=true")
         .arg("-C")
-        .arg(repo_path)
-        .args(args);
-    run_command_output_limited(git, args.first().copied().unwrap_or("unknown"))
+        .arg(repo_path);
+    git
 }
 
 pub(crate) fn run_command_output_limited(mut command: Command, operation: &str) -> Result<Output> {
@@ -180,12 +193,15 @@ fn wait_with_output_limited(mut child: Child, operation: &str) -> Result<Output>
     })
 }
 
-struct LimitedBytes {
-    bytes: Vec<u8>,
-    truncated: bool,
+pub(crate) struct LimitedBytes {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) truncated: bool,
 }
 
-fn read_limited(mut reader: impl std::io::Read, limit: usize) -> std::io::Result<LimitedBytes> {
+pub(crate) fn read_limited(
+    mut reader: impl std::io::Read,
+    limit: usize,
+) -> std::io::Result<LimitedBytes> {
     let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
     let mut buffer = [0u8; 16 * 1024];
     let mut truncated = false;

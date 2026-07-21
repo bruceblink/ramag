@@ -188,7 +188,7 @@ impl VcsView {
             let active = window.is_window_active();
             let became_active = active && !this.was_window_active;
             this.was_window_active = active;
-            if became_active && this.repo.is_some() && !this.loading {
+            if became_active && this.repo.is_some() && !this.loading && !this.busy {
                 this.refresh_workspace_silent(cx);
             }
         })
@@ -201,7 +201,7 @@ impl VcsView {
             status: None,
             status_request_seq: 0,
             workspace_refresh_in_flight: false,
-            workspace_refresh_pending: false,
+            workspace_refresh_pending: Default::default(),
             local_branches: Vec::new(),
             remote_branches: Vec::new(),
             error: None,
@@ -236,6 +236,7 @@ impl VcsView {
             history_retained_bytes: 0,
             history_limit_reached: false,
             history_graph_rows: std::rc::Rc::new(Vec::new()),
+            history_graph_state: Default::default(),
             history_has_more: false,
             history_request_seq: 0,
             loading_history: false,

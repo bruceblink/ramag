@@ -30,9 +30,9 @@ pub use git::{
     DiffLineKind, FileChangeKind, FileDiff, FileStatus, Hunk, LogOptions, MAX_COMMIT_MESSAGE_BYTES,
     MAX_GIT_NAME_ARG_BYTES, MAX_GIT_PATCH_BYTES, MAX_GIT_PATH_ARGS, MAX_GIT_PATH_ARGS_BYTES,
     MAX_GIT_PATH_BYTES, MAX_GIT_PATH_DEPTH, MAX_GIT_POSITIONAL_ARG_BYTES,
-    MAX_GIT_STASH_MESSAGE_BYTES, MAX_GIT_TAG_MESSAGE_BYTES, RebaseAction, RebaseTodo, ReflogEntry,
-    Remote, RepoConfig, RepoId, RepoOperation, ResetKind, Signature, Stash, StashId, Tag, TagKind,
-    WorkingTreeStatus,
+    MAX_GIT_STASH_MESSAGE_BYTES, MAX_GIT_TAG_MESSAGE_BYTES, MAX_INCREMENTAL_STATUS_PATH_BYTES,
+    MAX_INCREMENTAL_STATUS_PATHS, RebaseAction, RebaseTodo, ReflogEntry, Remote, RepoConfig,
+    RepoId, RepoOperation, ResetKind, Signature, Stash, StashId, Tag, TagKind, WorkingTreeStatus,
 };
 pub use history::{
     MAX_QUERY_HISTORY_ERROR_BYTES, MAX_QUERY_HISTORY_SQL_BYTES, QueryHistoryPage, QueryRecord,

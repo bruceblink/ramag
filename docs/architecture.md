@@ -97,11 +97,11 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 
 ### `ramag-infra-git`
 
-实现 `GitDriver`，底层 [`gix`](https://github.com/Byron/gitoxide)（纯 Rust，性能 2-10× libgit2）。
+实现 `GitDriver`：[`gix`](https://github.com/Byron/gitoxide) 负责仓库发现，status / diff / log / 分支与写操作复用系统 Git，保证与用户 Git 配置和凭据链兼容。
 
-**同步 → async 桥接**：gix 主要是同步 API，用 `std::thread + futures::oneshot` 派发，**不需要 tokio**——与 Storage 同款模式。
+**同步 → async 桥接**：固定上限的 worker pool + `futures::oneshot` 派发，避免高频刷新反复创建线程，**不需要 tokio**。
 
-**仓库句柄按 `RepoId` 缓存**；写操作通过 `Mutex<()>` 串行化，避免 `.git/index.lock` 冲突。
+**仓库路径与写锁按 `RepoId` 缓存**；只串行化写操作，status / 分支等只读查询可并发执行。文件监听优先走路径级 status，只有 Git refs 变化才刷新分支。
 
 ### `ramag-infra-storage`
 
@@ -158,7 +158,7 @@ GPUI 内部用 smol，sqlx / redis-rs / mongodb 强依赖 tokio，**直接调用
 | tokio (SQL) | sqlx 查询 | `ramag-infra-sql-shared::runtime`（MySQL + Postgres + 未来 SQLite 共用，2 worker） |
 | tokio (Redis) | redis-rs 操作 | `ramag-infra-redis::runtime`（独立 2 worker） |
 | tokio (MongoDB) | mongodb 文档操作 | `ramag-infra-mongodb::runtime`（独立 2 worker） |
-| std::thread | redb / gix 同步 API | `Storage` 与 `GitDriver` 各自的 `run_blocking` |
+| std::thread | redb / 系统 Git 同步 API | `Storage` 与 `GitDriver` 各自的 `run_blocking` |
 
 **为什么分开**：Redis Pub/Sub 长生命周期消费需要独立 worker，否则被 SQL 长查询挤占；MongoDB 同理独立一份。同种类型 driver（如多个 SQL）共享则合理。
 

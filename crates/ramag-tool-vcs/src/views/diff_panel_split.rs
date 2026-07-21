@@ -541,8 +541,9 @@ fn build_middle_list(
                                 li.and_then(|i| diff_rc.hunks[hunk_idx].lines[i].new_lineno)
                                     .and_then(|ln| {
                                         blame_rc.as_ref().and_then(|bs| {
-                                            bs.iter()
-                                                .find(|b| b.line_no == ln)
+                                            bs.binary_search_by_key(&ln, |blame| blame.line_no)
+                                                .ok()
+                                                .and_then(|index| bs.get(index))
                                                 .map(|b| super::inline_text_preview(&b.author, 10))
                                         })
                                     })
@@ -675,6 +676,76 @@ mod tests {
                 ],
             }],
         })
+    }
+
+    #[test]
+    #[ignore = "手动观察十万行 diff 布局与语法快照耗时"]
+    fn reports_large_diff_layout_latency() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const LOGICAL_LINES: usize = 100_000;
+        const ITERATIONS: usize = 5;
+
+        let mut lines = Vec::with_capacity(LOGICAL_LINES + LOGICAL_LINES / 10);
+        for index in 0..LOGICAL_LINES {
+            if index % 10 == 0 {
+                lines.push(line(
+                    DiffLineKind::Delete,
+                    &format!("let value_{index} = {index};"),
+                ));
+                lines.push(line(
+                    DiffLineKind::Add,
+                    &format!("let value_{index} = {};", index + 1),
+                ));
+            } else {
+                lines.push(line(
+                    DiffLineKind::Context,
+                    &format!("let value_{index} = {index};"),
+                ));
+            }
+        }
+        let diff = Rc::new(FileDiff {
+            path: "large.rs".into(),
+            old_path: None,
+            change_kind: FileChangeKind::Modified,
+            binary: false,
+            old_mode: None,
+            new_mode: None,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: LOGICAL_LINES as u32,
+                new_start: 1,
+                new_lines: LOGICAL_LINES as u32,
+                heading: None,
+                lines,
+            }],
+        });
+        let expanded = HashSet::new();
+
+        let mut layout_samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let cache = RefCell::new(None);
+            let started = Instant::now();
+            black_box(prepare_diff_layout(&cache, &diff, false, true, &expanded));
+            layout_samples.push(started.elapsed());
+        }
+        layout_samples.sort_unstable();
+
+        let started = Instant::now();
+        let syntax = black_box(super::super::syntax::DiffSyntaxSnapshot::new_bounded(
+            &diff,
+            Some("rust"),
+        ));
+        let syntax_elapsed = started.elapsed();
+        eprintln!(
+            "vcs large diff layout: domain_lines={}, layout_median={:.3} ms, syntax_gate={:.3} ms, syntax_built={}, syntax_bytes={}",
+            diff.hunks[0].lines.len(),
+            layout_samples[ITERATIONS / 2].as_secs_f64() * 1_000.0,
+            syntax_elapsed.as_secs_f64() * 1_000.0,
+            syntax.is_some(),
+            syntax.as_ref().map_or(0, |syntax| syntax.retained_bytes())
+        );
     }
 
     #[test]

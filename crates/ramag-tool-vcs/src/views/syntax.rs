@@ -76,6 +76,9 @@ pub(super) const MAX_HIGHLIGHT_LINE_BYTES: usize = 10_000;
 const MAX_HIGHLIGHT_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 /// 只缓存最近查询过的行，避免极端多行文件把 `Option<Vec<_>>` 预分配到数十 MiB。
 const MAX_CACHED_HIGHLIGHT_LINES: usize = 8 * 1024;
+/// Diff 同时保留旧、新两侧文本；超过此规模时直接按可见行渲染纯文本，避免首次打开等待整树解析。
+const MAX_DIFF_SNAPSHOT_LINES: usize = 20_000;
+const MAX_DIFF_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 
 /// 单字符显示列宽：CJK / 全角 / emoji ≈ 2 列，其余 1 列（近似，不引第三方 crate）
 fn char_cols(c: char) -> usize {
@@ -98,7 +101,13 @@ fn char_cols(c: char) -> usize {
 
 /// 文本显示列数：与实际渲染使用同一份 Tab 展开规则。
 pub(super) fn display_cols(text: &str) -> usize {
-    prepare_display_line(text).cols
+    text.chars().fold(0usize, |col, character| {
+        if character == '\t' {
+            col + TAB_W - (col % TAB_W)
+        } else {
+            col + char_cols(character)
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -106,7 +115,6 @@ struct PreparedDisplayLine {
     text: String,
     /// 超长行不查询高亮，但正文必须完整显示。
     highlight_len: Option<usize>,
-    cols: usize,
 }
 
 /// 只展开 Tab，不截断用户内容；极端长行仅关闭高亮。
@@ -128,7 +136,6 @@ fn prepare_display_line(text: &str) -> PreparedDisplayLine {
 
     PreparedDisplayLine {
         highlight_len: (out.len() <= MAX_HIGHLIGHT_LINE_BYTES).then_some(out.len()),
-        cols: col,
         text: out,
     }
 }
@@ -345,6 +352,36 @@ pub(super) struct DiffSyntaxSnapshot {
 }
 
 impl DiffSyntaxSnapshot {
+    /// 只为有界 Diff 构建完整语法快照；超限时调用方以虚拟列表按需渲染纯文本。
+    pub(super) fn new_bounded(diff: &FileDiff, lang: Option<&str>) -> Option<Self> {
+        let mut side_lines = 0usize;
+        let mut expanded_bytes = 0usize;
+        for (hunk_index, hunk) in diff.hunks.iter().enumerate() {
+            if hunk_index > 0 {
+                side_lines = side_lines.checked_add(2)?;
+                expanded_bytes = expanded_bytes.checked_add(2)?;
+            }
+            for line in &hunk.lines {
+                let copies = if matches!(line.kind, DiffLineKind::Context) {
+                    2
+                } else {
+                    1
+                };
+                side_lines = side_lines.checked_add(copies)?;
+                expanded_bytes = expanded_bytes.checked_add(
+                    expanded_line_bytes(&line.text)
+                        .checked_add(1)?
+                        .checked_mul(copies)?,
+                )?;
+                if side_lines > MAX_DIFF_SNAPSHOT_LINES || expanded_bytes > MAX_DIFF_SNAPSHOT_BYTES
+                {
+                    return None;
+                }
+            }
+        }
+        Some(Self::new(diff, lang))
+    }
+
     pub(super) fn new(diff: &FileDiff, lang: Option<&str>) -> Self {
         let mut old_lines = Vec::new();
         let mut new_lines = Vec::new();
@@ -437,6 +474,22 @@ impl DiffSyntaxSnapshot {
     pub(super) fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
+}
+
+fn expanded_line_bytes(text: &str) -> usize {
+    let mut bytes = 0usize;
+    let mut col = 0usize;
+    for character in text.chars() {
+        if character == '\t' {
+            let spaces = TAB_W - (col % TAB_W);
+            bytes = bytes.saturating_add(spaces);
+            col = col.saturating_add(spaces);
+        } else {
+            bytes = bytes.saturating_add(character.len_utf8());
+            col = col.saturating_add(char_cols(character));
+        }
+    }
+    bytes
 }
 
 pub(super) struct CodeLine {

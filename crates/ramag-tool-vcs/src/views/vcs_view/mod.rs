@@ -63,7 +63,7 @@ pub struct VcsView {
     pub(super) status_request_seq: u64,
     /// status + branches 联合静默刷新最多一组在途；期间的新请求合并为一次补刷新。
     pub(super) workspace_refresh_in_flight: bool,
-    pub(super) workspace_refresh_pending: bool,
+    pub(super) workspace_refresh_pending: crate::watcher::RepoRefresh,
     /// 本地分支列表
     pub(super) local_branches: Vec<Branch>,
     /// 远程分支列表
@@ -133,6 +133,8 @@ pub struct VcsView {
     pub(super) history_limit_reached: bool,
     /// history_commits 的 lane 图预计算（render 直接用，不每帧重算）
     pub(super) history_graph_rows: std::rc::Rc<Vec<super::commit_graph::CommitGraphRow>>,
+    /// 分页续算 lane 的尾部状态，避免每页重新扫描全部历史。
+    pub(super) history_graph_state: super::commit_graph::CommitLaneState,
     /// History 是否还可能有下一页（上次拉满 PAGE_SIZE 即认为有）
     pub(super) history_has_more: bool,
     /// history 请求代际号：换搜索/切仓/刷新自增，旧回包据此丢弃（防乱序覆盖）
@@ -511,7 +513,8 @@ impl VcsView {
         self.remotes_request_seq = self.remotes_request_seq.wrapping_add(1);
         self.history_left_rows_cache.get_mut().take();
         self.status_request_seq = self.status_request_seq.wrapping_add(1);
-        self.workspace_refresh_pending = false;
+        self.workspace_refresh_in_flight = false;
+        self.workspace_refresh_pending = Default::default();
         // 搜索框内容属仓库上下文，经 Render 的 defer 写回清空（异步处拿不到 Window）
         self.pending_clear_search_inputs = true;
         self.pending_clear_creation_inputs = true;
@@ -552,14 +555,16 @@ impl VcsView {
         let retained = super::history_retention::replace(commits);
         self.history_retained_bytes = retained.retained_bytes;
         self.history_limit_reached = retained.limit_reached;
+        self.history_graph_state = Default::default();
         self.history_graph_rows =
-            std::rc::Rc::new(super::commit_graph::build_commit_lanes(&retained.commits));
+            std::rc::Rc::new(self.history_graph_state.append(&retained.commits));
         self.history_commits = std::rc::Rc::new(retained.commits);
         self.history_limit_reached
     }
 
     /// 分页追加只复制 `Rc` 指针；旧提交的 subject/body 不再随页数反复深拷贝。
     pub(super) fn append_history_commits(&mut self, commits: Vec<Commit>) -> bool {
+        let previous_len = self.history_commits.len();
         let retained = super::history_retention::append(
             &self.history_commits,
             self.history_retained_bytes,
@@ -567,8 +572,10 @@ impl VcsView {
         );
         self.history_retained_bytes = retained.retained_bytes;
         self.history_limit_reached = retained.limit_reached;
-        self.history_graph_rows =
-            std::rc::Rc::new(super::commit_graph::build_commit_lanes(&retained.commits));
+        let new_rows = self
+            .history_graph_state
+            .append(&retained.commits[previous_len..]);
+        std::rc::Rc::make_mut(&mut self.history_graph_rows).extend(new_rows);
         self.history_commits = std::rc::Rc::new(retained.commits);
         self.history_limit_reached
     }
@@ -589,7 +596,7 @@ impl VcsView {
         self.busy = true;
         // 所有更早发起的静默 status 刷新失效；写操作结束时取得的状态才是权威结果。
         self.status_request_seq = self.status_request_seq.wrapping_add(1);
-        self.workspace_refresh_pending = false;
+        self.workspace_refresh_pending = Default::default();
         self.busy_label = Some(label);
         self.error = None;
         cx.notify();

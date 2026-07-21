@@ -105,16 +105,103 @@ fn init_stage_commit_log() {
     let st = block_on(driver.status(&id)).unwrap();
     assert!(st.files[0].staged.is_some(), "stage 后应 staged");
 
-    let cid = block_on(driver.commit(&id, "first commit", false, false)).unwrap();
+    let cid = block_on(driver.commit(&id, "first commit\n\nfull body", false, false)).unwrap();
     assert!(!cid.0.is_empty(), "commit 应返回非空 id");
 
     let log = block_on(driver.log(&id, LogOptions::default())).unwrap();
     assert_eq!(log.len(), 1);
     assert_eq!(log[0].subject, "first commit");
+    assert!(log[0].body.is_empty(), "历史列表不应预加载 commit 正文");
+    assert!(log[0].author.email.is_empty(), "历史列表不应预加载作者邮箱");
+    assert!(log[0].committer.name.is_empty(), "历史列表不应预加载提交者");
+    let details = block_on(driver.commit_details(&id, &cid.0)).unwrap();
+    assert_eq!(details.subject, "first commit");
+    assert_eq!(details.body, "full body");
+    assert_eq!(details.author.email, "test@ramag.dev");
 
     let st = block_on(driver.status(&id)).unwrap();
     assert!(st.files.is_empty(), "commit 后工作区应干净");
     assert!(st.head_branch.is_some(), "应有 HEAD 分支");
+}
+
+#[test]
+fn log_pages_continue_one_stream_and_reset_for_new_query() {
+    let (driver, id, tmp) = setup();
+    for index in 0..5 {
+        commit_file(
+            &driver,
+            &id,
+            tmp.path(),
+            "a.txt",
+            &format!("content {index}\n"),
+            &format!("commit {index}"),
+        );
+    }
+
+    let page = |skip, grep| {
+        block_on(driver.log(
+            &id,
+            LogOptions {
+                start: Some("HEAD".into()),
+                skip,
+                limit: Some(2),
+                grep,
+                ..Default::default()
+            },
+        ))
+        .unwrap()
+    };
+    assert_eq!(
+        page(0, None)
+            .iter()
+            .map(|commit| commit.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["commit 4", "commit 3"]
+    );
+    assert_eq!(
+        page(2, None)
+            .iter()
+            .map(|commit| commit.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["commit 2", "commit 1"]
+    );
+    assert_eq!(page(4, None)[0].subject, "commit 0");
+
+    let filtered = page(0, Some("commit 3".into()));
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].subject, "commit 3");
+}
+
+#[test]
+fn path_scoped_status_returns_only_requested_changes() {
+    let (driver, id, tmp) = setup();
+    write(tmp.path(), "a.txt", "base a\n");
+    write(tmp.path(), "b.txt", "base b\n");
+    block_on(driver.stage(&id, &["a.txt".into(), "b.txt".into()])).unwrap();
+    block_on(driver.commit(&id, "base", false, false)).unwrap();
+
+    write(tmp.path(), "a.txt", "changed a\n");
+    write(tmp.path(), "b.txt", "changed b\n");
+    let files = block_on(driver.status_paths(&id, &["a.txt".into()])).unwrap();
+
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "a.txt");
+    assert_eq!(files[0].unstaged, Some(FileChangeKind::Modified));
+}
+
+#[test]
+fn path_scoped_project_files_returns_tracked_and_visible_untracked_members() {
+    let (driver, id, tmp) = setup();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    write(tmp.path(), "src/a.rs", "tracked\n");
+    write(tmp.path(), "src/b.rs", "untracked\n");
+    write(tmp.path(), "outside.rs", "outside\n");
+    block_on(driver.stage(&id, &["src/a.rs".into()])).unwrap();
+    block_on(driver.commit(&id, "base", false, false)).unwrap();
+
+    let files = block_on(driver.list_files_paths(&id, &["src".into()])).unwrap();
+
+    assert_eq!(files, ["src/a.rs", "src/b.rs"]);
 }
 
 #[test]
@@ -340,6 +427,10 @@ fn branch_created_from_remote_explicitly_tracks_upstream() {
         .find(|branch| branch.name == "feature")
         .expect("应创建本地 feature");
     assert_eq!(feature.upstream.as_deref(), Some("origin/feature"));
+
+    let (local, remote) = block_on(driver.list_all_branches(&id)).unwrap();
+    assert!(local.iter().any(|branch| branch.name == "feature"));
+    assert!(remote.iter().any(|branch| branch.name == "origin/feature"));
 }
 
 #[test]

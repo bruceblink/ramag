@@ -1,7 +1,7 @@
 //! VcsView Remote 异步操作：fetch / pull / push（含 force-with-lease）
 
 use gpui::Context;
-use ramag_domain::entities::{BranchKind, RepoId};
+use ramag_domain::entities::RepoId;
 use tracing::{error, info};
 
 use super::super::helpers::{RemoteOp, default_remote_name, is_current_arc_slot};
@@ -177,17 +177,18 @@ impl VcsView {
             };
             // 不论成功失败都刷新一次 status（pull 后 ahead/behind 必变）；
             // remote 分支同刷：fetch/pull 更新远端 refs，push -u 会新建 origin/<branch>
+            let (new_status, branches) = futures::future::join(
+                driver.status(&repo),
+                driver.list_all_branches(&repo),
+            )
+            .await;
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
-                driver.status(&repo).await,
+                new_status,
                 "workspace status",
             );
-            let local = crate::views::vcs_view_ops_sync::best_effort_refresh(
-                driver.list_branches(&repo, BranchKind::Local).await,
-                "local branches",
-            );
-            let remote_b = crate::views::vcs_view_ops_sync::best_effort_refresh(
-                driver.list_branches(&repo, BranchKind::Remote).await,
-                "remote branches",
+            let branches = crate::views::vcs_view_ops_sync::best_effort_refresh(
+                branches,
+                "branches",
             );
             let _ = this.update(cx, |this, cx| {
                 // 只允许发起该任务的操作收尾，避免迟到回调清掉后续操作的状态槽。
@@ -216,11 +217,9 @@ impl VcsView {
                 if let Some(s) = new_status {
                     this.status = Some(s);
                 }
-                if let Some(b) = local {
-                    this.local_branches = b;
-                }
-                if let Some(b) = remote_b {
-                    this.remote_branches = b;
+                if let Some((local, remote)) = branches {
+                    this.local_branches = local;
+                    this.remote_branches = remote;
                 }
                 let paused = matches!(op, RemoteOp::Pull)
                     .then(|| this.status.as_ref().and_then(|s| s.operation))

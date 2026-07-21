@@ -1,7 +1,7 @@
-//! Project Files：git ls-files → 嵌套树 → ProjectRow → uniform_list 行级虚拟化（28px 等高）。
+//! Project Files：排序路径 → 可见行 → uniform_list 行级虚拟化（28px 等高）。
 //! 默认全部折叠（IDE 习惯，避免一打开全展开）；状态字母色复用 `helpers::code_letter_color`
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -14,20 +14,6 @@ use ramag_domain::entities::{FileChangeKind, FileStatus, contains_case_insensiti
 
 use super::helpers::{code_letter_color, code_to_letter};
 use super::vcs_view::VcsView;
-
-/// 树节点：目录（含子节点 BTreeMap，按名字字母序）或文件（叶子）
-enum Node {
-    /// 目录：children 按名字字母序，目录排前文件排后
-    Dir(BTreeMap<String, Node>),
-    /// 文件仅保留原始 `project_files` 索引，避免树与行缓存重复持有完整路径。
-    File { path_index: usize },
-}
-
-/// 节点 map 类型别名：目录名 → 子节点；BTreeMap 自带字母序
-type NodeMap = BTreeMap<String, Node>;
-
-/// `split_dirs_files` 返回类型：(目录节点列表, 文件节点列表)
-type SplitNodes = (Vec<(String, Node)>, Vec<(String, Node)>);
 
 /// uniform_list 行单元，所有变体高度必须等于 28px
 #[derive(Clone)]
@@ -77,72 +63,100 @@ impl ProjectStatusCacheEntry {
     }
 }
 
-/// 把扁平 path 列表（已排序）构建成嵌套目录树
-///
-/// 例：`["a/b.rs", "a/c.rs", "d.rs"]` → `Dir { a: Dir { b.rs: File, c.rs: File }, d.rs: File }`
-fn build_tree<'a>(paths: impl IntoIterator<Item = (usize, &'a str)>) -> NodeMap {
-    let mut root: NodeMap = BTreeMap::new();
-    for (path_index, path) in paths {
-        insert_path(&mut root, path_index, path);
-    }
-    root
+/// 已排序路径按前缀范围递归生成可见行；折叠目录只生成自身，不物化隐藏后代。
+fn build_project_rows(
+    project_files: &[String],
+    path_indices: &[usize],
+    expanded: &std::collections::HashSet<String>,
+) -> Vec<ProjectRow> {
+    let mut rows = Vec::new();
+    flatten_path_range(project_files, path_indices, expanded, "", 0, &mut rows);
+    rows
 }
 
-/// 流式插入单条 path，不为每个文件额外分配分段 Vec。
-fn insert_path(map: &mut NodeMap, path_index: usize, full_path: &str) {
-    let mut parts = full_path.split('/').peekable();
-    let mut current = map;
-    while let Some(part) = parts.next() {
-        if parts.peek().is_none() {
-            current.insert(part.to_string(), Node::File { path_index });
-            return;
-        }
-        let entry = current
-            .entry(part.to_string())
-            .or_insert_with(|| Node::Dir(BTreeMap::new()));
-        let Node::Dir(children) = entry else {
-            return;
-        };
-        current = children;
-    }
-}
-
-/// DFS 扁平化。`expanded` 不含的目录视为折叠；每层先目录后文件、按 BTreeMap 字母序
-fn flatten(
-    map: NodeMap,
+fn flatten_path_range(
+    project_files: &[String],
+    path_indices: &[usize],
     expanded: &std::collections::HashSet<String>,
     parent_path: &str,
     depth: usize,
     out: &mut Vec<ProjectRow>,
 ) {
-    let (dirs, files) = split_dirs_files(map);
-    for (name, node) in dirs {
-        if let Node::Dir(children) = node {
-            let dir_path = if parent_path.is_empty() {
-                name.clone()
-            } else {
-                format!("{parent_path}/{name}")
-            };
-            let is_expanded = expanded.contains(&dir_path);
-            out.push(ProjectRow::Dir {
-                name,
-                dir_path: dir_path.clone(),
-                depth,
-                is_expanded,
-            });
-            if is_expanded {
-                flatten(children, expanded, &dir_path, depth + 1, out);
+    // 第一遍只输出目录，保证每层目录始终排在文件之前。
+    let mut cursor = 0usize;
+    while cursor < path_indices.len() {
+        let Some(path) = project_files.get(path_indices[cursor]) else {
+            cursor += 1;
+            continue;
+        };
+        let Some(relative) = relative_project_path(path, parent_path) else {
+            cursor += 1;
+            continue;
+        };
+        let Some((name, _)) = relative.split_once('/') else {
+            cursor += 1;
+            continue;
+        };
+        let mut end = cursor + 1;
+        while end < path_indices.len() {
+            let same_directory = project_files
+                .get(path_indices[end])
+                .and_then(|path| relative_project_path(path, parent_path))
+                .and_then(|relative| relative.split_once('/').map(|(dir, _)| dir))
+                == Some(name);
+            if !same_directory {
+                break;
             }
+            end += 1;
         }
+        let dir_path = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{parent_path}/{name}")
+        };
+        let is_expanded = expanded.contains(&dir_path);
+        out.push(ProjectRow::Dir {
+            name: name.to_string(),
+            dir_path: dir_path.clone(),
+            depth,
+            is_expanded,
+        });
+        if is_expanded {
+            flatten_path_range(
+                project_files,
+                &path_indices[cursor..end],
+                expanded,
+                &dir_path,
+                depth + 1,
+                out,
+            );
+        }
+        cursor = end;
     }
-    for (name, node) in files {
-        if let Node::File { path_index } = node {
+
+    // 第二遍输出当前层直属文件；深层路径已由上面的目录范围负责。
+    for &path_index in path_indices {
+        let Some(path) = project_files.get(path_index) else {
+            continue;
+        };
+        let Some(relative) = relative_project_path(path, parent_path) else {
+            continue;
+        };
+        if !relative.contains('/') {
             out.push(ProjectRow::File {
-                name,
+                name: relative.to_string(),
                 path_index,
                 depth,
             });
         }
+    }
+}
+
+fn relative_project_path<'a>(path: &'a str, parent_path: &str) -> Option<&'a str> {
+    if parent_path.is_empty() {
+        Some(path)
+    } else {
+        path.strip_prefix(parent_path)?.strip_prefix('/')
     }
 }
 
@@ -429,7 +443,7 @@ impl VcsView {
         row.into_any_element()
     }
 
-    /// 缓存 miss 时：filter + build_tree + flatten，结果包 Rc 并写入 cache
+    /// 缓存 miss 时：过滤并按展开状态生成可见行，结果包 Rc 写入 cache。
     ///
     /// 仅在 (files_version / expanded_version / query) 任一变化时调；命中路径直接复用。
     fn rebuild_project_rows(&self, query: &str) -> Rc<Vec<ProjectRow>> {
@@ -452,14 +466,11 @@ impl VcsView {
                     .filter_map(|index| self.project_files.get(*index).map(String::as_str)),
             )
         };
-        let tree = build_tree(filtered_indices.iter().filter_map(|index| {
-            self.project_files
-                .get(*index)
-                .map(|path| (*index, path.as_str()))
-        }));
-        let mut rows: Vec<ProjectRow> = Vec::new();
-        flatten(tree, &auto_expanded, "", 0, &mut rows);
-        let rows_rc = Rc::new(rows);
+        let rows_rc = Rc::new(build_project_rows(
+            &self.project_files,
+            &filtered_indices,
+            &auto_expanded,
+        ));
         // 写回 cache（同一 render 帧内只调一次）
         *self.project_rows_cache.borrow_mut() = Some(ProjectRowsCacheEntry {
             rows: rows_rc.clone(),
@@ -493,19 +504,6 @@ impl VcsView {
         self.project_expanded_dirs_version = self.project_expanded_dirs_version.wrapping_add(1);
         cx.notify();
     }
-}
-
-/// 把节点 map 拆成 (目录列表, 文件列表)，各自保持字母序（来自 BTreeMap）
-fn split_dirs_files(map: NodeMap) -> SplitNodes {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    for (name, node) in map {
-        match node {
-            Node::Dir(_) => dirs.push((name, node)),
-            Node::File { .. } => files.push((name, node)),
-        }
-    }
-    (dirs, files)
 }
 
 /// 文件 FileStatus → 显示状态：未暂存优先（与日常关注一致）；其次暂存；冲突最高优先
@@ -564,77 +562,5 @@ fn collect_ancestors_iter<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn status(
-        path: &str,
-        staged: Option<FileChangeKind>,
-        unstaged: Option<FileChangeKind>,
-    ) -> FileStatus {
-        FileStatus {
-            path: path.into(),
-            old_path: None,
-            staged,
-            unstaged,
-        }
-    }
-
-    #[test]
-    fn status_kind_map_keeps_display_precedence() {
-        let project_files = vec![
-            "clean.rs".to_string(),
-            "conflict.rs".to_string(),
-            "modified.rs".to_string(),
-        ];
-        let files = vec![
-            status(
-                "modified.rs",
-                Some(FileChangeKind::Added),
-                Some(FileChangeKind::Modified),
-            ),
-            status(
-                "conflict.rs",
-                Some(FileChangeKind::Conflicted),
-                Some(FileChangeKind::Modified),
-            ),
-            status("clean.rs", None, None),
-        ];
-
-        let kinds = build_status_kind_map(&project_files, &files);
-
-        assert_eq!(kinds.get(&2), Some(&FileChangeKind::Modified));
-        assert_eq!(kinds.get(&1), Some(&FileChangeKind::Conflicted));
-        assert!(!kinds.contains_key(&0));
-    }
-
-    #[test]
-    fn status_cache_requires_matching_vec_identity_and_length() {
-        let kinds = Rc::new(HashMap::new());
-        let cache = ProjectStatusCacheEntry {
-            project_files_version: 7,
-            files_identity: 11,
-            files_len: 2,
-            kinds: kinds.clone(),
-        };
-
-        let cached = cache.get(7, 11, 2);
-        assert!(cached.is_some());
-        if let Some(cached) = cached {
-            assert!(Rc::ptr_eq(&cached, &kinds));
-        }
-        assert!(cache.get(8, 11, 2).is_none());
-        assert!(cache.get(7, 12, 2).is_none());
-        assert!(cache.get(7, 11, 3).is_none());
-    }
-
-    #[test]
-    fn ancestors_are_collected_incrementally() {
-        let ancestors = collect_ancestors(&["a/b/c/file.rs".to_string()]);
-
-        assert_eq!(ancestors.len(), 3);
-        assert!(ancestors.contains("a"));
-        assert!(ancestors.contains("a/b"));
-        assert!(ancestors.contains("a/b/c"));
-    }
-}
+#[path = "project_files/tests.rs"]
+mod tests;

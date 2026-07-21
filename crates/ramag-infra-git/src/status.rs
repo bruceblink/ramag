@@ -1,153 +1,148 @@
-//! 工作区状态 + 分支。HEAD 走 gix；文件变更与 ahead/behind 共用
-//! `git status --porcelain=v2 --branch -z`；进行中操作看 .git/ 标记文件。
+//! 工作区状态 + 分支。HEAD / 文件变更 / ahead-behind 共用一次 porcelain v2；
+//! 本地与远程分支共用一次 `for-each-ref`，避免重复子进程和仓库锁。
 
 use std::path::Path;
 
 use ramag_domain::entities::{
-    Branch, BranchKind, CommitId, FileChangeKind, FileStatus, RepoOperation, WorkingTreeStatus,
+    Branch, BranchKind, CommitId, FileChangeKind, FileStatus, MAX_INCREMENTAL_STATUS_PATH_BYTES,
+    MAX_INCREMENTAL_STATUS_PATHS, RepoOperation, WorkingTreeStatus,
 };
 use ramag_domain::error::{DomainError, Result};
 
-use crate::errors::{map_branch_error, map_status_error};
 use crate::git_cmd::{
-    ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_text, validate_output_path,
+    ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_output_path,
+    validate_path_args,
 };
 
-pub fn collect_status(repo: &gix::Repository, repo_path: &Path) -> Result<WorkingTreeStatus> {
-    let head = repo.head().map_err(map_status_error)?;
-    let head_branch = head
-        .referent_name()
-        .map(|name| short_branch_name(name.as_bstr()));
-    // unborn HEAD 是新仓库的正常状态；对象读取或 peel 失败则必须上报。
-    let head_commit = head
-        .try_into_peeled_id()
-        .map_err(map_status_error)?
-        .map(|id| CommitId(id.to_string()).short().to_string());
+const BRANCH_FORMAT: &str =
+    "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(symref)%1e";
 
-    let operation = detect_operation(repo);
-    let (files, ahead, behind) = parse_porcelain_v2(repo_path)?;
+pub fn collect_status(repo_path: &Path, git_dir: &Path) -> Result<WorkingTreeStatus> {
+    let parsed = run_porcelain_v2(repo_path, true, &[])?;
 
     Ok(WorkingTreeStatus {
-        head_branch,
-        head_commit,
-        operation,
-        files,
-        ahead,
-        behind,
+        head_branch: parsed.head_branch,
+        head_commit: parsed.head_commit,
+        operation: detect_operation(git_dir),
+        files: parsed.files,
+        ahead: parsed.ahead,
+        behind: parsed.behind,
     })
 }
 
-/// 本地分支同时填 upstream / ahead / behind
-pub fn list_branches(repo: &gix::Repository, kind: BranchKind) -> Result<Vec<Branch>> {
-    // 必须按 symbolic ref 名匹配 is_head，commit_id 比较会让指向同一 commit 的多分支误标
-    let head_branch_name = match repo.head_name() {
-        Ok(Some(name)) => Some(short_branch_name(name.as_bstr())),
-        Ok(None) => None,
-        Err(error) => return Err(map_branch_error(error)),
+/// 只查询文件监听报告的路径；不读取 HEAD / 分支，避免普通编辑触发全仓扫描。
+pub fn collect_status_paths(repo_path: &Path, paths: &[String]) -> Result<Vec<FileStatus>> {
+    validate_incremental_paths(paths)?;
+    Ok(run_porcelain_v2(repo_path, false, paths)?.files)
+}
+
+/// 单类分支仍只启动一次 `for-each-ref`；联合刷新使用 `list_all_branches`。
+pub fn list_branches(repo_path: &Path, kind: BranchKind) -> Result<Vec<Branch>> {
+    let refs = match kind {
+        BranchKind::Local => &["refs/heads/"][..],
+        BranchKind::Remote => &["refs/remotes/"][..],
     };
-    let platform = repo.references().map_err(map_branch_error)?;
+    let (local, remote) = query_branches(repo_path, refs)?;
+    Ok(match kind {
+        BranchKind::Local => local,
+        BranchKind::Remote => remote,
+    })
+}
 
-    let iter = match kind {
-        BranchKind::Local => platform.local_branches(),
-        BranchKind::Remote => platform.remote_branches(),
-    }
-    .map_err(map_branch_error)?;
+/// 本地与远程分支共用一次 `for-each-ref`，与 Zed 的批量读取策略一致。
+pub fn list_all_branches(repo_path: &Path) -> Result<(Vec<Branch>, Vec<Branch>)> {
+    query_branches(repo_path, &["refs/heads/", "refs/remotes/"])
+}
 
-    // 远程分支本身就是上游，无 upstream tracking
-    let tracking = if matches!(kind, BranchKind::Local) {
-        fetch_branch_tracking(repo)?
-    } else {
-        std::collections::HashMap::new()
-    };
+fn query_branches(repo_path: &Path, refs: &[&str]) -> Result<(Vec<Branch>, Vec<Branch>)> {
+    let format_arg = format!("--format={BRANCH_FORMAT}");
+    let mut args = vec!["for-each-ref", format_arg.as_str()];
+    args.extend_from_slice(refs);
+    let bytes = run_git_bytes(repo_path, &args)?;
+    parse_branch_records(&bytes)
+}
 
-    let mut branches = Vec::new();
-    for r in iter {
-        let r = match r {
-            Ok(r) => r,
-            Err(error) => {
-                tracing::warn!(error = %error, "vcs: skip unreadable branch reference");
-                continue;
-            }
-        };
-        let full = r.name().as_bstr();
-        let short = short_branch_name(full);
-        let commit_id = match r.target().try_id() {
-            Some(id) => CommitId(id.to_string()),
-            None => continue,
-        };
-        // 远程分支永远不是 HEAD
-        let is_head = matches!(kind, BranchKind::Local)
-            && head_branch_name.as_deref() == Some(short.as_str());
-
-        let (upstream, ahead, behind) = if let Some(t) = tracking.get(&short) {
-            (Some(t.upstream.clone()), t.ahead, t.behind)
+fn parse_branch_records(bytes: &[u8]) -> Result<(Vec<Branch>, Vec<Branch>)> {
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    for (record_index, raw) in bytes.split(|byte| *byte == 0x1e).enumerate() {
+        let record = raw.strip_prefix(b"\n").unwrap_or(raw);
+        let record = record.strip_suffix(b"\n").unwrap_or(record);
+        if record.is_empty() {
+            continue;
+        }
+        ensure_git_record_size(record, "Git 分支记录", record_index + 1)?;
+        let fields = record.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() != 6 {
+            return Err(branch_parse_error(record_index, "字段数量异常"));
+        }
+        let full_name = decode_branch_field(fields[0], record_index, "ref 名")?;
+        let (kind, name) = if let Some(name) = full_name.strip_prefix("refs/heads/") {
+            (BranchKind::Local, name)
+        } else if let Some(name) = full_name.strip_prefix("refs/remotes/") {
+            (BranchKind::Remote, name)
         } else {
-            (None, None, None)
+            return Err(branch_parse_error(record_index, "ref 前缀异常"));
         };
-
-        ensure_git_list_room(branches.len(), "Git 分支列表")?;
-        branches.push(Branch {
-            name: short,
+        if name.is_empty() {
+            return Err(branch_parse_error(record_index, "分支名为空"));
+        }
+        let object_id = decode_branch_field(fields[1], record_index, "commit id")?;
+        if object_id.is_empty() || !object_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(branch_parse_error(record_index, "commit id 无效"));
+        }
+        let head = decode_branch_field(fields[2], record_index, "HEAD 标记")?;
+        if head != " " && head != "*" {
+            return Err(branch_parse_error(record_index, "HEAD 标记异常"));
+        }
+        let upstream = decode_branch_field(fields[3], record_index, "upstream")?;
+        let track = decode_branch_field(fields[4], record_index, "track 状态")?;
+        let symref = decode_branch_field(fields[5], record_index, "symbolic ref")?;
+        // origin/HEAD 等符号引用不是可操作分支，保持旧 gix 实现的过滤语义。
+        if !symref.is_empty() {
+            continue;
+        }
+        let (upstream, ahead, behind) = if upstream.is_empty() {
+            if !track.is_empty() {
+                return Err(branch_parse_error(
+                    record_index,
+                    "无 upstream 但存在 track 状态",
+                ));
+            }
+            (None, None, None)
+        } else {
+            let (ahead, behind) = parse_track(track, record_index)?;
+            (Some(upstream.to_string()), ahead, behind)
+        };
+        let branch = Branch {
+            name: name.to_string(),
             kind,
-            commit: commit_id,
-            is_head,
+            commit: CommitId(object_id.to_string()),
+            is_head: matches!(kind, BranchKind::Local) && head == "*",
             upstream,
             ahead,
             behind,
-        });
+        };
+        ensure_git_list_room(local.len().saturating_add(remote.len()), "Git 分支列表")?;
+        let target = match kind {
+            BranchKind::Local => &mut local,
+            BranchKind::Remote => &mut remote,
+        };
+        target.push(branch);
     }
-    Ok(branches)
+    Ok((local, remote))
 }
 
-struct TrackInfo {
-    upstream: String,
-    ahead: Option<usize>,
-    behind: Option<usize>,
+fn decode_branch_field<'a>(bytes: &'a [u8], index: usize, label: &str) -> Result<&'a str> {
+    std::str::from_utf8(bytes)
+        .map_err(|error| branch_parse_error(index, &format!("{label} 非 UTF-8：{error}")))
 }
 
-/// `git for-each-ref` 批量取本地分支的 upstream + track 计数
-fn fetch_branch_tracking(
-    repo: &gix::Repository,
-) -> Result<std::collections::HashMap<String, TrackInfo>> {
-    let repo_path = repo.git_dir().parent().unwrap_or(repo.git_dir());
-    let out = run_git_text(
-        repo_path,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)\t%(upstream:short)\t%(upstream:track)",
-            "refs/heads/",
-        ],
-    )?;
-
-    let mut map = std::collections::HashMap::new();
-    for (line_index, line) in out.lines().enumerate() {
-        ensure_git_record_size(line.as_bytes(), "Git 分支跟踪记录", line_index + 1)?;
-        let parts: Vec<&str> = line.splitn(3, '\t').collect();
-        if parts.len() != 3 || parts[0].is_empty() {
-            return Err(branch_tracking_parse_error(
-                line_index,
-                "字段数量异常或分支名为空",
-            ));
-        }
-        if parts[1].is_empty() {
-            continue;
-        }
-        let branch = parts[0].to_string();
-        let upstream = parts[1].to_string();
-        let (ahead, behind) = parse_track(parts[2], line_index)?;
-        if !map.contains_key(&branch) {
-            ensure_git_list_room(map.len(), "Git 分支跟踪列表")?;
-        }
-        map.insert(
-            branch,
-            TrackInfo {
-                upstream,
-                ahead,
-                behind,
-            },
-        );
-    }
-    Ok(map)
+fn branch_parse_error(index: usize, reason: &str) -> DomainError {
+    DomainError::QueryFailed(format!(
+        "解析 Git 分支第 {} 条记录失败：{reason}",
+        index + 1
+    ))
 }
 
 /// `%(upstream:track)` 形如 `[ahead 2, behind 1]`
@@ -186,21 +181,77 @@ fn parse_track(s: &str, line_index: usize) -> Result<(Option<usize>, Option<usiz
 }
 
 fn branch_tracking_parse_error(line_index: usize, reason: &str) -> DomainError {
-    DomainError::QueryFailed(format!(
-        "解析 Git 分支跟踪信息第 {} 条记录失败：{reason}",
-        line_index + 1
-    ))
+    branch_parse_error(line_index, reason)
 }
 
-/// `git status --porcelain=v2 --branch -z`：NUL 分记录，首字节标 entry type；
-/// `# branch.ab +N -N` 同一回包提供 ahead/behind，避免额外启动 `git rev-list`。
-fn parse_porcelain_v2(repo_path: &Path) -> Result<(Vec<FileStatus>, Option<usize>, Option<usize>)> {
-    let bytes = run_git_bytes(repo_path, &["status", "--porcelain=v2", "--branch", "-z"])?;
-    parse_porcelain_bytes(&bytes)
+#[derive(Default)]
+struct ParsedStatus {
+    files: Vec<FileStatus>,
+    head_branch: Option<String>,
+    head_commit: Option<String>,
+    ahead: Option<usize>,
+    behind: Option<usize>,
+    saw_head_branch: bool,
+    saw_head_commit: bool,
 }
 
-fn parse_porcelain_bytes(bytes: &[u8]) -> Result<(Vec<FileStatus>, Option<usize>, Option<usize>)> {
-    let mut out = Vec::new();
+/// 完整刷新从同一份 porcelain v2 输出读取 HEAD、ahead/behind 与文件状态；路径刷新不带分支头。
+fn run_porcelain_v2(
+    repo_path: &Path,
+    include_branch: bool,
+    paths: &[String],
+) -> Result<ParsedStatus> {
+    let mut args = vec![
+        "status".to_string(),
+        "--porcelain=v2".to_string(),
+        "--untracked-files=all".to_string(),
+        "-z".to_string(),
+    ];
+    if include_branch {
+        args.push("--branch".into());
+    }
+    if !paths.is_empty() {
+        args.push("--".into());
+        args.extend(paths.iter().cloned());
+    }
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let bytes = run_git_bytes(repo_path, &args)?;
+    let mut parsed = parse_porcelain_bytes(&bytes)?;
+    // 增量 UI 合并依赖路径有序；Git 通常已排序，先线性确认，异常时才真正排序。
+    if !parsed
+        .files
+        .windows(2)
+        .all(|pair| compare_file_status(&pair[0], &pair[1]) != std::cmp::Ordering::Greater)
+    {
+        parsed.files.sort_unstable_by(compare_file_status);
+    }
+    Ok(parsed)
+}
+
+fn compare_file_status(left: &FileStatus, right: &FileStatus) -> std::cmp::Ordering {
+    left.path
+        .cmp(&right.path)
+        .then_with(|| left.old_path.cmp(&right.old_path))
+}
+
+fn validate_incremental_paths(paths: &[String]) -> Result<()> {
+    validate_path_args(paths, "增量状态路径")?;
+    let total_bytes = paths
+        .iter()
+        .try_fold(0usize, |total, path| total.checked_add(path.len() + 1))
+        .ok_or_else(|| DomainError::InvalidConfig("增量状态路径总长度溢出".into()))?;
+    if paths.len() > MAX_INCREMENTAL_STATUS_PATHS || total_bytes > MAX_INCREMENTAL_STATUS_PATH_BYTES
+    {
+        return Err(DomainError::InvalidConfig(format!(
+            "增量状态路径超过 {MAX_INCREMENTAL_STATUS_PATHS} 条或 {} KiB 上限",
+            MAX_INCREMENTAL_STATUS_PATH_BYTES / 1024
+        )));
+    }
+    Ok(())
+}
+
+fn parse_porcelain_bytes(bytes: &[u8]) -> Result<ParsedStatus> {
+    let mut parsed = ParsedStatus::default();
     let mut ahead_behind = None;
     let mut iter = bytes.split(|&b| b == 0).filter(|s| !s.is_empty());
     let mut record_index = 0;
@@ -212,10 +263,10 @@ fn parse_porcelain_bytes(bytes: &[u8]) -> Result<(Vec<FileStatus>, Option<usize>
             .copied()
             .ok_or_else(|| status_parse_error(record_index, "记录为空"))?;
         match first {
-            b'#' => parse_branch_header(record, record_index, &mut ahead_behind)?,
+            b'#' => parse_branch_header(record, record_index, &mut parsed, &mut ahead_behind)?,
             b'1' => {
-                ensure_git_list_room(out.len(), "Git 工作区文件状态")?;
-                out.push(parse_ordinary(record, record_index)?);
+                ensure_git_list_room(parsed.files.len(), "Git 工作区文件状态")?;
+                parsed.files.push(parse_ordinary(record, record_index)?);
             }
             b'2' => {
                 // type 2 紧跟一条 NUL 分隔的 old_path
@@ -223,16 +274,18 @@ fn parse_porcelain_bytes(bytes: &[u8]) -> Result<(Vec<FileStatus>, Option<usize>
                     .next()
                     .ok_or_else(|| status_parse_error(record_index, "rename 记录缺少旧路径"))?;
                 ensure_git_record_size(old_path, "Git 工作区旧路径", record_index)?;
-                ensure_git_list_room(out.len(), "Git 工作区文件状态")?;
-                out.push(parse_rename(record, old_path, record_index)?);
+                ensure_git_list_room(parsed.files.len(), "Git 工作区文件状态")?;
+                parsed
+                    .files
+                    .push(parse_rename(record, old_path, record_index)?);
             }
             b'?' => {
-                ensure_git_list_room(out.len(), "Git 工作区文件状态")?;
-                out.push(parse_untracked(record, record_index)?);
+                ensure_git_list_room(parsed.files.len(), "Git 工作区文件状态")?;
+                parsed.files.push(parse_untracked(record, record_index)?);
             }
             b'u' => {
-                ensure_git_list_room(out.len(), "Git 工作区文件状态")?;
-                out.push(parse_unmerged(record, record_index)?);
+                ensure_git_list_room(parsed.files.len(), "Git 工作区文件状态")?;
+                parsed.files.push(parse_unmerged(record, record_index)?);
             }
             other => {
                 return Err(status_parse_error(
@@ -242,36 +295,65 @@ fn parse_porcelain_bytes(bytes: &[u8]) -> Result<(Vec<FileStatus>, Option<usize>
             }
         }
     }
-    let (ahead, behind) = ahead_behind
+    (parsed.ahead, parsed.behind) = ahead_behind
         .map(|(ahead, behind)| (Some(ahead), Some(behind)))
         .unwrap_or((None, None));
-    Ok((out, ahead, behind))
+    parsed
+        .files
+        .sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(parsed)
 }
 
 fn parse_branch_header(
     record: &[u8],
     index: usize,
+    parsed: &mut ParsedStatus,
     ahead_behind: &mut Option<(usize, usize)>,
 ) -> Result<()> {
     let text = decode_status_record(record, index)?;
-    let Some(value) = text.strip_prefix("# branch.ab ") else {
-        // branch.oid/head/upstream 是已知头；Git 允许以后增加头字段，调用方须可忽略。
-        if text.starts_with("# ") {
-            return Ok(());
+    if let Some(value) = text.strip_prefix("# branch.oid ") {
+        if parsed.saw_head_commit {
+            return Err(status_parse_error(index, "branch.oid 重复"));
         }
-        return Err(status_parse_error(index, "分支头记录格式异常"));
-    };
-    if ahead_behind.is_some() {
-        return Err(status_parse_error(index, "branch.ab 重复"));
+        parsed.saw_head_commit = true;
+        if value != "(initial)" {
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(status_parse_error(index, "branch.oid 无效"));
+            }
+            parsed.head_commit = Some(value.chars().take(7).collect());
+        }
+        return Ok(());
     }
-    let mut parts = value.split_ascii_whitespace();
-    let ahead = parse_branch_count(parts.next(), '+', index)?;
-    let behind = parse_branch_count(parts.next(), '-', index)?;
-    if parts.next().is_some() {
-        return Err(status_parse_error(index, "branch.ab 字段数量异常"));
+    if let Some(value) = text.strip_prefix("# branch.head ") {
+        if parsed.saw_head_branch {
+            return Err(status_parse_error(index, "branch.head 重复"));
+        }
+        parsed.saw_head_branch = true;
+        if value != "(detached)" {
+            if value.is_empty() || value.chars().any(char::is_control) {
+                return Err(status_parse_error(index, "branch.head 无效"));
+            }
+            parsed.head_branch = Some(value.to_string());
+        }
+        return Ok(());
     }
-    *ahead_behind = Some((ahead, behind));
-    Ok(())
+    if let Some(value) = text.strip_prefix("# branch.ab ") {
+        if ahead_behind.is_some() {
+            return Err(status_parse_error(index, "branch.ab 重复"));
+        }
+        let mut parts = value.split_ascii_whitespace();
+        let ahead = parse_branch_count(parts.next(), '+', index)?;
+        let behind = parse_branch_count(parts.next(), '-', index)?;
+        if parts.next().is_some() {
+            return Err(status_parse_error(index, "branch.ab 字段数量异常"));
+        }
+        *ahead_behind = Some((ahead, behind));
+        return Ok(());
+    }
+    // branch.upstream 与 Git 未来新增的 `#` 头不影响当前快照。
+    text.starts_with("# ")
+        .then_some(())
+        .ok_or_else(|| status_parse_error(index, "分支头记录格式异常"))
 }
 
 fn parse_branch_count(value: Option<&str>, prefix: char, index: usize) -> Result<usize> {
@@ -407,8 +489,7 @@ fn status_parse_error(index: usize, reason: &str) -> DomainError {
     ))
 }
 
-fn detect_operation(repo: &gix::Repository) -> Option<RepoOperation> {
-    let git_dir = repo.git_dir();
+fn detect_operation(git_dir: &Path) -> Option<RepoOperation> {
     if git_dir.join("MERGE_HEAD").exists() {
         return Some(RepoOperation::Merge);
     }
@@ -422,14 +503,6 @@ fn detect_operation(repo: &gix::Repository) -> Option<RepoOperation> {
         return Some(RepoOperation::Revert);
     }
     None
-}
-
-fn short_branch_name(full: &gix::bstr::BStr) -> String {
-    let s = full.to_string();
-    s.strip_prefix("refs/heads/")
-        .or_else(|| s.strip_prefix("refs/remotes/"))
-        .map(|x| x.to_string())
-        .unwrap_or(s)
 }
 
 #[cfg(test)]
@@ -453,14 +526,15 @@ mod tests {
                     2 R. N... 100644 100644 100644 abc def R100 new.rs\0old.rs\0\
                     ? new file.rs\0\
                     u UU N... 100644 100644 100644 100644 abc def ghi conflict.rs\0";
-        let (files, ahead, behind) = parse_porcelain_bytes(raw)?;
-        assert_eq!(files.len(), 4);
-        assert_eq!(files[0].path, "src/lib.rs");
-        assert_eq!(files[1].path, "new.rs");
-        assert_eq!(files[1].old_path.as_deref(), Some("old.rs"));
-        assert_eq!(files[2].path, "new file.rs");
-        assert_eq!(files[3].staged, Some(FileChangeKind::Conflicted));
-        assert_eq!((ahead, behind), (None, None));
+        let parsed = parse_porcelain_bytes(raw)?;
+        assert_eq!(parsed.files.len(), 4);
+        assert_eq!(parsed.files[0].path, "conflict.rs");
+        assert_eq!(parsed.files[0].staged, Some(FileChangeKind::Conflicted));
+        assert_eq!(parsed.files[1].path, "new file.rs");
+        assert_eq!(parsed.files[2].path, "new.rs");
+        assert_eq!(parsed.files[2].old_path.as_deref(), Some("old.rs"));
+        assert_eq!(parsed.files[3].path, "src/lib.rs");
+        assert_eq!((parsed.ahead, parsed.behind), (None, None));
         Ok(())
     }
 
@@ -468,9 +542,28 @@ mod tests {
     fn parses_branch_ahead_behind_without_extra_command() -> Result<()> {
         let raw = b"# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0\
                     # branch.ab +12 -3\0? file.txt\0";
-        let (files, ahead, behind) = parse_porcelain_bytes(raw)?;
-        assert_eq!(files.len(), 1);
-        assert_eq!((ahead, behind), (Some(12), Some(3)));
+        let parsed = parse_porcelain_bytes(raw)?;
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.head_branch.as_deref(), Some("main"));
+        assert_eq!(parsed.head_commit.as_deref(), Some("abc"));
+        assert_eq!((parsed.ahead, parsed.behind), (Some(12), Some(3)));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_local_and_remote_branches_in_one_response() -> Result<()> {
+        let raw = b"refs/heads/main\0aaaaaaaa\0*\0origin/main\0[ahead 2, behind 1]\0\x1e\n\
+                    refs/remotes/origin/main\0bbbbbbbb\0 \0\0\0\x1e\n\
+                    refs/remotes/origin/HEAD\0bbbbbbbb\0 \0\0\0refs/remotes/origin/main\x1e\n";
+        let (local, remote) = parse_branch_records(raw)?;
+
+        assert_eq!(local.len(), 1);
+        assert!(local[0].is_head);
+        assert_eq!(local[0].upstream.as_deref(), Some("origin/main"));
+        assert_eq!((local[0].ahead, local[0].behind), (Some(2), Some(1)));
+        assert_eq!(remote.len(), 1);
+        assert_eq!(remote[0].name, "origin/main");
+        assert!(!remote[0].is_head);
         Ok(())
     }
 

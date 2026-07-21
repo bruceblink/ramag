@@ -29,7 +29,7 @@ pub(in crate::views) fn render_commit_row(
 ) -> AnyElement {
     let time_str = relative_time(&c.author.timestamp);
     let author_short = super::super::inline_text_preview(&c.author.name, 20);
-    let dot_color = lane_color(graph.lane);
+    let dot_color = lane_color(usize::from(graph.lane));
     let hover_bg = cx.theme().muted;
     let mut sel_bg = accent;
     sel_bg.a = 0.12;
@@ -149,17 +149,7 @@ pub(in crate::views) fn render_commit_row(
             .item(
                 ramag_ui::menu_item("复制提交信息").on_click(move |_, _, app| {
                     e_msg.update(app, |this, cx| {
-                        let message = this
-                            .history_commits
-                            .iter()
-                            .find(|commit| commit.id.0 == c_msg)
-                            .map(|commit| commit.message_full());
-                        if let Some(message) = message {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(message));
-                            this.notify_success("已复制提交信息", cx);
-                        } else {
-                            this.notify_warning("提交列表已刷新，请重新选择", cx);
-                        }
+                        this.copy_commit_message(c_msg.clone(), cx);
                     });
                 }),
             )

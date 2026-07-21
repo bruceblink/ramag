@@ -1,4 +1,4 @@
-//! Git 领域实体：纯数据结构 + serde。infra 层（gix）填值，UI 层只读
+//! Git 领域实体：纯数据结构 + serde。infra 层填值，UI 层只读
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -14,6 +14,9 @@ pub const MAX_GIT_PATH_BYTES: usize = 64 * 1024;
 pub const MAX_GIT_PATH_DEPTH: usize = 256;
 pub const MAX_GIT_PATH_ARGS: usize = 50_000;
 pub const MAX_GIT_PATH_ARGS_BYTES: usize = 16 * 1024 * 1024;
+/// 文件监听增量 status 走 argv；限制批次以兼容 Windows 命令行长度并控制合并成本。
+pub const MAX_INCREMENTAL_STATUS_PATHS: usize = 128;
+pub const MAX_INCREMENTAL_STATUS_PATH_BYTES: usize = 16 * 1024;
 /// 行级暂存 / 回滚 patch 通过 stdin 传递，限制克隆与子进程写入的峰值内存。
 pub const MAX_GIT_PATCH_BYTES: usize = 16 * 1024 * 1024;
 /// Tag 备注通过 stdin 传给 git，仍限制异常输入的内存占用。
@@ -92,7 +95,7 @@ pub enum FileChangeKind {
 }
 
 /// 单文件的工作区 + 暂存区状态。同一文件可同时 staged + unstaged（先 add 再改）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStatus {
     /// 工作树相对路径
     pub path: String,
@@ -209,7 +212,7 @@ pub struct LogOptions {
     pub path_filter: Option<String>,
     /// 分页跳过条数
     pub skip: usize,
-    /// 取条数，None = 全部（UI 通常按页 100）
+    /// 取条数，None = 全部（UI 通常按页 1000）
     pub limit: Option<usize>,
     /// 仅当前分支可达（false = 所有可达）
     pub current_branch_only: bool,

@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use ramag_domain::entities::Commit;
 
-const MAX_HISTORY_COMMITS: usize = 10_000;
+const MAX_HISTORY_COMMITS: usize = 100_000;
 const MAX_HISTORY_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) struct RetainedHistory {

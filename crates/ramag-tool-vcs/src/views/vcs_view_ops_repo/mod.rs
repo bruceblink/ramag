@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 
 use gpui::Context;
-use ramag_domain::entities::{BranchKind, MAX_COMMIT_MESSAGE_BYTES};
+use ramag_domain::entities::MAX_COMMIT_MESSAGE_BYTES;
 use tracing::{error, info};
 
 use super::helpers::{
@@ -884,9 +884,8 @@ pub(super) async fn open_repo_async(
 
     let id = repo_config.id.clone();
     let status_fut = driver.status(&id);
-    let local_fut = driver.list_branches(&id, BranchKind::Local);
-    let remote_fut = driver.list_branches(&id, BranchKind::Remote);
-    let (status, local, remote) = futures::future::join3(status_fut, local_fut, remote_fut).await;
+    let branches_fut = driver.list_all_branches(&id);
+    let (status, branches) = futures::future::join(status_fut, branches_fut).await;
 
     let _ = this.update(cx, |this, cx| {
         this.loading = false;
@@ -938,20 +937,16 @@ pub(super) async fn open_repo_async(
                 load_errors.push(format!("读取工作区状态失败：{e}"));
             }
         }
-        match local {
-            Ok(branches) => this.local_branches = branches,
-            Err(e) => {
-                tracing::error!(error = %e, "vcs: open repo local branches failed");
-                this.local_branches.clear();
-                load_errors.push(format!("读取本地分支失败：{e}"));
+        match branches {
+            Ok((local, remote)) => {
+                this.local_branches = local;
+                this.remote_branches = remote;
             }
-        }
-        match remote {
-            Ok(branches) => this.remote_branches = branches,
             Err(e) => {
-                tracing::error!(error = %e, "vcs: open repo remote branches failed");
+                tracing::error!(error = %e, "vcs: open repo branches failed");
+                this.local_branches.clear();
                 this.remote_branches.clear();
-                load_errors.push(format!("读取远程分支失败：{e}"));
+                load_errors.push(format!("读取分支失败：{e}"));
             }
         }
         if !load_errors.is_empty() {

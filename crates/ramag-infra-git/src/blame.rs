@@ -52,6 +52,12 @@ fn parse_porcelain(text: &str) -> Result<Vec<BlameLine>> {
         if final_line == 0 {
             return Err(blame_parse_error(out.len(), "最终行号必须大于 0"));
         }
+        if out
+            .last()
+            .is_some_and(|previous| previous.line_no >= final_line)
+        {
+            return Err(blame_parse_error(out.len(), "最终行号未严格递增"));
+        }
         if let Some(count) = parts.next() {
             count
                 .parse::<u32>()
@@ -177,6 +183,13 @@ abc123 2 2
         assert!(
             parse_porcelain("abc123 1 1\nauthor Alice\nauthor-time bad\nsummary x\n\tline\n")
                 .is_err()
+        );
+        assert!(
+            parse_porcelain(
+                "abc123 1 2\nauthor Alice\nauthor-time 1700000000\nsummary x\n\tline 2\n\
+                 abc123 2 1\n\tline 1\n"
+            )
+            .is_err()
         );
     }
 }

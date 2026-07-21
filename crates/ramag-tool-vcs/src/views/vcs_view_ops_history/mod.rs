@@ -14,6 +14,36 @@ use super::helpers::ViewMode;
 use super::vcs_view::VcsView;
 
 impl VcsView {
+    /// 历史列表只保留摘要；复制完整 message 时按需读取正文。
+    pub(crate) fn copy_commit_message(&mut self, commit_id: String, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.as_ref().map(|repo| repo.id.clone()) else {
+            return;
+        };
+        let driver = self.driver.clone();
+        cx.spawn(async move |this, cx| {
+            let result = driver.commit_details(&repo, &commit_id).await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.is_current_repo(&repo) {
+                    return;
+                }
+                match result {
+                    Ok(commit) => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            commit.message_full(),
+                        ));
+                        this.notify_success("已复制提交信息", cx);
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, %commit_id, "vcs: copy commit message failed");
+                        this.error = Some(format!("读取提交信息失败：{error}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     /// 单文件历史：设 path_filter + 打开下半 history pane（history_pane_visible=true 必需，否则无反馈）
     pub(crate) fn view_file_history(&mut self, path: String, cx: &mut Context<Self>) {
         self.history_path_filter = Some(path);
@@ -36,7 +66,7 @@ impl VcsView {
         self.load_history_page(0, cx);
     }
 
-    /// 进入「commit 详情视图」：拉文件列表 + 自动选第一个文件 → 拉 diff
+    /// 进入「commit 详情视图」：并发按需读取正文与文件列表。
     pub(crate) fn load_commit_detail(&mut self, commit_id: String, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
@@ -57,13 +87,24 @@ impl VcsView {
         let request_seq = self.commit_detail_request_seq;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = driver.list_commit_files(&repo, &commit_id).await;
+            let (details, files) = futures::future::join(
+                driver.commit_details(&repo, &commit_id),
+                driver.list_commit_files(&repo, &commit_id),
+            )
+            .await;
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) || this.commit_detail_request_seq != request_seq {
                     return;
                 }
                 this.loading_commit_files = false;
-                match result {
+                match details {
+                    Ok(commit) => this.viewing_commit = Some(std::rc::Rc::new(commit)),
+                    Err(e) => {
+                        error!(error = %e, %commit_id, "vcs: load commit details failed");
+                        this.error = Some(format!("加载 commit 详情失败：{e}"));
+                    }
+                }
+                match files {
                     Ok(files) => {
                         // 默认不选中任何文件，等用户主动点击
                         this.commit_files = std::rc::Rc::new(files);
@@ -177,7 +218,7 @@ impl VcsView {
                 Ok(diff) => {
                     let syntax_path = path_for_diff.clone();
                     ramag_app::run_blocking(move || {
-                        let syntax = super::syntax::DiffSyntaxSnapshot::new(
+                        let syntax = super::syntax::DiffSyntaxSnapshot::new_bounded(
                             &diff,
                             super::syntax::lang_for_path(&syntax_path),
                         );
@@ -196,7 +237,7 @@ impl VcsView {
                     match result {
                         Ok((d, syntax)) => {
                             let d = std::rc::Rc::new(d);
-                            let syntax = std::rc::Rc::new(syntax);
+                            let syntax = syntax.map(std::rc::Rc::new);
                             let still_current = this.active_file_tab_idx.is_some_and(|idx| {
                                 this.file_tabs.get(idx).is_some_and(|tab| {
                                     tab.path == path_for_diff && tab.source == source_for_diff
@@ -204,14 +245,14 @@ impl VcsView {
                             });
                             if still_current {
                                 this.current_diff = Some(d.clone());
-                                this.current_diff_syntax = Some(syntax.clone());
+                                this.current_diff_syntax = syntax.clone();
                                 this.commit_file_diff = Some(d.clone());
                             }
                             if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
                                 tab.path == path_for_diff && tab.source == source_for_diff
                             }) {
                                 tab.cached_diff = Some(d);
-                                tab.cached_diff_syntax = Some(syntax);
+                                tab.cached_diff_syntax = syntax;
                             }
                             this.prune_file_tab_payloads();
                         }

@@ -1,12 +1,27 @@
 //! 工作区状态同步：静默刷新（窗口激活 / 手动刷新）+ Changes 文件 tabs 与最新 status 对齐
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::Context;
-use ramag_domain::entities::{BranchKind, FileChangeKind, FileStatus};
+use ramag_domain::entities::{FileChangeKind, FileStatus};
 
 use super::helpers::{FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
+use crate::watcher::RepoRefresh;
+
+mod merge;
+
+use self::merge::{
+    merge_partial_project_files, merge_partial_status, path_matches_prefixes, status_changes,
+};
+
+enum WorkspaceStatusResult {
+    Full(ramag_domain::error::Result<ramag_domain::entities::WorkingTreeStatus>),
+    Partial {
+        paths: Vec<String>,
+        result: ramag_domain::error::Result<Vec<FileStatus>>,
+    },
+}
 
 /// 写操作后的辅助刷新允许保留旧 UI 数据，但失败必须留有可定位日志。
 pub(super) fn best_effort_refresh<T>(
@@ -26,9 +41,20 @@ impl VcsView {
     /// 静默刷新工作区：status + 本地/远程分支 + 当前 Files 视图数据。
     /// 不显示整屏 loading；完成后对齐 Changes tabs（外部改动 / 终端 git 操作后界面自动跟上）
     pub(super) fn refresh_workspace_silent(&mut self, cx: &mut Context<Self>) {
+        self.refresh_workspace(RepoRefresh::full(), cx);
+    }
+
+    fn refresh_workspace_change(&mut self, refresh: RepoRefresh, cx: &mut Context<Self>) {
+        if !refresh.is_empty() {
+            self.refresh_workspace(refresh, cx);
+        }
+    }
+
+    fn refresh_workspace(&mut self, refresh: RepoRefresh, cx: &mut Context<Self>) {
         if !begin_workspace_refresh(
             &mut self.workspace_refresh_in_flight,
             &mut self.workspace_refresh_pending,
+            refresh.clone(),
         ) {
             return;
         }
@@ -39,44 +65,125 @@ impl VcsView {
         self.status_request_seq = self.status_request_seq.wrapping_add(1);
         let request_seq = self.status_request_seq;
         let driver = self.driver.clone();
+        let refresh_project_files =
+            matches!(self.files_view_mode, super::helpers::FilesViewMode::Project)
+                && self.project_files_version > 0
+                && !self.loading_project_files;
         cx.spawn(async move |this, cx| {
-            let status_fut = driver.status(&repo);
-            let local_fut = driver.list_branches(&repo, BranchKind::Local);
-            let remote_fut = driver.list_branches(&repo, BranchKind::Remote);
-            let (status, local, remote) =
-                futures::future::join3(status_fut, local_fut, remote_fut).await;
+            let RepoRefresh {
+                full_status,
+                refresh_refs,
+                paths,
+            } = refresh;
+            let status_driver = driver.clone();
+            let status_repo = repo.clone();
+            let project_paths = (!full_status && refresh_project_files).then(|| paths.clone());
+            let status_fut = async move {
+                if full_status {
+                    WorkspaceStatusResult::Full(status_driver.status(&status_repo).await)
+                } else {
+                    let result = status_driver.status_paths(&status_repo, &paths).await;
+                    WorkspaceStatusResult::Partial { paths, result }
+                }
+            };
+            let branch_repo = repo.clone();
+            let branch_driver = driver.clone();
+            let branches_fut = async move {
+                if refresh_refs {
+                    Some(branch_driver.list_all_branches(&branch_repo).await)
+                } else {
+                    None
+                }
+            };
+            let project_repo = repo.clone();
+            let project_files_fut = async move {
+                match project_paths {
+                    Some(paths) => {
+                        let result = driver.list_files_paths(&project_repo, &paths).await;
+                        Some((paths, result))
+                    }
+                    None => None,
+                }
+            };
+            let (status_result, branches, project_files) =
+                futures::join!(status_fut, branches_fut, project_files_fut);
             let _ = this.update(cx, |this, cx| {
+                if !this.is_current_repo(&repo) {
+                    return;
+                }
                 this.workspace_refresh_in_flight = false;
-                let rerun = std::mem::take(&mut this.workspace_refresh_pending)
-                    && this.repo.is_some()
-                    && !this.loading
-                    && !this.busy;
-                if !this.is_current_repo(&repo) || this.status_request_seq != request_seq {
-                    if rerun {
-                        this.refresh_workspace_silent(cx);
+                let mut next_refresh = std::mem::take(&mut this.workspace_refresh_pending);
+                if this.status_request_seq != request_seq {
+                    if should_rerun(this, &next_refresh) {
+                        this.refresh_workspace(next_refresh, cx);
                     }
                     return;
                 }
-                // 文件状态指纹没变 → 跳过 tabs 对齐和 diff 重拉，避免窗口激活白闪一次
-                let (files_changed, head_changed) = match (&this.status, &status) {
-                    (Some(old), Ok(new)) => status_changes(old, new),
-                    (None, Ok(_)) => (true, false),
-                    _ => (false, false),
+                let event_paths = match &status_result {
+                    WorkspaceStatusResult::Full(_) => None,
+                    WorkspaceStatusResult::Partial { paths, .. } => Some(paths.clone()),
                 };
-                match status {
-                    Ok(s) => this.status = Some(s),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "vcs: workspace status refresh failed");
-                        this.error = Some(format!("刷新工作区状态失败：{e}"));
+                let (files_changed, head_changed) = match status_result {
+                    WorkspaceStatusResult::Full(status) => match status {
+                        Ok(status) => {
+                            let changes = this
+                                .status
+                                .as_ref()
+                                .map_or((true, false), |old| status_changes(old, &status));
+                            this.status = Some(status);
+                            changes
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "vcs: workspace status refresh failed");
+                            this.error = Some(format!("刷新工作区状态失败：{error}"));
+                            (false, false)
+                        }
+                    },
+                    WorkspaceStatusResult::Partial { paths, result } => match result {
+                        Ok(files) => match this.status.as_mut() {
+                            Some(status) => (merge_partial_status(status, &paths, files), false),
+                            None => {
+                                // 缺少完整基线时不能安全合并，补一次完整刷新。
+                                next_refresh.merge(RepoRefresh::full());
+                                (false, false)
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(error = %error, "vcs: incremental workspace status refresh failed");
+                            this.error = Some(format!("增量刷新工作区状态失败：{error}"));
+                            (false, false)
+                        }
+                    },
+                };
+                let mut project_files_incremental = false;
+                if let Some((paths, result)) = project_files {
+                    project_files_incremental = true;
+                    match result {
+                        Ok(files) => {
+                            if merge_partial_project_files(&mut this.project_files, &paths, files) {
+                                this.prune_project_expanded_dirs();
+                                this.project_files_version =
+                                    this.project_files_version.wrapping_add(1);
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "vcs: incremental project files refresh failed");
+                            this.error = Some(format!("增量刷新 Project Files 失败：{error}"));
+                            this.reload_project_files(cx);
+                        }
                     }
                 }
-                match local {
-                    Ok(b) => this.local_branches = b,
-                    Err(e) => tracing::warn!(error = %e, "vcs: local branch refresh failed"),
-                }
-                match remote {
-                    Ok(b) => this.remote_branches = b,
-                    Err(e) => tracing::warn!(error = %e, "vcs: remote branch refresh failed"),
+                if let Some(branches) = branches {
+                    match branches {
+                        Ok((local, remote)) => {
+                            this.local_branches = local;
+                            this.remote_branches = remote;
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "vcs: branch refresh failed");
+                            this.error = Some(format!("刷新分支失败：{error}"));
+                        }
+                    }
                 }
                 if head_changed {
                     // 两个分支都干净时 files 指纹同为空，但文件内容仍可能完全不同。
@@ -84,31 +191,64 @@ impl VcsView {
                     if this.history_pane_visible || !this.history_commits.is_empty() {
                         this.load_history_page(0, cx);
                     }
-                } else if files_changed {
-                    // Project Files 内容缓存随外部改动失效（重激活 tab 时按需重读）
+                } else {
+                    let full_status_refresh = event_paths.is_none();
+                    let event_prefixes = event_paths
+                        .as_ref()
+                        .map(|paths| paths.iter().map(String::as_str).collect::<HashSet<_>>());
+                    // watcher 明确给出路径时只失效命中标签；全量 status 变化才失效全部。
                     for tab in &mut this.file_tabs {
-                        if matches!(tab.source, FileTabSource::ProjectFiles) {
+                        if matches!(tab.source, FileTabSource::ProjectFiles)
+                            && ((full_status_refresh && files_changed)
+                                || event_prefixes
+                                    .as_ref()
+                                    .is_some_and(|prefixes| path_matches_prefixes(&tab.path, prefixes)))
+                        {
                             tab.cached_content = None;
                         }
                     }
-                    this.sync_changes_tabs_with_status(cx);
-                    // active 是 PF tab 时立即重读（sync 只处理 Changes 来源的重拉）
+                    if files_changed {
+                        this.sync_changes_tabs_with_status_paths(event_paths.as_deref(), cx);
+                    } else if let Some(prefixes) = event_prefixes.as_ref()
+                        && let Some(idx) = this.active_file_tab_idx
+                        && let Some(tab) = this.file_tabs.get(idx).cloned()
+                        && path_matches_prefixes(&tab.path, prefixes)
+                        && let FileTabSource::Changes(kind) = tab.source
+                    {
+                        // 状态种类不变不代表内容没变；仅重拉命中的活动 diff。
+                        if let Some(active_tab) = this.file_tabs.get_mut(idx) {
+                            active_tab.cached_diff = None;
+                            active_tab.cached_diff_syntax = None;
+                        }
+                        this.select_file(tab.path, kind, cx);
+                    }
+                    // active 是 PF tab 时立即重读。
                     if let Some(idx) = this.active_file_tab_idx
                         && let Some(tab) = this.file_tabs.get(idx).cloned()
                         && matches!(tab.source, FileTabSource::ProjectFiles)
+                        && ((full_status_refresh && files_changed)
+                            || event_prefixes.as_ref().is_some_and(|prefixes| {
+                                path_matches_prefixes(&tab.path, prefixes)
+                            }))
                     {
                         this.select_pf_file(tab.path, cx);
                     }
-                    // Project / Stash 模式的列表数据独立于 status，单独拉
-                    match this.files_view_mode {
-                        super::helpers::FilesViewMode::Project => this.reload_project_files(cx),
-                        super::helpers::FilesViewMode::Stash => this.reload_stashes(cx),
-                        super::helpers::FilesViewMode::Changes => {}
+                    if files_changed {
+                        // 全量刷新没有路径补丁时，Project Files 仍需重拉。
+                        match this.files_view_mode {
+                            super::helpers::FilesViewMode::Project
+                                if !project_files_incremental =>
+                            {
+                                this.reload_project_files(cx);
+                            }
+                            super::helpers::FilesViewMode::Stash => this.reload_stashes(cx),
+                            _ => {}
+                        }
                     }
                 }
                 cx.notify();
-                if rerun {
-                    this.refresh_workspace_silent(cx);
+                if should_rerun(this, &next_refresh) {
+                    this.refresh_workspace(next_refresh, cx);
                 }
             });
         })
@@ -126,8 +266,11 @@ impl VcsView {
         // futures mpsc 每个 sender 自带一个保留槽；容量 0 + 单 sender 即最多积压一个刷新信号。
         let (tx, mut rx) = futures::channel::mpsc::channel::<()>(0);
         let tx = std::sync::Arc::new(std::sync::Mutex::new(tx));
+        let pending = std::sync::Arc::new(std::sync::Mutex::new(RepoRefresh::default()));
         let tx_for_watcher = tx.clone();
-        match crate::watcher::RepoWatcher::start(root, move || {
+        let pending_for_watcher = pending.clone();
+        match crate::watcher::RepoWatcher::start(root, move |refresh| {
+            merge_pending_refresh(&pending_for_watcher, refresh);
             enqueue_workspace_refresh(&tx_for_watcher);
         }) {
             Ok(w) => {
@@ -135,10 +278,11 @@ impl VcsView {
                 cx.spawn(async move |this, cx| {
                     use futures::StreamExt as _;
                     while rx.next().await.is_some() {
+                        let refresh = take_pending_refresh(&pending);
                         let alive = this.update(cx, |this, cx| {
                             // busy 中跳过：写操作完成路径自己会刷新，避免叠加
                             if this.repo.is_some() && !this.loading && !this.busy {
-                                this.refresh_workspace_silent(cx);
+                                this.refresh_workspace_change(refresh, cx);
                             }
                         });
                         if alive.is_err() {
@@ -158,13 +302,29 @@ impl VcsView {
     /// 把 Changes 来源的文件 tabs 与最新 `self.status` 对齐：
     /// - 文件已无任何变更 → 关闭 tab（diff 必为空，保留无意义）
     /// - 文件变更组别迁移（如 stage 后 Unstaged → Staged）→ 重定向 tab 的 GroupKind
-    /// - 保留的 tab 一律清 diff 缓存（状态变过，旧 diff 不可信）；active 是 Changes 时重拉
+    /// - 全量刷新清全部 Changes 缓存；watcher 增量刷新只清命中路径并重拉命中的 active tab
     ///
     /// ProjectFiles / Commit 来源的 tabs 不受影响（仅索引可能因关闭前移）
     pub(super) fn sync_changes_tabs_with_status(&mut self, cx: &mut Context<Self>) {
+        self.sync_changes_tabs_with_status_paths(None, cx);
+    }
+
+    /// watcher 增量刷新只失效命中路径的 Changes 缓存；`paths=None` 表示全量失效。
+    fn sync_changes_tabs_with_status_paths(
+        &mut self,
+        paths: Option<&[String]>,
+        cx: &mut Context<Self>,
+    ) {
         self.prune_changes_collapsed_dirs();
         let Some(status) = self.status.as_ref() else {
             return;
+        };
+        let affected_prefixes =
+            paths.map(|paths| paths.iter().map(String::as_str).collect::<HashSet<_>>());
+        let is_affected = |path: &str| {
+            affected_prefixes
+                .as_ref()
+                .is_none_or(|prefixes| path_matches_prefixes(path, prefixes))
         };
         // 没有 Changes 来源标签时无需复制或索引可能很大的工作区文件列表。
         if !self
@@ -203,8 +363,10 @@ impl VcsView {
                 continue;
             }
             tab.source = FileTabSource::Changes(new_kind);
-            tab.cached_diff = None;
-            tab.cached_diff_syntax = None;
+            if is_affected(&tab.path) {
+                tab.cached_diff = None;
+                tab.cached_diff_syntax = None;
+            }
             new_tabs.push(tab);
         }
         self.file_tabs = new_tabs;
@@ -229,8 +391,11 @@ impl VcsView {
                 self.active_file_tab_idx = Some(idx);
                 let tab = self.file_tabs[idx].clone();
                 match tab.source {
-                    // Changes：缓存已清，走 select_file 重拉（占位/伪 diff 由其内部分支处理）
-                    FileTabSource::Changes(kind) => self.select_file(tab.path, kind, cx),
+                    FileTabSource::Changes(kind)
+                        if is_affected(&tab.path) || tab.cached_diff.is_none() =>
+                    {
+                        self.select_file(tab.path, kind, cx);
+                    }
                     // 其余来源缓存未动，仅同步派生字段
                     _ => self.activate_file_tab_state(tab),
                 }
@@ -241,7 +406,11 @@ impl VcsView {
                 if let Some(idx) = self.active_file_tab_idx {
                     let tab = self.file_tabs[idx].clone();
                     match tab.source {
-                        FileTabSource::Changes(kind) => self.select_file(tab.path, kind, cx),
+                        FileTabSource::Changes(kind)
+                            if is_affected(&tab.path) || tab.cached_diff.is_none() =>
+                        {
+                            self.select_file(tab.path, kind, cx);
+                        }
                         _ => self.activate_file_tab_state(tab),
                     }
                 } else {
@@ -260,13 +429,42 @@ impl VcsView {
     }
 }
 
-fn begin_workspace_refresh(in_flight: &mut bool, pending: &mut bool) -> bool {
+fn begin_workspace_refresh(
+    in_flight: &mut bool,
+    pending: &mut RepoRefresh,
+    refresh: RepoRefresh,
+) -> bool {
     if *in_flight {
-        *pending = true;
+        pending.merge(refresh);
         false
     } else {
         *in_flight = true;
         true
+    }
+}
+
+fn should_rerun(this: &VcsView, pending: &RepoRefresh) -> bool {
+    this.repo.is_some() && !this.loading && !this.busy && !pending.is_empty()
+}
+
+fn merge_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>, refresh: RepoRefresh) {
+    match pending.lock() {
+        Ok(mut pending) => pending.merge(refresh),
+        Err(error) => {
+            tracing::warn!("vcs workspace refresh state lock poisoned");
+            error.into_inner().merge(refresh);
+        }
+    }
+}
+
+fn take_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>) -> RepoRefresh {
+    match pending.lock() {
+        Ok(mut pending) => std::mem::take(&mut *pending),
+        Err(error) => {
+            tracing::warn!("vcs workspace refresh state lock poisoned");
+            let mut pending = error.into_inner();
+            std::mem::take(&mut *pending)
+        }
     }
 }
 
@@ -285,26 +483,6 @@ fn enqueue_workspace_refresh(sender: &std::sync::Mutex<futures::channel::mpsc::S
             tracing::warn!(error = %error, "vcs workspace refresh enqueue failed");
         }
     }
-}
-
-/// 文件状态指纹：路径 + 暂存/工作区变更类型。两次 status 指纹一致 = 工作区无实质变化
-fn files_fingerprint(
-    files: &[FileStatus],
-) -> Vec<(&str, Option<FileChangeKind>, Option<FileChangeKind>)> {
-    files
-        .iter()
-        .map(|f| (f.path.as_str(), f.staged, f.unstaged))
-        .collect()
-}
-
-fn status_changes(
-    old: &ramag_domain::entities::WorkingTreeStatus,
-    new: &ramag_domain::entities::WorkingTreeStatus,
-) -> (bool, bool) {
-    (
-        files_fingerprint(&old.files) != files_fingerprint(&new.files),
-        old.head_commit != new.head_commit || old.head_branch != new.head_branch,
-    )
 }
 
 /// 按最新文件状态推导 tab 应归属的组：原组仍有效则保持，否则按 冲突 > 已暂存 > 未暂存 > 未跟踪 迁移
@@ -333,107 +511,5 @@ fn redirect_group_kind(f: &FileStatus, prefer: GroupKind) -> GroupKind {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fs(staged: Option<FileChangeKind>, unstaged: Option<FileChangeKind>) -> FileStatus {
-        FileStatus {
-            path: "a.rs".into(),
-            old_path: None,
-            staged,
-            unstaged,
-        }
-    }
-
-    #[test]
-    fn keeps_valid_group() {
-        // 同文件先 add 再改：两组都有效，各自保持原组
-        let f = fs(
-            Some(FileChangeKind::Modified),
-            Some(FileChangeKind::Modified),
-        );
-        assert_eq!(
-            redirect_group_kind(&f, GroupKind::Staged),
-            GroupKind::Staged
-        );
-        assert_eq!(
-            redirect_group_kind(&f, GroupKind::Unstaged),
-            GroupKind::Unstaged
-        );
-    }
-
-    #[test]
-    fn clean_external_checkout_still_counts_as_head_change() {
-        let old = ramag_domain::entities::WorkingTreeStatus {
-            head_branch: Some("main".into()),
-            head_commit: Some("aaaaaaa".into()),
-            ..Default::default()
-        };
-        let new = ramag_domain::entities::WorkingTreeStatus {
-            head_branch: Some("feature".into()),
-            head_commit: Some("bbbbbbb".into()),
-            ..Default::default()
-        };
-        assert_eq!(status_changes(&old, &new), (false, true));
-    }
-
-    #[test]
-    fn stage_moves_unstaged_tab_to_staged() {
-        let f = fs(Some(FileChangeKind::Modified), None);
-        assert_eq!(
-            redirect_group_kind(&f, GroupKind::Unstaged),
-            GroupKind::Staged
-        );
-    }
-
-    #[test]
-    fn unstage_moves_staged_tab_back() {
-        let f = fs(None, Some(FileChangeKind::Modified));
-        assert_eq!(
-            redirect_group_kind(&f, GroupKind::Staged),
-            GroupKind::Unstaged
-        );
-    }
-
-    #[test]
-    fn staging_untracked_redirects_to_staged() {
-        let f = fs(Some(FileChangeKind::Added), None);
-        assert_eq!(
-            redirect_group_kind(&f, GroupKind::Untracked),
-            GroupKind::Staged
-        );
-    }
-
-    #[test]
-    fn conflict_wins_over_everything() {
-        let f = fs(Some(FileChangeKind::Conflicted), None);
-        assert_eq!(
-            redirect_group_kind(&f, GroupKind::Unstaged),
-            GroupKind::Conflict
-        );
-    }
-
-    #[test]
-    fn workspace_refresh_signals_are_coalesced() {
-        let (tx, mut rx) = futures::channel::mpsc::channel(0);
-        let tx = std::sync::Mutex::new(tx);
-
-        enqueue_workspace_refresh(&tx);
-        enqueue_workspace_refresh(&tx);
-
-        assert_eq!(rx.try_recv(), Ok(()));
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn in_flight_workspace_refresh_keeps_only_one_pending_run() {
-        let mut in_flight = false;
-        let mut pending = false;
-
-        assert!(begin_workspace_refresh(&mut in_flight, &mut pending));
-        assert!(!begin_workspace_refresh(&mut in_flight, &mut pending));
-        assert!(!begin_workspace_refresh(&mut in_flight, &mut pending));
-        assert!(in_flight);
-        assert!(pending);
-    }
-}
+#[path = "vcs_view_ops_sync/tests.rs"]
+mod tests;

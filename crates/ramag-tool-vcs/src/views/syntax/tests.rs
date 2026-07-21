@@ -52,7 +52,7 @@ fn unknown_or_no_extension_is_none() {
 fn display_line_expands_tabs_and_keeps_long_utf8_text() {
     let short = prepare_display_line("a\tb");
     assert_eq!(short.text, "a   b");
-    assert_eq!(short.cols, 5);
+    assert_eq!(display_cols("a\tb"), 5);
 
     let source = "中".repeat(MAX_HIGHLIGHT_LINE_BYTES);
     let long = prepare_display_line(&source);
@@ -142,4 +142,33 @@ fn diff_snapshot_maps_old_and_new_sides() {
         Some("let new = 2;")
     );
     assert!(snapshot.side_line(0, 0, false, &theme, key).is_none());
+}
+
+#[test]
+fn oversized_diff_skips_eager_syntax_snapshot() {
+    let line = DiffLine {
+        kind: DiffLineKind::Context,
+        old_lineno: Some(1),
+        new_lineno: Some(1),
+        text: "let value = 1;".into(),
+    };
+    let logical_lines = MAX_DIFF_SNAPSHOT_LINES / 2 + 1;
+    let diff = FileDiff {
+        path: "large.rs".into(),
+        old_path: None,
+        change_kind: FileChangeKind::Modified,
+        binary: false,
+        old_mode: None,
+        new_mode: None,
+        hunks: vec![Hunk {
+            old_start: 1,
+            old_lines: logical_lines as u32,
+            new_start: 1,
+            new_lines: logical_lines as u32,
+            heading: None,
+            lines: vec![line; logical_lines],
+        }],
+    };
+
+    assert!(DiffSyntaxSnapshot::new_bounded(&diff, Some("rust")).is_none());
 }

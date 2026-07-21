@@ -6,12 +6,12 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Ramag Git driver (gix backend, syncronous → async bridge)"
+description = "Ramag Git driver (system Git with a bounded synchronous-to-async bridge)"
 
 [dependencies]
 ramag-domain = { workspace = true }
 
-# 纯 Rust gitoxide：性能优于 libgit2，async 桥接由本 crate runtime.rs 处理
+# 仅用于可靠发现普通仓库、submodule 与 linked worktree 的实际 Git 目录
 gix = { workspace = true }
 
 # 同步 → async 桥接

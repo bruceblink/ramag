@@ -46,12 +46,47 @@
 打开仓库 → 查看改动 → 对照 Diff → Stage → Commit → Push / Pull
 ```
 
-- 工作区状态自动刷新，支持未跟踪文件预览与文件树浏览。
+- 工作区状态按文件路径增量刷新，Git 元数据变化时才执行全量刷新。
 - Unified / Split Diff、整文件上下文和按文件类型语法高亮。
 - Branch、Tag、Stash、Merge、Rebase、Cherry-pick、Reflog、Blame。
 - 冲突三栏处理、提交图、Amend，以及可继续或中止的冲突流程。
 
 写操作与网络认证复用系统 Git 和既有 SSH 配置，不在应用内复制一套凭据体系。
+
+### Git 性能基线
+
+VCS 以“普通保存即时响应，并在大型仓库保持有界延迟”为性能基线。常见路径不会重扫整个仓库：
+
+```text
+文件事件 → 60ms 合并窗口 → 路径级 status → 有序区间补丁 → 仅刷新受影响标签
+```
+
+同一台 Apple M2 Pro、Release 构建、预热后各测量 100 次：
+
+| 场景 | 中位数 |
+|---|---:|
+| Ramag 仓库，单文件状态刷新 | 11.106 ms |
+| 大型 Rust 工作区，单文件状态刷新 | 11.425 ms |
+
+监听合并窗口为 60ms，叠加 Git 查询后，普通单文件保存的状态刷新通常约为 71ms。查询在后台 worker 执行，UI 线程只合并有序路径补丁并刷新受影响标签。
+
+大型合成仓库的 Release 压力结果：
+
+- 100,000 条文件状态：路径查询 17.735 ms、UI 合并 0.059 ms；全量 status 为 503.434 ms。
+- 20,000 次提交连续读取 20 × 1,000 条：持久流 116.124 ms，重复 `--skip` 为 877.853 ms。
+- 100,000 个 Project Files：折叠树 1.829 ms，全展开 7.420 ms，单路径成员合并 0.750 μs。
+- 100,000 条提交图：布局 2.599 ms，每行图状态 3 字节。
+- 110,000 行 Diff：虚拟化布局 4.440 ms，超大语法快照判定 0.452 ms，不保留完整语法树。
+
+基准保留为默认忽略的测试，可在本机仓库复现：
+
+```bash
+RAMAG_PERF_REPO=/path/to/repo RAMAG_PERF_PATH=src/main.rs \
+  RAMAG_PERF_ITERATIONS=100 cargo test -p ramag-infra-git --release \
+  --test performance reports_workspace_refresh_latency -- --ignored --nocapture
+
+cargo test -p ramag-tool-vcs --release reports_large_ -- --ignored --nocapture
+```
 
 ## 剪贴板工作台
 

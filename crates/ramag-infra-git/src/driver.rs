@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::mapref::entry::Entry;
-use parking_lot::Mutex;
 
 use ramag_domain::entities::{
     BlameLine, Branch, BranchKind, Commit, CommitId, ConflictContent, DiffKind, FileDiff,
@@ -26,7 +25,7 @@ use crate::{
 #[async_trait]
 impl GitDriver for GitDriverImpl {
     fn name(&self) -> &'static str {
-        "gix"
+        "system-git"
     }
 
     async fn open_repo(&self, path: &Path) -> Result<RepoConfig> {
@@ -56,11 +55,13 @@ impl GitDriver for GitDriverImpl {
             run_blocking(move || gix::open(&canonical_for_open).map_err(errors::map_open_error))
                 .await?;
 
+        let git_dir = repo.git_dir().to_path_buf();
         let id = RepoId::new();
         let handle = Arc::new(OpenRepo {
-            repo: Arc::new(Mutex::new(repo)),
             path: canonical.clone(),
-            write_lock: Arc::new(Mutex::new(())),
+            git_dir,
+            write_lock: Arc::new(parking_lot::Mutex::new(())),
+            log_pager: parking_lot::Mutex::new(None),
         });
         self.repos.insert(id.clone(), handle);
         self.by_path.insert(canonical.clone(), id.clone());
@@ -88,26 +89,35 @@ impl GitDriver for GitDriverImpl {
 
     async fn status(&self, repo: &RepoId) -> Result<WorkingTreeStatus> {
         let handle = self.get_repo(repo)?;
-        run_blocking(move || {
-            let path = handle.path.clone();
-            let repo = handle.repo.lock();
-            status::collect_status(&repo, &path)
-        })
-        .await
+        run_blocking(move || status::collect_status(&handle.path, &handle.git_dir)).await
+    }
+
+    async fn status_paths(&self, repo: &RepoId, paths: &[String]) -> Result<Vec<FileStatus>> {
+        let handle = self.get_repo(repo)?;
+        let paths = paths.to_vec();
+        run_blocking(move || status::collect_status_paths(&handle.path, &paths)).await
     }
 
     async fn list_branches(&self, repo: &RepoId, kind: BranchKind) -> Result<Vec<Branch>> {
         let handle = self.get_repo(repo)?;
-        run_blocking(move || {
-            let repo = handle.repo.lock();
-            status::list_branches(&repo, kind)
-        })
-        .await
+        run_blocking(move || status::list_branches(&handle.path, kind)).await
+    }
+
+    async fn list_all_branches(&self, repo: &RepoId) -> Result<(Vec<Branch>, Vec<Branch>)> {
+        let handle = self.get_repo(repo)?;
+        run_blocking(move || status::list_all_branches(&handle.path)).await
     }
 
     async fn log(&self, repo: &RepoId, opts: LogOptions) -> Result<Vec<Commit>> {
         let handle = self.get_repo(repo)?;
-        run_blocking(move || log::run_log(&handle.path, &opts)).await
+        run_blocking(move || log::run_log_paged(&handle.path, &handle.log_pager, &opts)).await
+    }
+
+    async fn commit_details(&self, repo: &RepoId, revision: &str) -> Result<Commit> {
+        git_cmd::validate_positional_arg(revision, "commit 详情 revision")?;
+        let handle = self.get_repo(repo)?;
+        let revision = revision.to_string();
+        run_blocking(move || log::run_commit(&handle.path, &revision)).await
     }
 
     async fn diff_file(&self, repo: &RepoId, path: &str, kind: DiffKind) -> Result<FileDiff> {
@@ -174,6 +184,12 @@ impl GitDriver for GitDriverImpl {
     async fn list_files(&self, repo: &RepoId) -> Result<Vec<String>> {
         let handle = self.get_repo(repo)?;
         run_blocking(move || work_ops::list_files(&handle.path)).await
+    }
+
+    async fn list_files_paths(&self, repo: &RepoId, paths: &[String]) -> Result<Vec<String>> {
+        let handle = self.get_repo(repo)?;
+        let paths = paths.to_vec();
+        run_blocking(move || work_ops::list_files_paths(&handle.path, &paths)).await
     }
 
     async fn commit(

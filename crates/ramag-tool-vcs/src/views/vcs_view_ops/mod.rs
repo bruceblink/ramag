@@ -183,27 +183,20 @@ impl VcsView {
         }
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
-            let opts = LogOptions {
-                limit: Some(1),
-                ..Default::default()
-            };
             let head_msg = driver
-                .log(&repo, opts)
+                .commit_details(&repo, "HEAD")
                 .await
-                .map(|commits| commits.first().map(|c| c.message_full()));
+                .map(|commit| commit.message_full());
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) || !this.commit_amend {
                     return;
                 }
                 match head_msg {
                     // 异步期间用户已输入内容则不覆盖
-                    Ok(Some(msg)) if this.commit_input.read(cx).value().trim().is_empty() => {
+                    Ok(msg) if this.commit_input.read(cx).value().trim().is_empty() => {
                         this.pending_commit_text = Some(msg.into());
                     }
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        this.error = Some("无法读取 HEAD 提交消息：历史记录为空".into());
-                    }
+                    Ok(_) => {}
                     Err(error) => {
                         tracing::error!(error = %error, "vcs: load amend message failed");
                         this.error = Some(format!("加载上次提交消息失败：{error}"));
@@ -251,6 +244,21 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
+        // status 已确认 unborn HEAD 时直接给空态，避免为必然失败的 `git log HEAD` 启进程。
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|status| status.head_commit.is_none())
+        {
+            self.history_request_seq = self.history_request_seq.wrapping_add(1);
+            if skip == 0 {
+                self.set_history_commits(Vec::new());
+            }
+            self.history_has_more = false;
+            self.loading_history = false;
+            cx.notify();
+            return;
+        }
         // skip>0 是 load-more：正在加载时跳过避免重复拉同一页；
         // skip=0 是刷新/切仓/换搜索，即使有在途请求也要发起（否则切仓后新仓库 history 会因早退而不加载）
         if skip > 0 && self.loading_history {
@@ -272,6 +280,8 @@ impl VcsView {
             .to_string();
         let (grep, author, since) = parse_search_query(&raw_search);
         let opts = LogOptions {
+            // UI 已由 status 排除 unborn HEAD；显式 HEAD 让 infra 省掉额外 rev-parse 探测。
+            start: Some("HEAD".into()),
             skip,
             limit: Some(HISTORY_PAGE_SIZE),
             path_filter: self.history_path_filter.clone(),

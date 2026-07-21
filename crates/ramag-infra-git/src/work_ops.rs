@@ -2,11 +2,12 @@
 
 use std::path::Path;
 
+use ramag_domain::entities::{MAX_INCREMENTAL_STATUS_PATH_BYTES, MAX_INCREMENTAL_STATUS_PATHS};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::git_cmd::{
     ensure_git_list_room, ensure_git_record_size, run_git_bytes, run_git_pathspecs, run_git_probe,
-    validate_name_arg, validate_output_path, validate_positional_arg,
+    validate_name_arg, validate_output_path, validate_path_args, validate_positional_arg,
 };
 
 pub fn stage(repo_path: &Path, paths: &[String]) -> Result<()> {
@@ -32,6 +33,36 @@ pub fn list_files(repo_path: &Path) -> Result<Vec<String>> {
     let mut files = parse_file_list(&bytes)?;
     // list_files 整体在 Git worker 中运行；排序也留在 worker，避免 25 万路径回到 UI 后阻塞。
     files.sort_unstable();
+    Ok(files)
+}
+
+/// 仅重查指定路径前缀，供 watcher 增量维护 Project Files 成员。
+pub fn list_files_paths(repo_path: &Path, paths: &[String]) -> Result<Vec<String>> {
+    validate_path_args(paths, "增量 Project Files 路径")?;
+    let total_bytes = paths
+        .iter()
+        .try_fold(0usize, |total, path| total.checked_add(path.len() + 1))
+        .ok_or_else(|| DomainError::InvalidConfig("增量 Project Files 路径总长度溢出".into()))?;
+    if paths.len() > MAX_INCREMENTAL_STATUS_PATHS || total_bytes > MAX_INCREMENTAL_STATUS_PATH_BYTES
+    {
+        return Err(DomainError::InvalidConfig(format!(
+            "增量 Project Files 路径超过 {MAX_INCREMENTAL_STATUS_PATHS} 条或 {} KiB 上限",
+            MAX_INCREMENTAL_STATUS_PATH_BYTES / 1024
+        )));
+    }
+    let mut args = vec![
+        "ls-files".to_string(),
+        "--cached".into(),
+        "--others".into(),
+        "--exclude-standard".into(),
+        "-z".into(),
+        "--".into(),
+    ];
+    args.extend(paths.iter().cloned());
+    let args_ref = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut files = parse_file_list(&run_git_bytes(repo_path, &args_ref)?)?;
+    files.sort_unstable();
+    files.dedup();
     Ok(files)
 }
 

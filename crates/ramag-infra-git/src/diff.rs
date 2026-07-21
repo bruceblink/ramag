@@ -135,21 +135,27 @@ fn parse_unified_diff(text: &str, path: &str) -> Result<FileDiff> {
             ensure_git_list_room(parsed_items, "Git diff 实体")?;
             parsed_items += 1;
             if let Some(h) = current.take() {
-                push_validated_hunk(h, &mut hunks)?;
+                push_validated_hunk(h, old_no, new_no, &mut hunks)?;
             }
             // `@@ -os[,ol] +ns[,nl] @@ heading`
             let header = line
                 .strip_prefix("@@ ")
                 .and_then(|value| value.split_once(" @@"))
                 .ok_or_else(|| diff_parse_error(line_index, "hunk 头格式无效"))?;
-            let ranges: Vec<&str> = header.0.split_whitespace().collect();
-            if ranges.len() != 2 {
+            let mut ranges = header.0.split_whitespace();
+            let Some(old_field) = ranges.next() else {
+                return Err(diff_parse_error(line_index, "hunk 范围字段数量异常"));
+            };
+            let Some(new_field) = ranges.next() else {
+                return Err(diff_parse_error(line_index, "hunk 范围字段数量异常"));
+            };
+            if ranges.next().is_some() {
                 return Err(diff_parse_error(line_index, "hunk 范围字段数量异常"));
             }
-            let old_range = ranges[0]
+            let old_range = old_field
                 .strip_prefix('-')
                 .ok_or_else(|| diff_parse_error(line_index, "旧范围缺少 '-' 前缀"))?;
-            let new_range = ranges[1]
+            let new_range = new_field
                 .strip_prefix('+')
                 .ok_or_else(|| diff_parse_error(line_index, "新范围缺少 '+' 前缀"))?;
             let (os, ol) = parse_range(old_range, line_index)?;
@@ -226,7 +232,7 @@ fn parse_unified_diff(text: &str, path: &str) -> Result<FileDiff> {
         }
     }
     if let Some(h) = current {
-        push_validated_hunk(h, &mut hunks)?;
+        push_validated_hunk(h, old_no, new_no, &mut hunks)?;
     }
 
     Ok(FileDiff {
@@ -267,18 +273,19 @@ fn next_line_number(current: u32, line_index: usize) -> Result<u32> {
         .ok_or_else(|| diff_parse_error(line_index, "行号超出支持范围"))
 }
 
-fn push_validated_hunk(hunk: Hunk, hunks: &mut Vec<Hunk>) -> Result<()> {
-    let actual_old = hunk
-        .lines
-        .iter()
-        .filter(|line| matches!(line.kind, DiffLineKind::Context | DiffLineKind::Delete))
-        .count();
-    let actual_new = hunk
-        .lines
-        .iter()
-        .filter(|line| matches!(line.kind, DiffLineKind::Context | DiffLineKind::Add))
-        .count();
-    if actual_old != hunk.old_lines as usize || actual_new != hunk.new_lines as usize {
+fn push_validated_hunk(
+    hunk: Hunk,
+    next_old: u32,
+    next_new: u32,
+    hunks: &mut Vec<Hunk>,
+) -> Result<()> {
+    let actual_old = next_old
+        .checked_sub(hunk.old_start)
+        .ok_or_else(|| DomainError::QueryFailed("解析 Git diff 失败：旧行号倒退".into()))?;
+    let actual_new = next_new
+        .checked_sub(hunk.new_start)
+        .ok_or_else(|| DomainError::QueryFailed("解析 Git diff 失败：新行号倒退".into()))?;
+    if actual_old != hunk.old_lines || actual_new != hunk.new_lines {
         return Err(DomainError::QueryFailed(format!(
             "解析 Git diff 失败：hunk 声明 {}/{} 行，实际 {}/{} 行",
             hunk.old_lines, hunk.new_lines, actual_old, actual_new
@@ -298,6 +305,48 @@ fn diff_parse_error(line_index: usize, reason: &str) -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "手动观察十万行 diff 解析耗时"]
+    fn reports_large_diff_parse_latency() -> Result<()> {
+        use std::fmt::Write as _;
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const LOGICAL_LINES: usize = 100_000;
+        const ITERATIONS: usize = 5;
+
+        let mut text = String::with_capacity(8 * 1024 * 1024);
+        writeln!(text, "@@ -1,{LOGICAL_LINES} +1,{LOGICAL_LINES} @@")
+            .map_err(|error| DomainError::QueryFailed(format!("构造 diff 基准失败：{error}")))?;
+        for index in 0..LOGICAL_LINES {
+            let marker = if index % 10 == 0 { '-' } else { ' ' };
+            writeln!(text, "{marker}let value_{index} = {index};").map_err(|error| {
+                DomainError::QueryFailed(format!("构造 diff 基准失败：{error}"))
+            })?;
+            if index % 10 == 0 {
+                writeln!(text, "+let value_{index} = {};", index + 1).map_err(|error| {
+                    DomainError::QueryFailed(format!("构造 diff 基准失败：{error}"))
+                })?;
+            }
+        }
+
+        black_box(parse_unified_diff(&text, "large.rs")?);
+        let mut samples = Vec::with_capacity(ITERATIONS);
+        for _ in 0..ITERATIONS {
+            let started = Instant::now();
+            black_box(parse_unified_diff(&text, "large.rs")?);
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "vcs large diff parse: lines={}, bytes={}, median={:.3} ms",
+            LOGICAL_LINES,
+            text.len(),
+            samples[ITERATIONS / 2].as_secs_f64() * 1_000.0
+        );
+        Ok(())
+    }
 
     #[test]
     fn parses_simple_modify_diff() -> Result<()> {

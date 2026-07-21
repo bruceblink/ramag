@@ -112,7 +112,7 @@ impl VcsView {
                 Ok(diff) => {
                     let syntax_path = path_for_diff.clone();
                     ramag_app::run_blocking(move || {
-                        let syntax = super::syntax::DiffSyntaxSnapshot::new(
+                        let syntax = super::syntax::DiffSyntaxSnapshot::new_bounded(
                             &diff,
                             super::syntax::lang_for_path(&syntax_path),
                         );
@@ -131,19 +131,19 @@ impl VcsView {
                     match result {
                         Ok((d, syntax)) => {
                             let d = std::rc::Rc::new(d);
-                            let syntax = std::rc::Rc::new(syntax);
+                            let syntax = syntax.map(std::rc::Rc::new);
                             let still_current =
                                 this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind));
                             if still_current {
                                 this.current_diff = Some(d.clone());
-                                this.current_diff_syntax = Some(syntax.clone());
+                                this.current_diff_syntax = syntax.clone();
                             }
                             // 不缓存到捕获的索引：关 tab 后索引可能位移，必须按完整来源定位。
                             if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
                                 tab.path == path_for_diff && tab.source == source_for_diff
                             }) {
                                 tab.cached_diff = Some(d);
-                                tab.cached_diff_syntax = Some(syntax);
+                                tab.cached_diff_syntax = syntax;
                             }
                             this.prune_file_tab_payloads();
                         }
@@ -232,7 +232,7 @@ impl VcsView {
                     Some(error) => Err(ramag_domain::error::DomainError::Other(error)),
                     None => {
                         let diff = build_untracked_diff(raw);
-                        let syntax = super::syntax::DiffSyntaxSnapshot::new(
+                        let syntax = super::syntax::DiffSyntaxSnapshot::new_bounded(
                             &diff,
                             super::syntax::lang_for_path(&rel_for_worker),
                         );
@@ -250,13 +250,13 @@ impl VcsView {
                 match result {
                     Ok((diff, syntax)) => {
                         let d = std::rc::Rc::new(diff);
-                        let syntax = std::rc::Rc::new(syntax);
+                        let syntax = syntax.map(std::rc::Rc::new);
                         if let Some(tab) = this.file_tabs.iter_mut().find(|t| {
                             t.path == path
                                 && t.source == FileTabSource::Changes(GroupKind::Untracked)
                         }) {
                             tab.cached_diff = Some(d.clone());
-                            tab.cached_diff_syntax = Some(syntax.clone());
+                            tab.cached_diff_syntax = syntax.clone();
                         }
                         this.prune_file_tab_payloads();
                         let is_selected = this
@@ -265,7 +265,7 @@ impl VcsView {
                             .is_some_and(|(p, k)| p == &path && *k == GroupKind::Untracked);
                         if is_selected {
                             this.current_diff = Some(d);
-                            this.current_diff_syntax = Some(syntax);
+                            this.current_diff_syntax = syntax;
                         }
                     }
                     Err(msg) => {
