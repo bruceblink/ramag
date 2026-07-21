@@ -274,11 +274,14 @@ impl TableTreePanel {
                         this.schema_cache.write().all_schemas = names;
                         this.schemas = schemas;
                         this.invalidate_tree_rows();
-                        // 首次加载完成后自动激活默认 schema
+                        // 首次加载完成后仅激活默认 schema（不展开表列表，树保持默认折叠）
                         if this.active_schema.is_none()
                             && let Some(default_name) = pick_default_schema(&conn, &this.schemas)
                         {
-                            this.toggle_schema(default_name, cx);
+                            this.active_schema = Some(default_name.clone());
+                            cx.emit(TreeEvent::SchemaActivated {
+                                schema: default_name,
+                            });
                         }
                     }
                     Err(e) => {

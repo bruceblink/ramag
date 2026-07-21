@@ -7,8 +7,10 @@ use tracing::{error, info};
 
 use super::{KeyTreePanel, MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS};
 
-/// 单批 SCAN 的 COUNT hint
-const SCAN_BATCH: u32 = 500;
+/// 单批 SCAN 的 COUNT hint：总耗时 ≈ 往返数 × RTT，取大批减少往返
+/// （5000 时服务端单次阻塞仍 ~1-2ms，远程/隧道下百万 key 从分钟级降到秒级；
+/// 不顶格 10000 是给高负载共享实例留余量）
+const SCAN_BATCH: u32 = 5_000;
 /// 扫描期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次。
 /// 重建是 O(已加载数)，上限 100 万时该步长把全程重建控制在几十次内，
 /// 避免尾段单次重建造成明显 UI 卡顿
