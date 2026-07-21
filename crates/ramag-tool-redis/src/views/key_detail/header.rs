@@ -102,31 +102,8 @@ pub(super) fn render_header(
     };
 
     if let Some(loaded) = value_ref.and_then(RedisValue::len) {
-        let label = match panel.collection_total {
-            Some(total) => format!("已加载 {loaded} / {total} 元素"),
-            None => format!("{loaded} 元素"),
-        };
-        info_row = info_row.child(div().child(label));
-        if panel.can_load_more() || panel.loading_more {
-            let remaining = panel
-                .collection_total
-                .unwrap_or(loaded as u64)
-                .saturating_sub(loaded as u64)
-                .min(super::COLLECTION_PAGE_SIZE as u64);
-            info_row = info_row.child(
-                ramag_ui::clickable_button("redis-load-more-members")
-                    .ghost()
-                    .xsmall()
-                    .label(if panel.loading_more {
-                        "加载中…".to_string()
-                    } else {
-                        format!("继续加载 {}", format_count(remaining))
-                    })
-                    .disabled(panel.loading_more)
-                    .tooltip("继续从服务端加载集合成员")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.load_more(cx))),
-            );
-        } else if panel.has_more() && panel.value_byte_limited {
+        info_row = info_row.child(div().child(format!("{loaded} 元素")));
+        if panel.has_more() && panel.value_byte_limited {
             info_row = info_row.child(div().text_color(muted_fg).child(format!(
                 "内容已达到 {} MiB 安全上限",
                 MAX_REDIS_COLLECTION_BYTES / 1024 / 1024
@@ -267,18 +244,6 @@ where
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
             cx.emit(make_event());
         }))
-}
-
-fn format_count(count: u64) -> String {
-    let digits = count.to_string();
-    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            output.push(',');
-        }
-        output.push(ch);
-    }
-    output
 }
 
 /// MEMORY USAGE 显示 chip：未估算时显示 [字节数] 按钮 → 触发 estimate_size；

@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 use ramag_domain::entities::{
-    ConnectionConfig, DriverKind, KeyMeta, MAX_REDIS_COLLECTION_BYTES, RedisType, RedisValue,
-    RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor, validate_redis_collection_limit,
-    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
-    validate_redis_scan_count,
+    ConnectionConfig, DriverKind, KeyMeta, MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS,
+    RedisType, RedisValue, RedisValueLoad, RedisValuePage, ScanResult, StreamEntry,
+    ValuePageCursor, validate_redis_collection_limit, validate_redis_command, validate_redis_key,
+    validate_redis_match_pattern, validate_redis_scan_count,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
@@ -21,7 +21,7 @@ use crate::value::{
     decode_hash_pairs, decode_stream_entries, decode_value, decode_zset_with_scores,
 };
 
-const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = MAX_REDIS_COLLECTION_BYTES;
 const MAX_RESPONSE_NODES: usize = 100_000;
 const MAX_RESPONSE_DEPTH: usize = 64;
 
@@ -437,9 +437,10 @@ fn parse_redis_version(info: &str) -> String {
     "unknown".into()
 }
 
-/// 集合类型单次加载成员上限：防百万成员 key 一次性拉全量撑爆内存 / 卡死服务端。
-/// 超过时只取前 N，UI 侧据 RedisValue 的成员数与实际长度差异提示「仅显示前 N」。
-const DEFAULT_COLLECTION_LIMIT: usize = 10_000;
+/// 通用读取与详情页共用全局条目上限；累计内容仍受字节预算约束。
+const DEFAULT_COLLECTION_LIMIT: usize = MAX_REDIS_COLLECTION_ITEMS;
+/// 大集合在后台按固定批次读取，避免把全局 100 万条上限直接变成单次超大响应。
+const COLLECTION_FETCH_BATCH: usize = 5_000;
 /// 详情渲染同样只保留 4 MiB；从服务端直接按此前缀读取，避免先拉取超大 String。
 const MAX_STRING_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -506,25 +507,50 @@ async fn fetch_list(
     key: &str,
     limit: usize,
 ) -> Result<(RedisValue, bool)> {
-    // LRANGE 0 N-1 只取前 N，避免 `0 -1` 全量拉取
-    let v: RV = redis::cmd("LRANGE")
-        .arg(key)
-        .arg(0)
-        .arg(limit.saturating_sub(1))
-        .query_async(mgr)
-        .await
-        .map_err(map_redis_error)?;
-    ensure_response_budget(&v, "LRANGE")?;
-    let elems = match v {
-        RV::Array(a) => a.into_iter().map(decode_value).collect(),
-        RV::Nil => return Ok((RedisValue::Nil, false)),
-        other => {
-            return Err(DomainError::QueryFailed(format!(
-                "LRANGE 应答非数组：{other:?}"
-            )));
+    let mut elems = Vec::with_capacity(limit.min(COLLECTION_FETCH_BATCH));
+    let mut offset = 0usize;
+    let mut retained_bytes = 0usize;
+    let mut byte_limited = false;
+    while elems.len() < limit {
+        let count = limit
+            .saturating_sub(elems.len())
+            .min(COLLECTION_FETCH_BATCH);
+        let end = offset.saturating_add(count).saturating_sub(1);
+        let v: RV = redis::cmd("LRANGE")
+            .arg(key)
+            .arg(offset)
+            .arg(end)
+            .query_async(&mut *mgr)
+            .await
+            .map_err(map_redis_error)?;
+        ensure_response_budget(&v, "LRANGE")?;
+        let batch = match v {
+            RV::Array(values) => values,
+            RV::Nil => Vec::new(),
+            other => {
+                return Err(DomainError::QueryFailed(format!(
+                    "LRANGE 应答非数组：{other:?}"
+                )));
+            }
+        };
+        let batch_len = batch.len();
+        for value in batch.into_iter().map(decode_value) {
+            let item_bytes = redis_value_retained_bytes(&value);
+            let Some(next_bytes) =
+                reserve_retained_bytes(retained_bytes, item_bytes, MAX_REDIS_COLLECTION_BYTES)
+            else {
+                byte_limited = true;
+                break;
+            };
+            retained_bytes = next_bytes;
+            elems.push(value);
         }
-    };
-    Ok((RedisValue::List(elems), false))
+        if batch_len < count || byte_limited {
+            break;
+        }
+        offset = offset.saturating_add(batch_len);
+    }
+    Ok((RedisValue::List(elems), byte_limited))
 }
 
 async fn fetch_hash(
@@ -533,9 +559,8 @@ async fn fetch_hash(
     limit: usize,
 ) -> Result<(RedisValue, bool)> {
     // COUNT 只是 hint，必须续扫游标，不能把第一批误当成完整结果。
-    const SCAN_BATCH: usize = 500;
     let mut cursor = 0u64;
-    let mut pairs = Vec::with_capacity(limit.min(DEFAULT_COLLECTION_LIMIT));
+    let mut pairs = Vec::with_capacity(limit.min(COLLECTION_FETCH_BATCH));
     let mut retained_bytes = 0usize;
     let mut byte_limited = false;
     loop {
@@ -543,7 +568,11 @@ async fn fetch_hash(
             .arg(key)
             .arg(cursor)
             .arg("COUNT")
-            .arg(limit.saturating_sub(pairs.len()).clamp(1, SCAN_BATCH))
+            .arg(
+                limit
+                    .saturating_sub(pairs.len())
+                    .clamp(1, COLLECTION_FETCH_BATCH),
+            )
             .query_async(&mut *mgr)
             .await
             .map_err(map_redis_error)?;
@@ -578,9 +607,8 @@ async fn fetch_set(
     key: &str,
     limit: usize,
 ) -> Result<(RedisValue, bool)> {
-    const SCAN_BATCH: usize = 500;
     let mut cursor = 0u64;
-    let mut elems = Vec::with_capacity(limit.min(DEFAULT_COLLECTION_LIMIT));
+    let mut elems = Vec::with_capacity(limit.min(COLLECTION_FETCH_BATCH));
     let mut retained_bytes = 0usize;
     let mut byte_limited = false;
     loop {
@@ -588,7 +616,11 @@ async fn fetch_set(
             .arg(key)
             .arg(cursor)
             .arg("COUNT")
-            .arg(limit.saturating_sub(elems.len()).clamp(1, SCAN_BATCH))
+            .arg(
+                limit
+                    .saturating_sub(elems.len())
+                    .clamp(1, COLLECTION_FETCH_BATCH),
+            )
             .query_async(&mut *mgr)
             .await
             .map_err(map_redis_error)?;
@@ -634,17 +666,53 @@ async fn fetch_zset(
     key: &str,
     limit: usize,
 ) -> Result<(RedisValue, bool)> {
-    // ZRANGE 0 N-1 只取前 N（按 score 升序），避免 `0 -1` 全量拉取
-    let v: RV = redis::cmd("ZRANGE")
-        .arg(key)
-        .arg(0)
-        .arg(limit.saturating_sub(1))
-        .arg("WITHSCORES")
-        .query_async(mgr)
-        .await
-        .map_err(map_redis_error)?;
-    ensure_response_budget(&v, "ZRANGE")?;
-    decode_zset_with_scores(v).map(|value| (value, false))
+    let mut pairs = Vec::with_capacity(limit.min(COLLECTION_FETCH_BATCH));
+    let mut offset = 0usize;
+    let mut retained_bytes = 0usize;
+    let mut byte_limited = false;
+    while pairs.len() < limit {
+        let count = limit
+            .saturating_sub(pairs.len())
+            .min(COLLECTION_FETCH_BATCH);
+        let end = offset.saturating_add(count).saturating_sub(1);
+        let v: RV = redis::cmd("ZRANGE")
+            .arg(key)
+            .arg(offset)
+            .arg(end)
+            .arg("WITHSCORES")
+            .query_async(&mut *mgr)
+            .await
+            .map_err(map_redis_error)?;
+        ensure_response_budget(&v, "ZRANGE")?;
+        let batch = match decode_zset_with_scores(v)? {
+            RedisValue::ZSet(values) => values,
+            RedisValue::Nil => Vec::new(),
+            other => {
+                return Err(DomainError::QueryFailed(format!(
+                    "ZRANGE 解码结果类型异常：{}",
+                    other.display_preview(32)
+                )));
+            }
+        };
+        let batch_len = batch.len();
+        for (value, score) in batch {
+            let item_bytes = std::mem::size_of::<(RedisValue, f64)>()
+                .saturating_add(redis_value_retained_bytes(&value));
+            let Some(next_bytes) =
+                reserve_retained_bytes(retained_bytes, item_bytes, MAX_REDIS_COLLECTION_BYTES)
+            else {
+                byte_limited = true;
+                break;
+            };
+            retained_bytes = next_bytes;
+            pairs.push((value, score));
+        }
+        if batch_len < count || byte_limited {
+            break;
+        }
+        offset = offset.saturating_add(batch_len);
+    }
+    Ok((RedisValue::ZSet(pairs), byte_limited))
 }
 
 async fn fetch_stream(
@@ -652,18 +720,69 @@ async fn fetch_stream(
     key: &str,
     limit: usize,
 ) -> Result<(RedisValue, bool)> {
-    // XRANGE - + COUNT N 只取前 N 条
-    let v: RV = redis::cmd("XRANGE")
-        .arg(key)
-        .arg("-")
-        .arg("+")
-        .arg("COUNT")
-        .arg(limit)
-        .query_async(mgr)
-        .await
-        .map_err(map_redis_error)?;
-    ensure_response_budget(&v, "XRANGE")?;
-    decode_stream_entries(v).map(|value| (value, false))
+    let mut entries = Vec::with_capacity(limit.min(COLLECTION_FETCH_BATCH));
+    let mut start = "-".to_string();
+    let mut retained_bytes = 0usize;
+    let mut byte_limited = false;
+    while entries.len() < limit {
+        let count = limit
+            .saturating_sub(entries.len())
+            .min(COLLECTION_FETCH_BATCH);
+        let v: RV = redis::cmd("XRANGE")
+            .arg(key)
+            .arg(&start)
+            .arg("+")
+            .arg("COUNT")
+            .arg(count)
+            .query_async(&mut *mgr)
+            .await
+            .map_err(map_redis_error)?;
+        ensure_response_budget(&v, "XRANGE")?;
+        let batch = match decode_stream_entries(v)? {
+            RedisValue::Stream(values) => values,
+            RedisValue::Nil => Vec::new(),
+            other => {
+                return Err(DomainError::QueryFailed(format!(
+                    "XRANGE 解码结果类型异常：{}",
+                    other.display_preview(32)
+                )));
+            }
+        };
+        let batch_len = batch.len();
+        let last_id = batch.last().map(|entry| entry.id.clone());
+        for entry in batch {
+            let item_bytes = stream_entry_retained_bytes(&entry);
+            let Some(next_bytes) =
+                reserve_retained_bytes(retained_bytes, item_bytes, MAX_REDIS_COLLECTION_BYTES)
+            else {
+                byte_limited = true;
+                break;
+            };
+            retained_bytes = next_bytes;
+            entries.push(entry);
+        }
+        if batch_len < count || byte_limited {
+            break;
+        }
+        let Some(last_id) = last_id else {
+            break;
+        };
+        // 开区间避免下一批重复上一批最后一条（Redis >= 6.2）。
+        start = format!("({last_id}");
+    }
+    Ok((RedisValue::Stream(entries), byte_limited))
+}
+
+fn stream_entry_retained_bytes(entry: &StreamEntry) -> usize {
+    entry.fields.iter().fold(
+        std::mem::size_of::<StreamEntry>().saturating_add(entry.id.len()),
+        |total, (field, value)| {
+            total
+                .saturating_add(std::mem::size_of::<(String, String)>())
+                .saturating_add(field.len())
+                .saturating_add(value.len())
+        },
+    )
 }
 
 fn reserve_retained_bytes(current: usize, added: usize, limit: usize) -> Option<usize> {
@@ -942,6 +1061,7 @@ mod tests {
 
     #[test]
     fn response_budget_rejects_bytes_nodes_and_depth() {
+        assert_eq!(MAX_RESPONSE_BYTES, MAX_REDIS_COLLECTION_BYTES);
         let limits = ResponseLimits {
             bytes: 3,
             nodes: 3,

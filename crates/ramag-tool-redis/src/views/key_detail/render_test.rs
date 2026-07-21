@@ -2,14 +2,17 @@
 //! uniform_list 行真实拿到了非零布局（回归防护：详情区数据在但视觉空白）
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use async_trait::async_trait;
 use gpui::{AppContext as _, TestAppContext, px};
 use ramag_app::RedisService;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, RedisType, RedisValue,
-    RedisValueLoad, ScanResult, StreamEntry,
+    ConnectionConfig, ConnectionId, MAX_REDIS_LOADED_ITEMS, QueryRecord, QueryRecordId, RedisType,
+    RedisValue, RedisValueLoad, ScanResult, StreamEntry,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{KvDriver, Storage};
@@ -17,7 +20,10 @@ use ramag_domain::traits::{KvDriver, Storage};
 use super::KeyDetailPanel;
 
 /// 空壳 KvDriver：render 是纯展示、不调 driver
-struct MockKv;
+#[derive(Default)]
+struct MockKv {
+    requested_limit: Option<Arc<AtomicUsize>>,
+}
 
 #[async_trait]
 impl KvDriver for MockKv {
@@ -58,8 +64,16 @@ impl KvDriver for MockKv {
         _: &ConnectionConfig,
         _: u8,
         _: &str,
-        _: usize,
+        limit: usize,
     ) -> Result<RedisValueLoad> {
+        if let Some(requested_limit) = self.requested_limit.as_ref() {
+            requested_limit.store(limit, Ordering::SeqCst);
+            return Ok(RedisValueLoad {
+                value: RedisValue::Hash(vec![("field".into(), RedisValue::Text("value".into()))]),
+                total: Some(1),
+                byte_limited: false,
+            });
+        }
         Err(DomainError::NotImplemented("mock".into()))
     }
     async fn delete_key(&self, _: &ConnectionConfig, _: u8, _: &str) -> Result<bool> {
@@ -122,13 +136,45 @@ impl Storage for MockStorage {
 }
 
 fn mock_service() -> Arc<RedisService> {
-    Arc::new(RedisService::new(Arc::new(MockKv), Arc::new(MockStorage)))
+    Arc::new(RedisService::new(
+        Arc::new(MockKv::default()),
+        Arc::new(MockStorage),
+    ))
 }
 
 fn mock_config() -> ConnectionConfig {
     let mut config = ConnectionConfig::new_redis("test", "127.0.0.1", 6379);
     config.password = String::new();
     config
+}
+
+#[gpui::test]
+fn key_load_uses_global_limit_without_manual_pagination(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let requested_limit = Arc::new(AtomicUsize::new(0));
+    let service = Arc::new(RedisService::new(
+        Arc::new(MockKv {
+            requested_limit: Some(requested_limit.clone()),
+        }),
+        Arc::new(MockStorage),
+    ));
+
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = KeyDetailPanel::new(service, cx);
+            panel.config = Some(mock_config());
+            panel
+        });
+        panel.update(cx, |panel, cx| panel.load_key("large:hash".into(), cx));
+        gpui_component::Root::new(panel, window, cx)
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        requested_limit.load(Ordering::SeqCst),
+        MAX_REDIS_LOADED_ITEMS
+    );
+    assert!(cx.debug_bounds("redis-load-more-members").is_none());
 }
 
 /// 五种容器类型逐一注入后渲染：类型块必须拿到非零高度布局（回归防护：

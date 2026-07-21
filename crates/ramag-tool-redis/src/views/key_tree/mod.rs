@@ -26,7 +26,7 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::{ConnectionConfig, KeyMeta};
+use ramag_domain::entities::{ConnectionConfig, KeyMeta, MAX_REDIS_LOADED_ITEMS};
 use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 
@@ -54,7 +54,7 @@ impl VisibleRowsCacheEntry {
 /// 当前 DB 的 key 树加载上限（各 DB 独立）。列表、去重集合与 Trie 三份索引
 /// 共同受此计数和原始名称字节预算约束：100 万 key（名称均长 ~30B）约占
 /// 300-500 MB，是桌面场景合理极限；再大提示用 MATCH 缩小范围
-const MAX_LOADED_KEYS: usize = 1_000_000;
+const MAX_LOADED_KEYS: usize = MAX_REDIS_LOADED_ITEMS;
 const MAX_LOADED_KEY_BYTES: usize = 256 * 1024 * 1024;
 
 /// 命名空间分隔符（业界事实标准）

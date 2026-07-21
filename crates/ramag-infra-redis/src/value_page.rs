@@ -17,7 +17,7 @@ use crate::driver::{ensure_response_budget, scan_parts};
 use crate::errors::map_redis_error;
 use crate::value::{decode_value, decode_zset_with_scores};
 
-/// 单页条目上限；与响应预算（16 MiB / 10 万节点）保持安全距离
+/// 单页条目上限；与响应预算（512 MiB / 10 万节点）保持安全距离
 pub const MAX_PAGE_ITEMS: u32 = 5_000;
 /// String 类型单页读取字节数
 const STRING_PAGE_BYTES: u64 = 1024 * 1024;

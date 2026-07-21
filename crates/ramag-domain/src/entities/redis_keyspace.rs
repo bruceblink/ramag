@@ -16,10 +16,12 @@ pub const MAX_REDIS_COMMAND_NAME_BYTES: usize = 256;
 pub const MAX_REDIS_COMMAND_BYTES: usize = 16 * 1024 * 1024;
 /// 单条命令参数个数上限，单独约束大量空参数造成的容器与协议开销。
 pub const MAX_REDIS_COMMAND_ARGS: usize = 10_000;
-/// 集合详情最多保留的元素数；更大集合应使用服务端过滤或专用脚本处理。
-pub const MAX_REDIS_COLLECTION_ITEMS: usize = 10_000;
-/// 集合详情累计保留的动态内容上限，防止 HSCAN / SSCAN 多批结果绕过单批应答限制。
-pub const MAX_REDIS_COLLECTION_BYTES: usize = 16 * 1024 * 1024;
+/// Redis 界面单次最多保留的条目数；Key 树与集合详情共用，避免各处上限不一致。
+pub const MAX_REDIS_LOADED_ITEMS: usize = 1_000_000;
+/// 集合详情最多保留的元素数；同时受累计内容字节预算约束。
+pub const MAX_REDIS_COLLECTION_ITEMS: usize = MAX_REDIS_LOADED_ITEMS;
+/// Redis 值加载的全局字节上限；集合累计内容与单批响应共同复用。
+pub const MAX_REDIS_COLLECTION_BYTES: usize = 512 * 1024 * 1024;
 /// 单批 SCAN 的 COUNT 只是 hint，但仍需限制异常调用给服务端造成的瞬时压力。
 pub const MAX_REDIS_SCAN_COUNT: u32 = 10_000;
 /// `scan_all` 是小批辅助接口，不允许被直接调用成无界全库加载。
@@ -314,6 +316,9 @@ mod tests {
 
     #[test]
     fn redis_scan_and_collection_limits_reject_bypasses() {
+        assert_eq!(MAX_REDIS_LOADED_ITEMS, 1_000_000);
+        assert_eq!(MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_LOADED_ITEMS);
+        assert_eq!(MAX_REDIS_COLLECTION_BYTES, 512 * 1024 * 1024);
         assert!(validate_redis_collection_limit(1).is_ok());
         assert!(validate_redis_collection_limit(MAX_REDIS_COLLECTION_ITEMS).is_ok());
         assert!(validate_redis_collection_limit(0).is_err());

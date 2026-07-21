@@ -10,35 +10,30 @@ use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
 
 use super::helpers::futures_join;
-use super::{COLLECTION_PAGE_SIZE, KeyDetailEvent, KeyDetailPanel, MAX_COLLECTION_ITEMS};
+use super::{KeyDetailEvent, KeyDetailPanel, MAX_COLLECTION_ITEMS};
 
 impl KeyDetailPanel {
     /// 加载某 key 的值（由 Session 在收到 KeyTreeEvent::Selected 时调用）。
     pub fn load_key(&mut self, key: String, cx: &mut Context<Self>) {
-        self.collection_limit = COLLECTION_PAGE_SIZE;
-        self.load_key_with_limit(key, false, cx);
+        self.load_key_value(key, cx);
     }
 
-    fn load_key_with_limit(&mut self, key: String, preserve_value: bool, cx: &mut Context<Self>) {
+    fn load_key_value(&mut self, key: String, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
             return;
         };
         self.request_seq = self.request_seq.wrapping_add(1);
         let request_seq = self.request_seq;
         self.key = Some(key.clone());
-        if preserve_value {
-            self.loading_more = true;
-        } else {
-            self.value = None;
-            self.ttl_ms = None;
-            self.collection_total = None;
-            self.value_byte_limited = false;
-            self.loading = true;
-            // 换 key 滚动归顶归左（分页追加 preserve_value 时保持用户当前位置）
-            self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
-            self.scalar_h_scroll
-                .set_offset(gpui::Point::new(gpui::px(0.0), gpui::px(0.0)));
-        }
+        self.value = None;
+        self.ttl_ms = None;
+        self.collection_total = None;
+        self.value_byte_limited = false;
+        self.loading = true;
+        // 换 key 或刷新后滚动归顶归左。
+        self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.scalar_h_scroll
+            .set_offset(gpui::Point::new(gpui::px(0.0), gpui::px(0.0)));
         self.ttl_loading = true;
         self.ttl_error = None;
         self.error = None;
@@ -51,21 +46,17 @@ impl KeyDetailPanel {
 
         let service = self.service.clone();
         let db = self.db;
-        let limit = self.collection_limit;
         cx.spawn(async move |this, cx| {
             let (value_result, ttl_result) = futures_join(
-                service.get_value_limited(&config, db, &key, limit),
+                service.get_value_limited(&config, db, &key, MAX_COLLECTION_ITEMS),
                 service.key_ttl(&config, db, &key),
             )
             .await;
             let _ = this.update(cx, |this, cx| {
-                if !this.load_request_is_current(&config, db, &key, request_seq)
-                    || this.collection_limit != limit
-                {
+                if !this.load_request_is_current(&config, db, &key, request_seq) {
                     return;
                 }
                 this.loading = false;
-                this.loading_more = false;
                 this.ttl_loading = false;
                 match value_result {
                     Ok(load) => {
@@ -75,20 +66,7 @@ impl KeyDetailPanel {
                     }
                     Err(error) => {
                         error!(error = %error, "load key value failed");
-                        if preserve_value {
-                            this.collection_limit = this
-                                .value
-                                .as_ref()
-                                .and_then(RedisValue::len)
-                                .unwrap_or(COLLECTION_PAGE_SIZE)
-                                .clamp(COLLECTION_PAGE_SIZE, MAX_COLLECTION_ITEMS);
-                            this.pending_notification = Some(
-                                Notification::error(format!("继续加载失败：{error}"))
-                                    .autohide(true),
-                            );
-                        } else {
-                            this.error = Some(format!("加载值失败：{error}"));
-                        }
+                        this.error = Some(format!("加载值失败：{error}"));
                     }
                 }
                 match ttl_result {
@@ -170,7 +148,7 @@ impl KeyDetailPanel {
                 match result {
                     Ok(_) => {
                         info!(field_bytes = field.len(), "hash field deleted");
-                        this.load_key_with_limit(key_for_reload, false, cx);
+                        this.load_key_value(key_for_reload, cx);
                     }
                     Err(error) => {
                         error!(error = %error, "delete hash field failed");
@@ -187,19 +165,8 @@ impl KeyDetailPanel {
 
     pub fn reload_current(&mut self, cx: &mut Context<Self>) {
         if let Some(key) = self.key.clone() {
-            self.load_key_with_limit(key, false, cx);
+            self.load_key_value(key, cx);
         }
-    }
-
-    pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.loading || self.loading_more || !self.can_load_more() {
-            return;
-        }
-        let Some(key) = self.key.clone() else {
-            return;
-        };
-        self.collection_limit = next_collection_limit(self.collection_limit);
-        self.load_key_with_limit(key, true, cx);
     }
 
     pub(super) fn has_more(&self) -> bool {
@@ -210,10 +177,6 @@ impl KeyDetailPanel {
             (Some(loaded), Some(total)) => (loaded as u64) < total,
             _ => false,
         }
-    }
-
-    pub(super) fn can_load_more(&self) -> bool {
-        self.has_more() && !self.value_byte_limited && self.collection_limit < MAX_COLLECTION_ITEMS
     }
 
     pub(super) fn scalar_is_truncated(&self) -> bool {
@@ -317,7 +280,7 @@ impl KeyDetailPanel {
                 match result {
                     Ok(_) => {
                         info!(label = log_label, "element deleted");
-                        this.load_key_with_limit(key, false, cx);
+                        this.load_key_value(key, cx);
                     }
                     Err(error) => {
                         error!(error = %error, label = log_label, "delete element failed");
@@ -363,7 +326,7 @@ impl KeyDetailPanel {
                     Ok(response) => match list_delete_status(&response) {
                         ListDeleteStatus::Deleted => {
                             info!(index, "list element deleted by index");
-                            this.load_key_with_limit(key, false, cx);
+                            this.load_key_value(key, cx);
                         }
                         ListDeleteStatus::Missing => {
                             this.pending_notification = Some(
@@ -372,14 +335,14 @@ impl KeyDetailPanel {
                                 )
                                 .autohide(true),
                             );
-                            this.load_key_with_limit(key, false, cx);
+                            this.load_key_value(key, cx);
                         }
                         ListDeleteStatus::Changed => {
                             this.pending_notification = Some(
                                 Notification::warning("列表内容已变化，为避免删错元素已取消操作")
                                     .autohide(true),
                             );
-                            this.load_key_with_limit(key, false, cx);
+                            this.load_key_value(key, cx);
                         }
                         ListDeleteStatus::Unexpected => {
                             error!(
@@ -484,31 +447,6 @@ impl KeyDetailPanel {
         request_seq: u64,
     ) -> bool {
         self.request_seq == request_seq && self.request_is_current(config, db, key)
-    }
-}
-
-fn next_collection_limit(current: usize) -> usize {
-    current
-        .saturating_add(COLLECTION_PAGE_SIZE)
-        .min(MAX_COLLECTION_ITEMS)
-}
-
-#[cfg(test)]
-mod collection_limit_tests {
-    use super::{MAX_COLLECTION_ITEMS, next_collection_limit};
-
-    #[test]
-    fn collection_limit_grows_by_page_and_stops_at_safety_cap() {
-        assert_eq!(next_collection_limit(2_000), 4_000);
-        assert_eq!(
-            next_collection_limit(MAX_COLLECTION_ITEMS - 1),
-            MAX_COLLECTION_ITEMS
-        );
-        assert_eq!(
-            next_collection_limit(MAX_COLLECTION_ITEMS),
-            MAX_COLLECTION_ITEMS
-        );
-        assert_eq!(next_collection_limit(usize::MAX), MAX_COLLECTION_ITEMS);
     }
 }
 

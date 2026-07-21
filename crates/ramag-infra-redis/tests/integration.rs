@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use ramag_domain::entities::{
-    ConnectionConfig, RedisType, RedisValue, StreamEntry, ValuePageCursor,
+    ConnectionConfig, MAX_REDIS_LOADED_ITEMS, RedisType, RedisValue, StreamEntry, ValuePageCursor,
 };
 use ramag_domain::traits::KvDriver;
 use ramag_infra_redis::RedisDriver;
@@ -191,6 +191,39 @@ async fn hash_value_returns_pairs() {
         other => panic!("期望 Hash，实得 {other:?}"),
     }
 
+    cleanup(&driver, &config).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hash_detail_loads_all_members_up_to_global_limit() {
+    const MEMBER_COUNT: usize = 20_000;
+
+    let config = require_env!();
+    let driver = RedisDriver::new();
+    cleanup(&driver, &config).await;
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec![
+                "EVAL".into(),
+                "for i = 1, tonumber(ARGV[1]) do redis.call('HSET', KEYS[1], 'field:' .. i, 'value:' .. i) end return redis.call('HLEN', KEYS[1])".into(),
+                "1".into(),
+                "large:hash".into(),
+                MEMBER_COUNT.to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let load = driver
+        .get_value_limited(&config, TEST_DB, "large:hash", MAX_REDIS_LOADED_ITEMS)
+        .await
+        .unwrap();
+
+    assert_eq!(load.total, Some(MEMBER_COUNT as u64));
+    assert_eq!(load.loaded_len(), Some(MEMBER_COUNT));
+    assert!(!load.has_more());
     cleanup(&driver, &config).await;
 }
 

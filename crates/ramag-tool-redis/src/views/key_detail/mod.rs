@@ -29,7 +29,6 @@ use helpers::render_value;
 
 use crate::views::value_display::ViewMode;
 
-const COLLECTION_PAGE_SIZE: usize = 2_000;
 const MAX_COLLECTION_ITEMS: usize = MAX_REDIS_COLLECTION_ITEMS;
 
 #[derive(Debug, Clone)]
@@ -112,8 +111,6 @@ pub struct KeyDetailPanel {
     pub(super) collection_total: Option<u64>,
     /// 多批集合读取因累计内容字节预算只保留了安全前缀。
     pub(super) value_byte_limited: bool,
-    collection_limit: usize,
-    pub(super) loading_more: bool,
     /// 标量值视图模式：None=按内容自动（JSON 美化 / Raw），Some=用户手动选定
     value_view_mode: Option<ViewMode>,
     /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 按行切好的内容, gzip 提示)。
@@ -163,8 +160,6 @@ impl KeyDetailPanel {
             size_error: None,
             collection_total: None,
             value_byte_limited: false,
-            collection_limit: COLLECTION_PAGE_SIZE,
-            loading_more: false,
             value_view_mode: None,
             scalar_cache: std::cell::RefCell::new(None),
             focus_handle: cx.focus_handle(),
@@ -195,8 +190,6 @@ impl KeyDetailPanel {
         self.size_error = None;
         self.collection_total = None;
         self.value_byte_limited = false;
-        self.collection_limit = COLLECTION_PAGE_SIZE;
-        self.loading_more = false;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
         // 换 key 后滚动归顶：uniform_list 句柄跨 key 复用，不复位会残留上个 key 的偏移
@@ -226,8 +219,6 @@ impl KeyDetailPanel {
         self.size_error = None;
         self.collection_total = None;
         self.value_byte_limited = false;
-        self.collection_limit = COLLECTION_PAGE_SIZE;
-        self.loading_more = false;
         self.value_view_mode = None;
         *self.scalar_cache.borrow_mut() = None;
         // 换 key 后滚动归顶：uniform_list 句柄跨 key 复用，不复位会残留上个 key 的偏移
