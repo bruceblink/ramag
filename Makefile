@@ -155,3 +155,17 @@ win-debug:
 # === 清理 ============================================================
 clean:
 	cargo clean
+
+clean-all: clean
+	rm -rf target/Ramag*.app
+	rm -rf target/dmg-staging*
+	rm -f target/Ramag*.dmg
+	rm -f scripts/icons/ramag.icns
+
+# === 依赖 ============================================================
+deps-update:
+	cargo update
+
+lock-refresh:
+	rm -f Cargo.lock
+	cargo check
