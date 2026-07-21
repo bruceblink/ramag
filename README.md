@@ -5,154 +5,135 @@
 <h1 align="center">Ramag</h1>
 
 <p align="center">
-  <strong>数据库、Git 与剪贴板，一个本地桌面工作台。</strong>
+  <strong>数据库、Git 与剪贴板，一个真正本地优先的桌面工作台。</strong>
 </p>
 
 <p align="center">
-  MySQL · PostgreSQL · Redis · MongoDB · Git · Clipboard
+  MySQL · PostgreSQL · Redis · MongoDB · Git（试验性） · Clipboard
 </p>
 
 <p align="center">
-  macOS & Windows · Local-first · Rust + GPUI
+  macOS & Windows · Rust + GPUI · Local-first
 </p>
 
 ---
 
-## 一个窗口，覆盖三类高频任务
+## 不是三个工具的简单拼接
 
-| 数据库工作台 | Git 工作台 | 剪贴板工作台 |
-|---|---|---|
-| 连接并管理 MySQL、PostgreSQL、Redis、MongoDB | 从工作区检查一路完成到提交、同步与冲突处理 | 随时唤起历史记录，搜索并粘贴回原窗口 |
-| SQL、命令、数据编辑、分页、导出与历史记录 | Diff、Stage、Commit、Branch、Stash、Rebase、Blame | 文本、图片、文件记录，支持筛选、黑名单与自动清理 |
-| TLS、自定义 CA、SSH 隧道、连接配置加密导入导出 | 文件监听自动刷新，35 种语法高亮 | 后台持续采集，历史数据本地加密 |
+Ramag 把开发中最频繁切换的三类上下文收进一个原生窗口：查数据库、处理 Git 工作区、找回刚才复制过的内容。它不依赖浏览器壳，不要求把连接配置或历史记录交给云端服务，也不会为了展示一张大表、一个大仓库或一段很长的剪贴历史就无边界地吃掉内存。
+
+| 一个工作台 | 本地优先 | 面向真实数据量 | 原生交互 |
+|---|---|---|---|
+| 数据库、Git、剪贴板共享统一窗口与快捷键体系 | 密码与剪贴历史加密后落本地，主密钥进入系统凭据库 | 百万级历史、十万文件与十万级数据库种子均有压力验证 | Rust + GPUI，耗时任务与 UI 线程隔离 |
+
+```text
+连接数据库处理数据  ↔  在 Git 中检查并提交改动  ↔  随时找回和粘贴上下文
+```
 
 ## 数据库工作台
 
-| 引擎 | 浏览与管理 | 查询与编辑 |
-|---|---|---|
-| **MySQL / PostgreSQL** | Schema、表、列、DDL、重命名、清空与删除 | SQL 补全与高亮、多语句执行、EXPLAIN、取消、结果分页、单元格编辑与导出 |
-| **Redis** | 按 `:` 折叠 Key 命名空间，支持大型 Keyspace 扫描 | String、Hash、List、Set、ZSet、Stream 全类型查看与编辑，TTL 管理 |
-| **MongoDB** | Database、Collection 与文档浏览 | `find`、`aggregate` 等命令，嵌套字段钻取、文档编辑与导出 |
+从连接、结构浏览、查询，到结果编辑和完整迁移，四类数据库共用一套清晰的工作流。
 
-连接配置支持颜色标签、连接测试、TLS、自定义 CA 和系统 SSH 隧道。密码在本地加密保存，配置文件导出使用自定义口令进行 AES-256-GCM 加密。
+### MySQL 与 PostgreSQL
+
+- Schema、表、视图、列、索引与 DDL 浏览。
+- SQL 补全、高亮、多语句执行、光标语句执行、格式化与 EXPLAIN。
+- 查询取消、结果分页、排序、筛选和单元格编辑。
+- 大整数、高精度数值、JSON/JSONB、二进制、时间以及 PostgreSQL 原生类型保真展示。
+- 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
+
+### Redis
+
+- 以 `:` 自动折叠 Key 命名空间，大型 Keyspace 使用游标 SCAN 和虚拟列表。
+- String、Hash、List、Set、ZSet、Stream 六种类型统一查看与编辑。
+- TTL 管理、大 String 有界加载、大集合自动分批继续加载。
+- 内置命令控制台；危险、阻塞和生产写命令在执行前识别。
+- 整库 JSONL 迁移保留类型、TTL、顺序、分数、Stream ID 与二进制内容。
+
+### MongoDB
+
+- Database、Collection、索引、统计信息和文档浏览。
+- `find`、`aggregate` 与通用命令，支持格式化、历史记录和多查询标签。
+- 嵌套文档按 dotted path 展开，ObjectId、Decimal128、DateTime、Int64 等使用 Extended JSON 保真往返。
+- 文档编辑、集合级 JSONL 和数据库级导入导出；混合类型 `_id` 使用 keyset 连续读取。
+
+### 连接与数据安全
+
+- TLS、三档证书验证、自定义 CA 与系统 OpenSSH 隧道。
+- 连接测试、颜色标签、连接配置加密导入导出。
+- 连接可标记为生产环境：写查询、结果编辑和导入入口统一进入只读保护。
+- SQL、Redis、MongoDB 使用独立执行 runtime，某个慢查询不会直接挤占其他数据库的任务线程。
+
+## Git 工作台（试验性）
+
+Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，而不是把命令行按钮化。
+
+> 当前 VCS 能力处于试验阶段，适合体验和反馈；执行关键写操作前，建议确认工作区状态并保留可恢复点。
 
 ```text
-创建连接 → 浏览结构 → 编写查询 → 检查或编辑结果 → 导出
+打开仓库 → 检查工作区 → 对照 Diff → Stage → Commit → Push / Pull
 ```
 
-## Git 工作台
+- Changes、Project Files、Stash、历史日志、Commit 详情、Blame 与 Reflog。
+- Unified / Split Diff、整文件上下文、35 种语法高亮和超大 Diff 虚拟化。
+- Stage / Unstage、Amend、Branch、Tag、Stash、Merge、Rebase、Cherry-pick。
+- 冲突三栏处理，可继续或中止 Merge / Rebase / Cherry-pick 流程。
+- 提交图、分支与远端状态、文件编辑和自动保存。
+- 文件监听按路径增量刷新；普通保存不重扫整个仓库。
 
-```text
-打开仓库 → 查看改动 → 对照 Diff → Stage → Commit → Push / Pull
-```
-
-- 工作区状态按文件路径增量刷新，Git 元数据变化时才执行全量刷新。
-- Unified / Split Diff、整文件上下文和按文件类型语法高亮。
-- Branch、Tag、Stash、Merge、Rebase、Cherry-pick、Reflog、Blame。
-- 冲突三栏处理、提交图、Amend，以及可继续或中止的冲突流程。
-
-写操作与网络认证复用系统 Git 和既有 SSH 配置，不在应用内复制一套凭据体系。
-
-### Git 性能基线
-
-VCS 以“普通保存即时响应，并在大型仓库保持有界延迟”为性能基线。常见路径不会重扫整个仓库：
-
-```text
-文件事件 → 60ms 合并窗口 → 路径级 status → 有序区间补丁 → 仅刷新受影响标签
-```
-
-同一台 Apple M2 Pro、Release 构建、预热后各测量 100 次：
-
-| 场景 | 中位数 |
-|---|---:|
-| Ramag 仓库，单文件状态刷新 | 11.106 ms |
-| 大型 Rust 工作区，单文件状态刷新 | 11.425 ms |
-
-监听合并窗口为 60ms，叠加 Git 查询后，普通单文件保存的状态刷新通常约为 71ms。查询在后台 worker 执行，UI 线程只合并有序路径补丁并刷新受影响标签。
-
-大型合成仓库的 Release 压力结果：
-
-- 100,000 条文件状态：路径查询 17.735 ms、UI 合并 0.059 ms；全量 status 为 503.434 ms。
-- 20,000 次提交连续读取 20 × 1,000 条：持久流 116.124 ms，重复 `--skip` 为 877.853 ms。
-- 100,000 个 Project Files：折叠树 1.829 ms，全展开 7.420 ms，单路径成员合并 0.750 μs。
-- 100,000 条提交图：布局 2.599 ms，每行图状态 3 字节。
-- 110,000 行 Diff：虚拟化布局 4.440 ms，超大语法快照判定 0.452 ms，不保留完整语法树。
-
-基准保留为默认忽略的测试，可在本机仓库复现：
-
-```bash
-RAMAG_PERF_REPO=/path/to/repo RAMAG_PERF_PATH=src/main.rs \
-  RAMAG_PERF_ITERATIONS=100 cargo test -p ramag-infra-git --release \
-  --test performance reports_workspace_refresh_latency -- --ignored --nocapture
-
-cargo test -p ramag-tool-vcs --release reports_large_ -- --ignored --nocapture
-```
+写操作与网络认证直接复用系统 Git、SSH Agent 和用户已有配置，不在应用中再造一套不兼容的凭据体系。
 
 ## 剪贴板工作台
 
 ```text
-⌘⇧V / Ctrl+Shift+V → 搜索或筛选 → Enter → 粘贴回原窗口
+⌘⇧V / Ctrl+Shift+V → 输入关键词或筛选类型 → Enter → 粘贴回原窗口
 ```
 
-- 应用运行期间持续采集，不需要保持剪贴板页面打开。
-- 支持文本、图片和文件记录，以及来源应用黑名单。
-- 支持数量与保留天数限制，历史内容本地加密存储。
-- Windows 关闭主窗口后可驻留系统托盘，继续提供采集与快捷抽屉。
+- 应用运行期间后台采集，无需保持剪贴板页面打开。
+- 支持纯文本、富文本、链接、颜色、图片和文件路径。
+- 记录来源应用，可加入黑名单；macOS 下遵循 Concealed / Transient 隐私标记。
+- 复制、纯文本复制、自动切回来源应用并粘贴。
+- 最近历史常驻有界缓存，完整历史与图片媒体在本地加密保存。
+- 按数量和时间自动清理；图片使用缩略图、并发加载上限和内存预算。
+- Windows 关闭主窗口后可驻留系统托盘，采集与全局快捷抽屉继续工作。
 
-## 面向真实数据量验证
+## 经得起数据量放大的性能设计
 
-项目内置可重复执行的四数据库 Docker 测试环境，不只验证简单 CRUD：
+以下为 Apple M1 Max、Release 构建的代表性结果；数据库运行在本机 Docker 回环网络。
 
-| MySQL | PostgreSQL | Redis | MongoDB |
-|---:|---:|---:|---:|
-| 100,000+ 行 | 100,000+ 行与 8,000 条分析数据 | 46,000+ Keys | 125,102 个文档 |
+| 场景 | 实测结果 |
+|---|---:|
+| 当前仓库完整 VCS 刷新 | 18.454 ms 中位数 |
+| 当前仓库单路径状态 | 13.702 ms 中位数 |
+| 100,000 条 VCS 状态补丁合并 | 67.791 μs |
+| 100,000 次提交图布局 | 3.284 ms |
+| MySQL 100,005 行全库导出 | 871 ms，约 11.48 万行/s |
+| PostgreSQL 100,004 行导出 | 884 ms，约 11.31 万行/s |
+| MongoDB 125,102 文档导出 / 导入 | 1.761 s / 2.371 s |
+| Redis 46,014 Key 完整保真导出 / 导入 | 26.126 s / 23.507 s |
+| 1,000,000 条剪贴历史读取最近 500 条 | 5.513 ms 中位数 |
+| 剪贴板 500 × 4 KiB 即时过滤最坏样本 | 1.918 ms 中位数 |
+| 4K 剪贴图片缩略图 | 58.603 ms，后台执行 |
 
-测试覆盖大型字段、二进制数据、特殊字符、原生类型、分页扫描和完整 Keyspace / Collection 遍历。
+这些数字背后是几条明确原则：能增量就不全量，能分页就不整库驻留，能虚拟化就不一次构造所有行，CPU 与 IO 重活不占用 UI 线程。
 
-## 快速运行
+完整测试环境、P95、数据库吞吐、百万剪贴历史的深度搜索边界和复核方式，见 [性能报告](docs/performance.md)。其中也如实记录了当前最慢路径：百万条加密剪贴历史的罕见词或无命中全文搜索约为 12.5 秒，最近历史与 UI 即时过滤不受影响。
 
-macOS 支持 Apple Silicon 与 Intel；Windows 支持 Windows 10/11 x64。VCS 功能需要系统已安装 Git，SSH 隧道需要系统 OpenSSH。
+## 本地优先，不等于只做“能跑”
 
-```bash
-git clone https://github.com/tools-rs/ramag.git
-cd ramag
-make develop
-```
+- 数据库密码与敏感配置经 AES-256-GCM 加密后写入 redb。
+- 主密钥保存在 macOS Keychain 或 Windows Credential Manager。
+- 剪贴板正文、来源信息、原图和缩略图均以密文持久化。
+- 导出文件采用临时文件、完整写入后原子替换，失败不会覆盖原文件。
+- 查询结果、元数据、图片、剪贴历史、Redis 集合和导入行都有显式数量与字节预算。
+- 外部命令、路径、连接标识和导入内容在进入执行层前校验，不静默吞掉错误。
 
-Windows 原生开发：
+## 平台与文档
 
-```powershell
-cargo run -p ramag-bin
-```
+Ramag 支持 macOS Apple Silicon / Intel，以及 Windows 10/11 x64。Git 功能依赖系统 Git；SSH 隧道依赖系统 OpenSSH。
 
-Rust 版本已由 `rust-toolchain.toml` 固定。首次编译 GPUI 与数据库驱动需要一定时间，后续构建会复用缓存。
-
-## 常用快捷键
-
-| 场景 | 快捷键 |
-|---|---|
-| 执行 SQL / Mongo 查询 | `Cmd/Ctrl+Enter` |
-| 执行光标所在语句 | `Cmd/Ctrl+Shift+Enter` |
-| 格式化 SQL / EXPLAIN | `Cmd/Ctrl+Shift+F` / `Cmd/Ctrl+Shift+E` |
-| Git 提交 / Push / Pull | `Cmd/Ctrl+Enter` / `Cmd/Ctrl+Shift+K` / `Cmd/Ctrl+T` |
-| 唤起剪贴板抽屉 | macOS `⌘⇧V` / Windows `Ctrl+Shift+V` |
-
-<details>
-<summary><strong>开发、测试与打包</strong></summary>
-
-```bash
-make check             # 检查所有 target
-make fmt-check         # 验证 Rust 格式
-make clippy            # Clippy，警告视为错误
-make test              # 完整工作区测试
-make db-test           # 重建专用测试数据并运行四数据库门禁
-make dmg               # 构建当前 macOS 架构的 DMG
-make win-debug         # 在 macOS 验证 Windows x64 debug 构建
-```
-
-`make db-test` 只会重建 `ramag-db-test-*` 专用容器和数据卷。完整分层与扩展方式见 [架构文档](docs/architecture.md)，其余命令运行 `make` 查看。
-
-</details>
+- [性能报告：VCS、数据库与剪贴板](docs/performance.md)
+- [架构说明](docs/architecture.md)
 
 ## License
 
