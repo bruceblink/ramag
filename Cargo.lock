@@ -6516,6 +6516,7 @@ dependencies = [
  "parking_lot",
  "ramag-app",
  "ramag-domain",
+ "rfd",
  "rust-embed",
  "schemars",
  "serde",

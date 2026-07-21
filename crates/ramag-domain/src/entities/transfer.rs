@@ -127,6 +127,22 @@ impl TransferSummary {
         }
         text
     }
+
+    /// 多文件导入逐文件累加计数；警告受同一上限约束，任一文件取消即整体取消。
+    pub fn merge(&mut self, other: TransferSummary) {
+        self.objects = self.objects.saturating_add(other.objects);
+        self.items = self.items.saturating_add(other.items);
+        self.skipped = self.skipped.saturating_add(other.skipped);
+        self.failed = self.failed.saturating_add(other.failed);
+        self.elapsed_ms = self.elapsed_ms.saturating_add(other.elapsed_ms);
+        self.cancelled |= other.cancelled;
+        for warning in other.warnings {
+            self.push_warning(warning);
+        }
+        self.warnings_overflow = self
+            .warnings_overflow
+            .saturating_add(other.warnings_overflow);
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +157,31 @@ mod tests {
         }
         assert_eq!(summary.warnings.len(), MAX_TRANSFER_WARNINGS);
         assert_eq!(summary.warnings_overflow, 5);
+    }
+
+    #[test]
+    fn merge_accumulates_counts_and_cancel() {
+        let mut total = TransferSummary {
+            objects: 2,
+            items: 10,
+            skipped: 1,
+            ..Default::default()
+        };
+        total.push_warning("a");
+        total.merge(TransferSummary {
+            objects: 3,
+            items: 5,
+            failed: 1,
+            cancelled: true,
+            warnings: vec!["b".into()],
+            ..Default::default()
+        });
+        assert_eq!(total.objects, 5);
+        assert_eq!(total.items, 15);
+        assert_eq!(total.skipped, 1);
+        assert_eq!(total.failed, 1);
+        assert!(total.cancelled);
+        assert_eq!(total.warnings, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

@@ -102,12 +102,10 @@ pub(super) fn database_context_menu(
     db: String,
 ) -> PopupMenu {
     let (d, ent) = (db.clone(), entity.clone());
-    let menu = menu.item(
-        ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
-            let (d, ent) = (d.clone(), ent.clone());
-            ent.update(app, |this, cx| this.export_database_to_file(d, cx));
-        }),
-    );
+    let menu = menu.item(ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
+        let (d, ent) = (d.clone(), ent.clone());
+        ent.update(app, |this, cx| this.export_database_to_file(d, cx));
+    }));
     let (d, ent) = (db.clone(), entity.clone());
     let menu = menu
         .item(
@@ -116,13 +114,14 @@ pub(super) fn database_context_menu(
                 ramag_ui::open_import_options_dialog(
                     "导入 JSONL 文件",
                     format!(
-                        "选择冲突策略后再选 .jsonl 文件，将导入到库 {d}。重复导入同一文件：\
+                        "选择冲突策略与 .jsonl 文件（可多选），将导入到库 {d}。重复导入同一文件：\
                          「跳过」按集合断点续传，「合并」按文档去重补齐，「覆盖」完全重建（幂等）。"
                     ),
                     true,
-                    move |policy, _, app| {
+                    ("JSONL", &["jsonl", "json"]),
+                    move |policy, files, _, app| {
                         ent.update(app, |this, cx| {
-                            this.import_database_from_file(d, policy, cx);
+                            this.import_database_from_files(d, policy, files, cx);
                         });
                     },
                     window,

@@ -1,4 +1,4 @@
-//! 结果集导出 CSV/JSON/Markdown：rfd 选路径→受限工作池序列化/写入→回主线程 toast。
+//! 结果集导出 JSONL：rfd 选路径→受限工作池序列化/写入→回主线程 toast。
 //! selected_rows 非空只导勾选行，否则全部
 
 use std::path::PathBuf;
@@ -12,13 +12,6 @@ use tracing::{error, info};
 use super::ResultPanel;
 use super::ResultState;
 
-#[derive(Clone, Copy)]
-pub enum ExportFormat {
-    Csv,
-    Json,
-    Markdown,
-}
-
 enum ExportOutcome {
     Saved(PathBuf),
     Cancelled,
@@ -26,8 +19,8 @@ enum ExportOutcome {
 }
 
 impl ResultPanel {
-    /// 导出为 CSV / JSON / Markdown
-    pub fn export(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+    /// 导出为 JSONL（每行一个 JSON 对象）
+    pub fn export(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
             self.pending_notification =
                 Some(Notification::info("已有导出任务正在进行").autohide(true));
@@ -108,29 +101,11 @@ impl ResultPanel {
             }
         };
 
-        let (default_name, ext) = match format {
-            ExportFormat::Csv => (
-                format!(
-                    "ramag-export-{}.csv",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                ),
-                "csv",
-            ),
-            ExportFormat::Json => (
-                format!(
-                    "ramag-export-{}.json",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                ),
-                "json",
-            ),
-            ExportFormat::Markdown => (
-                format!(
-                    "ramag-export-{}.md",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                ),
-                "md",
-            ),
-        };
+        let default_name = format!(
+            "ramag-export-{}.jsonl",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        );
+        let ext = "jsonl";
 
         // 保存框异步等待，不占用共享 worker；选定路径后才把序列化交给有界工作池。
         self.exporting = true;
@@ -149,16 +124,8 @@ impl ResultPanel {
                     match ramag_app::run_blocking(move || {
                         let rows = row_indices.as_deref().map(Vec::as_slice);
                         let columns = column_indices.as_deref().map(Vec::as_slice);
-                        export::write_atomic_with(&write_path, |writer| match format {
-                            ExportFormat::Csv => {
-                                export::write_csv_view(writer, &base, rows, columns)
-                            }
-                            ExportFormat::Json => {
-                                export::write_json_view(writer, &base, rows, columns)
-                            }
-                            ExportFormat::Markdown => {
-                                export::write_markdown_view(writer, &base, rows, columns)
-                            }
+                        export::write_atomic_with(&write_path, |writer| {
+                            export::write_jsonl_view(writer, &base, rows, columns)
                         })
                     })
                     .await

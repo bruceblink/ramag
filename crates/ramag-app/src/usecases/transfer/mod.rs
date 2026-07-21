@@ -5,12 +5,14 @@
 //! 导入：流式读文件、分批写库。进度按批次回调，`AtomicBool` 随时取消；
 //! 取消不是错误——返回 `cancelled=true` 的汇总（导入已写入的部分保留）
 
+pub mod jsonl_table;
 pub mod mongo;
 pub mod redis;
 mod sql_catalog;
 pub mod sql_export;
 pub mod sql_import;
 
+pub use jsonl_table::import_jsonl_into_table;
 pub use mongo::{export_mongo_database, import_mongo_database};
 pub use redis::{export_redis_db, import_redis_db};
 pub use sql_export::export_sql_database;

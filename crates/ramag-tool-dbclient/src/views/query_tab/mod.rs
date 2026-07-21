@@ -39,6 +39,8 @@ pub struct QueryTab {
     pub(super) running: bool,
     /// 查询请求代际；取消后快速重跑时，旧回包与旧耗时 ticker 不得跟随新查询。
     pub(super) run_seq: u64,
+    /// 计数代际：仅新查询递增、翻页不变，使后台 COUNT 回包跨翻页仍有效、被新查询作废。
+    pub(super) count_seq: u64,
     /// SQL 格式化防重入；CPU 工作在共享有界 worker 中执行。
     pub(super) formatting: bool,
     /// 当前正在跑的任务句柄（drop 后取消异步任务）
@@ -168,6 +170,7 @@ impl QueryTab {
             result,
             running: false,
             run_seq: 0,
+            count_seq: 0,
             formatting: false,
             current_task: None,
             column_prefetch_task: None,

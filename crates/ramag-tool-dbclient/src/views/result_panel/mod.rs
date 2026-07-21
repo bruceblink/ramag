@@ -5,8 +5,6 @@ mod helpers;
 mod ops;
 mod render;
 
-pub use export::ExportFormat;
-
 use std::collections::BTreeSet;
 use std::sync::{
     Arc,
@@ -52,11 +50,25 @@ pub enum SortDir {
     Desc,
 }
 
+/// 全表精确总行数的异步计数状态。分页刻意只用哨兵判断有无下一页，
+/// 精确总数由首屏后台 COUNT(*) 回填，故需三态区分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TotalRows {
+    /// 计数进行中，底栏显示“计算中…”
+    Counting,
+    /// 已知精确总数
+    Known(u64),
+    /// 计数失败或不可用，底栏留空
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResultPagination {
     pub(crate) page: usize,
     pub(crate) page_size: usize,
     pub(crate) has_more: bool,
+    /// 全表精确总行数状态；跨翻页缓存复用，不逐页重算。
+    pub(crate) total: TotalRows,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -618,6 +630,18 @@ impl ResultPanel {
             return;
         }
         self.pagination = pagination;
+        cx.notify();
+    }
+
+    /// 后台 COUNT 返回后回填精确总数；当前无分页结果时忽略（如已被新查询清空）。
+    pub(crate) fn set_pagination_total(&mut self, total: TotalRows, cx: &mut Context<Self>) {
+        let Some(pagination) = self.pagination.as_mut() else {
+            return;
+        };
+        if pagination.total == total {
+            return;
+        }
+        pagination.total = total;
         cx.notify();
     }
 

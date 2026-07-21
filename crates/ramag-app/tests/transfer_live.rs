@@ -1019,3 +1019,259 @@ async fn perf_probe_seeded_exports() {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+// ===== 表级 JSONL 导入 =====
+
+/// 覆盖：键名匹配 / 缺列走默认与自增 / 未知键告警 / 脏行计失败 /
+/// Skip 幂等 / Overwrite 重建 / Fail 冲突即停
+#[tokio::test(flavor = "multi_thread")]
+async fn mysql_jsonl_table_import() {
+    let Some(config) = mysql_config() else {
+        eprintln!("[SKIP] 设置 RAMAG_TEST_MYSQL_* 环境变量后运行");
+        return;
+    };
+    let svc = sql_service();
+    let db = "ramag_e2e_jsonl";
+    exec(&svc, &config, format!("DROP DATABASE IF EXISTS `{db}`;")).await;
+    exec(
+        &svc,
+        &config,
+        format!(
+            "CREATE DATABASE `{db}`;\n\
+             CREATE TABLE `{db}`.`items` (\
+             `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY, \
+             `name` VARCHAR(64) NOT NULL, \
+             `qty` INT NULL DEFAULT 7, \
+             `note` TEXT NULL);"
+        ),
+    )
+    .await;
+
+    let path = temp_file("mysql-table.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"id\":1,\"name\":\"甲\",\"qty\":1,\"note\":\"a'b\\\\c\"}\n",
+            "{\"id\":2,\"name\":\"乙\"}\n",
+            "{\"name\":\"丙\",\"ghost\":true}\n",
+            "not json\n",
+            "{\"just\":\"unknown\"}\n",
+        ),
+    )
+    .expect("写测试 jsonl");
+    let cancel = AtomicBool::new(false);
+    let progress = noop_progress();
+    let count_sql = format!("SELECT COUNT(*) FROM `{db}`.`items`;");
+
+    // 首次导入：3 行入库、2 行脏数据计失败、未知键 ghost 有告警
+    let summary = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("首次导入失败");
+    assert_eq!(summary.items, 3, "警告：{:?}", summary.warnings);
+    assert_eq!(summary.failed, 2);
+    assert_eq!(summary.skipped, 0);
+    assert!(summary.warnings.iter().any(|w| w.contains("ghost")));
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+    // 缺列走库默认值；含引号 / 反斜杠文本保真
+    assert_eq!(
+        scalar_i64(
+            &svc,
+            &config,
+            &format!("SELECT `qty` FROM `{db}`.`items` WHERE `id` = 2;")
+        )
+        .await,
+        7
+    );
+    match scalar_value(
+        &svc,
+        &config,
+        &format!("SELECT `note` FROM `{db}`.`items` WHERE `id` = 1;"),
+    )
+    .await
+    {
+        ramag_domain::entities::Value::Text(text) => assert_eq!(text, "a'b\\c"),
+        other => panic!("期望文本 note，实得 {other:?}"),
+    }
+
+    // Skip 重复导入：显式 id 冲突跳过，无主键行（自增）再插一条
+    let summary = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("重复导入失败");
+    assert_eq!(summary.items, 1);
+    assert_eq!(summary.skipped, 2);
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 4);
+
+    // Overwrite：先清空再导入
+    let summary = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Overwrite,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("覆盖导入失败");
+    assert_eq!(summary.items, 3);
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+
+    // Fail：遇到第一个冲突行即报错，表保持不变
+    let failed = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Fail,
+        &cancel,
+        &progress,
+    )
+    .await;
+    assert!(failed.is_err(), "Fail 策略应在冲突时报错");
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+
+    exec(&svc, &config, format!("DROP DATABASE `{db}`;")).await;
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_jsonl_table_import() {
+    let Some(config) = pg_config() else {
+        eprintln!("[SKIP] 设置 RAMAG_TEST_PG_* 环境变量后运行");
+        return;
+    };
+    let svc = sql_service();
+    let schema = "ramag_e2e_jsonl_pg";
+    exec(
+        &svc,
+        &config,
+        format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE;"),
+    )
+    .await;
+    exec(
+        &svc,
+        &config,
+        format!(
+            "CREATE SCHEMA \"{schema}\";\n\
+             CREATE TABLE \"{schema}\".\"items\" (\
+             \"id\" INT PRIMARY KEY, \
+             \"name\" TEXT NOT NULL, \
+             \"qty\" INT DEFAULT 7, \
+             \"note\" TEXT);"
+        ),
+    )
+    .await;
+
+    let path = temp_file("pg-table.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"id\":1,\"name\":\"甲\",\"qty\":1,\"note\":\"a'b\\\\c\"}\n",
+            "{\"id\":2,\"name\":\"乙\"}\n",
+            "{\"id\":3,\"name\":\"丙\",\"ghost\":true}\n",
+            "not json\n",
+            "{\"just\":\"unknown\"}\n",
+        ),
+    )
+    .expect("写测试 jsonl");
+    let cancel = AtomicBool::new(false);
+    let progress = noop_progress();
+    let count_sql = format!("SELECT COUNT(*) FROM \"{schema}\".\"items\";");
+
+    let summary = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (schema, "items"),
+        &path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("首次导入失败");
+    assert_eq!(summary.items, 3, "警告：{:?}", summary.warnings);
+    assert_eq!(summary.failed, 2);
+    assert!(summary.warnings.iter().any(|w| w.contains("ghost")));
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+    // PG 标准串不吃反斜杠转义：文本应原样保真
+    match scalar_value(
+        &svc,
+        &config,
+        &format!("SELECT \"note\" FROM \"{schema}\".\"items\" WHERE \"id\" = 1;"),
+    )
+    .await
+    {
+        ramag_domain::entities::Value::Text(text) => assert_eq!(text, "a'b\\c"),
+        other => panic!("期望文本 note，实得 {other:?}"),
+    }
+    assert_eq!(
+        scalar_i64(
+            &svc,
+            &config,
+            &format!("SELECT \"qty\" FROM \"{schema}\".\"items\" WHERE \"id\" = 2;")
+        )
+        .await,
+        7
+    );
+
+    // Skip 幂等：全部冲突跳过
+    let summary = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (schema, "items"),
+        &path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("重复导入失败");
+    assert_eq!(summary.items, 0);
+    assert_eq!(summary.skipped, 3);
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+
+    let summary = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (schema, "items"),
+        &path,
+        ConflictPolicy::Overwrite,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("覆盖导入失败");
+    assert_eq!(summary.items, 3);
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+
+    let failed = transfer::import_jsonl_into_table(
+        &svc,
+        &config,
+        (schema, "items"),
+        &path,
+        ConflictPolicy::Fail,
+        &cancel,
+        &progress,
+    )
+    .await;
+    assert!(failed.is_err(), "Fail 策略应在冲突时报错");
+
+    exec(&svc, &config, format!("DROP SCHEMA \"{schema}\" CASCADE;")).await;
+    let _ = std::fs::remove_file(&path);
+}

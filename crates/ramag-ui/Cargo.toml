@@ -32,5 +32,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # 异步偏好写入串行化：快速切换时确保最后一次选择最终落盘。
 futures = { workspace = true }
+# 导入选项对话框内的系统文件多选框（workspace 既有依赖复用）
+rfd = { workspace = true }
 # 按需出现的分隔面板需共享一次性待恢复状态；复用 workspace 既有同步原语。
 parking_lot = { workspace = true }

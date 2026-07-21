@@ -27,7 +27,7 @@ use gpui_component::{
 
 use ramag_domain::entities::{QueryResult, contains_case_insensitive};
 
-use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, SortDir};
+use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, SortDir, TotalRows};
 
 /// 连续输入筛选词时先等待短暂停顿，避免每个按键都占用共享 CPU 工作池。
 const DISPLAY_VIEW_DEBOUNCE: Duration = Duration::from_millis(160);
@@ -663,6 +663,17 @@ pub(super) fn render_table(
         ));
     }
     let pagination_ui = pagination.filter(|pagination| pagination.page > 0 || pagination.has_more);
+    // 总行数文案：紧跟“显示 X-Y 行”之后、耗时之前；计算中/已知/不可用（留空）。
+    let total_summary: Option<String> = pagination_ui.and_then(|p| match p.total {
+        TotalRows::Counting => Some("总行数计算中…".to_string()),
+        TotalRows::Known(n) => Some(format!("共 {n} 行")),
+        TotalRows::Unavailable => None,
+    });
+    // 精确总数已知时把“第 N 页”升级为“第 N / M 页”。
+    let total_pages: Option<u64> = pagination_ui.and_then(|p| match p.total {
+        TotalRows::Known(n) if p.page_size > 0 => Some(n.div_ceil(p.page_size as u64).max(1)),
+        _ => None,
+    });
     if row_filtering {
         if pagination_ui.is_some() {
             let range_start = row_number_offset.saturating_add(1);
@@ -684,6 +695,10 @@ pub(super) fn render_table(
             let range_start = row_number_offset.saturating_add(1);
             let range_end = row_number_offset.saturating_add(total_rows);
             status_parts.push(format!("显示 {range_start}-{range_end} 行"));
+        }
+        // 总行数紧跟范围之后、耗时之前
+        if let Some(total_text) = total_summary {
+            status_parts.push(total_text);
         }
     } else if truncated {
         status_parts.push(format!(
@@ -731,11 +746,10 @@ pub(super) fn render_table(
                         });
                     }),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .child(format!("第 {} 页", pagination.page + 1)),
-            )
+            .child(div().flex_none().child(match total_pages {
+                Some(pages) => format!("第 {} / {} 页", pagination.page + 1, pages),
+                None => format!("第 {} 页", pagination.page + 1),
+            }))
             .child(
                 ramag_ui::clickable_button("result-page-next")
                     .ghost()

@@ -93,6 +93,36 @@ pub(super) fn table_context_menu(
         )
     };
 
+    // 表级 JSONL 导入：与结果集导出配对，按键名匹配列插入（视图不适用）
+    let menu = if is_view {
+        menu
+    } else {
+        let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
+        menu.item(
+            ramag_ui::menu_item("导入 JSONL 到此表").on_click(move |_, window, app| {
+                let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
+                ramag_ui::open_import_options_dialog(
+                    "导入 JSONL 到表",
+                    format!(
+                        "选择冲突策略与 .jsonl 文件（可多选），每行一个 JSON 对象，\
+                         按键名匹配 {s}.{t} 的列插入；行内缺少的列走库默认值，\
+                         未匹配的键忽略。「跳过」冲突行跳过，「覆盖」先清空表\
+                         （不可恢复），「停止」遇冲突即报错。"
+                    ),
+                    false,
+                    ("JSONL", &["jsonl", "json"]),
+                    move |policy, files, _, app| {
+                        ent.update(app, |this, cx| {
+                            this.import_table_from_files(s, t, policy, files, cx);
+                        });
+                    },
+                    window,
+                    app,
+                );
+            }),
+        )
+    };
+
     let (label, title, desc) = if is_view {
         (
             "删除视图",
@@ -130,12 +160,10 @@ pub(super) fn schema_context_menu(
     driver: DriverKind,
 ) -> PopupMenu {
     let (s, ent) = (schema.clone(), entity.clone());
-    let menu = menu.item(
-        ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
-            let (s, ent) = (s.clone(), ent.clone());
-            ent.update(app, |this, cx| this.export_schema_to_file(s, cx));
-        }),
-    );
+    let menu = menu.item(ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
+        let (s, ent) = (s.clone(), ent.clone());
+        ent.update(app, |this, cx| this.export_schema_to_file(s, cx));
+    }));
     let (s, ent) = (schema.clone(), entity.clone());
     let menu = menu
         .item(
@@ -144,13 +172,16 @@ pub(super) fn schema_context_menu(
                 ramag_ui::open_import_options_dialog(
                     "导入 SQL 文件",
                     format!(
-                        "选择冲突策略后再选 .sql 文件。ramag 导出的文件将导入到文件内记录的库；\
-                         普通 .sql 以当前库 {s} 为默认目标。重复导入同一文件：\
+                        "选择冲突策略与 .sql 文件（可多选）。ramag 导出的文件将导入到文件内\
+                         记录的库；普通 .sql 以当前库 {s} 为默认目标。重复导入同一文件：\
                          「跳过」按对象断点续传，「合并」按行去重补齐，「覆盖」完全重建（幂等）。"
                     ),
                     true,
-                    move |policy, _, app| {
-                        ent.update(app, |this, cx| this.import_schema_from_file(s, policy, cx));
+                    ("SQL", &["sql"]),
+                    move |policy, files, _, app| {
+                        ent.update(app, |this, cx| {
+                            this.import_schema_from_files(s, policy, files, cx);
+                        });
                     },
                     window,
                     app,

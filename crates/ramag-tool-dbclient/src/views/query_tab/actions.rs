@@ -6,18 +6,20 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext as _, Context, Window};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
-use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query};
+use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query, QueryResult, Value};
 use ramag_domain::error::DomainError;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::QueryTab;
-use super::paging::{PAGE_SIZE, PageRequest, Pager, page_sql, paging_base_sql, trim_page_sentinel};
+use super::paging::{
+    PAGE_SIZE, PageRequest, Pager, count_sql, page_sql, paging_base_sql, trim_page_sentinel,
+};
 use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line,
 };
 use crate::sql_completion::extract_tables_in_use_for_prefetch;
-use crate::views::result_panel::{ResultPagination, ResultState};
+use crate::views::result_panel::{ResultPagination, ResultState, TotalRows};
 
 impl QueryTab {
     /// 取出当前编辑器中的 SQL
@@ -185,6 +187,7 @@ impl QueryTab {
                 page: 0,
                 has_more: false,
                 page_size: PAGE_SIZE,
+                total: TotalRows::Counting,
             })
         } else {
             None
@@ -210,7 +213,73 @@ impl QueryTab {
             (sql_to_run, None)
         };
         self.pager = pager;
-        self.execute_query(conn, effective_sql, title_sql, is_run, page_request, cx);
+        // 分页首屏：后台并发精确计数（不写历史），算好回填“共 N 行”。翻页复用不重算。
+        let count_base = self.pager.as_ref().map(|pager| pager.base_sql.clone());
+        self.execute_query(
+            conn.clone(),
+            effective_sql,
+            title_sql,
+            is_run,
+            page_request,
+            cx,
+        );
+        if let Some(base_sql) = count_base {
+            self.spawn_total_count(conn, base_sql, cx);
+        }
+    }
+
+    /// 分页首屏后台精确计数：把原查询外包成 COUNT(*) 子查询执行（不写历史），
+    /// 回填 Pager 与结果面板底栏。新查询通过 `count_seq` 令在途计数失效。
+    fn spawn_total_count(
+        &mut self,
+        conn: ramag_domain::entities::ConnectionConfig,
+        base_sql: String,
+        cx: &mut Context<Self>,
+    ) {
+        let counting_sql = match count_sql(&base_sql) {
+            Ok(sql) => sql,
+            Err(message) => {
+                // 无法构造计数 SQL（极少见的超长查询）：底栏留空，不再尝试。
+                warn!(error = %message, "build count sql failed");
+                if let Some(pager) = self.pager.as_mut() {
+                    pager.total = TotalRows::Unavailable;
+                }
+                return;
+            }
+        };
+        self.count_seq = self.count_seq.wrapping_add(1);
+        let count_seq = self.count_seq;
+        let svc = self.service.clone();
+        let result_handle = self.result.clone();
+        let active_schema = self.active_schema.clone();
+        cx.spawn(async move |this, cx| {
+            let mut query = Query::new(counting_sql);
+            if let Some(schema) = active_schema {
+                query = query.with_schema(schema);
+            }
+            let total = match svc.execute(&conn, &query).await {
+                Ok(result) => parse_count_result(&result)
+                    .map(TotalRows::Known)
+                    .unwrap_or(TotalRows::Unavailable),
+                Err(e) => {
+                    warn!(error = %e, "count query failed");
+                    TotalRows::Unavailable
+                }
+            };
+            let _ = this.update(cx, |this, cx| {
+                // 翻页不改 count_seq；仅当被新查询取代时丢弃本次计数。
+                if this.count_seq != count_seq {
+                    return;
+                }
+                if let Some(pager) = this.pager.as_mut() {
+                    pager.total = total;
+                }
+                result_handle.update(cx, |result, cx| {
+                    result.set_pagination_total(total, cx);
+                });
+            });
+        })
+        .detach();
     }
 
     /// 请求相邻结果页；SQL 基线只保存在当前 QueryTab，不从可变编辑器重新读取。
@@ -341,6 +410,7 @@ impl QueryTab {
                                         page: request.page,
                                         page_size: request.page_size,
                                         has_more,
+                                        total: pager.total,
                                     }
                                 })
                             })
@@ -741,6 +811,15 @@ impl QueryTab {
             }
         })
         .detach();
+    }
+}
+
+/// 从 COUNT(*) 结果取第一行第一列的非负整数总数；类型不符或为空则返回 None。
+fn parse_count_result(result: &QueryResult) -> Option<u64> {
+    match result.rows.first()?.values.first()? {
+        Value::Int(n) => u64::try_from(*n).ok(),
+        Value::Text(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
     }
 }
 

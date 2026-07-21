@@ -19,16 +19,6 @@ pub struct RunStatementAtCursor;
 #[action(namespace = ramag_dbclient)]
 pub struct NewQueryTab;
 
-/// 导出当前结果集为 CSV
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag_dbclient)]
-pub struct ExportCsv;
-
-/// 导出当前结果集为 JSON
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag_dbclient)]
-pub struct ExportJson;
-
 /// 聚焦结果集过滤栏（默认主修饰键+F）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_dbclient)]
@@ -48,11 +38,6 @@ pub struct ExplainQuery;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_dbclient)]
 pub struct CopyCellValue;
-
-/// 工具条「导出」下拉的 Markdown 项：写 .md 文件（按勾选行过滤 / 全部）
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag_dbclient)]
-pub struct ExportMarkdown;
 
 /// 右键菜单：复制选中单元格所在的列名
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]

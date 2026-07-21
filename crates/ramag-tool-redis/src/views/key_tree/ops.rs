@@ -122,13 +122,14 @@ pub(super) fn toolbar_more_menu(
             ramag_ui::open_import_options_dialog(
                 "导入 JSONL 文件",
                 format!(
-                    "选择冲突策略后再选 .jsonl 文件，将导入到 DB {db}。重复导入同一文件：\
+                    "选择冲突策略与 .jsonl 文件（可多选），将导入到 DB {db}。重复导入同一文件：\
                      「跳过」按 key 断点续传，「覆盖」完全重建（幂等）。\
                      （list / string 无法条目级去重，Redis 不提供合并）"
                 ),
                 false,
-                move |policy, _, app| {
-                    ent.update(app, |this, cx| this.import_db_from_file(policy, cx));
+                ("JSONL", &["jsonl", "json"]),
+                move |policy, files, _, app| {
+                    ent.update(app, |this, cx| this.import_db_from_files(policy, files, cx));
                 },
                 window,
                 app,

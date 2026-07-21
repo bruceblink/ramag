@@ -9,7 +9,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, IconName, Sizable as _, WindowExt as _,
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
@@ -164,6 +164,153 @@ pub fn open_optional_bounded_prompt(
         window,
         cx,
     );
+}
+
+/// 掩码输入 + 明文显隐切换的口令对话框：免二次输入，用户可切明文自查后提交。
+/// `validate` 返回 Some(错误文案) 时阻止提交并内联展示（输入一变即隐藏）；
+/// 空输入按「不能为空」处理，口令保留首尾空格
+pub fn open_reveal_masked_prompt(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    confirm_label: impl Into<SharedString>,
+    validate: impl Fn(&str) -> Option<String> + 'static,
+    on_confirm: impl FnOnce(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title: SharedString = title.into();
+    let description: SharedString = description.into();
+    let confirm_label: SharedString = confirm_label.into();
+    let input: Entity<InputState> = cx.new(|cx| {
+        InputState::new(window, cx)
+            .validate(|value, _| value.len() <= MAX_PROMPT_INPUT_BYTES)
+            .masked(true)
+    });
+    input.update(cx, |state, cx| state.focus(window, cx));
+    let on_confirm_cell = Rc::new(RefCell::new(Some(on_confirm)));
+    let validate = Rc::new(validate);
+    // (错误文案, 触发时的输入快照)：输入一变即隐藏错误
+    let error_state: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
+    let masked_state = Rc::new(RefCell::new(true));
+
+    // 提交检查：空 / 校验失败 → 记录错误保持打开；通过 → 执行回调，返回是否可关闭
+    let submit = {
+        let cell = on_confirm_cell.clone();
+        let input = input.clone();
+        let validate = validate.clone();
+        let error_state = error_state.clone();
+        Rc::new(move |window: &mut Window, app: &mut App| -> bool {
+            let value = input.read(app).value().to_string();
+            let error = if value.trim().is_empty() {
+                Some("输入不能为空".to_string())
+            } else {
+                validate(&value)
+            };
+            if let Some(error) = error {
+                *error_state.borrow_mut() = Some((error, value));
+                input.update(app, |_, cx| cx.notify());
+                return false;
+            }
+            if let Some(cb) = cell.borrow_mut().take() {
+                cb(value, window, app);
+            }
+            true
+        })
+    };
+
+    window.open_dialog(cx, move |dialog, _, _| {
+        let desc = description.clone();
+        let confirm_label_inner = confirm_label.clone();
+
+        let cancel_btn = crate::clickable_button("ramag-reveal-prompt-cancel")
+            .ghost()
+            .small()
+            .label("取消")
+            .on_click(|_: &ClickEvent, window, app| {
+                window.close_dialog(app);
+            });
+        let ok_btn = crate::clickable_button("ramag-reveal-prompt-ok")
+            .small()
+            .primary()
+            .label(confirm_label_inner)
+            .on_click({
+                let submit = submit.clone();
+                move |_: &ClickEvent, window, app| {
+                    if submit(window, app) {
+                        window.close_dialog(app);
+                    }
+                }
+            });
+
+        let input_for_content = input.clone();
+        let masked_for_content = masked_state.clone();
+        let error_for_content = error_state.clone();
+        dialog
+            .title(crate::closable_dialog_title(
+                "ramag-reveal-prompt-close",
+                title.clone(),
+                |_, _| {},
+            ))
+            .close_button(false)
+            .margin_top(px(180.0))
+            .on_ok({
+                let submit = submit.clone();
+                move |_, window, app| submit(window, app)
+            })
+            .content(move |content, _, cx| {
+                let muted_fg = cx.theme().muted_foreground;
+                let masked_now = *masked_for_content.borrow();
+                let value = input_for_content.read(cx).value();
+                let error_line = error_for_content
+                    .borrow()
+                    .as_ref()
+                    .and_then(|(message, at)| {
+                        (value.as_ref() == at.as_str()).then(|| message.clone())
+                    });
+                let toggle = {
+                    let input = input_for_content.clone();
+                    let masked_cell = masked_for_content.clone();
+                    crate::clickable_button("ramag-reveal-prompt-toggle")
+                        .ghost()
+                        .xsmall()
+                        .tab_stop(false)
+                        .icon(if masked_now {
+                            IconName::Eye
+                        } else {
+                            IconName::EyeOff
+                        })
+                        .tooltip(if masked_now {
+                            "显示口令"
+                        } else {
+                            "隐藏口令"
+                        })
+                        .on_click(move |_: &ClickEvent, window, app| {
+                            let next = !*masked_cell.borrow();
+                            *masked_cell.borrow_mut() = next;
+                            input.update(app, |state, cx| state.set_masked(next, window, cx));
+                        })
+                };
+                content.child(
+                    v_flex()
+                        .gap(px(8.0))
+                        .py(px(4.0))
+                        .child(div().text_sm().text_color(muted_fg).child(desc.clone()))
+                        .child(Input::new(&input_for_content).small().suffix(toggle))
+                        .when_some(error_line, |this, message| {
+                            this.child(div().text_xs().text_color(gpui::red()).child(message))
+                        }),
+                )
+            })
+            .footer(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(cancel_btn)
+                    .child(ok_btn),
+            )
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

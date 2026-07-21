@@ -1,7 +1,8 @@
 //! Key 树的按 DB 导出 / 导入入口。编排在 `ramag_app::usecases::transfer::redis`，
 //! 这里负责文件选择、进度槽 / 取消位、完成通知与重扫
 
-use std::sync::atomic::AtomicBool;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::Context;
@@ -10,6 +11,7 @@ use ramag_app::RedisService;
 use ramag_app::usecases::transfer;
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig, TransferProgress, TransferSummary};
 use ramag_domain::error::{READ_ONLY_MESSAGE, Result};
+use tracing::error;
 
 use super::KeyTreePanel;
 
@@ -50,7 +52,15 @@ impl KeyTreePanel {
         .detach();
     }
 
-    pub(super) fn import_db_from_file(&mut self, policy: ConflictPolicy, cx: &mut Context<Self>) {
+    pub(super) fn import_db_from_files(
+        &mut self,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
         let Some(config) = self.transfer_ready(cx) else {
             return;
         };
@@ -67,7 +77,7 @@ impl KeyTreePanel {
         cx.notify();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let outcome = run_import(svc, config, db, policy, cancel.clone(), slot).await;
+            let outcome = run_import(svc, config, db, policy, files, cancel.clone(), slot).await;
             let _ = this.update(cx, |this, cx| {
                 if !this.transfer.finish(&cancel) {
                     return;
@@ -112,25 +122,53 @@ async fn run_export(
     Ok(Some((summary, path.display().to_string())))
 }
 
+/// 逐文件导入并汇总；任一文件出错即停止（出错文件名记入日志便于定位）
 async fn run_import(
     svc: Arc<RedisService>,
     config: ConnectionConfig,
     db: u8,
     policy: ConflictPolicy,
+    files: Vec<PathBuf>,
     cancel: Arc<AtomicBool>,
     slot: Arc<Mutex<TransferProgress>>,
 ) -> Result<Option<(TransferSummary, String)>> {
-    let Some(handle) = rfd::AsyncFileDialog::new()
-        .add_filter("JSONL", &["jsonl", "json"])
-        .pick_file()
-        .await
-    else {
-        return Ok(None);
-    };
-    let path = handle.path().to_path_buf();
     let progress = ramag_ui::progress_sink(slot);
-    let summary =
-        transfer::import_redis_db(&svc, &config, Some(db), &path, policy, &cancel, &progress)
-            .await?;
-    Ok(Some((summary, path.display().to_string())))
+    let file_count = files.len();
+    let mut total = TransferSummary::default();
+    let mut single_target = String::new();
+    for path in files {
+        if cancel.load(Ordering::Relaxed) {
+            total.cancelled = true;
+            break;
+        }
+        single_target = path.display().to_string();
+        let summary = match transfer::import_redis_db(
+            &svc,
+            &config,
+            Some(db),
+            &path,
+            policy,
+            &cancel,
+            &progress,
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(e) => {
+                error!(file = %path.display(), "redis import failed");
+                return Err(e);
+            }
+        };
+        let cancelled = summary.cancelled;
+        total.merge(summary);
+        if cancelled {
+            break;
+        }
+    }
+    let target = if file_count == 1 {
+        single_target
+    } else {
+        format!("{file_count} 个文件")
+    };
+    Ok(Some((total, target)))
 }

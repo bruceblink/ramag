@@ -1,7 +1,8 @@
 //! 表树的按库导出 / 导入入口。编排在 `ramag_app::usecases::transfer`，
 //! 这里负责文件选择、进度槽 / 取消位、完成通知与树刷新
 
-use std::sync::atomic::AtomicBool;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui::Context;
@@ -10,6 +11,7 @@ use ramag_app::ConnectionService;
 use ramag_app::usecases::transfer;
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig, TransferProgress, TransferSummary};
 use ramag_domain::error::{READ_ONLY_MESSAGE, Result};
+use tracing::error;
 
 use super::TableTreePanel;
 
@@ -50,12 +52,16 @@ impl TableTreePanel {
         .detach();
     }
 
-    pub(super) fn import_schema_from_file(
+    pub(super) fn import_schema_from_files(
         &mut self,
         schema: String,
         policy: ConflictPolicy,
+        files: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) {
+        if files.is_empty() {
+            return;
+        }
         let Some(config) = self.transfer_ready(cx) else {
             return;
         };
@@ -71,7 +77,8 @@ impl TableTreePanel {
         cx.notify();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let outcome = run_import(svc, config, schema, policy, cancel.clone(), slot).await;
+            let outcome =
+                run_import(svc, config, schema, policy, files, cancel.clone(), slot).await;
             let _ = this.update(cx, |this, cx| {
                 if !this.transfer.finish(&cancel) {
                     return;
@@ -81,6 +88,60 @@ impl TableTreePanel {
                     ramag_ui::transfer_notification("导入", "已完成部分保留", outcome);
                 if imported {
                     // 导入可能新建了库 / 表，刷新树
+                    this.refresh(cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 表级 JSONL 导入：多文件循环，按 JSON 键名匹配列插入
+    pub(super) fn import_table_from_files(
+        &mut self,
+        schema: String,
+        table: String,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
+        let Some(config) = self.transfer_ready(cx) else {
+            return;
+        };
+        if config.production {
+            self.pending_notification = Some(Notification::error(READ_ONLY_MESSAGE).autohide(true));
+            cx.notify();
+            return;
+        }
+        let (cancel, slot) = self.transfer.begin();
+        ramag_ui::spawn_transfer_ticker(cx, cancel.clone(), |this: &Self, token| {
+            this.transfer.is_current(token)
+        });
+        cx.notify();
+        let svc = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = run_table_import(
+                svc,
+                config,
+                (schema, table),
+                policy,
+                files,
+                cancel.clone(),
+                slot,
+            )
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.transfer.finish(&cancel) {
+                    return;
+                }
+                let imported = matches!(&outcome, Ok(Some(_)));
+                this.pending_notification =
+                    ramag_ui::transfer_notification("导入", "已完成部分保留", outcome);
+                if imported {
                     this.refresh(cx);
                 } else {
                     cx.notify();
@@ -117,32 +178,107 @@ async fn run_export(
     Ok(Some((summary, path.display().to_string())))
 }
 
+/// 逐文件导入并汇总；任一文件出错即停止（出错文件名记入日志便于定位）
 async fn run_import(
     svc: Arc<ConnectionService>,
     config: ConnectionConfig,
     schema: String,
     policy: ConflictPolicy,
+    files: Vec<PathBuf>,
     cancel: Arc<AtomicBool>,
     slot: Arc<Mutex<TransferProgress>>,
 ) -> Result<Option<(TransferSummary, String)>> {
-    let Some(handle) = rfd::AsyncFileDialog::new()
-        .add_filter("SQL", &["sql"])
-        .pick_file()
-        .await
-    else {
-        return Ok(None);
-    };
-    let path = handle.path().to_path_buf();
     let progress = ramag_ui::progress_sink(slot);
-    let summary = transfer::import_sql_database(
-        &svc,
-        &config,
-        &path,
-        policy,
-        Some(&schema),
-        &cancel,
-        &progress,
-    )
-    .await?;
-    Ok(Some((summary, path.display().to_string())))
+    let file_count = files.len();
+    let mut total = TransferSummary::default();
+    let mut single_target = String::new();
+    for path in files {
+        if cancel.load(Ordering::Relaxed) {
+            total.cancelled = true;
+            break;
+        }
+        single_target = path.display().to_string();
+        let summary = match transfer::import_sql_database(
+            &svc,
+            &config,
+            &path,
+            policy,
+            Some(&schema),
+            &cancel,
+            &progress,
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(e) => {
+                error!(file = %path.display(), "sql import failed");
+                return Err(e);
+            }
+        };
+        let cancelled = summary.cancelled;
+        total.merge(summary);
+        if cancelled {
+            break;
+        }
+    }
+    let target = if file_count == 1 {
+        single_target
+    } else {
+        format!("{file_count} 个文件")
+    };
+    Ok(Some((total, target)))
+}
+
+/// 表级 JSONL：逐文件导入并汇总；任一文件出错即停止（出错文件名记入日志便于定位）
+async fn run_table_import(
+    svc: Arc<ConnectionService>,
+    config: ConnectionConfig,
+    target: (String, String),
+    policy: ConflictPolicy,
+    files: Vec<PathBuf>,
+    cancel: Arc<AtomicBool>,
+    slot: Arc<Mutex<TransferProgress>>,
+) -> Result<Option<(TransferSummary, String)>> {
+    let (schema, table) = target;
+    let progress = ramag_ui::progress_sink(slot);
+    let file_count = files.len();
+    let mut total = TransferSummary::default();
+    let mut single_target = String::new();
+    for path in files {
+        if cancel.load(Ordering::Relaxed) {
+            total.cancelled = true;
+            break;
+        }
+        single_target = path.display().to_string();
+        let summary = match transfer::import_jsonl_into_table(
+            &svc,
+            &config,
+            (&schema, &table),
+            &path,
+            policy,
+            &cancel,
+            &progress,
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(e) => {
+                error!(file = %path.display(), "jsonl table import failed");
+                return Err(e);
+            }
+        };
+        let cancelled = summary.cancelled;
+        total.merge(summary);
+        if cancelled {
+            break;
+        }
+    }
+    // 多文件都对同一张表：objects 累加会虚高，归一为 1
+    total.objects = total.objects.min(1);
+    let target = if file_count == 1 {
+        single_target
+    } else {
+        format!("{file_count} 个文件 → {schema}.{table}")
+    };
+    Ok(Some((total, target)))
 }

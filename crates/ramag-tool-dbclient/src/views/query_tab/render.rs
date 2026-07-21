@@ -13,16 +13,13 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
-use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::platform::primary_shortcut;
 
 use super::QueryTab;
 use super::sql_utils::format_elapsed;
 
 /// 千分位格式化（10_000 → "10,000"），自动限制档位展示用
-use crate::actions::{
-    ExplainQuery, ExportCsv, ExportJson, ExportMarkdown, FormatSql, RunQuery, RunStatementAtCursor,
-};
+use crate::actions::{ExplainQuery, FormatSql, RunQuery, RunStatementAtCursor};
 use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultState};
 
 impl Render for QueryTab {
@@ -75,16 +72,6 @@ impl Render for QueryTab {
             }))
             .on_action(cx.listener(|this, _: &RunStatementAtCursor, window, cx| {
                 this.handle_run_at_cursor(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ExportCsv, _, cx| {
-                this.result.update(cx, |r, cx| {
-                    r.export(crate::views::result_panel::ExportFormat::Csv, cx);
-                });
-            }))
-            .on_action(cx.listener(|this, _: &ExportJson, _, cx| {
-                this.result.update(cx, |r, cx| {
-                    r.export(crate::views::result_panel::ExportFormat::Json, cx);
-                });
             }))
             .on_action(cx.listener(|this, _: &FormatSql, window, cx| {
                 this.handle_format(window, cx);
@@ -397,20 +384,11 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::download())
-                            .tooltip("导出")
+                            .tooltip("导出 JSONL")
                             .disabled(!has_result)
-                            .pointer_dropdown_menu(|menu, _, _| {
-                                menu.item(
-                                    ramag_ui::menu_item("CSV").action(Box::new(ExportCsv)),
-                                )
-                                .item(
-                                    ramag_ui::menu_item("JSON").action(Box::new(ExportJson)),
-                                )
-                                .item(
-                                    ramag_ui::menu_item("Markdown")
-                                        .action(Box::new(ExportMarkdown)),
-                                )
-                            }),
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.result.update(cx, |r, cx| r.export(cx));
+                            })),
                     )
                     .when(running, |this| {
                         this.child(

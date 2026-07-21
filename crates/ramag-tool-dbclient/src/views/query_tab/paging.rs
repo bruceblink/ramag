@@ -7,7 +7,7 @@ use ramag_infra_sql_shared::sql::{
 };
 
 use super::sql_utils::{has_top_level_keyword, strip_leading_comments};
-use crate::views::result_panel::MAX_ROWS_DISPLAY;
+use crate::views::result_panel::{MAX_ROWS_DISPLAY, TotalRows};
 
 pub(super) const PAGE_SIZE: usize = MAX_ROWS_DISPLAY;
 
@@ -19,6 +19,8 @@ pub(super) struct Pager {
     pub(super) page: usize,
     pub(super) has_more: bool,
     pub(super) page_size: usize,
+    /// 全表精确总行数的异步计数状态：由首屏后台 COUNT 回填，翻页复用不重算。
+    pub(super) total: TotalRows,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +110,30 @@ pub(super) fn trim_page_sentinel(result: &mut QueryResult, page_size: usize) -> 
     has_more
 }
 
+/// 把原始单条只读查询外包成子查询做精确计数。base_sql 已保证无 LIMIT/OFFSET/FOR
+/// 等顶层子句（见 `paging_base_sql`），可安全外包 COUNT(*)。
+pub(super) fn count_sql(base_sql: &str) -> Result<String, String> {
+    // 前后换行：避免 base_sql 末尾行注释吞掉右括号与派生表别名。
+    let prefix = "SELECT COUNT(*) FROM (\n";
+    let suffix = "\n) AS ramag_total_count";
+    let generated_len = prefix
+        .len()
+        .checked_add(base_sql.len())
+        .and_then(|len| len.checked_add(suffix.len()))
+        .ok_or_else(|| "计数 SQL 长度溢出".to_string())?;
+    if generated_len > MAX_SQL_QUERY_BYTES {
+        return Err(format!(
+            "计数 SQL 超过 {} MiB 安全上限",
+            MAX_SQL_QUERY_BYTES / 1024 / 1024
+        ));
+    }
+    let mut generated = String::with_capacity(generated_len);
+    generated.push_str(prefix);
+    generated.push_str(base_sql);
+    generated.push_str(suffix);
+    Ok(generated)
+}
+
 #[cfg(test)]
 mod tests {
     use ramag_domain::entities::{Row, Value};
@@ -195,6 +221,14 @@ mod tests {
         );
         assert!(page_sql("SELECT 1", usize::MAX, 0).is_err());
         assert!(page_sql("SELECT 1", 2, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn count_sql_wraps_base_query_as_derived_table() {
+        assert_eq!(
+            count_sql("SELECT * FROM t WHERE a > 1").as_deref(),
+            Ok("SELECT COUNT(*) FROM (\nSELECT * FROM t WHERE a > 1\n) AS ramag_total_count")
+        );
     }
 
     #[test]

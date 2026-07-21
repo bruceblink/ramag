@@ -12,10 +12,7 @@ use ramag_ui::platform::primary_shortcut;
 
 use super::ResultPanel;
 use super::ResultState;
-use super::export::ExportFormat;
-use crate::actions::{
-    CopyCellValue, CopySelectedColumn, ExportCsv, ExportJson, ExportMarkdown, FindInResults,
-};
+use crate::actions::{CopyCellValue, CopySelectedColumn, FindInResults};
 use crate::views::result_table::render_table;
 
 impl Render for ResultPanel {
@@ -119,12 +116,6 @@ impl Render for ResultPanel {
         let mut root = v_flex()
             .size_full()
             .min_w_0()
-            .on_action(cx.listener(|this, _: &ExportCsv, _, cx| {
-                this.export(ExportFormat::Csv, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ExportJson, _, cx| {
-                this.export(ExportFormat::Json, cx);
-            }))
             .on_action(cx.listener(|this, _: &FindInResults, window, cx| {
                 let handle = this.row_filter_input.read(cx).focus_handle(cx);
                 handle.focus(window, cx);
@@ -135,9 +126,6 @@ impl Render for ResultPanel {
             }))
             .on_action(cx.listener(|this, _: &CopySelectedColumn, _, cx| {
                 this.copy_selected_column_name(cx);
-            }))
-            .on_action(cx.listener(|this, _: &ExportMarkdown, _, cx| {
-                this.export(ExportFormat::Markdown, cx);
             }));
         if let Some(banner) = warnings_banner {
             root = root.child(banner);

@@ -279,53 +279,20 @@ impl ConnectionListPanel {
         cx.notify();
     }
 
-    /// 导出：强制自定义口令并二次确认，避免公开默认值造成“看似加密”。
+    /// 导出：单框自定义口令（≥8 字符，校验失败内联提示），
+    /// 明文显隐切换供自查，免二次输入确认
     pub(super) fn prompt_export_passphrase(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.transferring {
             return;
         }
         let entity = cx.entity().clone();
-        ramag_ui::open_bounded_masked_prompt(
-            "设置导出口令",
-            "请输入至少 8 个字符的自定义口令。文件包含数据库密码，遗失口令将无法恢复。",
-            "",
-            "下一步",
-            transfer::MAX_TRANSFER_PASSPHRASE_BYTES,
-            move |passphrase, window, app| {
-                if let Err(error) = transfer::validate_export_passphrase(&passphrase) {
-                    entity.update(app, |this, cx| {
-                        this.pending_notification = Some(Notification::error(error));
-                        cx.notify();
-                    });
-                    return;
-                }
-                let entity_confirm = entity.clone();
-                // 第一个弹窗在本回调返回后才关闭（关的是栈顶）；确认弹窗必须 defer 到
-                // 那之后再开，否则刚开的确认弹窗会被顶替关闭、界面看似无响应
-                window.defer(app, move |window, app| {
-                    ramag_ui::open_bounded_masked_prompt(
-                        "确认导出口令",
-                        "请再次输入同一口令。",
-                        "",
-                        "导出",
-                        transfer::MAX_TRANSFER_PASSPHRASE_BYTES,
-                        move |confirm, _window, app| {
-                            if confirm != passphrase {
-                                entity_confirm.update(app, |this, cx| {
-                                    this.pending_notification = Some(Notification::error(
-                                        "两次输入的口令不一致，导出已取消",
-                                    ));
-                                    cx.notify();
-                                });
-                                return;
-                            }
-                            entity_confirm
-                                .update(app, |this, cx| this.export_connections(confirm, cx));
-                        },
-                        window,
-                        app,
-                    );
-                });
+        ramag_ui::open_reveal_masked_prompt(
+            "导出连接配置",
+            "设置至少 8 个字符的自定义口令。文件包含数据库密码，遗失口令将无法恢复。",
+            "导出",
+            |passphrase| transfer::validate_export_passphrase(passphrase).err(),
+            move |passphrase, _, app| {
+                entity.update(app, |this, cx| this.export_connections(passphrase, cx));
             },
             window,
             cx,
@@ -469,23 +436,9 @@ impl ConnectionListPanel {
                     });
                 }
                 Ok(Some(transfer::PreparedImport::Plain { valid, skipped })) => {
+                    // transferring 保持 true，待覆盖数量算出后在合并确认框前复位
                     let _ = this.update_in(cx, |this, window, cx| {
-                        this.transferring = false;
-                        cx.notify();
-                        let entity = cx.entity().clone();
-                        ramag_ui::open_confirm(
-                            "导入未加密配置？",
-                            "这是旧版 V1 明文文件，可能直接包含数据库密码。请仅导入可信文件，并在完成后安全删除原文件。",
-                            "继续导入",
-                            true,
-                            move |window, app| {
-                                entity.update(app, |this, cx| {
-                                    this.prepare_import_save(valid, skipped, window, cx)
-                                });
-                            },
-                            window,
-                            cx,
-                        );
+                        this.confirm_plain_import(valid, skipped, window, cx);
                     });
                 }
                 Ok(Some(transfer::PreparedImport::Encrypted(raw))) => {
@@ -511,6 +464,66 @@ impl ConnectionListPanel {
                     });
                 }
             }
+        })
+        .detach();
+    }
+
+    /// 明文 V1 导入：一次确认同时给出明文风险与新增 / 覆盖数量，
+    /// 替代「明文警告 → 覆盖确认」两个背靠背弹框；进入时 transferring 仍为 true
+    fn confirm_plain_import(
+        &mut self,
+        valid: Vec<ConnectionConfig>,
+        skipped: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let svc = self.service.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let existing = svc.list().await;
+            let _ = this.update_in(cx, move |this, window, cx| {
+                this.transferring = false;
+                cx.notify();
+                match existing {
+                    Ok(existing) => {
+                        let (added, overwritten) = import_change_counts(&valid, &existing);
+                        let mut description = format!(
+                            "这是旧版 V1 明文文件，可能直接包含数据库密码。请仅导入可信文件，\
+                             并在完成后安全删除原文件。\n\n将新增 {added} 个连接"
+                        );
+                        if overwritten > 0 {
+                            description.push_str(&format!(
+                                "、覆盖 {overwritten} 个同 ID 连接\
+                                 （相关连接池会清理，已打开标签需重新连接）"
+                            ));
+                        }
+                        if !skipped.is_empty() {
+                            description
+                                .push_str(&format!("，另跳过 {} 个无效或重复条目", skipped.len()));
+                        }
+                        description.push('。');
+                        let entity = cx.entity().clone();
+                        ramag_ui::open_confirm(
+                            "导入未加密配置？",
+                            description,
+                            "继续导入",
+                            true,
+                            move |_, app| {
+                                entity
+                                    .update(app, |this, cx| this.save_imported(valid, skipped, cx));
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        error!(error = %error, "load connections before import failed");
+                        this.pending_notification = Some(Notification::error(format!(
+                            "导入前读取现有连接失败：{error}"
+                        )));
+                        cx.notify();
+                    }
+                }
+            });
         })
         .detach();
     }

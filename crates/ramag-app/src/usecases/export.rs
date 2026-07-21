@@ -1,4 +1,4 @@
-//! 结果集导出：CSV / JSON / Markdown 文本，供 UI 写文件或复制剪贴板
+//! 结果集导出：JSONL 文本（每行一个 JSON 对象），供 UI 写文件
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ramag_domain::entities::{QueryResult, Value};
 use ramag_domain::error::{DomainError, Result};
-use serde::ser::{SerializeMap, SerializeSeq};
+use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
 static EXPORT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -178,61 +178,13 @@ fn remove_export_temp(path: &Path) {
     }
 }
 
-/// 流式导出 CSV。NULL=空字段，BLOB=hex；逗号、引号和换行按 RFC 4180 转义。
-pub fn write_csv(writer: &mut dyn Write, result: &QueryResult) -> Result<()> {
-    write_csv_view(writer, result, None, None)
+/// 流式导出 JSONL：每行一个紧凑 JSON 对象。
+pub fn write_jsonl(writer: &mut dyn Write, result: &QueryResult) -> Result<()> {
+    write_jsonl_view(writer, result, None, None)
 }
 
-/// 按源行 / 源列索引流式导出 CSV；None 表示全部，不复制 QueryResult 或单元格。
-pub fn write_csv_view(
-    writer: &mut dyn Write,
-    result: &QueryResult,
-    row_indices: Option<&[usize]>,
-    column_indices: Option<&[usize]>,
-) -> Result<()> {
-    let mut first = true;
-    for column_index in selected_indices(column_indices, result.columns.len()) {
-        let Some(column) = result.columns.get(column_index) else {
-            continue;
-        };
-        if !first {
-            writer.write_all(b",").map_err(csv_write_error)?;
-        }
-        write_csv_text(writer, column).map_err(csv_write_error)?;
-        first = false;
-    }
-    writer.write_all(b"\n").map_err(csv_write_error)?;
-
-    for row_index in selected_indices(row_indices, result.rows.len()) {
-        let Some(row) = result.rows.get(row_index) else {
-            continue;
-        };
-        let mut first = true;
-        for column_index in selected_indices(column_indices, result.columns.len()) {
-            if result.columns.get(column_index).is_none() {
-                continue;
-            }
-            if !first {
-                writer.write_all(b",").map_err(csv_write_error)?;
-            }
-            match row.values.get(column_index) {
-                Some(value) => write_csv_value(writer, value).map_err(csv_write_error)?,
-                None => write_csv_value(writer, &Value::Null).map_err(csv_write_error)?,
-            }
-            first = false;
-        }
-        writer.write_all(b"\n").map_err(csv_write_error)?;
-    }
-    Ok(())
-}
-
-/// 流式导出 pretty JSON 数组，每行一个对象。
-pub fn write_json(writer: &mut dyn Write, result: &QueryResult) -> Result<()> {
-    write_json_view(writer, result, None, None)
-}
-
-/// 按源行 / 源列索引流式导出 JSON；None 表示全部。
-pub fn write_json_view(
+/// 按源行 / 源列索引流式导出 JSONL；None 表示全部，不复制 QueryResult 或单元格。
+pub fn write_jsonl_view(
     writer: &mut dyn Write,
     result: &QueryResult,
     row_indices: Option<&[usize]>,
@@ -240,15 +192,23 @@ pub fn write_json_view(
 ) -> Result<()> {
     // 列名排序与重复列“后者覆盖前者”的映射只依赖表头，不能在每一行重复分配 BTreeMap。
     let projection = json_projection(result, column_indices);
-    serde_json::to_writer_pretty(
-        writer,
-        &ExportRows {
-            result,
-            row_indices,
-            projection: &projection,
-        },
-    )
-    .map_err(|error| DomainError::Storage(format!("写入 JSON 导出内容失败：{error}")))
+    for row_index in selected_indices(row_indices, result.rows.len()) {
+        let Some(row) = result.rows.get(row_index) else {
+            continue;
+        };
+        serde_json::to_writer(
+            &mut *writer,
+            &ExportRow {
+                values: &row.values,
+                projection: &projection,
+            },
+        )
+        .map_err(|error| DomainError::Storage(format!("写入 JSONL 导出内容失败：{error}")))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|error| DomainError::Storage(format!("写入 JSONL 换行失败：{error}")))?;
+    }
+    Ok(())
 }
 
 fn json_projection<'a>(
@@ -262,65 +222,6 @@ fn json_projection<'a>(
         }
     }
     fields.into_iter().collect()
-}
-
-/// 流式导出 GFM 表格。单元格转义：`|`→`\|`、`\`→`\\`、换行→空格。
-pub fn write_markdown(writer: &mut dyn Write, result: &QueryResult) -> Result<()> {
-    write_markdown_view(writer, result, None, None)
-}
-
-/// 按源行 / 源列索引流式导出 Markdown；None 表示全部。
-pub fn write_markdown_view(
-    writer: &mut dyn Write,
-    result: &QueryResult,
-    row_indices: Option<&[usize]>,
-    column_indices: Option<&[usize]>,
-) -> Result<()> {
-    writer.write_all(b"| ").map_err(markdown_write_error)?;
-    let mut first = true;
-    let mut visible_columns = 0;
-    for column_index in selected_indices(column_indices, result.columns.len()) {
-        let Some(column) = result.columns.get(column_index) else {
-            continue;
-        };
-        if !first {
-            writer.write_all(b" | ").map_err(markdown_write_error)?;
-        }
-        write_markdown_text(writer, column, false).map_err(markdown_write_error)?;
-        first = false;
-        visible_columns += 1;
-    }
-    writer.write_all(b" |\n| ").map_err(markdown_write_error)?;
-    for index in 0..visible_columns {
-        if index > 0 {
-            writer.write_all(b" | ").map_err(markdown_write_error)?;
-        }
-        writer.write_all(b"---").map_err(markdown_write_error)?;
-    }
-    writer.write_all(b" |").map_err(markdown_write_error)?;
-
-    for row_index in selected_indices(row_indices, result.rows.len()) {
-        let Some(row) = result.rows.get(row_index) else {
-            continue;
-        };
-        writer.write_all(b"\n| ").map_err(markdown_write_error)?;
-        let mut first = true;
-        for column_index in selected_indices(column_indices, result.columns.len()) {
-            if result.columns.get(column_index).is_none() {
-                continue;
-            }
-            if !first {
-                writer.write_all(b" | ").map_err(markdown_write_error)?;
-            }
-            match row.values.get(column_index) {
-                Some(value) => write_markdown_value(writer, value).map_err(markdown_write_error)?,
-                None => write_markdown_value(writer, &Value::Null).map_err(markdown_write_error)?,
-            }
-            first = false;
-        }
-        writer.write_all(b" |").map_err(markdown_write_error)?;
-    }
-    Ok(())
 }
 
 enum SelectedIndices<'a> {
@@ -343,114 +244,6 @@ fn selected_indices(indices: Option<&[usize]>, len: usize) -> SelectedIndices<'_
     match indices {
         Some(indices) => SelectedIndices::Selected(indices.iter().copied()),
         None => SelectedIndices::All(0..len),
-    }
-}
-
-fn csv_write_error(error: std::io::Error) -> DomainError {
-    DomainError::Storage(format!("写入 CSV 导出内容失败：{error}"))
-}
-
-fn markdown_write_error(error: std::io::Error) -> DomainError {
-    DomainError::Storage(format!("写入 Markdown 导出内容失败：{error}"))
-}
-
-fn write_csv_text(writer: &mut dyn Write, value: &str) -> std::io::Result<()> {
-    if !value.contains([',', '"', '\n', '\r']) {
-        return writer.write_all(value.as_bytes());
-    }
-
-    writer.write_all(b"\"")?;
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte == b'"' {
-            writer.write_all(&bytes[start..index])?;
-            writer.write_all(b"\"\"")?;
-            start = index + 1;
-        }
-    }
-    writer.write_all(&bytes[start..])?;
-    writer.write_all(b"\"")
-}
-
-fn write_csv_value(writer: &mut dyn Write, value: &Value) -> std::io::Result<()> {
-    match value {
-        Value::Null => Ok(()),
-        Value::Bool(value) => write!(writer, "{value}"),
-        Value::Int(value) => write!(writer, "{value}"),
-        Value::Float(value) => write!(writer, "{value}"),
-        Value::Text(value) => write_csv_text(writer, value),
-        Value::Bytes(value) => {
-            for byte in value {
-                write!(writer, "{byte:02x}")?;
-            }
-            Ok(())
-        }
-        Value::DateTime(value) => write_csv_text(writer, &value.to_rfc3339()),
-        Value::Json(value) => write_csv_text(writer, &value.to_string()),
-    }
-}
-
-fn write_markdown_text(
-    writer: &mut dyn Write,
-    value: &str,
-    carriage_return_as_space: bool,
-) -> std::io::Result<()> {
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    for (index, byte) in bytes.iter().enumerate() {
-        let replacement: Option<&[u8]> = match *byte {
-            b'\\' => Some(b"\\\\"),
-            b'|' => Some(b"\\|"),
-            b'\n' => Some(b" "),
-            b'\r' if carriage_return_as_space => Some(b" "),
-            b'\r' => Some(b""),
-            _ => None,
-        };
-        if let Some(replacement) = replacement {
-            writer.write_all(&bytes[start..index])?;
-            writer.write_all(replacement)?;
-            start = index + 1;
-        }
-    }
-    writer.write_all(&bytes[start..])
-}
-
-fn write_markdown_value(writer: &mut dyn Write, value: &Value) -> std::io::Result<()> {
-    match value {
-        Value::Null => writer.write_all(b"NULL"),
-        Value::Bool(value) => write!(writer, "{value}"),
-        Value::Int(value) => write!(writer, "{value}"),
-        Value::Float(value) => write!(writer, "{value}"),
-        Value::Text(value) => write_markdown_text(writer, value, true),
-        Value::Bytes(value) => write!(writer, "[{} bytes]", value.len()),
-        Value::DateTime(value) => write_markdown_text(writer, &value.to_rfc3339(), false),
-        Value::Json(value) => write_markdown_text(writer, &value.to_string(), false),
-    }
-}
-
-struct ExportRows<'result, 'selection> {
-    result: &'result QueryResult,
-    row_indices: Option<&'selection [usize]>,
-    projection: &'selection [(&'result str, usize)],
-}
-
-impl Serialize for ExportRows<'_, '_> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut sequence = serializer.serialize_seq(None)?;
-        for row_index in selected_indices(self.row_indices, self.result.rows.len()) {
-            let Some(row) = self.result.rows.get(row_index) else {
-                continue;
-            };
-            sequence.serialize_element(&ExportRow {
-                values: &row.values,
-                projection: self.projection,
-            })?;
-        }
-        sequence.end()
     }
 }
 
@@ -535,29 +328,18 @@ mod tests {
     }
 
     #[test]
-    fn csv_basic() {
+    fn jsonl_basic() {
         let mut output = Vec::new();
-        write_csv(&mut output, &sample_result()).unwrap();
-        let csv = String::from_utf8(output).unwrap();
-        let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(lines[0], "id,name,data");
-        assert_eq!(lines[1], "1,张三,");
-        assert!(lines[2].contains("\"李, 四\""));
-        assert!(lines[2].contains("\"\"\"escaped\"\"\""));
-    }
-
-    #[test]
-    fn json_basic() {
-        let mut output = Vec::new();
-        write_json(&mut output, &sample_result()).unwrap();
-        let json = String::from_utf8(output).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let arr = parsed.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["id"], 1);
-        assert_eq!(arr[0]["name"], "张三");
-        assert!(arr[0]["data"].is_null());
-        assert_eq!(arr[1]["name"], "李, 四");
+        write_jsonl(&mut output, &sample_result()).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["id"], 1);
+        assert_eq!(first["name"], "张三");
+        assert!(first["data"].is_null());
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["name"], "李, 四");
     }
 
     #[test]
@@ -565,20 +347,20 @@ mod tests {
         let result = sample_result();
         let rows = [1, 0];
         let columns = [1, 0];
-        let mut csv_output = Vec::new();
-        let mut json_output = Vec::new();
+        let mut output = Vec::new();
 
-        write_csv_view(&mut csv_output, &result, Some(&rows), Some(&columns)).unwrap();
-        write_json_view(&mut json_output, &result, Some(&rows), Some(&columns)).unwrap();
+        write_jsonl_view(&mut output, &result, Some(&rows), Some(&columns)).unwrap();
 
-        let csv = String::from_utf8(csv_output).unwrap();
-        assert!(csv.starts_with("name,id\n\"李, 四\",2\n张三,1\n"));
-        let json: serde_json::Value = serde_json::from_slice(&json_output).unwrap();
-        let rows = json.as_array().unwrap();
-        assert_eq!(rows[0]["id"], 2);
-        assert_eq!(rows[0]["name"], "李, 四");
-        assert!(rows[0].get("data").is_none());
-        assert_eq!(rows[1]["id"], 1);
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        // 行序按传入索引 [1,0]；列仅投影选中的 name/id，data 不出现。
+        let row0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(row0["id"], 2);
+        assert_eq!(row0["name"], "李, 四");
+        assert!(row0.get("data").is_none());
+        let row1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(row1["id"], 1);
     }
 
     #[test]
@@ -587,16 +369,13 @@ mod tests {
         result.rows[0].values.truncate(1);
         let rows = [0];
         let columns = [0, 2];
-        let mut json_output = Vec::new();
-        let mut markdown_output = Vec::new();
+        let mut output = Vec::new();
 
-        write_json_view(&mut json_output, &result, Some(&rows), Some(&columns)).unwrap();
-        write_markdown_view(&mut markdown_output, &result, Some(&rows), Some(&columns)).unwrap();
+        write_jsonl_view(&mut output, &result, Some(&rows), Some(&columns)).unwrap();
 
-        let json: serde_json::Value = serde_json::from_slice(&json_output).unwrap();
-        assert!(json[0]["data"].is_null());
-        let markdown = String::from_utf8(markdown_output).unwrap();
-        assert!(markdown.contains("| 1 | NULL |"));
+        let text = String::from_utf8(output).unwrap();
+        let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert!(line["data"].is_null());
     }
 
     #[test]
@@ -620,24 +399,9 @@ mod tests {
         assert_eq!(projection, vec![("a", 2), ("same", 3), ("z", 0)]);
 
         let mut output = Vec::new();
-        write_json(&mut output, &result).unwrap();
+        write_jsonl(&mut output, &result).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
-        assert_eq!(json[0]["same"], "new");
-    }
-
-    #[test]
-    fn markdown_streaming_preserves_escaping() {
-        let mut result = sample_result();
-        result.columns[1] = "na|me".into();
-        result.rows[0].values[1] = Value::Text("a\\b\r\nc|d".into());
-        let mut output = Vec::new();
-
-        write_markdown(&mut output, &result).unwrap();
-
-        let markdown = String::from_utf8(output).unwrap();
-        assert!(markdown.starts_with("| id | na\\|me | data |\n"));
-        assert!(markdown.contains("| 1 | a\\\\b  c\\|d | NULL |"));
-        assert!(!markdown.ends_with('\n'));
+        assert_eq!(json["same"], "new");
     }
 
     #[test]

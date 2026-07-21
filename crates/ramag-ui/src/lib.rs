@@ -25,7 +25,7 @@ pub use assets::RamagAssets;
 pub use confirm_dialog::open_confirm;
 pub use prompt_dialog::{
     open_bounded_masked_prompt, open_bounded_prompt, open_masked_prompt,
-    open_optional_bounded_prompt, open_optional_prompt, open_prompt,
+    open_optional_bounded_prompt, open_optional_prompt, open_prompt, open_reveal_masked_prompt,
 };
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget};
