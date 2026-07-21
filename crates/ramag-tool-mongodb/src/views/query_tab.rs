@@ -64,9 +64,16 @@ pub struct MongoQueryTab {
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum MongoQueryTabEvent {
     DraftChanged,
+    /// 结果区发起的集合级 JSONL 导入，上抛给 session 路由到集合树执行
+    CollectionImportRequested {
+        db: String,
+        collection: String,
+        policy: ramag_domain::entities::ConflictPolicy,
+        files: Vec<std::path::PathBuf>,
+    },
 }
 
 impl EventEmitter<MongoQueryTabEvent> for MongoQueryTab {}
@@ -108,6 +115,17 @@ impl MongoQueryTab {
             |this, _, event: &ResultEvent, window, cx| match event {
                 ResultEvent::Refresh => this.request_run(window, cx),
                 ResultEvent::Cancel => this.cancel_if_running(cx),
+                ResultEvent::CollectionImportRequested {
+                    db,
+                    collection,
+                    policy,
+                    files,
+                } => cx.emit(MongoQueryTabEvent::CollectionImportRequested {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    policy: *policy,
+                    files: files.clone(),
+                }),
             },
         );
         let editor_for_sub = editor.clone();

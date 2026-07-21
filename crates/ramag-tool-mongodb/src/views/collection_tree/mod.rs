@@ -64,7 +64,7 @@ pub struct CollectionTreePanel {
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     /// 切连接后是否待自动展开默认库（仅首次加载消费一次，refresh 不重复展开）
-    auto_expand_pending: bool,
+    auto_activate_pending: bool,
     /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
     pending_notification: Option<gpui_component::notification::Notification>,
     /// 集合级写操作串行化闸门；连接切换会使旧任务 token 失效。
@@ -183,7 +183,7 @@ impl CollectionTreePanel {
             uniform_scroll: UniformListScrollHandle::new(),
             tree_revision: 0,
             tree_rows_cache: RefCell::new(None),
-            auto_expand_pending: false,
+            auto_activate_pending: false,
             pending_notification: None,
             mutation_gate: AsyncMutationGate::default(),
             transfer: ramag_ui::TransferState::default(),
@@ -228,8 +228,8 @@ impl CollectionTreePanel {
         self.selected = None;
         self.error = None;
         self.invalidate_tree_rows();
-        // 切连接后首次加载完 db 列表时自动展开默认库（仅一次）
-        self.auto_expand_pending = self.connection.is_some();
+        // 切连接后首次加载完 db 列表时自动激活默认库（仅一次；不展开，与 SQL 树一致）
+        self.auto_activate_pending = self.connection.is_some();
         if self.connection.is_some() {
             self.refresh_databases(cx);
         } else {
@@ -289,13 +289,17 @@ impl CollectionTreePanel {
                         // 仍补一行展示，便于直接在其下建集合，不必先绕开再回来
                         insert_configured_database(&mut dbs, conf.database.clone());
                         this.databases = dbs;
-                        // 首次加载：自动展开并激活默认库（config.database 优先，否则首个非系统库）
-                        if this.auto_expand_pending {
-                            this.auto_expand_pending = false;
+                        // 首次加载：仅激活默认库（config.database 优先，否则首个非系统库），
+                        // 不自动展开集合列表，与 MySQL / PG 树的默认折叠一致
+                        if this.auto_activate_pending {
+                            this.auto_activate_pending = false;
                             if let Some(default_db) =
                                 pick_default_db(this.connection.as_ref(), &this.databases)
                             {
-                                this.toggle_database(&default_db, cx);
+                                this.active_db = Some(default_db.clone());
+                                cx.emit(TreeEvent::DatabaseActivated {
+                                    database: default_db,
+                                });
                             }
                         }
                         this.ensure_search_coverage(cx);

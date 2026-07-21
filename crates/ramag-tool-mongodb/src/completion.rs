@@ -11,7 +11,7 @@ use gpui_component::RopeExt;
 use gpui_component::input::{CompletionProvider, InputState};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
-    InsertReplaceEdit,
+    Documentation, InsertReplaceEdit, MarkupContent, MarkupKind,
 };
 use parking_lot::RwLock;
 use ropey::Rope;
@@ -114,17 +114,23 @@ const MONGO_OPERATORS: &[&str] = &[
     "$dateToString",
 ];
 
-/// 单条补全项：InsertAndReplace 保证覆盖已输入的前缀
+/// 单条补全项：InsertAndReplace 保证覆盖已输入的前缀；
+/// docs 走 markdown，选中项在右侧说明卡片展示（与 SQL 补全同款样式）
 fn make_item(
     label: &str,
     kind: CompletionItemKind,
     detail: &str,
+    docs: String,
     range: lsp_types::Range,
 ) -> CompletionItem {
     CompletionItem {
         label: label.to_string(),
         kind: Some(kind),
         detail: Some(detail.to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: docs,
+        })),
         text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
             new_text: label.to_string(),
             insert: range,
@@ -243,6 +249,7 @@ impl CompletionProvider for CommandCompletionProvider {
                         op,
                         CompletionItemKind::OPERATOR,
                         "operator",
+                        format!("**{op}**\n\nOperator · MongoDB 查询 / 聚合操作符"),
                         range,
                     ));
                 }
@@ -250,7 +257,13 @@ impl CompletionProvider for CommandCompletionProvider {
         } else {
             for kw in MONGO_COMMANDS {
                 if starts_with_ascii_case_insensitive(kw, &prefix) {
-                    items.push(make_item(kw, CompletionItemKind::KEYWORD, "command", range));
+                    items.push(make_item(
+                        kw,
+                        CompletionItemKind::KEYWORD,
+                        "command",
+                        format!("**{kw}**\n\nCommand · MongoDB 数据库命令"),
+                        range,
+                    ));
                 }
             }
         }
@@ -359,7 +372,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
             let parent_lower = normalized_path_segments(drill);
             let mut seen = std::collections::HashSet::new();
             for name in cols.iter() {
-                let Some((orig_seg, _)) = child_after_path(name, &parent_lower) else {
+                let Some((orig_seg, expandable)) = child_after_path(name, &parent_lower) else {
                     continue;
                 };
                 let seg_lc = orig_seg.to_lowercase();
@@ -370,10 +383,22 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
                 {
                     continue;
                 }
+                let (detail, docs) = if expandable {
+                    (
+                        "object",
+                        format!("**{orig_seg}**\n\nObject · 嵌套字段，可打点继续下钻"),
+                    )
+                } else {
+                    (
+                        "field",
+                        format!("**{orig_seg}**\n\nField · 叶子字段，钻取后为值列表"),
+                    )
+                };
                 items.push(make_item(
                     orig_seg,
                     CompletionItemKind::FIELD,
-                    "field",
+                    detail,
+                    docs,
                     range,
                 ));
                 if items.len() >= 50 {
@@ -390,8 +415,24 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
                 &seg_prefix.to_lowercase(),
                 50,
             ) {
-                let detail = if expandable { "object" } else { "field" };
-                items.push(make_item(&full, CompletionItemKind::FIELD, detail, range));
+                let (detail, docs) = if expandable {
+                    (
+                        "object",
+                        format!("**{full}**\n\nObject · 嵌套字段，可打点继续下钻"),
+                    )
+                } else {
+                    (
+                        "field",
+                        format!("**{full}**\n\nField · 叶子字段，钻取后为值列表"),
+                    )
+                };
+                items.push(make_item(
+                    &full,
+                    CompletionItemKind::FIELD,
+                    detail,
+                    docs,
+                    range,
+                ));
             }
         } else {
             // 无点：只提示顶层字段名（各路径第一段，去重），子串匹配；打点后才深入子字段
@@ -403,7 +444,13 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
                 {
                     continue;
                 }
-                items.push(make_item(top, CompletionItemKind::FIELD, "column", range));
+                items.push(make_item(
+                    top,
+                    CompletionItemKind::FIELD,
+                    "column",
+                    format!("**{top}**\n\nColumn · 当前结果集列"),
+                    range,
+                ));
                 if items.len() >= 50 {
                     break;
                 }

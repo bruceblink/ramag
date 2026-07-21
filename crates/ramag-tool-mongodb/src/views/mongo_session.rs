@@ -19,7 +19,7 @@ use ramag_domain::entities::ConnectionConfig;
 use tracing::info;
 
 use crate::views::collection_tree::{CollectionTreePanel, TreeEvent};
-use crate::views::query_panel::MongoQueryPanel;
+use crate::views::query_panel::{MongoQueryPanel, MongoQueryPanelEvent};
 
 const TREE_WIDTH_INITIAL: f32 = 280.0;
 const TREE_WIDTH_MIN: f32 = 180.0;
@@ -87,6 +87,30 @@ impl MongoSessionPanel {
                     let visible = queries_handle.update(cx, |q, cx| q.toggle_editor(window, cx));
                     // 同步给 tree，让按钮图标朝向匹配
                     tree_handle.update(cx, |t, cx| t.set_editor_visible(visible, cx));
+                }
+            },
+        ));
+
+        // 结果区发起的集合级 JSONL 导入 → 集合树执行（复用其进度行与取消）
+        let tree_for_import = tree.clone();
+        subs.push(cx.subscribe(
+            &queries,
+            move |_this: &mut Self, _, e: &MongoQueryPanelEvent, cx| match e {
+                MongoQueryPanelEvent::CollectionImportRequested {
+                    db,
+                    collection,
+                    policy,
+                    files,
+                } => {
+                    tree_for_import.update(cx, |tree, cx| {
+                        tree.import_collection_from_files(
+                            db.clone(),
+                            collection.clone(),
+                            *policy,
+                            files.clone(),
+                            cx,
+                        );
+                    });
                 }
             },
         ));

@@ -1,24 +1,55 @@
-//! 结果集导出：CSV（基于扁平表格）/ JSON（原始文档）。
+//! 结果集导出 JSONL：每行一个原始文档，与集合级导入配对（导出文件可直接导回）。
 //! rfd 保存框异步等待，序列化放受限工作池，结果回主线程提示（与 dbclient 同款）。
 
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 
-use gpui::Context;
+use gpui::{Context, Window};
 use gpui_component::notification::Notification;
 use ramag_app::usecases::export;
 use ramag_domain::error::DomainError;
-use serde::ser::SerializeSeq;
-use serde::{Serialize, Serializer};
 
-use super::ResultPanel;
-use super::flatten::FlatTable;
+use super::{ResultEvent, ResultPanel};
 
 impl ResultPanel {
-    /// 导出当前结果，范围三档与表格所见一致：勾选行 >「当前视图（筛选/排序后）」> 全部。
-    /// CSV 按可见列投影；JSON 按范围行导原始文档（文档本身不裁字段）
-    pub(crate) fn export_documents(&mut self, as_csv: bool, cx: &mut Context<Self>) {
+    /// 结果工具条「导入」：对当前目标集合发起 JSONL 导入；
+    /// 确认后上抛事件，由 session 路由到集合树执行（进度条显示在树侧）
+    pub(crate) fn open_import_jsonl_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_write() {
+            return;
+        }
+        let Some(collection) = self.target_collection.clone() else {
+            return;
+        };
+        let db = self.database.clone();
+        let entity = cx.entity();
+        ramag_ui::open_import_options_dialog(
+            "导入 JSONL 到集合",
+            format!(
+                "选择冲突策略与 .jsonl 文件（可多选），每行一个文档（支持 Extended JSON），\
+                 导入到 {db}.{collection}。「跳过」重复 _id 跳过，「覆盖」先清空集合文档\
+                 （保留索引，不可恢复），「停止」遇重复即报错。"
+            ),
+            false,
+            ("JSONL", &["jsonl", "json"]),
+            move |policy, files, _, app| {
+                entity.update(app, |_, cx| {
+                    cx.emit(ResultEvent::CollectionImportRequested {
+                        db,
+                        collection,
+                        policy,
+                        files,
+                    });
+                });
+            },
+            window,
+            cx,
+        );
+    }
+    /// 导出当前结果为 JSONL（每行一个原始文档，不裁字段），
+    /// 范围三档与表格所见一致：勾选行 >「当前视图（筛选/排序后）」> 全部
+    pub(crate) fn export_documents(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
             self.pending_notification = Some(
                 Notification::info("已有导出任务正在进行")
@@ -96,24 +127,18 @@ impl ResultPanel {
         } else {
             None
         };
-        // 列范围：列过滤激活时仅导可见列（None = 全列）
-        let cols: Vec<usize> = self
-            .filtered_column_indices(cx)
-            .unwrap_or_else(|| (0..table.columns.len()).collect());
-
-        // JSON 按范围行导原始文档。钻取视图下表格行与原始文档可能不一一对应。
-        if !as_csv && !rows.iter().any(|&index| documents.get(index).is_some()) {
+        // 按范围行导原始文档。钻取视图下表格行与原始文档可能不一一对应。
+        if !rows.iter().any(|&index| documents.get(index).is_some()) {
             return self.notify_error(
-                "当前视图与原始文档不对应（钻取层），请改用 CSV 导出".to_string(),
+                "当前视图与原始文档不对应（钻取层），请返回上层后导出".to_string(),
                 cx,
             );
         }
-        let ext = if as_csv { "csv" } else { "json" };
         let coll = self
             .target_collection
             .clone()
             .unwrap_or_else(|| "export".to_string());
-        let name = format!("{coll}.{ext}");
+        let name = format!("{coll}.jsonl");
         let scope_label = scope;
         // 用户取消时不做排序 / 序列化；保存框不占共享 worker，防重入避免重复弹框。
         self.exporting = true;
@@ -121,7 +146,7 @@ impl ResultPanel {
         cx.spawn(async move |this, cx| {
             let path = rfd::AsyncFileDialog::new()
                 .set_file_name(&name)
-                .add_filter(ext, &[ext])
+                .add_filter("JSONL", &["jsonl"])
                 .save_file()
                 .await
                 .map(|handle| handle.path().to_path_buf());
@@ -141,26 +166,13 @@ impl ResultPanel {
                             );
                         }
                         export::write_atomic_with(&write_path, |writer| {
-                            if as_csv {
-                                write_flat_csv(writer, &table, &rows, &cols).map_err(|error| {
+                            write_selected_jsonl(writer, documents.as_slice(), &rows).map_err(
+                                |error| {
                                     DomainError::Storage(format!(
-                                        "写入 MongoDB CSV 导出内容失败：{error}"
+                                        "写入 MongoDB JSONL 导出内容失败：{error}"
                                     ))
-                                })
-                            } else {
-                                serde_json::to_writer_pretty(
-                                    writer,
-                                    &SelectedDocuments {
-                                        documents: documents.as_slice(),
-                                        rows: &rows,
-                                    },
-                                )
-                                .map_err(|error| {
-                                    DomainError::Storage(format!(
-                                        "写入 MongoDB JSON 导出内容失败：{error}"
-                                    ))
-                                })
-                            }
+                                },
+                            )
                         })
                     })
                     .await
@@ -204,135 +216,37 @@ enum ExportOutcome {
     Failed(String),
 }
 
-/// FlatTable → CSV：按给定行序 / 可见列投影（与表格所见一致）。
-fn write_flat_csv(
+/// 按给定行序流式写 JSONL：每行一个紧凑 JSON 文档，越界行索引跳过
+fn write_selected_jsonl(
     writer: &mut dyn Write,
-    table: &FlatTable,
+    documents: &[serde_json::Value],
     rows: &[usize],
-    cols: &[usize],
 ) -> std::io::Result<()> {
-    let mut first_header = true;
-    for column in cols.iter().filter_map(|&index| table.columns.get(index)) {
-        if !first_header {
-            writer.write_all(b",")?;
-        }
-        write_csv_text(writer, &column.path)?;
-        first_header = false;
-    }
-    writer.write_all(b"\n")?;
-    for &ri in rows {
-        let Some(row) = table.rows.get(ri) else {
+    for &index in rows {
+        let Some(document) = documents.get(index) else {
             continue;
         };
-        for (index, &column_index) in cols.iter().enumerate() {
-            if index > 0 {
-                writer.write_all(b",")?;
-            }
-            if let Some(cell) = row.get(column_index) {
-                write_csv_text(writer, &cell.text)?;
-            }
-        }
+        serde_json::to_writer(&mut *writer, document)?;
         writer.write_all(b"\n")?;
     }
     Ok(())
 }
 
-fn write_csv_text(writer: &mut dyn Write, value: &str) -> std::io::Result<()> {
-    if !value.contains([',', '"', '\n', '\r']) {
-        return writer.write_all(value.as_bytes());
-    }
-
-    writer.write_all(b"\"")?;
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte == b'"' {
-            writer.write_all(&bytes[start..index])?;
-            writer.write_all(b"\"\"")?;
-            start = index + 1;
-        }
-    }
-    writer.write_all(&bytes[start..])?;
-    writer.write_all(b"\"")
-}
-
-struct SelectedDocuments<'a> {
-    documents: &'a [serde_json::Value],
-    rows: &'a [usize],
-}
-
-impl Serialize for SelectedDocuments<'_> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let valid_count = self
-            .rows
-            .iter()
-            .filter(|&&index| self.documents.get(index).is_some())
-            .count();
-        let mut sequence = serializer.serialize_seq(Some(valid_count))?;
-        for &index in self.rows {
-            if let Some(document) = self.documents.get(index) {
-                sequence.serialize_element(document)?;
-            }
-        }
-        sequence.end()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::cell::Cell;
-    use super::super::flatten::Column;
     use super::*;
 
     #[test]
-    fn flat_csv_streams_projection_and_escapes_fields() {
-        let table = FlatTable {
-            columns: vec![
-                Column {
-                    path: "name".into(),
-                    kind: "text",
-                },
-                Column {
-                    path: "note".into(),
-                    kind: "text",
-                },
-            ],
-            total_columns: 2,
-            rows: vec![vec![
-                Cell {
-                    text: "A, B".into(),
-                    kind: "text",
-                },
-                Cell {
-                    text: "say \"hi\"\r\n".into(),
-                    kind: "text",
-                },
-            ]],
-        };
+    fn selected_jsonl_skips_invalid_rows_and_keeps_order() {
+        let documents = vec![serde_json::json!({"id": 1}), serde_json::json!({"id": 2})];
+        let rows = [1, 99, 0];
         let mut output = Vec::new();
 
-        write_flat_csv(&mut output, &table, &[0], &[1, 0]).unwrap();
+        write_selected_jsonl(&mut output, &documents, &rows).unwrap();
 
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "note,name\n\"say \"\"hi\"\"\r\n\",\"A, B\"\n"
+            "{\"id\":2}\n{\"id\":1}\n"
         );
-    }
-
-    #[test]
-    fn selected_documents_skip_invalid_rows_and_keep_order() {
-        let documents = vec![serde_json::json!({"id": 1}), serde_json::json!({"id": 2})];
-        let rows = [1, 99, 0];
-
-        let value = serde_json::to_value(SelectedDocuments {
-            documents: &documents,
-            rows: &rows,
-        })
-        .unwrap();
-
-        assert_eq!(value, serde_json::json!([{"id": 2}, {"id": 1}]));
     }
 }

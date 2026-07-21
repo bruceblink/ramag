@@ -17,7 +17,7 @@ use ramag_domain::entities::{ConnectionConfig, DriverKind};
 use tracing::{info, warn};
 
 use crate::sql_completion::{SchemaCache, is_system_schema};
-use crate::views::query_panel::QueryPanel;
+use crate::views::query_panel::{QueryPanel, QueryPanelEvent};
 use crate::views::table_tree::{TableTreePanel, TreeEvent};
 
 /// 补全 cache 的 TTL：超过这个时长后台异步重拉一次
@@ -129,6 +129,30 @@ impl ConnectionSession {
 
         let resize_state = cx.new(|_| ResizableState::default());
         // 表树 / 查询区分隔宽度跨重启（所有 SQL 会话共用同一偏好，布局一致）
+        // 结果工具条发起的表级 JSONL 导入 → 表树执行（复用其进度行与取消）
+        let tree_for_import = tree.clone();
+        subs.push(cx.subscribe(
+            &queries,
+            move |_this: &mut Self, _, e: &QueryPanelEvent, cx| match e {
+                QueryPanelEvent::TableImportRequested {
+                    schema,
+                    table,
+                    policy,
+                    files,
+                } => {
+                    tree_for_import.update(cx, |tree, cx| {
+                        tree.import_table_from_files(
+                            schema.clone(),
+                            table.clone(),
+                            *policy,
+                            files.clone(),
+                            cx,
+                        );
+                    });
+                }
+            },
+        ));
+
         subs.push(ramag_ui::persist_resizable_sizes(
             &resize_state,
             "split_dbclient_session",

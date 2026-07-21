@@ -1,23 +1,24 @@
-//! 增量 SCAN 状态机：分批加载 + 服务端 MATCH 下推 + 代际取消。
+//! 增量 SCAN 状态机：一次扫到底（资源上限兜底）+ 服务端 MATCH 下推 + 代际取消。
 //! 每批回包做（代际, db, 连接）三重身份校验，换代 / 切库 / 切连接后在途批次一律作废
 
 use gpui::Context;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
 use tracing::{error, info};
 
-use super::{KEYS_PAGE_SIZE, KeyTreePanel, MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS};
+use super::{KeyTreePanel, MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS};
 
 /// 单批 SCAN 的 COUNT hint
 const SCAN_BATCH: u32 = 500;
-/// 单次刷新/继续最多发出的批次数；到达后保留 cursor，防异常游标或超大库导致无限请求。
-const MAX_SCAN_BATCHES_PER_PAGE: usize = 200;
-/// 分批加载期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次
-const REBUILD_STEP: usize = 2_000;
+/// 扫描期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次。
+/// 重建是 O(已加载数)，上限 100 万时该步长把全程重建控制在几十次内，
+/// 避免尾段单次重建造成明显 UI 卡顿
+const REBUILD_STEP: usize = 25_000;
 /// 输入停顿后自动把过滤词下推到服务端，避免旧 MATCH 子集造成假“无结果”。
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
 
 impl KeyTreePanel {
-    /// 重新扫描：换代作废在途批次，清空后从 cursor=0 起按当前 MATCH 模式增量扫
+    /// 重新扫描：换代作废在途批次，清空后从 cursor=0 起按当前 MATCH 模式一次扫到底
+    /// （扫完或达资源上限为止，可随时 ⏹ 停止）
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
             return;
@@ -34,10 +35,9 @@ impl KeyTreePanel {
         self.truncated = false;
         self.resource_limited = false;
         self.resume_cursor = Some(0);
-        self.scan_target = KEYS_PAGE_SIZE;
         cx.notify();
         let generation = self.scan_generation;
-        self.scan_next_batch(config, 0, generation, MAX_SCAN_BATCHES_PER_PAGE, cx);
+        self.scan_next_batch(config, 0, generation, cx);
     }
 
     /// 停止扫描：换代终止续扫，保留并展示已加载部分（如实标注未扫完）
@@ -96,7 +96,7 @@ impl KeyTreePanel {
         self.refresh(cx);
     }
 
-    /// 从上次暂停的 cursor 再加载一页，保留已加载 key 与树状态。
+    /// 手动停止 / 批次出错后：从上次停止的 cursor 继续扫描，保留已加载 key 与树状态。
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
         if self.loading || self.resource_limited {
             return;
@@ -105,22 +105,20 @@ impl KeyTreePanel {
             return;
         };
         self.scan_generation = self.scan_generation.wrapping_add(1);
-        self.scan_target = next_scan_target(self.keys.len());
         self.loading = true;
         self.truncated = false;
         self.error = None;
         let generation = self.scan_generation;
         cx.notify();
-        self.scan_next_batch(config, cursor, generation, MAX_SCAN_BATCHES_PER_PAGE, cx);
+        self.scan_next_batch(config, cursor, generation, cx);
     }
 
-    /// 扫一批：回包三重校验通过则追加，按需节流重建 Trie 并续扫，扫完 / 达上限收尾
+    /// 扫一批：回包三重校验通过则追加，按需节流重建 Trie 并续扫，扫完 / 达资源上限收尾
     fn scan_next_batch(
         &self,
         config: ConnectionConfig,
         cursor: u64,
         generation: u64,
-        batches_left: usize,
         cx: &mut Context<Self>,
     ) {
         let svc = self.service.clone();
@@ -158,11 +156,10 @@ impl KeyTreePanel {
                             && (this.keys.len() >= MAX_LOADED_KEYS
                                 || this.key_bytes >= MAX_LOADED_KEY_BYTES);
                         this.resume_cursor = (!done && !resource_capped).then_some(r.cursor);
-                        let capped = this.keys.len() >= this.scan_target;
-                        let batch_budget_exhausted = batches_left <= 1;
                         if resource_capped {
+                            // 资源上限是终态：不提供继续扫描，提示用 MATCH 缩小范围
                             this.loading = false;
-                            this.truncated = true;
+                            this.truncated = false;
                             this.resource_limited = true;
                             this.rebuild_tree();
                             info!(
@@ -171,14 +168,11 @@ impl KeyTreePanel {
                                 db,
                                 "redis scan stopped at resource limit"
                             );
-                        } else if scan_page_finished(done, capped, batches_left) {
+                        } else if done {
                             this.loading = false;
-                            this.truncated = !done && (capped || batch_budget_exhausted);
+                            this.truncated = false;
                             this.rebuild_tree();
-                            info!(
-                                count = this.keys.len(),
-                                db, capped, batch_budget_exhausted, "redis scan completed"
-                            );
+                            info!(count = this.keys.len(), db, "redis scan completed");
                         } else {
                             // 首批立即出树给首屏反馈，此后每积累 REBUILD_STEP 才重建一次
                             if this.last_rebuilt_count == 0
@@ -186,13 +180,7 @@ impl KeyTreePanel {
                             {
                                 this.rebuild_tree();
                             }
-                            this.scan_next_batch(
-                                config,
-                                r.cursor,
-                                generation,
-                                batches_left - 1,
-                                cx,
-                            );
+                            this.scan_next_batch(config, r.cursor, generation, cx);
                         }
                     }
                     Err(e) => {
@@ -233,10 +221,6 @@ fn server_match_pattern(raw: &str) -> Option<String> {
     }
 }
 
-fn next_scan_target(loaded: usize) -> usize {
-    loaded.saturating_add(KEYS_PAGE_SIZE).min(MAX_LOADED_KEYS)
-}
-
 fn insert_key_with_budget(
     keys: &mut Vec<KeyMeta>,
     seen: &mut std::collections::HashSet<String>,
@@ -258,15 +242,10 @@ fn insert_key_with_budget(
     true
 }
 
-fn scan_page_finished(done: bool, key_cap_reached: bool, batches_left: usize) -> bool {
-    done || key_cap_reached || batches_left <= 1
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS, insert_key_with_budget, next_scan_target,
-        scan_page_finished, server_match_pattern,
+        MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS, insert_key_with_budget, server_match_pattern,
     };
     use ramag_domain::entities::KeyMeta;
     use std::collections::HashSet;
@@ -276,21 +255,6 @@ mod tests {
         assert_eq!(server_match_pattern("user"), Some("*user*".into()));
         assert_eq!(server_match_pattern("user:*"), Some("user:*".into()));
         assert_eq!(server_match_pattern("  "), None);
-    }
-
-    #[test]
-    fn load_more_adds_one_page_without_overflow() {
-        assert_eq!(next_scan_target(5_123), 10_123);
-        assert_eq!(next_scan_target(MAX_LOADED_KEYS - 1), MAX_LOADED_KEYS);
-        assert_eq!(next_scan_target(usize::MAX), MAX_LOADED_KEYS);
-    }
-
-    #[test]
-    fn scan_page_stops_at_cursor_key_or_batch_boundary() {
-        assert!(scan_page_finished(true, false, 10));
-        assert!(scan_page_finished(false, true, 10));
-        assert!(scan_page_finished(false, false, 1));
-        assert!(!scan_page_finished(false, false, 2));
     }
 
     #[test]

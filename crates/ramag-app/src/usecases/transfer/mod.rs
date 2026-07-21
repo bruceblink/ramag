@@ -13,7 +13,7 @@ pub mod sql_export;
 pub mod sql_import;
 
 pub use jsonl_table::import_jsonl_into_table;
-pub use mongo::{export_mongo_database, import_mongo_database};
+pub use mongo::{export_mongo_database, import_jsonl_into_collection, import_mongo_database};
 pub use redis::{export_redis_db, import_redis_db};
 pub use sql_export::export_sql_database;
 pub use sql_import::import_sql_database;

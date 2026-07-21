@@ -93,6 +93,61 @@ impl CollectionTreePanel {
         })
         .detach();
     }
+
+    /// 集合级 JSONL 导入：多文件循环，每行一个文档插入目标集合；
+    /// pub(crate)：结果工具条入口经 session 路由到此复用执行与进度
+    pub(crate) fn import_collection_from_files(
+        &mut self,
+        db: String,
+        collection: String,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
+        let Some(config) = self.transfer_ready(cx) else {
+            return;
+        };
+        if config.production {
+            self.pending_notification = Some(Notification::error(READ_ONLY_MESSAGE).autohide(true));
+            cx.notify();
+            return;
+        }
+        let (cancel, slot) = self.transfer.begin();
+        ramag_ui::spawn_transfer_ticker(cx, cancel.clone(), |this: &Self, token| {
+            this.transfer.is_current(token)
+        });
+        cx.notify();
+        let svc = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = run_collection_import(
+                svc,
+                config,
+                (db, collection),
+                policy,
+                files,
+                cancel.clone(),
+                slot,
+            )
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.transfer.finish(&cancel) {
+                    return;
+                }
+                let imported = matches!(&outcome, Ok(Some(_)));
+                this.pending_notification =
+                    ramag_ui::transfer_notification("导入", "已完成部分保留", outcome);
+                if imported {
+                    this.refresh(cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
 }
 
 async fn run_export(
@@ -168,6 +223,60 @@ async fn run_import(
         single_target
     } else {
         format!("{file_count} 个文件")
+    };
+    Ok(Some((total, target)))
+}
+
+/// 集合级 JSONL：逐文件导入并汇总；任一文件出错即停止（出错文件名记入日志便于定位）
+async fn run_collection_import(
+    svc: Arc<MongoService>,
+    config: ConnectionConfig,
+    target: (String, String),
+    policy: ConflictPolicy,
+    files: Vec<PathBuf>,
+    cancel: Arc<AtomicBool>,
+    slot: Arc<Mutex<TransferProgress>>,
+) -> Result<Option<(TransferSummary, String)>> {
+    let (db, collection) = target;
+    let progress = ramag_ui::progress_sink(slot);
+    let file_count = files.len();
+    let mut total = TransferSummary::default();
+    let mut single_target = String::new();
+    for path in files {
+        if cancel.load(Ordering::Relaxed) {
+            total.cancelled = true;
+            break;
+        }
+        single_target = path.display().to_string();
+        let summary = match transfer::import_jsonl_into_collection(
+            &svc,
+            &config,
+            (&db, &collection),
+            &path,
+            policy,
+            &cancel,
+            &progress,
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(e) => {
+                error!(file = %path.display(), "jsonl collection import failed");
+                return Err(e);
+            }
+        };
+        let cancelled = summary.cancelled;
+        total.merge(summary);
+        if cancelled {
+            break;
+        }
+    }
+    // 多文件都对同一集合：objects 累加会虚高，归一为 1
+    total.objects = total.objects.min(1);
+    let target = if file_count == 1 {
+        single_target
+    } else {
+        format!("{file_count} 个文件 → {db}.{collection}")
     };
     Ok(Some((total, target)))
 }

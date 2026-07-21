@@ -233,7 +233,8 @@ fn flatten_doc_bounded(
 ) -> BTreeMap<String, Cell> {
     let mut out = BTreeMap::new();
     match value {
-        Value::Object(map) => flatten_into_bounded(
+        // ExtJSON 包装（$oid 等）是标量而非子文档：走 _value 单列，避免拆出字面 $oid 列
+        Value::Object(map) if extjson_cell(map).is_none() => flatten_into_bounded(
             map,
             "",
             expanded,

@@ -51,11 +51,11 @@ impl VisibleRowsCacheEntry {
     }
 }
 
-/// 每次追加加载的 key 数（防止首次进入大库即占用过多内存）
-const KEYS_PAGE_SIZE: usize = 5_000;
-/// Key 树同时持有列表、去重集合与 Trie，多份索引共同受此计数和原始名称字节预算约束。
-const MAX_LOADED_KEYS: usize = 50_000;
-const MAX_LOADED_KEY_BYTES: usize = 16 * 1024 * 1024;
+/// 当前 DB 的 key 树加载上限（各 DB 独立）。列表、去重集合与 Trie 三份索引
+/// 共同受此计数和原始名称字节预算约束：100 万 key（名称均长 ~30B）约占
+/// 300-500 MB，是桌面场景合理极限；再大提示用 MATCH 缩小范围
+const MAX_LOADED_KEYS: usize = 1_000_000;
+const MAX_LOADED_KEY_BYTES: usize = 256 * 1024 * 1024;
 
 /// 命名空间分隔符（业界事实标准）
 const NAMESPACE_SEP: char = ':';
@@ -125,14 +125,12 @@ pub struct KeyTreePanel {
     last_rebuilt_count: usize,
     /// 当前选中的 key（高亮）
     selected: Option<String>,
-    /// 是否在本次分页目标处暂停，仍可继续扫描。
+    /// 手动停止或批次出错后暂停，仍可从断点继续扫描。
     truncated: bool,
-    /// 达到全局资源上限后不再提供继续加载，需用 MATCH 缩小范围。
+    /// 达到全局资源上限后不再提供继续扫描，需用 MATCH 缩小范围。
     resource_limited: bool,
     /// 下一次应继续使用的 SCAN cursor；None 表示已经完整扫完。
     resume_cursor: Option<u64>,
-    /// 当前这轮扫描允许累计到的 key 数，点“继续加载”后按页增加。
-    scan_target: usize,
     /// 虚拟列表滚动句柄：树扁平化后用 uniform_list 行级虚拟化，
     /// 支持 5w+ key 仍流畅
     uniform_scroll: UniformListScrollHandle,
@@ -197,7 +195,6 @@ impl KeyTreePanel {
             truncated: false,
             resource_limited: false,
             resume_cursor: None,
-            scan_target: KEYS_PAGE_SIZE,
             uniform_scroll: UniformListScrollHandle::new(),
             pending_notification: None,
             mutation_gate: AsyncMutationGate::default(),
@@ -227,7 +224,6 @@ impl KeyTreePanel {
         self.truncated = false;
         self.resource_limited = false;
         self.resume_cursor = None;
-        self.scan_target = KEYS_PAGE_SIZE;
         self.search_pending = false;
         // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，这里清 loading
         // 让新目标的 refresh 不被防重入拒绝
@@ -253,18 +249,12 @@ impl KeyTreePanel {
         }
     }
 
-    /// 由 keys 重建 Trie 树；默认展开第一层命名空间。记录重建时 key 数供分批加载节流
+    /// 由 keys 重建 Trie 树；默认全折叠（与 SQL / Mongo 树一致）。
+    /// 记录重建时 key 数供分批加载节流
     fn rebuild_tree(&mut self) {
         self.tree = build_tree(&self.keys);
         self.last_rebuilt_count = self.keys.len();
         let expanded_changed = prune_expanded_for_tree(&self.tree, &mut self.expanded);
-        if self.expanded.is_empty() {
-            for n in &self.tree {
-                if n.is_namespace() {
-                    self.expanded.insert(n.label.clone());
-                }
-            }
-        }
         if expanded_changed {
             self.expanded_revision = self.expanded_revision.wrapping_add(1);
         }
@@ -363,7 +353,7 @@ impl Render for KeyTreePanel {
             format!(
                 "{pattern_note}共 {total} 个 key{}",
                 if self.truncated {
-                    "（已暂停，可继续加载）"
+                    "（已停止，可继续扫描）"
                 } else {
                     ""
                 }
@@ -652,7 +642,8 @@ impl Render for KeyTreePanel {
                     ramag_ui::clickable_button("redis-key-load-more")
                         .ghost()
                         .xsmall()
-                        .label(format!("继续加载 {KEYS_PAGE_SIZE}"))
+                        .label("继续扫描")
+                        .tooltip("从上次停止的位置继续扫描")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.load_more(cx);
                         })),

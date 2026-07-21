@@ -5,9 +5,11 @@ mod history;
 
 use std::sync::Arc;
 
+use std::path::PathBuf;
+
 use gpui::{
-    AnyView, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement, Point,
-    Render, ScrollHandle, SharedString, Styled, Window, div, prelude::*, px,
+    AnyView, ClickEvent, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
+    ParentElement, Point, Render, ScrollHandle, SharedString, Styled, Window, div, prelude::*, px,
 };
 
 use crate::actions::NewQueryTab;
@@ -17,7 +19,7 @@ use gpui_component::{
 };
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConflictPolicy, ConnectionConfig};
 use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{
     CloseTab, MAX_EDITOR_TABS, can_open_editor_tab,
@@ -26,6 +28,20 @@ use ramag_ui::{
 
 use crate::sql_completion::SchemaCache;
 use crate::views::query_tab::{QueryTab, QueryTabEvent};
+
+/// 面板对外事件：Tab 内部请求经此上抛给 session 路由
+#[derive(Debug, Clone)]
+pub enum QueryPanelEvent {
+    /// 结果工具条发起的表级 JSONL 导入（由表树执行，进度显示在树侧）
+    TableImportRequested {
+        schema: String,
+        table: String,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+    },
+}
+
+impl EventEmitter<QueryPanelEvent> for QueryPanel {}
 
 pub struct QueryPanel {
     service: Arc<ConnectionService>,
@@ -162,10 +178,19 @@ impl QueryPanel {
             }
         };
         let tab = self.build_tab(title.clone(), window, cx);
-        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| {
-            if matches!(e, QueryTabEvent::DraftChanged) {
-                this.schedule_draft_persist(cx);
-            }
+        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| match e {
+            QueryTabEvent::DraftChanged => this.schedule_draft_persist(cx),
+            QueryTabEvent::TableImportRequested {
+                schema,
+                table,
+                policy,
+                files,
+            } => cx.emit(QueryPanelEvent::TableImportRequested {
+                schema: schema.clone(),
+                table: table.clone(),
+                policy: *policy,
+                files: files.clone(),
+            }),
         });
         self.tabs.push(tab);
         self.titles.push(title);
@@ -540,13 +565,27 @@ impl Render for QueryPanel {
                                         )),
                                 ),
                         )
-                        // 右：示例 / 格式化 / EXPLAIN / 历史（弹框）
+                        // 右：历史（弹框）/ 示例 / 格式化 / EXPLAIN
                         .child(
                             h_flex()
                                 .flex_none()
                                 .items_center()
                                 .border_l_1()
                                 .border_color(border)
+                                .child(
+                                    // 上游 IconName 无 History 变体，用旧版历史入口同款日历图标
+                                    ramag_ui::clickable_button("query-history")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Calendar)
+                                        .tooltip("查询历史")
+                                        .disabled(self.connection.is_none())
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.open_history_dialog(window, cx);
+                                            },
+                                        )),
+                                )
                                 .child({
                                     let entity = cx.entity();
                                     let driver = self.connection.as_ref().map(|c| c.driver);
@@ -628,20 +667,6 @@ impl Render for QueryPanel {
                                                         t.handle_explain(window, cx)
                                                     });
                                                 }
-                                            },
-                                        )),
-                                )
-                                .child(
-                                    // 上游 IconName 无 History 变体，用旧版历史入口同款日历图标
-                                    ramag_ui::clickable_button("query-history")
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::Calendar)
-                                        .tooltip("查询历史")
-                                        .disabled(self.connection.is_none())
-                                        .on_click(cx.listener(
-                                            |this, _: &ClickEvent, window, cx| {
-                                                this.open_history_dialog(window, cx);
                                             },
                                         )),
                                 ),

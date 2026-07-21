@@ -99,16 +99,11 @@ pub(super) fn table_context_menu(
     } else {
         let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
         menu.item(
-            ramag_ui::menu_item("导入 JSONL 到此表").on_click(move |_, window, app| {
+            ramag_ui::menu_item("导入 JSONL").on_click(move |_, window, app| {
                 let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
                 ramag_ui::open_import_options_dialog(
                     "导入 JSONL 到表",
-                    format!(
-                        "选择冲突策略与 .jsonl 文件（可多选），每行一个 JSON 对象，\
-                         按键名匹配 {s}.{t} 的列插入；行内缺少的列走库默认值，\
-                         未匹配的键忽略。「跳过」冲突行跳过，「覆盖」先清空表\
-                         （不可恢复），「停止」遇冲突即报错。"
-                    ),
+                    super::jsonl_import_description(&s, &t),
                     false,
                     ("JSONL", &["jsonl", "json"]),
                     move |policy, files, _, app| {

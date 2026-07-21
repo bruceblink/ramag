@@ -74,9 +74,16 @@ pub struct QueryTab {
     pub(super) _result_sub: gpui::Subscription,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum QueryTabEvent {
     DraftChanged,
+    /// 结果工具条「导入」确认后上抛：经 QueryPanel / session 路由到表树执行表级 JSONL 导入
+    TableImportRequested {
+        schema: String,
+        table: String,
+        policy: ramag_domain::entities::ConflictPolicy,
+        files: Vec<std::path::PathBuf>,
+    },
 }
 
 impl EventEmitter<QueryTabEvent> for QueryTab {}

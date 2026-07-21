@@ -1275,3 +1275,115 @@ async fn pg_jsonl_table_import() {
     exec(&svc, &config, format!("DROP SCHEMA \"{schema}\" CASCADE;")).await;
     let _ = std::fs::remove_file(&path);
 }
+
+/// 集合级裸 JSONL 导入：键入库 / 脏行计失败 / Skip 幂等（无 _id 文档重复插入）/
+/// Overwrite 清空重建 / Fail 遇重复即停
+#[tokio::test(flavor = "multi_thread")]
+async fn mongo_jsonl_collection_import() {
+    let Some(config) = mongo_config() else {
+        eprintln!("[SKIP] 设置 RAMAG_TEST_MONGO_* 环境变量后运行");
+        return;
+    };
+    let svc = MongoService::new(
+        Arc::new(ramag_infra_mongodb::MongoDriver::new()),
+        Arc::new(StubStorage),
+    );
+    let db = "ramag_e2e_jsonl_coll";
+    let _ = svc
+        .run_command(&config, db, json!({"dropDatabase": 1}))
+        .await;
+
+    let path = temp_file("mongo-coll.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"_id\":1,\"name\":\"甲\",\"tags\":[\"a\"]}\n",
+            "{\"_id\":2,\"name\":\"乙\",\"when\":{\"$date\":\"2026-01-02T03:04:05Z\"}}\n",
+            "{\"name\":\"丙\"}\n",
+            "not json\n",
+            "[1,2]\n",
+        ),
+    )
+    .expect("写测试 jsonl");
+    let cancel = AtomicBool::new(false);
+    let progress = noop_progress();
+
+    // 首次导入：3 条入库、2 行脏数据计失败
+    let summary = transfer::import_jsonl_into_collection(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("首次导入失败");
+    assert_eq!(summary.items, 3, "警告：{:?}", summary.warnings);
+    assert_eq!(summary.failed, 2);
+    assert_eq!(summary.skipped, 0);
+    assert_eq!(
+        svc.count(&config, db, "items", &Value::Null).await.unwrap(),
+        3
+    );
+
+    // Skip 重复导入：_id 1/2 重复跳过，无 _id 文档以新 ObjectId 再插一条
+    let summary = transfer::import_jsonl_into_collection(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("重复导入失败");
+    assert_eq!(summary.items, 1);
+    assert_eq!(summary.skipped, 2);
+    assert_eq!(
+        svc.count(&config, db, "items", &Value::Null).await.unwrap(),
+        4
+    );
+
+    // Overwrite：先清空集合文档再导入
+    let summary = transfer::import_jsonl_into_collection(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Overwrite,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("覆盖导入失败");
+    assert_eq!(summary.items, 3);
+    assert_eq!(
+        svc.count(&config, db, "items", &Value::Null).await.unwrap(),
+        3
+    );
+
+    // Fail：严格插入遇重复 _id 即报错，集合保持不变
+    let failed = transfer::import_jsonl_into_collection(
+        &svc,
+        &config,
+        (db, "items"),
+        &path,
+        ConflictPolicy::Fail,
+        &cancel,
+        &progress,
+    )
+    .await;
+    assert!(failed.is_err(), "Fail 策略应在重复 _id 时报错");
+    assert_eq!(
+        svc.count(&config, db, "items", &Value::Null).await.unwrap(),
+        3
+    );
+
+    let _ = svc
+        .run_command(&config, db, json!({"dropDatabase": 1}))
+        .await;
+    let _ = std::fs::remove_file(&path);
+}

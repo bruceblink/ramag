@@ -380,10 +380,26 @@ impl Render for QueryTab {
                             })),
                     )
                     .child(
-                        ramag_ui::clickable_button("export-btn")
+                        // 与导出配对：仅表树打开的单表结果可导入（pinned 表即目标）
+                        ramag_ui::clickable_button("import-btn")
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::download())
+                            .tooltip(if self.pinned_target.is_some() {
+                                "导入 JSONL 到当前表"
+                            } else {
+                                "导入 JSONL（先从表树打开一张表）"
+                            })
+                            .disabled(self.pinned_target.is_none())
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.open_table_import_dialog(window, cx);
+                            })),
+                    )
+                    .child(
+                        ramag_ui::clickable_button("export-btn")
+                            .ghost()
+                            .small()
+                            .icon(ramag_ui::icons::upload())
                             .tooltip("导出 JSONL")
                             .disabled(!has_result)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

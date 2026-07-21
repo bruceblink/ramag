@@ -6,18 +6,19 @@
 
 mod drafts;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, Entity, FocusHandle, IntoElement, ParentElement, Point, Render,
-    ScrollHandle, SharedString, Styled, Subscription, Window, div, prelude::*, px,
+    ClickEvent, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement, Point,
+    Render, ScrollHandle, SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
     button::ButtonVariants as _, h_flex, notification::Notification, v_flex,
 };
 use ramag_app::MongoService;
-use ramag_domain::entities::ConnectionConfig;
+use ramag_domain::entities::{ConflictPolicy, ConnectionConfig};
 use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{
     CloseTab, MAX_EDITOR_TABS, can_open_editor_tab, icons,
@@ -26,6 +27,20 @@ use ramag_ui::{
 
 use crate::actions::{NewMongoQueryTab, ToggleMongoEditor};
 use crate::views::query_tab::{MongoQueryTab, MongoQueryTabEvent};
+
+/// 面板对外事件：Tab 内部请求经此上抛给 session 路由
+#[derive(Debug, Clone)]
+pub enum MongoQueryPanelEvent {
+    /// 结果工具条发起的集合级 JSONL 导入（由集合树执行，进度显示在树侧）
+    CollectionImportRequested {
+        db: String,
+        collection: String,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+    },
+}
+
+impl EventEmitter<MongoQueryPanelEvent> for MongoQueryPanel {}
 
 pub struct MongoQueryPanel {
     service: Arc<MongoService>,
@@ -182,11 +197,23 @@ impl MongoQueryPanel {
         // 找出未使用的最小编号（与 dbclient::QueryPanel 同款策略）
         let title = self.next_tab_title();
         let tab = self.build_tab(conf, window, cx);
-        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &MongoQueryTabEvent, cx| {
-            if matches!(e, MongoQueryTabEvent::DraftChanged) {
-                this.schedule_draft_persist(cx);
-            }
-        });
+        let sub = cx.subscribe(
+            &tab,
+            |this: &mut Self, _, e: &MongoQueryTabEvent, cx| match e {
+                MongoQueryTabEvent::DraftChanged => this.schedule_draft_persist(cx),
+                MongoQueryTabEvent::CollectionImportRequested {
+                    db,
+                    collection,
+                    policy,
+                    files,
+                } => cx.emit(MongoQueryPanelEvent::CollectionImportRequested {
+                    db: db.clone(),
+                    collection: collection.clone(),
+                    policy: *policy,
+                    files: files.clone(),
+                }),
+            },
+        );
         self.tabs.push(tab);
         self.titles.push(title);
         self.draft_subscriptions.push(sub);

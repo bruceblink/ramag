@@ -1,11 +1,10 @@
 //! 结果区顶部工具栏：过滤列 / 过滤行 / 增删文档 / 导出 / 运行。
 //! 行数 / 耗时摘要已下沉到底部 status bar（见 mod.rs render_status_bar），与 dbclient 一致
 
-use gpui::{Anchor, Context, div, prelude::*, px};
+use gpui::{Context, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
 };
-use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::platform::primary_shortcut;
 
 use super::{ResultEvent, ResultPanel};
@@ -142,12 +141,28 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_delete_confirm(window, cx)))
         })
         .child({
-            let entity = cx.entity().clone();
+            // 与导出配对：导入 JSONL 到当前目标集合（无目标 / 生产只读时禁用）
+            let can_import = panel.can_write();
+            ramag_ui::clickable_button("mongo-import")
+                .ghost()
+                .small()
+                .icon(ramag_ui::icons::download())
+                .tooltip(if can_import {
+                    "导入 JSONL 到当前集合"
+                } else {
+                    "导入 JSONL（需先打开集合；生产只读不可用）"
+                })
+                .disabled(!can_import)
+                .on_click(
+                    cx.listener(|panel, _, window, cx| panel.open_import_jsonl_dialog(window, cx)),
+                )
+        })
+        .child({
             let has_data = panel.docs_arc.as_ref().is_some_and(|docs| !docs.is_empty());
             ramag_ui::clickable_button("mongo-export")
                 .ghost()
                 .small()
-                .icon(ramag_ui::icons::download())
+                .icon(ramag_ui::icons::upload())
                 .tooltip(if panel.exporting {
                     "导出进行中"
                 } else if panel.row_view_building {
@@ -155,7 +170,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 } else if panel.row_view_error.is_some() {
                     "导出（当前行视图构建失败）"
                 } else {
-                    "导出"
+                    "导出 JSONL"
                 })
                 .disabled(
                     !has_data
@@ -164,16 +179,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                         || panel.row_view_error.is_some()
                         || panel.exporting,
                 )
-                .pointer_dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
-                    let e_json = entity.clone();
-                    let e_csv = entity.clone();
-                    menu.item(ramag_ui::menu_item("导出 JSON").on_click(move |_, _, app| {
-                        e_json.update(app, |this, cx| this.export_documents(false, cx));
-                    }))
-                    .item(ramag_ui::menu_item("导出 CSV").on_click(move |_, _, app| {
-                        e_csv.update(app, |this, cx| this.export_documents(true, cx));
-                    }))
-                })
+                .on_click(cx.listener(|panel, _, _, cx| panel.export_documents(cx)))
         })
         .child(if panel.running {
             ramag_ui::clickable_button("mongo-cancel-result")

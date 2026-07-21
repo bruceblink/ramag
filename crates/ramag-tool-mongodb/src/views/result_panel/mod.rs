@@ -15,6 +15,7 @@ mod table;
 mod toolbar;
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -31,7 +32,9 @@ use gpui_component::{
 };
 use parking_lot::RwLock;
 use ramag_app::MongoService;
-use ramag_domain::entities::{ConnectionConfig, MongoQueryResult, json_pretty_bounded};
+use ramag_domain::entities::{
+    ConflictPolicy, ConnectionConfig, MongoQueryResult, json_pretty_bounded,
+};
 use serde_json::Value;
 
 pub use flatten::FlatTable;
@@ -110,6 +113,14 @@ pub enum ResultEvent {
     Refresh,
     /// 仅停止客户端等待；MongoDB 服务端操作可能仍在执行。
     Cancel,
+    /// 结果工具条发起的集合级 JSONL 导入：经 query_tab / query_panel 上抛，
+    /// session 路由到集合树执行（复用其进度行与取消）
+    CollectionImportRequested {
+        db: String,
+        collection: String,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+    },
 }
 
 /// 排序方向（单击列头切换 None→Asc→Desc→None）

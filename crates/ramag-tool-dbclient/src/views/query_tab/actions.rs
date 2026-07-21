@@ -10,7 +10,6 @@ use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query, QueryResult, Value};
 use ramag_domain::error::DomainError;
 use tracing::{error, info, warn};
 
-use super::QueryTab;
 use super::paging::{
     PAGE_SIZE, PageRequest, Pager, count_sql, page_sql, paging_base_sql, trim_page_sentinel,
 };
@@ -18,6 +17,7 @@ use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line,
 };
+use super::{QueryTab, QueryTabEvent};
 use crate::sql_completion::extract_tables_in_use_for_prefetch;
 use crate::views::result_panel::{ResultPagination, ResultState, TotalRows};
 
@@ -166,6 +166,33 @@ impl QueryTab {
             return;
         }
         self.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
+    }
+
+    /// 结果工具条「导入」：对当前 pinned 表发起 JSONL 导入；
+    /// 确认后上抛事件，由 session 路由到表树执行（进度条也显示在表树侧）
+    pub(super) fn open_table_import_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((schema, table)) = self.pinned_target.clone() else {
+            return;
+        };
+        let entity = cx.entity();
+        ramag_ui::open_import_options_dialog(
+            "导入 JSONL 到表",
+            crate::views::table_tree::jsonl_import_description(&schema, &table),
+            false,
+            ("JSONL", &["jsonl", "json"]),
+            move |policy, files, _, app| {
+                entity.update(app, |_, cx| {
+                    cx.emit(QueryTabEvent::TableImportRequested {
+                        schema,
+                        table,
+                        policy,
+                        files,
+                    });
+                });
+            },
+            window,
+            cx,
+        );
     }
 
     /// 确认后（或无需确认）提交执行

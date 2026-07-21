@@ -97,8 +97,9 @@ impl TableTreePanel {
         .detach();
     }
 
-    /// 表级 JSONL 导入：多文件循环，按 JSON 键名匹配列插入
-    pub(super) fn import_table_from_files(
+    /// 表级 JSONL 导入：多文件循环，按 JSON 键名匹配列插入；
+    /// pub(crate)：结果工具条入口经 session 路由到此复用执行与进度
+    pub(crate) fn import_table_from_files(
         &mut self,
         schema: String,
         table: String,

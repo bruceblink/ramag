@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::FlatTable;
 use super::ResultPanel;
-use super::cell::{Cell, cell_for_value};
+use super::cell::{Cell, cell_for_value, extjson_cell};
 use super::flatten::{Column, build_flat_table_with_cancellable};
 use crate::views::{estimated_json_value_bytes, inline_text_preview};
 
@@ -160,7 +160,9 @@ impl ResultPanel {
         else {
             return Ok(None);
         };
-        if !matches!(value, Value::Object(_) | Value::Array(_)) {
+        // ExtJSON 包装（$oid 等）是标量，双击不下钻（否则会拆出字面 $oid 列）
+        let is_extjson_scalar = matches!(value, Value::Object(map) if extjson_cell(map).is_some());
+        if is_extjson_scalar || !matches!(value, Value::Object(_) | Value::Array(_)) {
             return Ok(None);
         }
         if matches!(value, Value::Array(items) if items.len() > MAX_DRILL_DOCUMENTS) {
@@ -265,7 +267,8 @@ impl ResultPanel {
         }
     }
 
-    /// 过滤列输入对象/数组路径 → 钻进去（逐段穿透数组）：终值 object 一行 / array 元素逐行，裸字段。
+    /// 过滤列输入对象/数组路径 → 钻进去（逐段穿透数组）：终值 object 一行 / array 元素逐行 /
+    /// 标量与 ExtJSON 包装为 _value 单列一行。
     /// 返回 (钻取文档, 钻取表, 路径)；非钻取路径返回 None。与双击下钻并存，是"过滤框输入路径"这条额外入口。
     pub(crate) fn try_drill_path(
         &self,
@@ -311,7 +314,8 @@ impl ResultPanel {
             node_label = seg.to_string();
             current = next;
         }
-        // 终值：array → 元素逐行；object → 一行；标量跳过。祖先链随行一并带出
+        // 终值：array → 元素逐行；object → 一行；标量与 ExtJSON 包装 → _value 单列一行。
+        // 祖先链随行一并带出
         let mut rows: Vec<(Vec<(String, Cell)>, Value)> = Vec::new();
         for (anc, v) in current {
             if rows.len() >= MAX_ELEMS {
@@ -326,8 +330,7 @@ impl ResultPanel {
                         }
                     }
                 }
-                Value::Object(_) => rows.push((anc, v.clone())),
-                _ => {}
+                other => rows.push((anc, other.clone())),
             }
         }
         if rows.is_empty() {
