@@ -179,7 +179,7 @@ impl VcsView {
             .child(busy_indicator)
             .child(self.render_branch_picker(cx));
 
-        // 第 2 行：搜索框 + (Project 模式才显示的)全展开/全折叠 toggle + 刷新按钮
+        // 第 2 行：搜索框 + 刷新按钮 + (Project 模式才显示的)全展开/全折叠 toggle
         // toggle 单按钮模式与 redis key_tree 对齐：根据当前是否有展开目录决定图标和动作
         let mut search_row = h_flex()
             .w_full()
@@ -201,6 +201,23 @@ impl VcsView {
                     .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             );
+        // 手动刷新：外部（终端 / 编辑器）改动后立即同步；窗口重新激活时也会自动刷
+        if self.repo.is_some() {
+            search_row = search_row.child(
+                ramag_ui::clickable_button("vcs-refresh")
+                    .ghost()
+                    .xsmall()
+                    .icon(ramag_ui::icons::refresh_cw())
+                    .tooltip(format!(
+                        "刷新工作区状态（{}；切回窗口时也会自动刷新）",
+                        ramag_ui::platform::primary_shortcut("R")
+                    ))
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.refresh_workspace_silent(cx);
+                    })),
+            );
+        }
         if matches!(active, FilesViewMode::Project) {
             let any_expanded = !self.project_expanded_dirs.is_empty();
             let (icon, tip) = if any_expanded {
@@ -220,23 +237,6 @@ impl VcsView {
                         } else {
                             this.expand_all_project_dirs(cx);
                         }
-                    })),
-            );
-        }
-        // 手动刷新：外部（终端 / 编辑器）改动后立即同步；窗口重新激活时也会自动刷
-        if self.repo.is_some() {
-            search_row = search_row.child(
-                ramag_ui::clickable_button("vcs-refresh")
-                    .ghost()
-                    .xsmall()
-                    .icon(ramag_ui::icons::refresh_cw())
-                    .tooltip(format!(
-                        "刷新工作区状态（{}；切回窗口时也会自动刷新）",
-                        ramag_ui::platform::primary_shortcut("R")
-                    ))
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.refresh_workspace_silent(cx);
                     })),
             );
         }

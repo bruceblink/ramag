@@ -297,4 +297,21 @@ fn vcs_view_renders_project_file_content_without_panic(cx: &mut TestAppContext) 
 
     view.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
+
+    // 未修改标签不显示圆点；切成 dirty 后覆盖圆点渲染分支，二者都必须稳定绘制。
+    view.update(cx, |v, cx| {
+        assert!(
+            v.file_tabs[0]
+                .cached_content
+                .as_mut()
+                .is_some_and(|snapshot| {
+                    snapshot.dirty = true;
+                    true
+                })
+        );
+        v.pf_editor_dirty = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| assert!(v.file_tabs[0].is_dirty()));
 }

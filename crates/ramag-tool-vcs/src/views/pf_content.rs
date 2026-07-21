@@ -1,10 +1,7 @@
-//! Project Files 主区：原生 Code Editor，支持编辑、增量语法解析和完整长行显示。
+//! Project Files 主区：原生 Code Editor，支持自动保存、增量语法解析和完整长行显示。
 
-use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
-    prelude::FluentBuilder as _, px,
-};
-use gpui_component::{ActiveTheme, Disableable as _, Sizable as _, h_flex, input::Input, v_flex};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui_component::{ActiveTheme, h_flex, input::Input, v_flex};
 
 use super::vcs_view::VcsView;
 
@@ -33,12 +30,8 @@ impl VcsView {
         let mut body = v_flex().size_full().min_h_0().child(header_bar(
             &snapshot.path,
             self.pf_editor_line_count,
-            self.pf_editor_dirty,
-            self.saving_file_content,
-            editable,
             muted_fg,
             fg,
-            cx,
         ));
         if snapshot.truncated {
             body = body.child(truncated_banner(muted_fg));
@@ -49,7 +42,7 @@ impl VcsView {
                 .h_full()
                 .bordered(false)
                 .focus_bordered(false)
-                .disabled(!editable || self.saving_file_content)
+                .disabled(!editable)
                 .into_any_element()
         } else {
             placeholder("准备编辑器…", muted_fg)
@@ -58,17 +51,7 @@ impl VcsView {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn header_bar(
-    path: &str,
-    line_count: usize,
-    dirty: bool,
-    saving: bool,
-    editable: bool,
-    muted_fg: gpui::Hsla,
-    fg: gpui::Hsla,
-    cx: &mut Context<VcsView>,
-) -> AnyElement {
+fn header_bar(path: &str, line_count: usize, muted_fg: gpui::Hsla, fg: gpui::Hsla) -> AnyElement {
     h_flex()
         .w_full()
         .flex_none()
@@ -93,23 +76,6 @@ fn header_bar(
                 .text_color(muted_fg)
                 .child(format!("{line_count} 行")),
         )
-        .when(dirty, |row| {
-            row.child(div().text_xs().text_color(fg).child("未保存"))
-        })
-        .child(
-            ramag_ui::clickable_button("vcs-pf-save")
-                .outline()
-                .xsmall()
-                .label(if saving { "保存中…" } else { "保存" })
-                .tooltip(format!(
-                    "保存当前文件（{}）",
-                    ramag_ui::platform::primary_shortcut("S")
-                ))
-                .disabled(!editable || !dirty || saving)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.save_project_file(cx);
-                })),
-        )
         .into_any_element()
 }
 
@@ -123,7 +89,7 @@ fn truncated_banner(muted_fg: gpui::Hsla) -> AnyElement {
         .bg(bg)
         .text_xs()
         .text_color(muted_fg)
-        .child("文件较大，仅预览前 4 MiB；为避免破坏未加载内容，已禁用编辑和保存")
+        .child("文件较大，仅预览前 4 MiB；为避免破坏未加载内容，已禁用编辑")
         .into_any_element()
 }
 

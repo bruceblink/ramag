@@ -2,6 +2,7 @@
 //! remove_open_repo / open_repo_async（共享异步流：open + 拉 status / 分支 / stash 等）
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use gpui::Context;
 use ramag_domain::entities::MAX_COMMIT_MESSAGE_BYTES;
@@ -14,6 +15,10 @@ use super::vcs_view::{RepoSessionState, VcsView};
 
 /// Project Files 点击文件后读盘上限（4MB）；超过截断后 UI 显示提示
 pub(super) const PF_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// 连续输入只在停顿后写盘，避免每个字符都触发 truncate + sync_all。
+const PF_FILE_AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(300);
+/// 自身写盘事件的短期识别窗口；过期后必须按外部修改处理。
+pub(super) const PF_FILE_SELF_WRITE_TTL: Duration = Duration::from_secs(2);
 /// 单窗口打开仓库标签上限；每个标签会保留会话元数据，并可能在驱动层持有仓库句柄。
 pub(super) const MAX_OPEN_REPOS: usize = 32;
 /// 仅保留最近访问仓库的轻量 UI 会话，避免长时间运行后路径与草稿无限累积。
@@ -221,18 +226,14 @@ impl VcsView {
         false
     }
 
-    /// Project Files 编辑草稿只保存在当前仓库内存中；切仓或关闭前必须显式保存。
+    /// 自动保存尚未完成时不允许切仓或关闭，避免异步写入失去所属会话。
     pub(super) fn ensure_project_file_drafts_saved(&mut self, cx: &mut Context<Self>) -> bool {
         self.capture_active_project_draft(cx);
         let dirty_paths = self
             .file_tabs
             .iter()
-            .filter_map(|tab| {
-                tab.cached_content
-                    .as_ref()
-                    .filter(|content| content.dirty)
-                    .map(|_| tab.path.clone())
-            })
+            .filter(|tab| tab.is_dirty())
+            .map(|tab| tab.path.clone())
             .collect::<Vec<_>>();
         if dirty_paths.is_empty() {
             return true;
@@ -247,7 +248,7 @@ impl VcsView {
         let suffix = if dirty_paths.len() > 3 { " 等" } else { "" };
         self.notify_warning(
             format!(
-                "有 {} 个文件尚未保存（{preview}{suffix}），请保存后再切换或关闭仓库",
+                "有 {} 个文件尚未完成自动保存（{preview}{suffix}），请稍后再切换或关闭仓库",
                 dirty_paths.len()
             ),
             cx,
@@ -453,7 +454,32 @@ impl VcsView {
         snapshot.revision = self.pf_editor_revision;
         snapshot.dirty = true;
         tab.cached_content = Some(snapshot.clone());
+        self.pf_editor_line_count = line_count;
         self.current_file_content = Some(snapshot);
+    }
+
+    /// 输入事件只更新轻量元数据，让标签蓝点立即出现；正文复制留到防抖命中时。
+    pub(super) fn mark_active_project_file_dirty(&mut self) {
+        let Some(path) = self.pf_editor_loaded_path.as_deref() else {
+            return;
+        };
+        if self.selected_pf_path.as_deref() != Some(path) {
+            return;
+        }
+        let Some(tab) = self
+            .file_tabs
+            .iter_mut()
+            .find(|tab| tab.path == path && tab.source == FileTabSource::ProjectFiles)
+        else {
+            return;
+        };
+        let Some(snapshot) = tab.cached_content.as_mut() else {
+            return;
+        };
+        snapshot.line_count = self.pf_editor_line_count;
+        snapshot.revision = self.pf_editor_revision;
+        snapshot.dirty = true;
+        self.current_file_content = Some(snapshot.clone());
     }
 
     /// 为 Render 安排一次编辑器正文切换；set_value 会同时把编辑器滚动位置复位到顶部。
@@ -471,16 +497,24 @@ impl VcsView {
         });
     }
 
-    /// 显式保存当前 Project Files 编辑正文；截断预览禁止保存，避免覆盖未加载尾部。
+    /// 输入停顿后自动保存当前 Project Files 正文。
+    pub(super) fn schedule_project_file_autosave(&mut self, cx: &mut Context<Self>) {
+        self.schedule_current_project_file_save(PF_FILE_AUTOSAVE_DEBOUNCE, cx);
+    }
+
+    /// 快捷键可跳过去抖并立即重试；常规编辑无需显式保存。
     pub(super) fn save_project_file(&mut self, cx: &mut Context<Self>) {
-        if self.saving_file_content {
+        self.schedule_current_project_file_save(Duration::ZERO, cx);
+    }
+
+    fn schedule_current_project_file_save(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        if !self.pf_editor_dirty {
             return;
         }
-        self.capture_active_project_draft(cx);
         let Some(path) = self.selected_pf_path.clone() else {
             return;
         };
-        let Some(snapshot) = self.current_file_content.clone() else {
+        let Some(snapshot) = self.current_file_content.as_ref() else {
             return;
         };
         if snapshot.error.is_some() || snapshot.binary || snapshot.truncated || !snapshot.dirty {
@@ -494,54 +528,97 @@ impl VcsView {
             return;
         };
 
-        let text = snapshot.text.as_ref().clone();
-        let revision = snapshot.revision;
-        self.file_save_request_seq = self.file_save_request_seq.wrapping_add(1);
-        let request_seq = self.file_save_request_seq;
-        self.saving_file_content = true;
-        cx.notify();
+        let revision = self.pf_editor_revision;
+        let coordinator = self.project_file_write_coordinator.clone();
+        let ticket = coordinator.begin(format!("{repo_path}\0{path}"));
 
         cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+
+            // 只在最新代际命中后复制正文；快速输入不会反复克隆最多 4 MiB 的文本。
+            let text = this
+                .update(cx, |this, cx| {
+                    if !this.is_current_repo(&repo_id) {
+                        return None;
+                    }
+                    if this.selected_pf_path.as_deref() == Some(path.as_str())
+                        && this.pf_editor_loaded_path.as_deref() == Some(path.as_str())
+                    {
+                        if !this.pf_editor_dirty || this.pf_editor_revision != revision {
+                            return None;
+                        }
+                        this.capture_active_project_draft(cx);
+                    }
+                    let snapshot = this
+                        .file_tabs
+                        .iter()
+                        .find(|tab| {
+                            tab.path == path && tab.source == FileTabSource::ProjectFiles
+                        })?
+                        .cached_content
+                        .as_ref()?;
+                    let text = (snapshot.dirty
+                        && snapshot.revision == revision
+                        && snapshot.error.is_none()
+                        && !snapshot.binary
+                        && !snapshot.truncated)
+                        .then(|| snapshot.text.as_ref().clone())?;
+                    // 写入前登记，确保 watcher 事件无论先于还是后于写盘回包都只消费一次。
+                    let now = std::time::Instant::now();
+                    this.project_file_self_writes
+                        .retain(|_, (_, saved_at)| {
+                            now.saturating_duration_since(*saved_at) <= PF_FILE_SELF_WRITE_TTL
+                        });
+                    this.project_file_self_writes
+                        .insert(path.clone(), (revision, now));
+                    Some(text)
+                })
+                .ok()
+                .flatten();
+            let Some(text) = text else {
+                coordinator.cancel_if_latest(&ticket);
+                return;
+            };
+
             let root = std::path::PathBuf::from(repo_path);
             let path_for_worker = path.clone();
-            let result = ramag_app::run_blocking(move || {
-                write_project_file(&root, &path_for_worker, text.as_str())
-                    .map_err(ramag_domain::error::DomainError::Other)
-            })
-            .await;
+            let result = coordinator
+                .run_if_latest(&ticket, || {
+                    ramag_app::run_blocking(move || {
+                        write_project_file(&root, &path_for_worker, text.as_str())
+                            .map_err(ramag_domain::error::DomainError::Other)
+                    })
+                })
+                .await;
+            let Some(result) = result else {
+                return;
+            };
             let _ = this.update(cx, |this, cx| {
-                if !this.is_current_repo(&repo_id) || this.file_save_request_seq != request_seq {
+                if !this.is_current_repo(&repo_id) {
                     return;
                 }
-                this.saving_file_content = false;
                 match result {
                     Ok(()) => {
-                        // 保存期间若用户已经切换标签，切换动作已把较新的草稿写进 tab。
-                        this.capture_active_project_draft(cx);
-                        let mut current = None;
-                        if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
-                            tab.path == path && tab.source == FileTabSource::ProjectFiles
-                        }) && let Some(snapshot) = tab.cached_content.as_mut()
-                        {
-                            if snapshot.revision == revision {
-                                snapshot.dirty = false;
-                            }
-                            current = Some(snapshot.clone());
-                        }
+                        // 写盘期间的新编辑会提升 revision，旧回包不得清除新一代蓝点。
+                        let current = mark_project_file_revision_saved(
+                            &mut this.file_tabs,
+                            &path,
+                            revision,
+                        );
                         if this.selected_pf_path.as_deref() == Some(path.as_str())
                             && let Some(snapshot) = current
                         {
                             this.pf_editor_dirty = snapshot.dirty;
                             this.current_file_content = Some(snapshot);
                         }
-                        this.notify_success(format!("已保存 {path}"), cx);
-                        this.refresh_workspace_silent(cx);
+                        // 文件监听会按路径增量刷新 Git 状态，无需再发起一次全量刷新。
                     }
                     Err(error) => {
-                        tracing::error!(error = %error, path = %path, "vcs: save project file failed");
+                        tracing::error!(error = %error, path = %path, "vcs: autosave project file failed");
                         this.pending_notification = Some(
                             gpui_component::notification::Notification::error(format!(
-                                "保存文件失败：{error}"
+                                "自动保存 {path} 失败：{error}；可按 {} 重试",
+                                ramag_ui::platform::primary_shortcut("S")
                             ))
                             .autohide(true),
                         );
@@ -1034,6 +1111,23 @@ fn strip_file_tab_payloads(file_tabs: &mut [FileTab]) {
     }
 }
 
+/// 仅完全匹配写盘代际时清除 dirty，避免较慢旧写覆盖后续编辑状态。
+fn mark_project_file_revision_saved(
+    file_tabs: &mut [FileTab],
+    path: &str,
+    revision: u64,
+) -> Option<FileContentSnapshot> {
+    let snapshot = file_tabs
+        .iter_mut()
+        .find(|tab| tab.path == path && tab.source == FileTabSource::ProjectFiles)?
+        .cached_content
+        .as_mut()?;
+    if snapshot.revision == revision {
+        snapshot.dirty = false;
+    }
+    Some(snapshot.clone())
+}
+
 fn cache_repo_session(
     cache: &mut std::collections::HashMap<String, RepoSessionState>,
     order: &mut std::collections::VecDeque<String>,
@@ -1114,6 +1208,31 @@ mod tests {
 
         assert!(tabs[0].cached_content.is_none());
         assert!(tabs[0].cached_diff.is_none());
+    }
+
+    #[test]
+    fn completed_save_clears_only_the_matching_revision() {
+        let mut tabs = vec![FileTab {
+            path: "src/lib.rs".into(),
+            source: FileTabSource::ProjectFiles,
+            cached_diff: None,
+            cached_diff_syntax: None,
+            cached_content: Some(FileContentSnapshot {
+                path: "src/lib.rs".into(),
+                text: std::rc::Rc::new("new".into()),
+                line_count: 1,
+                revision: 2,
+                dirty: true,
+                truncated: false,
+                binary: false,
+                error: None,
+            }),
+        }];
+
+        let stale = mark_project_file_revision_saved(&mut tabs, "src/lib.rs", 1);
+        assert!(stale.is_some_and(|snapshot| snapshot.dirty));
+        let current = mark_project_file_revision_saved(&mut tabs, "src/lib.rs", 2);
+        assert!(current.is_some_and(|snapshot| !snapshot.dirty));
     }
 }
 

@@ -166,15 +166,12 @@ impl VcsView {
             return;
         }
         self.capture_active_project_draft(cx);
-        if self.file_tabs[idx]
-            .cached_content
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.dirty)
-        {
+        if self.file_tabs[idx].is_dirty() {
             self.pending_notification = Some(
-                gpui_component::notification::Notification::warning(
-                    "文件有未保存修改，请先保存后再关闭标签",
-                )
+                gpui_component::notification::Notification::warning(format!(
+                    "文件尚未完成自动保存，请稍后关闭；也可按 {} 立即重试",
+                    ramag_ui::platform::primary_shortcut("S")
+                ))
                 .autohide(true),
             );
             cx.notify();

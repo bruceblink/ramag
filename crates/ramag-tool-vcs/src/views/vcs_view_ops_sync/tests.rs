@@ -111,6 +111,43 @@ fn clean_external_checkout_still_counts_as_head_change() {
 }
 
 #[test]
+fn matching_self_write_event_keeps_the_loaded_editor_snapshot() {
+    let now = Instant::now();
+    let mut markers = HashMap::from([("src/lib.rs".into(), (2, now))]);
+    let mut tabs = vec![FileTab {
+        path: "src/lib.rs".into(),
+        source: FileTabSource::ProjectFiles,
+        cached_diff: None,
+        cached_diff_syntax: None,
+        cached_content: Some(super::super::helpers::FileContentSnapshot {
+            path: "src/lib.rs".into(),
+            text: std::rc::Rc::new("saved".into()),
+            line_count: 1,
+            revision: 2,
+            dirty: false,
+            truncated: false,
+            binary: false,
+            error: None,
+        }),
+    }];
+    let prefixes = HashSet::from(["src/lib.rs"]);
+
+    let consumed = take_recent_project_file_self_writes(&mut markers, &tabs, &prefixes, now);
+    assert!(consumed.contains("src/lib.rs"));
+    assert!(markers.is_empty());
+
+    assert!(tabs[0].cached_content.as_mut().is_some_and(|snapshot| {
+        snapshot.revision = 3;
+        snapshot.dirty = true;
+        true
+    }));
+    markers.insert("src/lib.rs".into(), (2, now));
+    let consumed = take_recent_project_file_self_writes(&mut markers, &tabs, &prefixes, now);
+    assert!(consumed.is_empty());
+    assert!(markers.contains_key("src/lib.rs"));
+}
+
+#[test]
 fn rename_identity_change_counts_as_file_change() {
     let old = ramag_domain::entities::WorkingTreeStatus {
         files: vec![FileStatus {

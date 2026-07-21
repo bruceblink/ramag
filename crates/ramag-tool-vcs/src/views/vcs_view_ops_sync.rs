@@ -1,12 +1,14 @@
 //! 工作区状态同步：静默刷新（窗口激活 / 手动刷新）+ Changes 文件 tabs 与最新 status 对齐
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use gpui::Context;
 use ramag_domain::entities::{FileChangeKind, FileStatus};
 
-use super::helpers::{FileTabSource, GroupKind};
+use super::helpers::{FileTab, FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
+use super::vcs_view_ops_repo::PF_FILE_SELF_WRITE_TTL;
 use crate::watcher::RepoRefresh;
 
 mod merge;
@@ -196,9 +198,19 @@ impl VcsView {
                     let event_prefixes = event_paths
                         .as_ref()
                         .map(|paths| paths.iter().map(String::as_str).collect::<HashSet<_>>());
+                    let self_saved_paths = event_prefixes.as_ref().map_or_else(HashSet::new, |prefixes| {
+                        take_recent_project_file_self_writes(
+                            &mut this.project_file_self_writes,
+                            &this.file_tabs,
+                            prefixes,
+                            Instant::now(),
+                        )
+                    });
                     // watcher 明确给出路径时只失效命中标签；全量 status 变化才失效全部。
                     for tab in &mut this.file_tabs {
                         if matches!(tab.source, FileTabSource::ProjectFiles)
+                            && !tab.is_dirty()
+                            && !self_saved_paths.contains(&tab.path)
                             && ((full_status_refresh && files_changed)
                                 || event_prefixes
                                     .as_ref()
@@ -226,6 +238,8 @@ impl VcsView {
                     if let Some(idx) = this.active_file_tab_idx
                         && let Some(tab) = this.file_tabs.get(idx).cloned()
                         && matches!(tab.source, FileTabSource::ProjectFiles)
+                        && !tab.is_dirty()
+                        && !self_saved_paths.contains(&tab.path)
                         && ((full_status_refresh && files_changed)
                             || event_prefixes.as_ref().is_some_and(|prefixes| {
                                 path_matches_prefixes(&tab.path, prefixes)
@@ -445,6 +459,39 @@ fn begin_workspace_refresh(
 
 fn should_rerun(this: &VcsView, pending: &RepoRefresh) -> bool {
     this.repo.is_some() && !this.loading && !this.busy && !pending.is_empty()
+}
+
+/// watcher 命中本进程发起写入的同一代快照时，只刷新 Git 状态，不重载编辑器。
+fn take_recent_project_file_self_writes(
+    markers: &mut HashMap<String, (u64, Instant)>,
+    file_tabs: &[FileTab],
+    event_prefixes: &HashSet<&str>,
+    now: Instant,
+) -> HashSet<String> {
+    let mut consumed = HashSet::new();
+    markers.retain(|path, (revision, saved_at)| {
+        if now.saturating_duration_since(*saved_at) > PF_FILE_SELF_WRITE_TTL {
+            return false;
+        }
+        if !path_matches_prefixes(path, event_prefixes) {
+            return true;
+        }
+        let matches_revision = file_tabs.iter().any(|tab| {
+            tab.path == *path
+                && matches!(tab.source, FileTabSource::ProjectFiles)
+                && tab
+                    .cached_content
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.revision == *revision)
+        });
+        if matches_revision {
+            consumed.insert(path.clone());
+            false
+        } else {
+            true
+        }
+    });
+    consumed
 }
 
 fn merge_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>, refresh: RepoRefresh) {

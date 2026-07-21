@@ -57,6 +57,11 @@ impl LatestWriteCoordinator {
         self.finish_if_latest(ticket).then_some(output)
     }
 
+    /// 任务在真正写入前已失去有效载荷时，清理仍属于自己的 latest 记录。
+    pub(super) fn cancel_if_latest(&self, ticket: &LatestWriteTicket) {
+        self.finish_if_latest(ticket);
+    }
+
     fn is_latest(&self, ticket: &LatestWriteTicket) -> bool {
         self.with_latest(|latest| latest.get(&ticket.key).copied() == Some(ticket.revision))
     }
@@ -119,6 +124,20 @@ mod tests {
             assert_eq!(
                 coordinator.run_if_latest(&second, || async { 2 }).await,
                 Some(2)
+            );
+        });
+    }
+
+    #[test]
+    fn cancelled_latest_write_does_not_run() {
+        futures::executor::block_on(async {
+            let coordinator = LatestWriteCoordinator::default();
+            let ticket = coordinator.begin("repo".into());
+            coordinator.cancel_if_latest(&ticket);
+
+            assert_eq!(
+                coordinator.run_if_latest(&ticket, || async { 1 }).await,
+                None
             );
         });
     }

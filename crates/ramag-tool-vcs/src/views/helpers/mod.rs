@@ -171,6 +171,17 @@ pub(super) struct FileTab {
     pub cached_content: Option<FileContentSnapshot>,
 }
 
+impl FileTab {
+    /// Project Files 标签是否仍有尚未落盘的编辑；其他来源不承载可编辑正文。
+    pub(super) fn is_dirty(&self) -> bool {
+        matches!(self.source, FileTabSource::ProjectFiles)
+            && self
+                .cached_content
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.dirty)
+    }
+}
+
 /// Stash 行尾按钮触发的操作
 #[derive(Debug, Clone, Copy)]
 pub(super) enum StashOp {
@@ -403,8 +414,8 @@ mod tests {
     use ramag_domain::entities::{Branch, BranchKind, CommitId, Remote};
 
     use super::{
-        BranchOp, RemoteOp, checkout_remote_branch_op, default_remote_name, is_current_arc_slot,
-        needs_first_push_remote_picker,
+        BranchOp, FileContentSnapshot, FileTab, FileTabSource, RemoteOp, checkout_remote_branch_op,
+        default_remote_name, is_current_arc_slot, needs_first_push_remote_picker,
     };
 
     fn local(name: &str, upstream: Option<&str>) -> Branch {
@@ -496,5 +507,35 @@ mod tests {
         assert!(is_current_arc_slot(Some(&original), &original));
         assert!(!is_current_arc_slot(Some(&replacement), &original));
         assert!(!is_current_arc_slot(None, &original));
+    }
+
+    #[test]
+    fn project_file_tab_is_dirty_only_with_unsaved_content() {
+        let mut tab = FileTab {
+            path: "src/lib.rs".into(),
+            source: FileTabSource::ProjectFiles,
+            cached_diff: None,
+            cached_diff_syntax: None,
+            cached_content: None,
+        };
+        assert!(!tab.is_dirty());
+
+        tab.cached_content = Some(FileContentSnapshot {
+            path: tab.path.clone(),
+            text: std::rc::Rc::new(String::new()),
+            line_count: 1,
+            revision: 1,
+            dirty: false,
+            truncated: false,
+            binary: false,
+            error: None,
+        });
+        assert!(!tab.is_dirty());
+
+        assert!(tab.cached_content.as_mut().is_some_and(|snapshot| {
+            snapshot.dirty = true;
+            true
+        }));
+        assert!(tab.is_dirty());
     }
 }

@@ -180,6 +180,8 @@ impl VcsView {
                 FileTabSource::ProjectFiles => gpui::hsla(210.0 / 360.0, 0.6, 0.55, 1.0),
                 FileTabSource::Commit { .. } => gpui::hsla(280.0 / 360.0, 0.55, 0.55, 1.0),
             };
+            // Changes / Commit 的圆点表达来源状态；Project Files 只在尚未落盘时显示。
+            let show_dot = !matches!(tab.source, FileTabSource::ProjectFiles) || tab.is_dirty();
             let path_for_click = tab.path.clone();
             let source_for_click = tab.source.clone();
 
@@ -192,7 +194,9 @@ impl VcsView {
                 .border_r_1()
                 .border_color(border)
                 .cursor_pointer()
-                .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(dot_color))
+                .when(show_dot, |tab| {
+                    tab.child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(dot_color))
+                })
                 .child(
                     div()
                         .text_xs()

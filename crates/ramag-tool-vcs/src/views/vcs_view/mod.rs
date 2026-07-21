@@ -286,9 +286,11 @@ pub struct VcsView {
     pub(super) loading_file_content: bool,
     /// Project 文件内容请求代际号：同一路径重复打开时旧读盘结果不得覆盖新结果
     pub(super) file_content_request_seq: u64,
-    /// 文件保存是否进行中；保存期间禁用编辑，避免同一路径并发写。
-    pub(super) saving_file_content: bool,
-    pub(super) file_save_request_seq: u64,
+    /// Project Files 自动保存按仓库路径 + 文件路径只提交最新版本，并串行写盘。
+    pub(super) project_file_write_coordinator: super::latest_write::LatestWriteCoordinator,
+    /// 最近发起的自身写盘；用于消费对应 watcher 事件，避免自动保存后重载编辑器。
+    pub(super) project_file_self_writes:
+        std::collections::HashMap<String, (u64, std::time::Instant)>,
     /// Diff 视图的虚拟化列表滚动 handle（unified / split 共用一个）
     pub(super) diff_scroll: UniformListScrollHandle,
     /// commit 文件列表 / 冲突编辑器滚动
@@ -449,8 +451,7 @@ impl VcsView {
         self.pf_editor_line_count = 0;
         self.loading_file_content = false;
         self.file_content_request_seq = self.file_content_request_seq.wrapping_add(1);
-        self.saving_file_content = false;
-        self.file_save_request_seq = self.file_save_request_seq.wrapping_add(1);
+        self.project_file_self_writes.clear();
         self.file_tabs_h_scroll
             .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
         self.diff_fullscreen = false;

@@ -178,6 +178,9 @@ impl VcsView {
                     .read(cx)
                     .text()
                     .len_lines(ropey::LineType::LF);
+                // 先同步轻量脏状态供标签即时反馈；正文只在防抖命中或切换标签时复制。
+                this.mark_active_project_file_dirty();
+                this.schedule_project_file_autosave(cx);
                 cx.notify();
             },
         )
@@ -187,7 +190,12 @@ impl VcsView {
         cx.observe_window_activation(window, |this: &mut Self, window, cx| {
             let active = window.is_window_active();
             let became_active = active && !this.was_window_active;
+            let became_inactive = !active && this.was_window_active;
             this.was_window_active = active;
+            // 离开窗口时跳过去抖立即落盘，缩短关闭应用前最后一次输入的风险窗口。
+            if became_inactive && this.pf_editor_dirty {
+                this.save_project_file(cx);
+            }
             if became_active && this.repo.is_some() && !this.loading && !this.busy {
                 this.refresh_workspace_silent(cx);
             }
@@ -318,8 +326,8 @@ impl VcsView {
             pf_editor_line_count: 0,
             loading_file_content: false,
             file_content_request_seq: 0,
-            saving_file_content: false,
-            file_save_request_seq: 0,
+            project_file_write_coordinator: Default::default(),
+            project_file_self_writes: std::collections::HashMap::new(),
             diff_scroll: UniformListScrollHandle::new(),
             commit_files_scroll: UniformListScrollHandle::new(),
             changes_scroll: UniformListScrollHandle::new(),

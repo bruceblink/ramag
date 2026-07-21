@@ -34,7 +34,7 @@ pub struct RefreshWorkspace;
 #[action(namespace = ramag_vcs)]
 pub struct ToggleHistoryPane;
 
-/// 保存 Project Files 当前编辑文件（默认主修饰键+S）
+/// 立即触发 Project Files 当前编辑文件自动保存（默认主修饰键+S，用于主动重试）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_vcs)]
 pub struct SaveProjectFile;
