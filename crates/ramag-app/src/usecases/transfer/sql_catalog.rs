@@ -125,6 +125,21 @@ pub(crate) fn pg_foreign_keys_query(schema: &str) -> String {
     )
 }
 
+/// PG 单表拥有的外键 ALTER 语句。只导出约束所属表，不夹带其他表定义。
+pub(crate) fn pg_table_foreign_keys_query(schema: &str, table: &str) -> String {
+    let s = pg_lit(schema);
+    let t = pg_lit(table);
+    format!(
+        "SELECT 'ALTER TABLE ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname) || \
+                ' ADD CONSTRAINT ' || quote_ident(con.conname) || ' ' || pg_get_constraintdef(con.oid) || ';' AS stmt \
+           FROM pg_constraint con \
+           JOIN pg_class c ON c.oid = con.conrelid \
+           JOIN pg_namespace n ON n.oid = c.relnamespace \
+          WHERE con.contype = 'f' AND n.nspname = '{s}' AND c.relname = '{t}' \
+          ORDER BY con.conname;"
+    )
+}
+
 /// PG 整 schema 的枚举类型定义（表列引用的自建 enum 必须先建）
 pub(crate) fn pg_enum_types_query(schema: &str) -> String {
     let s = pg_lit(schema);
@@ -137,6 +152,25 @@ pub(crate) fn pg_enum_types_query(schema: &str) -> String {
           WHERE n.nspname = '{s}' \
           GROUP BY n.nspname, t.typname \
           ORDER BY t.typname;"
+    )
+}
+
+/// PG 单表直接使用的枚举类型定义（含枚举数组列），避免导出同 schema 的无关类型。
+pub(crate) fn pg_table_enum_types_query(schema: &str, table: &str) -> String {
+    let s = pg_lit(schema);
+    let t = pg_lit(table);
+    format!(
+        "SELECT 'CREATE TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(ty.typname) || \
+                ' AS ENUM (' || string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder) || ');' AS stmt \
+           FROM pg_type ty \
+           JOIN pg_enum e ON e.enumtypid = ty.oid \
+           JOIN pg_namespace n ON n.oid = ty.typnamespace \
+           JOIN pg_attribute a ON a.atttypid IN (ty.oid, ty.typarray) \
+          WHERE n.nspname = '{s}' \
+            AND a.attrelid = '\"{s}\".\"{t}\"'::regclass \
+            AND a.attnum > 0 AND NOT a.attisdropped \
+          GROUP BY n.nspname, ty.typname \
+          ORDER BY ty.typname;"
     )
 }
 

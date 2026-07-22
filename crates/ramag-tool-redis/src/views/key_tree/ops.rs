@@ -29,8 +29,31 @@ pub(super) fn node_context_menu(
     full_path: String,
     is_leaf: bool,
     is_namespace: bool,
+    allow_write: bool,
 ) -> PopupMenu {
     let mut menu = menu;
+    if is_leaf {
+        let (key, ent) = (full_path.clone(), entity.clone());
+        menu = menu.item(
+            ramag_ui::menu_item("导出此 Key").on_click(move |_, _, app| {
+                ent.update(app, |this, cx| this.export_key_to_file(key.clone(), cx));
+            }),
+        );
+    }
+    if is_namespace {
+        let (prefix, ent) = (full_path.clone(), entity.clone());
+        menu = menu.item(
+            ramag_ui::menu_item("导出此前缀下全部 Key").on_click(move |_, _, app| {
+                ent.update(app, |this, cx| {
+                    this.export_prefix_to_file(prefix.clone(), cx)
+                });
+            }),
+        );
+    }
+    if !allow_write {
+        return menu;
+    }
+    menu = menu.separator();
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
@@ -106,6 +129,7 @@ pub(super) fn toolbar_more_menu(
     let entity_for_create = entity.clone();
     let entity_for_export = entity.clone();
     let entity_for_import = entity.clone();
+    let entity_for_selection_import = entity.clone();
     menu.item(
         ramag_ui::menu_item("新建 Key").on_click(move |_, _window, app| {
             entity_for_create.update(app, |_this, cx| cx.emit(KeyTreeEvent::RequestCreate));
@@ -117,10 +141,10 @@ pub(super) fn toolbar_more_menu(
         }),
     )
     .item(
-        ramag_ui::menu_item(format!("导入到 DB {db}")).on_click(move |_, window, app| {
+        ramag_ui::menu_item(format!("导入整个 DB {db}")).on_click(move |_, window, app| {
             let ent = entity_for_import.clone();
             ramag_ui::open_import_options_dialog(
-                "导入 JSONL 文件",
+                "导入整个 Redis DB",
                 format!(
                     "选择冲突策略与 .jsonl 文件（可多选），将导入到 DB {db}。重复导入同一文件：\
                      「跳过」按 key 断点续传，「覆盖」完全重建（幂等）。\
@@ -135,6 +159,28 @@ pub(super) fn toolbar_more_menu(
                 app,
             );
         }),
+    )
+    .item(
+        ramag_ui::menu_item(format!("导入 Key / 前缀到 DB {db}")).on_click(
+            move |_, window, app| {
+                let ent = entity_for_selection_import.clone();
+                ramag_ui::open_import_options_dialog(
+                    "导入 Key / 前缀（类型 + TTL + 数据）",
+                    format!(
+                        "选择由 Ramag“导出此 Key / 此前缀”生成的 .jsonl 文件（可多选），将 Key 类型、TTL 和全部值恢复到 DB {db}。Key 名取自文件。"
+                    ),
+                    false,
+                    ("JSONL", &["jsonl", "json"]),
+                    move |policy, files, _, app| {
+                        ent.update(app, |this, cx| {
+                            this.import_selections_from_files(policy, files, cx);
+                        });
+                    },
+                    window,
+                    app,
+                );
+            },
+        ),
     )
     .separator()
     .item(

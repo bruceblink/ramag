@@ -23,10 +23,11 @@ use crate::sql_completion::{SchemaCache, is_system_schema};
 const MAX_LOADED_SCHEMA_TABLES: usize = 64;
 const MAX_EXPANDED_TABLE_COLUMNS: usize = 32;
 
-/// 表级 JSONL 导入对话框的说明文案；表树右键与结果工具条入口共用
+/// 纯数据 JSONL 导入对话框文案；不会创建或修改表结构。
 pub(crate) fn jsonl_import_description(schema: &str, table: &str) -> String {
     format!(
-        "选择冲突策略与 .jsonl 文件（可多选），每行一个 JSON 对象，\
+        "仅导入数据，不创建或修改表结构。选择冲突策略与 .jsonl 文件（可多选），\
+         每行一个 JSON 对象，\
          按键名匹配 {schema}.{table} 的列插入；行内缺少的列走库默认值，\
          未匹配的键忽略。「跳过」冲突行跳过，「覆盖」先清空表\
          （不可恢复），「停止」遇冲突即报错。"
@@ -71,7 +72,7 @@ pub struct TableTreePanel {
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     /// DDL 串行化闸门；切换连接后旧回包不能解锁新连接的操作。
     pub(super) ddl_gate: AsyncMutationGate,
-    /// 按库导出 / 导入状态（进度行 + 取消位）
+    /// 库 / 表传输状态（进度行 + 取消位）
     pub(super) transfer: ramag_ui::TransferState,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
 }

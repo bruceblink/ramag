@@ -1,5 +1,4 @@
-//! 结果集导出 JSONL：rfd 选路径→受限工作池序列化/写入→回主线程 toast。
-//! selected_rows 非空只导勾选行，否则全部
+//! 结果集选中行导出 JSONL：rfd 选路径→受限工作池序列化/写入→回主线程 toast。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,6 +6,7 @@ use std::sync::Arc;
 use gpui::Context;
 use gpui_component::notification::Notification;
 use ramag_app::usecases::export;
+use ramag_domain::entities::DriverKind;
 use tracing::{error, info};
 
 use super::ResultPanel;
@@ -42,69 +42,44 @@ impl ResultPanel {
             cx.notify();
             return;
         }
-        let Some(view) = crate::views::result_table::cached_display_view(self, &base, cx) else {
-            self.pending_notification =
-                Some(Notification::info("结果仍在筛选或排序，请稍候再导出").autohide(true));
+        if self.selected_rows.is_empty() {
+            self.pending_notification = Some(Notification::warning("未选择数据").autohide(true));
             cx.notify();
             return;
-        };
-
-        // 导出范围三档：勾选行 > 当前视图（有排序/过滤时，所见即所导）> 原始全量
-        let (row_indices, column_indices, scope_label) = if !self.selected_rows.is_empty() {
-            let selected = Arc::new(
-                self.selected_rows
-                    .iter()
-                    .copied()
-                    .filter(|index| *index < base.rows.len())
-                    .collect::<Vec<_>>(),
-            );
-            if selected.is_empty() {
-                self.pending_notification =
-                    Some(Notification::warning("勾选的行越界，无内容可导出").autohide(true));
-                cx.notify();
-                return;
-            }
-            let n = selected.len();
-            let visible = view
-                .display_indices
+        }
+        let row_indices = Arc::new(
+            self.selected_rows
                 .iter()
                 .copied()
-                .collect::<std::collections::BTreeSet<_>>();
-            let hidden = self
-                .selected_rows
-                .iter()
-                .filter(|ri| !visible.contains(ri))
-                .count();
-            let scope = if hidden > 0 {
-                format!("选中 {n} 行，其中 {hidden} 行当前隐藏")
-            } else {
-                format!("选中 {n} 行")
-            };
-            (Some(selected), None, scope)
-        } else {
-            if view.differs_from_raw(self) {
-                // 视图与原始不同：仅传共享索引，后台按可见列和显示行序流式投影。
-                if view.display_indices.is_empty() {
-                    self.pending_notification =
-                        Some(Notification::warning("当前筛选下无行可导出").autohide(true));
-                    cx.notify();
-                    return;
-                }
-                let n = view.display_indices.len();
-                (
-                    Some(view.display_indices),
-                    view.cols_filtered.then_some(view.visible_col_indices),
-                    format!("当前视图（筛选/排序后）{n} 行"),
-                )
-            } else {
-                (None, None, format!("全部 {} 行", base.rows.len()))
-            }
-        };
-
-        let default_name = format!(
-            "ramag-export-{}.jsonl",
-            chrono::Local::now().format("%Y%m%d-%H%M%S")
+                .filter(|index| *index < base.rows.len())
+                .collect::<Vec<_>>(),
         );
+        if row_indices.is_empty() {
+            self.pending_notification =
+                Some(Notification::warning("未选择有效数据").autohide(true));
+            cx.notify();
+            return;
+        }
+        let scope_label = format!("选中 {} 行", row_indices.len());
+
+        let database_type = match self.connection.as_ref().map(|config| config.driver) {
+            Some(DriverKind::Mysql) => "mysql",
+            Some(DriverKind::Postgres) => "postgresql",
+            Some(DriverKind::Redis | DriverKind::Mongodb) | None => "sql",
+        };
+        let database = self
+            .pinned_target
+            .as_ref()
+            .and_then(|(schema, _)| schema.as_deref())
+            .or_else(|| {
+                self.connection
+                    .as_ref()
+                    .and_then(|config| config.database.as_deref())
+            })
+            .unwrap_or("query");
+        let object = self.pinned_target.as_ref().map(|(_, table)| table.as_str());
+        let default_name =
+            export::suggested_export_file_name(database_type, database, object, true, "jsonl");
         let ext = "jsonl";
 
         // 保存框异步等待，不占用共享 worker；选定路径后才把序列化交给有界工作池。
@@ -122,10 +97,8 @@ impl ResultPanel {
                 Some(path) => {
                     let write_path = path.clone();
                     match ramag_app::run_blocking(move || {
-                        let rows = row_indices.as_deref().map(Vec::as_slice);
-                        let columns = column_indices.as_deref().map(Vec::as_slice);
                         export::write_atomic_with(&write_path, |writer| {
-                            export::write_jsonl_view(writer, &base, rows, columns)
+                            export::write_jsonl_view(writer, &base, Some(&row_indices), None)
                         })
                     })
                     .await

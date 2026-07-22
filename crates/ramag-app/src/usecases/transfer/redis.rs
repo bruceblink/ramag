@@ -17,7 +17,7 @@ use std::time::Instant;
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, DriverKind, MAX_REDIS_VALUE_PAGE_BATCH, ProgressFn,
     RedisType, RedisValue, RedisValuePage, StreamEntry, TRANSFER_BATCH_BYTES,
-    TRANSFER_BATCH_ITEMS, TransferSummary,
+    TRANSFER_BATCH_ITEMS, TransferSummary, validate_redis_key,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
@@ -31,10 +31,45 @@ use crate::usecases::RedisService;
 /// （服务端单次阻塞仍 ~1-2ms；与 key 树扫描取值一致）
 const SCAN_BATCH: u32 = 5_000;
 /// 单个容器 key 的值分页大小（HSCAN / LRANGE 等每页元素数）
-const PAGE_ITEMS: u32 = TRANSFER_BATCH_ITEMS as u32;
+pub(crate) const PAGE_ITEMS: u32 = TRANSFER_BATCH_ITEMS as u32;
 const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 /// 进度节流：每处理 N 个 key 上报一次
 const PROGRESS_EVERY_KEYS: u32 = 25;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RedisExportScope {
+    Key(String),
+    Prefix(String),
+}
+
+impl RedisExportScope {
+    fn contains(&self, key: &str) -> bool {
+        match self {
+            Self::Key(expected) => key == expected,
+            Self::Prefix(prefix) => key
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with(':')),
+        }
+    }
+}
+
+pub(crate) fn parse_export_scope(header: &Value) -> Result<Option<RedisExportScope>> {
+    let Some(scope) = header.get("scope").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let object = header
+        .get("object")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DomainError::InvalidConfig("Redis 对象文件头缺少 object 字段".into()))?;
+    validate_redis_key(object)?;
+    match scope {
+        "key" => Ok(Some(RedisExportScope::Key(object.to_string()))),
+        "prefix" => Ok(Some(RedisExportScope::Prefix(object.to_string()))),
+        other => Err(DomainError::InvalidConfig(format!(
+            "不支持的 Redis 导出范围「{other}」"
+        ))),
+    }
+}
 
 pub async fn export_redis_db(
     svc: &RedisService,
@@ -60,60 +95,19 @@ pub async fn export_redis_db(
         ))?;
 
         let mut line = Vec::with_capacity(64 * 1024);
-        let mut cursor = 0u64;
-        let mut vanished = 0u64;
         let key_source = ExportKeySource { svc, config, db };
-        loop {
-            let batch = svc
-                .scan_batch(config, db, cursor, None, None, SCAN_BATCH)
-                .await?;
-            for key_batch in batch.keys.chunks(MAX_REDIS_VALUE_PAGE_BATCH) {
-                if is_cancelled(cancel) {
-                    summary.cancelled = true;
-                    return Ok(finish_summary(summary, start));
-                }
-                let keys = key_batch
-                    .iter()
-                    .map(|meta| meta.key.clone())
-                    .collect::<Vec<_>>();
-                let pages = svc
-                    .read_value_first_pages(config, db, &keys, PAGE_ITEMS)
-                    .await?;
-                if pages.len() != key_batch.len() {
-                    return Err(DomainError::QueryFailed(format!(
-                        "Redis 批量首页数量不一致：{} / {}",
-                        pages.len(),
-                        key_batch.len()
-                    )));
-                }
-                for (meta, page) in key_batch.iter().zip(pages) {
-                    if is_cancelled(cancel) {
-                        summary.cancelled = true;
-                        return Ok(finish_summary(summary, start));
-                    }
-                    match export_key(
-                        &key_source,
-                        &meta.key,
-                        page,
-                        &mut sink,
-                        &mut line,
-                        &mut summary,
-                    )
-                    .await?
-                    {
-                        KeyOutcome::Exported => summary.objects += 1,
-                        KeyOutcome::Vanished => vanished += 1,
-                    }
-                    reporter.snapshot.objects_done += 1;
-                    reporter.snapshot.items_done = summary.items;
-                    reporter.snapshot.bytes = sink.bytes_written();
-                    reporter.emit_every(PROGRESS_EVERY_KEYS);
-                }
-            }
-            cursor = batch.cursor;
-            if cursor == 0 {
-                break;
-            }
+        let vanished = export_scanned_keys(
+            &key_source,
+            None,
+            cancel,
+            &mut sink,
+            &mut line,
+            &mut summary,
+            &mut reporter,
+        )
+        .await?;
+        if summary.cancelled {
+            return Ok(finish_summary(summary, start));
         }
         if vanished > 0 {
             summary.push_warning(format!(
@@ -128,21 +122,22 @@ pub async fn export_redis_db(
     .await
 }
 
-enum KeyOutcome {
+pub(crate) enum KeyOutcome {
     Exported,
     Vanished,
 }
 
-struct ExportKeySource<'a> {
-    svc: &'a RedisService,
-    config: &'a ConnectionConfig,
-    db: u8,
+pub(crate) struct ExportKeySource<'a> {
+    pub(crate) svc: &'a RedisService,
+    pub(crate) config: &'a ConnectionConfig,
+    pub(crate) db: u8,
 }
 
-async fn export_key(
+pub(crate) async fn export_key(
     source: &ExportKeySource<'_>,
     key: &str,
     mut page: RedisValuePage,
+    cancel: &AtomicBool,
     sink: &mut super::ExportSink,
     line: &mut Vec<u8>,
     summary: &mut TransferSummary,
@@ -157,6 +152,10 @@ async fn export_key(
     let mut skipped_items = 0u64;
     let mut first = true;
     loop {
+        if is_cancelled(cancel) {
+            summary.cancelled = true;
+            return Ok(KeyOutcome::Exported);
+        }
         skipped_items += page.skipped;
         let (fragment, count) = encode_fragment(&page.items)?;
         summary.items += count;
@@ -307,6 +306,71 @@ fn fragment_record(
     }
 }
 
+/// 按可选 MATCH 模式扫描并导出 key；整库与前缀导出共用同一条批量首页热路径。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn export_scanned_keys(
+    source: &ExportKeySource<'_>,
+    pattern: Option<&str>,
+    cancel: &AtomicBool,
+    sink: &mut super::ExportSink,
+    line: &mut Vec<u8>,
+    summary: &mut TransferSummary,
+    reporter: &mut Reporter<'_>,
+) -> Result<u64> {
+    let mut cursor = 0u64;
+    let mut vanished = 0u64;
+    loop {
+        if is_cancelled(cancel) {
+            summary.cancelled = true;
+            break;
+        }
+        let batch = source
+            .svc
+            .scan_batch(source.config, source.db, cursor, pattern, None, SCAN_BATCH)
+            .await?;
+        for key_batch in batch.keys.chunks(MAX_REDIS_VALUE_PAGE_BATCH) {
+            if is_cancelled(cancel) {
+                summary.cancelled = true;
+                return Ok(vanished);
+            }
+            let keys = key_batch
+                .iter()
+                .map(|metadata| metadata.key.clone())
+                .collect::<Vec<_>>();
+            let pages = source
+                .svc
+                .read_value_first_pages(source.config, source.db, &keys, PAGE_ITEMS)
+                .await?;
+            if pages.len() != key_batch.len() {
+                return Err(DomainError::QueryFailed(format!(
+                    "Redis 批量首页数量不一致：{} / {}",
+                    pages.len(),
+                    key_batch.len()
+                )));
+            }
+            for (metadata, page) in key_batch.iter().zip(pages) {
+                if is_cancelled(cancel) {
+                    summary.cancelled = true;
+                    return Ok(vanished);
+                }
+                match export_key(source, &metadata.key, page, cancel, sink, line, summary).await? {
+                    KeyOutcome::Exported => summary.objects += 1,
+                    KeyOutcome::Vanished => vanished += 1,
+                }
+                reporter.snapshot.objects_done += 1;
+                reporter.snapshot.items_done = summary.items;
+                reporter.snapshot.bytes = sink.bytes_written();
+                reporter.emit_every(PROGRESS_EVERY_KEYS);
+            }
+        }
+        cursor = batch.cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+    Ok(vanished)
+}
+
 pub async fn import_redis_db(
     svc: &RedisService,
     config: &ConnectionConfig,
@@ -339,11 +403,14 @@ pub async fn import_redis_db(
     )?;
     let header: Value = serde_json::from_str(header_line.trim())
         .map_err(|_| DomainError::InvalidConfig("文件首行不是有效的导出头".into()))?;
-    if header.get("engine").and_then(Value::as_str) != Some("redis") {
+    if header.get("ramag_export").and_then(Value::as_u64) != Some(1)
+        || header.get("engine").and_then(Value::as_str) != Some("redis")
+    {
         return Err(DomainError::InvalidConfig(
             "文件不是 Redis 导出（engine 不匹配）".into(),
         ));
     }
+    let export_scope = parse_export_scope(&header)?;
     let file_db = header.get("db").and_then(Value::as_u64).unwrap_or(0);
     let db = target_db.unwrap_or(u8::try_from(file_db).unwrap_or(0));
 
@@ -372,6 +439,14 @@ pub async fn import_redis_db(
             ));
             continue;
         };
+        if export_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.contains(key))
+        {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis 对象文件包含范围外 Key「{key}」"
+            )));
+        }
         let is_more = record.get("more").and_then(Value::as_bool) == Some(true);
 
         if !is_more {
@@ -515,7 +590,7 @@ async fn finalize_key(
     Ok(())
 }
 
-fn ensure_redis(config: &ConnectionConfig) -> Result<()> {
+pub(crate) fn ensure_redis(config: &ConnectionConfig) -> Result<()> {
     if config.driver != DriverKind::Redis {
         return Err(DomainError::InvalidConfig("该操作仅支持 Redis 连接".into()));
     }
@@ -788,5 +863,23 @@ mod tests {
         assert_eq!(count, 2);
         let (_, single) = encode_fragment(&RedisValue::Text("x".into())).unwrap();
         assert_eq!(single, 1);
+    }
+
+    #[test]
+    fn object_scope_only_accepts_declared_key_or_prefix() {
+        let key = parse_export_scope(&json!({"scope": "key", "object": "users:1"}))
+            .unwrap()
+            .unwrap();
+        assert!(key.contains("users:1"));
+        assert!(!key.contains("users:2"));
+
+        let prefix = parse_export_scope(&json!({"scope": "prefix", "object": "users"}))
+            .unwrap()
+            .unwrap();
+        assert!(prefix.contains("users:1"));
+        assert!(prefix.contains("users:nested:1"));
+        assert!(!prefix.contains("users"));
+        assert!(!prefix.contains("users2:1"));
+        assert!(parse_export_scope(&json!({"scope": "other", "object": "x"})).is_err());
     }
 }

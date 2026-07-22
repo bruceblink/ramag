@@ -12,7 +12,7 @@ use super::CollectionTreePanel;
 
 // ===== 右键菜单构造（row.rs 调用） =====
 
-/// collection / view 行右键菜单：清空集合（仅集合）+ 删除
+/// collection / view 行右键菜单：完整集合导出 + 写操作
 pub(super) fn collection_context_menu(
     menu: PopupMenu,
     entity: Entity<CollectionTreePanel>,
@@ -20,6 +20,19 @@ pub(super) fn collection_context_menu(
     coll: String,
     is_view: bool,
 ) -> PopupMenu {
+    let menu = if is_view {
+        menu
+    } else {
+        let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
+        menu.item(
+            ramag_ui::menu_item("导出此集合").on_click(move |_, _, app| {
+                let (d, c) = (d.clone(), c.clone());
+                ent.update(app, |this, cx| this.export_collection_to_file(d, c, cx));
+            }),
+        )
+        .separator()
+    };
+
     // 重命名仅集合支持（renameCollection 不适用于 view），目标存在则服务端报错不覆盖
     let menu = if is_view {
         menu
@@ -107,21 +120,42 @@ pub(super) fn database_context_menu(
         ent.update(app, |this, cx| this.export_database_to_file(d, cx));
     }));
     let (d, ent) = (db.clone(), entity.clone());
+    let menu = menu.item(
+        ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+            let (d, ent) = (d.clone(), ent.clone());
+            ramag_ui::open_import_options_dialog(
+                "导入 JSONL 文件",
+                format!(
+                    "选择冲突策略与 .jsonl 文件（可多选），将导入到库 {d}。重复导入同一文件：\
+                         「跳过」按集合断点续传，「合并」按文档去重补齐，「覆盖」完全重建（幂等）。"
+                ),
+                true,
+                ("JSONL", &["jsonl", "json"]),
+                move |policy, files, _, app| {
+                    ent.update(app, |this, cx| {
+                        this.import_database_from_files(d, policy, files, cx);
+                    });
+                },
+                window,
+                app,
+            );
+        }),
+    );
+    let (d, ent) = (db.clone(), entity.clone());
     let menu = menu
         .item(
-            ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+            ramag_ui::menu_item("导入集合").on_click(move |_, window, app| {
                 let (d, ent) = (d.clone(), ent.clone());
                 ramag_ui::open_import_options_dialog(
-                    "导入 JSONL 文件",
+                    "导入集合（结构 + 数据）",
                     format!(
-                        "选择冲突策略与 .jsonl 文件（可多选），将导入到库 {d}。重复导入同一文件：\
-                         「跳过」按集合断点续传，「合并」按文档去重补齐，「覆盖」完全重建（幂等）。"
+                        "选择由 Ramag“导出此集合”生成的 .jsonl 文件（可多选），将集合创建选项、索引和全部文档恢复到库 {d}。集合名取自文件。"
                     ),
                     true,
                     ("JSONL", &["jsonl", "json"]),
                     move |policy, files, _, app| {
                         ent.update(app, |this, cx| {
-                            this.import_database_from_files(d, policy, files, cx);
+                            this.import_structured_collections_from_files(d, policy, files, cx);
                         });
                     },
                     window,

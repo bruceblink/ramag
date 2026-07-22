@@ -24,7 +24,7 @@ enum AfterDdl {
 
 // ===== 右键菜单构造（row.rs 调用） =====
 
-/// 表 / 视图行右键菜单：查看 DDL + 清空表（仅基础表）+ 删除
+/// 表 / 视图行右键菜单：查看 DDL + 完整表导出 + 写操作
 pub(super) fn table_context_menu(
     menu: PopupMenu,
     entity: Entity<TableTreePanel>,
@@ -38,12 +38,20 @@ pub(super) fn table_context_menu(
         "查看建表 SQL"
     };
     let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
-    let menu = menu
-        .item(ramag_ui::menu_item(ddl_label).on_click(move |_, _, app| {
+    let menu = menu.item(ramag_ui::menu_item(ddl_label).on_click(move |_, _, app| {
+        let (s, t) = (s.clone(), t.clone());
+        ent.update(app, |this, cx| this.handle_show_ddl(s, t, is_view, cx));
+    }));
+    let menu = if is_view {
+        menu
+    } else {
+        let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
+        menu.item(ramag_ui::menu_item("导出此表").on_click(move |_, _, app| {
             let (s, t) = (s.clone(), t.clone());
-            ent.update(app, |this, cx| this.handle_show_ddl(s, t, is_view, cx));
+            ent.update(app, |this, cx| this.export_table_to_file(s, t, cx));
         }))
-        .separator();
+    }
+    .separator();
 
     let rename_title = if is_view {
         "重命名视图"
@@ -85,31 +93,6 @@ pub(super) fn table_context_menu(
                     true,
                     move |_, app| {
                         ent.update(app, |this, cx| this.truncate_table(s, t, cx));
-                    },
-                    window,
-                    app,
-                );
-            }),
-        )
-    };
-
-    // 表级 JSONL 导入：与结果集导出配对，按键名匹配列插入（视图不适用）
-    let menu = if is_view {
-        menu
-    } else {
-        let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
-        menu.item(
-            ramag_ui::menu_item("导入 JSONL").on_click(move |_, window, app| {
-                let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
-                ramag_ui::open_import_options_dialog(
-                    "导入 JSONL 到表",
-                    super::jsonl_import_description(&s, &t),
-                    false,
-                    ("JSONL", &["jsonl", "json"]),
-                    move |policy, files, _, app| {
-                        ent.update(app, |this, cx| {
-                            this.import_table_from_files(s, t, policy, files, cx);
-                        });
                     },
                     window,
                     app,
@@ -160,22 +143,43 @@ pub(super) fn schema_context_menu(
         ent.update(app, |this, cx| this.export_schema_to_file(s, cx));
     }));
     let (s, ent) = (schema.clone(), entity.clone());
-    let menu = menu
-        .item(
-            ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
-                let (s, ent) = (s.clone(), ent.clone());
-                ramag_ui::open_import_options_dialog(
-                    "导入 SQL 文件",
-                    format!(
-                        "选择冲突策略与 .sql 文件（可多选）。ramag 导出的文件将导入到文件内\
+    let menu = menu.item(
+        ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+            let (s, ent) = (s.clone(), ent.clone());
+            ramag_ui::open_import_options_dialog(
+                "导入 SQL 文件",
+                format!(
+                    "选择冲突策略与 .sql 文件（可多选）。ramag 导出的文件将导入到文件内\
                          记录的库；普通 .sql 以当前库 {s} 为默认目标。重复导入同一文件：\
                          「跳过」按对象断点续传，「合并」按行去重补齐，「覆盖」完全重建（幂等）。"
+                ),
+                true,
+                ("SQL", &["sql"]),
+                move |policy, files, _, app| {
+                    ent.update(app, |this, cx| {
+                        this.import_schema_from_files(s, policy, files, cx);
+                    });
+                },
+                window,
+                app,
+            );
+        }),
+    );
+    let (s, ent) = (schema.clone(), entity.clone());
+    let menu = menu
+        .item(
+            ramag_ui::menu_item("导入表").on_click(move |_, window, app| {
+                let (s, ent) = (s.clone(), ent.clone());
+                ramag_ui::open_import_options_dialog(
+                    "导入表（结构 + 数据）",
+                    format!(
+                        "选择由 Ramag“导出此表”生成的 .sql 文件（可多选），恢复表结构、约束、索引和全部数据到库 {s}。为避免 SQL 跨库误写，文件所属库必须与当前库一致。"
                     ),
                     true,
                     ("SQL", &["sql"]),
                     move |policy, files, _, app| {
                         ent.update(app, |this, cx| {
-                            this.import_schema_from_files(s, policy, files, cx);
+                            this.import_structured_tables_from_files(s, policy, files, cx);
                         });
                     },
                     window,

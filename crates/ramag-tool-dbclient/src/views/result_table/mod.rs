@@ -56,7 +56,7 @@ struct TableRowFrame {
     accent: gpui::Hsla,
 }
 
-/// 表格当前视图（排序 + 列/行过滤后的所见内容）；渲染与导出共用，保证所见即所导
+/// 表格当前视图（排序 + 列/行过滤后的所见内容）；保留源行索引供渲染与勾选使用。
 #[derive(Clone)]
 pub(crate) struct DisplayView {
     /// 可见列的原始下标（列过滤后）
@@ -109,13 +109,6 @@ impl DisplayViewCacheKey {
             && self.sort_by == previous.sort_by
             && (self.column_filter != previous.column_filter
                 || self.row_filter_lower != previous.row_filter_lower)
-    }
-}
-
-impl DisplayView {
-    /// 视图是否与原始结果不同（有排序 / 过滤）——导出时据此决定导原始还是导视图
-    pub(crate) fn differs_from_raw(&self, panel: &ResultPanel) -> bool {
-        self.cols_filtered || self.row_filtering || panel.sort_by().is_some()
     }
 }
 

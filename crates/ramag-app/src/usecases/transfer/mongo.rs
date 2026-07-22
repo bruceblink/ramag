@@ -1,8 +1,9 @@
-//! MongoDB 按库导出 / 导入（JSONL）。
+//! MongoDB 按库 / 单集合结构化导出与导入（JSONL）。
 //!
 //! 文件格式（每行一个 JSON 对象）：
 //! - 首行 `{"ramag_export":1,"engine":"mongodb","database":"..."}`
-//! - 集合行 `{"collection":"users","indexes":[<原始索引 spec>…]}`（不含 _id_ 索引）
+//! - 集合行 `{"collection":"users","options":{…},"indexes":[…]}`；options 可恢复
+//!   capped / validator / collation / time-series 等创建语义，索引不重复记录自动 `_id_`
 //! - 文档行 `{"doc":{…}}`（Extended JSON，Int64 保 $numberLong，与查询面板同一映射）
 //!
 //! 导出翻页用 `$expr + $literal` 的 `_id` keyset：聚合比较是跨类型全序，
@@ -15,7 +16,7 @@ use std::time::Instant;
 
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, DriverKind, MongoQuerySpec, ProgressFn, TRANSFER_BATCH_BYTES,
-    TRANSFER_BATCH_ITEMS, TransferSummary,
+    TRANSFER_BATCH_ITEMS, TransferSummary, validate_mongo_collection_name,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
@@ -39,39 +40,104 @@ pub async fn export_mongo_database(
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
+    export_mongo(svc, config, db, None, path, cancel, progress).await
+}
+
+/// 导出单集合创建选项、索引与全部文档；文件可直接走 MongoDB 结构化导入恢复。
+pub async fn export_mongo_collection(
+    svc: &MongoService,
+    config: &ConnectionConfig,
+    target: (&str, &str),
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    let (db, collection) = target;
+    export_mongo(svc, config, db, Some(collection), path, cancel, progress).await
+}
+
+async fn export_mongo(
+    svc: &MongoService,
+    config: &ConnectionConfig,
+    db: &str,
+    target_collection: Option<&str>,
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
     let start = Instant::now();
     ensure_mongo(config)?;
-    let collections = svc.list_collections(config, db).await?;
+    // 集合清单与完整创建选项并发读取；整库场景只发一次 listCollections，避免逐集合往返。
+    let (collections, collection_options) = futures::try_join!(
+        svc.list_collections(config, db),
+        export_collection_options(svc, config, db, target_collection),
+    )?;
+    let (collection_names, skipped_views): (Vec<String>, Vec<String>) = match target_collection {
+        Some(name) => {
+            let collection = collections
+                .iter()
+                .find(|item| item.name == name)
+                .ok_or_else(|| DomainError::NotFound(format!("集合 {db}.{name} 不存在")))?;
+            if collection.is_view {
+                return Err(DomainError::InvalidConfig(
+                    "MongoDB 视图不支持集合级结构与数据导出，请使用查询结果导出".into(),
+                ));
+            }
+            (vec![name.to_string()], Vec::new())
+        }
+        None => (
+            collections
+                .iter()
+                .filter(|collection| !collection.is_view)
+                .map(|collection| collection.name.clone())
+                .collect(),
+            collections
+                .iter()
+                .filter(|collection| collection.is_view)
+                .map(|collection| collection.name.clone())
+                .collect(),
+        ),
+    };
 
     with_export_sink(path, |mut sink| async move {
         let mut summary = TransferSummary::default();
         let mut reporter = Reporter::new(progress);
-        let data_collections: Vec<_> = collections.iter().filter(|c| !c.is_view).collect();
-        reporter.snapshot.objects_total = Some(data_collections.len() as u64);
-        for view in collections.iter().filter(|c| c.is_view) {
-            summary.push_warning(format!("视图 {} 不导出（仅数据集合）", view.name));
+        reporter.snapshot.objects_total = Some(collection_names.len() as u64);
+        for view in skipped_views {
+            summary.push_warning(format!("视图 {view} 不导出（仅真实集合可完整恢复）"));
         }
 
-        sink.write_str(&format!(
-            "{}\n",
-            json!({"ramag_export": 1, "engine": "mongodb", "database": db})
-        ))?;
+        let header = match target_collection {
+            Some(collection) => json!({
+                "ramag_export": 1,
+                "engine": "mongodb",
+                "database": db,
+                "scope": "collection",
+                "object": collection,
+            }),
+            None => json!({"ramag_export": 1, "engine": "mongodb", "database": db}),
+        };
+        sink.write_str(&format!("{header}\n"))?;
 
         let mut line = Vec::with_capacity(64 * 1024);
-        for collection in data_collections {
+        for name in &collection_names {
             if is_cancelled(cancel) {
                 summary.cancelled = true;
                 return Ok(finish_summary(summary, start));
             }
-            let name = collection.name.as_str();
-            reporter.stage("导出集合", name);
+            reporter.stage("导出集合结构", name);
 
-            let indexes = export_indexes(svc, config, db, name, &mut summary).await;
+            let options = collection_options
+                .get(name)
+                .cloned()
+                .ok_or_else(|| DomainError::NotFound(format!("集合 {db}.{name} 在导出期间消失")))?;
+            let indexes = export_indexes(svc, config, db, name).await?;
             write_json_line(
                 &mut sink,
                 &mut line,
-                &json!({"collection": name, "indexes": indexes}),
+                &json!({"collection": name, "options": options, "indexes": indexes}),
             )?;
+            reporter.stage("导出集合数据", name);
 
             let mut last_id: Option<Value> = None;
             loop {
@@ -101,7 +167,12 @@ pub async fn export_mongo_database(
                 let next_id = result
                     .documents
                     .last()
-                    .and_then(|doc| doc.get("_id").cloned());
+                    .and_then(|doc| doc.get("_id").cloned())
+                    .ok_or_else(|| {
+                        DomainError::QueryFailed(format!(
+                            "集合 {db}.{name} 返回了缺少 _id 的文档，无法保证完整导出"
+                        ))
+                    })?;
                 for doc in result.documents {
                     write_json_line(&mut sink, &mut line, &json!({"doc": doc}))?;
                 }
@@ -109,15 +180,7 @@ pub async fn export_mongo_database(
                 reporter.snapshot.items_done += page_len;
                 reporter.snapshot.bytes = sink.bytes_written();
                 reporter.emit();
-                match next_id {
-                    Some(id) => last_id = Some(id),
-                    None => {
-                        // 无 _id 的文档无法 keyset 续读（仅特殊系统集合会出现）
-                        summary
-                            .push_warning(format!("集合 {name} 存在无 _id 文档，仅导出到该批为止"));
-                        break;
-                    }
-                }
+                last_id = Some(next_id);
             }
             summary.objects += 1;
             reporter.snapshot.objects_done += 1;
@@ -129,6 +192,25 @@ pub async fn export_mongo_database(
         Ok(finish_summary(summary, start))
     })
     .await
+}
+
+/// 将单集合结构化文件恢复到所选数据库；文件中的集合名保持不变。
+pub async fn import_mongo_collection(
+    svc: &MongoService,
+    config: &ConnectionConfig,
+    path: &Path,
+    target_db: &str,
+    policy: ConflictPolicy,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    let header = read_export_header(path)?;
+    if scoped_collection(&header)?.is_none() {
+        return Err(DomainError::InvalidConfig(
+            "请选择由 Ramag“导出此集合”生成的单集合文件".into(),
+        ));
+    }
+    import_mongo_database(svc, config, path, Some(target_db), policy, cancel, progress).await
 }
 
 pub async fn import_mongo_database(
@@ -162,11 +244,14 @@ pub async fn import_mongo_database(
     )?;
     let header: Value = serde_json::from_str(header_line.trim())
         .map_err(|_| DomainError::InvalidConfig("文件首行不是有效的导出头".into()))?;
-    if header.get("engine").and_then(Value::as_str) != Some("mongodb") {
+    if header.get("ramag_export").and_then(Value::as_u64) != Some(1)
+        || header.get("engine").and_then(Value::as_str) != Some("mongodb")
+    {
         return Err(DomainError::InvalidConfig(
             "文件不是 MongoDB 导出（engine 不匹配）".into(),
         ));
     }
+    let scoped_collection = scoped_collection(&header)?.map(str::to_string);
     let file_db = header
         .get("database")
         .and_then(Value::as_str)
@@ -182,6 +267,7 @@ pub async fn import_mongo_database(
 
     // 当前集合状态机
     let mut current: Option<CollectionCtx> = None;
+    let mut seen_collections = std::collections::HashSet::new();
     let mut line = String::new();
     loop {
         let read = read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES, "MongoDB 导入文件")?;
@@ -196,6 +282,14 @@ pub async fn import_mongo_database(
             .map_err(|error| DomainError::InvalidConfig(format!("JSONL 解析失败：{error}")))?;
 
         if let Some(name) = record.get("collection").and_then(Value::as_str) {
+            if scoped_collection
+                .as_deref()
+                .is_some_and(|expected| name != expected)
+            {
+                return Err(DomainError::InvalidConfig(format!(
+                    "单集合文件声明了范围外集合「{name}」"
+                )));
+            }
             if let Some(ctx) = current.take() {
                 finalize_collection(svc, config, &db, ctx, &mut summary, &mut reporter).await?;
             }
@@ -203,13 +297,33 @@ pub async fn import_mongo_database(
                 summary.cancelled = true;
                 return Ok(finish_summary(summary, start));
             }
-            let indexes = record
-                .get("indexes")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+            validate_mongo_collection_name(name)?;
+            if !seen_collections.insert(name.to_string()) {
+                return Err(DomainError::InvalidConfig(format!(
+                    "集合 {name} 在导入文件中重复声明"
+                )));
+            }
+            let indexes = match record.get("indexes") {
+                Some(Value::Array(indexes)) => indexes.clone(),
+                None => Vec::new(),
+                Some(_) => {
+                    return Err(DomainError::InvalidConfig(format!(
+                        "集合 {name} 的 indexes 不是数组"
+                    )));
+                }
+            };
+            let options = match record.get("options") {
+                Some(Value::Object(options)) => options.clone(),
+                None => serde_json::Map::new(),
+                Some(_) => {
+                    return Err(DomainError::InvalidConfig(format!(
+                        "集合 {name} 的 options 不是对象"
+                    )));
+                }
+            };
             let mut ctx = CollectionCtx::new(name.to_string(), indexes);
             reporter.stage("导入集合", name);
+            let mut should_create = !existing.contains(name);
             if existing.contains(name) {
                 match policy {
                     ConflictPolicy::Skip => {
@@ -217,13 +331,14 @@ pub async fn import_mongo_database(
                         summary.skipped += 1;
                     }
                     // 合并：保留集合，靠无序批量的重复 _id 跳过实现条目级补齐
-                    ConflictPolicy::Merge => {}
+                    ConflictPolicy::Merge => should_create = false,
                     ConflictPolicy::Fail => {
                         return Err(DomainError::QueryFailed(format!(
                             "集合「{name}」已存在（冲突策略：报错停止）"
                         )));
                     }
                     ConflictPolicy::Overwrite => {
+                        should_create = true;
                         if let Err(error) =
                             svc.run_command(config, &db, json!({"drop": name})).await
                         {
@@ -239,6 +354,10 @@ pub async fn import_mongo_database(
                         }
                     }
                 }
+            }
+            if !ctx.skip && should_create {
+                reporter.stage("重建集合结构", name);
+                create_collection(svc, config, &db, name, options).await?;
             }
             current = Some(ctx);
             continue;
@@ -293,8 +412,46 @@ pub async fn import_mongo_database(
     if let Some(ctx) = current.take() {
         finalize_collection(svc, config, &db, ctx, &mut summary, &mut reporter).await?;
     }
+    if let Some(expected) = scoped_collection
+        && !seen_collections.contains(&expected)
+    {
+        return Err(DomainError::InvalidConfig(format!(
+            "单集合文件缺少集合「{expected}」的结构声明"
+        )));
+    }
     reporter.emit();
     Ok(finish_summary(summary, start))
+}
+
+fn read_export_header(path: &Path) -> Result<Value> {
+    use std::io::BufRead as _;
+
+    let file = std::fs::File::open(path)
+        .map_err(|error| DomainError::Storage(format!("打开导入文件失败：{error}")))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+    serde_json::from_str(line.trim())
+        .map_err(|_| DomainError::InvalidConfig("文件首行不是有效的导出头".into()))
+}
+
+fn scoped_collection(header: &Value) -> Result<Option<&str>> {
+    match header.get("scope").and_then(Value::as_str) {
+        None => Ok(None),
+        Some("collection") => {
+            let name = header
+                .get("object")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DomainError::InvalidConfig("单集合文件头缺少 object 字段".into()))?;
+            validate_mongo_collection_name(name)?;
+            Ok(Some(name))
+        }
+        Some(scope) => Err(DomainError::InvalidConfig(format!(
+            "不支持的 MongoDB 导出范围「{scope}」"
+        ))),
+    }
 }
 
 struct CollectionCtx {
@@ -302,7 +459,6 @@ struct CollectionCtx {
     indexes: Vec<Value>,
     batch: Vec<Value>,
     batch_bytes: usize,
-    inserted_any: bool,
     duplicates: u64,
     skip: bool,
 }
@@ -314,7 +470,6 @@ impl CollectionCtx {
             indexes,
             batch: Vec::with_capacity(IMPORT_BATCH_DOCS),
             batch_bytes: 0,
-            inserted_any: false,
             duplicates: 0,
             skip: false,
         }
@@ -338,11 +493,41 @@ async fn flush_batch(
         .await?;
     summary.items += outcome.inserted;
     ctx.duplicates += outcome.duplicates;
-    ctx.inserted_any = true;
     Ok(())
 }
 
-/// 集合收尾：冲洗余批、建索引、空集合显式 create
+async fn create_collection(
+    svc: &MongoService,
+    config: &ConnectionConfig,
+    db: &str,
+    name: &str,
+    options: serde_json::Map<String, Value>,
+) -> Result<()> {
+    let command = create_collection_command(name, options);
+    svc.run_command(config, db, command)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            DomainError::QueryFailed(format!(
+                "重建集合 {name} 的创建选项失败：{}",
+                error.message()
+            ))
+        })
+}
+
+fn create_collection_command(name: &str, options: serde_json::Map<String, Value>) -> Value {
+    // MongoDB 以 BSON 文档首字段识别命令名；必须先放 create，再追加选项。
+    let mut command = serde_json::Map::new();
+    command.insert("create".to_string(), Value::String(name.to_string()));
+    for (key, value) in options {
+        if key != "create" {
+            command.insert(key, value);
+        }
+    }
+    Value::Object(command)
+}
+
+/// 集合收尾：冲洗余批并重建索引。集合本身已在读入声明时按创建选项建立。
 async fn finalize_collection(
     svc: &MongoService,
     config: &ConnectionConfig,
@@ -364,18 +549,15 @@ async fn finalize_collection(
     if !ctx.indexes.is_empty() {
         reporter.stage("重建索引", &ctx.name);
         let command = json!({"createIndexes": ctx.name, "indexes": ctx.indexes});
-        if let Err(error) = svc.run_command(config, db, command).await {
-            summary.push_warning(format!("集合 {} 建索引失败：{}", ctx.name, error.message()));
-        }
-    } else if !ctx.inserted_any {
-        // 空集合且无索引：显式 create，保留「空集合」这个事实
-        if let Err(error) = svc
-            .run_command(config, db, json!({"create": ctx.name}))
+        svc.run_command(config, db, command)
             .await
-            && !error.message().contains("NamespaceExists")
-        {
-            summary.push_warning(format!("创建空集合 {} 失败：{}", ctx.name, error.message()));
-        }
+            .map_err(|error| {
+                DomainError::QueryFailed(format!(
+                    "集合 {} 重建索引失败：{}",
+                    ctx.name,
+                    error.message()
+                ))
+            })?;
     }
     summary.objects += 1;
     reporter.snapshot.objects_done += 1;
@@ -401,25 +583,62 @@ fn keyset_filter(last_id: &Option<Value>) -> Value {
     }
 }
 
-/// 导出索引 spec：剔除自动的 _id_ 索引与 ns 字段（历史版本残留）
+/// `listCollections` 的 options 可直接作为 `create` 命令选项，保留 capped、validator、
+/// collation、time-series 等集合级结构。
+async fn export_collection_options(
+    svc: &MongoService,
+    config: &ConnectionConfig,
+    db: &str,
+    target_collection: Option<&str>,
+) -> Result<std::collections::HashMap<String, serde_json::Map<String, Value>>> {
+    let command = match target_collection {
+        Some(collection) => {
+            json!({"listCollections": 1, "filter": {"name": collection}, "nameOnly": false})
+        }
+        None => json!({"listCollections": 1, "nameOnly": false}),
+    };
+    let response = svc.run_command(config, db, command).await?;
+    let specs = response
+        .pointer("/cursor/firstBatch")
+        .and_then(Value::as_array)
+        .ok_or_else(|| DomainError::QueryFailed("集合创建选项响应缺少 firstBatch".into()))?;
+    let mut options = std::collections::HashMap::with_capacity(specs.len());
+    for spec in specs {
+        let name = spec
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DomainError::QueryFailed("listCollections 响应缺少集合名称".into()))?;
+        let value = spec
+            .get("options")
+            .and_then(Value::as_object)
+            .cloned()
+            .ok_or_else(|| DomainError::QueryFailed(format!("集合 {name} 的 options 响应无效")))?;
+        options.insert(name.to_string(), value);
+    }
+    Ok(options)
+}
+
+/// 导出索引 spec：剔除自动的 _id_ 索引与 ns 字段（历史版本残留）。
+/// 索引属于集合结构，读取失败必须终止，不能生成看似成功但不可完整恢复的文件。
 async fn export_indexes(
     svc: &MongoService,
     config: &ConnectionConfig,
     db: &str,
     coll: &str,
-    summary: &mut TransferSummary,
-) -> Vec<Value> {
-    let response = match svc
+) -> Result<Vec<Value>> {
+    let response = svc
         .run_command(config, db, json!({"listIndexes": coll}))
-        .await
+        .await?;
+    if response
+        .pointer("/cursor/firstBatch")
+        .and_then(Value::as_array)
+        .is_none()
     {
-        Ok(response) => response,
-        Err(error) => {
-            summary.push_warning(format!("集合 {coll} 索引读取失败：{}", error.message()));
-            return Vec::new();
-        }
-    };
-    filter_index_specs(&response)
+        return Err(DomainError::QueryFailed(format!(
+            "集合 {coll} 的索引响应缺少 firstBatch"
+        )));
+    }
+    Ok(filter_index_specs(&response))
 }
 
 fn filter_index_specs(response: &Value) -> Vec<Value> {
@@ -668,5 +887,27 @@ mod tests {
         assert_eq!(specs[0]["name"], "email_1");
         assert!(specs[0].get("ns").is_none());
         assert_eq!(filter_index_specs(&json!({})).len(), 0);
+    }
+
+    #[test]
+    fn create_command_keeps_command_name_first() {
+        let options = json!({"capped": true, "size": 1024})
+            .as_object()
+            .cloned()
+            .unwrap();
+        let command = create_collection_command("events", options);
+        let fields = command.as_object().unwrap().keys().collect::<Vec<_>>();
+        assert_eq!(fields.first().map(|field| field.as_str()), Some("create"));
+        assert_eq!(command["create"], "events");
+        assert_eq!(command["capped"], true);
+    }
+
+    #[test]
+    fn collection_scope_requires_valid_object_and_rejects_other_scopes() {
+        let header = json!({"scope": "collection", "object": "events"});
+        assert_eq!(scoped_collection(&header).unwrap(), Some("events"));
+        assert!(scoped_collection(&json!({"scope": "collection"})).is_err());
+        assert!(scoped_collection(&json!({"scope": "database"})).is_err());
+        assert_eq!(scoped_collection(&json!({})).unwrap(), None);
     }
 }

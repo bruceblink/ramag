@@ -82,8 +82,12 @@ fn sql_service() -> Arc<ConnectionService> {
 fn mysql_config() -> Option<ConnectionConfig> {
     let host = std::env::var("RAMAG_TEST_MYSQL_HOST").ok()?;
     let port: u16 = std::env::var("RAMAG_TEST_MYSQL_PORT").ok()?.parse().ok()?;
-    let user = std::env::var("RAMAG_TEST_MYSQL_USER").ok()?;
-    let password = std::env::var("RAMAG_TEST_MYSQL_PASSWORD").ok()?;
+    let user = std::env::var("RAMAG_TEST_MYSQL_ADMIN_USER")
+        .or_else(|_| std::env::var("RAMAG_TEST_MYSQL_USER"))
+        .ok()?;
+    let password = std::env::var("RAMAG_TEST_MYSQL_ADMIN_PASSWORD")
+        .or_else(|_| std::env::var("RAMAG_TEST_MYSQL_PASSWORD"))
+        .ok()?;
     Some(ConnectionConfig {
         password,
         database: std::env::var("RAMAG_TEST_MYSQL_DB").ok(),
@@ -714,8 +718,58 @@ async fn redis_export_import_roundtrip() {
     .await;
     assert!(merge_attempt.is_err(), "Redis 合并导入应被拒绝");
 
+    // 下一级导出：单 Key 与命名空间前缀都沿用整 DB 文件协议，可直接回灌。
+    let key_path = temp_file("redis-key.jsonl");
+    let prefix_path = temp_file("redis-prefix.jsonl");
+    let summary =
+        transfer::export_redis_key(&svc, &config, db, "e2e:bin", &key_path, &cancel, &progress)
+            .await
+            .expect("单 Key 导出失败");
+    assert_eq!(summary.objects, 1);
+    let summary =
+        transfer::export_redis_prefix(&svc, &config, db, "e2e", &prefix_path, &cancel, &progress)
+            .await
+            .expect("前缀导出失败");
+    assert_eq!(summary.objects, 6);
+
+    flush_db(&svc, &config, db).await;
+    let summary = transfer::import_redis_selection(
+        &svc,
+        &config,
+        db,
+        &key_path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("单 Key 导出文件回灌失败");
+    assert_eq!(summary.objects, 1);
+    let page = svc
+        .read_value_page(&config, db, "e2e:bin", None, ValuePageCursor::Start, 100)
+        .await
+        .unwrap();
+    assert!(matches!(page.items, RedisValue::Bytes(bytes) if bytes == vec![0xff, 0x00, 0x01]));
+
+    flush_db(&svc, &config, db).await;
+    let summary = transfer::import_redis_selection(
+        &svc,
+        &config,
+        db,
+        &prefix_path,
+        ConflictPolicy::Skip,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("前缀导出文件回灌失败");
+    assert_eq!(summary.objects, 6);
+    assert_eq!(svc.db_size(&config, db).await.unwrap(), 6);
+
     flush_db(&svc, &config, db).await;
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&key_path);
+    let _ = std::fs::remove_file(&prefix_path);
 }
 
 async fn flush_db(svc: &RedisService, config: &ConnectionConfig, db: u8) {
@@ -884,10 +938,187 @@ async fn mongo_export_import_roundtrip() {
         2
     );
 
+    // 树节点单集合导出必须包含创建选项、索引与全部文档，固定集合回灌后不能退化。
+    svc.run_command(
+        &config,
+        db,
+        json!({"create": "capped_selection", "capped": true, "size": 1_048_576, "max": 100}),
+    )
+    .await
+    .unwrap();
+    svc.insert_many(
+        &config,
+        db,
+        "capped_selection",
+        vec![
+            json!({"_id": 1, "sequence": 1}),
+            json!({"_id": 2, "sequence": 2}),
+            json!({"_id": 3, "sequence": 3}),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+    svc.run_command(
+        &config,
+        db,
+        json!({"createIndexes": "capped_selection", "indexes": [{"key": {"sequence": 1}, "name": "sequence_1"}]}),
+    )
+    .await
+    .unwrap();
+    let collection_path = temp_file("mongo-collection.jsonl");
+    let summary = transfer::export_mongo_collection(
+        &svc,
+        &config,
+        (db, "capped_selection"),
+        &collection_path,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("集合导出失败");
+    assert_eq!((summary.objects, summary.items), (1, 3));
+    let exported = std::fs::read_to_string(&collection_path).expect("读取集合导出文件");
+    let marker: Value =
+        serde_json::from_str(exported.lines().nth(1).expect("集合导出文件缺少结构声明"))
+            .expect("集合结构声明不是合法 JSON");
+    assert_eq!(
+        marker.pointer("/options/capped").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        marker
+            .get("indexes")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| { item.get("name").and_then(Value::as_str) == Some("sequence_1") }))
+    );
+    assert!(!exported.contains("\"collection\":\"matrix\""));
+
+    svc.run_command(&config, db, json!({"drop": "capped_selection"}))
+        .await
+        .unwrap();
+    let summary = transfer::import_mongo_collection(
+        &svc,
+        &config,
+        &collection_path,
+        db,
+        ConflictPolicy::Fail,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("集合导出文件回灌失败");
+    assert_eq!((summary.objects, summary.items), (1, 3));
+    assert_eq!(
+        svc.count(&config, db, "capped_selection", &Value::Null)
+            .await
+            .unwrap(),
+        3
+    );
+    let options = svc
+        .run_command(
+            &config,
+            db,
+            json!({"listCollections": 1, "filter": {"name": "capped_selection"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        options
+            .pointer("/cursor/firstBatch/0/options/capped")
+            .and_then(Value::as_bool),
+        Some(true),
+        "固定集合创建选项未恢复：{options}"
+    );
+    let indexes = svc
+        .run_command(&config, db, json!({"listIndexes": "capped_selection"}))
+        .await
+        .unwrap();
+    assert!(
+        indexes
+            .pointer("/cursor/firstBatch")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| { item.get("name").and_then(Value::as_str) == Some("sequence_1") })),
+        "集合索引未恢复：{indexes}"
+    );
+
+    // time-series 也是集合结构：创建选项必须先恢复，不能隐式建成普通集合。
+    svc.run_command(
+        &config,
+        db,
+        json!({"create": "metrics_selection", "timeseries": {"timeField": "observedAt", "metaField": "metadata", "granularity": "minutes"}}),
+    )
+    .await
+    .unwrap();
+    svc.insert_many(
+        &config,
+        db,
+        "metrics_selection",
+        vec![
+            json!({"observedAt": {"$date": "2026-01-01T00:00:00Z"}, "metadata": {"sensor": "a"}, "value": 1}),
+            json!({"observedAt": {"$date": "2026-01-01T00:01:00Z"}, "metadata": {"sensor": "a"}, "value": 2}),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+    let timeseries_path = temp_file("mongo-timeseries.jsonl");
+    transfer::export_mongo_collection(
+        &svc,
+        &config,
+        (db, "metrics_selection"),
+        &timeseries_path,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("time-series 导出失败");
+    svc.run_command(&config, db, json!({"drop": "metrics_selection"}))
+        .await
+        .unwrap();
+    transfer::import_mongo_collection(
+        &svc,
+        &config,
+        &timeseries_path,
+        db,
+        ConflictPolicy::Fail,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("time-series 回灌失败");
+    let options = svc
+        .run_command(
+            &config,
+            db,
+            json!({"listCollections": 1, "filter": {"name": "metrics_selection"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        options
+            .pointer("/cursor/firstBatch/0/options/timeseries/timeField")
+            .and_then(Value::as_str),
+        Some("observedAt"),
+        "time-series 创建选项未恢复：{options}"
+    );
+    assert_eq!(
+        svc.count(&config, db, "metrics_selection", &Value::Null)
+            .await
+            .unwrap(),
+        2
+    );
+
     let _ = svc
         .run_command(&config, db, json!({"dropDatabase": 1}))
         .await;
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&collection_path);
+    let _ = std::fs::remove_file(&timeseries_path);
 }
 
 /// 汇总结构可用于断言（编译期防字段误删）
@@ -1042,7 +1273,10 @@ async fn mysql_jsonl_table_import() {
              `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY, \
              `name` VARCHAR(64) NOT NULL, \
              `qty` INT NULL DEFAULT 7, \
-             `note` TEXT NULL);"
+             `note` TEXT NULL, \
+             `payload` VARBINARY(8) NULL, \
+             KEY `items_name_idx` (`name`)); \
+             CREATE TABLE `{db}`.`unrelated` (`id` INT PRIMARY KEY);"
         ),
     )
     .await;
@@ -1146,8 +1380,70 @@ async fn mysql_jsonl_table_import() {
     assert!(failed.is_err(), "Fail 策略应在冲突时报错");
     assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
 
+    // 树节点导出是结构化 SQL：只含目标表的 DDL 与全量数据，可在删表后完整恢复。
+    exec(
+        &svc,
+        &config,
+        format!("UPDATE `{db}`.`items` SET `payload` = X'FF00' WHERE `id` = 1;"),
+    )
+    .await;
+    let export_path = temp_file("mysql-table-export.sql");
+    let summary = transfer::export_sql_table(
+        &svc,
+        &config,
+        (db, "items"),
+        &export_path,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("表导出失败");
+    assert_eq!((summary.objects, summary.items), (1, 3));
+    let exported = std::fs::read_to_string(&export_path).expect("读取单表 SQL 导出文件");
+    assert!(exported.contains("CREATE TABLE `items`"));
+    assert!(exported.contains("INSERT INTO `items`"));
+    assert!(exported.contains("items_name_idx"));
+    assert!(!exported.contains("`unrelated`"));
+    let summary = transfer::import_sql_table(
+        &svc,
+        &config,
+        &export_path,
+        db,
+        ConflictPolicy::Overwrite,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("表导出文件回灌失败");
+    assert_eq!(summary.objects, 1);
+    assert_eq!(summary.failed, 0, "警告：{:?}", summary.warnings);
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+    assert_eq!(
+        scalar_i64(
+            &svc,
+            &config,
+            &format!(
+                "SELECT COUNT(*) FROM information_schema.STATISTICS \
+                 WHERE TABLE_SCHEMA = '{db}' AND TABLE_NAME = 'items' \
+                   AND INDEX_NAME = 'items_name_idx';"
+            ),
+        )
+        .await,
+        1
+    );
+    let payload = scalar_value(
+        &svc,
+        &config,
+        &format!("SELECT `payload` FROM `{db}`.`items` WHERE `id` = 1;"),
+    )
+    .await;
+    assert!(
+        matches!(payload, ramag_domain::entities::Value::Bytes(bytes) if bytes == vec![0xff, 0x00])
+    );
+
     exec(&svc, &config, format!("DROP DATABASE `{db}`;")).await;
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&export_path);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1169,11 +1465,19 @@ async fn pg_jsonl_table_import() {
         &config,
         format!(
             "CREATE SCHEMA \"{schema}\";\n\
+             CREATE TYPE \"{schema}\".\"item_state\" AS ENUM ('ready', 'done'); \
+             CREATE TYPE \"{schema}\".\"unused_state\" AS ENUM ('unused'); \
+             CREATE TABLE \"{schema}\".\"unrelated\" (\"id\" INT PRIMARY KEY); \
              CREATE TABLE \"{schema}\".\"items\" (\
-             \"id\" INT PRIMARY KEY, \
+             \"id\" SERIAL PRIMARY KEY, \
              \"name\" TEXT NOT NULL, \
              \"qty\" INT DEFAULT 7, \
-             \"note\" TEXT);"
+             \"note\" TEXT, \
+             \"payload\" BYTEA, \
+             \"state\" \"{schema}\".\"item_state\" NOT NULL DEFAULT 'ready', \
+             \"parent_id\" INT REFERENCES \"{schema}\".\"unrelated\"(\"id\")); \
+             CREATE INDEX \"items_name_idx\" ON \"{schema}\".\"items\" (\"name\"); \
+             COMMENT ON TABLE \"{schema}\".\"items\" IS 'single export';"
         ),
     )
     .await;
@@ -1272,8 +1576,104 @@ async fn pg_jsonl_table_import() {
     .await;
     assert!(failed.is_err(), "Fail 策略应在冲突时报错");
 
+    exec(
+        &svc,
+        &config,
+        format!("UPDATE \"{schema}\".\"items\" SET \"payload\" = '\\xFF00' WHERE \"id\" = 1;"),
+    )
+    .await;
+    let export_path = temp_file("pg-table-export.sql");
+    let summary = transfer::export_sql_table(
+        &svc,
+        &config,
+        (schema, "items"),
+        &export_path,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("表导出失败");
+    assert_eq!((summary.objects, summary.items), (1, 3));
+    let exported = std::fs::read_to_string(&export_path).expect("读取单表 SQL 导出文件");
+    assert!(exported.contains(&format!("CREATE TABLE \"{schema}\".\"items\"")));
+    assert!(exported.contains(&format!("INSERT INTO \"{schema}\".\"items\"")));
+    assert!(exported.contains("CREATE TYPE"));
+    assert!(exported.contains("item_state"));
+    assert!(!exported.contains("unused_state"));
+    assert!(exported.contains("items_name_idx"));
+    assert!(exported.contains("single export"));
+    assert!(exported.contains("REFERENCES"));
+    assert!(exported.contains("unrelated"));
+    assert!(!exported.contains(&format!("CREATE TABLE \"{schema}\".\"unrelated\"")));
+    let summary = transfer::import_sql_table(
+        &svc,
+        &config,
+        &export_path,
+        schema,
+        ConflictPolicy::Overwrite,
+        &cancel,
+        &progress,
+    )
+    .await
+    .expect("表导出文件回灌失败");
+    assert_eq!(summary.objects, 1);
+    assert_eq!(summary.failed, 0, "警告：{:?}", summary.warnings);
+    assert_eq!(scalar_i64(&svc, &config, &count_sql).await, 3);
+    assert_eq!(
+        scalar_i64(
+            &svc,
+            &config,
+            &format!(
+                "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = '{schema}' \
+                 AND tablename = 'items' AND indexname = 'items_name_idx';"
+            ),
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        scalar_i64(
+            &svc,
+            &config,
+            &format!(
+                "SELECT COUNT(*) FROM pg_constraint con \
+                 JOIN pg_class rel ON rel.oid = con.conrelid \
+                 JOIN pg_namespace ns ON ns.oid = rel.relnamespace \
+                 WHERE ns.nspname = '{schema}' AND rel.relname = 'items' \
+                   AND con.contype = 'f';"
+            ),
+        )
+        .await,
+        1
+    );
+    let payload = scalar_value(
+        &svc,
+        &config,
+        &format!("SELECT \"payload\" FROM \"{schema}\".\"items\" WHERE \"id\" = 1;"),
+    )
+    .await;
+    assert!(
+        matches!(payload, ramag_domain::entities::Value::Bytes(bytes) if bytes == vec![0xff, 0x00])
+    );
+    exec(
+        &svc,
+        &config,
+        format!("INSERT INTO \"{schema}\".\"items\" (\"name\") VALUES ('序列恢复');"),
+    )
+    .await;
+    assert_eq!(
+        scalar_i64(
+            &svc,
+            &config,
+            &format!("SELECT \"id\" FROM \"{schema}\".\"items\" WHERE \"name\" = '序列恢复';")
+        )
+        .await,
+        4
+    );
+
     exec(&svc, &config, format!("DROP SCHEMA \"{schema}\" CASCADE;")).await;
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&export_path);
 }
 
 /// 集合级裸 JSONL 导入：键入库 / 脏行计失败 / Skip 幂等（无 _id 文档重复插入）/

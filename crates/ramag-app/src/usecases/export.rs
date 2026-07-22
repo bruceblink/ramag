@@ -11,6 +11,99 @@ use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
 static EXPORT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const MAX_EXPORT_FILE_SEGMENT_BYTES: usize = 64;
+const MAX_EXPORT_FILE_EXTENSION_BYTES: usize = 10;
+
+/// 统一生成用户可见的导出文件名：ramag-数据库类型-库[-对象][-data]-时间.扩展名。
+///
+/// 数据库名、表名、集合名与 Key 均来自外部系统，因此在这里统一处理跨平台非法字符
+/// 和长度边界，避免保存框拿到不可用文件名。
+pub fn suggested_export_file_name(
+    database_type: &str,
+    database: &str,
+    object: Option<&str>,
+    data_only: bool,
+    extension: &str,
+) -> String {
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    suggested_export_file_name_at(
+        database_type,
+        database,
+        object,
+        data_only,
+        extension,
+        &timestamp,
+    )
+}
+
+fn suggested_export_file_name_at(
+    database_type: &str,
+    database: &str,
+    object: Option<&str>,
+    data_only: bool,
+    extension: &str,
+    timestamp: &str,
+) -> String {
+    let mut segments = vec![
+        "ramag".to_string(),
+        sanitize_export_file_segment(database_type).to_ascii_lowercase(),
+        sanitize_export_file_segment(database),
+    ];
+    if let Some(object) = object.filter(|value| !value.trim().is_empty()) {
+        segments.push(sanitize_export_file_segment(object));
+    }
+    if data_only {
+        segments.push("data".to_string());
+    }
+    segments.push(sanitize_export_file_segment(timestamp));
+
+    let stem = segments.join("-");
+    let extension = extension
+        .trim()
+        .trim_start_matches('.')
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(MAX_EXPORT_FILE_EXTENSION_BYTES)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if extension.is_empty() {
+        stem
+    } else {
+        format!("{stem}.{extension}")
+    }
+}
+
+fn sanitize_export_file_segment(value: &str) -> String {
+    let mut output = String::with_capacity(value.len().min(MAX_EXPORT_FILE_SEGMENT_BYTES));
+    let mut pending_separator = false;
+    for character in value.trim().chars() {
+        let invalid = character.is_control()
+            || character.is_whitespace()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            );
+        if invalid {
+            pending_separator = !output.is_empty();
+            continue;
+        }
+
+        let separator_bytes = usize::from(pending_separator);
+        if output.len() + separator_bytes + character.len_utf8() > MAX_EXPORT_FILE_SEGMENT_BYTES {
+            break;
+        }
+        if pending_separator {
+            output.push('_');
+            pending_separator = false;
+        }
+        output.push(character);
+    }
+    if output.is_empty() {
+        "unknown".to_string()
+    } else {
+        output
+    }
+}
 
 /// 在目标同目录完整写入临时文件，再替换目标；失败时原文件保持不变。
 pub fn write_atomic(path: &Path, content: &str) -> Result<()> {
@@ -326,6 +419,54 @@ mod tests {
             warnings: Vec::new(),
             truncated: false,
         }
+    }
+
+    #[test]
+    fn export_file_name_contains_type_database_and_object() {
+        assert_eq!(
+            suggested_export_file_name_at(
+                "MySQL",
+                "ramag/demo",
+                Some("order:items"),
+                false,
+                ".SQL",
+                "20260722-123456",
+            ),
+            "ramag-mysql-ramag_demo-order_items-20260722-123456.sql"
+        );
+    }
+
+    #[test]
+    fn export_file_name_omits_object_and_marks_data_scope() {
+        assert_eq!(
+            suggested_export_file_name_at(
+                "MongoDB",
+                "ramag_demo",
+                None,
+                true,
+                "jsonl",
+                "20260722-123456",
+            ),
+            "ramag-mongodb-ramag_demo-data-20260722-123456.jsonl"
+        );
+    }
+
+    #[test]
+    fn export_file_name_is_bounded_and_utf8_safe() {
+        let long_name = "数据库".repeat(100);
+        let name = suggested_export_file_name_at(
+            "PostgreSQL",
+            &long_name,
+            Some(&long_name),
+            false,
+            "jsonl",
+            "20260722-123456",
+        );
+
+        assert!(name.len() <= 255);
+        assert!(name.starts_with("ramag-postgresql-"));
+        assert!(name.ends_with("-20260722-123456.jsonl"));
+        assert!(!name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']));
     }
 
     #[test]

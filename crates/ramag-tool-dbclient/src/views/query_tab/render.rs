@@ -386,9 +386,9 @@ impl Render for QueryTab {
                             .small()
                             .icon(ramag_ui::icons::download())
                             .tooltip(if self.pinned_target.is_some() {
-                                "导入 JSONL 到当前表"
+                                "导入 JSONL 数据到当前表（不改表结构）"
                             } else {
-                                "导入 JSONL（先从表树打开一张表）"
+                                "导入 JSONL 数据（先从表树打开一张表）"
                             })
                             .disabled(self.pinned_target.is_none())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -400,7 +400,11 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::upload())
-                            .tooltip("导出 JSONL")
+                            .tooltip(if has_multi_selected {
+                                "导出选中数据（JSONL，不含表结构）"
+                            } else {
+                                "导出选中数据（请先勾选）"
+                            })
                             .disabled(!has_result)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.result.update(cx, |r, cx| r.export(cx));

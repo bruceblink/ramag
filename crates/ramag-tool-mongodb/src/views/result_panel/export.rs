@@ -1,7 +1,6 @@
-//! 结果集导出 JSONL：每行一个原始文档，与集合级导入配对（导出文件可直接导回）。
+//! 结果集导出 JSONL：每行一个原始文档，与当前集合的数据导入配对；不含集合创建选项或索引。
 //! rfd 保存框异步等待，序列化放受限工作池，结果回主线程提示（与 dbclient 同款）。
 
-use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -47,8 +46,7 @@ impl ResultPanel {
             cx,
         );
     }
-    /// 导出当前结果为 JSONL（每行一个原始文档，不裁字段），
-    /// 范围三档与表格所见一致：勾选行 >「当前视图（筛选/排序后）」> 全部
+    /// 仅导出勾选文档为 JSONL（每行一个原始文档，不裁字段）。
     pub(crate) fn export_documents(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
             self.pending_notification = Some(
@@ -59,64 +57,32 @@ impl ResultPanel {
             cx.notify();
             return;
         }
-        if self.row_view_building {
-            return self.notify_error("正在筛选 / 排序，请完成后再导出".to_string(), cx);
-        }
-        if let Some(error) = &self.row_view_error {
-            return self.notify_error(format!("当前行视图不可用：{error}"), cx);
-        }
         let Some(documents) = self.docs_arc.clone() else {
             return self.notify_error("无可导出的结果".to_string(), cx);
         };
         if documents.is_empty() {
             return self.notify_error("结果为空，无需导出".to_string(), cx);
         }
+        if self.selected_rows.is_empty() {
+            self.pending_notification = Some(Notification::warning("未选择数据").autohide(true));
+            cx.notify();
+            return;
+        }
         let Some(table) = self.table.clone() else {
             return self.notify_error("无表格数据可导出".to_string(), cx);
         };
 
-        // 行范围：勾选 > 行过滤视图 > 全部；再按当前排序列重排（与表格显示一致）
-        let Some((display_rows, rows_filtered)) = self.display_row_indices(cx) else {
-            return self.notify_error("当前行视图尚未准备完成".to_string(), cx);
-        };
-        let selected_scope = !self.selected_rows.is_empty();
-        let (rows, scope) = if !self.selected_rows.is_empty() {
-            let v: Vec<usize> = self
-                .selected_rows
-                .iter()
-                .copied()
-                .filter(|i| *i < table.rows.len())
-                .collect();
-            let n = v.len();
-            let hidden = if rows_filtered {
-                let visible: HashSet<usize> = display_rows.iter().copied().collect();
-                self.selected_rows
-                    .iter()
-                    .filter(|ri| !visible.contains(ri))
-                    .count()
-            } else {
-                0
-            };
-            let scope = if hidden > 0 {
-                format!("选中 {n} 行，其中 {hidden} 行当前隐藏")
-            } else {
-                format!("选中 {n} 行")
-            };
-            (v, scope)
-        } else {
-            let n = display_rows.len();
-            let scope = if rows_filtered {
-                format!("当前视图（筛选后）{n} 行")
-            } else {
-                format!("全部 {n} 行")
-            };
-            (display_rows.as_ref().clone(), scope)
-        };
+        let rows: Vec<usize> = self
+            .selected_rows
+            .iter()
+            .copied()
+            .filter(|i| *i < table.rows.len())
+            .collect();
         if rows.is_empty() {
-            return self.notify_error("当前范围内无行可导出".to_string(), cx);
+            return self.notify_error("未选择有效数据".to_string(), cx);
         }
-        let selected_sort = if selected_scope
-            && let Some((sort_path, dir)) = self.sort_by.clone()
+        let scope = format!("选中 {} 行", rows.len());
+        let selected_sort = if let Some((sort_path, dir)) = self.sort_by.clone()
             && let Some(si) = table.columns.iter().position(|c| c.path == sort_path)
         {
             let numeric = matches!(
@@ -134,11 +100,13 @@ impl ResultPanel {
                 cx,
             );
         }
-        let coll = self
-            .target_collection
-            .clone()
-            .unwrap_or_else(|| "export".to_string());
-        let name = format!("{coll}.jsonl");
+        let name = export::suggested_export_file_name(
+            "mongodb",
+            &self.database,
+            self.target_collection.as_deref(),
+            true,
+            "jsonl",
+        );
         let scope_label = scope;
         // 用户取消时不做排序 / 序列化；保存框不占共享 worker，防重入避免重复弹框。
         self.exporting = true;

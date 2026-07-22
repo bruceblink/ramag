@@ -178,24 +178,22 @@ impl KeyTreePanel {
             row_el = row_el.hover(move |this| this.bg(row_hover));
         }
 
-        // 生产连接不挂载写操作菜单，避免“点得动、提交后才报只读”的假可用状态。
-        if self.is_read_only() {
-            row_el.into_any_element()
-        } else {
-            let entity_for_menu = cx.entity().clone();
-            let path_for_menu = row.full_path.clone();
-            row_el
-                .context_menu(move |menu: PopupMenu, _, _| {
-                    super::ops::node_context_menu(
-                        menu,
-                        entity_for_menu.clone(),
-                        path_for_menu.as_ref().clone(),
-                        is_leaf,
-                        is_namespace,
-                    )
-                })
-                .into_any_element()
-        }
+        // 生产连接仍允许只读导出，只从菜单中移除重命名和删除。
+        let allow_write = !self.is_read_only();
+        let entity_for_menu = cx.entity().clone();
+        let path_for_menu = row.full_path.clone();
+        row_el
+            .context_menu(move |menu: PopupMenu, _, _| {
+                super::ops::node_context_menu(
+                    menu,
+                    entity_for_menu.clone(),
+                    path_for_menu.as_ref().clone(),
+                    is_leaf,
+                    is_namespace,
+                    allow_write,
+                )
+            })
+            .into_any_element()
     }
 }
 

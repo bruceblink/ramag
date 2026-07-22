@@ -141,7 +141,7 @@ pub struct KeyTreePanel {
     pending_notification: Option<gpui_component::notification::Notification>,
     /// 树级写操作串行化闸门；切换连接或 DB 后旧任务 token 失效。
     mutation_gate: AsyncMutationGate,
-    /// 按 DB 导出 / 导入状态（进度行 + 取消位）
+    /// DB / Key / 前缀传输状态（进度行 + 取消位）
     transfer: ramag_ui::TransferState,
     _subscriptions: Vec<gpui::Subscription>,
 }

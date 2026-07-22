@@ -165,20 +165,12 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .icon(ramag_ui::icons::upload())
                 .tooltip(if panel.exporting {
                     "导出进行中"
-                } else if panel.row_view_building {
-                    "导出（正在筛选 / 排序）"
-                } else if panel.row_view_error.is_some() {
-                    "导出（当前行视图构建失败）"
+                } else if panel.selected_rows.is_empty() {
+                    "导出选中文档（请先勾选）"
                 } else {
-                    "导出 JSONL"
+                    "导出选中文档（JSONL，不含集合结构）"
                 })
-                .disabled(
-                    !has_data
-                        || panel.table_building
-                        || panel.row_view_building
-                        || panel.row_view_error.is_some()
-                        || panel.exporting,
-                )
+                .disabled(!has_data || panel.table_building || panel.exporting)
                 .on_click(cx.listener(|panel, _, _, cx| panel.export_documents(cx)))
         })
         .child(if panel.running {

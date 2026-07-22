@@ -8,15 +8,22 @@
 pub mod jsonl_table;
 pub mod mongo;
 pub mod redis;
+mod redis_selection_export;
+mod redis_selection_import;
 mod sql_catalog;
 pub mod sql_export;
 pub mod sql_import;
 
 pub use jsonl_table::import_jsonl_into_table;
-pub use mongo::{export_mongo_database, import_jsonl_into_collection, import_mongo_database};
+pub use mongo::{
+    export_mongo_collection, export_mongo_database, import_jsonl_into_collection,
+    import_mongo_collection, import_mongo_database,
+};
 pub use redis::{export_redis_db, import_redis_db};
-pub use sql_export::export_sql_database;
-pub use sql_import::import_sql_database;
+pub use redis_selection_export::{export_redis_key, export_redis_prefix};
+pub use redis_selection_import::import_redis_selection;
+pub use sql_export::{export_sql_database, export_sql_table};
+pub use sql_import::{import_sql_database, import_sql_table};
 
 use std::io::BufRead as _;
 use std::path::Path;

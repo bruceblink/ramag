@@ -1,4 +1,4 @@
-//! 集合树的按库导出 / 导入入口。编排在 `ramag_app::usecases::transfer::mongo`，
+//! 集合树的库级传输与单集合完整导出入口。编排在 `ramag_app::usecases::transfer::mongo`，
 //! 这里负责文件选择、进度槽 / 取消位、完成通知与树刷新
 
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use gpui::Context;
 use gpui_component::notification::Notification;
 use ramag_app::MongoService;
-use ramag_app::usecases::transfer;
+use ramag_app::usecases::{export, transfer};
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig, TransferProgress, TransferSummary};
 use ramag_domain::error::{READ_ONLY_MESSAGE, Result};
 use tracing::error;
@@ -39,6 +39,37 @@ impl CollectionTreePanel {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let outcome = run_export(svc, config, db, cancel.clone(), slot).await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.transfer.finish(&cancel) {
+                    return;
+                }
+                this.pending_notification =
+                    ramag_ui::transfer_notification("导出", "文件未生成", outcome);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 集合级结构化 JSONL 导出：包含创建选项、索引与全部文档。
+    pub(super) fn export_collection_to_file(
+        &mut self,
+        db: String,
+        collection: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(config) = self.transfer_ready(cx) else {
+            return;
+        };
+        let (cancel, slot) = self.transfer.begin();
+        ramag_ui::spawn_transfer_ticker(cx, cancel.clone(), |this: &Self, token| {
+            this.transfer.is_current(token)
+        });
+        cx.notify();
+        let svc = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome =
+                run_collection_export(svc, config, (db, collection), cancel.clone(), slot).await;
             let _ = this.update(cx, |this, cx| {
                 if !this.transfer.finish(&cancel) {
                     return;
@@ -84,6 +115,59 @@ impl CollectionTreePanel {
                 let imported = matches!(&outcome, Ok(Some(_)));
                 this.pending_notification =
                     ramag_ui::transfer_notification("导入", "已完成部分保留", outcome);
+                if imported {
+                    this.refresh(cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 库节点「导入集合」：仅接受单集合结构化文件，恢复创建选项、索引与文档。
+    pub(super) fn import_structured_collections_from_files(
+        &mut self,
+        db: String,
+        policy: ConflictPolicy,
+        files: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
+        let Some(config) = self.transfer_ready(cx) else {
+            return;
+        };
+        if config.production {
+            self.pending_notification = Some(Notification::error(READ_ONLY_MESSAGE).autohide(true));
+            cx.notify();
+            return;
+        }
+        let (cancel, slot) = self.transfer.begin();
+        ramag_ui::spawn_transfer_ticker(cx, cancel.clone(), |this: &Self, token| {
+            this.transfer.is_current(token)
+        });
+        cx.notify();
+        let svc = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = run_structured_collection_import(
+                svc,
+                config,
+                db,
+                policy,
+                files,
+                cancel.clone(),
+                slot,
+            )
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.transfer.finish(&cancel) {
+                    return;
+                }
+                let imported = matches!(&outcome, Ok(Some(_)));
+                this.pending_notification =
+                    ramag_ui::transfer_notification("导入集合", "已完成部分保留", outcome);
                 if imported {
                     this.refresh(cx);
                 } else {
@@ -157,10 +241,7 @@ async fn run_export(
     cancel: Arc<AtomicBool>,
     slot: Arc<Mutex<TransferProgress>>,
 ) -> Result<Option<(TransferSummary, String)>> {
-    let file_name = format!(
-        "{db}-{}.jsonl",
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    );
+    let file_name = export::suggested_export_file_name("mongodb", &db, None, false, "jsonl");
     let Some(handle) = rfd::AsyncFileDialog::new()
         .set_file_name(&file_name)
         .add_filter("JSONL", &["jsonl", "json"])
@@ -173,6 +254,38 @@ async fn run_export(
     let progress = ramag_ui::progress_sink(slot);
     let summary =
         transfer::export_mongo_database(&svc, &config, &db, &path, &cancel, &progress).await?;
+    Ok(Some((summary, path.display().to_string())))
+}
+
+async fn run_collection_export(
+    svc: Arc<MongoService>,
+    config: ConnectionConfig,
+    target: (String, String),
+    cancel: Arc<AtomicBool>,
+    slot: Arc<Mutex<TransferProgress>>,
+) -> Result<Option<(TransferSummary, String)>> {
+    let (db, collection) = target;
+    let file_name =
+        export::suggested_export_file_name("mongodb", &db, Some(&collection), false, "jsonl");
+    let Some(handle) = rfd::AsyncFileDialog::new()
+        .set_file_name(&file_name)
+        .add_filter("JSONL", &["jsonl", "json"])
+        .save_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    let progress = ramag_ui::progress_sink(slot);
+    let summary = transfer::export_mongo_collection(
+        &svc,
+        &config,
+        (&db, &collection),
+        &path,
+        &cancel,
+        &progress,
+    )
+    .await?;
     Ok(Some((summary, path.display().to_string())))
 }
 
@@ -223,6 +336,50 @@ async fn run_import(
         single_target
     } else {
         format!("{file_count} 个文件")
+    };
+    Ok(Some((total, target)))
+}
+
+async fn run_structured_collection_import(
+    svc: Arc<MongoService>,
+    config: ConnectionConfig,
+    db: String,
+    policy: ConflictPolicy,
+    files: Vec<PathBuf>,
+    cancel: Arc<AtomicBool>,
+    slot: Arc<Mutex<TransferProgress>>,
+) -> Result<Option<(TransferSummary, String)>> {
+    let progress = ramag_ui::progress_sink(slot);
+    let file_count = files.len();
+    let mut total = TransferSummary::default();
+    let mut single_target = String::new();
+    for path in files {
+        if cancel.load(Ordering::Relaxed) {
+            total.cancelled = true;
+            break;
+        }
+        single_target = path.display().to_string();
+        let summary = match transfer::import_mongo_collection(
+            &svc, &config, &path, &db, policy, &cancel, &progress,
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                error!(file = %path.display(), "structured collection import failed");
+                return Err(error);
+            }
+        };
+        let cancelled = summary.cancelled;
+        total.merge(summary);
+        if cancelled {
+            break;
+        }
+    }
+    let target = if file_count == 1 {
+        single_target
+    } else {
+        format!("{file_count} 个集合文件 → {db}")
     };
     Ok(Some((total, target)))
 }

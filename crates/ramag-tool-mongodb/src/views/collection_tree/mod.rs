@@ -69,7 +69,7 @@ pub struct CollectionTreePanel {
     pending_notification: Option<gpui_component::notification::Notification>,
     /// 集合级写操作串行化闸门；连接切换会使旧任务 token 失效。
     mutation_gate: AsyncMutationGate,
-    /// 按库导出 / 导入状态（进度行 + 取消位）
+    /// 库 / 集合传输状态（进度行 + 取消位）
     transfer: ramag_ui::TransferState,
     _subscriptions: Vec<Subscription>,
 }

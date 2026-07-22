@@ -10,8 +10,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
-    TRANSFER_BATCH_ITEMS, TransferSummary,
+    ConflictPolicy, ConnectionConfig, DriverKind, MAX_CONNECTION_IDENTIFIER_BYTES, ProgressFn,
+    Query, TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS, TransferSummary,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use std::collections::{HashMap, HashSet};
@@ -91,6 +91,110 @@ struct Segment {
     failed: bool,
 }
 
+/// 仅接收 Ramag 生成的单表文件，并恢复到文件所属的同名库。
+///
+/// SQL 文件包含可执行 DDL，不能把任意整库文件伪装成“导入表”；先校验范围头，
+/// 再复用完整 SQL 导入器执行结构、约束、索引和数据恢复。
+pub async fn import_sql_table(
+    svc: &ConnectionService,
+    config: &ConnectionConfig,
+    path: &Path,
+    target_schema: &str,
+    policy: ConflictPolicy,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    let table = validate_table_export_header(path, config.driver, target_schema)?;
+    import_sql(
+        svc,
+        config,
+        path,
+        policy,
+        Some(target_schema),
+        Some(&table),
+        cancel,
+        progress,
+    )
+    .await
+}
+
+fn validate_table_export_header(
+    path: &Path,
+    driver: DriverKind,
+    target_schema: &str,
+) -> Result<String> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| DomainError::Storage(format!("打开导入文件失败：{error}")))?;
+    parse_table_export_header(BufReader::new(file), driver, target_schema)
+}
+
+fn parse_table_export_header(
+    mut reader: impl BufRead,
+    driver: DriverKind,
+    target_schema: &str,
+) -> Result<String> {
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+    if line.trim_end() != "-- ramag table export v1" {
+        return Err(DomainError::InvalidConfig(
+            "请选择由 Ramag“导出此表”生成的单表 SQL 文件".into(),
+        ));
+    }
+
+    let mut engine = None;
+    let mut database = None;
+    let mut table = None;
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+        if read == 0 || parse_marker(line.trim_end()).is_some() {
+            break;
+        }
+        if line.len() > MAX_LINE_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "导入文件单行超过 {} MiB，疑似损坏",
+                MAX_LINE_BYTES / 1024 / 1024
+            )));
+        }
+        let trimmed = line.trim_end();
+        if let Some(value) = trimmed.strip_prefix("-- engine: ") {
+            engine = Some(value.trim().to_string());
+        } else if let Some(value) = trimmed.strip_prefix("-- database: ") {
+            database = Some(value.trim().to_string());
+        } else if let Some(value) = trimmed.strip_prefix("-- table: ") {
+            table = Some(value.trim().to_string());
+        }
+    }
+
+    let expected_engine = match driver {
+        DriverKind::Mysql => "mysql",
+        DriverKind::Postgres => "postgres",
+        _ => {
+            return Err(DomainError::InvalidConfig(
+                "单表 SQL 导入仅支持 MySQL / PostgreSQL 连接".into(),
+            ));
+        }
+    };
+    if engine.as_deref() != Some(expected_engine) {
+        return Err(DomainError::InvalidConfig(format!(
+            "单表文件引擎与当前 {expected_engine} 连接不匹配"
+        )));
+    }
+    if database.as_deref() != Some(target_schema) {
+        return Err(DomainError::InvalidConfig(format!(
+            "单表文件所属库为「{}」，请选择对应库节点导入",
+            database.as_deref().unwrap_or("未知")
+        )));
+    }
+    let table =
+        table.filter(|name| !name.is_empty() && name.len() <= MAX_CONNECTION_IDENTIFIER_BYTES);
+    table.ok_or_else(|| DomainError::InvalidConfig("单表文件缺少有效的 table 头".into()))
+}
+
 impl Segment {
     fn new(kind: SegmentKind, name: &str) -> Self {
         Self {
@@ -111,6 +215,30 @@ pub async fn import_sql_database(
     path: &Path,
     policy: ConflictPolicy,
     fallback_schema: Option<&str>,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    import_sql(
+        svc,
+        config,
+        path,
+        policy,
+        fallback_schema,
+        None,
+        cancel,
+        progress,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn import_sql(
+    svc: &ConnectionService,
+    config: &ConnectionConfig,
+    path: &Path,
+    policy: ConflictPolicy,
+    fallback_schema: Option<&str>,
+    expected_table: Option<&str>,
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
@@ -141,6 +269,7 @@ pub async fn import_sql_database(
     let mut existing: HashMap<String, bool> = HashMap::new();
     let mut skipped_objects: HashSet<String> = HashSet::new();
     let mut failed_objects: HashSet<String> = HashSet::new();
+    let mut expected_table_seen = false;
 
     let mut segment = Segment::new(SegmentKind::Generic, "");
     let mut line = String::new();
@@ -181,6 +310,29 @@ pub async fn import_sql_database(
                 segment = Segment::new(SegmentKind::Generic, "");
                 continue;
             };
+            if let Some(expected) = expected_table {
+                match kind {
+                    SegmentKind::Table => {
+                        if name != expected || expected_table_seen {
+                            return Err(DomainError::InvalidConfig(format!(
+                                "单表文件包含范围外或重复表结构「{name}」"
+                            )));
+                        }
+                        expected_table_seen = true;
+                    }
+                    SegmentKind::Data | SegmentKind::Index if name != expected => {
+                        return Err(DomainError::InvalidConfig(format!(
+                            "单表文件包含范围外对象「{name}」"
+                        )));
+                    }
+                    SegmentKind::View => {
+                        return Err(DomainError::InvalidConfig(
+                            "单表文件不能包含视图定义".into(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
             segment = Segment::new(kind, name);
             reporter.stage(format!("导入{}", kind.label()), name);
 
@@ -296,6 +448,12 @@ pub async fn import_sql_database(
             summary.cancelled = true;
             return Ok(finish_summary(summary, start));
         }
+    }
+
+    if expected_table.is_some() && !expected_table_seen {
+        return Err(DomainError::InvalidConfig(
+            "单表文件缺少对应的表结构段".into(),
+        ));
     }
 
     reporter.snapshot.items_done = summary.items;
@@ -602,5 +760,33 @@ mod tests {
         assert!(!is_use_statement("USE `shop`"));
         assert!(!is_use_statement("SELECT usedata FROM t;"));
         assert!(!is_use_statement("-- use note;"));
+    }
+
+    #[test]
+    fn table_import_header_requires_single_table_export_for_current_database() {
+        let valid = "-- ramag table export v1\n\
+                     -- engine: postgres\n\
+                     -- database: public\n\
+                     -- table: users\n\
+                     -- ramag:begin header\n";
+        assert_eq!(
+            parse_table_export_header(std::io::Cursor::new(valid), DriverKind::Postgres, "public")
+                .unwrap(),
+            "users"
+        );
+        assert!(
+            parse_table_export_header(std::io::Cursor::new(valid), DriverKind::Postgres, "archive")
+                .is_err()
+        );
+
+        let database_export = valid.replacen("table export", "database export", 1);
+        assert!(
+            parse_table_export_header(
+                std::io::Cursor::new(database_export),
+                DriverKind::Postgres,
+                "public"
+            )
+            .is_err()
+        );
     }
 }

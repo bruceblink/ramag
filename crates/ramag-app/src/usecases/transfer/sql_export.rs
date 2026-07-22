@@ -1,4 +1,4 @@
-//! MySQL / PostgreSQL 按库导出为 .sql。
+//! MySQL / PostgreSQL 按库或单表导出为 .sql。
 //!
 //! 结构顺序（导入端零拓扑排序）：
 //! MySQL：header(FK_CHECKS=0) → 每表 [DDL(SHOW CREATE，FK 内联) → 数据] → 视图；
@@ -20,7 +20,7 @@ use super::sql_catalog::{
     PgSequenceInfo, begin_marker, first_column_strings, generated_columns_query,
     parse_pg_sequences, parse_show_create, pg_comments_query, pg_enum_types_query,
     pg_foreign_keys_query, pg_indexes_query, pg_sequences_query, pg_table_create_query,
-    transfer_literal,
+    pg_table_enum_types_query, pg_table_foreign_keys_query, transfer_literal,
 };
 use super::{
     ExportSink, MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, with_export_sink,
@@ -64,6 +64,31 @@ pub async fn export_sql_database(
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
+    export_sql(svc, config, schema, None, path, cancel, progress).await
+}
+
+/// 导出单表结构与全部数据；文件沿用库级 SQL 协议，可直接走现有 SQL 导入恢复。
+pub async fn export_sql_table(
+    svc: &ConnectionService,
+    config: &ConnectionConfig,
+    target: (&str, &str),
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    let (schema, table) = target;
+    export_sql(svc, config, schema, Some(table), path, cancel, progress).await
+}
+
+async fn export_sql(
+    svc: &ConnectionService,
+    config: &ConnectionConfig,
+    schema: &str,
+    target_table: Option<&str>,
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
     let start = Instant::now();
     let driver = config.driver;
     if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) {
@@ -72,20 +97,42 @@ pub async fn export_sql_database(
         ));
     }
     let all = svc.list_tables(config, schema).await?;
-    let (tables, views): (Vec<Table>, Vec<Table>) = all.into_iter().partition(|t| !t.is_view);
+    let (tables, views): (Vec<Table>, Vec<Table>) = match target_table {
+        Some(name) => {
+            let table = all
+                .into_iter()
+                .find(|item| item.name == name)
+                .ok_or_else(|| DomainError::NotFound(format!("表 {schema}.{name} 不存在")))?;
+            if table.is_view {
+                return Err(DomainError::InvalidConfig(
+                    "视图不支持表级结构与数据导出，请使用库级导出".into(),
+                ));
+            }
+            (vec![table], Vec::new())
+        }
+        None => all.into_iter().partition(|table| !table.is_view),
+    };
 
     with_export_sink(path, |mut sink| async move {
         let mut summary = TransferSummary::default();
         let mut reporter = Reporter::new(progress);
         reporter.snapshot.objects_total = Some((tables.len() + views.len()) as u64);
-        reporter.stage("读取结构", schema);
+        reporter.stage(
+            "读取结构",
+            target_table
+                .map(|table| format!("{schema}.{table}"))
+                .unwrap_or_else(|| schema.to_string()),
+        );
 
-        write_header(svc, config, schema, driver, &mut sink).await?;
+        write_header(svc, config, schema, target_table, driver, &mut sink).await?;
 
         // PG：枚举类型 + serial 序列预建（DEFAULT nextval 引用它们，必须先建）
         let mut sequences: Vec<(String, PgSequenceInfo)> = Vec::new();
         if driver == DriverKind::Postgres {
-            let enums = run_first_column(svc, config, pg_enum_types_query(schema)).await?;
+            let enum_query = target_table
+                .map(|table| pg_table_enum_types_query(schema, table))
+                .unwrap_or_else(|| pg_enum_types_query(schema));
+            let enums = run_first_column(svc, config, enum_query).await?;
             if !enums.is_empty() {
                 sink.write_str(&begin_marker("types", ""))?;
                 for stmt in &enums {
@@ -139,7 +186,10 @@ pub async fn export_sql_database(
         }
 
         if driver == DriverKind::Postgres {
-            let fk = run_first_column(svc, config, pg_foreign_keys_query(schema)).await?;
+            let fk_query = target_table
+                .map(|table| pg_table_foreign_keys_query(schema, table))
+                .unwrap_or_else(|| pg_foreign_keys_query(schema));
+            let fk = run_first_column(svc, config, fk_query).await?;
             if !fk.is_empty() {
                 sink.write_str(&begin_marker("fk", ""))?;
                 for stmt in &fk {
@@ -207,6 +257,7 @@ async fn write_header(
     svc: &ConnectionService,
     config: &ConnectionConfig,
     schema: &str,
+    target_table: Option<&str>,
     driver: DriverKind,
     sink: &mut ExportSink,
 ) -> Result<()> {
@@ -214,8 +265,19 @@ async fn write_header(
         DriverKind::Mysql => "mysql",
         _ => "postgres",
     };
+    let kind = if target_table.is_some() {
+        "table"
+    } else {
+        "database"
+    };
     sink.write_str(&format!(
-        "-- ramag database export v1\n-- engine: {engine}\n-- database: {schema}\n-- exported_at: {}\n\
+        "-- ramag {kind} export v1\n-- engine: {engine}\n-- database: {schema}\n"
+    ))?;
+    if let Some(table) = target_table {
+        sink.write_str(&format!("-- table: {table}\n"))?;
+    }
+    sink.write_str(&format!(
+        "-- exported_at: {}\n\
          -- 说明：不含触发器 / 存储过程 / 事件 / 权限；导出为非快照一致\n",
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
     ))?;
@@ -273,6 +335,14 @@ async fn write_table_ddl(
             write_sql_statement(sink, config.driver, &statement, "MySQL 表结构")?;
         }
         _ => {
+            // Overwrite 导入会在 table 段开始前删除旧表；serial 的 OWNED 序列也会被级联删除。
+            // 因此在同一 table 段内再保证一次序列存在，避免随后 DEFAULT nextval 建表失败。
+            if let Some((_, info)) = sequences.iter().find(|(name, _)| name == &table.name) {
+                for stmt in &info.create_stmts {
+                    sink.write_str(stmt)?;
+                    sink.write_str("\n")?;
+                }
+            }
             let create = run_first_column(svc, config, pg_table_create_query(schema, &table.name))
                 .await?
                 .into_iter()
