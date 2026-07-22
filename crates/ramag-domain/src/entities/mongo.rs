@@ -18,6 +18,50 @@ pub const MAX_MONGO_VALUE_NODES: usize = 100_000;
 pub const MAX_MONGO_NESTING_DEPTH: usize = 100;
 pub const MAX_MONGO_PIPELINE_STAGES: usize = 1_000;
 
+/// 估算单个 Extended JSON 值的常驻内存，包含容器预留空间与字符串容量。
+pub fn mongo_value_retained_bytes(value: &Value) -> usize {
+    std::mem::size_of::<Value>().saturating_add(mongo_value_dynamic_bytes(value))
+}
+
+/// 估算一组 MongoDB 文档的常驻内存，供结果与传输批次预算使用。
+pub fn mongo_documents_retained_bytes(documents: &[Value], capacity: usize) -> usize {
+    let mut bytes = capacity.saturating_mul(std::mem::size_of::<Value>());
+    for document in documents {
+        bytes = bytes.saturating_add(mongo_value_dynamic_bytes(document));
+    }
+    bytes
+}
+
+fn mongo_value_dynamic_bytes(root: &Value) -> usize {
+    let mut total = 0usize;
+    let mut stack = vec![root];
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::String(text) => total = total.saturating_add(text.capacity()),
+            Value::Array(items) => {
+                total = total.saturating_add(
+                    items
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Value>()),
+                );
+                stack.extend(items);
+            }
+            Value::Object(fields) => {
+                // serde_json::Map 的节点布局不公开，额外计三个指针作为保守开销。
+                let entry_bytes = std::mem::size_of::<(String, Value)>()
+                    .saturating_add(3 * std::mem::size_of::<usize>());
+                total = total.saturating_add(fields.len().saturating_mul(entry_bytes));
+                for (key, child) in fields {
+                    total = total.saturating_add(key.capacity());
+                    stack.push(child);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+    total
+}
+
 pub fn validate_mongo_database_name(name: &str) -> Result<()> {
     validate_mongo_name("MongoDB 数据库名", name, MAX_MONGO_DATABASE_NAME_BYTES)
 }
@@ -200,8 +244,11 @@ pub struct MongoQuerySpec {
     pub sort: Option<Value>,
     /// 跳过文档数（分页）
     pub skip: Option<u64>,
-    /// 返回上限。None 走 UI 默认值
+    /// 返回上限。None 表示不限制条数，仍受调用方结果字节预算约束。
     pub limit: Option<i64>,
+    /// 调用方单页内存预算；None 使用交互结果的 256 MiB 上限。
+    #[serde(default)]
+    pub result_byte_limit: Option<usize>,
 }
 
 impl MongoQuerySpec {
@@ -224,6 +271,11 @@ impl MongoQuerySpec {
         if self.limit == Some(i64::MIN) {
             return Err(DomainError::InvalidConfig(
                 "MongoDB limit 不能是 i64::MIN".into(),
+            ));
+        }
+        if self.result_byte_limit == Some(0) {
+            return Err(DomainError::InvalidConfig(
+                "MongoDB 结果字节预算必须大于 0".into(),
             ));
         }
 
@@ -251,6 +303,12 @@ pub struct MongoQueryResult {
     /// 导出也据此告知用户导出的是已加载数据而非完整查询结果
     #[serde(default)]
     pub truncated: bool,
+    /// 文档在客户端的常驻内存估算。
+    #[serde(default)]
+    pub retained_bytes: usize,
+    /// 单个结果已达到 128 MiB 提示线。
+    #[serde(default)]
+    pub memory_warning: bool,
 }
 
 /// `insert_many` 结果：插入数与重复 `_id` 跳过数
@@ -283,6 +341,17 @@ impl MongoQueryResult {
         elapsed_ms: u64,
         truncated: bool,
     ) -> Self {
+        let retained_bytes = mongo_documents_retained_bytes(&documents, documents.capacity());
+        Self::read_with_budget(documents, elapsed_ms, truncated, retained_bytes)
+    }
+
+    /// read 类构造，复用驱动流式累计出的内存估算。
+    pub fn read_with_budget(
+        documents: Vec<MongoDocument>,
+        elapsed_ms: u64,
+        truncated: bool,
+        retained_bytes: usize,
+    ) -> Self {
         let n = documents.len();
         let summary = if truncated {
             format!("已加载前 {n} 条（结果被截断）, {elapsed_ms}ms")
@@ -295,6 +364,8 @@ impl MongoQueryResult {
             elapsed_ms,
             summary,
             truncated,
+            retained_bytes,
+            memory_warning: retained_bytes >= super::INTERACTIVE_RESULT_WARNING_BYTES,
         }
     }
 
@@ -306,6 +377,8 @@ impl MongoQueryResult {
             elapsed_ms,
             summary: format!("{op} affected={affected}, {elapsed_ms}ms"),
             truncated: false,
+            retained_bytes: 0,
+            memory_warning: false,
         }
     }
 }
@@ -346,6 +419,7 @@ mod tests {
             sort: Some(json!({"created_at": -1})),
             skip: Some(0),
             limit: Some(100),
+            result_byte_limit: None,
         };
         assert!(valid.validate().is_ok());
 

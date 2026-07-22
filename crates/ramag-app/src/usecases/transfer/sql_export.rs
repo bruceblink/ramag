@@ -11,8 +11,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    Column, ConnectionConfig, DriverKind, ProgressFn, Query, Table, TransferSummary, Value,
-    build_ddl_query,
+    Column, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
+    TRANSFER_BATCH_ITEMS, Table, TransferSummary, Value, build_ddl_query,
 };
 use ramag_domain::error::{DomainError, Result};
 
@@ -22,13 +22,39 @@ use super::sql_catalog::{
     pg_foreign_keys_query, pg_indexes_query, pg_sequences_query, pg_table_create_query,
     transfer_literal,
 };
-use super::{ExportSink, Reporter, finish_summary, is_cancelled, with_export_sink};
+use super::{
+    ExportSink, MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, with_export_sink,
+};
 use crate::usecases::ConnectionService;
 
-/// 单页行数与单条 INSERT 的字节预算（Query 上限 4 MiB，导入端另加批量余量）
-const PAGE_ROWS: u32 = 1_000;
-const INSERT_FLUSH_BYTES: usize = 1024 * 1024;
-const INSERT_MAX_ROWS: usize = 500;
+/// 导出读取页与生成 INSERT 共用统一批次上限。
+const PAGE_ROWS: u32 = TRANSFER_BATCH_ITEMS as u32;
+const INSERT_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
+const INSERT_MAX_ROWS: usize = TRANSFER_BATCH_ITEMS;
+
+fn sql_transfer_payload_limit(driver: DriverKind) -> usize {
+    if driver == DriverKind::Mysql {
+        TRANSFER_BATCH_BYTES.saturating_sub(MYSQL_IMPORT_PREFIX.len())
+    } else {
+        TRANSFER_BATCH_BYTES
+    }
+}
+
+fn write_sql_statement(
+    sink: &mut ExportSink,
+    driver: DriverKind,
+    statement: &str,
+    label: &str,
+) -> Result<()> {
+    if statement.len().saturating_add(1) > sql_transfer_payload_limit(driver) {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}的单条 SQL 超过 {} MiB，无法按安全批次导出",
+            TRANSFER_BATCH_BYTES / 1024 / 1024
+        )));
+    }
+    sink.write_str(statement)?;
+    sink.write_str("\n")
+}
 
 pub async fn export_sql_database(
     svc: &ConnectionService,
@@ -63,8 +89,7 @@ pub async fn export_sql_database(
             if !enums.is_empty() {
                 sink.write_str(&begin_marker("types", ""))?;
                 for stmt in &enums {
-                    sink.write_str(stmt)?;
-                    sink.write_str("\n")?;
+                    write_sql_statement(&mut sink, driver, stmt, "PostgreSQL 枚举类型")?;
                 }
             }
             for table in &tables {
@@ -80,8 +105,7 @@ pub async fn export_sql_database(
             if !creates.is_empty() {
                 sink.write_str(&begin_marker("sequences-pre", ""))?;
                 for stmt in creates {
-                    sink.write_str(stmt)?;
-                    sink.write_str("\n")?;
+                    write_sql_statement(&mut sink, driver, stmt, "PostgreSQL 序列")?;
                 }
             }
         }
@@ -119,8 +143,7 @@ pub async fn export_sql_database(
             if !fk.is_empty() {
                 sink.write_str(&begin_marker("fk", ""))?;
                 for stmt in &fk {
-                    sink.write_str(stmt)?;
-                    sink.write_str("\n")?;
+                    write_sql_statement(&mut sink, driver, stmt, "PostgreSQL 外键")?;
                 }
             }
             for table in &tables {
@@ -129,8 +152,7 @@ pub async fn export_sql_database(
                 if !stmts.is_empty() {
                     sink.write_str(&begin_marker("index", &table.name))?;
                     for stmt in &stmts {
-                        sink.write_str(stmt)?;
-                        sink.write_str("\n")?;
+                        write_sql_statement(&mut sink, driver, stmt, "PostgreSQL 索引")?;
                     }
                 }
             }
@@ -142,8 +164,7 @@ pub async fn export_sql_database(
                 reporter.stage("同步序列", schema);
                 sink.write_str(&begin_marker("sequences", ""))?;
                 for stmt in setvals {
-                    sink.write_str(stmt)?;
-                    sink.write_str("\n")?;
+                    write_sql_statement(&mut sink, driver, stmt, "PostgreSQL 序列值")?;
                 }
             }
         }
@@ -157,8 +178,7 @@ pub async fn export_sql_database(
             match view_ddl(svc, config, schema, &view.name, driver).await {
                 Ok(ddl) => {
                     sink.write_str(&begin_marker("view", &view.name))?;
-                    sink.write_str(&ddl)?;
-                    sink.write_str("\n")?;
+                    write_sql_statement(&mut sink, driver, &ddl, "视图结构")?;
                     summary.objects += 1;
                 }
                 Err(error) => {
@@ -220,7 +240,8 @@ async fn write_header(
                 })
                 .unwrap_or_default();
             let quoted = driver.quote_identifier(schema);
-            sink.write_str("SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n")?;
+            sink.write_str("SET NAMES utf8mb4;\n")?;
+            sink.write_str(MYSQL_IMPORT_PREFIX)?;
             sink.write_str(&format!(
                 "CREATE DATABASE IF NOT EXISTS {quoted}{charset_clause};\nUSE {quoted};\n"
             ))?;
@@ -248,8 +269,8 @@ async fn write_table_ddl(
         DriverKind::Mysql => {
             let sql = build_ddl_query(DriverKind::Mysql, schema, &table.name, false);
             let result = svc.execute(config, &Query::new(sql)).await?;
-            sink.write_str(&parse_show_create(&result)?)?;
-            sink.write_str(";\n")?;
+            let statement = format!("{};", parse_show_create(&result)?);
+            write_sql_statement(sink, config.driver, &statement, "MySQL 表结构")?;
         }
         _ => {
             let create = run_first_column(svc, config, pg_table_create_query(schema, &table.name))
@@ -259,19 +280,16 @@ async fn write_table_ddl(
                 .ok_or_else(|| {
                     DomainError::QueryFailed(format!("表 {} 结构查询无结果", table.name))
                 })?;
-            sink.write_str(&create)?;
-            sink.write_str("\n")?;
+            write_sql_statement(sink, config.driver, &create, "PostgreSQL 表结构")?;
             if let Some((_, info)) = sequences.iter().find(|(name, _)| name == &table.name) {
                 for stmt in &info.owned_stmts {
-                    sink.write_str(stmt)?;
-                    sink.write_str("\n")?;
+                    write_sql_statement(sink, config.driver, stmt, "PostgreSQL 序列归属")?;
                 }
             }
             for stmt in
                 run_first_column(svc, config, pg_comments_query(schema, &table.name)).await?
             {
-                sink.write_str(&stmt)?;
-                sink.write_str("\n")?;
+                write_sql_statement(sink, config.driver, &stmt, "PostgreSQL 注释")?;
             }
         }
     }
@@ -370,6 +388,8 @@ async fn export_table_data(
     let mut offset: u64 = 0;
     let mut insert_buf = String::with_capacity(INSERT_FLUSH_BYTES + 4096);
     let mut buffered_rows = 0usize;
+    // MySQL 导入每次执行都会补 FK 前缀；导出时预留它，确保回放请求仍不超过 32 MiB。
+    let insert_payload_limit = sql_transfer_payload_limit(driver);
     loop {
         if is_cancelled(cancel) {
             summary.cancelled = true;
@@ -378,27 +398,66 @@ async fn export_table_data(
         let select = build_page_select(
             driver, &qualified, &col_list, &pk, &order_by, &last_key, offset,
         );
-        let result = svc.execute(config, &Query::new(select)).await?;
+        let result = svc
+            .execute(
+                config,
+                &Query::new(select).with_result_byte_limit(TRANSFER_BATCH_BYTES),
+            )
+            .await?;
         if result.rows.is_empty() {
+            if result.truncated {
+                return Err(DomainError::InvalidConfig(format!(
+                    "表 {} 的单行或列元数据超过 {} MiB，无法按安全批次导出",
+                    table.name,
+                    TRANSFER_BATCH_BYTES / 1024 / 1024
+                )));
+            }
             break;
         }
         let page_len = result.rows.len() as u64;
         for row in &result.rows {
+            let mut row_sql = String::from("(");
+            for (index, value) in row.values.iter().enumerate() {
+                if index > 0 {
+                    row_sql.push_str(", ");
+                }
+                row_sql.push_str(&transfer_literal(value, driver));
+            }
+            row_sql.push(')');
+
+            let single_statement_bytes = insert_prefix
+                .len()
+                .saturating_add(row_sql.len())
+                .saturating_add(2);
+            if single_statement_bytes > insert_payload_limit {
+                return Err(DomainError::InvalidConfig(format!(
+                    "表 {} 的单行 INSERT 超过 {} MiB，无法按安全批次导出",
+                    table.name,
+                    INSERT_FLUSH_BYTES / 1024 / 1024
+                )));
+            }
+            let separator_bytes = usize::from(buffered_rows > 0) * 2;
+            let prospective_bytes = insert_buf
+                .len()
+                .saturating_add(separator_bytes)
+                .saturating_add(row_sql.len())
+                .saturating_add(2);
+            if buffered_rows > 0
+                && (buffered_rows >= INSERT_MAX_ROWS || prospective_bytes > insert_payload_limit)
+            {
+                insert_buf.push_str(";\n");
+                sink.write_str(&insert_buf)?;
+                insert_buf.clear();
+                buffered_rows = 0;
+            }
             if buffered_rows == 0 {
                 insert_buf.push_str(&insert_prefix);
             } else {
                 insert_buf.push_str(", ");
             }
-            insert_buf.push('(');
-            for (index, value) in row.values.iter().enumerate() {
-                if index > 0 {
-                    insert_buf.push_str(", ");
-                }
-                insert_buf.push_str(&transfer_literal(value, driver));
-            }
-            insert_buf.push(')');
+            insert_buf.push_str(&row_sql);
             buffered_rows += 1;
-            if insert_buf.len() >= INSERT_FLUSH_BYTES || buffered_rows >= INSERT_MAX_ROWS {
+            if buffered_rows >= INSERT_MAX_ROWS {
                 insert_buf.push_str(";\n");
                 sink.write_str(&insert_buf)?;
                 insert_buf.clear();
@@ -605,7 +664,7 @@ mod tests {
     #[test]
     fn no_pk_select_falls_back_to_offset() {
         let sql = build_page_select(DriverKind::Mysql, "`d`.`t`", "`c`", &[], "", &None, 2000);
-        assert!(sql.contains("LIMIT 1000 OFFSET 2000"));
+        assert!(sql.contains(&format!("LIMIT {PAGE_ROWS} OFFSET 2000")));
     }
 
     #[test]

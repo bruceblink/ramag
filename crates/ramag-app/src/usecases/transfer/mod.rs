@@ -18,6 +18,7 @@ pub use redis::{export_redis_db, import_redis_db};
 pub use sql_export::export_sql_database;
 pub use sql_import::import_sql_database;
 
+use std::io::BufRead as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
@@ -32,6 +33,8 @@ const SINK_QUEUE_BLOCKS: usize = 64;
 /// 写线程通道断开（生产端取消 / 出错提前 drop）时的内部哨兵，转成「放弃临时文件」
 const SINK_ABORT_MESSAGE: &str = "__ramag_transfer_abort__";
 const SINK_CLOSED_MESSAGE: &str = "导出写文件线程已退出";
+/// MySQL 导入每批需在同一连接上临时关闭外键检查；批次预算必须预留该前缀。
+pub(crate) const MYSQL_IMPORT_PREFIX: &str = "SET FOREIGN_KEY_CHECKS=0;\n";
 
 enum SinkMsg {
     Chunk(Vec<u8>),
@@ -140,6 +143,30 @@ pub(crate) fn is_cancelled(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
+/// 有界读取一行：最多只从底层读取 `max_bytes + 1` 字节，超长脏文件不会先把整行
+/// 分配进内存再报错。返回 0 表示 EOF。
+pub(crate) fn read_line_bounded(
+    reader: &mut impl std::io::BufRead,
+    line: &mut String,
+    max_bytes: usize,
+    label: &str,
+) -> Result<usize> {
+    line.clear();
+    let read_limit = max_bytes.saturating_add(1);
+    let mut limited =
+        std::io::Read::take(&mut *reader, u64::try_from(read_limit).unwrap_or(u64::MAX));
+    let read = limited
+        .read_line(line)
+        .map_err(|error| DomainError::Storage(format!("读取{label}失败：{error}")))?;
+    if line.len() > max_bytes {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label}单行超过 {} MiB 安全上限，疑似损坏",
+            max_bytes / 1024 / 1024
+        )));
+    }
+    Ok(read)
+}
+
 /// JSONL 一行：序列化进复用 buffer 再整体投递，避免逐行分配
 pub(crate) fn write_json_line(
     sink: &mut ExportSink,
@@ -150,6 +177,12 @@ pub(crate) fn write_json_line(
     serde_json::to_writer(&mut *buffer, value)
         .map_err(|error| DomainError::Storage(format!("序列化导出记录失败：{error}")))?;
     buffer.push(b'\n');
+    if buffer.len() > ramag_domain::entities::TRANSFER_BATCH_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "单条导出记录超过 {} MiB 安全上限，无法继续导出",
+            ramag_domain::entities::TRANSFER_BATCH_BYTES / 1024 / 1024
+        )));
+    }
     sink.write(buffer)
 }
 
@@ -251,5 +284,21 @@ mod tests {
         }
         assert_eq!(count.load(Ordering::Relaxed), 4);
         let _ = noop_progress();
+    }
+
+    #[test]
+    fn bounded_line_reader_accepts_exact_boundary_and_rejects_before_full_line_load() {
+        let mut exact = std::io::Cursor::new(b"abcd".as_slice());
+        let mut line = String::new();
+        assert_eq!(
+            read_line_bounded(&mut exact, &mut line, 4, "测试").unwrap(),
+            4
+        );
+        assert_eq!(line, "abcd");
+
+        let mut over = std::io::Cursor::new(b"abcd\nremaining".as_slice());
+        let error = read_line_bounded(&mut over, &mut line, 4, "测试").unwrap_err();
+        assert!(error.message().contains("单行超过"));
+        assert!(line.len() <= 5);
     }
 }

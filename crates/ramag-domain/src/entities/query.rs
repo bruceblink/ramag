@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::contains_case_insensitive;
 
-pub const MAX_SQL_QUERY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_SQL_QUERY_BYTES: usize = 32 * 1024 * 1024;
 
 /// 一次 SQL 查询请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +17,9 @@ pub struct Query {
     /// 追加 `LIMIT n`。当前 UI 不再使用（恒传 None），保留供 driver 兜底与未来复用
     #[serde(default)]
     pub auto_limit: Option<u32>,
+    /// 调用方的结果常驻内存预算；None 使用交互查询的 256 MiB 硬上限。
+    #[serde(default)]
+    pub result_byte_limit: Option<usize>,
 }
 
 impl Query {
@@ -25,6 +28,7 @@ impl Query {
             sql: sql.into(),
             default_schema: None,
             auto_limit: None,
+            result_byte_limit: None,
         }
     }
 
@@ -35,6 +39,11 @@ impl Query {
 
     pub fn with_auto_limit(mut self, limit: Option<u32>) -> Self {
         self.auto_limit = limit;
+        self
+    }
+
+    pub fn with_result_byte_limit(mut self, limit: usize) -> Self {
+        self.result_byte_limit = Some(limit);
         self
     }
 
@@ -49,6 +58,14 @@ impl Query {
             return Err(crate::error::DomainError::InvalidConfig(
                 "SQL 内容不能包含 NUL 字符".into(),
             ));
+        }
+        if let Some(limit) = self.result_byte_limit
+            && (limit == 0 || limit > super::MAX_INTERACTIVE_RESULT_BYTES)
+        {
+            return Err(crate::error::DomainError::InvalidConfig(format!(
+                "SQL 结果字节预算必须在 1 字节到 {} MiB 之间",
+                super::MAX_INTERACTIVE_RESULT_BYTES / 1024 / 1024
+            )));
         }
         if let Some(schema) = &self.default_schema
             && (schema.len() > super::connection::MAX_CONNECTION_IDENTIFIER_BYTES
@@ -77,6 +94,56 @@ pub struct QueryResult {
     /// MySQL SHOW WARNINGS；多语句执行时累积所有 statement 的警告
     #[serde(default)]
     pub warnings: Vec<Warning>,
+    /// 驱动因结果字节预算停止读取，调用方可据此继续分页。
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl QueryResult {
+    /// 结果集在客户端的常驻内存保守估算，供跨标签总预算使用。
+    pub fn retained_bytes(&self) -> u64 {
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.columns
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.column_types
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Row>()),
+            )
+            .saturating_add(
+                self.warnings
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Warning>()),
+            );
+        for column in &self.columns {
+            bytes = bytes.saturating_add(column.capacity());
+        }
+        for column_type in &self.column_types {
+            bytes = bytes.saturating_add(column_type.capacity());
+        }
+        for row in &self.rows {
+            // Row 本体已计入 rows 的容量，只追加其动态内容。
+            bytes = bytes.saturating_add(
+                usize::try_from(row.retained_bytes())
+                    .unwrap_or(usize::MAX)
+                    .saturating_sub(std::mem::size_of::<Row>()),
+            );
+        }
+        for warning in &self.warnings {
+            bytes = bytes
+                .saturating_add(warning.level.capacity())
+                .saturating_add(warning.message.capacity());
+        }
+        u64::try_from(bytes).unwrap_or(u64::MAX)
+    }
 }
 
 /// 服务端警告（MySQL SHOW WARNINGS 一行）
@@ -735,6 +802,24 @@ mod tests {
                 .is_err()
         );
         assert!(Query::new("select\0 1").validate().is_err());
+        assert!(
+            Query::new("select 1")
+                .with_result_byte_limit(super::super::TRANSFER_BATCH_BYTES)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            Query::new("select 1")
+                .with_result_byte_limit(0)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            Query::new("select 1")
+                .with_result_byte_limit(super::super::MAX_INTERACTIVE_RESULT_BYTES + 1)
+                .validate()
+                .is_err()
+        );
 
         let mut bad_schema = Query::new("select 1");
         bad_schema.default_schema = Some("bad\nschema".into());

@@ -23,8 +23,9 @@ impl MongoQueryPanel {
         let service = self.service.clone();
         let database = Some(self.database.clone());
         let show_editor = self.show_editor;
+        let result_memory = self.result_memory.clone();
         cx.new(|cx| {
-            let mut tab = MongoQueryTab::new(service, config, database, window, cx);
+            let mut tab = MongoQueryTab::new(service, config, database, result_memory, window, cx);
             tab.set_show_editor(show_editor, cx);
             tab
         })
@@ -210,6 +211,7 @@ impl MongoQueryPanel {
             self.draft_subscriptions.push(sub);
         }
         self.active = pref.active.min(self.tabs.len().saturating_sub(1));
+        self.sync_result_activity(cx);
         self.restoring_drafts = false;
         cx.notify();
     }

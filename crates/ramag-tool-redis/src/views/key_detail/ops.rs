@@ -29,6 +29,7 @@ impl KeyDetailPanel {
         self.ttl_ms = None;
         self.collection_total = None;
         self.value_byte_limited = false;
+        self.value_memory_warning = false;
         self.loading = true;
         // 换 key 或刷新后滚动归顶归左。
         self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -63,6 +64,7 @@ impl KeyDetailPanel {
                         this.value = Some(load.value);
                         this.collection_total = load.total;
                         this.value_byte_limited = load.byte_limited;
+                        this.value_memory_warning = load.memory_warning;
                     }
                     Err(error) => {
                         error!(error = %error, "load key value failed");

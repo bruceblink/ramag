@@ -18,9 +18,9 @@ pub use backend::{
 pub use pool::PoolCache;
 pub use runtime::run_in_tokio;
 
-pub const MAX_METADATA_ITEMS: usize = 50_000;
+pub use ramag_domain::entities::MAX_METADATA_ITEMS;
 pub const METADATA_FETCH_LIMIT: i64 = (MAX_METADATA_ITEMS + 1) as i64;
-pub const MAX_METADATA_RESULT_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_METADATA_RESULT_BYTES: usize = ramag_domain::entities::MAX_METADATA_BYTES;
 
 /// 元数据树无法实用地展示超大结果；多取一条作溢出哨兵，超限时明确拒绝而非静默截断。
 pub fn ensure_metadata_item_limit(item_count: usize, label: &str) -> Result<()> {

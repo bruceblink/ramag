@@ -30,7 +30,7 @@ use tracing::{error, info};
 
 const AUTO_LOAD_MAX_DATABASES: usize = 50;
 const MAX_LOADED_DATABASES: usize = 64;
-const MAX_LOADED_COLLECTION_BYTES: usize = 32 * 1024 * 1024;
+const MAX_LOADED_COLLECTION_BYTES: usize = ramag_domain::entities::MAX_METADATA_BYTES;
 
 pub struct CollectionTreePanel {
     service: Arc<MongoService>,

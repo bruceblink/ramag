@@ -41,6 +41,9 @@ pub struct RedisValueLoad {
     /// 内容因累计字节预算只保留了安全前缀；调用方不得把它当作完整值覆盖回服务端。
     #[serde(default)]
     pub byte_limited: bool,
+    /// 已加载内容达到 128 MiB 提示线。
+    #[serde(default)]
+    pub memory_warning: bool,
 }
 
 impl RedisValueLoad {
@@ -213,6 +216,7 @@ mod tests {
             value: RedisValue::List(vec![RedisValue::Int(1)]),
             total: Some(2),
             byte_limited: false,
+            memory_warning: false,
         };
 
         assert_eq!(load.loaded_len(), Some(1));
@@ -225,6 +229,7 @@ mod tests {
             value: RedisValue::Text("hello".into()),
             total: Some(10),
             byte_limited: true,
+            memory_warning: false,
         };
 
         assert_eq!(load.loaded_len(), Some(5));

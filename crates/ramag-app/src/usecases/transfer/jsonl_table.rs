@@ -5,24 +5,25 @@
 //! Merge 在行级与 Skip 重合，调用方不提供该选项（防御性传入时按 Skip 处理）
 
 use std::collections::{BTreeSet, HashSet};
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, Query, TransferSummary,
+    ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
+    TRANSFER_BATCH_ITEMS, TransferSummary,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 
-use super::{Reporter, finish_summary, is_cancelled};
+use super::{Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
 
-/// 单批 INSERT 的行数 / 字节阈值（Query 上限 4 MiB，留足余量）
-const BATCH_ROWS: usize = 500;
-const BATCH_BYTES: usize = 1024 * 1024;
+/// 单批 INSERT 的统一行数 / 字节阈值。
+const BATCH_ROWS: usize = TRANSFER_BATCH_ITEMS;
+const BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;
 /// 单行长度保护（异常长行直接拒绝，防脏文件撑爆内存）
-const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 /// 未匹配键告警最多点名的键数
 const MAX_UNKNOWN_KEYS_LISTED: usize = 8;
 
@@ -87,21 +88,12 @@ pub async fn import_jsonl_into_table(
     let mut batch_first_line = 0u64;
 
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+        let read = read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES, "导入文件")?;
         if read == 0 {
             break;
         }
         line_no += 1;
         reporter.snapshot.bytes += read as u64;
-        if line.len() > MAX_LINE_BYTES {
-            return Err(DomainError::InvalidConfig(format!(
-                "导入文件单行超过 {} MiB，疑似损坏",
-                MAX_LINE_BYTES / 1024 / 1024
-            )));
-        }
         if is_cancelled(cancel) {
             summary.cancelled = true;
             break;
@@ -150,9 +142,51 @@ pub async fn import_jsonl_into_table(
             batch_first_line = line_no;
         }
         let tuple = render_row(config.driver, &batch_cols, object);
-        batch_bytes += tuple.len();
+        let single_sql_bytes = build_insert_sql(
+            config.driver,
+            policy,
+            &qualified,
+            &batch_cols,
+            std::slice::from_ref(&tuple),
+        )
+        .len();
+        if single_sql_bytes > BATCH_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "第 {line_no} 行生成的单条 SQL 超过 {} MiB，无法导入",
+                BATCH_BYTES / 1024 / 1024
+            )));
+        }
+        let prospective_bytes = if batch_rows.is_empty() {
+            single_sql_bytes
+        } else {
+            batch_bytes.saturating_add(2).saturating_add(tuple.len())
+        };
+        if !batch_rows.is_empty()
+            && (batch_rows.len() >= BATCH_ROWS || prospective_bytes > BATCH_BYTES)
+        {
+            flush_batch(
+                svc,
+                config,
+                schema,
+                &qualified,
+                policy,
+                &batch_cols,
+                &mut batch_rows,
+                batch_first_line,
+                &mut summary,
+                &mut reporter,
+            )
+            .await?;
+            batch_bytes = 0;
+            batch_first_line = line_no;
+        }
+        batch_bytes = if batch_rows.is_empty() {
+            single_sql_bytes
+        } else {
+            batch_bytes.saturating_add(2).saturating_add(tuple.len())
+        };
         batch_rows.push(tuple);
-        if batch_rows.len() >= BATCH_ROWS || batch_bytes >= BATCH_BYTES {
+        if batch_rows.len() >= BATCH_ROWS {
             flush_batch(
                 svc,
                 config,

@@ -20,7 +20,7 @@ fn identity_where_error_message(error: IdentityWhereError) -> &'static str {
     match error {
         IdentityWhereError::MissingColumn => "结果集缺少定位键列，已取消操作；请重新查询该表",
         IdentityWhereError::TooLarge => {
-            "行定位键生成的 SQL 超过 4 MiB 安全上限，已取消操作；请用手写 SQL 处理"
+            "行定位键生成的 SQL 超过 32 MiB 安全上限，已取消操作；请用手写 SQL 处理"
         }
     }
 }
@@ -375,9 +375,10 @@ impl ResultPanel {
             let remaining = MAX_SQL_QUERY_BYTES.saturating_sub(estimated_sql_bytes);
             let Some(literal_bytes) = value.bounded_sql_literal_len_for(driver, remaining) else {
                 self.pending_notification = Some(
-                    Notification::error(
-                        "INSERT 生成的 SQL 超过 4 MiB 安全上限，请减少列或缩短输入",
-                    )
+                    Notification::error(format!(
+                        "INSERT 生成的 SQL 超过 {} MiB 安全上限，请减少列或缩短输入",
+                        MAX_SQL_QUERY_BYTES / 1024 / 1024
+                    ))
                     .autohide(false),
                 );
                 cx.notify();
@@ -650,8 +651,11 @@ impl ResultPanel {
             .is_none()
         {
             self.pending_notification = Some(
-                Notification::error("UPDATE 生成的 SQL 超过 4 MiB 安全上限，请缩短单元格内容")
-                    .autohide(false),
+                Notification::error(format!(
+                    "UPDATE 生成的 SQL 超过 {} MiB 安全上限，请缩短单元格内容",
+                    MAX_SQL_QUERY_BYTES / 1024 / 1024
+                ))
+                .autohide(false),
             );
             cx.notify();
             return false;

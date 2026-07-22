@@ -72,6 +72,7 @@ impl KvDriver for MockKv {
                 value: RedisValue::Hash(vec![("field".into(), RedisValue::Text("value".into()))]),
                 total: Some(1),
                 byte_limited: false,
+                memory_warning: false,
             });
         }
         Err(DomainError::NotImplemented("mock".into()))

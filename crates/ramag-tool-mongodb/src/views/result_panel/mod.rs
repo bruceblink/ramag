@@ -26,7 +26,9 @@ use gpui::{
     ScrollHandle, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
+    button::ButtonVariants as _,
+    h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
 };
@@ -35,6 +37,7 @@ use ramag_app::MongoService;
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, MongoQueryResult, json_pretty_bounded,
 };
+use ramag_ui::{ResultMemoryLease, ResultMemoryUpdate};
 use serde_json::Value;
 
 pub use flatten::FlatTable;
@@ -52,7 +55,11 @@ pub struct ResultPanel {
     /// 当前层文档的唯一共享所有权；查询结果 DTO 中的 documents 在 set_result 时移入这里。
     pub(crate) docs_arc: Option<Arc<Vec<serde_json::Value>>>,
     pub(crate) error: Option<String>,
+    /// 单结果或全部标签内存达到提示线时展示的说明。
+    memory_notice: Option<String>,
     pub(crate) running: bool,
+    /// 普通 find 的当前服务端结果页。
+    pagination: Option<MongoResultPagination>,
     /// 扁平化表格视图（result 变化时重算）
     pub(crate) table: Option<Arc<FlatTable>>,
     /// 表格扁平化正在共享 worker 中执行。
@@ -104,6 +111,8 @@ pub struct ResultPanel {
     row_view_cancel: Option<Arc<AtomicBool>>,
     /// 后台行视图构建失败时显式展示，修改条件或重建表格会清除。
     pub(crate) row_view_error: Option<String>,
+    /// 当前标签在全部查询结果内存预算中的登记。
+    result_memory: Option<ResultMemoryLease>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -113,6 +122,7 @@ pub enum ResultEvent {
     Refresh,
     /// 仅停止客户端等待；MongoDB 服务端操作可能仍在执行。
     Cancel,
+    PageRequested(usize),
     /// 结果工具条发起的集合级 JSONL 导入：经 query_tab / query_panel 上抛，
     /// session 路由到集合树执行（复用其进度行与取消）
     CollectionImportRequested {
@@ -121,6 +131,13 @@ pub enum ResultEvent {
         policy: ConflictPolicy,
         files: Vec<PathBuf>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MongoResultPagination {
+    pub page: usize,
+    pub page_size: usize,
+    pub has_more: bool,
 }
 
 /// 排序方向（单击列头切换 None→Asc→Desc→None）
@@ -216,7 +233,9 @@ impl ResultPanel {
             result: None,
             docs_arc: None,
             error: None,
+            memory_notice: None,
             running: false,
+            pagination: None,
             table: None,
             table_building: false,
             table_build_seq: 0,
@@ -244,7 +263,18 @@ impl ResultPanel {
             row_view_request_seq: 0,
             row_view_cancel: None,
             row_view_error: None,
+            result_memory: None,
             _subscriptions: subs,
+        }
+    }
+
+    pub fn attach_result_memory(&mut self, lease: ResultMemoryLease) {
+        self.result_memory = Some(lease);
+    }
+
+    pub fn set_result_active(&self, active: bool) {
+        if let Some(lease) = &self.result_memory {
+            lease.set_active(active);
         }
     }
 
@@ -395,6 +425,18 @@ impl ResultPanel {
     }
 
     pub fn set_result(&mut self, mut r: MongoQueryResult, cx: &mut Context<Self>) {
+        let outcome = self.account_result_bytes(r.retained_bytes, cx);
+        if outcome.current_evicted {
+            self.release_result_payload();
+            self.error = Some(
+                "结果超过全部标签 512 MiB 硬上限，已释放结果数据；查询文本仍保留，可收窄后重新运行"
+                    .into(),
+            );
+            self.running = false;
+            cx.notify();
+            return;
+        }
+        self.memory_notice = memory_notice(&r, r.retained_bytes, outcome);
         self.clear_selected_rows();
         // 新查询：重置下钻栈为顶层（label 用目标 collection）
         let label = self
@@ -408,6 +450,7 @@ impl ResultPanel {
         self.result = Some(r);
         self.error = None;
         self.running = false;
+        self.pagination = None;
         // 切结果时把横滚归位最左（与 dbclient::result_table 同款），避免新表格沿用旧的横滚 X 位置
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
         // 建基础表 + 刷新补全源（最多 200 万单元格，必须离开 UI 线程）。
@@ -416,12 +459,54 @@ impl ResultPanel {
     }
 
     pub fn set_error(&mut self, err: String, cx: &mut Context<Self>) {
+        self.release_result_payload();
+        let _ = self.account_result_bytes(0, cx);
+        self.error = Some(err);
+        self.running = false;
+        cx.notify();
+    }
+
+    fn account_result_bytes(&self, bytes: usize, cx: &mut Context<Self>) -> ResultMemoryUpdate {
+        self.result_memory
+            .as_ref()
+            .map_or_else(ResultMemoryUpdate::default, |lease| {
+                lease.update_bytes(bytes, cx)
+            })
+    }
+
+    fn release_result_payload(&mut self) {
         self.cancel_table_build();
         self.table_build_seq = self.table_build_seq.wrapping_add(1);
         self.table_building = false;
         self.invalidate_row_view();
-        self.error = Some(err);
+        self.result = None;
+        self.docs_arc = None;
+        self.table = None;
+        self.drill_stack.clear();
+        self.pagination = None;
+        self.memory_notice = None;
+        self.column_completion_source.write().clear();
+        self.clear_selected_rows();
+    }
+
+    /// 全局预算回收回调：只释放结果，不触碰标签编辑器里的命令文本。
+    pub fn evict_result_for_budget(&mut self, cx: &mut Context<Self>) {
+        self.release_result_payload();
+        self.error =
+            Some("旧结果已按 LRU 释放，以保持全部标签结果不超过 512 MiB；查询文本仍保留".into());
         self.running = false;
+        cx.notify();
+    }
+
+    pub fn set_pagination(
+        &mut self,
+        pagination: Option<MongoResultPagination>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pagination == pagination {
+            return;
+        }
+        self.pagination = pagination;
         cx.notify();
     }
 
@@ -447,6 +532,11 @@ impl ResultPanel {
         self.table_build_seq = self.table_build_seq.wrapping_add(1);
         let request_seq = self.table_build_seq;
         self.table = None;
+        let raw_bytes = self
+            .result
+            .as_ref()
+            .map_or(0, |result| result.retained_bytes);
+        let _ = self.account_result_bytes(raw_bytes, cx);
         self.invalidate_row_view();
         self.table_building = !docs.is_empty();
         self.column_completion_source.write().clear();
@@ -508,6 +598,28 @@ impl ResultPanel {
                 this.table_building = false;
                 match built {
                     Ok(Some((table, completions))) => {
+                        let combined_bytes = this
+                            .result
+                            .as_ref()
+                            .map_or(0, |result| result.retained_bytes)
+                            .saturating_add(table.retained_bytes());
+                        let outcome = this.account_result_bytes(combined_bytes, cx);
+                        if outcome.current_evicted {
+                            this.release_result_payload();
+                            this.error = Some(
+                                "MongoDB 结果及表格视图超过全部标签 512 MiB 硬上限，已释放；请收窄查询"
+                                    .into(),
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        if let Some(result) = &this.result
+                            && let Some(notice) = memory_notice(result, combined_bytes, outcome)
+                        {
+                            // 新结果刚触发过 LRU 时保留该提示；表格派生内存的后续登记
+                            // 不应因为总量已回落就立刻把提示抹掉。
+                            this.memory_notice = Some(notice);
+                        }
                         this.table = Some(table);
                         *this.column_completion_source.write() = completions;
                         this.schedule_row_view(false, cx);
@@ -729,6 +841,36 @@ fn bounded_cell_dialog_text(mut text: String, max_bytes: usize) -> String {
     text
 }
 
+fn memory_notice(
+    result: &MongoQueryResult,
+    retained_bytes: usize,
+    outcome: ResultMemoryUpdate,
+) -> Option<String> {
+    let mut notices = Vec::new();
+    if result.memory_warning
+        || retained_bytes >= ramag_domain::entities::INTERACTIVE_RESULT_WARNING_BYTES
+    {
+        notices.push(
+            "单个结果及表格视图已达到 128 MiB 提示线，建议用 filter / projection 收窄查询"
+                .to_string(),
+        );
+    }
+    if outcome.warning {
+        if outcome.evicted_results > 0 {
+            notices.push(format!(
+                "全部查询标签结果达到全局预算，已按 LRU 释放 {} 个非活动标签的旧结果",
+                outcome.evicted_results
+            ));
+        } else {
+            notices.push(format!(
+                "全部查询标签结果已达到 384 MiB 提示线（当前约 {} MiB）",
+                outcome.total_bytes / 1024 / 1024
+            ));
+        }
+    }
+    (!notices.is_empty()).then(|| notices.join("；"))
+}
+
 impl Render for ResultPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 异步 DML 完成的 toast 在这里推送
@@ -844,6 +986,8 @@ impl Render for ResultPanel {
                     border,
                     muted,
                     bg,
+                    self.pagination,
+                    cx.entity(),
                 ))
                 .into_any_element();
         }
@@ -903,8 +1047,7 @@ impl Render for ResultPanel {
             .bg(bg)
             .child(toolbar::render(self, cx))
             .child(div().h(px(1.0)).bg(border));
-        // 截断横幅：结果被安全上限截断时醒目提示，避免用户误以为看到 / 导出的是全量
-        if truncated {
+        if let Some(notice) = self.memory_notice.clone() {
             let warn = cx.theme().warning;
             let mut warn_bg = warn;
             warn_bg.a = 0.14;
@@ -916,9 +1059,32 @@ impl Render for ResultPanel {
                     .bg(warn_bg)
                     .text_xs()
                     .text_color(warn)
-                    .child(format!(
-                        "⚠ 结果较大，仅加载前 {total_docs} 条；统计、排序、过滤与导出均基于这部分数据。请用 filter / limit 精确查询"
-                    )),
+                    .child(format!("⚠ {notice}")),
+            );
+        }
+        // 截断横幅：结果被安全上限截断时醒目提示，避免用户误以为看到 / 导出的是全量
+        if truncated {
+            let warn = cx.theme().warning;
+            let mut warn_bg = warn;
+            warn_bg.a = 0.14;
+            let message = if self.pagination.is_some() {
+                format!(
+                    "⚠ 当前页达到 256 MiB 硬上限，仅加载 {total_docs} 条；可用下一页从实际断点继续，统计、排序、过滤与导出均只基于当前页。"
+                )
+            } else {
+                format!(
+                    "⚠ 结果较大，仅加载前 {total_docs} 条；统计、排序、过滤与导出均基于这部分数据。请用 filter / limit 精确查询"
+                )
+            };
+            root = root.child(
+                div()
+                    .w_full()
+                    .px(px(12.0))
+                    .py(px(5.0))
+                    .bg(warn_bg)
+                    .text_xs()
+                    .text_color(warn)
+                    .child(message),
             );
         }
         if discovered_cols > total_cols {
@@ -950,7 +1116,14 @@ impl Render for ResultPanel {
             None,
             cx,
         )))
-        .child(render_status_bar(summary, border, muted, bg))
+        .child(render_status_bar(
+            summary,
+            border,
+            muted,
+            bg,
+            self.pagination,
+            cx.entity(),
+        ))
         .into_any_element()
     }
 }
@@ -961,11 +1134,15 @@ fn render_status_bar(
     border: gpui::Hsla,
     muted: gpui::Hsla,
     bg: gpui::Hsla,
+    pagination: Option<MongoResultPagination>,
+    panel: Entity<ResultPanel>,
 ) -> impl IntoElement {
-    div()
+    h_flex()
         .id("mongo-status-bar")
         .w_full()
         .flex_none()
+        .items_center()
+        .gap_2()
         .px(px(12.0))
         .py(px(4.0))
         .border_t_1()
@@ -974,6 +1151,43 @@ fn render_status_bar(
         .text_xs()
         .text_color(muted)
         .child(SharedString::from(summary))
+        .child(div().flex_1())
+        .when_some(pagination, |this, pagination| {
+            let previous_page = pagination.page.saturating_sub(1);
+            let next_page = pagination.page.saturating_add(1);
+            let panel_for_previous = panel.clone();
+            let panel_for_next = panel.clone();
+            this.child(
+                ramag_ui::clickable_button("mongo-result-page-previous")
+                    .ghost()
+                    .small()
+                    .label("上一页")
+                    .disabled(pagination.page == 0)
+                    .on_click(move |_, _, app| {
+                        panel_for_previous.update(app, |_, cx| {
+                            cx.emit(ResultEvent::PageRequested(previous_page));
+                        });
+                    }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(format!("第 {} 页", pagination.page + 1)),
+            )
+            .child(
+                ramag_ui::clickable_button("mongo-result-page-next")
+                    .ghost()
+                    .small()
+                    .label("下一页")
+                    .tooltip("下一页；未指定 sort 时 MongoDB 不保证分页顺序")
+                    .disabled(!pagination.has_more)
+                    .on_click(move |_, _, app| {
+                        panel_for_next.update(app, |_, cx| {
+                            cx.emit(ResultEvent::PageRequested(next_page));
+                        });
+                    }),
+            )
+        })
 }
 
 /// 钻取视图顶部提示条：已钻取某路径 + 元素数 + 恢复方式

@@ -7,7 +7,7 @@ use std::borrow::Cow;
 
 use ramag_domain::entities::{
     MAX_REDIS_COMMAND_ARG_BYTES, RedisType, RedisValue, RedisValuePage, StreamEntry,
-    ValuePageCursor,
+    TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS, ValuePageCursor,
 };
 use ramag_domain::error::{DomainError, Result};
 use redis::Value as RV;
@@ -17,13 +17,13 @@ use crate::driver::{ensure_response_budget, scan_parts};
 use crate::errors::map_redis_error;
 use crate::value::{decode_value, decode_zset_with_scores};
 
-/// 单页条目上限；与响应预算（512 MiB / 10 万节点）保持安全距离
-pub const MAX_PAGE_ITEMS: u32 = 5_000;
+/// 单页条目上限；与 32 MiB 传输批次及响应节点预算保持一致。
+pub const MAX_PAGE_ITEMS: u32 = TRANSFER_BATCH_ITEMS as u32;
 /// String 类型单页读取字节数
 const STRING_PAGE_BYTES: u64 = 1024 * 1024;
 /// 单条写命令的成员数与字节预算，超过即分批发送
-const WRITE_CHUNK_MEMBERS: usize = 512;
-const WRITE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+const WRITE_CHUNK_MEMBERS: usize = TRANSFER_BATCH_ITEMS;
+const WRITE_CHUNK_BYTES: usize = TRANSFER_BATCH_BYTES;
 
 pub(crate) fn validate_page_items(max_items: u32) -> Result<()> {
     if !(1..=MAX_PAGE_ITEMS).contains(&max_items) {

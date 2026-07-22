@@ -42,7 +42,7 @@ impl Render for QueryTab {
         let (result_summary, has_result): (Option<String>, bool) =
             match self.result.read(cx).state() {
                 ResultState::Ok(qr) => (None, !qr.rows.is_empty()),
-                ResultState::Error(_) => (None, false),
+                ResultState::Error(_) | ResultState::Released(_) => (None, false),
                 ResultState::Running => (
                     Some(match &running_elapsed {
                         Some(s) => format!("执行中 {s}"),

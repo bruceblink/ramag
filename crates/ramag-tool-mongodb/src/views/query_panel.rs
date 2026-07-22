@@ -21,7 +21,7 @@ use ramag_app::MongoService;
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig};
 use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{
-    CloseTab, MAX_EDITOR_TABS, can_open_editor_tab, icons,
+    CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab, icons,
     platform::{primary_shift_shortcut, primary_shortcut},
 };
 
@@ -44,6 +44,7 @@ impl EventEmitter<MongoQueryPanelEvent> for MongoQueryPanel {}
 
 pub struct MongoQueryPanel {
     service: Arc<MongoService>,
+    result_memory: ResultMemoryBudget,
     connection: Option<ConnectionConfig>,
     /// 当前默认 db（由 session 同步：连接配置 OR 树点击 db 行）
     database: String,
@@ -51,6 +52,8 @@ pub struct MongoQueryPanel {
     /// Tab 标题（与 tabs 一一对应；查询 N 自动编号，与 dbclient 一致）
     titles: Vec<String>,
     active: usize,
+    /// 当前连接会话是否是窗口里正在显示的会话。
+    session_active: bool,
     /// Tab Bar 横向滚动句柄：tab 多到溢出时新建后滚到末尾
     tabs_scroll: ScrollHandle,
     /// 命令编辑器显隐（默认 false 隐藏；cmd-e 切换；新 Tab 跟随）
@@ -73,14 +76,21 @@ pub struct MongoQueryPanel {
 }
 
 impl MongoQueryPanel {
-    pub fn new(service: Arc<MongoService>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        service: Arc<MongoService>,
+        result_memory: ResultMemoryBudget,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             service,
+            result_memory,
             connection: None,
             database: "admin".to_string(),
             tabs: Vec::new(),
             titles: Vec::new(),
             active: 0,
+            session_active: false,
             tabs_scroll: ScrollHandle::new(),
             // 隐藏编辑器，让结果区直接占满（与 dbclient 默认一致）
             show_editor: false,
@@ -218,6 +228,7 @@ impl MongoQueryPanel {
         self.titles.push(title);
         self.draft_subscriptions.push(sub);
         self.active = self.tabs.len() - 1;
+        self.sync_result_activity(cx);
         self.scroll_tabs_to_end();
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
@@ -377,6 +388,7 @@ impl MongoQueryPanel {
         } else if self.active > idx {
             self.active -= 1;
         }
+        self.sync_result_activity(cx);
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
         cx.notify();
@@ -386,9 +398,26 @@ impl MongoQueryPanel {
         if idx < self.tabs.len() && self.active != idx {
             self.draft_load_pending = false;
             self.active = idx;
+            self.sync_result_activity(cx);
             self.focus_active_editor(window, cx);
             self.schedule_draft_persist(cx);
             cx.notify();
+        }
+    }
+
+    pub fn set_session_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.session_active == active {
+            return;
+        }
+        self.session_active = active;
+        self.sync_result_activity(cx);
+    }
+
+    pub(super) fn sync_result_activity(&self, cx: &mut Context<Self>) {
+        for (index, tab) in self.tabs.iter().enumerate() {
+            tab.update(cx, |tab, cx| {
+                tab.set_result_active(self.session_active && index == self.active, cx)
+            });
         }
     }
 

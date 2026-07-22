@@ -5,21 +5,19 @@ use bson::{Bson, Document, doc};
 use futures::TryStreamExt;
 use mongodb::Client;
 use ramag_domain::entities::{
-    MongoCollection, MongoCollectionStats, MongoDatabase, MongoIndex,
-    validate_mongo_collection_name, validate_mongo_database_name,
+    MAX_METADATA_BYTES, MAX_METADATA_ITEMS, MongoCollection, MongoCollectionStats, MongoDatabase,
+    MongoIndex, validate_mongo_collection_name, validate_mongo_database_name,
 };
 use ramag_domain::error::{DomainError, Result};
 
 use crate::errors::map_mongo_error;
-
-const MAX_METADATA_ITEMS: usize = 50_000;
 
 pub async fn list_databases(client: &Client) -> Result<Vec<MongoDatabase>> {
     let names = client
         .list_database_names()
         .await
         .map_err(map_mongo_error)?;
-    ensure_metadata_item_limit(names.len(), "数据库")?;
+    ensure_metadata_limit(names.len(), string_list_retained_bytes(&names), "数据库")?;
     let mut databases = Vec::with_capacity(names.len());
     for name in names {
         validate_mongo_database_name(&name).map_err(|error| {
@@ -42,6 +40,7 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
     // list_collections 返回 cursor of CollectionSpecification（含 name + type）
     let mut cursor = database.list_collections().await.map_err(map_mongo_error)?;
     let mut out = Vec::new();
+    let mut retained_bytes = 0usize;
     while let Some(spec) = cursor.try_next().await.map_err(map_mongo_error)? {
         // 跳过 MongoDB 系统集合（system.views / system.buckets.* / system.profile / system.js 等）：
         // 受限账号无权访问，点开会报 code=13；数据库客户端惯例不展示
@@ -56,11 +55,14 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
                 error.message()
             ))
         })?;
-        out.push(MongoCollection {
+        let collection = MongoCollection {
             name: spec.name,
             database: db.to_string(),
             is_view,
-        });
+        };
+        retained_bytes = retained_bytes.saturating_add(collection_retained_bytes(&collection));
+        ensure_metadata_limit(out.len().saturating_add(1), retained_bytes, "集合")?;
+        out.push(collection);
     }
     // listCollections 返回服务端顺序，按集合名字典序排，左侧列表稳定有序（与 SQL 的 ORDER BY 一致）
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -73,18 +75,58 @@ fn is_system_collection(name: &str) -> bool {
 }
 
 fn ensure_metadata_item_limit(item_count: usize, label: &str) -> Result<()> {
+    ensure_metadata_limit(item_count, 0, label)
+}
+
+fn ensure_metadata_limit(item_count: usize, retained_bytes: usize, label: &str) -> Result<()> {
     if item_count > MAX_METADATA_ITEMS {
         return Err(DomainError::QueryFailed(format!(
             "{label}数量超过 {MAX_METADATA_ITEMS} 条安全上限，请缩小数据库范围"
         )));
     }
+    if retained_bytes > MAX_METADATA_BYTES {
+        return Err(DomainError::QueryFailed(format!(
+            "{label}元数据超过 {} MiB 安全上限，请缩小数据库范围",
+            MAX_METADATA_BYTES / 1024 / 1024
+        )));
+    }
     Ok(())
+}
+
+fn string_list_retained_bytes(values: &[String]) -> usize {
+    values
+        .len()
+        .saturating_mul(std::mem::size_of::<String>())
+        .saturating_add(values.iter().fold(0usize, |total, value| {
+            total.saturating_add(value.capacity())
+        }))
+}
+
+fn collection_retained_bytes(value: &MongoCollection) -> usize {
+    std::mem::size_of::<MongoCollection>()
+        .saturating_add(value.name.capacity())
+        .saturating_add(value.database.capacity())
+}
+
+fn index_retained_bytes(index: &MongoIndex) -> usize {
+    std::mem::size_of::<MongoIndex>()
+        .saturating_add(index.name.capacity())
+        .saturating_add(
+            index
+                .keys
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(String, i32)>()),
+        )
+        .saturating_add(index.keys.iter().fold(0usize, |total, (key, _)| {
+            total.saturating_add(key.capacity())
+        }))
 }
 
 pub async fn list_indexes(client: &Client, db: &str, coll: &str) -> Result<Vec<MongoIndex>> {
     let collection = client.database(db).collection::<Document>(coll);
     let mut cursor = collection.list_indexes().await.map_err(map_mongo_error)?;
     let mut out = Vec::new();
+    let mut retained_bytes = 0usize;
     while let Some(model) = cursor.try_next().await.map_err(map_mongo_error)? {
         ensure_metadata_item_limit(out.len().saturating_add(1), "索引")?;
         let name = model
@@ -104,13 +146,16 @@ pub async fn list_indexes(client: &Client, db: &str, coll: &str) -> Result<Vec<M
             .and_then(|o| o.sparse)
             .unwrap_or(false);
         let keys = parse_index_keys(&model.keys);
-        out.push(MongoIndex {
+        let index = MongoIndex {
             name,
             keys,
             unique: unique || primary,
             primary,
             sparse,
-        });
+        };
+        retained_bytes = retained_bytes.saturating_add(index_retained_bytes(&index));
+        ensure_metadata_limit(out.len().saturating_add(1), retained_bytes, "索引")?;
+        out.push(index);
     }
     Ok(out)
 }
@@ -216,6 +261,12 @@ mod tests {
     fn metadata_limit_allows_boundary_and_rejects_overflow() {
         assert!(ensure_metadata_item_limit(MAX_METADATA_ITEMS, "集合").is_ok());
         assert!(ensure_metadata_item_limit(MAX_METADATA_ITEMS + 1, "集合").is_err());
+    }
+
+    #[test]
+    fn metadata_byte_limit_allows_boundary_and_rejects_overflow() {
+        assert!(ensure_metadata_limit(1, MAX_METADATA_BYTES, "集合").is_ok());
+        assert!(ensure_metadata_limit(1, MAX_METADATA_BYTES + 1, "集合").is_err());
     }
 
     #[test]

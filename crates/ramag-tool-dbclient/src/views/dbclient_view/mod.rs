@@ -67,6 +67,18 @@ impl SessionEntity {
             SessionEntity::Mongo(e) => e.update(cx, |s, cx| s.focus(window, cx)),
         }
     }
+
+    pub(super) fn set_result_active(&self, active: bool, cx: &mut App) {
+        match self {
+            SessionEntity::Sql(entity) => {
+                entity.update(cx, |session, cx| session.set_result_active(active, cx))
+            }
+            SessionEntity::Mongo(entity) => {
+                entity.update(cx, |session, cx| session.set_result_active(active, cx))
+            }
+            SessionEntity::Redis(_) => {}
+        }
+    }
 }
 
 /// 顶部一个连接 Tab 对应的槽位。实体惰性创建：跨重启恢复的标签先只有配置，
@@ -107,6 +119,8 @@ pub struct DbClientView {
     pub(super) service: Arc<ConnectionService>,
     pub(super) redis_service: Arc<RedisService>,
     pub(super) mongo_service: Arc<MongoService>,
+    /// SQL 与 MongoDB 全部查询标签共享的结果内存预算。
+    pub(super) result_memory: ramag_ui::ResultMemoryBudget,
     /// 已打开的连接会话槽位（含 MySQL + Redis + MongoDB）
     pub(super) sessions: Vec<SessionSlot>,
     /// 当前激活的 session 索引
@@ -283,6 +297,7 @@ impl DbClientView {
             service,
             redis_service,
             mongo_service,
+            result_memory: ramag_ui::ResultMemoryBudget::default(),
             sessions: Vec::new(),
             active_session: None,
             // 启动时显示连接管理（用户挑选打开哪个）
@@ -370,7 +385,8 @@ impl DbClientView {
         match config.driver {
             DriverKind::Mysql | DriverKind::Postgres => {
                 let svc = self.service.clone();
-                let entity = cx.new(|cx| ConnectionSession::new(config, svc, window, cx));
+                let budget = self.result_memory.clone();
+                let entity = cx.new(|cx| ConnectionSession::new(config, svc, budget, window, cx));
                 SessionEntity::Sql(entity)
             }
             DriverKind::Redis => {
@@ -380,7 +396,8 @@ impl DbClientView {
             }
             DriverKind::Mongodb => {
                 let svc = self.mongo_service.clone();
-                let entity = cx.new(|cx| MongoSessionPanel::new(config, svc, window, cx));
+                let budget = self.result_memory.clone();
+                let entity = cx.new(|cx| MongoSessionPanel::new(config, svc, budget, window, cx));
                 SessionEntity::Mongo(entity)
             }
         }
@@ -403,6 +420,7 @@ impl DbClientView {
         let entity = self.build_session_entity(config.clone(), window, cx);
         entity.focus(window, cx);
         self.sessions[idx].entity = Some(entity);
+        self.sync_result_activity(cx);
         // 真正连库时才异步探测版本（占位标签不建池 / 不试连）
         self.picker
             .update(cx, |p, cx| p.prefetch_version(&config, cx));
@@ -448,6 +466,7 @@ impl DbClientView {
                 // 聚焦内容，cmd-e 等快捷键无需先点内容区
                 entity.focus(window, cx);
             }
+            self.sync_result_activity(cx);
             self.persist_open_sessions(cx);
             cx.notify();
             return;
@@ -476,6 +495,7 @@ impl DbClientView {
         });
         self.active_session = Some(self.sessions.len() - 1);
         self.center = CenterMode::Session;
+        self.sync_result_activity(cx);
         // tab 多溢出时让新连接 tab 滚入视图（GPUI 自动 clamp 到 max_offset）
         self.sessions_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
@@ -521,6 +541,7 @@ impl DbClientView {
                 self.active_session = Some(active - 1);
             }
         }
+        self.sync_result_activity(cx);
         self.persist_open_sessions(cx);
         cx.notify();
     }
@@ -545,6 +566,7 @@ impl DbClientView {
                 // 聚焦内容，cmd-e 等快捷键无需先点内容区
                 entity.focus(window, cx);
             }
+            self.sync_result_activity(cx);
             // active 变化也入偏好：重启后回到上次停留的连接
             self.persist_open_sessions(cx);
             cx.notify();
@@ -554,9 +576,19 @@ impl DbClientView {
     /// 切到"打开连接"面板
     pub(super) fn show_picker(&mut self, cx: &mut Context<Self>) {
         self.center = CenterMode::ConnectionPicker;
+        self.sync_result_activity(cx);
         // 刷新一下列表
         self.picker.update(cx, |p, cx| p.refresh(cx));
         cx.notify();
+    }
+
+    pub(super) fn sync_result_activity(&self, cx: &mut Context<Self>) {
+        let showing_session = matches!(self.center, CenterMode::Session);
+        for (index, slot) in self.sessions.iter().enumerate() {
+            if let Some(entity) = &slot.entity {
+                entity.set_result_active(showing_session && self.active_session == Some(index), cx);
+            }
+        }
     }
 }
 

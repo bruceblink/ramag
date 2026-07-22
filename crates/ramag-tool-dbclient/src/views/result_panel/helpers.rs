@@ -5,7 +5,7 @@ use gpui_component::input::InputState;
 use ramag_domain::entities::{Column, ColumnKind, Index, MAX_SQL_QUERY_BYTES, QueryResult, Value};
 
 pub(super) const MAX_BATCH_DELETE_ROWS: usize = 500;
-pub(super) const MAX_BATCH_DELETE_SQL_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_BATCH_DELETE_SQL_BYTES: usize = MAX_SQL_QUERY_BYTES;
 
 pub(super) fn reserve_batch_delete_sql_bytes(current: usize, added: usize) -> Option<usize> {
     current
@@ -281,6 +281,7 @@ mod tests {
             warnings: vec![],
             elapsed_ms: 0,
             affected_rows: 0,
+            truncated: false,
         }
     }
 

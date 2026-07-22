@@ -2,8 +2,9 @@
 
 use ramag_domain::error::{DomainError, Result};
 
-/// 单次执行的语句数量上限；正常脚本远低于此值，边界用于限制切分对象与数据库往返。
-pub const MAX_SQL_STATEMENTS: usize = 1024;
+/// 单次执行最多 5,000 条业务语句；额外 1 条给 MySQL 导入内部添加的
+/// `SET FOREIGN_KEY_CHECKS=0`，避免它挤占用户批准的传输批次。
+pub const MAX_SQL_STATEMENTS: usize = ramag_domain::entities::TRANSFER_BATCH_ITEMS + 1;
 
 /// 多语句切分选项
 #[derive(Debug, Clone, Copy)]
@@ -353,6 +354,23 @@ mod tests {
             split_statements_bounded("SELECT 1; SELECT 2; SELECT 3", SplitOptions::mysql(), 2,)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn transfer_batch_and_mysql_internal_prefix_fit_statement_limit() {
+        let mut sql = String::from("SET FOREIGN_KEY_CHECKS=0;");
+        sql.push_str(
+            &"INSERT INTO t VALUES (1);".repeat(ramag_domain::entities::TRANSFER_BATCH_ITEMS),
+        );
+
+        assert_eq!(
+            split_statements_bounded(&sql, SplitOptions::mysql(), MAX_SQL_STATEMENTS)
+                .ok()
+                .map(|statements| statements.len()),
+            Some(MAX_SQL_STATEMENTS)
+        );
+        sql.push_str("SELECT 1;");
+        assert!(split_statements_bounded(&sql, SplitOptions::mysql(), MAX_SQL_STATEMENTS).is_err());
     }
 
     #[test]

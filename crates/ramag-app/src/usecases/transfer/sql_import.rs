@@ -4,26 +4,27 @@
 //! MySQL 块前缀 `SET FOREIGN_KEY_CHECKS=0` 消除建表 / 导数顺序问题。
 //! 无标记的普通 .sql 走 generic 模式：顺序执行，错误按策略停止或计警告继续
 
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, Query, TransferSummary,
+    ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
+    TRANSFER_BATCH_ITEMS, TransferSummary,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use std::collections::{HashMap, HashSet};
 
 use super::sql_catalog::parse_marker;
-use super::{Reporter, finish_summary, is_cancelled};
+use super::{MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
 
-/// 单块累计字节 / 语句行数达到阈值即执行（Query 上限 4 MiB，留足前缀余量）
-const CHUNK_FLUSH_BYTES: usize = 3 * 1024 * 1024;
-const CHUNK_FLUSH_STMTS: usize = 400;
+/// 单块累计字节 / 语句数达到统一批次阈值即执行。
+const CHUNK_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
+const CHUNK_FLUSH_STMTS: usize = TRANSFER_BATCH_ITEMS;
 /// 单行长度保护（自家文件单行 ≤ ~1 MiB；异常长行直接拒绝）
-const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SegmentKind {
@@ -83,6 +84,8 @@ struct Segment {
     kind: SegmentKind,
     name: String,
     buffer: String,
+    /// 尚未遇到行尾分号的当前语句；不能在中间按字节截断。
+    pending_statement: String,
     stmt_lines: usize,
     skip: bool,
     failed: bool,
@@ -94,6 +97,7 @@ impl Segment {
             kind,
             name: name.to_string(),
             buffer: String::new(),
+            pending_statement: String::new(),
             stmt_lines: 0,
             skip: false,
             failed: false,
@@ -141,23 +145,27 @@ pub async fn import_sql_database(
     let mut segment = Segment::new(SegmentKind::Generic, "");
     let mut line = String::new();
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+        let read = read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES, "SQL 导入文件")?;
         let eof = read == 0;
-        if line.len() > MAX_LINE_BYTES {
-            return Err(DomainError::InvalidConfig(format!(
-                "导入文件单行超过 {} MiB，疑似损坏",
-                MAX_LINE_BYTES / 1024 / 1024
-            )));
-        }
 
         let trimmed = line.trim_end();
         let marker = if eof { None } else { parse_marker(trimmed) };
         let is_end_marker = trimmed == "-- ramag:end";
         if eof || marker.is_some() || is_end_marker {
             // 段边界：先冲洗上一段，再切换
+            if !segment.pending_statement.trim().is_empty() {
+                let statement = std::mem::take(&mut segment.pending_statement);
+                queue_statement(
+                    svc,
+                    config,
+                    &schema,
+                    &mut segment,
+                    policy,
+                    &mut summary,
+                    statement,
+                )
+                .await?;
+            }
             flush_segment(svc, config, &schema, &mut segment, policy, &mut summary).await?;
             finish_segment(&segment, &mut summary, &mut failed_objects, &mut reporter);
             if eof || is_end_marker {
@@ -251,30 +259,38 @@ pub async fn import_sql_database(
             .flatten();
         match rewritten {
             Some(text) => {
-                segment.buffer.push_str(&text);
+                segment.pending_statement.push_str(&text);
                 if !text.ends_with('\n') {
-                    segment.buffer.push('\n');
+                    segment.pending_statement.push('\n');
                 }
             }
             None => {
-                segment.buffer.push_str(&line);
+                segment.pending_statement.push_str(&line);
                 if !line.ends_with('\n') {
-                    segment.buffer.push('\n');
+                    segment.pending_statement.push('\n');
                 }
             }
         }
+        if segment.pending_statement.len() > sql_chunk_payload_limit(config.driver) {
+            return Err(DomainError::InvalidConfig(format!(
+                "单条 SQL 超过 {} MiB 安全上限，无法导入；请先拆分该语句",
+                CHUNK_FLUSH_BYTES / 1024 / 1024
+            )));
+        }
         if trimmed.ends_with(';') {
-            segment.stmt_lines += 1;
-            if segment.buffer.len() >= CHUNK_FLUSH_BYTES || segment.stmt_lines >= CHUNK_FLUSH_STMTS
-            {
-                if is_cancelled(cancel) {
-                    summary.cancelled = true;
-                    return Ok(finish_summary(summary, start));
-                }
-                flush_segment(svc, config, &schema, &mut segment, policy, &mut summary).await?;
-                reporter.snapshot.items_done = summary.items;
-                reporter.emit();
-            }
+            let statement = std::mem::take(&mut segment.pending_statement);
+            queue_statement(
+                svc,
+                config,
+                &schema,
+                &mut segment,
+                policy,
+                &mut summary,
+                statement,
+            )
+            .await?;
+            reporter.snapshot.items_done = summary.items;
+            reporter.emit();
         }
         if is_cancelled(cancel) {
             summary.cancelled = true;
@@ -361,6 +377,52 @@ async fn apply_policy(
         _ => {}
     }
     Ok(())
+}
+
+/// 把一条完整 SQL 加入待执行批次；加入前先冲洗，保证实际请求不越过 32 MiB。
+#[allow(clippy::too_many_arguments)]
+async fn queue_statement(
+    svc: &ConnectionService,
+    config: &ConnectionConfig,
+    schema: &Option<String>,
+    segment: &mut Segment,
+    policy: ConflictPolicy,
+    summary: &mut TransferSummary,
+    statement: String,
+) -> Result<()> {
+    if statement.trim().is_empty() || segment.skip || segment.failed {
+        return Ok(());
+    }
+    let payload_limit = sql_chunk_payload_limit(config.driver);
+    if statement.len() > payload_limit {
+        return Err(DomainError::InvalidConfig(format!(
+            "单条 SQL 超过 {} MiB 安全上限，无法导入；请先拆分该语句",
+            CHUNK_FLUSH_BYTES / 1024 / 1024
+        )));
+    }
+    let prospective = segment.buffer.len().saturating_add(statement.len());
+    if !segment.buffer.is_empty()
+        && (segment.stmt_lines >= CHUNK_FLUSH_STMTS || prospective > payload_limit)
+    {
+        flush_segment(svc, config, schema, segment, policy, summary).await?;
+    }
+    if segment.failed {
+        return Ok(());
+    }
+    segment.buffer.push_str(&statement);
+    segment.stmt_lines = segment.stmt_lines.saturating_add(1);
+    if segment.stmt_lines >= CHUNK_FLUSH_STMTS || segment.buffer.len() >= payload_limit {
+        flush_segment(svc, config, schema, segment, policy, summary).await?;
+    }
+    Ok(())
+}
+
+fn sql_chunk_payload_limit(driver: DriverKind) -> usize {
+    if driver == DriverKind::Mysql {
+        CHUNK_FLUSH_BYTES.saturating_sub(MYSQL_IMPORT_PREFIX.len())
+    } else {
+        CHUNK_FLUSH_BYTES
+    }
 }
 
 /// 执行段内累计的语句块
@@ -479,7 +541,7 @@ async fn run_chunk(
 ) -> Result<u64> {
     // MySQL 每块关闭 FK 检查：建表顺序 / 数据顺序 / 覆盖删除都无需拓扑排序
     let effective = if config.driver == DriverKind::Mysql {
-        format!("SET FOREIGN_KEY_CHECKS=0;\n{sql}")
+        format!("{MYSQL_IMPORT_PREFIX}{sql}")
     } else {
         sql.to_string()
     };

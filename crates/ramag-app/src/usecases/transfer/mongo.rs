@@ -14,20 +14,22 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, DriverKind, MongoQuerySpec, ProgressFn, TransferSummary,
+    ConflictPolicy, ConnectionConfig, DriverKind, MongoQuerySpec, ProgressFn, TRANSFER_BATCH_BYTES,
+    TRANSFER_BATCH_ITEMS, TransferSummary,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
 
-use super::{Reporter, finish_summary, is_cancelled, with_export_sink, write_json_line};
+use super::{
+    Reporter, finish_summary, is_cancelled, read_line_bounded, with_export_sink, write_json_line,
+};
 use crate::usecases::MongoService;
 
-/// 单页文档数（driver 单次上限 5 万 / 32 MiB，留足余量）
-const PAGE_DOCS: i64 = 2_000;
-/// 导入批：条数与字节预算（BSON 单文档上限 16 MiB，批预算给驱动留一半）
-const IMPORT_BATCH_DOCS: usize = 500;
-const IMPORT_BATCH_BYTES: usize = 8 * 1024 * 1024;
-const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+/// 导出页与导入批统一为 5,000 条或 32 MiB。
+const PAGE_DOCS: i64 = TRANSFER_BATCH_ITEMS as i64;
+const IMPORT_BATCH_DOCS: usize = TRANSFER_BATCH_ITEMS;
+const IMPORT_BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;
+const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 
 pub async fn export_mongo_database(
     svc: &MongoService,
@@ -83,9 +85,16 @@ pub async fn export_mongo_database(
                     sort: Some(json!({"_id": 1})),
                     skip: None,
                     limit: Some(PAGE_DOCS),
+                    result_byte_limit: Some(ramag_domain::entities::TRANSFER_BATCH_BYTES),
                 };
                 let result = svc.find(config, db, name, &spec).await?;
                 if result.documents.is_empty() {
+                    if result.truncated {
+                        return Err(DomainError::InvalidConfig(format!(
+                            "集合 {name} 的单个文档超过 {} MiB 传输上限，无法导出",
+                            TRANSFER_BATCH_BYTES / 1024 / 1024
+                        )));
+                    }
                     break;
                 }
                 let page_len = result.documents.len() as u64;
@@ -131,8 +140,6 @@ pub async fn import_mongo_database(
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
-    use std::io::BufRead as _;
-
     let start = Instant::now();
     ensure_mongo(config)?;
     if config.production {
@@ -147,9 +154,12 @@ pub async fn import_mongo_database(
 
     // 首行文件头
     let mut header_line = String::new();
-    reader
-        .read_line(&mut header_line)
-        .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+    read_line_bounded(
+        &mut reader,
+        &mut header_line,
+        MAX_LINE_BYTES,
+        "MongoDB 导入文件",
+    )?;
     let header: Value = serde_json::from_str(header_line.trim())
         .map_err(|_| DomainError::InvalidConfig("文件首行不是有效的导出头".into()))?;
     if header.get("engine").and_then(Value::as_str) != Some("mongodb") {
@@ -174,17 +184,9 @@ pub async fn import_mongo_database(
     let mut current: Option<CollectionCtx> = None;
     let mut line = String::new();
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+        let read = read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES, "MongoDB 导入文件")?;
         if read == 0 {
             break;
-        }
-        if line.len() > MAX_LINE_BYTES {
-            return Err(DomainError::InvalidConfig(
-                "导入文件单行超长，疑似损坏".into(),
-            ));
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -251,9 +253,28 @@ pub async fn import_mongo_database(
             if ctx.skip {
                 continue;
             }
-            ctx.batch_bytes += trimmed.len();
+            if trimmed.len() > IMPORT_BATCH_BYTES {
+                return Err(DomainError::InvalidConfig(format!(
+                    "集合 {} 的单个文档记录超过 {} MiB，无法导入",
+                    ctx.name,
+                    IMPORT_BATCH_BYTES / 1024 / 1024
+                )));
+            }
+            if !ctx.batch.is_empty()
+                && (ctx.batch.len() >= IMPORT_BATCH_DOCS
+                    || ctx.batch_bytes.saturating_add(trimmed.len()) > IMPORT_BATCH_BYTES)
+            {
+                flush_batch(svc, config, &db, ctx, &mut summary).await?;
+                reporter.snapshot.items_done = summary.items;
+                reporter.emit();
+                if is_cancelled(cancel) {
+                    summary.cancelled = true;
+                    return Ok(finish_summary(summary, start));
+                }
+            }
+            ctx.batch_bytes = ctx.batch_bytes.saturating_add(trimmed.len());
             ctx.batch.push(doc.clone());
-            if ctx.batch.len() >= IMPORT_BATCH_DOCS || ctx.batch_bytes >= IMPORT_BATCH_BYTES {
+            if ctx.batch.len() >= IMPORT_BATCH_DOCS {
                 flush_batch(svc, config, &db, ctx, &mut summary).await?;
                 reporter.snapshot.items_done = summary.items;
                 reporter.emit();
@@ -433,8 +454,6 @@ pub async fn import_jsonl_into_collection(
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
-    use std::io::BufRead as _;
-
     let start = Instant::now();
     let (db, coll) = target;
     ensure_mongo(config)?;
@@ -473,20 +492,12 @@ pub async fn import_jsonl_into_collection(
     let mut line = String::new();
     let mut line_no: u64 = 0;
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+        let read = read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES, "MongoDB JSONL 文件")?;
         if read == 0 {
             break;
         }
         line_no += 1;
         reporter.snapshot.bytes += read as u64;
-        if line.len() > MAX_LINE_BYTES {
-            return Err(DomainError::InvalidConfig(
-                "导入文件单行超长，疑似损坏".into(),
-            ));
-        }
         if is_cancelled(cancel) {
             summary.cancelled = true;
             break;
@@ -511,9 +522,35 @@ pub async fn import_jsonl_into_collection(
         if batch.is_empty() {
             batch_first_line = line_no;
         }
-        batch_bytes += trimmed.len();
+        if trimmed.len() > IMPORT_BATCH_BYTES {
+            return Err(DomainError::InvalidConfig(format!(
+                "第 {line_no} 行超过 {} MiB，无法导入",
+                IMPORT_BATCH_BYTES / 1024 / 1024
+            )));
+        }
+        if !batch.is_empty()
+            && (batch.len() >= IMPORT_BATCH_DOCS
+                || batch_bytes.saturating_add(trimmed.len()) > IMPORT_BATCH_BYTES)
+        {
+            flush_jsonl_batch(
+                svc,
+                config,
+                (db, coll),
+                skip_duplicates,
+                policy,
+                &mut batch,
+                batch_first_line,
+                &mut duplicates,
+                &mut summary,
+                &mut reporter,
+            )
+            .await?;
+            batch_bytes = 0;
+            batch_first_line = line_no;
+        }
+        batch_bytes = batch_bytes.saturating_add(trimmed.len());
         batch.push(document);
-        if batch.len() >= IMPORT_BATCH_DOCS || batch_bytes >= IMPORT_BATCH_BYTES {
+        if batch.len() >= IMPORT_BATCH_DOCS {
             flush_jsonl_batch(
                 svc,
                 config,

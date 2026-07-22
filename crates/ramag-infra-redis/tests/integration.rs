@@ -123,13 +123,13 @@ async fn string_get_set_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn oversized_string_load_is_bounded_and_reports_total_bytes() {
-    const STRING_PREFIX_LIMIT: usize = 4 * 1024 * 1024;
+async fn multi_megabyte_string_is_not_truncated_at_the_old_four_mib_limit() {
+    const OLD_STRING_PREFIX_LIMIT: usize = 4 * 1024 * 1024;
 
     let config = require_env!();
     let driver = RedisDriver::new();
     cleanup(&driver, &config).await;
-    let total = (STRING_PREFIX_LIMIT - 1 + "界".len()) as u64;
+    let total = (OLD_STRING_PREFIX_LIMIT - 1 + "界".len()) as u64;
 
     driver
         .execute_command(
@@ -141,7 +141,7 @@ async fn oversized_string_load_is_bounded_and_reports_total_bytes() {
                     .into(),
                 "1".into(),
                 "large-text".into(),
-                (STRING_PREFIX_LIMIT - 1).to_string(),
+                (OLD_STRING_PREFIX_LIMIT - 1).to_string(),
             ],
         )
         .await
@@ -152,8 +152,9 @@ async fn oversized_string_load_is_bounded_and_reports_total_bytes() {
         .await
         .unwrap();
     assert_eq!(load.total, Some(total));
-    assert!(load.has_more());
-    assert!(matches!(load.value, RedisValue::Text(text) if text.len() == STRING_PREFIX_LIMIT - 1));
+    assert!(!load.has_more());
+    assert!(!load.memory_warning);
+    assert!(matches!(load.value, RedisValue::Text(text) if text.len() == total as usize));
 
     cleanup(&driver, &config).await;
 }

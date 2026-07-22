@@ -7,17 +7,15 @@ use bson::{Bson, Document, doc};
 use futures::TryStreamExt;
 use mongodb::Client;
 use ramag_domain::entities::{
-    InsertManyOutcome, MAX_MONGO_DOCUMENT_BYTES, MongoDocument, MongoQueryResult, MongoQuerySpec,
+    INTERACTIVE_RESULT_WARNING_BYTES, InsertManyOutcome, MAX_INTERACTIVE_RESULT_BYTES,
+    MAX_MONGO_DOCUMENT_BYTES, MongoDocument, MongoQueryResult, MongoQuerySpec,
+    TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS, mongo_value_retained_bytes,
 };
 use ramag_domain::error::{DomainError, Result};
 use serde_json::Value;
 
 use crate::errors::map_mongo_error;
 use crate::types::{document_to_json, json_to_document};
-
-/// 单次结果集安全上限，避免把超大集合完整装入内存。
-const MAX_RESULT_DOCS: usize = 50_000;
-const MAX_RESULT_BSON_BYTES: usize = 32 * 1024 * 1024;
 
 /// `ping` 命令，仅用于 test_connection
 pub async fn ping(client: &Client) -> Result<()> {
@@ -83,19 +81,27 @@ pub async fn find(
     let mut docs: Vec<MongoDocument> = Vec::new();
     let mut budget = ResultBudget::default();
     let mut truncated = false;
+    let max_result_bytes = spec
+        .result_byte_limit
+        .unwrap_or(MAX_INTERACTIVE_RESULT_BYTES)
+        .min(MAX_INTERACTIVE_RESULT_BYTES);
     while let Some(doc) = cursor.try_next().await.map_err(map_mongo_error)? {
-        let bytes = document_size(&doc)?;
-        if !budget.try_reserve(bytes, MAX_RESULT_DOCS, MAX_RESULT_BSON_BYTES) {
+        let document = document_to_json(doc);
+        let bytes = mongo_value_retained_bytes(&document);
+        if !budget.try_reserve(bytes, max_result_bytes) {
             truncated = true;
             break;
         }
-        docs.push(document_to_json(doc));
+        docs.push(document);
     }
     warn_if_truncated(truncated, &budget, "find");
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
-    Ok(MongoQueryResult::read_maybe_truncated(
-        docs, elapsed_ms, truncated,
+    Ok(MongoQueryResult::read_with_budget(
+        docs,
+        elapsed_ms,
+        truncated,
+        budget.retained_bytes,
     ))
 }
 
@@ -129,7 +135,7 @@ pub async fn aggregate(
             command_bytes,
             &document,
             "MongoDB aggregate",
-            MAX_MONGO_DOCUMENT_BYTES,
+            TRANSFER_BATCH_BYTES,
         )?;
         docs_pipeline.push(document);
     }
@@ -142,17 +148,21 @@ pub async fn aggregate(
     let mut budget = ResultBudget::default();
     let mut truncated = false;
     while let Some(d) = cursor.try_next().await.map_err(map_mongo_error)? {
-        let bytes = document_size(&d)?;
-        if !budget.try_reserve(bytes, MAX_RESULT_DOCS, MAX_RESULT_BSON_BYTES) {
+        let document = document_to_json(d);
+        let bytes = mongo_value_retained_bytes(&document);
+        if !budget.try_reserve(bytes, MAX_INTERACTIVE_RESULT_BYTES) {
             truncated = true;
             break;
         }
-        out.push(document_to_json(d));
+        out.push(document);
     }
     warn_if_truncated(truncated, &budget, "aggregate");
     let elapsed_ms = start.elapsed().as_millis() as u64;
-    Ok(MongoQueryResult::read_maybe_truncated(
-        out, elapsed_ms, truncated,
+    Ok(MongoQueryResult::read_with_budget(
+        out,
+        elapsed_ms,
+        truncated,
+        budget.retained_bytes,
     ))
 }
 
@@ -182,6 +192,11 @@ pub async fn insert_many(
     skip_duplicates: bool,
 ) -> Result<InsertManyOutcome> {
     let mut docs: Vec<Document> = Vec::with_capacity(documents.len());
+    if documents.len() > TRANSFER_BATCH_ITEMS {
+        return Err(DomainError::InvalidConfig(format!(
+            "MongoDB insertMany 单批最多 {TRANSFER_BATCH_ITEMS} 个文档"
+        )));
+    }
     for document in documents {
         docs.push(json_to_document(document)?);
     }
@@ -318,25 +333,27 @@ async fn collect_cursor_command(client: &Client, db: &str, cmd: Document) -> Res
         .run_cursor_command(cmd)
         .await
         .map_err(map_mongo_error)?;
-    let mut docs: Vec<Bson> = Vec::new();
+    let mut docs: Vec<Value> = Vec::new();
     let mut budget = ResultBudget::default();
     let mut truncated = false;
     while let Some(doc) = cursor.try_next().await.map_err(map_mongo_error)? {
-        let bytes = document_size(&doc)?;
-        if !budget.try_reserve(bytes, MAX_RESULT_DOCS, MAX_RESULT_BSON_BYTES) {
+        let document = document_to_json(doc);
+        let bytes = mongo_value_retained_bytes(&document);
+        if !budget.try_reserve(bytes, MAX_INTERACTIVE_RESULT_BYTES) {
             truncated = true;
             break;
         }
-        docs.push(Bson::Document(doc));
+        docs.push(document);
     }
     warn_if_truncated(truncated, &budget, "runCommand");
     // 内部标记：截断信息随 firstBatch 一起上传，parse_run_command_response 提取后剔除
-    let resp = doc! {
-        "cursor": { "firstBatch": Bson::Array(docs), "id": 0i64 },
+    Ok(serde_json::json!({
+        "cursor": { "firstBatch": docs, "id": 0 },
         "__ramag_truncated": truncated,
+        "__ramag_memory_warning": budget.retained_bytes >= INTERACTIVE_RESULT_WARNING_BYTES,
+        "__ramag_retained_bytes": budget.retained_bytes,
         "ok": 1.0,
-    };
-    Ok(document_to_json(resp))
+    }))
 }
 
 fn optional_document(value: Option<&Value>) -> Result<Option<Document>> {
@@ -344,12 +361,7 @@ fn optional_document(value: Option<&Value>) -> Result<Option<Document>> {
 }
 
 fn effective_find_limit(limit: Option<i64>) -> i64 {
-    const SAFETY_LIMIT: i64 = MAX_RESULT_DOCS as i64 + 1;
-    match limit {
-        Some(value) if value != 0 && value.unsigned_abs() <= SAFETY_LIMIT as u64 => value,
-        Some(value) if value < 0 => -SAFETY_LIMIT,
-        _ => SAFETY_LIMIT,
-    }
+    limit.unwrap_or(0)
 }
 
 fn ensure_command_document_budget<'a>(
@@ -358,7 +370,7 @@ fn ensure_command_document_budget<'a>(
 ) -> Result<()> {
     let mut total = 0usize;
     for document in documents {
-        total = reserve_command_document_bytes(total, document, label, MAX_MONGO_DOCUMENT_BYTES)?;
+        total = reserve_command_document_bytes(total, document, label, TRANSFER_BATCH_BYTES)?;
     }
     Ok(())
 }
@@ -370,6 +382,12 @@ fn reserve_command_document_bytes(
     limit: usize,
 ) -> Result<usize> {
     let bytes = document_size(document)?;
+    if bytes > MAX_MONGO_DOCUMENT_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "{label} 单个 BSON 文档超过 {} MiB 上限",
+            MAX_MONGO_DOCUMENT_BYTES / 1024 / 1024
+        )));
+    }
     let total = current
         .checked_add(bytes)
         .ok_or_else(|| DomainError::InvalidConfig(format!("{label} BSON 总长度溢出")))?;
@@ -385,20 +403,20 @@ fn reserve_command_document_bytes(
 #[derive(Debug, Default)]
 struct ResultBudget {
     documents: usize,
-    bson_bytes: usize,
+    retained_bytes: usize,
 }
 
 impl ResultBudget {
-    /// 返回 false 表示本次文档超出任一上限；调用方只有实际读到额外文档时才标记截断。
-    fn try_reserve(&mut self, bytes: usize, max_documents: usize, max_bytes: usize) -> bool {
-        let Some(total_bytes) = self.bson_bytes.checked_add(bytes) else {
+    /// 返回 false 表示本次文档超过字节预算；只有实际读到额外文档时才标记截断。
+    fn try_reserve(&mut self, bytes: usize, max_bytes: usize) -> bool {
+        let Some(total_bytes) = self.retained_bytes.checked_add(bytes) else {
             return false;
         };
-        if self.documents >= max_documents || total_bytes > max_bytes {
+        if total_bytes > max_bytes {
             return false;
         }
         self.documents += 1;
-        self.bson_bytes = total_bytes;
+        self.retained_bytes = total_bytes;
         true
     }
 }
@@ -433,7 +451,7 @@ fn warn_if_truncated(truncated: bool, budget: &ResultBudget, operation: &'static
     }
     tracing::warn!(
         collected = budget.documents,
-        bson_bytes = budget.bson_bytes,
+        retained_bytes = budget.retained_bytes,
         operation,
         "mongo cursor truncated at safety cap"
     );
@@ -470,23 +488,23 @@ mod tests {
     #[test]
     fn result_budget_only_reports_actual_overflow() {
         let mut budget = ResultBudget::default();
-        assert!(budget.try_reserve(4, 2, 8));
-        assert!(budget.try_reserve(4, 2, 8));
+        assert!(budget.try_reserve(4, 8));
+        assert!(budget.try_reserve(4, 8));
         assert_eq!(budget.documents, 2);
-        assert_eq!(budget.bson_bytes, 8);
+        assert_eq!(budget.retained_bytes, 8);
 
-        assert!(!budget.try_reserve(1, 2, 8));
+        assert!(!budget.try_reserve(1, 8));
         assert_eq!(budget.documents, 2);
-        assert_eq!(budget.bson_bytes, 8);
+        assert_eq!(budget.retained_bytes, 8);
     }
 
     #[test]
     fn result_budget_rejects_byte_overflow_before_count_limit() {
         let mut budget = ResultBudget::default();
-        assert!(budget.try_reserve(6, 10, 8));
-        assert!(!budget.try_reserve(3, 10, 8));
+        assert!(budget.try_reserve(6, 8));
+        assert!(!budget.try_reserve(3, 8));
         assert_eq!(budget.documents, 1);
-        assert_eq!(budget.bson_bytes, 6);
+        assert_eq!(budget.retained_bytes, 6);
     }
 
     #[test]
@@ -499,13 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn find_limit_is_capped_server_side_but_preserves_small_signed_limits() {
-        assert_eq!(effective_find_limit(None), 50_001);
-        assert_eq!(effective_find_limit(Some(0)), 50_001);
+    fn find_limit_preserves_mongodb_zero_and_signed_semantics() {
+        assert_eq!(effective_find_limit(None), 0);
+        assert_eq!(effective_find_limit(Some(0)), 0);
         assert_eq!(effective_find_limit(Some(100)), 100);
         assert_eq!(effective_find_limit(Some(-100)), -100);
-        assert_eq!(effective_find_limit(Some(100_000)), 50_001);
-        assert_eq!(effective_find_limit(Some(-100_000)), -50_001);
+        assert_eq!(effective_find_limit(Some(100_000)), 100_000);
     }
 
     #[test]

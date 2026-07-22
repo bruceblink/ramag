@@ -9,6 +9,7 @@ pub mod mongo;
 pub mod query;
 pub mod redis_keyspace;
 pub mod redis_value;
+pub mod resource_limits;
 pub mod schema;
 pub mod transfer;
 
@@ -43,8 +44,9 @@ pub use mongo::{
     MAX_MONGO_DOCUMENT_BYTES, MAX_MONGO_FIELD_PATH_BYTES, MAX_MONGO_NESTING_DEPTH,
     MAX_MONGO_PIPELINE_STAGES, MAX_MONGO_VALUE_NODES, MongoCollection, MongoCollectionStats,
     MongoDatabase, MongoDocument, MongoIndex, MongoQueryResult, MongoQuerySpec,
-    validate_mongo_collection_name, validate_mongo_database_name, validate_mongo_document,
-    validate_mongo_field_path, validate_mongo_pipeline,
+    mongo_documents_retained_bytes, mongo_value_retained_bytes, validate_mongo_collection_name,
+    validate_mongo_database_name, validate_mongo_document, validate_mongo_field_path,
+    validate_mongo_pipeline,
 };
 pub use query::{
     MAX_SQL_QUERY_BYTES, Query, QueryResult, Row, Value, Warning, json_pretty_bounded,
@@ -58,6 +60,10 @@ pub use redis_keyspace::{
     validate_redis_match_pattern, validate_redis_scan_count,
 };
 pub use redis_value::{RedisValue, RedisValueLoad, RedisValuePage, StreamEntry, ValuePageCursor};
+pub use resource_limits::{
+    INTERACTIVE_RESULT_WARNING_BYTES, MAX_INTERACTIVE_RESULT_BYTES, MAX_METADATA_BYTES,
+    MAX_METADATA_ITEMS, TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS,
+};
 pub use schema::{Column, ColumnKind, ColumnType, ForeignKey, Index, Schema, Table};
 pub use transfer::{
     ConflictPolicy, MAX_TRANSFER_WARNINGS, ProgressFn, TransferProgress, TransferSummary,

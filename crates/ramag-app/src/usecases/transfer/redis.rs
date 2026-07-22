@@ -16,20 +16,22 @@ use std::time::Instant;
 
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, RedisType, RedisValue, StreamEntry,
-    TransferSummary, ValuePageCursor,
+    TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS, TransferSummary, ValuePageCursor,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
 
-use super::{Reporter, finish_summary, is_cancelled, with_export_sink, write_json_line};
+use super::{
+    Reporter, finish_summary, is_cancelled, read_line_bounded, with_export_sink, write_json_line,
+};
 use crate::usecases::RedisService;
 
 /// 枚举 key 的 SCAN COUNT：总耗时 ≈ 往返数 × RTT，取大批减少往返
 /// （服务端单次阻塞仍 ~1-2ms；与 key 树扫描取值一致）
 const SCAN_BATCH: u32 = 5_000;
 /// 单个容器 key 的值分页大小（HSCAN / LRANGE 等每页元素数）
-const PAGE_ITEMS: u32 = 4_096;
-const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+const PAGE_ITEMS: u32 = TRANSFER_BATCH_ITEMS as u32;
+const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 /// 进度节流：每处理 N 个 key 上报一次
 const PROGRESS_EVERY_KEYS: u32 = 25;
 
@@ -138,18 +140,7 @@ async fn export_key(
         skipped_items += page.skipped;
         let (fragment, count) = encode_fragment(&page.items)?;
         summary.items += count;
-        let record = if first {
-            json!({
-                "key": key,
-                "type": kind_name(kind),
-                "ttl_ms": ttl_ms,
-                "value": fragment,
-            })
-        } else {
-            json!({"key": key, "more": true, "value": fragment})
-        };
-        first = false;
-        write_json_line(sink, line, &record)?;
+        write_fragment_records(sink, line, key, kind, ttl_ms, &mut first, fragment)?;
         let Some(next) = page.next.clone() else { break };
         page = svc
             .read_value_page(config, db, key, Some(kind), next, PAGE_ITEMS)
@@ -163,6 +154,138 @@ async fn export_key(
     Ok(KeyOutcome::Exported)
 }
 
+/// 把一个 Redis 页进一步切成不超过 32 MiB 的 JSONL 记录。条目不会拆半；单个条目
+/// 自身超限时明确报错，避免生成导入端无法按统一批次处理的文件。
+fn write_fragment_records(
+    sink: &mut super::ExportSink,
+    line: &mut Vec<u8>,
+    key: &str,
+    kind: RedisType,
+    ttl_ms: Option<i64>,
+    first: &mut bool,
+    fragment: Value,
+) -> Result<()> {
+    let Value::Array(items) = fragment else {
+        return write_fragment_record(sink, line, key, kind, ttl_ms, first, fragment);
+    };
+    if items.is_empty() {
+        return write_fragment_record(
+            sink,
+            line,
+            key,
+            kind,
+            ttl_ms,
+            first,
+            Value::Array(Vec::new()),
+        );
+    }
+
+    let mut group = Vec::new();
+    let mut group_bytes = 2usize; // JSON 数组的 []
+    let first_budget = fragment_value_budget(key, kind, ttl_ms, true)?;
+    let continuation_budget = fragment_value_budget(key, kind, ttl_ms, false)?;
+    for item in items {
+        let item_bytes = serde_json::to_vec(&item)
+            .map_err(|error| DomainError::Storage(format!("序列化 Redis 条目失败：{error}")))?
+            .len();
+        let separator = usize::from(!group.is_empty());
+        let budget = if *first {
+            first_budget
+        } else {
+            continuation_budget
+        };
+        if !group.is_empty()
+            && group_bytes
+                .saturating_add(separator)
+                .saturating_add(item_bytes)
+                > budget
+        {
+            write_fragment_record(
+                sink,
+                line,
+                key,
+                kind,
+                ttl_ms,
+                first,
+                Value::Array(std::mem::take(&mut group)),
+            )?;
+            group_bytes = 2;
+        }
+        let budget = if *first {
+            first_budget
+        } else {
+            continuation_budget
+        };
+        let separator = usize::from(!group.is_empty());
+        let next_bytes = group_bytes
+            .saturating_add(separator)
+            .saturating_add(item_bytes);
+        if next_bytes > budget {
+            return Err(DomainError::InvalidConfig(format!(
+                "key {key} 的单个条目超过 {} MiB 传输上限，无法导出",
+                TRANSFER_BATCH_BYTES / 1024 / 1024
+            )));
+        }
+        group.push(item);
+        group_bytes = next_bytes;
+    }
+    if !group.is_empty() {
+        write_fragment_record(sink, line, key, kind, ttl_ms, first, Value::Array(group))?;
+    }
+    Ok(())
+}
+
+fn fragment_value_budget(
+    key: &str,
+    kind: RedisType,
+    ttl_ms: Option<i64>,
+    first: bool,
+) -> Result<usize> {
+    let empty_record = fragment_record(key, kind, ttl_ms, first, Value::Array(Vec::new()));
+    let empty_bytes = serde_json::to_vec(&empty_record)
+        .map_err(|error| DomainError::Storage(format!("序列化 Redis 导出记录失败：{error}")))?
+        .len();
+    // empty_record 已包含 2 字节的 []；write_json_line 还会追加换行。
+    let fixed_bytes = empty_bytes.saturating_sub(2).saturating_add(1);
+    TRANSFER_BATCH_BYTES
+        .checked_sub(fixed_bytes)
+        .ok_or_else(|| DomainError::InvalidConfig(format!("key {key} 导出记录头超过传输上限")))
+}
+
+fn write_fragment_record(
+    sink: &mut super::ExportSink,
+    line: &mut Vec<u8>,
+    key: &str,
+    kind: RedisType,
+    ttl_ms: Option<i64>,
+    first: &mut bool,
+    fragment: Value,
+) -> Result<()> {
+    let record = fragment_record(key, kind, ttl_ms, *first, fragment);
+    write_json_line(sink, line, &record)?;
+    *first = false;
+    Ok(())
+}
+
+fn fragment_record(
+    key: &str,
+    kind: RedisType,
+    ttl_ms: Option<i64>,
+    first: bool,
+    fragment: Value,
+) -> Value {
+    if first {
+        json!({
+            "key": key,
+            "type": kind_name(kind),
+            "ttl_ms": ttl_ms,
+            "value": fragment,
+        })
+    } else {
+        json!({"key": key, "more": true, "value": fragment})
+    }
+}
+
 pub async fn import_redis_db(
     svc: &RedisService,
     config: &ConnectionConfig,
@@ -172,8 +295,6 @@ pub async fn import_redis_db(
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
-    use std::io::BufRead as _;
-
     let start = Instant::now();
     ensure_redis(config)?;
     if config.production {
@@ -189,9 +310,12 @@ pub async fn import_redis_db(
     let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
 
     let mut header_line = String::new();
-    reader
-        .read_line(&mut header_line)
-        .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+    read_line_bounded(
+        &mut reader,
+        &mut header_line,
+        MAX_LINE_BYTES,
+        "Redis 导入文件",
+    )?;
     let header: Value = serde_json::from_str(header_line.trim())
         .map_err(|_| DomainError::InvalidConfig("文件首行不是有效的导出头".into()))?;
     if header.get("engine").and_then(Value::as_str) != Some("redis") {
@@ -210,17 +334,9 @@ pub async fn import_redis_db(
     let mut current: Option<KeyCtx> = None;
     let mut line = String::new();
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|error| DomainError::Storage(format!("读取导入文件失败：{error}")))?;
+        let read = read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES, "Redis 导入文件")?;
         if read == 0 {
             break;
-        }
-        if line.len() > MAX_LINE_BYTES {
-            return Err(DomainError::InvalidConfig(
-                "导入文件单行超长，疑似损坏".into(),
-            ));
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {

@@ -13,7 +13,7 @@ pub const MAX_REDIS_COMMAND_ARG_BYTES: usize = 4 * 1024 * 1024;
 /// Redis 核心与模块命令名都很短，独立限制避免分类器为异常名称分配大写副本。
 pub const MAX_REDIS_COMMAND_NAME_BYTES: usize = 256;
 /// 单条命令全部参数的总字节上限，避免批量编辑形成超大网络缓冲区。
-pub const MAX_REDIS_COMMAND_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_REDIS_COMMAND_BYTES: usize = super::TRANSFER_BATCH_BYTES;
 /// 单条命令参数个数上限，单独约束大量空参数造成的容器与协议开销。
 pub const MAX_REDIS_COMMAND_ARGS: usize = 10_000;
 /// Redis 界面单次最多保留的条目数；Key 树与集合详情共用，避免各处上限不一致。
@@ -21,9 +21,9 @@ pub const MAX_REDIS_LOADED_ITEMS: usize = 1_000_000;
 /// 集合详情最多保留的元素数；同时受累计内容字节预算约束。
 pub const MAX_REDIS_COLLECTION_ITEMS: usize = MAX_REDIS_LOADED_ITEMS;
 /// Redis 值加载的全局字节上限；集合累计内容与单批响应共同复用。
-pub const MAX_REDIS_COLLECTION_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_REDIS_COLLECTION_BYTES: usize = super::MAX_INTERACTIVE_RESULT_BYTES;
 /// 单批 SCAN 的 COUNT 只是 hint，但仍需限制异常调用给服务端造成的瞬时压力。
-pub const MAX_REDIS_SCAN_COUNT: u32 = 10_000;
+pub const MAX_REDIS_SCAN_COUNT: u32 = 5_000;
 /// `scan_all` 是小批辅助接口，不允许被直接调用成无界全库加载。
 pub const MAX_REDIS_SCAN_ALL_KEYS: usize = 10_000;
 
@@ -275,26 +275,23 @@ mod tests {
         let oversized_argument = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES + 1);
         assert!(validate_redis_command_parts(["SET", oversized_argument.as_str()]).is_err());
 
-        let almost_four_mib = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES - 3);
+        // 7 个完整 4 MiB 参数 + 命令名 + 余量，恰好命中 32 MiB 总边界。
+        let exact_remainder = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES - "SET".len());
         assert!(
-            validate_redis_command_parts([
-                "SET",
-                max_argument.as_str(),
-                max_argument.as_str(),
-                max_argument.as_str(),
-                almost_four_mib.as_str(),
-            ])
+            validate_redis_command_parts(
+                std::iter::once("SET")
+                    .chain(std::iter::repeat_n(max_argument.as_str(), 7))
+                    .chain(std::iter::once(exact_remainder.as_str()))
+            )
             .is_ok()
         );
-        let four_mib_minus_two = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES - 2);
+        let over_remainder = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES - "SET".len() + 1);
         assert!(
-            validate_redis_command_parts([
-                "SET",
-                max_argument.as_str(),
-                max_argument.as_str(),
-                max_argument.as_str(),
-                four_mib_minus_two.as_str(),
-            ])
+            validate_redis_command_parts(
+                std::iter::once("SET")
+                    .chain(std::iter::repeat_n(max_argument.as_str(), 7))
+                    .chain(std::iter::once(over_remainder.as_str()))
+            )
             .is_err()
         );
 
@@ -318,7 +315,7 @@ mod tests {
     fn redis_scan_and_collection_limits_reject_bypasses() {
         assert_eq!(MAX_REDIS_LOADED_ITEMS, 1_000_000);
         assert_eq!(MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_LOADED_ITEMS);
-        assert_eq!(MAX_REDIS_COLLECTION_BYTES, 512 * 1024 * 1024);
+        assert_eq!(MAX_REDIS_COLLECTION_BYTES, 256 * 1024 * 1024);
         assert!(validate_redis_collection_limit(1).is_ok());
         assert!(validate_redis_collection_limit(MAX_REDIS_COLLECTION_ITEMS).is_ok());
         assert!(validate_redis_collection_limit(0).is_err());

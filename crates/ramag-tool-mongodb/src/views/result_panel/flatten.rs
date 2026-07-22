@@ -37,6 +37,32 @@ pub struct FlatTable {
 }
 
 impl FlatTable {
+    /// 表格派生视图的常驻内存估算，纳入全部查询标签预算。
+    pub fn retained_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.columns
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Column>()),
+            )
+            .saturating_add(
+                self.rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Vec<Cell>>()),
+            );
+        for column in &self.columns {
+            bytes = bytes.saturating_add(column.path.capacity());
+        }
+        for row in &self.rows {
+            bytes =
+                bytes.saturating_add(row.capacity().saturating_mul(std::mem::size_of::<Cell>()));
+            for cell in row {
+                bytes = bytes.saturating_add(cell.text.capacity());
+            }
+        }
+        bytes
+    }
+
     /// 在最左插入前导列（下钻时展示祖先文档 id）。`lead_rows[i]` 与第 i 行对齐、
     /// 长度与 `lead` 一致；行数不足处补空。lead 为空则不动
     pub fn prepend_lead(&mut self, mut lead: Vec<Column>, lead_rows: Vec<Vec<Cell>>) {

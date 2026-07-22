@@ -852,6 +852,7 @@ mod tests {
             affected_rows: 0,
             elapsed_ms: 1,
             warnings: Vec::new(),
+            truncated: false,
         }
     }
 
@@ -954,6 +955,7 @@ mod tests {
             affected_rows: 0,
             elapsed_ms: 1,
             warnings: Vec::new(),
+            truncated: false,
         };
 
         let view = build_display_view(&result, None, "", "needle");

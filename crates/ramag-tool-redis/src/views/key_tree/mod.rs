@@ -26,7 +26,10 @@ use gpui_component::{
     v_flex,
 };
 use ramag_app::RedisService;
-use ramag_domain::entities::{ConnectionConfig, KeyMeta, MAX_REDIS_LOADED_ITEMS};
+use ramag_domain::entities::{
+    ConnectionConfig, INTERACTIVE_RESULT_WARNING_BYTES, KeyMeta, MAX_INTERACTIVE_RESULT_BYTES,
+    MAX_REDIS_LOADED_ITEMS,
+};
 use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 
@@ -55,7 +58,7 @@ impl VisibleRowsCacheEntry {
 /// 共同受此计数和原始名称字节预算约束：100 万 key（名称均长 ~30B）约占
 /// 300-500 MB，是桌面场景合理极限；再大提示用 MATCH 缩小范围
 const MAX_LOADED_KEYS: usize = MAX_REDIS_LOADED_ITEMS;
-const MAX_LOADED_KEY_BYTES: usize = 256 * 1024 * 1024;
+const MAX_LOADED_KEY_BYTES: usize = MAX_INTERACTIVE_RESULT_BYTES;
 
 /// 命名空间分隔符（业界事实标准）
 const NAMESPACE_SEP: char = ':';
@@ -363,6 +366,8 @@ impl Render for KeyTreePanel {
         };
         if self.resource_limited {
             count_label.push_str(" · 已达到安全上限，请用 MATCH 缩小范围");
+        } else if self.key_bytes >= INTERACTIVE_RESULT_WARNING_BYTES {
+            count_label.push_str(" · 名称缓存已超过 128 MiB，建议用 MATCH 缩小范围");
         }
         if mutating {
             count_label.push_str(" · 写操作执行中…");

@@ -324,6 +324,7 @@ mod tests {
             affected_rows: 0,
             elapsed_ms: 5,
             warnings: Vec::new(),
+            truncated: false,
         }
     }
 
@@ -394,6 +395,7 @@ mod tests {
             affected_rows: 0,
             elapsed_ms: 0,
             warnings: Vec::new(),
+            truncated: false,
         };
         let projection = json_projection(&result, None);
         assert_eq!(projection, vec![("a", 2), ("same", 3), ("z", 0)]);

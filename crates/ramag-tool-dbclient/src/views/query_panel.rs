@@ -22,7 +22,7 @@ use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig};
 use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{
-    CloseTab, MAX_EDITOR_TABS, can_open_editor_tab,
+    CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab,
     platform::{primary_shift_shortcut, primary_shortcut},
 };
 
@@ -47,12 +47,15 @@ pub struct QueryPanel {
     service: Arc<ConnectionService>,
     /// 共享给每个 Tab 的 SQL 补全缓存
     schema_cache: Arc<RwLock<SchemaCache>>,
+    result_memory: ResultMemoryBudget,
     /// 各个标签页
     tabs: Vec<Entity<QueryTab>>,
     /// 标签页标题
     titles: Vec<String>,
     /// 当前激活的索引
     active: usize,
+    /// 当前连接会话是否是窗口里正在显示的会话。
+    session_active: bool,
     /// 当前激活的连接（同步给所有 Tab + 历史面板）
     connection: Option<ConnectionConfig>,
     /// 当前激活的默认库（点表树/schema 行后同步给所有 Tab）
@@ -81,15 +84,18 @@ impl QueryPanel {
     pub fn new(
         service: Arc<ConnectionService>,
         schema_cache: Arc<RwLock<SchemaCache>>,
+        result_memory: ResultMemoryBudget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
             service,
             schema_cache,
+            result_memory,
             tabs: Vec::new(),
             titles: Vec::new(),
             active: 0,
+            session_active: false,
             connection: None,
             active_schema: None,
             // 数据浏览 / 导出是主场景，写 SQL 走 cmd-e 或表树按钮唤出
@@ -196,6 +202,7 @@ impl QueryPanel {
         self.titles.push(title);
         self.draft_subscriptions.push(sub);
         self.active = self.tabs.len() - 1;
+        self.sync_result_activity(cx);
         // 聚焦编辑器，cmd-t 后立即可输入
         self.focus_active_editor(window, cx);
         // 大负 offset 让 tab bar 滚末尾，GPUI 自动 clamp 到 max_offset
@@ -253,6 +260,7 @@ impl QueryPanel {
             return;
         }
         self.active = active_index_after_close(self.active, index, self.tabs.len());
+        self.sync_result_activity(cx);
         // 关闭后让新 active tab 编辑器获得焦点，无需再点一下
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
@@ -263,9 +271,26 @@ impl QueryPanel {
         if index < self.tabs.len() && self.active != index {
             self.draft_load_pending = false;
             self.active = index;
+            self.sync_result_activity(cx);
             self.focus_active_editor(window, cx);
             self.schedule_draft_persist(cx);
             cx.notify();
+        }
+    }
+
+    pub fn set_session_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.session_active == active {
+            return;
+        }
+        self.session_active = active;
+        self.sync_result_activity(cx);
+    }
+
+    pub(super) fn sync_result_activity(&self, cx: &mut Context<Self>) {
+        for (index, tab) in self.tabs.iter().enumerate() {
+            tab.update(cx, |tab, cx| {
+                tab.set_result_active(self.session_active && index == self.active, cx)
+            });
         }
     }
 

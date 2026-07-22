@@ -2,10 +2,11 @@
 
 use async_trait::async_trait;
 use ramag_domain::entities::{
-    ConnectionConfig, DriverKind, KeyMeta, MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS,
-    RedisType, RedisValue, RedisValueLoad, RedisValuePage, ScanResult, StreamEntry,
-    ValuePageCursor, validate_redis_collection_limit, validate_redis_command, validate_redis_key,
-    validate_redis_match_pattern, validate_redis_scan_count,
+    ConnectionConfig, DriverKind, INTERACTIVE_RESULT_WARNING_BYTES, KeyMeta,
+    MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS, RedisType, RedisValue, RedisValueLoad,
+    RedisValuePage, ScanResult, StreamEntry, ValuePageCursor, validate_redis_collection_limit,
+    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
+    validate_redis_scan_count,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
@@ -223,10 +224,13 @@ impl KvDriver for RedisDriver {
                 RedisType::ZSet => fetch_zset(&mut mgr, &key, limit).await,
                 RedisType::Stream => fetch_stream(&mut mgr, &key, limit).await,
             }?;
+            let memory_warning =
+                redis_value_retained_bytes(&value) >= INTERACTIVE_RESULT_WARNING_BYTES;
             Ok(RedisValueLoad {
                 value,
                 total,
                 byte_limited,
+                memory_warning,
             })
         })
         .await
@@ -441,8 +445,8 @@ fn parse_redis_version(info: &str) -> String {
 const DEFAULT_COLLECTION_LIMIT: usize = MAX_REDIS_COLLECTION_ITEMS;
 /// 大集合在后台按固定批次读取，避免把全局 100 万条上限直接变成单次超大响应。
 const COLLECTION_FETCH_BATCH: usize = 5_000;
-/// 详情渲染同样只保留 4 MiB；从服务端直接按此前缀读取，避免先拉取超大 String。
-const MAX_STRING_BYTES: u64 = 4 * 1024 * 1024;
+/// String 详情与其它交互结果共用 256 MiB 硬上限；渲染层仍只构造有界文本预览。
+const MAX_STRING_BYTES: u64 = MAX_REDIS_COLLECTION_BYTES as u64;
 
 async fn fetch_value_len(
     mgr: &mut ConnectionManager,

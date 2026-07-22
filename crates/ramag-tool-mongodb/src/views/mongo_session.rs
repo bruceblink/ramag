@@ -37,11 +37,12 @@ impl MongoSessionPanel {
     pub fn new(
         config: ConnectionConfig,
         service: Arc<MongoService>,
+        result_memory: ramag_ui::ResultMemoryBudget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let tree = cx.new(|cx| CollectionTreePanel::new(service.clone(), window, cx));
-        let queries = cx.new(|cx| MongoQueryPanel::new(service.clone(), window, cx));
+        let queries = cx.new(|cx| MongoQueryPanel::new(service.clone(), result_memory, window, cx));
 
         // 立即同步 connection；queries 初始化一个空 Tab（与 dbclient 一致：保证至少一个 Tab）
         tree.update(cx, |t, cx| t.set_connection(Some(config.clone()), cx));
@@ -148,6 +149,11 @@ impl MongoSessionPanel {
     /// Tab 被（重新）激活时调用：collection 树为空才补拉，避免空面板（连接放久后切回也会重新请求）
     pub fn ensure_loaded(&self, cx: &mut Context<Self>) {
         self.tree.update(cx, |t, cx| t.ensure_loaded(cx));
+    }
+
+    pub fn set_result_active(&self, active: bool, cx: &mut Context<Self>) {
+        self.queries
+            .update(cx, |queries, cx| queries.set_session_active(active, cx));
     }
 
     /// Tab 激活时聚焦查询面板，让 cmd-e（ToggleMongoEditor）的 handler 立即在焦点链上

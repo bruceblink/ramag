@@ -48,6 +48,7 @@ impl ConnectionSession {
     pub fn new(
         config: ConnectionConfig,
         service: Arc<ConnectionService>,
+        result_memory: ramag_ui::ResultMemoryBudget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -57,8 +58,15 @@ impl ConnectionSession {
 
         let tree =
             cx.new(|cx| TableTreePanel::new(service.clone(), schema_cache.clone(), window, cx));
-        let queries =
-            cx.new(|cx| QueryPanel::new(service.clone(), schema_cache.clone(), window, cx));
+        let queries = cx.new(|cx| {
+            QueryPanel::new(
+                service.clone(),
+                schema_cache.clone(),
+                result_memory,
+                window,
+                cx,
+            )
+        });
 
         // 立即设置连接 → 加载 schemas + 同步 queries
         let conn_for_tree = config.clone();
@@ -248,6 +256,11 @@ impl ConnectionSession {
     /// Tab 被（重新）激活时调用：表树为空才补拉，避免空面板（连接放久后切回也会重新请求）
     pub fn ensure_loaded(&self, cx: &mut Context<Self>) {
         self.tree.update(cx, |t, cx| t.ensure_loaded(cx));
+    }
+
+    pub fn set_result_active(&self, active: bool, cx: &mut Context<Self>) {
+        self.queries
+            .update(cx, |queries, cx| queries.set_session_active(active, cx));
     }
 
     /// Tab 激活时聚焦：编辑器可见则聚焦编辑器（cmd-enter 的 handler 在 QueryTab 层，需焦点在内），

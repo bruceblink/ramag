@@ -300,6 +300,7 @@ mod tests {
             affected_rows: 0,
             elapsed_ms: 0,
             warnings: Vec::new(),
+            truncated: false,
         }
     }
 

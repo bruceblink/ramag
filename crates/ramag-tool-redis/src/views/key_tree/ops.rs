@@ -8,7 +8,7 @@ use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use ramag_app::RedisService;
 use ramag_domain::entities::{
-    ConnectionConfig, MAX_REDIS_KEY_BYTES, RedisValue, validate_redis_key,
+    ConnectionConfig, MAX_REDIS_KEY_BYTES, MAX_REDIS_SCAN_COUNT, RedisValue, validate_redis_key,
 };
 use ramag_domain::error::Result;
 use ramag_ui::{open_bounded_prompt, open_confirm};
@@ -16,7 +16,7 @@ use ramag_ui::{open_bounded_prompt, open_confirm};
 use super::{DeletedScope, KeyTreeEvent, KeyTreePanel};
 
 /// 单轮 SCAN 收集上限：删完一轮再扫下一轮，内存有界
-const SCAN_BATCH: usize = 10_000;
+const SCAN_BATCH: usize = MAX_REDIS_SCAN_COUNT as usize;
 /// 单条 DEL 携带的 key 数上限：避免超长命令阻塞服务端
 const DEL_CHUNK: usize = 500;
 

@@ -24,8 +24,9 @@ impl QueryPanel {
         let cache = self.schema_cache.clone();
         let active_schema = self.active_schema.clone();
         let show_editor = self.show_editor;
+        let result_memory = self.result_memory.clone();
         cx.new(|cx| {
-            let mut tab = QueryTab::new(svc, title, conn, cache, window, cx);
+            let mut tab = QueryTab::new(svc, title, conn, cache, result_memory, window, cx);
             tab.set_active_schema(active_schema, cx);
             tab.set_show_editor(show_editor, cx);
             tab
@@ -209,6 +210,7 @@ impl QueryPanel {
             self.draft_subscriptions.push(sub);
         }
         self.active = pref.active.min(self.tabs.len().saturating_sub(1));
+        self.sync_result_activity(cx);
         self.restoring_drafts = false;
         cx.notify();
     }

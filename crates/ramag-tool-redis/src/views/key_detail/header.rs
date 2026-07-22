@@ -103,6 +103,13 @@ pub(super) fn render_header(
 
     if let Some(loaded) = value_ref.and_then(RedisValue::len) {
         info_row = info_row.child(div().child(format!("{loaded} 元素")));
+        if panel.value_memory_warning {
+            info_row = info_row.child(
+                div()
+                    .text_color(accent)
+                    .child("内存占用已超过 128 MiB，建议缩小加载范围"),
+            );
+        }
         if panel.has_more() && panel.value_byte_limited {
             info_row = info_row.child(div().text_color(muted_fg).child(format!(
                 "内容已达到 {} MiB 安全上限",

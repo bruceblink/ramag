@@ -1,10 +1,11 @@
 //! 单 Tab 编辑器：JSON 命令编辑器 + 工具条 + 结果区。
 //!
 //! 编辑器内容是 MongoDB 原生 runCommand 风格的 JSON：
-//!   `{"find": "users", "filter": {...}, "limit": 10000}` / `{"aggregate": "...", "pipeline": [...], "cursor": {}}` / `{"count": "users", "query": {...}}`
+//!   `{"find": "users", "filter": {...}}` / `{"aggregate": "...", "pipeline": [...], "cursor": {}}` / `{"count": "users", "query": {...}}`
 //! 运行后若返回带 `cursor.firstBatch`，自动展开为文档列表；否则把整个返回当单文档展示
 
 mod command;
+mod paging;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,16 +23,18 @@ use gpui_component::{
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoQueryResult, json_pretty_bounded};
 use ramag_domain::error::DomainError;
+use ramag_ui::ResultMemoryBudget;
 use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::actions::{FormatMongoJson, RunMongoQuery};
-use crate::views::result_panel::{ResultEvent, ResultPanel};
+use crate::views::result_panel::{MongoResultPagination, ResultEvent, ResultPanel};
 use crate::views::{MAX_MONGO_INTERACTIVE_INPUT_BYTES, bounded_input};
 use command::{
-    command_response_kind, dangerous_command_reason, default_command_template, extract_collection,
-    parse_run_command_response, truncate_chars,
+    CommandResponseKind, command_response_kind, dangerous_command_reason, default_command_template,
+    extract_collection, parse_run_command_response, truncate_chars,
 };
+use paging::{MongoPager, PageRequest, finish_page};
 
 const MAX_CONFIRM_PRETTY_BYTES: usize = 64 * 1024;
 
@@ -61,6 +64,8 @@ pub struct MongoQueryTab {
     /// 上次自动注入的命令（默认模板 / 树点 collection / 示例）。编辑器内容仍等于它
     /// = 未手改，树点击可原地覆盖；否则视为手写草稿，浏览另开 Tab（防丢稿）
     last_injected_cmd: Option<String>,
+    /// 普通 find 的服务端分页状态；基线命令独立于可变编辑器文本。
+    pager: Option<MongoPager>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -83,6 +88,7 @@ impl MongoQueryTab {
         service: Arc<MongoService>,
         config: ConnectionConfig,
         default_db: Option<String>,
+        result_memory: ResultMemoryBudget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -97,15 +103,22 @@ impl MongoQueryTab {
                 .code_editor("json")
                 .multi_line(true)
                 .line_number(true)
-                .placeholder("{\"find\": \"users\", \"filter\": {}, \"limit\": 10000}")
+                .placeholder("{\"find\": \"users\", \"filter\": {}}")
                 .default_value(default_command_template());
             state.lsp.completion_provider =
                 Some(crate::completion::CommandCompletionProvider::new_rc());
             state
         });
         let result = cx.new(|cx_inner| ResultPanel::new(window, cx_inner));
+        let weak_result = result.downgrade();
+        let lease = result_memory.register(move |app| {
+            weak_result
+                .update(app, |panel, cx| panel.evict_result_for_budget(cx))
+                .is_ok()
+        });
         // 注入 DML 执行上下文，让结果区能增删改
         result.update(cx, |r, _| {
+            r.attach_result_memory(lease);
             r.set_context(service.clone(), config.clone(), database.clone());
         });
         // 结果区 DML 成功后请求刷新：重跑当前命令
@@ -115,6 +128,7 @@ impl MongoQueryTab {
             |this, _, event: &ResultEvent, window, cx| match event {
                 ResultEvent::Refresh => this.request_run(window, cx),
                 ResultEvent::Cancel => this.cancel_if_running(cx),
+                ResultEvent::PageRequested(page) => this.handle_page(*page, cx),
                 ResultEvent::CollectionImportRequested {
                     db,
                     collection,
@@ -136,6 +150,7 @@ impl MongoQueryTab {
                 if !matches!(e, InputEvent::Change) {
                     return;
                 }
+                this.pager = None;
                 if ramag_ui::clamp_multiline_input_value(
                     &editor_for_sub,
                     MAX_MONGO_INTERACTIVE_INPUT_BYTES,
@@ -169,8 +184,14 @@ impl MongoQueryTab {
             pending_notification: None,
             // 新 Tab 出生自带默认模板，属自动注入（未手改前树点击可原地覆盖）
             last_injected_cmd: Some(default_command_template()),
+            pager: None,
             _subscriptions: vec![refresh_sub, editor_sub],
         }
+    }
+
+    pub fn set_result_active(&self, active: bool, cx: &mut Context<Self>) {
+        self.result
+            .update(cx, |result, _| result.set_result_active(active));
     }
 
     /// 是否存在用户手写草稿：编辑器非空且内容不等于上次自动注入的命令
@@ -216,6 +237,7 @@ impl MongoQueryTab {
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
         self.collection = None;
         self.last_injected_cmd = None;
+        self.pager = None;
         self.result.update(cx, |panel, _| {
             panel.set_database(self.database.clone());
             panel.set_target_collection(None);
@@ -243,6 +265,7 @@ impl MongoQueryTab {
         self.cancel_if_running(cx);
         self.database = database;
         self.collection = Some(collection.clone());
+        self.pager = None;
         let cmd = find_command_template(&collection);
         self.editor.update(cx, |s, cx| {
             s.set_value(cmd.clone(), window, cx);
@@ -256,6 +279,7 @@ impl MongoQueryTab {
 
     /// 编辑器内容整体替换为给定命令（示例插入用，与点树 prefill 的覆盖语义一致）
     pub fn set_command(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.pager = None;
         self.editor.update(cx, |s, cx| {
             s.set_value(cmd.to_string(), window, cx);
         });
@@ -273,6 +297,7 @@ impl MongoQueryTab {
     pub fn set_database(&mut self, db: String, cx: &mut Context<Self>) {
         if self.database != db {
             self.database = db;
+            self.pager = None;
             // Mongo driver 当前没有可靠 killOp 句柄；让旧回包失效，并清除旧结果的 DML 目标。
             self.current_task = None;
             self.run_seq = self.run_seq.wrapping_add(1);
@@ -421,10 +446,81 @@ impl MongoQueryTab {
         if self.running {
             return;
         }
+        let response_kind = command_response_kind(&cmd);
+        let (effective_command, page_request) = if let Some(pager) = MongoPager::from_command(&cmd)
+        {
+            let page = match pager.command_for_page(0) {
+                Ok(page) => page,
+                Err(message) => {
+                    self.result.update(cx, |panel, cx| {
+                        panel.set_error(format!("MongoDB 分页初始化失败：{message}"), cx)
+                    });
+                    return;
+                }
+            };
+            self.pager = Some(pager);
+            (page.0, Some(page.1))
+        } else {
+            self.pager = None;
+            (cmd.clone(), None)
+        };
+        self.execute_command(
+            cmd,
+            effective_command,
+            response_kind,
+            Some(text),
+            page_request,
+            cx,
+        );
+    }
+
+    /// 加载相邻结果页；原始编辑器命令不变，派生的 skip / limit 不写入历史。
+    fn handle_page(&mut self, requested_page: usize, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
+        let Some(pager) = self.pager.as_ref() else {
+            return;
+        };
+        if !pager.accepts_adjacent_page(requested_page) {
+            return;
+        }
+        let base_command = pager.base_command().clone();
+        let (effective_command, page_request) = match pager.command_for_page(requested_page) {
+            Ok(page) => page,
+            Err(message) => {
+                self.pending_notification = Some(
+                    Notification::error(format!("加载 MongoDB 分页失败：{message}")).autohide(true),
+                );
+                cx.notify();
+                return;
+            }
+        };
+        let response_kind = command_response_kind(&base_command);
+        self.execute_command(
+            base_command,
+            effective_command,
+            response_kind,
+            None,
+            Some(page_request),
+            cx,
+        );
+    }
+
+    /// 执行原始命令或其分页派生命令。
+    fn execute_command(
+        &mut self,
+        base_command: Value,
+        effective_command: Value,
+        response_kind: CommandResponseKind,
+        history_text: Option<String>,
+        page_request: Option<PageRequest>,
+        cx: &mut Context<Self>,
+    ) {
         // 提取命令目标 collection + 同步当前 db，一并注入结果区作为增删改上下文。
         // self.database 切库 / 切 collection 时已更新，必须同步给结果区；否则写操作沿用 tab
         // 初始库，filter 匹配不到文档（matched 0）→ 更新 / 删除「不生效」
-        let target = extract_collection(&cmd);
+        let target = extract_collection(&base_command);
         self.collection = target.clone();
         let db_now = self.database.clone();
         self.result.update(cx, |p, _| {
@@ -435,8 +531,6 @@ impl MongoQueryTab {
         let svc = self.service.clone();
         let conf = self.config.clone();
         let db = self.database.clone();
-        let response_kind = command_response_kind(&cmd);
-        let cmd_text = text.clone();
         self.running = true;
         // 代际推进 + 记录本次运行的 db（回包时比对，防运行期间切库导致串台）
         self.run_seq = self.run_seq.wrapping_add(1);
@@ -449,14 +543,23 @@ impl MongoQueryTab {
 
         let task = cx.spawn(async move |this, cx| {
             let start = Instant::now();
-            let outcome = svc.run_command(&conf, &db, cmd).await;
+            let outcome = svc.run_command(&conf, &db, effective_command).await;
             let elapsed_ms = start.elapsed().as_millis() as u64;
-            let qr: ramag_domain::error::Result<MongoQueryResult> = match outcome {
-                Ok(resp) => Ok(parse_run_command_response(resp, elapsed_ms, response_kind)),
-                Err(e) => Err(e),
-            };
+            let (qr, page_has_more): (ramag_domain::error::Result<MongoQueryResult>, Option<bool>) =
+                match outcome {
+                    Ok(resp) => {
+                        let mut result =
+                            parse_run_command_response(resp, elapsed_ms, response_kind);
+                        let has_more =
+                            page_request.map(|request| finish_page(&mut result, request));
+                        (Ok(result), has_more)
+                    }
+                    Err(e) => (Err(e), None),
+                };
             // 写历史在同 task 顺序执行，避免 DomainError 不实现 Clone 的借用难题
-            svc.append_history(&conf, cmd_text, &qr).await;
+            if let Some(command_text) = history_text {
+                svc.append_history(&conf, command_text, &qr).await;
+            }
 
             let _ = this.update(cx, |this, cx| {
                 // 请求身份校验：切库 / 重新运行后旧回包不得覆盖新上下文的结果
@@ -475,13 +578,32 @@ impl MongoQueryTab {
                 this.current_task = None;
                 match qr {
                     Ok(r) => {
+                        let pagination =
+                            page_request
+                                .zip(page_has_more)
+                                .and_then(|(request, has_more)| {
+                                    let displayed = r.documents.len();
+                                    this.pager.as_mut().map(|pager| {
+                                        pager.finish_request(request, displayed, has_more);
+                                        MongoResultPagination {
+                                            page: request.page,
+                                            page_size: request.page_size,
+                                            has_more: pager.has_more,
+                                        }
+                                    })
+                                });
                         info!(
                             db = %this.database,
                             docs = r.documents.len(),
                             ms = r.elapsed_ms,
                             "mongo command done"
                         );
-                        result_handle.update(cx, |p, cx| p.set_result(r, cx));
+                        result_handle.update(cx, |panel, cx| {
+                            panel.set_result(r, cx);
+                            if panel.result.is_some() {
+                                panel.set_pagination(pagination, cx);
+                            }
+                        });
                     }
                     Err(e) => {
                         warn!(error = %e, "mongo command failed");
@@ -605,7 +727,7 @@ impl MongoQueryTab {
 fn find_command_template(collection: &str) -> String {
     let collection =
         serde_json::to_string(collection).unwrap_or_else(|_| "\"invalid collection\"".to_string());
-    format!("{{\n  \"find\": {collection},\n  \"filter\": {{}},\n  \"limit\": 10000\n}}")
+    format!("{{\n  \"find\": {collection},\n  \"filter\": {{}},\n  \"sort\": {{\"_id\": 1}}\n}}")
 }
 
 impl Render for MongoQueryTab {
@@ -660,5 +782,7 @@ mod template_tests {
         let template = find_command_template("quotes\"and\\slashes");
         let parsed: serde_json::Value = serde_json::from_str(&template).unwrap();
         assert_eq!(parsed["find"], "quotes\"and\\slashes");
+        assert_eq!(parsed["sort"]["_id"], 1);
+        assert!(parsed.get("limit").is_none());
     }
 }

@@ -20,7 +20,10 @@ use gpui::{
 use gpui_component::input::InputState;
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, Value};
+use ramag_domain::entities::{
+    Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, Value, Warning,
+};
+use ramag_ui::{ResultMemoryLease, ResultMemoryUpdate};
 
 use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
@@ -40,6 +43,8 @@ pub enum ResultState {
     Empty,
     Running,
     Error(String),
+    /// 结果因全部标签的全局预算被释放；查询文本仍保留在编辑器。
+    Released(String),
     Ok(Arc<QueryResult>),
 }
 
@@ -144,6 +149,8 @@ pub struct ResultPanel {
     pub(super) column_completion_source: Arc<RwLock<Vec<String>>>,
     /// SHOW WARNINGS 面板是否展开
     pub(super) warnings_expanded: bool,
+    /// 当前标签在全部查询结果内存预算中的登记。
+    result_memory: Option<ResultMemoryLease>,
 }
 
 impl ResultPanel {
@@ -200,6 +207,17 @@ impl ResultPanel {
             h_scroll: ScrollHandle::new(),
             column_completion_source,
             warnings_expanded: false,
+            result_memory: None,
+        }
+    }
+
+    pub fn attach_result_memory(&mut self, lease: ResultMemoryLease) {
+        self.result_memory = Some(lease);
+    }
+
+    pub fn set_result_active(&self, active: bool) {
+        if let Some(lease) = &self.result_memory {
+            lease.set_active(active);
         }
     }
 
@@ -471,6 +489,10 @@ impl ResultPanel {
     }
 
     pub fn set_state(&mut self, state: ResultState, cx: &mut Context<Self>) {
+        let state = self.account_result_memory(state, cx);
+        if matches!(&state, ResultState::Released(_)) {
+            self.clear_released_result_context();
+        }
         let has_client_warning = matches!(
             &state,
             ResultState::Ok(qr) if qr.warnings.iter().any(|warning| warning.level == "Client")
@@ -505,12 +527,74 @@ impl ResultPanel {
     /// 恢复被 Running 覆盖前的状态快照（生产只读拦截 Forbidden 时用）：
     /// 不走 set_state 的清理逻辑，选中 / 排序 / 滚动位置全部保持原样
     pub fn restore_state(&mut self, state: ResultState, cx: &mut Context<Self>) {
+        let state = self.account_result_memory(state, cx);
+        if matches!(&state, ResultState::Released(_)) {
+            self.clear_released_result_context();
+        }
         if let ResultState::Ok(qr) = &state {
             *self.column_completion_source.write() = qr.columns.clone();
         }
         self.state = state;
         self.mark_result_changed();
         cx.notify();
+    }
+
+    fn account_result_memory(&self, mut state: ResultState, cx: &mut Context<Self>) -> ResultState {
+        let bytes = match &state {
+            ResultState::Ok(result) => {
+                usize::try_from(result.retained_bytes()).unwrap_or(usize::MAX)
+            }
+            _ => 0,
+        };
+        let Some(lease) = &self.result_memory else {
+            return state;
+        };
+        let outcome = lease.update_bytes(bytes, cx);
+        if outcome.current_evicted {
+            return ResultState::Released(
+                "结果超过全部标签 512 MiB 硬上限，已释放结果数据；查询文本仍保留，可收窄后重新运行"
+                    .into(),
+            );
+        }
+        if outcome.warning
+            && let ResultState::Ok(result) = &mut state
+        {
+            let result = Arc::make_mut(result);
+            if !result
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("全部查询标签结果"))
+            {
+                result.warnings.push(global_memory_warning(outcome));
+            }
+        }
+        state
+    }
+
+    /// 全局预算回收回调：只释放结果，不触碰编辑器里的 SQL。
+    pub fn evict_result_for_budget(&mut self, cx: &mut Context<Self>) {
+        self.state = ResultState::Released(
+            "旧结果已按 LRU 释放，以保持全部标签结果不超过 512 MiB；查询文本仍保留".into(),
+        );
+        self.clear_released_result_context();
+        self.column_completion_source.write().clear();
+        self.pagination = None;
+        self.mark_result_changed();
+        self.selected_cell = None;
+        self.clear_selected_rows();
+        self.sort_by = None;
+        self.col_width_overrides.clear();
+        self.pending_insert = None;
+        self.row_identity = None;
+        cx.notify();
+    }
+
+    /// 编辑器持有唯一需要保留的查询文本；结果面板内的 SQL 副本与编辑状态一并释放。
+    fn clear_released_result_context(&mut self) {
+        self.source_sql = None;
+        self.pinned_target = None;
+        self.cell_edit_input = None;
+        self.row_identity = None;
     }
 
     /// 标记结果数据已变化，并丢弃所有依赖旧行内容的派生缓存。
@@ -681,6 +765,25 @@ impl ResultPanel {
 
     pub fn state(&self) -> &ResultState {
         &self.state
+    }
+}
+
+fn global_memory_warning(outcome: ResultMemoryUpdate) -> Warning {
+    let total_mib = outcome.total_bytes / 1024 / 1024;
+    let message = if outcome.evicted_results > 0 {
+        format!(
+            "全部查询标签结果达到全局预算，已按 LRU 释放 {} 个非活动标签的旧结果；当前保留约 {total_mib} MiB",
+            outcome.evicted_results
+        )
+    } else {
+        format!(
+            "全部查询标签结果已达到 384 MiB 提示线（当前约 {total_mib} MiB），建议关闭旧结果或收窄查询"
+        )
+    };
+    Warning {
+        level: "Client".into(),
+        code: 0,
+        message,
     }
 }
 

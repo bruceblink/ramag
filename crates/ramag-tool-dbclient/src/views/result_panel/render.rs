@@ -97,6 +97,16 @@ impl Render for ResultPanel {
                     .into_any_element()
             }
 
+            ResultState::Released(msg) => v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .px_4()
+                .text_xs()
+                .text_color(theme.warning)
+                .child(msg)
+                .into_any_element(),
+
             ResultState::Ok(result) => render_table(
                 self,
                 &result,

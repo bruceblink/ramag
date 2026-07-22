@@ -131,6 +131,15 @@ pub(super) fn parse_run_command_response(
         .get("__ramag_truncated")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let memory_warning = response
+        .get("__ramag_memory_warning")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let retained_bytes = response
+        .get("__ramag_retained_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(0);
     if let Some(Value::Array(batch)) = response
         .get_mut("cursor")
         .and_then(Value::as_object_mut)
@@ -138,7 +147,10 @@ pub(super) fn parse_run_command_response(
         .filter(|batch| batch.is_array())
         .map(std::mem::take)
     {
-        return MongoQueryResult::read_maybe_truncated(batch, elapsed_ms, truncated);
+        let mut result =
+            MongoQueryResult::read_with_budget(batch, elapsed_ms, truncated, retained_bytes);
+        result.memory_warning |= memory_warning;
+        return result;
     }
     match kind {
         CommandResponseKind::Count => {
@@ -149,6 +161,8 @@ pub(super) fn parse_run_command_response(
                     elapsed_ms,
                     summary: format!("count={count}, {elapsed_ms}ms"),
                     truncated: false,
+                    retained_bytes: 0,
+                    memory_warning: false,
                 };
             }
         }

@@ -19,6 +19,7 @@ use parking_lot::RwLock;
 
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES};
+use ramag_ui::ResultMemoryBudget;
 use ramag_ui::platform::primary_shortcut;
 
 use crate::sql_completion::SchemaCache;
@@ -94,6 +95,7 @@ impl QueryTab {
         title: impl Into<String>,
         connection: Option<ConnectionConfig>,
         schema_cache: Arc<RwLock<SchemaCache>>,
+        result_memory: ResultMemoryBudget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -123,6 +125,13 @@ impl QueryTab {
             p.set_schema_cache(Some(cache_for_result));
             p
         });
+        let weak_result = result.downgrade();
+        let lease = result_memory.register(move |app| {
+            weak_result
+                .update(app, |panel, cx| panel.evict_result_for_budget(cx))
+                .is_ok()
+        });
+        result.update(cx, |panel, _| panel.attach_result_memory(lease));
 
         // 订阅编辑器内容变化：发现新提到的表 → 后台预拉它的列结构
         let editor_for_sub = editor.clone();
@@ -194,6 +203,11 @@ impl QueryTab {
             _editor_sub: editor_sub,
             _result_sub: result_sub,
         }
+    }
+
+    pub fn set_result_active(&self, active: bool, cx: &mut Context<Self>) {
+        self.result
+            .update(cx, |result, _| result.set_result_active(active));
     }
 
     /// 是否存在用户手写草稿：编辑器非空且内容不等于上次自动注入的 SQL。
