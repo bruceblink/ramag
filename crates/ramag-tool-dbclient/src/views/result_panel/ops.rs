@@ -270,7 +270,7 @@ impl ResultPanel {
                     }
                     Ok(_) => not_matched += 1,
                     Err(e) => {
-                        error!(error = %e, "delete row failed (in batch)");
+                        error!(error = %e, mode = "batch", "delete row failed");
                         last_err = Some(e);
                         break;
                     }

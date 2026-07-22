@@ -49,7 +49,7 @@ impl KeyTreePanel {
             self.loading = false;
             self.truncated = true;
             self.rebuild_tree();
-            info!(count = self.keys.len(), "redis scan stopped by user");
+            info!(count = self.keys.len(), "key scan stopped by user");
         }
         cx.notify();
     }
@@ -168,13 +168,13 @@ impl KeyTreePanel {
                                 count = this.keys.len(),
                                 key_bytes = this.key_bytes,
                                 db,
-                                "redis scan stopped at resource limit"
+                                "key scan stopped at resource limit"
                             );
                         } else if done {
                             this.loading = false;
                             this.truncated = false;
                             this.rebuild_tree();
-                            info!(count = this.keys.len(), db, "redis scan completed");
+                            info!(count = this.keys.len(), db, "key scan completed");
                         } else {
                             // 首批立即出树给首屏反馈，此后每积累 REBUILD_STEP 才重建一次
                             if this.last_rebuilt_count == 0
@@ -186,7 +186,7 @@ impl KeyTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, db, "redis scan failed");
+                        error!(error = %e, db, "key scan failed");
                         this.loading = false;
                         if this.keys.is_empty() {
                             this.error = Some(format!("加载失败：{e}"));

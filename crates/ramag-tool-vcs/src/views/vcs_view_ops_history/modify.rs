@@ -38,14 +38,14 @@ impl VcsView {
                 }
                 let paused = this.status.as_ref().and_then(|s| s.operation);
                 if let Some(operation) = paused {
-                    info!(%commit_id, ?operation, "vcs: revert paused");
+                    info!(%commit_id, ?operation, "revert paused");
                     this.handle_operation_paused(operation, cx);
                     this.refresh_after_head_change(cx);
                 } else if let Err(e) = result {
-                    error!(error = %e, %commit_id, "vcs: revert failed");
+                    error!(error = %e, %commit_id, "revert failed");
                     this.error = Some(format!("Revert 失败：{e}"));
                 } else {
-                    info!(%commit_id, "vcs: revert done");
+                    info!(%commit_id, "revert completed");
                     // HEAD 推进一个 revert commit，刷新 history 第一页
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
@@ -94,10 +94,10 @@ impl VcsView {
                     this.local_branches = branches;
                 }
                 if let Err(e) = result {
-                    error!(error = %e, %target, ?kind, "vcs: reset failed");
+                    error!(error = %e, %target, ?kind, "reset failed");
                     this.error = Some(format!("Reset {} 失败：{e}", reset_kind_label(kind)));
                 } else {
-                    info!(%target, ?kind, "vcs: reset done");
+                    info!(%target, ?kind, "reset completed");
                     // HEAD 移动了：history、暂存区、已打开 tabs 的 diff 缓存全部重拉
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
@@ -156,7 +156,7 @@ impl VcsView {
                 }
                 match final_result {
                     Ok(()) => {
-                        info!(target = %target_for_log, "vcs: stash + checkout done");
+                        info!(target = %target_for_log, "stash checkout completed");
                         this.load_history_page(0, cx);
                         this.refresh_after_head_change(cx);
                         this.reload_stashes(cx);
@@ -166,7 +166,7 @@ impl VcsView {
                         );
                     }
                     Err(e) => {
-                        error!(error = %e, target = %target_for_log, stash_saved, "vcs: stash+checkout failed");
+                        error!(error = %e, target = %target_for_log, stash_saved, "stash checkout failed");
                         this.error = Some(if stash_saved {
                             format!(
                                 "切换失败，但改动已安全保存在最新一条 Stash 中，可手动恢复：{e}"
@@ -232,7 +232,7 @@ impl VcsView {
                         "未找到 Ramag 创建的临时 stash，已保留全部 stash 以避免误删".into(),
                     )),
                     Err(error) => {
-                        tracing::error!(error = %error, "vcs: list temporary stash failed");
+                        tracing::error!(error = %error, "load temporary stashes failed");
                         Err(ramag_domain::error::DomainError::Other(format!(
                             "无法读取 Stash 列表，为避免误删已保留临时备份：{error}"
                         )))
@@ -264,7 +264,7 @@ impl VcsView {
                 }
                 match checkout_result {
                     Ok(()) => {
-                        info!(target = %target_for_log, "vcs: discard + checkout done");
+                        info!(target = %target_for_log, "guarded checkout completed");
                         this.load_history_page(0, cx);
                         this.refresh_after_head_change(cx);
                         this.reload_stashes(cx);
@@ -274,7 +274,7 @@ impl VcsView {
                                 cx,
                             ),
                             Some(Err(e)) => {
-                                error!(error = %e, target = %target_for_log, "vcs: checkout done but temporary stash drop failed");
+                                error!(error = %e, target = %target_for_log, "temporary stash cleanup failed after checkout");
                                 this.error = Some(format!(
                                     "已切换到 {target_for_log}，但临时备份删除失败（改动仍可在 Stash 恢复）：{e}"
                                 ));
@@ -283,7 +283,7 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, target = %target_for_log, stash_saved, "vcs: guarded discard checkout failed");
+                        error!(error = %e, target = %target_for_log, stash_saved, "guarded discard checkout failed");
                         this.error = Some(if stash_saved {
                             format!(
                                 "切换失败，未丢失改动：已保存在最新一条 Stash 中，可手动恢复。原因：{e}"

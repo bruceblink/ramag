@@ -14,7 +14,7 @@ pub async fn record_backend_id(conn: &mut PgConnection, handle: &CancelHandle) {
         .await
     {
         Ok((pid,)) => handle.store(pid as u64, Ordering::SeqCst),
-        Err(e) => warn!(error = %e, "failed to fetch pg_backend_pid for cancel"),
+        Err(e) => warn!(error = %e, "query cancellation id lookup failed"),
     }
 }
 
@@ -31,7 +31,7 @@ pub async fn extract_columns_fallback(
                 .unzip(),
         ),
         Err(e) => {
-            warn!(error = %e, "describe empty-result SQL failed (non-fatal)");
+            warn!(error = %e, "empty-result SQL description failed");
             None
         }
     }

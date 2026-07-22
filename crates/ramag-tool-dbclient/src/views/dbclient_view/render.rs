@@ -346,7 +346,7 @@ impl DbClientView {
                         ramag_ui::clickable_button("stale-close")
                             .ghost()
                             .small()
-                            .label("关闭标签")
+                            .label("关闭")
                             .text_color(fg)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.close_session(idx, cx);

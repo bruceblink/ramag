@@ -27,7 +27,7 @@ impl VcsView {
                 match result {
                     Ok(list) => this.stashes = list,
                     Err(e) => {
-                        error!(error = %e, "vcs: list stashes failed");
+                        error!(error = %e, "load stashes failed");
                         this.error = Some(format!("加载 Stash 列表失败：{e}"));
                     }
                 }
@@ -73,7 +73,7 @@ impl VcsView {
                 }
                 match result {
                     Err(e) => {
-                        error!(error = %e, "vcs: stash save failed");
+                        error!(error = %e, "stash save failed");
                         this.error = Some(format!("Stash 失败：{e}"));
                     }
                     Ok(_) => {
@@ -121,11 +121,11 @@ impl VcsView {
             // 操作后刷新 stashes + status
             let new_stashes = driver.list_stashes(&repo).await;
             if let Err(error) = &new_stashes {
-                tracing::warn!(error = %error, "vcs: stash list refresh failed");
+                tracing::warn!(error = %error, "stash list refresh failed");
             }
             let new_status = driver.status(&repo).await;
             if let Err(error) = &new_status {
-                tracing::warn!(error = %error, "vcs: workspace status refresh failed after stash");
+                tracing::warn!(error = %error, "workspace status refresh failed after stash");
             }
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -150,7 +150,7 @@ impl VcsView {
                         if conflict_count > 0
                             && matches!(op, StashOp::Apply(_) | StashOp::Pop(_)) =>
                     {
-                        tracing::info!(error = %e, ?op, conflict_count, "vcs: stash apply paused on conflict");
+                        tracing::info!(error = %e, ?op, conflict_count, "stash apply paused on conflict");
                         this.error = None;
                         this.view_mode = super::super::helpers::ViewMode::Workspace;
                         this.files_view_mode = FilesViewMode::Changes;
@@ -163,7 +163,7 @@ impl VcsView {
                         );
                     }
                     Err(e) => {
-                        error!(error = %e, ?op, "vcs: stash op failed");
+                        error!(error = %e, ?op, "stash operation failed");
                         this.error = Some(format!("Stash 操作失败：{e}"));
                     }
                     Ok(_) => {

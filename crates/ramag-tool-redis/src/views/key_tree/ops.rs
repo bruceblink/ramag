@@ -34,21 +34,17 @@ pub(super) fn node_context_menu(
     let mut menu = menu;
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
-        menu = menu.item(
-            ramag_ui::menu_item("导出此 Key").on_click(move |_, _, app| {
-                ent.update(app, |this, cx| this.export_key_to_file(key.clone(), cx));
-            }),
-        );
+        menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
+            ent.update(app, |this, cx| this.export_key_to_file(key.clone(), cx));
+        }));
     }
     if is_namespace {
         let (prefix, ent) = (full_path.clone(), entity.clone());
-        menu = menu.item(
-            ramag_ui::menu_item("导出此前缀下全部 Key").on_click(move |_, _, app| {
-                ent.update(app, |this, cx| {
-                    this.export_prefix_to_file(prefix.clone(), cx)
-                });
-            }),
-        );
+        menu = menu.item(ramag_ui::menu_item("导出前缀").on_click(move |_, _, app| {
+            ent.update(app, |this, cx| {
+                this.export_prefix_to_file(prefix.clone(), cx)
+            });
+        }));
     }
     if !allow_write {
         return menu;
@@ -57,7 +53,7 @@ pub(super) fn node_context_menu(
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            ramag_ui::menu_item("重命名 key").on_click(move |_, window, app| {
+            ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
                 let (key, ent) = (key.clone(), ent.clone());
                 open_bounded_prompt(
                     "重命名 Key",
@@ -74,30 +70,28 @@ pub(super) fn node_context_menu(
             }),
         );
         let (key, ent) = (full_path.clone(), entity.clone());
-        menu = menu.item(
-            ramag_ui::menu_item("删除 key").on_click(move |_, window, app| {
-                let (key, ent) = (key.clone(), ent.clone());
-                open_confirm(
-                    "删除 Key",
-                    format!(
-                        "将永久删除 key「{}」，此操作不可恢复。",
-                        truncate_label(&key, 60)
-                    ),
-                    "删除",
-                    true,
-                    move |_, app| {
-                        ent.update(app, |this, cx| this.delete_key_op(key, cx));
-                    },
-                    window,
-                    app,
-                );
-            }),
-        );
+        menu = menu.item(ramag_ui::menu_item("删除").on_click(move |_, window, app| {
+            let (key, ent) = (key.clone(), ent.clone());
+            open_confirm(
+                "删除 Key",
+                format!(
+                    "将永久删除 key「{}」，此操作不可恢复。",
+                    truncate_label(&key, 60)
+                ),
+                "删除",
+                true,
+                move |_, app| {
+                    ent.update(app, |this, cx| this.delete_key_op(key, cx));
+                },
+                window,
+                app,
+            );
+        }));
     }
     if is_namespace {
         let (prefix, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(
-            ramag_ui::menu_item("删除该前缀下全部 key").on_click(move |_, window, app| {
+            ramag_ui::menu_item("删除前缀").on_click(move |_, window, app| {
                 let (prefix, ent) = (prefix.clone(), ent.clone());
                 open_confirm(
                     "删除前缀下全部 Key",
@@ -131,17 +125,17 @@ pub(super) fn toolbar_more_menu(
     let entity_for_import = entity.clone();
     let entity_for_selection_import = entity.clone();
     menu.item(
-        ramag_ui::menu_item("新建 Key").on_click(move |_, _window, app| {
+        ramag_ui::menu_item("新建").on_click(move |_, _window, app| {
             entity_for_create.update(app, |_this, cx| cx.emit(KeyTreeEvent::RequestCreate));
         }),
     )
     .item(
-        ramag_ui::menu_item(format!("导出 DB {db}")).on_click(move |_, _window, app| {
+        ramag_ui::menu_item("导出库").on_click(move |_, _window, app| {
             entity_for_export.update(app, |this, cx| this.export_db_to_file(cx));
         }),
     )
     .item(
-        ramag_ui::menu_item(format!("导入整个 DB {db}")).on_click(move |_, window, app| {
+        ramag_ui::menu_item("导入库").on_click(move |_, window, app| {
             let ent = entity_for_import.clone();
             ramag_ui::open_import_options_dialog(
                 "导入整个 Redis DB",
@@ -161,13 +155,13 @@ pub(super) fn toolbar_more_menu(
         }),
     )
     .item(
-        ramag_ui::menu_item(format!("导入 Key / 前缀到 DB {db}")).on_click(
+        ramag_ui::menu_item("导入对象").on_click(
             move |_, window, app| {
                 let ent = entity_for_selection_import.clone();
                 ramag_ui::open_import_options_dialog(
-                    "导入 Key / 前缀（类型 + TTL + 数据）",
+                    "导入对象",
                     format!(
-                        "选择由 Ramag“导出此 Key / 此前缀”生成的 .jsonl 文件（可多选），将 Key 类型、TTL 和全部值恢复到 DB {db}。Key 名取自文件。"
+                        "选择由 Ramag Key 或前缀节点“导出”生成的 .jsonl 文件（可多选），将 Key 类型、TTL 和全部值恢复到 DB {db}。Key 名取自文件。"
                     ),
                     false,
                     ("JSONL", &["jsonl", "json"]),
@@ -184,10 +178,10 @@ pub(super) fn toolbar_more_menu(
     )
     .separator()
     .item(
-        ramag_ui::menu_item(format!("清空当前 DB {db}")).on_click(move |_, window, app| {
+        ramag_ui::menu_item("清空库").on_click(move |_, window, app| {
             let ent = entity.clone();
             open_confirm(
-                "清空当前 DB",
+                "清空库",
                 format!("将删除 DB {db} 的全部 key（FLUSHDB），此操作不可恢复。"),
                 "清空",
                 true,
@@ -285,7 +279,11 @@ impl KeyTreePanel {
                         );
                     }
                     Ok(_) => {
-                        tracing::error!("renamenx unexpected reply");
+                        tracing::error!(
+                            old_key_bytes = old.len(),
+                            new_key_bytes = new.len(),
+                            "RENAMENX returned an unexpected reply"
+                        );
                         this.pending_notification =
                             Some(Notification::error("重命名失败：服务端应答异常").autohide(true));
                     }

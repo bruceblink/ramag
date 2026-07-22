@@ -16,7 +16,7 @@ pub async fn record_backend_id(conn: &mut MySqlConnection, handle: &CancelHandle
         .await
     {
         Ok((tid,)) => handle.store(tid, Ordering::SeqCst),
-        Err(e) => warn!(error = %e, "failed to fetch CONNECTION_ID for cancel"),
+        Err(e) => warn!(error = %e, "query cancellation id lookup failed"),
     }
 }
 
@@ -43,7 +43,7 @@ pub async fn fetch_warnings(conn: &mut MySqlConnection) -> Vec<Warning> {
             let is_unsupported =
                 e.as_database_error().and_then(|d| d.code()).as_deref() == Some("1295");
             if !is_unsupported {
-                warn!(error = %e, "fetch SHOW WARNINGS failed (non-fatal)");
+                warn!(error = %e, "query warning lookup failed");
             }
             Vec::new()
         }
@@ -64,7 +64,7 @@ pub async fn extract_columns_fallback(
                 .unzip(),
         ),
         Err(e) => {
-            warn!(error = %e, "describe empty-result SQL failed (non-fatal)");
+            warn!(error = %e, "empty-result SQL description failed");
             None
         }
     }

@@ -117,7 +117,6 @@ impl VcsView {
         cx: &mut Context<Self>,
     ) {
         let target = format!("{remote}/{branch}");
-        let confirm_label = format!("强推到 {target}");
         let view = cx.entity();
         super::open_confirm_dialog(
             view,
@@ -125,7 +124,7 @@ impl VcsView {
             format!(
                 "目标：{target}\n\n将使用 --force-with-lease 改写该远程分支历史。即使有租约保护，仍可能让协作者丢失基于旧历史的提交。"
             ),
-            confirm_label,
+            "强推",
             true,
             move |this, cx| {
                 this.run_remote_op_to(RemoteOp::PushForce, Some(remote), cx);

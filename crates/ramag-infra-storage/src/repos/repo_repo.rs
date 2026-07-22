@@ -55,7 +55,7 @@ pub(crate) fn list(db: Arc<Database>) -> Result<Vec<RepoConfig>> {
     }
     // 按 name 字母序，顺序稳定不漂移
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    debug!(count = out.len(), "list_repos done");
+    debug!(count = out.len(), "repository listing completed");
     Ok(out)
 }
 

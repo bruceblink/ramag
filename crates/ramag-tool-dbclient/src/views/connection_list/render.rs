@@ -75,7 +75,6 @@ impl Render for ConnectionListPanel {
                     .ghost()
                     .small()
                     .icon(ramag_ui::icons::upload())
-                    .tooltip("导出配置")
                     .disabled(self.transferring)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.prompt_export_passphrase(window, cx);
@@ -86,7 +85,6 @@ impl Render for ConnectionListPanel {
                     .ghost()
                     .small()
                     .icon(ramag_ui::icons::download())
-                    .tooltip("导入配置")
                     .disabled(self.transferring)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.import_connections(window, cx);
@@ -97,7 +95,6 @@ impl Render for ConnectionListPanel {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("新建连接")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(ListEvent::RequestNew);
                     })),
@@ -217,7 +214,7 @@ fn empty_state(cx: &mut Context<ConnectionListPanel>) -> impl IntoElement {
         ramag_ui::clickable_button("empty-add")
             .primary()
             .icon(IconName::Plus)
-            .label("新建连接")
+            .label("新建")
             .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                 cx.emit(ListEvent::RequestNew);
             })),

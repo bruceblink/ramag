@@ -50,7 +50,6 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .label("复制")
-                        .tooltip("复制错误诊断")
                         .on_click(move |_: &ClickEvent, _, app| {
                             app.write_to_clipboard(gpui::ClipboardItem::new_string(
                                 err_for_copy.clone(),
@@ -62,7 +61,6 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("关闭错误提示")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.clear_error(cx);
                         })),
@@ -139,7 +137,7 @@ impl VcsView {
                     .ghost()
                     .small()
                     .icon(ramag_ui::icons::download())
-                    .tooltip("Clone 远程仓库到本地")
+                    .tooltip("克隆")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.show_clone_panel = !this.show_clone_panel;
@@ -151,7 +149,7 @@ impl VcsView {
                     .ghost()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("初始化新 Git 仓库")
+                    .tooltip("初始化")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.pick_init_directory(cx);
@@ -162,7 +160,7 @@ impl VcsView {
                     .ghost()
                     .small()
                     .icon(IconName::FolderOpen)
-                    .tooltip("打开本地 Git 仓库")
+                    .tooltip("打开")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.pick_directory(cx);
@@ -323,7 +321,6 @@ impl VcsView {
                     .small()
                     .icon(IconName::Folder)
                     .label(dest_label)
-                    .tooltip("选择 Clone 目标目录")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.pick_clone_destination(cx);
@@ -334,7 +331,7 @@ impl VcsView {
                     .primary()
                     .small()
                     .icon(ramag_ui::icons::download())
-                    .label("Clone")
+                    .label("克隆")
                     .disabled(busy || self.clone_dest_path.is_none())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         let url = this.clone_url_input.read(cx).value().trim().to_string();
@@ -489,7 +486,7 @@ fn repo_row(
                         .tooltip(if is_favorite {
                             "取消收藏"
                         } else {
-                            "收藏并置顶"
+                            "收藏"
                         })
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -501,7 +498,7 @@ fn repo_row(
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())
-                        .tooltip("从最近列表移除（不删除磁盘文件）")
+                        .tooltip("移出列表")
                         .disabled(busy)
                         // 弹确认对话框（与 dbclient 删除连接同款交互），用户确认后再真正移除
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -521,7 +518,7 @@ fn empty_state(cx: &mut Context<VcsView>) -> AnyElement {
             ramag_ui::clickable_button("vcs-repo-empty-pick")
                 .primary()
                 .icon(IconName::Plus)
-                .label("打开仓库")
+                .label("打开")
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.pick_directory(cx);
                 })),

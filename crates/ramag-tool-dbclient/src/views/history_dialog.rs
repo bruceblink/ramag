@@ -288,11 +288,7 @@ impl HistoryList {
                             .ghost()
                             .xsmall()
                             .label("复制")
-                            .tooltip(if sql_truncated {
-                                "历史正文不完整，已禁止复制"
-                            } else {
-                                "复制 SQL 到剪贴板"
-                            })
+                            .when(sql_truncated, |button| button.tooltip("内容不完整"))
                             .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
@@ -308,12 +304,8 @@ impl HistoryList {
                         ramag_ui::clickable_button(SharedString::from(format!("hist-fill-{ix}")))
                             .ghost()
                             .xsmall()
-                            .label("填入编辑器")
-                            .tooltip(if sql_truncated {
-                                "历史正文不完整，无法安全填入编辑器"
-                            } else {
-                                "填入当前查询 Tab 的编辑器（不执行）"
-                            })
+                            .label("填入")
+                            .when(sql_truncated, |button| button.tooltip("内容不完整"))
                             .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(HistoryEvent::FillEditor(rec_for_fill.sql.clone()));
@@ -324,11 +316,7 @@ impl HistoryList {
                             .ghost()
                             .xsmall()
                             .label("重跑")
-                            .tooltip(if sql_truncated {
-                                "历史正文不完整，无法安全重跑"
-                            } else {
-                                "填入编辑器并立即执行（失败记录亦可重试）"
-                            })
+                            .when(sql_truncated, |button| button.tooltip("内容不完整"))
                             .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(HistoryEvent::RunSql(rec_for_run.sql.clone()));
@@ -339,7 +327,6 @@ impl HistoryList {
                             .ghost()
                             .xsmall()
                             .label("删除")
-                            .tooltip("删除这条历史记录")
                             .disabled(self.mutating)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.delete_record(rec_for_delete.id.clone(), cx);
@@ -396,7 +383,6 @@ impl Render for HistoryList {
                     .ghost()
                     .xsmall()
                     .label("清空")
-                    .tooltip("清空当前连接的全部查询历史")
                     .disabled(self.loading || self.mutating || self.records.is_empty())
                     .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                         let entity = cx.entity();

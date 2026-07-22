@@ -125,7 +125,7 @@ impl MongoHistoryList {
                         this.schedule_filter(false, cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "load mongo history failed");
+                        error!(error = %e, "load query history failed");
                         this.load_error = Some(e.to_string());
                     }
                 }
@@ -150,7 +150,7 @@ impl MongoHistoryList {
                         this.schedule_filter(false, cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "delete mongo history failed");
+                        error!(error = %e, "delete query history failed");
                         this.mutation_error = Some(format!("删除失败：{e}"));
                     }
                 }
@@ -177,7 +177,7 @@ impl MongoHistoryList {
                         this.schedule_filter(false, cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "clear mongo history failed");
+                        error!(error = %e, "clear query history failed");
                         this.mutation_error = Some(format!("清空失败：{e}"));
                     }
                 }
@@ -283,11 +283,7 @@ impl MongoHistoryList {
                             .ghost()
                             .xsmall()
                             .label("复制")
-                            .tooltip(if sql_truncated {
-                                "历史正文不完整，已禁止复制"
-                            } else {
-                                "复制命令到剪贴板"
-                            })
+                            .when(sql_truncated, |button| button.tooltip("内容不完整"))
                             .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
@@ -303,12 +299,8 @@ impl MongoHistoryList {
                         ramag_ui::clickable_button(SharedString::from(format!("mhist-fill-{ix}")))
                             .ghost()
                             .xsmall()
-                            .label("填入编辑器")
-                            .tooltip(if sql_truncated {
-                                "历史正文不完整，无法安全填入编辑器"
-                            } else {
-                                "填入当前命令编辑器（不执行）"
-                            })
+                            .label("填入")
+                            .when(sql_truncated, |button| button.tooltip("内容不完整"))
                             .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(MongoHistoryEvent::FillEditor(rec_for_fill.sql.clone()));
@@ -319,11 +311,7 @@ impl MongoHistoryList {
                             .ghost()
                             .xsmall()
                             .label("重跑")
-                            .tooltip(if sql_truncated {
-                                "历史正文不完整，无法安全重跑"
-                            } else {
-                                "填入编辑器并立即执行（失败记录亦可重试）"
-                            })
+                            .when(sql_truncated, |button| button.tooltip("内容不完整"))
                             .disabled(sql_truncated)
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 cx.emit(MongoHistoryEvent::RunCommand(rec_for_run.sql.clone()));
@@ -390,7 +378,6 @@ impl Render for MongoHistoryList {
                     .ghost()
                     .xsmall()
                     .label("清空")
-                    .tooltip("清空当前连接的全部查询历史")
                     .disabled(self.loading || self.mutating || self.records.is_empty())
                     .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                         let entity = cx.entity();

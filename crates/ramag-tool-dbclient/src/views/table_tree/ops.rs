@@ -33,9 +33,9 @@ pub(super) fn table_context_menu(
     is_view: bool,
 ) -> PopupMenu {
     let ddl_label = if is_view {
-        "查看视图定义"
+        "视图定义"
     } else {
-        "查看建表 SQL"
+        "建表语句"
     };
     let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
     let menu = menu.item(ramag_ui::menu_item(ddl_label).on_click(move |_, _, app| {
@@ -46,7 +46,7 @@ pub(super) fn table_context_menu(
         menu
     } else {
         let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
-        menu.item(ramag_ui::menu_item("导出此表").on_click(move |_, _, app| {
+        menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
             let (s, t) = (s.clone(), t.clone());
             ent.update(app, |this, cx| this.export_table_to_file(s, t, cx));
         }))
@@ -138,16 +138,16 @@ pub(super) fn schema_context_menu(
     driver: DriverKind,
 ) -> PopupMenu {
     let (s, ent) = (schema.clone(), entity.clone());
-    let menu = menu.item(ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
+    let menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
         let (s, ent) = (s.clone(), ent.clone());
         ent.update(app, |this, cx| this.export_schema_to_file(s, cx));
     }));
     let (s, ent) = (schema.clone(), entity.clone());
     let menu = menu.item(
-        ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+        ramag_ui::menu_item("导入库").on_click(move |_, window, app| {
             let (s, ent) = (s.clone(), ent.clone());
             ramag_ui::open_import_options_dialog(
-                "导入 SQL 文件",
+                "导入库",
                 format!(
                     "选择冲突策略与 .sql 文件（可多选）。ramag 导出的文件将导入到文件内\
                          记录的库；普通 .sql 以当前库 {s} 为默认目标。重复导入同一文件：\
@@ -171,9 +171,9 @@ pub(super) fn schema_context_menu(
             ramag_ui::menu_item("导入表").on_click(move |_, window, app| {
                 let (s, ent) = (s.clone(), ent.clone());
                 ramag_ui::open_import_options_dialog(
-                    "导入表（结构 + 数据）",
+                    "导入表",
                     format!(
-                        "选择由 Ramag“导出此表”生成的 .sql 文件（可多选），恢复表结构、约束、索引和全部数据到库 {s}。为避免 SQL 跨库误写，文件所属库必须与当前库一致。"
+                        "选择由 Ramag 表节点“导出”生成的 .sql 文件（可多选），恢复表结构、约束、索引和全部数据到库 {s}。为避免 SQL 跨库误写，文件所属库必须与当前库一致。"
                     ),
                     true,
                     ("SQL", &["sql"]),
@@ -192,10 +192,10 @@ pub(super) fn schema_context_menu(
     let menu = if matches!(driver, DriverKind::Postgres) {
         let (s, ent) = (schema.clone(), entity.clone());
         menu.item(
-            ramag_ui::menu_item("重命名 Schema").on_click(move |_, window, app| {
+            ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
                 let (s, ent) = (s.clone(), ent.clone());
                 open_bounded_prompt(
-                    "重命名 Schema",
+                    "重命名",
                     format!("输入 schema {s} 的新名称"),
                     &s.clone(),
                     "重命名",
@@ -214,15 +214,15 @@ pub(super) fn schema_context_menu(
 
     let (label, title, desc) = match driver {
         DriverKind::Postgres => (
-            "删除 Schema",
-            "删除 Schema",
+            "删除",
+            "删除",
             format!(
                 "将永久删除 schema {schema} 及其中全部对象（DROP SCHEMA … CASCADE），此操作不可恢复。"
             ),
         ),
         _ => (
-            "删除数据库",
-            "删除数据库",
+            "删除",
+            "删除",
             format!("将永久删除数据库 {schema} 及其中全部表与数据，此操作不可恢复。"),
         ),
     };
@@ -384,7 +384,7 @@ impl TableTreePanel {
                                 error = %error,
                                 connection = %conn.name,
                                 sql_bytes = sql.len(),
-                                "tree ddl failed after connection changed"
+                                "tree DDL failed after connection change"
                             );
                             Notification::error(
                                 error.write_hint(&format!("发起时的连接「{}」执行失败", conn.name)),
@@ -434,7 +434,7 @@ impl TableTreePanel {
                         }
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, sql_bytes = sql.len(), "tree ddl failed");
+                        tracing::error!(error = %e, sql_bytes = sql.len(), "tree DDL failed");
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("执行失败")).autohide(true));
                     }

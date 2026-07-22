@@ -48,7 +48,7 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, %path, "vcs: inline blame failed");
+                        error!(error = %e, %path, "inline blame failed");
                         this.inline_blame_text =
                             Some(SharedString::from(format!("blame 失败：{e}")));
                     }
@@ -112,7 +112,7 @@ impl VcsView {
                 match result {
                     Ok(lines) => this.blame_lines = std::rc::Rc::new(lines),
                     Err(e) => {
-                        error!(error = %e, %path, "vcs: blame failed");
+                        error!(error = %e, %path, "blame failed");
                         this.error = Some(format!("Blame 失败：{e}"));
                         this.showing_blame = false;
                     }

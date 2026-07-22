@@ -286,7 +286,7 @@ impl TableTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "list schemas failed");
+                        error!(error = %e, "load schemas failed");
                         this.error = Some(e.to_string());
                     }
                 }
@@ -454,7 +454,7 @@ impl TableTreePanel {
                                 this.schema_cache
                                     .write()
                                     .cancel_table_refresh(&schema, cache_generation);
-                                error!(error = %err, schema = %schema, "list tables for full search failed");
+                                error!(error = %err, schema = %schema, "load full-search tables failed");
                                 entry.error = Some(err.to_string());
                                 if let Some(progress) = this.full_search.as_mut() {
                                     progress.failed += 1;
@@ -575,7 +575,7 @@ impl TableTreePanel {
                         this.schema_cache
                             .write()
                             .cancel_table_refresh(&schema_for_async, cache_generation);
-                        error!(error = %e, schema = %schema_for_async, "list tables failed");
+                        error!(error = %e, schema = %schema_for_async, "load tables failed");
                         let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
                             return;
                         };
@@ -697,20 +697,20 @@ impl TableTreePanel {
                         entry.columns = cols;
                     }
                     Err(e) => {
-                        error!(error = %e, schema = %schema_async, table = %table_async, "list columns failed");
+                        error!(error = %e, schema = %schema_async, table = %table_async, "load columns failed");
                         entry.error = Some(e.to_string());
                     }
                 }
                 match idx_res {
                     Ok(ix) => entry.indexes = ix,
                     Err(e) => {
-                        tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "list indexes failed (non-fatal)");
+                        tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "load indexes failed");
                     }
                 }
                 match fk_res {
                     Ok(fk) => entry.foreign_keys = fk,
                     Err(e) => {
-                        tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "list foreign keys failed (non-fatal)");
+                        tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "load foreign keys failed");
                     }
                 }
                 this.invalidate_tree_rows();

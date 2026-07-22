@@ -208,10 +208,6 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
-                    .tooltip(format!(
-                        "刷新工作区状态（{}；切回窗口时也会自动刷新）",
-                        ramag_ui::platform::primary_shortcut("R")
-                    ))
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_workspace_silent(cx);
@@ -221,9 +217,9 @@ impl VcsView {
         if matches!(active, FilesViewMode::Project) {
             let any_expanded = !self.project_expanded_dirs.is_empty();
             let (icon, tip) = if any_expanded {
-                (IconName::FolderOpen, "全部折叠目录")
+                (IconName::FolderOpen, "折叠")
             } else {
-                (IconName::FolderClosed, "全部展开目录")
+                (IconName::FolderClosed, "展开")
             };
             search_row = search_row.child(
                 ramag_ui::clickable_button("vcs-pf-toggle-all")
@@ -253,11 +249,7 @@ impl VcsView {
                     } else {
                         IconName::PanelBottomOpen
                     })
-                    .tooltip(format!(
-                        "{}历史 / Reflog 面板（{}）",
-                        if history_visible { "隐藏" } else { "显示" },
-                        ramag_ui::platform::primary_shift_shortcut("H")
-                    ))
+                    .tooltip("历史")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.toggle_history_pane(cx);
                     })),
@@ -334,7 +326,6 @@ impl VcsView {
             .small()
             .label(label)
             .text_color(cx.theme().foreground)
-            .tooltip("切换分支 / 创建分支")
             .disabled(busy)
             .pointer_dropdown_menu_with_anchor(
                 gpui::Anchor::BottomRight,
@@ -451,8 +442,7 @@ impl VcsView {
             .outline()
             .xsmall()
             .icon(IconName::Inbox)
-            .label("Stash 工作区改动")
-            .tooltip("把当前全部改动（含未跟踪文件）存入 stash 堆栈，工作区恢复干净")
+            .label("储藏")
             .disabled(
                 self.busy
                     || !has_changes
@@ -465,10 +455,10 @@ impl VcsView {
             .on_click(cx.listener(|_this, _: &ClickEvent, window, cx| {
                 let entity = cx.entity();
                 ramag_ui::open_optional_bounded_prompt(
-                    "Stash 工作区改动",
+                    "储藏",
                     "输入 stash 说明（可留空，默认用 git 自动描述）",
                     "",
-                    "Stash",
+                    "储藏",
                     ramag_domain::entities::MAX_GIT_STASH_MESSAGE_BYTES,
                     move |msg, _, app| {
                         entity.update(app, |this, cx| this.run_stash_save(msg, cx));

@@ -27,7 +27,7 @@ impl VcsView {
                 match result {
                     Ok(list) => this.tags = list,
                     Err(e) => {
-                        error!(error = %e, "vcs: list tags failed");
+                        error!(error = %e, "load tags failed");
                         this.error = Some(format!("加载 Tag 列表失败：{e}"));
                     }
                 }
@@ -88,10 +88,10 @@ impl VcsView {
                     this.tags = tags.clone();
                 }
                 if let Err(e) = result {
-                    error!(error = %e, ?op, "vcs: tag op failed");
+                    error!(error = %e, ?op, "tag operation failed");
                     this.error = Some(format!("Tag 操作失败：{e}"));
                 } else {
-                    info!(?op, "vcs: tag op done");
+                    info!(?op, "tag operation completed");
                     if matches!(op, TagOp::Create { .. }) {
                         this.pending_clear_creation_inputs = true;
                     }

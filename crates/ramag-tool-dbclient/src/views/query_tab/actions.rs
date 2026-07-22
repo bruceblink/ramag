@@ -444,7 +444,11 @@ impl QueryTab {
                         } else {
                             None
                         };
-                        info!(rows = qr.rows.len(), elapsed_ms = qr.elapsed_ms, "query ok");
+                        info!(
+                            rows = qr.rows.len(),
+                            elapsed_ms = qr.elapsed_ms,
+                            "query completed"
+                        );
                         this.clear_sql_diagnostics(cx);
                         this.short_title = Some(make_short_title(&title_sql));
                         if is_run {
@@ -578,14 +582,17 @@ impl QueryTab {
                     if refreshed {
                         info!("schema cache refreshed after DDL");
                     } else {
-                        tracing::debug!("DDL schema refresh superseded or exceeded cache budget");
+                        tracing::debug!(
+                            reason = "superseded_or_budget",
+                            "DDL schema refresh discarded"
+                        );
                     }
                 }
                 Err(e) => {
                     cache
                         .write()
                         .cancel_table_refresh(&schema, cache_generation);
-                    error!(error = %e, "DDL refresh: list_tables failed");
+                    error!(error = %e, "DDL schema refresh failed");
                 }
             }
         })
@@ -728,8 +735,8 @@ impl QueryTab {
                     cx.notify();
                 });
                 match outcome {
-                    Ok(()) => info!(thread_id = tid, "KILL QUERY confirmed"),
-                    Err(e) => tracing::warn!(error = %e, thread_id = tid, "KILL QUERY failed"),
+                    Ok(()) => info!(thread_id = tid, "server query cancellation confirmed"),
+                    Err(e) => tracing::warn!(error = %e, thread_id = tid, "server query cancellation failed"),
                 }
             })
             .detach();
@@ -747,7 +754,7 @@ impl QueryTab {
         self.result.update(cx, |r, cx| {
             r.set_state(ResultState::Empty, cx);
         });
-        info!("query cancelled (client side)");
+        info!("client query wait cancelled");
         cx.notify();
     }
 

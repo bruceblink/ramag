@@ -3,7 +3,7 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Styled, div, px,
+    SharedString, Styled, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
@@ -46,11 +46,7 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip(if has_head {
-                        "基于当前 HEAD 创建本地分支"
-                    } else {
-                        "首次提交后才能从 HEAD 创建分支"
-                    })
+                    .when(!has_head, |button| button.tooltip("请先提交"))
                     .disabled(busy || !has_head)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.handle_create_branch(cx);
@@ -147,7 +143,6 @@ pub(super) fn branch_row(
         .ghost()
         .xsmall()
         .icon(ramag_ui::icons::ellipsis())
-        .tooltip("分支操作（切换 / 合并 / Rebase…）")
         .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
             branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
         })
@@ -180,62 +175,52 @@ fn branch_actions_menu(
     let mut m = menu;
     if !is_remote {
         // 切换
-        m = m.item(
-            ramag_ui::menu_item("切换到此分支").on_click(move |_, w, app| {
-                e1.update(app, |this, cx| {
-                    this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
-                });
-            }),
-        );
+        m = m.item(ramag_ui::menu_item("切换").on_click(move |_, w, app| {
+            e1.update(app, |this, cx| {
+                this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
+            });
+        }));
     } else {
-        m = m.item(
-            ramag_ui::menu_item("切到此远程分支（创建本地副本）").on_click(move |_, w, app| {
-                e1.update(app, |this, cx| {
-                    let op = match checkout_remote_branch_op(&n1, &this.local_branches) {
-                        Ok(op) => op,
-                        Err(message) => {
-                            this.error = Some(message);
-                            cx.notify();
-                            return;
-                        }
-                    };
-                    this.confirm_branch_op(op, w, cx);
-                });
-            }),
-        );
+        m = m.item(ramag_ui::menu_item("检出分支").on_click(move |_, w, app| {
+            e1.update(app, |this, cx| {
+                let op = match checkout_remote_branch_op(&n1, &this.local_branches) {
+                    Ok(op) => op,
+                    Err(message) => {
+                        this.error = Some(message);
+                        cx.notify();
+                        return;
+                    }
+                };
+                this.confirm_branch_op(op, w, cx);
+            });
+        }));
     }
     // 合并
-    m = m.item(
-        ramag_ui::menu_item("合并到当前 HEAD（--no-ff）").on_click(move |_, w, app| {
-            e2.update(app, |this, cx| {
-                this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);
-            });
-        }),
-    );
+    m = m.item(ramag_ui::menu_item("合并").on_click(move |_, w, app| {
+        e2.update(app, |this, cx| {
+            this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);
+        });
+    }));
     // Rebase
-    m = m.item(
-        ramag_ui::menu_item("Rebase 当前 HEAD 到此分支").on_click(move |_, w, app| {
-            e3.update(app, |this, cx| {
-                this.confirm_branch_op(BranchOp::Rebase(n3.clone()), w, cx);
-            });
-        }),
-    );
+    m = m.item(ramag_ui::menu_item("变基").on_click(move |_, w, app| {
+        e3.update(app, |this, cx| {
+            this.confirm_branch_op(BranchOp::Rebase(n3.clone()), w, cx);
+        });
+    }));
     if !is_remote {
         // 交互式 Rebase（仅本地分支）
         let (ei, ni) = (ent.clone(), n.clone());
-        m = m.item(
-            ramag_ui::menu_item("交互式 Rebase（编辑 commit 序列）").on_click(move |_, _, app| {
-                if !busy {
-                    ei.update(app, |this, cx| {
-                        this.start_interactive_rebase(ni.clone(), cx);
-                    });
-                }
-            }),
-        );
+        m = m.item(ramag_ui::menu_item("交互变基").on_click(move |_, _, app| {
+            if !busy {
+                ei.update(app, |this, cx| {
+                    this.start_interactive_rebase(ni.clone(), cx);
+                });
+            }
+        }));
         m = m.separator();
         // 删除分支
         let ed = ent.clone();
-        m = m.item(ramag_ui::menu_item("删除分支").on_click(move |_, w, app| {
+        m = m.item(ramag_ui::menu_item("删除").on_click(move |_, w, app| {
             let view = ed.clone();
             let branch_name = n4.clone();
             open_confirm_dialog(

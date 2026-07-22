@@ -100,8 +100,7 @@ impl VcsView {
                 ramag_ui::clickable_button("vcs-conflict-use-ours")
                     .outline()
                     .small()
-                    .label(format!("采纳 {ours_label}"))
-                    .tooltip(format!("整文件使用 {ours_label}（ours / stage 2）版本"))
+                    .label("采纳左侧")
                     .disabled(busy)
                     .on_click({
                         let p = path.clone();
@@ -114,8 +113,7 @@ impl VcsView {
                 ramag_ui::clickable_button("vcs-conflict-use-theirs")
                     .outline()
                     .small()
-                    .label(format!("采纳 {theirs_label}"))
-                    .tooltip(format!("整文件使用 {theirs_label}（theirs / stage 3）版本"))
+                    .label("采纳右侧")
                     .disabled(busy)
                     .on_click({
                         let p = path.clone();
@@ -129,8 +127,7 @@ impl VcsView {
                     .primary()
                     .small()
                     .icon(IconName::Check)
-                    .label("标记已解决")
-                    .tooltip("手动改完文件后：标记为已解决（git add）")
+                    .label("解决")
                     .disabled(busy)
                     .on_click({
                         let p = path.clone();

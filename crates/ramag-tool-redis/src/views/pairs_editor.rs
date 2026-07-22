@@ -157,10 +157,8 @@ impl Render for PairsEditor {
                     .icon(IconName::Plus)
                     .label(add_label)
                     .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
-                    .tooltip(if self.rows.len() >= MAX_EDITOR_ROWS {
-                        "单次最多添加 200 行；更大批量请使用脚本"
-                    } else {
-                        add_label
+                    .when(self.rows.len() >= MAX_EDITOR_ROWS, |button| {
+                        button.tooltip("最多 200 行")
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.add_row(window, cx);
@@ -199,7 +197,6 @@ impl Render for PairsEditor {
                         .small()
                         .icon(IconName::Close)
                         .disabled(self.disabled)
-                        .tooltip("删除该行")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_row(id, cx);
                         })),

@@ -184,7 +184,7 @@ impl ClipboardService {
                 *self.cache.write() = cache;
                 self.bump();
             }
-            Err(e) => warn!(error = %e, "clip cache preload failed"),
+            Err(e) => warn!(error = %e, "clipboard cache preload failed"),
         }
     }
 
@@ -228,7 +228,7 @@ impl ClipboardService {
                     s
                 }
                 Err(e) => {
-                    warn!(error = %e, "clip settings corrupted; capture fail-closed");
+                    warn!(error = %e, "clipboard settings corrupted; capture disabled");
                     self.settings_degraded.store(true, Ordering::Relaxed);
                     ClipboardSettings {
                         enabled: false,
@@ -241,7 +241,7 @@ impl ClipboardService {
                 ClipboardSettings::default()
             }
             Err(e) => {
-                warn!(error = %e, "clip settings unreadable; capture fail-closed");
+                warn!(error = %e, "clipboard settings unreadable; capture disabled");
                 self.settings_degraded.store(true, Ordering::Relaxed);
                 ClipboardSettings {
                     enabled: false,
@@ -361,7 +361,7 @@ impl ClipboardService {
 
         match decide_capture(&captured, settings, source.as_ref()) {
             CaptureDecision::Skip(reason) => {
-                debug!(reason, "clip capture skipped");
+                debug!(reason, "clipboard capture skipped");
                 Ok(false)
             }
             CaptureDecision::Record { hash, kind } => {

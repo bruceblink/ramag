@@ -331,11 +331,11 @@ impl ConnectionFormPanel {
                 }
                 this.test_state = match result {
                     Ok(_) => {
-                        info!("test_connection ok");
+                        info!("connection test completed");
                         TestState::Success
                     }
                     Err(e) => {
-                        error!(error = %e, "test_connection failed");
+                        error!(error = %e, "connection test failed");
                         TestState::Failed(e.to_string())
                     }
                 };

@@ -148,7 +148,7 @@ pub(crate) fn list(
         out.push(decode_connection(key.value(), value.value(), &cipher)?);
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    debug!(count = out.len(), "list_connections done");
+    debug!(count = out.len(), "connection listing completed");
     Ok(out)
 }
 

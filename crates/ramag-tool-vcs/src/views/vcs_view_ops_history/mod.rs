@@ -34,7 +34,7 @@ impl VcsView {
                         this.notify_success("已复制提交信息", cx);
                     }
                     Err(error) => {
-                        tracing::error!(error = %error, %commit_id, "vcs: copy commit message failed");
+                        tracing::error!(error = %error, %commit_id, "copy commit message failed");
                         this.error = Some(format!("读取提交信息失败：{error}"));
                         cx.notify();
                     }
@@ -100,7 +100,7 @@ impl VcsView {
                 match details {
                     Ok(commit) => this.viewing_commit = Some(std::rc::Rc::new(commit)),
                     Err(e) => {
-                        error!(error = %e, %commit_id, "vcs: load commit details failed");
+                        error!(error = %e, %commit_id, "load commit details failed");
                         this.error = Some(format!("加载 commit 详情失败：{e}"));
                     }
                 }
@@ -111,7 +111,7 @@ impl VcsView {
                         this.commit_files_rows_cache.get_mut().take();
                     }
                     Err(e) => {
-                        error!(error = %e, %commit_id, "vcs: list_commit_files failed");
+                        error!(error = %e, %commit_id, "load commit files failed");
                         this.error = Some(format!("加载 commit 文件列表失败：{e}"));
                     }
                 }
@@ -257,7 +257,7 @@ impl VcsView {
                             this.prune_file_tab_payloads();
                         }
                         Err(e) => {
-                            error!(error = %e, path = %path_for_diff, "vcs: commit diff failed");
+                            error!(error = %e, path = %path_for_diff, "commit diff failed");
                             if this.active_file_tab_idx.is_some_and(|idx| {
                                 this.file_tabs.get(idx).is_some_and(|tab| {
                                     tab.path == path_for_diff && tab.source == source_for_diff

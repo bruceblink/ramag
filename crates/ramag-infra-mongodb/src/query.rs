@@ -258,10 +258,11 @@ pub async fn update_one(
         .await
         .map_err(map_mongo_error)?;
     tracing::info!(
+        db = db,
         coll = coll,
         matched = r.matched_count,
         modified = r.modified_count,
-        "mongo update_one done"
+        "document update completed"
     );
     let elapsed_ms = start.elapsed().as_millis() as u64;
     // affected 取 matched_count（定位到的文档数）而非 modified_count：改成与原值相同时
@@ -453,7 +454,7 @@ fn warn_if_truncated(truncated: bool, budget: &ResultBudget, operation: &'static
         collected = budget.documents,
         retained_bytes = budget.retained_bytes,
         operation,
-        "mongo cursor truncated at safety cap"
+        "cursor truncated at safety cap"
     );
 }
 

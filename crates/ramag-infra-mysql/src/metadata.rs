@@ -14,7 +14,7 @@ use crate::types::map_column_type;
 
 /// 含系统库（mysql / information_schema / performance_schema / sys）；过滤交给 UI
 pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
-    debug!("list_schemas");
+    debug!("listing schemas");
 
     let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
         r#"
@@ -47,7 +47,7 @@ pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
 
 /// 列出 BASE TABLE / VIEW / SYSTEM VIEW。后两者在 UI 都归为视图分组
 pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
-    debug!(?schema, "list_tables");
+    debug!(?schema, "listing tables");
 
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         r#"
@@ -97,7 +97,7 @@ type ColumnRow = (
 
 /// 列出指定表的所有列
 pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Column>> {
-    debug!(?schema, ?table, "list_columns");
+    debug!(?schema, ?table, "listing columns");
 
     let rows: Vec<ColumnRow> = sqlx::query_as(
         r#"
@@ -144,7 +144,7 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
 
 /// 含主键 / 唯一 / 普通索引。基于 STATISTICS 一行一列，按 INDEX_NAME 聚合
 pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Index>> {
-    debug!(?schema, ?table, "list_indexes");
+    debug!(?schema, ?table, "listing indexes");
 
     let rows: Vec<(String, i64, i64, String)> = sqlx::query_as(
         r#"
@@ -196,7 +196,7 @@ pub async fn list_foreign_keys(
     schema: &str,
     table: &str,
 ) -> Result<Vec<ForeignKey>> {
-    debug!(?schema, ?table, "list_foreign_keys");
+    debug!(?schema, ?table, "listing foreign keys");
 
     let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
         r#"

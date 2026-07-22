@@ -274,7 +274,7 @@ async fn run_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(file = %path.display(), "redis import failed");
+                error!(error = %e, file = %path.display(), scope = "database", "import failed");
                 return Err(e);
             }
         };
@@ -318,7 +318,7 @@ async fn run_selection_import(
         {
             Ok(summary) => summary,
             Err(error) => {
-                error!(file = %path.display(), "redis selection import failed");
+                error!(error = %error, file = %path.display(), scope = "selection", "import failed");
                 return Err(error);
             }
         };

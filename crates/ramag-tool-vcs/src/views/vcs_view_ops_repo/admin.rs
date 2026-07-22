@@ -42,7 +42,7 @@ impl VcsView {
                 .run_if_latest(&ticket, || storage.save_repo(&repo))
                 .await;
             if let Some(Err(e)) = result {
-                tracing::warn!(error = %e, repo = %repo.name, "vcs: save_repo failed");
+                tracing::warn!(error = %e, repo = %repo.name, "save repository failed");
                 let _ = this.update(cx, |this, cx| {
                     this.error = Some(format!("仓库记录未能保存（重启后设置可能丢失）：{e}"));
                     cx.notify();
@@ -63,7 +63,7 @@ impl VcsView {
                 .run_if_latest(&ticket, || storage.delete_repo(&id))
                 .await;
             if let Some(Err(e)) = result {
-                tracing::warn!(error = %e, repo_id = %id, "vcs: delete_repo failed");
+                tracing::warn!(error = %e, repo_id = %id, "delete repository failed");
                 let _ = this.update(cx, |this, cx| {
                     this.error = Some(format!("移除记录未能持久化（重启后可能重新出现）：{e}"));
                     cx.notify();
@@ -169,7 +169,7 @@ impl VcsView {
             })
             .await;
             if let Err(error) = prepared {
-                tracing::error!(error = %error, dir = %dest.display(), "vcs: prepare clone destination failed");
+                tracing::error!(error = %error, dir = %dest.display(), "prepare clone destination failed");
                 let _ = this.update(cx, |this, cx| {
                     if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
                         return;
@@ -202,7 +202,7 @@ impl VcsView {
                 .await
             {
                 Ok(rc) => {
-                    tracing::info!("vcs clone done");
+                    tracing::info!("clone completed");
                     let current = this
                         .update(cx, |this, cx| {
                             if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
@@ -222,9 +222,9 @@ impl VcsView {
                 Err(e) => {
                     let cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
                     if cancelled {
-                        tracing::info!("vcs clone cancelled by user");
+                        tracing::info!("clone cancelled by user");
                     } else {
-                        tracing::error!(error = %e, "vcs: clone failed");
+                        tracing::error!(error = %e, "clone failed");
                     }
                     let _ = this.update(cx, |this, cx| {
                         if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
@@ -263,14 +263,14 @@ impl VcsView {
             let _ = this.update(cx, |this, cx| {
                 this.pending_notification = Some(match result {
                     Ok(()) => {
-                        tracing::info!(dir = %dir.display(), "cancelled clone dir removed");
+                        tracing::info!(dir = %dir.display(), "partial clone directory removed");
                         gpui_component::notification::Notification::success(format!(
                             "已删除未完成的 Clone 目录：{display}"
                         ))
                         .autohide(true)
                     }
                     Err(error) => {
-                        tracing::warn!(error = %error, dir = %dir.display(), "cleanup cancelled clone failed");
+                        tracing::warn!(error = %error, dir = %dir.display(), "partial clone cleanup failed");
                         gpui_component::notification::Notification::error(format!(
                             "删除未完成的 Clone 目录失败：{error}"
                         ))
@@ -308,7 +308,7 @@ impl VcsView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             if let Err(e) = driver.init_repo(&path).await {
-                tracing::error!(error = %e, path = %path.display(), "vcs: git init failed");
+                tracing::error!(error = %e, path = %path.display(), "repository initialization failed");
                 let _ = this.update(cx, |this, cx| {
                     this.loading = false;
                     this.loading_label = None;
@@ -396,7 +396,7 @@ impl VcsView {
                         cx.notify();
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "vcs: list_repos failed");
+                        tracing::warn!(error = %e, "load repositories failed");
                         if restore_allowed {
                             this.error = Some(format!("加载最近仓库失败：{e}"));
                             cx.notify();
@@ -414,7 +414,7 @@ impl VcsView {
         let json = match serde_json::to_string(&paths) {
             Ok(j) => j,
             Err(e) => {
-                tracing::warn!(error = %e, "vcs: serialize open repos failed");
+                tracing::warn!(error = %e, "serialize repository session failed");
                 return;
             }
         };

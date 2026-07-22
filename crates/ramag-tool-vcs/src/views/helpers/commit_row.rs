@@ -140,42 +140,36 @@ pub(in crate::views) fn render_commit_row(
             let (e3, c3) = (entity.clone(), cid.clone());
             let (e_sha, c_sha) = (entity.clone(), cid.clone());
             let (e_msg, c_msg) = (entity.clone(), cid.clone());
-            menu.item(
-                ramag_ui::menu_item("复制完整 SHA").on_click(move |_, _, app| {
-                    app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
-                    e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
-                }),
-            )
-            .item(
-                ramag_ui::menu_item("复制提交信息").on_click(move |_, _, app| {
-                    e_msg.update(app, |this, cx| {
-                        this.copy_commit_message(c_msg.clone(), cx);
-                    });
-                }),
-            )
+            menu.item(ramag_ui::menu_item("复制哈希").on_click(move |_, _, app| {
+                app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
+                e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
+            }))
+            .item(ramag_ui::menu_item("复制说明").on_click(move |_, _, app| {
+                e_msg.update(app, |this, cx| {
+                    this.copy_commit_message(c_msg.clone(), cx);
+                });
+            }))
             .separator()
-            .item(
-                ramag_ui::menu_item("Cherry-pick 到当前 HEAD").on_click(move |_, window, app| {
-                    use crate::views::confirm_dialogs::open_confirm_dialog;
-                    let short: String = c1.chars().take(7).collect();
-                    let c = c1.clone();
-                    open_confirm_dialog(
-                        e1.clone(),
-                        "Cherry-pick 这个 commit？",
-                        format!(
-                            "将把「{short}」拣选到当前 HEAD。\n\
+            .item(ramag_ui::menu_item("摘取").on_click(move |_, window, app| {
+                use crate::views::confirm_dialogs::open_confirm_dialog;
+                let short: String = c1.chars().take(7).collect();
+                let c = c1.clone();
+                open_confirm_dialog(
+                    e1.clone(),
+                    "Cherry-pick 这个 commit？",
+                    format!(
+                        "将把「{short}」拣选到当前 HEAD。\n\
                                  有冲突时会进入 cherry-pick 进行中状态。"
-                        ),
-                        "Cherry-pick",
-                        false,
-                        move |this, cx| this.run_cherry_pick(c, cx),
-                        window,
-                        app,
-                    );
-                }),
-            )
-            .item(ramag_ui::menu_item("Revert（生成反向 commit）").on_click(
-                move |_, window, app| {
+                    ),
+                    "摘取",
+                    false,
+                    move |this, cx| this.run_cherry_pick(c, cx),
+                    window,
+                    app,
+                );
+            }))
+            .item(
+                ramag_ui::menu_item("反向提交").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c2.chars().take(7).collect();
                     let c = c2.clone();
@@ -186,16 +180,16 @@ pub(in crate::views) fn render_commit_row(
                             "将生成一个反向 commit 撤销「{short}」的改动（不改写历史，安全）。\n\
                                  有冲突时会进入 revert 进行中状态。"
                         ),
-                        "Revert",
+                        "反向提交",
                         false,
                         move |this, cx| this.run_revert(c, cx),
                         window,
                         app,
                     );
-                },
-            ))
+                }),
+            )
             .item(
-                ramag_ui::menu_item("Reset --mixed 到此").on_click(move |_, window, app| {
+                ramag_ui::menu_item("混合重置").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c3.chars().take(7).collect();
                     let c = c3.clone();
@@ -207,7 +201,7 @@ pub(in crate::views) fn render_commit_row(
                              （可在 reflog 找回），它们的改动与未提交的暂存内容一起回到\
                              未暂存状态（工作区文件保留）。"
                         ),
-                        "Reset",
+                        "重置",
                         false,
                         move |this, cx| this.run_reset(c, ResetKind::Mixed, cx),
                         window,

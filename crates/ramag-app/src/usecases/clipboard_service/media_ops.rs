@@ -168,10 +168,10 @@ impl ClipboardService {
         match self.storage.clip_prune(MAX_ITEMS, MAX_AGE_DAYS).await {
             Ok(images) => {
                 if let Err(e) = self.cleanup_media(images).await {
-                    warn!(error = %e, "remove pruned clip media failed");
+                    warn!(error = %e, "remove pruned clipboard media failed");
                 }
             }
-            Err(e) => warn!(error = %e, "clip prune failed"),
+            Err(e) => warn!(error = %e, "clipboard pruning failed"),
         }
     }
 
@@ -180,7 +180,7 @@ impl ClipboardService {
         crate::run_blocking(move || {
             for path in paths {
                 if let Err(e) = driver.remove_media(&path) {
-                    warn!(error = %e, path, "remove clip media failed");
+                    warn!(error = %e, path, "remove clipboard media failed");
                 }
             }
             Ok(())

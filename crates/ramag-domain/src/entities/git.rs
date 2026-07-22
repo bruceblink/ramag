@@ -346,10 +346,10 @@ impl RebaseAction {
     pub fn label_zh(self) -> &'static str {
         match self {
             Self::Pick => "保留",
-            Self::Squash => "合并+保留消息",
-            Self::Fixup => "合并+丢弃消息",
-            Self::Reword => "修改消息",
-            Self::Edit => "暂停修改",
+            Self::Squash => "合并保留",
+            Self::Fixup => "合并丢弃",
+            Self::Reword => "改说明",
+            Self::Edit => "暂停",
             Self::Drop => "删除",
         }
     }

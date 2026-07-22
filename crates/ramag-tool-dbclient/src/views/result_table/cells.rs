@@ -165,7 +165,7 @@ pub(super) fn render_data_row(
                 )
                 .context_menu(|menu, _, _| {
                     menu.item(
-                        ramag_ui::menu_item("复制单元格")
+                        ramag_ui::menu_item("复制")
                             .icon(IconName::Copy)
                             .action(Box::new(CopyCellValue)),
                     )

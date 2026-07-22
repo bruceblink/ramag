@@ -322,7 +322,7 @@ async fn run_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(file = %path.display(), "mongo import failed");
+                error!(error = %e, file = %path.display(), scope = "database", "import failed");
                 return Err(e);
             }
         };
@@ -366,7 +366,7 @@ async fn run_structured_collection_import(
         {
             Ok(summary) => summary,
             Err(error) => {
-                error!(file = %path.display(), "structured collection import failed");
+                error!(error = %error, file = %path.display(), scope = "collection", format = "structured", "import failed");
                 return Err(error);
             }
         };
@@ -418,7 +418,7 @@ async fn run_collection_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(file = %path.display(), "jsonl collection import failed");
+                error!(error = %e, file = %path.display(), scope = "collection", format = "jsonl", "import failed");
                 return Err(e);
             }
         };

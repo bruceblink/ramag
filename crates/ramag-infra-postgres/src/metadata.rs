@@ -13,7 +13,7 @@ use crate::types::map_column_kind;
 
 /// 含系统 schema（pg_catalog / information_schema / pg_toast / pg_temp_*）；过滤交给 UI
 pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
-    debug!("list_schemas (postgres)");
+    debug!("listing schemas");
 
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         r#"
@@ -44,7 +44,7 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
 
 /// 列出 BASE TABLE / VIEW / MATERIALIZED VIEW。matview 不在 information_schema.tables，需 union pg_matviews
 pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
-    debug!(?schema, "list_tables (postgres)");
+    debug!(?schema, "listing tables");
 
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         r#"
@@ -106,7 +106,7 @@ type PgColumnRow = (
 
 /// 列注释走 pg_catalog.col_description，其他走 information_schema.columns
 pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<Column>> {
-    debug!(?schema, ?table, "list_columns (postgres)");
+    debug!(?schema, ?table, "listing columns");
 
     let rows: Vec<PgColumnRow> = sqlx::query_as(
         r#"
@@ -189,7 +189,7 @@ fn compose_full_type(data_type: &str, udt: &str, char_max: Option<i32>) -> Strin
 
 /// 含 BTREE/GIN/GIST/HASH/BRIN 等所有索引方法
 pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<Index>> {
-    debug!(?schema, ?table, "list_indexes (postgres)");
+    debug!(?schema, ?table, "listing indexes");
 
     let rows: Vec<(String, bool, bool, Vec<String>)> = sqlx::query_as(
         r#"
@@ -235,7 +235,7 @@ pub async fn list_foreign_keys(
     schema: &str,
     table: &str,
 ) -> Result<Vec<ForeignKey>> {
-    debug!(?schema, ?table, "list_foreign_keys (postgres)");
+    debug!(?schema, ?table, "listing foreign keys");
 
     let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
         r#"

@@ -104,7 +104,7 @@ impl ClipboardView {
                     .child(card_action_btn(
                         SharedString::from(format!("copy-{}", item.id)),
                         icons::copy(),
-                        "复制该条目",
+                        "复制",
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.copy_clip(item_copy.clone(), cx);
@@ -113,7 +113,7 @@ impl ClipboardView {
                     .child(card_action_btn(
                         SharedString::from(format!("del-{}", item.id)),
                         icons::trash(),
-                        "删除该条目",
+                        "删除",
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.delete_clip(item_del.clone(), cx);

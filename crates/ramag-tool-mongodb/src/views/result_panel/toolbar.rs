@@ -5,7 +5,6 @@ use gpui::{Context, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
 };
-use ramag_ui::platform::primary_shortcut;
 
 use super::{ResultEvent, ResultPanel};
 
@@ -100,20 +99,23 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
         })
         .child({
             let can = panel.can_write();
+            let drilled = panel.is_drilled();
+            let can_insert = can && !drilled;
+            let disabled_reason = if panel.doc_dml_busy {
+                "操作进行中"
+            } else if production {
+                "只读"
+            } else if drilled {
+                "请返回上层"
+            } else {
+                "请先打开集合"
+            };
             ramag_ui::clickable_button("mongo-insert")
                 .ghost()
                 .small()
                 .icon(IconName::Plus)
-                .tooltip(if can {
-                    "新增文档"
-                } else if panel.doc_dml_busy {
-                    "新增文档（上一写操作尚未完成）"
-                } else if production {
-                    "新增文档（生产连接 · 只读）"
-                } else {
-                    "新增文档（需当前命令指定 collection）"
-                })
-                .disabled(!can || panel.is_drilled())
+                .when(!can_insert, |button| button.tooltip(disabled_reason))
+                .disabled(!can_insert)
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_insert_dialog(window, cx)))
         })
         .child({
@@ -122,36 +124,39 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 && !panel.is_drilled()
                 && !panel.row_view_building
                 && panel.row_view_error.is_none();
+            let disabled_reason = if panel.row_view_building {
+                "正在筛选"
+            } else if panel.doc_dml_busy {
+                "操作进行中"
+            } else if production {
+                "只读"
+            } else if panel.is_drilled() {
+                "请返回上层"
+            } else {
+                "请先选择数据"
+            };
             ramag_ui::clickable_button("mongo-delete")
                 .ghost()
                 .small()
                 .icon(IconName::Minus)
-                .tooltip(if can_del {
-                    "删除选中文档"
-                } else if panel.row_view_building {
-                    "删除选中文档（正在筛选 / 排序）"
-                } else if panel.doc_dml_busy {
-                    "删除选中文档（上一写操作尚未完成）"
-                } else if production {
-                    "删除选中文档（生产连接 · 只读）"
-                } else {
-                    "删除选中文档（先勾选行）"
-                })
+                .when(!can_del, |button| button.tooltip(disabled_reason))
                 .disabled(!can_del)
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_delete_confirm(window, cx)))
         })
         .child({
-            // 与导出配对：导入 JSONL 到当前目标集合（无目标 / 生产只读时禁用）
             let can_import = panel.can_write();
+            let disabled_reason = if panel.doc_dml_busy {
+                "操作进行中"
+            } else if production {
+                "只读"
+            } else {
+                "请先打开集合"
+            };
             ramag_ui::clickable_button("mongo-import")
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::download())
-                .tooltip(if can_import {
-                    "导入 JSONL 到当前集合"
-                } else {
-                    "导入 JSONL（需先打开集合；生产只读不可用）"
-                })
+                .when(!can_import, |button| button.tooltip(disabled_reason))
                 .disabled(!can_import)
                 .on_click(
                     cx.listener(|panel, _, window, cx| panel.open_import_jsonl_dialog(window, cx)),
@@ -163,13 +168,6 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::upload())
-                .tooltip(if panel.exporting {
-                    "导出进行中"
-                } else if panel.selected_rows.is_empty() {
-                    "导出选中文档（请先勾选）"
-                } else {
-                    "导出选中文档（JSONL，不含集合结构）"
-                })
                 .disabled(!has_data || panel.table_building || panel.exporting)
                 .on_click(cx.listener(|panel, _, _, cx| panel.export_documents(cx)))
         })
@@ -178,8 +176,8 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .danger()
                 .small()
                 .icon(IconName::CircleX)
-                .label("停止等待")
-                .tooltip("停止客户端等待；服务器端操作可能仍在执行")
+                .label("停止")
+                .tooltip("仅停止等待")
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Cancel)))
         } else {
             // 运行：与 dbclient 同位（结果区工具栏最右）、同快捷键（⌘↵）。
@@ -187,7 +185,6 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .primary()
                 .small()
                 .icon(IconName::Play)
-                .tooltip(format!("{} 运行", primary_shortcut("Enter")))
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Refresh)))
         })
 }

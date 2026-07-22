@@ -301,7 +301,7 @@ impl VcsView {
                     // driver 已在受限 Git worker 中按字母序整理，UI 只交换结果。
                     Ok(paths) => this.project_files = paths,
                     Err(e) => {
-                        error!(error = %e, "vcs: list project files failed");
+                        error!(error = %e, "load project files failed");
                         // 失败时仍清空避免显示旧数据；错误以 banner 形式提示
                         this.project_files = Vec::new();
                         this.error = Some(format!("加载 Project Files 失败: {e}"));
@@ -614,7 +614,7 @@ impl VcsView {
                         // 文件监听会按路径增量刷新 Git 状态，无需再发起一次全量刷新。
                     }
                     Err(error) => {
-                        tracing::error!(error = %error, path = %path, "vcs: autosave project file failed");
+                        tracing::error!(error = %error, path = %path, "autosave project file failed");
                         this.pending_notification = Some(
                             gpui_component::notification::Notification::error(format!(
                                 "自动保存 {path} 失败：{error}；可按 {} 重试",
@@ -643,7 +643,7 @@ impl VcsView {
                 Ok(s) => Some(s),
                 Err(e) => {
                     // 静默刷新失败保留旧状态（仓库可能被外部删除/损坏），留日志可排查
-                    tracing::warn!(error = %e, "vcs: silent status reload failed");
+                    tracing::warn!(error = %e, "background status refresh failed");
                     None
                 }
             };
@@ -711,7 +711,7 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, repo_id = %repo_id, "vcs: close repo failed");
+                        error!(error = %e, repo_id = %repo_id, "close repository failed");
                         this.error = Some(format!("关闭仓库失败：{e}"));
                         cx.notify();
                     }
@@ -901,12 +901,12 @@ pub(super) async fn open_repo_async(
     path: std::path::PathBuf,
     cx: &mut gpui::AsyncApp,
 ) {
-    info!(?path, "vcs: opening repo");
+    info!(?path, "opening repository");
     let open_result = driver.open_repo(&path).await;
     let repo_config = match open_result {
         Ok(r) => r,
         Err(e) => {
-            error!(error = %e, "vcs: open repo failed");
+            error!(error = %e, "open repository failed");
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 this.loading_label = None;
@@ -1009,7 +1009,7 @@ pub(super) async fn open_repo_async(
         match status {
             Ok(s) => this.status = Some(s),
             Err(e) => {
-                tracing::error!(error = %e, "vcs: open repo status failed");
+                tracing::error!(error = %e, "load repository status failed");
                 this.status = None;
                 load_errors.push(format!("读取工作区状态失败：{e}"));
             }
@@ -1020,7 +1020,7 @@ pub(super) async fn open_repo_async(
                 this.remote_branches = remote;
             }
             Err(e) => {
-                tracing::error!(error = %e, "vcs: open repo branches failed");
+                tracing::error!(error = %e, "load repository branches failed");
                 this.local_branches.clear();
                 this.remote_branches.clear();
                 load_errors.push(format!("读取分支失败：{e}"));

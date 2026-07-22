@@ -80,7 +80,7 @@ impl VcsView {
                 }
                 match result {
                     Ok(()) => {
-                        info!(hunk_idx, ?kind, "vcs: hunk revert done");
+                        info!(hunk_idx, ?kind, "hunk revert completed");
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
@@ -88,7 +88,7 @@ impl VcsView {
                         this.sync_changes_tabs_with_status(cx);
                     }
                     Err(e) => {
-                        error!(error = %e, hunk_idx, ?kind, "vcs: hunk revert failed");
+                        error!(error = %e, hunk_idx, ?kind, "hunk revert failed");
                         let action = match kind {
                             GroupKind::Staged => "撤回 hunk 到工作区",
                             GroupKind::Unstaged => "回滚 hunk 到 index",
@@ -143,14 +143,14 @@ impl VcsView {
                 }
                 match result {
                     Ok(()) => {
-                        info!(hunk_idx, "vcs: hunk stage done");
+                        info!(hunk_idx, "hunk stage completed");
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
                         this.sync_changes_tabs_with_status(cx);
                     }
                     Err(e) => {
-                        error!(error = %e, hunk_idx, "vcs: hunk stage failed");
+                        error!(error = %e, hunk_idx, "hunk stage failed");
                         this.error = Some(format!("暂存 hunk 失败：{e}"));
                     }
                 }

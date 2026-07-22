@@ -355,7 +355,7 @@ impl CliConsole {
                     entry.elapsed_ms = elapsed;
                     let outcome = match result {
                         Ok(v) => {
-                            info!(elapsed_ms = elapsed, "cli command ok");
+                            info!(elapsed_ms = elapsed, "command completed");
                             // 超限应答分段：保留原始值 + 游标，支持点击继续展开
                             let chunk = format::lines_of_first(&v);
                             entry.cursor = chunk.cursor;
@@ -363,7 +363,7 @@ impl CliConsole {
                             Outcome::Ok(Arc::new(wrap_display_lines(chunk.lines)))
                         }
                         Err(e) => {
-                            error!(error = %e, "cli command failed");
+                            error!(error = %e, "command failed");
                             // 仿 redis-cli：(error) + 纯消息体，不带「查询执行失败:」SQL 腔前缀
                             Outcome::Err(format!("(error) {}", e.message()))
                         }
@@ -603,11 +603,6 @@ impl Render for CliConsole {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::trash())
-                    .tooltip(if pending_commands > 0 {
-                        "清空已完成历史（执行中的命令会保留）"
-                    } else {
-                        "清空历史"
-                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 
@@ -664,12 +659,12 @@ impl Render for CliConsole {
                     .small()
                     .icon(IconName::Play)
                     .disabled(read_only_write || command_queue_full)
-                    .tooltip(if read_only_write {
-                        "生产连接为只读，不能执行写命令"
-                    } else if command_queue_full {
-                        "并发命令已达上限，请等待已有命令完成"
-                    } else {
-                        "执行 (Enter)"
+                    .when(read_only_write || command_queue_full, |button| {
+                        button.tooltip(if read_only_write {
+                            "只读"
+                        } else {
+                            "命令队列已满"
+                        })
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.handle_submit(window, cx)
@@ -731,13 +726,14 @@ fn render_transcript_row(
                     )))
                     .ghost()
                     .xsmall()
-                    .label(format!("继续展开（{hint}）"))
+                    .label("继续")
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
                             this.continue_entry(entry_id, cx);
                         },
                     )),
                 )
+                .child(div().text_xs().text_color(muted_fg).child(hint.clone()))
                 .into_any_element()
         }
         TranscriptRow::Header { command, meta } => div()

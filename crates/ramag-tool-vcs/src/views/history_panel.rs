@@ -93,7 +93,6 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("清除单文件过滤，回到全仓库历史")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.clear_history_path_filter(cx);
@@ -132,9 +131,9 @@ impl VcsView {
             .small()
             .icon(ramag_ui::icons::scroll_text())
             .tooltip(if self.showing_reflog {
-                "切回 commit 历史"
+                "提交"
             } else {
-                "查看 reflog（找回丢失 commit）"
+                "Reflog"
             })
             .disabled(busy)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -163,7 +162,6 @@ impl VcsView {
                         .ghost()
                         .small()
                         .icon(IconName::ArrowRight)
-                        .tooltip("应用搜索条件")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.apply_history_search(cx);

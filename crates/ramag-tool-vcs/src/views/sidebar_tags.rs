@@ -3,7 +3,7 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, px,
+    Styled, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
@@ -49,11 +49,7 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip(if has_head {
-                        "创建 tag（message 非空 → annotated；空 → lightweight）"
-                    } else {
-                        "首次提交后才能创建 tag"
-                    })
+                    .when(!has_head, |button| button.tooltip("请先提交"))
                     .disabled(busy || !has_head)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.handle_create_tag(cx);
@@ -142,7 +138,7 @@ pub(super) fn tag_row(
                     let name = name.clone();
                     side_op_button(
                         format!("vcs-side-tag-push-{idx}"),
-                        "推送 tag 到默认 remote（优先 origin）",
+                        "推送",
                         IconName::ArrowUp,
                         busy,
                         move |this, window, cx| {
@@ -153,7 +149,7 @@ pub(super) fn tag_row(
                 })
                 .child(side_op_button(
                     format!("vcs-side-tag-delete-{idx}"),
-                    "删除本地 tag",
+                    "删除",
                     ramag_ui::icons::trash(),
                     busy,
                     move |this, window, cx| {

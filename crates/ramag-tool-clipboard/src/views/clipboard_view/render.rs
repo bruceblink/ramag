@@ -127,7 +127,7 @@ impl ClipboardView {
                             .small()
                             .icon(icons::settings())
                             .selected(self.show_settings)
-                            .tooltip("剪贴板设置")
+                            .tooltip("设置")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.show_settings = !this.show_settings;
                                 cx.notify();

@@ -219,8 +219,7 @@ pub(super) fn connection_row(
         .when(show_account, |row| {
             row.child(secondary_col(150.0, account_text))
         })
-        // 操作按钮（编辑 / 删除）：图标按钮 + tooltip
-        // mouse_down 拦截避免点击事件冒泡到父行触发"打开连接"
+        // 拦截按钮事件，避免触发父行的打开操作。
         .child(
             h_flex()
                 .flex_none()
@@ -233,7 +232,6 @@ pub(super) fn connection_row(
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::pencil())
-                        .tooltip("编辑连接")
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(ListEvent::RequestEdit(conn_for_edit.clone()));
                         })),
@@ -243,7 +241,6 @@ pub(super) fn connection_row(
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())
-                        .tooltip("删除连接")
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(ListEvent::RequestDelete(conn_id_for_del.clone()));
                         })),

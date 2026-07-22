@@ -43,12 +43,12 @@ pub(super) enum FilesViewMode {
 }
 
 impl FilesViewMode {
-    /// 用于 tooltip 的中文标签
+    /// 图标标签。
     pub(super) fn label(self) -> &'static str {
         match self {
-            FilesViewMode::Project => "项目文件",
-            FilesViewMode::Changes => "本地变更",
-            FilesViewMode::Stash => "暂存堆栈",
+            FilesViewMode::Project => "项目",
+            FilesViewMode::Changes => "变更",
+            FilesViewMode::Stash => "储藏",
         }
     }
 

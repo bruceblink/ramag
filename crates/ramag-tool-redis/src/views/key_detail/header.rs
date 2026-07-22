@@ -74,7 +74,7 @@ pub(super) fn render_header(
             ramag_ui::clickable_button("ttl-retry")
                 .ghost()
                 .xsmall()
-                .label("TTL 获取失败 · 重试")
+                .label("重试")
                 .text_color(gpui::red())
                 .tooltip(error.clone())
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.reload_ttl(cx))),
@@ -87,11 +87,7 @@ pub(super) fn render_header(
                 .label(format!("TTL {ttl_label} ✎"))
                 .text_color(accent)
                 .disabled(read_only)
-                .tooltip(if read_only {
-                    "生产连接为只读，不能修改 TTL"
-                } else {
-                    "编辑 TTL"
-                })
+                .when(read_only, |button| button.tooltip("只读"))
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     cx.emit(KeyDetailEvent::RequestEditTtl(
                         key_for_ttl.clone(),
@@ -173,35 +169,35 @@ pub(super) fn render_header(
         header = match value {
             RedisValue::Hash(_) => header.child(add_btn(
                 "redis-hash-add-field",
-                "新增 Hash 字段",
+                "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddHashField(key_for_emit.clone()),
             )),
             RedisValue::List(_) => header.child(add_btn(
                 "redis-list-add-elem",
-                "新增 List 元素",
+                "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddListElement(key_for_emit.clone()),
             )),
             RedisValue::Set(_) => header.child(add_btn(
                 "redis-set-add-elem",
-                "新增 Set 元素",
+                "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddSetElement(key_for_emit.clone()),
             )),
             RedisValue::ZSet(_) => header.child(add_btn(
                 "redis-zset-add-elem",
-                "新增 ZSet 成员",
+                "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddZSetElement(key_for_emit.clone()),
             )),
             RedisValue::Stream(_) => header.child(add_btn(
                 "redis-stream-add-entry",
-                "新增 Stream 条目",
+                "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddStreamEntry(key_for_emit.clone()),
@@ -216,11 +212,7 @@ pub(super) fn render_header(
             .danger()
             .small()
             .icon(ramag_ui::icons::trash())
-            .tooltip(if read_only {
-                "生产连接为只读，不能删除 Key"
-            } else {
-                "删除 Key"
-            })
+            .when(read_only, |button| button.tooltip("只读"))
             .disabled(read_only)
             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                 cx.emit(KeyDetailEvent::RequestDeleteKey(key_for_del.clone()));
@@ -242,11 +234,7 @@ where
         .outline()
         .small()
         .icon(IconName::Plus)
-        .tooltip(if disabled {
-            "生产连接为只读"
-        } else {
-            tooltip
-        })
+        .tooltip(if disabled { "只读" } else { tooltip })
         .disabled(disabled)
         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
             cx.emit(make_event());
@@ -280,7 +268,7 @@ fn render_size_chip(
         ramag_ui::clickable_button("size-retry")
             .ghost()
             .xsmall()
-            .label("大小估算失败 · 重试")
+            .label("重试")
             .text_color(gpui::red())
             .tooltip(message.to_string())
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.estimate_size(cx)))
@@ -289,9 +277,8 @@ fn render_size_chip(
         ramag_ui::clickable_button("size-trigger")
             .ghost()
             .xsmall()
-            .label("估算大小")
+            .label("估算")
             .text_color(accent)
-            .tooltip("执行 MEMORY USAGE")
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.estimate_size(cx)))
             .into_any_element()
     }

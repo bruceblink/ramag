@@ -13,7 +13,6 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
-use ramag_ui::platform::primary_shortcut;
 
 use super::QueryTab;
 use super::sql_utils::format_elapsed;
@@ -53,9 +52,9 @@ impl Render for QueryTab {
                 ResultState::Empty => (None, false),
             };
         let panel_for_btn = self.result.read(cx);
-        let has_multi_selected = !panel_for_btn.selected_rows().is_empty();
-        let has_selected = has_multi_selected || panel_for_btn.selected_cell().is_some();
-        // 写入口统一闸门：单表模式 / 视图 / 定位键 / 生产只读，禁用时 tooltip 给出原因
+        let has_selected =
+            !panel_for_btn.selected_rows().is_empty() || panel_for_btn.selected_cell().is_some();
+        // 写入口共用单表、视图、定位键和只读校验。
         let insert_reason = panel_for_btn.insert_block_reason();
         let modify_reason = panel_for_btn.modify_block_reason();
         let has_pending_insert = panel_for_btn.pending_insert().is_some();
@@ -191,17 +190,17 @@ impl Render for QueryTab {
                     })
                     .child({
                         let can_insert = insert_reason.is_none() && !has_pending_insert;
-                        let insert_tip: gpui::SharedString =
+                        let insert_tip: Option<gpui::SharedString> =
                             match (insert_reason, has_pending_insert) {
-                                (Some(reason), _) => format!("新增行（{reason}）").into(),
-                                (None, true) => "新增行（已在草稿中，先提交或取消）".into(),
-                                (None, false) => "新增行".into(),
+                                (Some(reason), _) => Some(reason.into()),
+                                (None, true) => Some("请先处理草稿".into()),
+                                (None, false) => None,
                             };
                         ramag_ui::clickable_button("toolbar-insert")
                             .ghost()
                             .small()
                             .icon(IconName::Plus)
-                            .tooltip(insert_tip)
+                            .when_some(insert_tip, |button, tip| button.tooltip(tip))
                             .disabled(!can_insert)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let Some(conn) = this.connection.clone() else {
@@ -278,14 +277,14 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(IconName::Minus)
-                            .tooltip({
-                                let tip: gpui::SharedString = match (modify_reason, has_selected) {
-                                    (Some(reason), _) => format!("删除选中行（{reason}）").into(),
-                                    (None, false) => "删除选中行（先勾选行或点选单元格）".into(),
-                                    (None, true) => "删除选中行".into(),
-                                };
-                                tip
-                            })
+                            .when_some(
+                                match (modify_reason, has_selected) {
+                                    (Some(reason), _) => Some(gpui::SharedString::from(reason)),
+                                    (None, false) => Some("请先选择数据".into()),
+                                    (None, true) => None,
+                                },
+                                |button, tip| button.tooltip(tip),
+                            )
                             .disabled(!has_selected || modify_reason.is_some())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let panel_ref = this.result.read(cx);
@@ -385,10 +384,8 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::download())
-                            .tooltip(if self.pinned_target.is_some() {
-                                "导入 JSONL 数据到当前表（不改表结构）"
-                            } else {
-                                "导入 JSONL 数据（先从表树打开一张表）"
+                            .when(self.pinned_target.is_none(), |button| {
+                                button.tooltip("请先打开表")
                             })
                             .disabled(self.pinned_target.is_none())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -400,11 +397,6 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::upload())
-                            .tooltip(if has_multi_selected {
-                                "导出选中数据（JSONL，不含表结构）"
-                            } else {
-                                "导出选中数据（请先勾选）"
-                            })
                             .disabled(!has_result)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.result.update(cx, |r, cx| r.export(cx));
@@ -416,7 +408,6 @@ impl Render for QueryTab {
                                 .danger()
                                 .small()
                                 .icon(IconName::Close)
-                                .tooltip("取消当前查询")
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_cancel(window, cx);
                                 })),
@@ -429,7 +420,6 @@ impl Render for QueryTab {
                                 .small()
                                 .icon(IconName::Play)
                                 .disabled(!has_connection)
-                                .tooltip(format!("{} 运行 SQL", primary_shortcut("Enter")))
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_run(window, cx);
                                 })),

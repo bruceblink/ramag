@@ -596,7 +596,7 @@ impl MongoQueryTab {
                             db = %this.database,
                             docs = r.documents.len(),
                             ms = r.elapsed_ms,
-                            "mongo command done"
+                            "command completed"
                         );
                         result_handle.update(cx, |panel, cx| {
                             panel.set_result(r, cx);
@@ -606,7 +606,7 @@ impl MongoQueryTab {
                         });
                     }
                     Err(e) => {
-                        warn!(error = %e, "mongo command failed");
+                        warn!(error = %e, "command failed");
                         // 生产模式只读拦截：弹 toast 并复位忙碌态（旧结果 / 旧错误原样恢复，
                         // 否则结果区永久停在"执行中"）；其余错误仍进结果区便于排查
                         if matches!(e, DomainError::Forbidden(_)) {

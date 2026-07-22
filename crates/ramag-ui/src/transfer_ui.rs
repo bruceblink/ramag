@@ -202,11 +202,6 @@ pub fn transfer_progress_row<V: 'static>(
                     .danger()
                     .xsmall()
                     .icon(IconName::Close)
-                    .tooltip(if cancelling {
-                        "取消中…"
-                    } else {
-                        "取消当前导出 / 导入"
-                    })
                     .disabled(cancelling)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         state_of(view).request_cancel();
@@ -265,7 +260,6 @@ impl ImportOptionsForm {
         .detach();
     }
 
-    /// 已选文件摘要：空 / 单文件名 / 两个文件名 / 首文件名 + 总数
     fn files_summary(&self) -> String {
         fn name_of(path: &std::path::Path) -> String {
             path.file_name()
@@ -315,8 +309,8 @@ impl Render for ImportOptionsForm {
         let merge_button = self.offer_merge.then(|| {
             policy_button(
                 "ramag-import-merge",
-                "合并补齐（条目级去重）",
-                "保留已存在对象，重复条目跳过、缺失条目补齐（行级断点续传）",
+                "合并",
+                "保留对象，补齐缺失条目",
                 ConflictPolicy::Merge,
                 false,
                 self.policy == ConflictPolicy::Merge,
@@ -329,9 +323,9 @@ impl Render for ImportOptionsForm {
                 .outline()
                 .small()
                 .label(if self.files.is_empty() {
-                    "选择文件（可多选）"
+                    "选文件"
                 } else {
-                    "重新选择"
+                    "重选"
                 })
                 .disabled(self.picking)
                 .on_click(move |_: &ClickEvent, _, app| {
@@ -378,8 +372,8 @@ impl Render for ImportOptionsForm {
             )
             .child(policy_button(
                 "ramag-import-skip",
-                "跳过已存在（推荐）",
-                "同名对象已存在时跳过，其余照常导入",
+                "跳过",
+                "跳过同名对象（推荐）",
                 ConflictPolicy::Skip,
                 false,
                 self.policy == ConflictPolicy::Skip,
@@ -387,16 +381,16 @@ impl Render for ImportOptionsForm {
             .children(merge_button)
             .child(policy_button(
                 "ramag-import-overwrite",
-                "覆盖已存在（先删除，不可恢复）",
-                "同名对象先删除再导入，原数据不可恢复",
+                "覆盖",
+                "删除同名对象后导入，不可恢复",
                 ConflictPolicy::Overwrite,
                 true,
                 self.policy == ConflictPolicy::Overwrite,
             ))
             .child(policy_button(
                 "ramag-import-fail",
-                "遇到冲突即停止",
-                "碰到第一个同名对象立即终止导入",
+                "停止",
+                "遇到同名对象即停止",
                 ConflictPolicy::Fail,
                 false,
                 self.policy == ConflictPolicy::Fail,

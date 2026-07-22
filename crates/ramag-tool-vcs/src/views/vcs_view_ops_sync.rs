@@ -33,7 +33,7 @@ pub(super) fn best_effort_refresh<T>(
     match result {
         Ok(value) => Some(value),
         Err(error) => {
-            tracing::warn!(error = %error, resource, "vcs post-operation refresh failed");
+            tracing::warn!(error = %error, resource, "post-operation refresh failed");
             None
         }
     }
@@ -136,7 +136,7 @@ impl VcsView {
                             changes
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "vcs: workspace status refresh failed");
+                            tracing::warn!(error = %error, "workspace status refresh failed");
                             this.error = Some(format!("刷新工作区状态失败：{error}"));
                             (false, false)
                         }
@@ -151,7 +151,7 @@ impl VcsView {
                             }
                         },
                         Err(error) => {
-                            tracing::warn!(error = %error, "vcs: incremental workspace status refresh failed");
+                            tracing::warn!(error = %error, "incremental workspace status refresh failed");
                             this.error = Some(format!("增量刷新工作区状态失败：{error}"));
                             (false, false)
                         }
@@ -169,7 +169,7 @@ impl VcsView {
                             }
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "vcs: incremental project files refresh failed");
+                            tracing::warn!(error = %error, "incremental project files refresh failed");
                             this.error = Some(format!("增量刷新 Project Files 失败：{error}"));
                             this.reload_project_files(cx);
                         }
@@ -182,7 +182,7 @@ impl VcsView {
                             this.remote_branches = remote;
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "vcs: branch refresh failed");
+                            tracing::warn!(error = %error, "branch refresh failed");
                             this.error = Some(format!("刷新分支失败：{error}"));
                         }
                     }
@@ -308,7 +308,7 @@ impl VcsView {
             }
             Err(e) => {
                 // 监听失败不阻断使用：窗口激活刷新 + 手动刷新仍可用
-                tracing::warn!(error = %e, "vcs: fs watcher start failed");
+                tracing::warn!(error = %e, "fs watcher start failed");
             }
         }
     }
@@ -498,7 +498,7 @@ fn merge_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>, refresh: RepoR
     match pending.lock() {
         Ok(mut pending) => pending.merge(refresh),
         Err(error) => {
-            tracing::warn!("vcs workspace refresh state lock poisoned");
+            tracing::warn!("workspace refresh state lock poisoned");
             error.into_inner().merge(refresh);
         }
     }
@@ -508,7 +508,7 @@ fn take_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>) -> RepoRefresh 
     match pending.lock() {
         Ok(mut pending) => std::mem::take(&mut *pending),
         Err(error) => {
-            tracing::warn!("vcs workspace refresh state lock poisoned");
+            tracing::warn!("workspace refresh state lock poisoned");
             let mut pending = error.into_inner();
             std::mem::take(&mut *pending)
         }
@@ -519,7 +519,7 @@ fn enqueue_workspace_refresh(sender: &std::sync::Mutex<futures::channel::mpsc::S
     let mut sender = match sender.lock() {
         Ok(sender) => sender,
         Err(_) => {
-            tracing::warn!("vcs workspace refresh channel lock poisoned");
+            tracing::warn!("workspace refresh channel lock poisoned");
             return;
         }
     };
@@ -527,7 +527,7 @@ fn enqueue_workspace_refresh(sender: &std::sync::Mutex<futures::channel::mpsc::S
         Ok(()) => {}
         Err(error) if error.is_full() || error.is_disconnected() => {}
         Err(error) => {
-            tracing::warn!(error = %error, "vcs workspace refresh enqueue failed");
+            tracing::warn!(error = %error, "workspace refresh enqueue failed");
         }
     }
 }

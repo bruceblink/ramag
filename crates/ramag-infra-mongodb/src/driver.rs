@@ -215,7 +215,7 @@ impl DocDriver for MongoDriver {
         validate_namespace(db, Some(coll))?;
         validate_mongo_pipeline(&pipeline)?;
         if config.production && pipeline_has_write_stage(&pipeline) {
-            warn!(conn = %config.name, %db, %coll, "read-only mode: blocked aggregate $out/$merge");
+            warn!(conn = %config.name, %db, %coll, operation = "aggregate_output", "read-only write blocked");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
         }
         let config = config.clone();
@@ -240,7 +240,7 @@ impl DocDriver for MongoDriver {
         validate_namespace(db, Some(coll))?;
         validate_mongo_document(&document, "MongoDB insert document")?;
         if config.production {
-            warn!(conn = %config.name, %db, %coll, "read-only mode: blocked insert");
+            warn!(conn = %config.name, %db, %coll, operation = "insert_one", "read-only write blocked");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
         }
         let config = config.clone();
@@ -268,7 +268,7 @@ impl DocDriver for MongoDriver {
             validate_mongo_document(document, "MongoDB insert document")?;
         }
         if config.production {
-            warn!(conn = %config.name, %db, %coll, "read-only mode: blocked insert_many");
+            warn!(conn = %config.name, %db, %coll, operation = "insert_many", "read-only write blocked");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
         }
         let config = config.clone();
@@ -295,7 +295,7 @@ impl DocDriver for MongoDriver {
         validate_mongo_document(filter, "MongoDB update filter")?;
         validate_mongo_document(update, "MongoDB update document")?;
         if config.production {
-            warn!(conn = %config.name, %db, %coll, "read-only mode: blocked update");
+            warn!(conn = %config.name, %db, %coll, operation = "update_one", "read-only write blocked");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
         }
         let config = config.clone();
@@ -322,7 +322,7 @@ impl DocDriver for MongoDriver {
         validate_namespace(db, Some(coll))?;
         validate_mongo_document(filter, "MongoDB delete filter")?;
         if config.production {
-            warn!(conn = %config.name, %db, %coll, "read-only mode: blocked delete");
+            warn!(conn = %config.name, %db, %coll, operation = "delete_one", "read-only write blocked");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
         }
         let config = config.clone();
@@ -347,7 +347,7 @@ impl DocDriver for MongoDriver {
         validate_namespace(db, None)?;
         validate_mongo_document(&command, "MongoDB command")?;
         if config.production && command_is_write(&command) {
-            warn!(conn = %config.name, %db, "read-only mode: blocked write command");
+            warn!(conn = %config.name, %db, operation = "command", "read-only write blocked");
             return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
         }
         let config = config.clone();

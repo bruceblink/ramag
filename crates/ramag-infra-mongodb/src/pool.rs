@@ -54,7 +54,7 @@ impl PoolCache {
 
         let generation = self.generation_for_request(&config.id);
         if let Some(client) = self.get_cached(&config.id, generation) {
-            debug!(connection_id = %config.id, "mongo client cache hit");
+            debug!(connection_id = %config.id, "client cache hit");
             return Ok(client);
         }
 
@@ -65,11 +65,11 @@ impl PoolCache {
             return build_client(config).await;
         }
         if let Some(client) = self.get_cached(&config.id, generation) {
-            debug!(connection_id = %config.id, "mongo client cache hit (after lock)");
+            debug!(connection_id = %config.id, after_lock = true, "client cache hit");
             return Ok(client);
         }
 
-        info!(connection_id = %config.id, name = %config.name, host = %config.host, "creating mongo client");
+        info!(connection_id = %config.id, name = %config.name, host = %config.host, "creating client");
         let client = build_client(config).await?;
         self.cache_if_current(config.id.clone(), generation, client.clone());
         Ok(client)
@@ -160,7 +160,7 @@ impl PoolCache {
             false
         };
         if removed {
-            info!(connection_id = %conn_id, "mongo client evicted");
+            info!(connection_id = %conn_id, "client evicted");
         }
     }
 
@@ -226,7 +226,7 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
             || config.ssh_target.is_some();
         if insecure {
             if config.ssh_target.is_some() {
-                warn!(host = %config.host, "mongo tls verification disabled over ssh tunnel");
+                warn!(host = %config.host, "TLS verification disabled over SSH tunnel");
             }
             tls_opts.allow_invalid_certificates = Some(true);
         }
@@ -252,7 +252,7 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         .build();
 
     let client = Client::with_options(opts).map_err(|e| {
-        warn!(error = %e, host = %config.host, "build mongo client failed");
+        warn!(error = %e, host = %config.host, "build client failed");
         map_mongo_error(e)
     })?;
     Ok(client)

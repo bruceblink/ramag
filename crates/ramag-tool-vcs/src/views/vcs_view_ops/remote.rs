@@ -226,16 +226,16 @@ impl VcsView {
                     .flatten();
                 match (result, paused) {
                     (_, Some(operation)) => {
-                        info!(?operation, "vcs: pull paused");
+                        info!(?operation, "pull paused");
                         this.handle_operation_paused(operation, cx);
                         this.refresh_after_head_change(cx);
                     }
                     (Err(e), None) => {
-                        error!(error = %e, ?op, "vcs: remote op failed");
+                        error!(error = %e, ?op, "remote operation failed");
                         this.error = Some(format!("{op_label} 失败：{e}"));
                     }
                     (Ok(_), None) => {
-                        info!(?op, "vcs: remote op done");
+                        info!(?op, "remote operation completed");
                         // fetch 后 behind 增加 = 远端有新 commit 被发现
                         let post_behind =
                             this.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
@@ -296,7 +296,7 @@ impl VcsView {
             Ok(text) => text.clone(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
             Err(std::sync::TryLockError::Poisoned(error)) => {
-                tracing::warn!("vcs remote progress lock poisoned");
+                tracing::warn!("remote progress lock poisoned");
                 error.into_inner().clone()
             }
         };
@@ -442,7 +442,7 @@ impl VcsView {
         }
         match result {
             Ok(()) => {
-                info!("vcs: remote crud done");
+                info!("remote configuration updated");
                 if clear_inputs {
                     self.pending_clear_creation_inputs = true;
                 }
@@ -450,7 +450,7 @@ impl VcsView {
                 self.reload_remotes(cx);
             }
             Err(e) => {
-                error!(error = %e, "vcs: remote crud failed");
+                error!(error = %e, "remote configuration update failed");
                 self.error = Some(format!("远程操作失败：{e}"));
             }
         }

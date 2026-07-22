@@ -178,7 +178,7 @@ impl MongoService {
             ),
         };
         if let Err(e) = self.storage.append_history(&record).await {
-            tracing::warn!(error = %e, "append mongo history failed");
+            tracing::warn!(error = %e, "append query history failed");
         }
     }
 

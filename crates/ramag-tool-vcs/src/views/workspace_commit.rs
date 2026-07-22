@@ -54,22 +54,11 @@ impl VcsView {
             .label(if committing {
                 "提交中…".to_string()
             } else if self.commit_amend {
-                "Amend 提交".to_string()
+                "修订".to_string()
             } else if staged_count > 0 {
                 format!("提交 ({staged_count})")
             } else {
                 "提交".to_string()
-            })
-            .tooltip(if self.commit_amend {
-                format!(
-                    "改写上一次 commit，message 留空则保留原文（{}）",
-                    ramag_ui::platform::primary_shortcut("Enter")
-                )
-            } else {
-                format!(
-                    "把暂存区的改动写入仓库（{}）",
-                    ramag_ui::platform::primary_shortcut("Enter")
-                )
             })
             .disabled(!can_commit)
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -83,15 +72,14 @@ impl VcsView {
             .primary()
             .small()
             .icon(IconName::ChevronDown)
-            .tooltip("更多提交方式")
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let ent = entity.clone();
                 let label = if !has_head {
-                    "Amend 上一次提交（暂无 commit）"
+                    "修订（不可用）"
                 } else if amend_on {
-                    "✓ Amend 模式（点击退出）"
+                    "✓ 修订"
                 } else {
-                    "Amend 上一次提交"
+                    "修订"
                 };
                 m = m.item(
                     ramag_ui::menu_item_with_disabled(label, !has_head).on_click(
@@ -101,11 +89,7 @@ impl VcsView {
                     ),
                 );
                 let ent = entity.clone();
-                let sign_label = if sign_on {
-                    "✓ GPG 签名提交（点击关闭）"
-                } else {
-                    "GPG 签名提交"
-                };
+                let sign_label = if sign_on { "✓ 签名" } else { "签名" };
                 m = m.item(ramag_ui::menu_item(sign_label).on_click(move |_, _, app| {
                     ent.update(app, |this, cx| {
                         this.commit_sign = !this.commit_sign;

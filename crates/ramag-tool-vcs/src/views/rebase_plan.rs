@@ -188,7 +188,7 @@ impl VcsView {
                     .flex_1()
                     .text_xs()
                     .text_color(muted_fg)
-                    .child("修改操作或调整顺序，点击「执行 Rebase」应用"),
+                    .child("修改操作或顺序后，点击「执行」应用"),
             )
             .child(
                 ramag_ui::clickable_button("vcs-rb-abort")
@@ -207,7 +207,7 @@ impl VcsView {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .label("执行 Rebase")
+                    .label("执行")
                     .disabled(busy || self.rebase_todos.is_empty())
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.confirm_execute_rebase(window, cx);
@@ -369,7 +369,6 @@ fn rebase_todo_row(
                         .ghost()
                         .xsmall()
                         .icon(IconName::ArrowUp)
-                        .tooltip("上移（先 rebase）")
                         .disabled(busy || !can_move_up)
                         .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             entity_up.update(app, |this, cx| {
@@ -382,7 +381,6 @@ fn rebase_todo_row(
                         .ghost()
                         .xsmall()
                         .icon(IconName::ArrowDown)
-                        .tooltip("下移（后 rebase）")
                         .disabled(busy || !can_move_down)
                         .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             entity_dn.update(app, |this, cx| {

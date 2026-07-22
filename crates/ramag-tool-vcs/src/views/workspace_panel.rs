@@ -344,7 +344,7 @@ impl VcsView {
                 Some(bulk_op_button(
                     "stage-all",
                     title,
-                    "全部暂存",
+                    "全暂存",
                     FileOp::Stage,
                     IconName::Plus,
                     file_indices.clone(),
@@ -355,7 +355,7 @@ impl VcsView {
             GroupKind::Staged if !file_indices.is_empty() => Some(bulk_op_button(
                 "unstage-all",
                 title,
-                "全部取消暂存",
+                "全取消",
                 FileOp::Unstage,
                 IconName::Minus,
                 file_indices.clone(),
@@ -542,13 +542,7 @@ impl VcsView {
                 busy,
                 cx,
             )],
-            GroupKind::Conflict => conflict_buttons(
-                idx,
-                &f.path,
-                busy,
-                self.status.as_ref().and_then(|status| status.operation),
-                cx,
-            ),
+            GroupKind::Conflict => conflict_buttons(idx, &f.path, busy, cx),
         };
 
         // 「查看历史」按钮：所有非 Untracked 文件都可看（untracked 文件还没进 git，无历史）
@@ -562,7 +556,7 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::scroll_text())
-                    .tooltip("查看此文件的历史")
+                    .tooltip("历史")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.view_file_history(path_for_history.clone(), cx);

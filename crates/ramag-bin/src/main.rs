@@ -209,7 +209,7 @@ fn main() {
     let (conn_service, storage) = match build_connection_service() {
         Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "failed to initialize data layer");
+            error!(error = %e, "data layer initialization failed");
             let log_hint = log_path.as_ref().map_or_else(
                 || "\n\n日志文件也无法创建，请检查用户目录权限。".to_string(),
                 |path| format!("\n\n日志：{}", path.display()),
@@ -241,7 +241,7 @@ fn main() {
     {
         Ok(runtime) => runtime.block_on(clipboard_service.prime_capture_enabled()),
         Err(error) => {
-            warn!(error = %error, "read clipboard settings failed; keep tool visible");
+            warn!(error = %error, fallback = "tool_visible", "load clipboard settings failed");
             true
         }
     };
@@ -443,7 +443,7 @@ fn main() {
                 })
                 .await;
                 if let Err(error) = result {
-                    tracing::warn!(error = %error, "open log dir failed");
+                    tracing::warn!(error = %error, "open log directory failed");
                 }
             })
             .detach();
@@ -559,7 +559,10 @@ fn spawn_clipboard_hotkey(
         let mut listener = if enabled {
             let l = HotkeyListener::register_clipboard_hotkey(alternate);
             if l.is_none() {
-                error!("global hotkey register failed; clipboard drawer disabled");
+                error!(
+                    impact = "clipboard_drawer_disabled",
+                    "global hotkey registration failed"
+                );
             }
             // 状态上报给设置面板展示（失败常见原因：组合键被其它应用占用）
             service.set_hotkey_state(if l.is_some() {
@@ -591,7 +594,7 @@ fn spawn_clipboard_hotkey(
                 if enabled {
                     listener = HotkeyListener::register_clipboard_hotkey(alternate);
                     if listener.is_none() {
-                        error!("global hotkey re-register failed");
+                        error!("global hotkey re-registration failed");
                     }
                     service.set_hotkey_state(if listener.is_some() {
                         ramag_app::HotkeyState::Registered
@@ -691,7 +694,7 @@ fn open_drawer_window(
     match result {
         Ok(handle) => Some(handle.into()),
         Err(e) => {
-            error!(error = %e, "open drawer window failed");
+            error!(error = %e, "open clipboard drawer failed");
             None
         }
     }
@@ -829,7 +832,7 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
             }
             Err(err) => {
                 cx.update(finish_main_window_open);
-                error!(error = %err, "open window failed");
+                error!(error = %err, "open application window failed");
             }
         }
     })
@@ -1024,7 +1027,7 @@ fn read_preferences(
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            warn!(error = %error, key_count = keys.len(), "create preference runtime failed");
+            warn!(error = %error, key_count = keys.len(), "preference runtime creation failed");
             return HashMap::new();
         }
     };
@@ -1036,7 +1039,7 @@ fn read_preferences(
             }
             Ok(None) => {}
             Err(error) => {
-                warn!(error = %error, key, "read preference failed");
+                warn!(error = %error, key, "load preference failed");
             }
         }
     }

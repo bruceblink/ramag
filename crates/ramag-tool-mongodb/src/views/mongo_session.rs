@@ -62,7 +62,7 @@ impl MongoSessionPanel {
                     database,
                     collection,
                 } => {
-                    info!(db = %database, coll = %collection, "mongo coll selected, open tab");
+                    info!(db = %database, coll = %collection, "collection opened");
                     queries_handle.update(cx, |q, cx| {
                         q.prefill_collection(database.clone(), collection.clone(), window, cx);
                     });
@@ -81,7 +81,7 @@ impl MongoSessionPanel {
                     });
                 }
                 TreeEvent::DatabaseActivated { database } => {
-                    info!(db = %database, "mongo db activated");
+                    info!(db = %database, "database activated");
                     queries_handle.update(cx, |q, cx| q.set_database(database.clone(), cx));
                 }
                 TreeEvent::ToggleEditor => {

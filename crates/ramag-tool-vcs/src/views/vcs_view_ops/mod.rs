@@ -82,11 +82,11 @@ impl VcsView {
                 let paused = this.status.as_ref().and_then(|s| s.operation);
                 match (&result, paused) {
                     (_, Some(operation)) => {
-                        info!(?operation, ?op, "vcs: branch op paused");
+                        info!(?operation, ?op, "branch operation paused");
                         this.handle_operation_paused(operation, cx);
                     }
                     (Err(e), None) => {
-                        error!(error = %e, ?op, "vcs: branch op failed");
+                        error!(error = %e, ?op, "branch operation failed");
                         this.error = Some(format!("分支操作失败：{e}"));
                     }
                     (Ok(_), None) => {
@@ -198,7 +198,7 @@ impl VcsView {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        tracing::error!(error = %error, "vcs: load amend message failed");
+                        tracing::error!(error = %error, "load amend message failed");
                         this.error = Some(format!("加载上次提交消息失败：{error}"));
                     }
                 }
@@ -309,7 +309,7 @@ impl VcsView {
                         this.history_has_more = got >= HISTORY_PAGE_SIZE && !limit_reached;
                     }
                     Err(e) => {
-                        error!(error = %e, "vcs: load history failed");
+                        error!(error = %e, "load history failed");
                         this.error = Some(format!("加载历史失败：{e}"));
                     }
                 }
@@ -378,7 +378,7 @@ impl VcsView {
                 }
                 match result {
                     Ok(commit_id) => {
-                        info!(commit = %commit_id, "vcs: commit done");
+                        info!(commit = %commit_id, "commit completed");
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
@@ -410,7 +410,7 @@ impl VcsView {
                         this.notify_success(format!("已提交 {short}"), cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "vcs: commit failed");
+                        error!(error = %e, "commit failed");
                         this.error = Some(format!("提交失败：{e}"));
                     }
                 }
@@ -481,7 +481,7 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, ?op, ?paths, "vcs: file op failed");
+                        error!(error = %e, ?op, ?paths, "file operation failed");
                         let action = match op {
                             FileOp::Stage => "暂存",
                             FileOp::Unstage => "取消暂存",

@@ -115,7 +115,7 @@ impl ResultPanel {
                 this.exporting = false;
                 let n = match outcome {
                     ExportOutcome::Saved(p) => {
-                        info!(path = %p.display(), scope = %scope_label, "exported");
+                        info!(path = %p.display(), scope = %scope_label, "result export completed");
                         let file_name = p
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
@@ -126,7 +126,7 @@ impl ResultPanel {
                     }
                     ExportOutcome::Cancelled => Notification::info("已取消导出").autohide(true),
                     ExportOutcome::Failed(msg) => {
-                        error!(error = %msg, "export failed");
+                        error!(error = %msg, "result export failed");
                         let short = msg
                             .char_indices()
                             .nth(80)

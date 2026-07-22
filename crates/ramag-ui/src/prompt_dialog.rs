@@ -279,11 +279,6 @@ pub fn open_reveal_masked_prompt(
                         } else {
                             IconName::EyeOff
                         })
-                        .tooltip(if masked_now {
-                            "显示口令"
-                        } else {
-                            "隐藏口令"
-                        })
                         .on_click(move |_: &ClickEvent, window, app| {
                             let next = !*masked_cell.borrow();
                             *masked_cell.borrow_mut() = next;

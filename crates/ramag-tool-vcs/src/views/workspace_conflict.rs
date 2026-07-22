@@ -73,11 +73,7 @@ impl VcsView {
                     .small()
                     .icon(IconName::Check)
                     .label("继续")
-                    .tooltip(if conflicts > 0 {
-                        "还有冲突未解决，解决全部冲突后才能继续"
-                    } else {
-                        "继续当前合并 / cherry-pick / rebase / revert"
-                    })
+                    .when(conflicts > 0, |button| button.tooltip("仍有冲突"))
                     .disabled(busy || conflicts > 0)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.confirm_op_step(OperationStep::Continue, window, cx);
@@ -90,7 +86,6 @@ impl VcsView {
                         .small()
                         .icon(IconName::ArrowRight)
                         .label("跳过")
-                        .tooltip("跳过当前 commit 继续 rebase 下一个")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.confirm_op_step(OperationStep::Skip, window, cx);
@@ -103,7 +98,6 @@ impl VcsView {
                     .small()
                     .icon(IconName::Close)
                     .label("中止")
-                    .tooltip("放弃当前进行中的操作，回到操作前的工作区")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.confirm_op_step(OperationStep::Abort, window, cx);
@@ -118,10 +112,8 @@ pub(super) fn conflict_buttons(
     idx: usize,
     path: &str,
     busy: bool,
-    operation: Option<RepoOperation>,
     cx: &mut Context<VcsView>,
 ) -> Vec<AnyElement> {
-    let (ours_label, theirs_label) = conflict_side_labels(operation);
     let path_for_view = path.to_string();
     let view_btn = {
         let id = SharedString::from(format!("vcs-conflict-view-{idx}"));
@@ -129,7 +121,7 @@ pub(super) fn conflict_buttons(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::columns_2())
-            .tooltip(format!("打开冲突对比（{ours_label} vs {theirs_label}）"))
+            .tooltip("对比")
             .disabled(busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.open_conflict_editor(path_for_view.clone(), cx);
@@ -142,7 +134,7 @@ pub(super) fn conflict_buttons(
             "use-ours",
             idx,
             path,
-            format!("采纳「{ours_label}」版本"),
+            "采纳左侧".into(),
             IconName::ArrowLeft,
             ConflictOp::UseOurs,
             busy,
@@ -152,7 +144,7 @@ pub(super) fn conflict_buttons(
             "use-theirs",
             idx,
             path,
-            format!("采纳「{theirs_label}」版本"),
+            "采纳右侧".into(),
             IconName::ArrowRight,
             ConflictOp::UseTheirs,
             busy,
@@ -162,7 +154,7 @@ pub(super) fn conflict_buttons(
             "mark-resolved",
             idx,
             path,
-            "标记已解决（手动改完文件后点这里）".into(),
+            "解决".into(),
             IconName::Check,
             ConflictOp::MarkResolved,
             busy,

@@ -90,7 +90,7 @@ impl ClipboardView {
                 Some(
                     ramag_ui::clickable_button("detail-open")
                         .small()
-                        .label("在浏览器打开")
+                        .label("打开")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if let Some(url) = &item.text {
                                 this.open_link(url.clone(), cx);
@@ -116,7 +116,7 @@ impl ClipboardView {
                 Some(
                     ramag_ui::clickable_button("detail-plain")
                         .small()
-                        .label("复制为纯文本")
+                        .label("复制文本")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.copy_plain(item_plain.clone(), cx);
                         }))
@@ -141,7 +141,7 @@ impl ClipboardView {
                 ramag_ui::clickable_button("detail-blacklist-source")
                     .danger()
                     .small()
-                    .label("不再记录此应用")
+                    .label("排除应用")
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.blacklist_source(source_id.clone(), cx);
                     }))

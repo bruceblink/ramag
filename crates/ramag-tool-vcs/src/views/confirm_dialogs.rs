@@ -155,7 +155,7 @@ impl VcsView {
                      Pull 会把远程改动合并到当前分支，可能产生 merge commit 或冲突；\
                      如希望线性历史，可取消后先 Fetch，再选择 Rebase。"
                 ),
-                "Pull 并合并",
+                "拉取",
                 false,
                 move |this, cx| this.run_remote_op(RemoteOp::Pull, cx),
                 window,
@@ -230,7 +230,7 @@ impl VcsView {
                  改写后的 commit 会获得新的 hash；若这些 commit 已推送到远程，完成后需要强推。\n\
                  确认执行吗？"
             ),
-            "执行 Rebase",
+            "执行",
             true,
             move |this, cx| this.execute_interactive_rebase(cx),
             window,
@@ -293,7 +293,7 @@ impl VcsView {
                      - 已 push 的分支谨慎使用（推送时需要 --force-with-lease）\n\
                      有冲突时会进入 rebase 进行中状态。"
                 ),
-                "Rebase",
+                "变基",
                 false,
             ),
             BranchOp::Checkout(name) => {
@@ -390,7 +390,7 @@ impl VcsView {
                 "跳过当前 Rebase commit？",
                 "将丢弃当前正在重放的 commit，并继续处理下一条。\n该 commit 的改动不会进入 Rebase 结果，确认继续吗？"
                     .into(),
-                "跳过 commit",
+                "跳过",
                 true,
                 move |this, cx| this.run_op_step(OperationStep::Skip, cx),
                 window,
@@ -438,7 +438,7 @@ impl VcsView {
             "将用当前暂存区改动 + 新 message 替换最近一次 commit。\n\
              如果该 commit 已经 push 到远程，再次推送需要 --force-with-lease。"
                 .into(),
-            "Amend 提交",
+            "修订",
             false,
             move |this, cx| this.run_commit(cx),
             window,
@@ -567,8 +567,7 @@ pub(super) fn open_checkout_dirty_dialog(
                         ramag_ui::clickable_button("vcs-co-discard")
                             .danger()
                             .small()
-                            .label("丢弃后切换")
-                            .tooltip("切换成功后永久丢弃当前全部改动（含未跟踪文件）")
+                            .label("丢弃切换")
                             .on_click({
                                 let v = view_discard.clone();
                                 move |_: &ClickEvent, w, app| {
@@ -584,7 +583,7 @@ pub(super) fn open_checkout_dirty_dialog(
                         ramag_ui::clickable_button("vcs-co-stash")
                             .primary()
                             .small()
-                            .label("Stash 后切换")
+                            .label("储藏切换")
                             .on_click({
                                 let v = view_stash.clone();
                                 move |_: &ClickEvent, w, app| {

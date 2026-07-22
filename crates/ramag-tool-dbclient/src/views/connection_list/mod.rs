@@ -165,7 +165,7 @@ impl ConnectionListPanel {
                         this.load_error = None;
                     }
                     Err(e) => {
-                        error!(error = %e, "list connections failed");
+                        error!(error = %e, "load connections failed");
                         // 保留旧列表（若有）而非清空成假空态，并记错误供顶部提示
                         this.load_error = Some(format!("加载连接列表失败：{e}"));
                     }
@@ -344,12 +344,12 @@ impl ConnectionListPanel {
                     // 用户取消保存框：静默返回
                     Ok(None) => {}
                     Ok(Some(path)) => {
-                        info!(path = %path, "connections exported");
+                        info!(path = %path, "connection export completed");
                         this.pending_notification =
                             Some(Notification::success(format!("已加密导出到 {path}")));
                     }
                     Err(error) => {
-                        error!(error = %error, "export connections failed");
+                        error!(error = %error, "connection export failed");
                         this.pending_notification = Some(Notification::error(error));
                     }
                 }
@@ -430,7 +430,7 @@ impl ConnectionListPanel {
                 Err(error) => {
                     let _ = this.update(cx, |this, cx| {
                         this.transferring = false;
-                        error!(error = %error, "import connections failed");
+                        error!(error = %error, "connection import failed");
                         this.pending_notification = Some(Notification::error(error));
                         cx.notify();
                     });
@@ -516,7 +516,7 @@ impl ConnectionListPanel {
                         );
                     }
                     Err(error) => {
-                        error!(error = %error, "load connections before import failed");
+                        error!(error = %error, "load existing connections failed");
                         this.pending_notification = Some(Notification::error(format!(
                             "导入前读取现有连接失败：{error}"
                         )));
@@ -551,7 +551,7 @@ impl ConnectionListPanel {
                 Ok((valid, skipped)) => this.prepare_import_save(valid, skipped, window, cx),
                 Err(error) => {
                     this.transferring = false;
-                    error!(error = %error, "decrypt import file failed");
+                    error!(error = %error, "decrypt connection import failed");
                     this.pending_notification =
                         Some(Notification::error(format!("解密失败：{error}")));
                     cx.notify();
@@ -609,7 +609,7 @@ impl ConnectionListPanel {
                 }
                 Err(error) => {
                     this.transferring = false;
-                    error!(error = %error, "load connections before import failed");
+                    error!(error = %error, "load existing connections failed");
                     this.pending_notification = Some(Notification::error(format!(
                         "导入前读取现有连接失败：{error}"
                     )));
@@ -673,7 +673,7 @@ impl ConnectionListPanel {
                         }
                     }
                     Err(error) => {
-                        error!(error = %error, "atomic import connections failed");
+                        error!(error = %error, "atomic connection import failed");
                         this.pending_notification = Some(Notification::error(format!(
                             "导入失败，未写入任何连接：{error}"
                         )));

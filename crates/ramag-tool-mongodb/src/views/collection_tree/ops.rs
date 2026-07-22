@@ -24,12 +24,10 @@ pub(super) fn collection_context_menu(
         menu
     } else {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
-        menu.item(
-            ramag_ui::menu_item("导出此集合").on_click(move |_, _, app| {
-                let (d, c) = (d.clone(), c.clone());
-                ent.update(app, |this, cx| this.export_collection_to_file(d, c, cx));
-            }),
-        )
+        menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
+            let (d, c) = (d.clone(), c.clone());
+            ent.update(app, |this, cx| this.export_collection_to_file(d, c, cx));
+        }))
         .separator()
     };
 
@@ -115,16 +113,16 @@ pub(super) fn database_context_menu(
     db: String,
 ) -> PopupMenu {
     let (d, ent) = (db.clone(), entity.clone());
-    let menu = menu.item(ramag_ui::menu_item("导出此库").on_click(move |_, _, app| {
+    let menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
         let (d, ent) = (d.clone(), ent.clone());
         ent.update(app, |this, cx| this.export_database_to_file(d, cx));
     }));
     let (d, ent) = (db.clone(), entity.clone());
     let menu = menu.item(
-        ramag_ui::menu_item("导入此库").on_click(move |_, window, app| {
+        ramag_ui::menu_item("导入库").on_click(move |_, window, app| {
             let (d, ent) = (d.clone(), ent.clone());
             ramag_ui::open_import_options_dialog(
-                "导入 JSONL 文件",
+                "导入库",
                 format!(
                     "选择冲突策略与 .jsonl 文件（可多选），将导入到库 {d}。重复导入同一文件：\
                          「跳过」按集合断点续传，「合并」按文档去重补齐，「覆盖」完全重建（幂等）。"
@@ -147,9 +145,9 @@ pub(super) fn database_context_menu(
             ramag_ui::menu_item("导入集合").on_click(move |_, window, app| {
                 let (d, ent) = (d.clone(), ent.clone());
                 ramag_ui::open_import_options_dialog(
-                    "导入集合（结构 + 数据）",
+                    "导入集合",
                     format!(
-                        "选择由 Ramag“导出此集合”生成的 .jsonl 文件（可多选），将集合创建选项、索引和全部文档恢复到库 {d}。集合名取自文件。"
+                        "选择由 Ramag 集合节点“导出”生成的 .jsonl 文件（可多选），将集合创建选项、索引和全部文档恢复到库 {d}。集合名取自文件。"
                     ),
                     true,
                     ("JSONL", &["jsonl", "json"]),
@@ -164,22 +162,20 @@ pub(super) fn database_context_menu(
             }),
         )
         .separator();
-    menu.item(
-        ramag_ui::menu_item("删除数据库").on_click(move |_, window, app| {
-            let (db, ent) = (db.clone(), entity.clone());
-            open_confirm(
-                "删除数据库",
-                format!("将永久删除数据库 {db} 及其中全部集合与数据，此操作不可恢复。"),
-                "删除",
-                true,
-                move |_, app| {
-                    ent.update(app, |this, cx| this.drop_database(db, cx));
-                },
-                window,
-                app,
-            );
-        }),
-    )
+    menu.item(ramag_ui::menu_item("删除").on_click(move |_, window, app| {
+        let (db, ent) = (db.clone(), entity.clone());
+        open_confirm(
+            "删除",
+            format!("将永久删除数据库 {db} 及其中全部集合与数据，此操作不可恢复。"),
+            "删除",
+            true,
+            move |_, app| {
+                ent.update(app, |this, cx| this.drop_database(db, cx));
+            },
+            window,
+            app,
+        );
+    }))
 }
 
 // ===== 命令执行 =====

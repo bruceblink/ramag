@@ -107,7 +107,6 @@ fn render_left_sidebar(
         .ghost()
         .xsmall()
         .icon(IconName::Close)
-        .tooltip("关闭详情面板")
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
             this.close_commit_detail(cx);
         }));
@@ -144,7 +143,7 @@ fn render_left_sidebar(
                 .ghost()
                 .xsmall()
                 .icon(ramag_ui::icons::copy())
-                .tooltip("复制完整 SHA")
+                .tooltip("复制哈希")
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(full_sha.clone()));
                     this.notify_success("已复制完整 SHA", cx);

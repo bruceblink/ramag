@@ -39,7 +39,6 @@ impl VcsView {
                         .danger()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("取消当前远端操作")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.cancel_remote_op(cx);
                         })),
@@ -49,33 +48,16 @@ impl VcsView {
         let ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
         let behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
         let diverged = ahead > 0 && behind > 0;
-        let (id, label, tip, op): (&'static str, String, String, RemoteOp) = if diverged {
+        let (id, label, op): (&'static str, String, RemoteOp) = if diverged {
             (
                 "vcs-quick-diverged",
                 format!("分叉 ↑{ahead} ↓{behind}"),
-                "本地与远程都有新 commit；点击查看 Pull 合并风险".to_string(),
                 RemoteOp::Pull,
             )
         } else if behind > 0 {
-            (
-                "vcs-quick-pull",
-                format!("Pull ↓{behind}"),
-                format!(
-                    "拉取远程的 {behind} 个新 commit（{}）",
-                    ramag_ui::platform::primary_shortcut("T")
-                ),
-                RemoteOp::Pull,
-            )
+            ("vcs-quick-pull", format!("拉取 ↓{behind}"), RemoteOp::Pull)
         } else if ahead > 0 {
-            (
-                "vcs-quick-push",
-                format!("Push ↑{ahead}"),
-                format!(
-                    "推送本地的 {ahead} 个 commit（{}）",
-                    ramag_ui::platform::primary_shift_shortcut("K")
-                ),
-                RemoteOp::Push,
-            )
+            ("vcs-quick-push", format!("推送 ↑{ahead}"), RemoteOp::Push)
         } else {
             return div().into_any_element();
         };
@@ -83,7 +65,6 @@ impl VcsView {
             .primary()
             .xsmall()
             .label(label)
-            .tooltip(tip)
             .disabled(self.busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.confirm_remote_op(op, window, cx);
@@ -106,24 +87,21 @@ impl VcsView {
             .is_some();
         let entity = cx.entity();
 
-        let pull_shortcut = ramag_ui::platform::primary_shortcut("T");
-        let push_shortcut = ramag_ui::platform::primary_shift_shortcut("K");
         let pull_label = if behind > 0 {
-            format!("Pull ↓{behind}（{pull_shortcut}）")
+            format!("拉取 ↓{behind}")
         } else {
-            format!("Pull（{pull_shortcut}）")
+            "拉取".to_string()
         };
         let push_label = if ahead > 0 {
-            format!("Push ↑{ahead}（{push_shortcut}）")
+            format!("推送 ↑{ahead}")
         } else {
-            format!("Push（{push_shortcut}）")
+            "推送".to_string()
         };
 
         ramag_ui::clickable_button("vcs-ops-menu")
             .ghost()
             .xsmall()
             .icon(IconName::EllipsisVertical)
-            .tooltip("Git 操作（Fetch / Pull / Push / 强推）")
             .disabled(busy)
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let entity1 = entity.clone();
@@ -131,7 +109,7 @@ impl VcsView {
                 let entity3 = entity.clone();
                 let entity4 = entity.clone();
                 m = m
-                    .item(ramag_ui::menu_item("Fetch").on_click(move |_, _, app| {
+                    .item(ramag_ui::menu_item("获取").on_click(move |_, _, app| {
                         entity1.update(app, |this, cx| {
                             this.run_remote_op(RemoteOp::Fetch, cx);
                         });

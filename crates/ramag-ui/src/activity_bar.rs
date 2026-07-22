@@ -130,9 +130,9 @@ impl Render for ActivityBar {
         container = container.child(div().flex_1());
         let (theme_icon, theme_tip) =
             if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
-                (IconName::Sun, "外观：浅色 · 点击切为 深色")
+                (IconName::Sun, "切换外观")
             } else {
-                (IconName::Moon, "外观：深色 · 点击切为 浅色")
+                (IconName::Moon, "切换外观")
             };
         container = container.child(activity_item(
             "theme-toggle",

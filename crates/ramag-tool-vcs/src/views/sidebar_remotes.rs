@@ -44,7 +44,6 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip("添加远程（git remote add）")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.handle_create_remote(cx);
@@ -128,7 +127,7 @@ pub(super) fn remote_row(
                     let url = url.clone();
                     side_op_button(
                         format!("vcs-side-remote-url-{idx}"),
-                        "修改 fetch URL",
+                        "改地址",
                         IconName::ExternalLink,
                         busy,
                         move |this, window, cx| {
@@ -141,7 +140,7 @@ pub(super) fn remote_row(
                     let name = name.clone();
                     side_op_button(
                         format!("vcs-side-remote-rename-{idx}"),
-                        "重命名远程",
+                        "重命名",
                         ramag_ui::icons::pencil(),
                         busy,
                         move |this, window, cx| this.prompt_remote_rename(name.clone(), window, cx),
@@ -150,7 +149,7 @@ pub(super) fn remote_row(
                 })
                 .child(side_op_button(
                     format!("vcs-side-remote-delete-{idx}"),
-                    "删除远程",
+                    "删除",
                     ramag_ui::icons::trash(),
                     busy,
                     move |this, window, cx| this.confirm_remote_delete(name.clone(), window, cx),

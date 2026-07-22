@@ -586,18 +586,14 @@ fn render_middle_revert(
                 .ghost()
                 .xsmall()
                 .icon(gpui_component::IconName::Plus)
-                .tooltip("暂存此 hunk（部分暂存）")
+                .tooltip("暂存")
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.stage_hunk(hunk_idx, cx);
                 })),
         );
     }
-    let tip = if staged {
-        "将此 hunk 移出暂存区（可再次暂存）"
-    } else {
-        "丢弃此 hunk 的工作区改动（不可恢复）"
-    };
+    let tip = if staged { "取消暂存" } else { "丢弃" };
     row.child(
         ramag_ui::clickable_button(SharedString::from(format!("vcs-hunk-discard-{hunk_idx}")))
             .ghost()

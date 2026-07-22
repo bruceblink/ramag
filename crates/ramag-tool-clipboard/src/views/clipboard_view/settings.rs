@@ -130,7 +130,7 @@ impl ClipboardView {
                         ramag_ui::clickable_button(("clip-unblock-source", index))
                             .ghost()
                             .small()
-                            .label("恢复记录")
+                            .label("恢复")
                             .disabled(self.settings_saving)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.unblacklist_source(&source_id_for_click, cx);
@@ -144,7 +144,7 @@ impl ClipboardView {
                     ramag_ui::clickable_button("clip-clear-all")
                         .danger()
                         .small()
-                        .label("清空历史")
+                        .label("清空")
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.confirm_clear(window, cx);
                         })),

@@ -11,7 +11,6 @@ use gpui_component::{
 };
 use ramag_domain::entities::DriverKind;
 use ramag_ui::PointerDropdownMenu as _;
-use ramag_ui::platform::primary_shortcut;
 
 use super::{TableTreePanel, TreeEvent};
 use crate::sql_completion::is_system_schema;
@@ -101,17 +100,7 @@ impl Render for TableTreePanel {
         } else {
             IconName::EyeOff
         };
-        let toggle_tip = if show_system {
-            "隐藏系统库（mysql / information_schema 等）"
-        } else {
-            "显示系统库（mysql / information_schema 等）"
-        };
         let qp_visible = self.editor_visible;
-        let qp_tip = if qp_visible {
-            format!("隐藏 SQL 编辑器 ({})", primary_shortcut("E"))
-        } else {
-            format!("显示 SQL 编辑器 ({})", primary_shortcut("E"))
-        };
         // 顶部第 1 行：schema picker（与 Redis 的 DB picker 对齐布局）
         // PG：picker 显示 `database / schema`
         let driver = self.connection.as_ref().map(|c| c.driver);
@@ -206,7 +195,7 @@ impl Render for TableTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(toggle_icon)
-                    .tooltip(toggle_tip)
+                    .tooltip("系统库")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.toggle_show_system(cx);
                     })),
@@ -216,7 +205,6 @@ impl Render for TableTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
-                    .tooltip("刷新")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh(cx);
                     })),
@@ -227,7 +215,7 @@ impl Render for TableTreePanel {
                     .xsmall()
                     .icon(IconName::SquareTerminal)
                     .selected(qp_visible)
-                    .tooltip(qp_tip)
+                    .tooltip("编辑器")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(TreeEvent::ToggleSqlEditor);
                     })),
@@ -241,10 +229,6 @@ impl Render for TableTreePanel {
                         ramag_ui::clickable_button("stop-full-schema-search")
                             .small()
                             .label(format!("停止 {}/{}", progress.completed, progress.total))
-                            .tooltip(format!(
-                                "停止加载其余库；已完成 {} 个，失败 {} 个",
-                                progress.completed, progress.failed
-                            ))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.cancel_full_search(cx);
                             })),
@@ -259,11 +243,6 @@ impl Render for TableTreePanel {
                                 "重试失败"
                             } else {
                                 "搜索全部"
-                            })
-                            .tooltip(if retry_only {
-                                "重新加载搜索失败的库"
-                            } else {
-                                "逐个加载尚未覆盖的库；可随时停止"
                             })
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.load_all_tables_for_search(cx);

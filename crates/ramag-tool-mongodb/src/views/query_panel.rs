@@ -20,10 +20,7 @@ use gpui_component::{
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig};
 use ramag_ui::PointerDropdownMenu as _;
-use ramag_ui::{
-    CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab, icons,
-    platform::{primary_shift_shortcut, primary_shortcut},
-};
+use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab, icons};
 
 use crate::actions::{NewMongoQueryTab, ToggleMongoEditor};
 use crate::views::query_tab::{MongoQueryTab, MongoQueryTabEvent};
@@ -649,12 +646,12 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
-                                        .tooltip(if self.connection.is_none() {
-                                            "请先连接 MongoDB".to_string()
-                                        } else if can_add_tab {
-                                            format!("新建查询 ({})", primary_shortcut("T"))
-                                        } else {
-                                            format!("查询标签已达上限（{MAX_EDITOR_TABS} 个）")
+                                        .when(add_tab_disabled, |button| {
+                                            button.tooltip(if self.connection.is_none() {
+                                                "请先连接".to_string()
+                                            } else {
+                                                format!("最多 {MAX_EDITOR_TABS} 个标签")
+                                            })
                                         })
                                         .disabled(add_tab_disabled)
                                         .on_click(cx.listener(
@@ -676,7 +673,7 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Calendar)
-                                        .tooltip("查询历史")
+                                        .tooltip("历史")
                                         .disabled(self.connection.is_none())
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
@@ -695,7 +692,7 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(icons::scroll_text())
-                                        .tooltip("常用命令示例（有手写草稿时新建标签）")
+                                        .tooltip("示例")
                                         .pointer_dropdown_menu(move |menu, _, _| {
                                             let mut m = menu;
                                             for (label, cmd) in
@@ -718,10 +715,7 @@ impl Render for MongoQueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(icons::wand_sparkles())
-                                        .tooltip(format!(
-                                            "格式化 ({})",
-                                            primary_shift_shortcut("F")
-                                        ))
+                                        .tooltip("格式化")
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 if let Some(tab) =

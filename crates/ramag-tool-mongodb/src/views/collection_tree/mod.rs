@@ -23,8 +23,8 @@ use gpui_component::{
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoCollection, MongoDatabase};
+use ramag_ui::AsyncMutationGate;
 use ramag_ui::PointerDropdownMenu as _;
-use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 use row::TreeRowsCacheEntry;
 use tracing::{error, info};
 
@@ -284,7 +284,7 @@ impl CollectionTreePanel {
                 this.loading = false;
                 match r {
                     Ok(mut dbs) => {
-                        info!(count = dbs.len(), "mongo databases loaded");
+                        info!(count = dbs.len(), "databases loaded");
                         // 配置指定了库但 MongoDB listDatabases 不返回它（库内无任何集合/数据）→
                         // 仍补一行展示，便于直接在其下建集合，不必先绕开再回来
                         insert_configured_database(&mut dbs, conf.database.clone());
@@ -305,7 +305,7 @@ impl CollectionTreePanel {
                         this.ensure_search_coverage(cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "mongo list_databases failed");
+                        error!(error = %e, "load databases failed");
                         this.error = Some(e.to_string());
                     }
                 }
@@ -441,7 +441,7 @@ impl CollectionTreePanel {
                         }
                         match result {
                             Ok(collections) => {
-                                info!(db = %database, count = collections.len(), "mongo collections loaded for search");
+                                info!(db = %database, count = collections.len(), "search collections loaded");
                                 if let Err(message) =
                                     this.store_collections(&database, collections, false)
                                     && let Some(state) = this.expanded.get_mut(&database)
@@ -451,7 +451,7 @@ impl CollectionTreePanel {
                                 }
                             }
                             Err(error) => {
-                                error!(error = %error, db = %database, "mongo list_collections for search failed");
+                                error!(error = %error, db = %database, "load search collections failed");
                                 if let Some(state) = this.expanded.get_mut(&database) {
                                     state.loading = false;
                                     state.error = Some(error.to_string());
@@ -667,7 +667,7 @@ impl CollectionTreePanel {
                 }
                 match r {
                     Ok(cs) => {
-                        info!(db = %db_for_async, count = cs.len(), "mongo collections loaded");
+                        info!(db = %db_for_async, count = cs.len(), "collections loaded");
                         if let Err(message) = this.store_collections(&db_for_async, cs, true)
                             && let Some(state) = this.expanded.get_mut(&db_for_async)
                         {
@@ -676,7 +676,7 @@ impl CollectionTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, db = %db_for_async, "mongo list_collections failed");
+                        error!(error = %e, db = %db_for_async, "load collections failed");
                         if let Some(state) = this.expanded.get_mut(&db_for_async) {
                             state.loading = false;
                             state.error = Some(e.to_string());
@@ -811,17 +811,6 @@ impl Render for CollectionTreePanel {
 
         // 顶栏第 2 行：搜索框 + 三个工具按钮（眼睛 / 刷新 / 命令编辑器切换）—— 与 MySQL 同款布局
         let editor_visible = self.editor_visible;
-        let toggle_sys_tip = if show_system {
-            "隐藏系统库（admin / config / local）"
-        } else {
-            "显示系统库（admin / config / local）"
-        };
-        let toggle_editor_tip = if editor_visible {
-            format!("隐藏命令编辑器 ({})", primary_shortcut("E"))
-        } else {
-            format!("显示命令编辑器 ({})", primary_shortcut("E"))
-        };
-
         let search_row = h_flex()
             .w_full()
             .items_center()
@@ -850,7 +839,7 @@ impl Render for CollectionTreePanel {
                     } else {
                         gpui_component::IconName::EyeOff
                     })
-                    .tooltip(toggle_sys_tip)
+                    .tooltip("系统库")
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_show_system(cx))),
             )
             .child(
@@ -858,7 +847,6 @@ impl Render for CollectionTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
-                    .tooltip("刷新")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .child(
@@ -867,7 +855,7 @@ impl Render for CollectionTreePanel {
                     .xsmall()
                     .icon(gpui_component::IconName::SquareTerminal)
                     .selected(editor_visible)
-                    .tooltip(toggle_editor_tip)
+                    .tooltip("编辑器")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TreeEvent::ToggleEditor))),
             );
 

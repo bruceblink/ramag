@@ -76,7 +76,7 @@ impl PoolCache {
 
         if let Some(manager) = self.get_cached(&key, generation) {
             self.enforce_pool_limit(&config.id, &key, generation);
-            debug!(connection_id = %config.id, db, "redis pool cache hit");
+            debug!(connection_id = %config.id, db, "connection pool cache hit");
             return Ok(manager);
         }
 
@@ -87,11 +87,11 @@ impl PoolCache {
         }
         if let Some(manager) = self.get_cached(&key, generation) {
             self.enforce_pool_limit(&config.id, &key, generation);
-            debug!(connection_id = %config.id, db, "redis pool cache hit (after lock)");
+            debug!(connection_id = %config.id, db, after_lock = true, "connection pool cache hit");
             return Ok(manager);
         }
 
-        info!(connection_id = %config.id, name = %config.name, host = %config.host, db, "creating redis connection manager");
+        info!(connection_id = %config.id, name = %config.name, host = %config.host, db, "creating connection manager");
         let mgr = build_connection_manager(config, db).await?;
         if self.cache_if_current(key.clone(), generation, mgr.clone()) {
             self.enforce_pool_limit(&config.id, &key, generation);
@@ -198,7 +198,7 @@ impl PoolCache {
             }
         }
         if evicted > 0 {
-            debug!(connection_id = %conn_id, evicted, "redis database pools evicted by LRU");
+            debug!(connection_id = %conn_id, evicted, "database pools evicted by LRU");
         }
     }
 
@@ -230,7 +230,7 @@ impl PoolCache {
             !remove
         });
         if evicted > 0 {
-            info!(connection_id = %conn_id, evicted, "redis pools evicted");
+            info!(connection_id = %conn_id, evicted, "connection pools evicted");
         }
     }
 }
@@ -283,12 +283,12 @@ async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<C
             },
         )
         .map_err(|e| {
-            warn!(error = %e, host = %config.host, "build redis tls client failed");
+            warn!(error = %e, host = %config.host, "build TLS client failed");
             map_redis_error(e)
         })?
     } else {
         Client::open(info).map_err(|e| {
-            warn!(error = %e, host = %config.host, "build redis client failed");
+            warn!(error = %e, host = %config.host, "build client failed");
             map_redis_error(e)
         })?
     };
@@ -302,7 +302,7 @@ async fn build_connection_manager(config: &ConnectionConfig, db: u8) -> Result<C
     )
     .await
     .map_err(|e| {
-        warn!(error = %e, host = %config.host, "open redis connection manager failed");
+        warn!(error = %e, host = %config.host, "open connection manager failed");
         map_redis_error(e)
     })?;
 
@@ -360,7 +360,7 @@ fn build_connection_info(
         let insecure = matches!(config.tls_verify, ramag_domain::entities::TlsVerify::None)
             || config.ssh_target.is_some();
         if insecure && config.ssh_target.is_some() {
-            warn!(host = %config.host, "redis tls verification disabled over ssh tunnel");
+            warn!(host = %config.host, "TLS verification disabled over SSH tunnel");
         }
         ConnectionAddr::TcpTls {
             host,

@@ -81,7 +81,6 @@ impl Render for ResultPanel {
                                     .ghost()
                                     .small()
                                     .icon(IconName::Copy)
-                                    .tooltip("复制错误信息")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             msg_for_copy.clone(),

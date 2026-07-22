@@ -87,18 +87,19 @@ impl ListElementForm {
         let db = self.db;
         let key = self.key.clone();
         let mut argv = vec![cmd.to_string(), key];
+        let element_count = elems.len();
         argv.extend(elems);
         cx.spawn(async move |this, cx| {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(?cmd, "list elements pushed");
+                    info!(command = cmd, element_count, "list elements added");
                     cx.emit(ListElementFormEvent::Saved);
                 }
                 Err(e) => {
                     this.editor
                         .update(cx, |editor, cx| editor.set_disabled(false, cx));
-                    error!(error = %e, "list push failed");
+                    error!(error = %e, command = cmd, element_count, "add list elements failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

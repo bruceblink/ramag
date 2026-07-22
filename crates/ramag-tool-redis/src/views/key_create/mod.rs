@@ -327,14 +327,14 @@ impl KeyCreateForm {
             };
             let _ = this.update(cx, |this, cx| match outcome {
                 CreateOutcome::Created => {
-                    info!(key_bytes = key.len(), ?ttl, "redis key created");
+                    info!(key_bytes = key.len(), ?ttl, "key created");
                     cx.emit(KeyCreateEvent::Created {
                         key: key.clone(),
                         ttl_warning: None,
                     });
                 }
                 CreateOutcome::CreatedWithTtlWarning(warning) => {
-                    tracing::warn!(key_bytes = key.len(), "redis key created with ttl warning");
+                    tracing::warn!(key_bytes = key.len(), "key created with TTL warning");
                     cx.emit(KeyCreateEvent::Created {
                         key: key.clone(),
                         ttl_warning: Some(warning),

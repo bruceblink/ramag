@@ -147,14 +147,16 @@ fn hash_row(
                 .small()
                 .icon(ramag_ui::icons::trash())
                 .disabled(delete_disabled)
-                .tooltip(if read_only {
-                    "生产连接为只读"
-                } else if field_is_lossy {
-                    "二进制字段名暂不支持安全删除"
-                } else if field.len() > MAX_REDIS_COMMAND_ARG_BYTES {
-                    "字段名过大，请使用脚本处理"
-                } else {
-                    "删除该字段"
+                .when(delete_disabled, |button| {
+                    button.tooltip(if read_only {
+                        "只读"
+                    } else if field_is_lossy {
+                        "二进制字段"
+                    } else if field.len() > MAX_REDIS_COMMAND_ARG_BYTES {
+                        "字段过大"
+                    } else {
+                        "不可删除"
+                    })
                 })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     if let Some(field) = field_for_del.clone() {

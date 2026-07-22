@@ -234,14 +234,17 @@ impl KeyDetailPanel {
                 match result {
                     Ok(RedisValue::Int(bytes)) if bytes >= 0 => {
                         this.key_size_bytes = Some(bytes as u64);
-                        tracing::debug!(key_bytes = key.len(), bytes, "memory usage ok");
+                        tracing::debug!(key_bytes = key.len(), bytes, "memory usage loaded");
                     }
                     Ok(RedisValue::Nil) => {
                         this.key_size_bytes = None;
-                        tracing::debug!(key_bytes = key.len(), "memory usage nil (key gone)");
+                        tracing::debug!(key_bytes = key.len(), "memory usage returned nil");
                     }
                     Ok(_) => {
-                        error!("memory usage unexpected response");
+                        error!(
+                            key_bytes = key.len(),
+                            "memory usage returned an unexpected response"
+                        );
                         this.size_error =
                             Some("MEMORY USAGE 应答异常（可能服务端不支持）".to_string());
                     }

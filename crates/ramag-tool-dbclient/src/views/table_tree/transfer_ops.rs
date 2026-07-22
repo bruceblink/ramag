@@ -340,7 +340,7 @@ async fn run_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(file = %path.display(), "sql import failed");
+                error!(error = %e, file = %path.display(), scope = "database", "import failed");
                 return Err(e);
             }
         };
@@ -385,7 +385,7 @@ async fn run_structured_table_import(
         {
             Ok(summary) => summary,
             Err(error) => {
-                error!(file = %path.display(), "structured table import failed");
+                error!(error = %error, file = %path.display(), scope = "table", format = "structured", "import failed");
                 return Err(error);
             }
         };
@@ -437,7 +437,7 @@ async fn run_table_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(file = %path.display(), "jsonl table import failed");
+                error!(error = %e, file = %path.display(), scope = "table", format = "jsonl", "import failed");
                 return Err(e);
             }
         };

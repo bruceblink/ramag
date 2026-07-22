@@ -126,7 +126,6 @@ pub fn closable_dialog_title(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
-                .tooltip("关闭")
                 .on_click(move |_, window, cx| {
                     window.close_dialog(cx);
                     on_close(window, cx);

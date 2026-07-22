@@ -386,7 +386,7 @@ where
         warn!(
             conn = %config.name,
             keyword = first_keyword(stmt).as_deref().unwrap_or("?"),
-            "read-only mode: blocked write statement"
+            "read-only write blocked"
         );
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
@@ -449,7 +449,7 @@ where
         rows = last_result.rows.len(),
         affected = last_result.affected_rows,
         statements = statements.len(),
-        "query executed"
+        "query completed"
     );
 
     Ok(QueryResult {

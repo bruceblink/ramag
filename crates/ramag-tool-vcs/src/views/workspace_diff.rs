@@ -259,13 +259,11 @@ impl VcsView {
             .xsmall()
             .icon(IconName::Eye)
             .tooltip(if !blame_supported {
-                "当前 diff 与工作区行号不一致，无法提供可靠 blame"
+                "当前视图不支持"
             } else if self.loading_blame {
-                "加载 blame 中…"
-            } else if self.showing_blame {
-                "关闭 blame（不再点行号查看作者）"
+                "加载中"
             } else {
-                "启用 blame（点行号查看该行最后改人）"
+                "Blame"
             })
             .disabled(!blame_supported || self.loading_blame)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -281,11 +279,7 @@ impl VcsView {
             } else {
                 ramag_ui::icons::scroll_text()
             })
-            .tooltip(if is_full {
-                "回到「标准」（带少量上下文）"
-            } else {
-                "展示「全文件」（完整文件 + 高亮变更）"
-            })
+            .tooltip(if is_full { "标准" } else { "全文" })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.set_diff_view_mode(this.diff_view_mode.toggled(), cx);
             }));
@@ -295,9 +289,9 @@ impl VcsView {
             .label("−ws")
             .selected(self.diff_ignore_whitespace)
             .tooltip(if self.diff_ignore_whitespace {
-                "当前已忽略空白差异；点击恢复"
+                "计入空白"
             } else {
-                "忽略空格、缩进等空白差异（git diff -w）"
+                "忽略空白"
             })
             .disabled(!diff_options_supported)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -310,11 +304,6 @@ impl VcsView {
                 IconName::Minimize
             } else {
                 IconName::Maximize
-            })
-            .tooltip(if self.diff_fullscreen {
-                "退出 Diff 全屏"
-            } else {
-                "Diff 全屏"
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_diff_fullscreen(cx);

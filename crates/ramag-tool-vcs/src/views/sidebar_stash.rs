@@ -35,7 +35,7 @@ impl VcsView {
                 .pl(px(4.0))
                 .text_xs()
                 .text_color(muted_fg)
-                .child("暂无 stash（工具栏「Stash 工作区改动」创建）")
+                .child("暂无 stash（点击「储藏」创建）")
                 .into_any_element();
         }
         // Files panel 搜索框在 Stash 模式按描述过滤（与 Changes/Project 的路径过滤语义对齐）
@@ -131,7 +131,7 @@ fn stash_row(s: &Stash, busy: bool, cx: &mut Context<VcsView>) -> impl IntoEleme
                 .items_center()
                 .child(side_op_button(
                     format!("vcs-side-stash-apply-{idx}"),
-                    "应用（保留 stash）",
+                    "应用",
                     IconName::ArrowDown,
                     busy,
                     move |this, window, cx| this.confirm_stash_op(StashOp::Apply(idx), window, cx),
@@ -139,7 +139,7 @@ fn stash_row(s: &Stash, busy: bool, cx: &mut Context<VcsView>) -> impl IntoEleme
                 ))
                 .child(side_op_button(
                     format!("vcs-side-stash-pop-{idx}"),
-                    "应用并删除 stash",
+                    "弹出",
                     IconName::Check,
                     busy,
                     move |this, window, cx| this.confirm_stash_op(StashOp::Pop(idx), window, cx),
@@ -147,7 +147,7 @@ fn stash_row(s: &Stash, busy: bool, cx: &mut Context<VcsView>) -> impl IntoEleme
                 ))
                 .child(side_op_button(
                     format!("vcs-side-stash-drop-{idx}"),
-                    "丢弃 stash",
+                    "丢弃",
                     ramag_ui::icons::trash(),
                     busy,
                     move |this, window, cx| this.confirm_stash_op(StashOp::Drop(idx), window, cx),

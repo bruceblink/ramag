@@ -339,7 +339,7 @@ impl RedisSessionPanel {
         if self.db == new_db {
             return;
         }
-        info!(db = new_db, "redis session db change");
+        info!(db = new_db, "database changed");
         self.db = new_db;
         let conf = self.config.clone();
         self.tree

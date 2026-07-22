@@ -2,7 +2,8 @@
 //! 调用方须在已持 ResultPanel mut ref 时传入预建好的数据，本函数不调 panel.read 避免二次借用 panic
 
 use gpui::{
-    ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
+    ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
@@ -68,11 +69,7 @@ pub(super) fn open(
             .small()
             .label("确认")
             .disabled(read_only)
-            .tooltip(if read_only {
-                "该单元格只读（原因见弹框内说明）"
-            } else {
-                "提交 UPDATE 到数据库"
-            })
+            .when(read_only, |button| button.tooltip("只读"))
             .on_click({
                 let panel = panel_btn.clone();
                 let input = input_btn.clone();

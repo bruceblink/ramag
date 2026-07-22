@@ -30,8 +30,8 @@ use ramag_domain::entities::{
     ConnectionConfig, INTERACTIVE_RESULT_WARNING_BYTES, KeyMeta, MAX_INTERACTIVE_RESULT_BYTES,
     MAX_REDIS_LOADED_ITEMS,
 };
+use ramag_ui::AsyncMutationGate;
 use ramag_ui::PointerDropdownMenu as _;
-use ramag_ui::{AsyncMutationGate, platform::primary_shortcut};
 
 use tree::{TreeNode, VisibleRow, build_tree, collect_namespace_paths};
 
@@ -474,16 +474,15 @@ impl Render for KeyTreePanel {
                 // 刷新 / 停止扫描移到最前：高频操作触手可及。
                 // 扫描中该位变「停止」：保留已加载部分，随时可中断大库扫描
                 let scanning = self.loading;
-                let (icon, tip) = if scanning {
-                    (Icon::new(IconName::CircleX), "停止扫描（保留已加载）")
+                let icon = if scanning {
+                    Icon::new(IconName::CircleX)
                 } else {
-                    (ramag_ui::icons::refresh_cw(), "重新扫描")
+                    ramag_ui::icons::refresh_cw()
                 };
                 ramag_ui::clickable_button("redis-key-refresh")
                     .ghost()
                     .xsmall()
                     .icon(icon)
-                    .tooltip(tip)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if scanning {
                             this.stop_scan(cx);
@@ -495,9 +494,9 @@ impl Render for KeyTreePanel {
             .child({
                 let any_expanded = !self.expanded.is_empty();
                 let (icon, tip) = if any_expanded {
-                    (IconName::FolderOpen, "全部折叠命名空间")
+                    (IconName::FolderOpen, "折叠")
                 } else {
-                    (IconName::FolderClosed, "全部展开命名空间")
+                    (IconName::FolderClosed, "展开")
                 };
                 ramag_ui::clickable_button("redis-key-toggle-all")
                     .ghost()
@@ -517,7 +516,7 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(IconName::SquareTerminal)
-                    .tooltip(format!("命令行（{}）", primary_shortcut("E")))
+                    .tooltip("命令行")
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(KeyTreeEvent::RequestOpenConsole);
                     })),
@@ -526,11 +525,10 @@ impl Render for KeyTreePanel {
                 // 新建 Key + DB 级毁灭性操作收进「更多」菜单，工具栏更清爽
                 let entity_for_menu = cx.entity().clone();
                 let current_db = self.db;
-                // 正常态不显示 tooltip；禁用时才说明原因（只读 / 写操作进行中）
                 let more_tip: Option<&'static str> = if read_only {
-                    Some("生产连接为只读")
+                    Some("只读")
                 } else if mutating {
-                    Some("上一项写操作尚未完成")
+                    Some("操作进行中")
                 } else {
                     None
                 };
@@ -647,8 +645,7 @@ impl Render for KeyTreePanel {
                     ramag_ui::clickable_button("redis-key-load-more")
                         .ghost()
                         .xsmall()
-                        .label("继续扫描")
-                        .tooltip("从上次停止的位置继续扫描")
+                        .label("继续")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.load_more(cx);
                         })),

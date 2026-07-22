@@ -21,10 +21,7 @@ use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConflictPolicy, ConnectionConfig};
 use ramag_ui::PointerDropdownMenu as _;
-use ramag_ui::{
-    CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab,
-    platform::{primary_shift_shortcut, primary_shortcut},
-};
+use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab};
 
 use crate::sql_completion::SchemaCache;
 use crate::views::query_tab::{QueryTab, QueryTabEvent};
@@ -577,10 +574,10 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Plus)
-                                        .tooltip(if can_add_tab {
-                                            format!("新建查询 ({})", primary_shortcut("T"))
-                                        } else {
-                                            format!("查询标签已达上限（{MAX_EDITOR_TABS} 个）")
+                                        .when(!can_add_tab, |button| {
+                                            button.tooltip(format!(
+                                                "最多 {MAX_EDITOR_TABS} 个标签"
+                                            ))
                                         })
                                         .disabled(!can_add_tab)
                                         .on_click(cx.listener(
@@ -603,7 +600,7 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(IconName::Calendar)
-                                        .tooltip("查询历史")
+                                        .tooltip("历史")
                                         .disabled(self.connection.is_none())
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
@@ -629,7 +626,7 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::scroll_text())
-                                        .tooltip("常用 SQL 示例（插入编辑器）")
+                                        .tooltip("示例")
                                         .disabled(driver.is_none())
                                         .pointer_dropdown_menu(move |menu, _, _| {
                                             let Some(driver) = driver else {
@@ -658,10 +655,7 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::wand_sparkles())
-                                        .tooltip(format!(
-                                            "美化 SQL ({})",
-                                            primary_shift_shortcut("F")
-                                        ))
+                                        .tooltip("格式化")
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 if let Some(tab) =
@@ -679,10 +673,7 @@ impl Render for QueryPanel {
                                         .ghost()
                                         .small()
                                         .icon(ramag_ui::icons::gauge())
-                                        .tooltip(format!(
-                                            "执行计划 EXPLAIN ({})",
-                                            primary_shift_shortcut("E")
-                                        ))
+                                        .tooltip("执行计划")
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 if let Some(tab) =

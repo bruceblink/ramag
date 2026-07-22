@@ -129,12 +129,8 @@ fn stream_row(
                             .xsmall()
                             .icon(ramag_ui::icons::trash())
                             .disabled(read_only || id_for_del.is_none())
-                            .tooltip(if read_only {
-                                "生产连接为只读"
-                            } else if id_for_del.is_none() {
-                                "条目 ID 过大，请使用脚本处理"
-                            } else {
-                                "删除该条目"
+                            .when(read_only || id_for_del.is_none(), |button| {
+                                button.tooltip(if read_only { "只读" } else { "ID 过大" })
                             })
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                                 if let Some(id) = id_for_del.clone() {

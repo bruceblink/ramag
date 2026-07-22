@@ -185,7 +185,6 @@ impl Render for ConnectionFormPanel {
                         ramag_ui::clickable_button("apply-uri")
                             .small()
                             .label("填充")
-                            .tooltip("解析连接地址并回填下方字段")
                             .disabled(self.saving)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.apply_uri(window, cx);
@@ -250,11 +249,6 @@ impl Render for ConnectionFormPanel {
                                                 IconName::Eye
                                             } else {
                                                 IconName::EyeOff
-                                            })
-                                            .tooltip(if self.password_masked {
-                                                "显示密码"
-                                            } else {
-                                                "隐藏密码"
                                             })
                                             .disabled(self.saving)
                                             .on_click(cx.listener(
@@ -453,7 +447,6 @@ impl Render for ConnectionFormPanel {
                                             .xsmall()
                                             .flex_none()
                                             .label("复制")
-                                            .tooltip("复制错误诊断")
                                             .on_click(cx.listener(
                                                 move |_, _: &ClickEvent, _, cx| {
                                                     cx.write_to_clipboard(

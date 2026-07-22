@@ -91,7 +91,7 @@ impl ConnectionSession {
             window,
             move |this: &mut Self, _, e: &TreeEvent, window, cx| match e {
                 TreeEvent::TableSelected { schema, table } => {
-                    info!(schema = %schema, table = %table, "table selected, prefill + run");
+                    info!(schema = %schema, table = %table, "table query opened");
                     queries_clone.update(cx, |q, cx| {
                         q.set_active_schema(Some(schema.clone()), cx);
                     });
@@ -343,7 +343,7 @@ async fn warm_once(
                 })
             }
             Err(e) => {
-                warn!(error = %e, "warm cache: list_schemas failed");
+                warn!(error = %e, stage = "schemas", "metadata cache warmup failed");
                 return;
             }
         }
@@ -364,13 +364,16 @@ async fn warm_once(
                 .write()
                 .finish_table_refresh(schema, generation, names, views);
             if !refreshed {
-                warn!("warm cache result superseded or exceeded cache budget");
+                warn!(
+                    reason = "superseded_or_budget",
+                    "metadata cache warmup discarded"
+                );
                 return;
             }
         }
         Err(e) => {
             cache.write().cancel_table_refresh(&schema, generation);
-            warn!(error = %e, schema = %schema, "warm cache: list_tables failed");
+            warn!(error = %e, schema = %schema, stage = "tables", "metadata cache warmup failed");
         }
     }
     info!(

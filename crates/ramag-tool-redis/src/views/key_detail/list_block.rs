@@ -110,16 +110,18 @@ fn list_row(
                 .small()
                 .icon(ramag_ui::icons::trash())
                 .disabled(delete_disabled)
-                .tooltip(if read_only {
-                    "生产连接为只读"
-                } else if raw_value.is_none() {
-                    if value_is_text {
-                        "元素过大，请使用脚本处理"
+                .when(delete_disabled, |button| {
+                    button.tooltip(if read_only {
+                        "只读"
+                    } else if raw_value.is_none() {
+                        if value_is_text {
+                            "元素过大"
+                        } else {
+                            "二进制元素"
+                        }
                     } else {
-                        "二进制元素暂不支持安全删除"
-                    }
-                } else {
-                    "删除该元素"
+                        "不可删除"
+                    })
                 })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     if let Some(value) = raw_value.clone() {

@@ -32,7 +32,7 @@ impl VcsView {
                 match result {
                     Ok(content) => this.conflict_content = Some(std::rc::Rc::new(content)),
                     Err(e) => {
-                        error!(error = %e, path = %path_clone, "vcs: get conflict content failed");
+                        error!(error = %e, path = %path_clone, "load conflict content failed");
                         this.error = Some(format!("加载冲突内容失败：{e}"));
                         this.conflict_editor_path = None;
                     }
@@ -107,14 +107,14 @@ impl VcsView {
                 }
                 let paused = this.status.as_ref().and_then(|s| s.operation);
                 if let Some(operation) = paused {
-                    info!(%commit_id, ?operation, "vcs: cherry-pick paused");
+                    info!(%commit_id, ?operation, "cherry-pick paused");
                     this.handle_operation_paused(operation, cx);
                     this.refresh_after_head_change(cx);
                 } else if let Err(e) = result {
-                    error!(error = %e, %commit_id, "vcs: cherry-pick failed");
+                    error!(error = %e, %commit_id, "cherry-pick failed");
                     this.error = Some(format!("Cherry-pick 失败：{e}"));
                 } else {
-                    info!(%commit_id, "vcs: cherry-pick done");
+                    info!(%commit_id, "cherry-pick completed");
                     // HEAD 推进了一个新 commit
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
@@ -159,10 +159,10 @@ impl VcsView {
                     this.status = Some(s);
                 }
                 if let Err(e) = result {
-                    error!(error = %e, ?op, %path, "vcs: conflict op failed");
+                    error!(error = %e, ?op, %path, "conflict operation failed");
                     this.error = Some(format!("冲突操作失败：{e}"));
                 } else {
-                    info!(?op, %path, "vcs: conflict op done");
+                    info!(?op, %path, "conflict operation completed");
                     // 该文件已解决：若三栏编辑器正开着它，关闭回 diff 视图
                     if this.conflict_editor_path.as_deref() == Some(path.as_str()) {
                         this.conflict_editor_path = None;
@@ -255,18 +255,18 @@ impl VcsView {
                     .then(|| this.status.as_ref().and_then(|s| s.operation))
                     .flatten();
                 if let Some(next_operation) = paused {
-                    info!(?operation, ?step, ?next_operation, "vcs: op step paused");
+                    info!(?operation, ?step, ?next_operation, "operation step paused");
                     this.handle_operation_paused(next_operation, cx);
                     this.refresh_after_head_change(cx);
                 } else if let Err(e) = result {
-                    error!(error = %e, ?operation, ?step, "vcs: op step failed");
+                    error!(error = %e, ?operation, ?step, "operation step failed");
                     this.error = Some(format!(
                         "{}·{}失败：{e}",
                         operation_label(operation),
                         step_label(step)
                     ));
                 } else {
-                    info!(?operation, ?step, "vcs: op step done");
+                    info!(?operation, ?step, "operation step completed");
                     // 继续 = 产生新 commit / 推进 rebase；中止 = 回滚工作区。HEAD 内容都变了
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
@@ -311,7 +311,7 @@ impl VcsView {
                 match result {
                     Ok(todos) => this.rebase_todos = todos,
                     Err(e) => {
-                        error!(error = %e, onto = %onto_clone, "vcs: load rebase plan failed");
+                        error!(error = %e, onto = %onto_clone, "load rebase plan failed");
                         this.error = Some(format!("加载 rebase 计划失败：{e}"));
                         this.show_rebase_plan = false;
                     }
@@ -365,14 +365,14 @@ impl VcsView {
                     Some(ramag_domain::entities::RepoOperation::Rebase)
                 ) {
                     // 冲突或 edit 暂停都保持 operation=Rebase；无论 driver 返回 Ok/Err 都按暂停处理。
-                    info!(%onto, "vcs: interactive rebase paused");
+                    info!(%onto, "interactive rebase paused");
                     this.handle_operation_paused(RepoOperation::Rebase, cx);
                     this.refresh_after_head_change(cx);
                 } else if let Err(e) = result {
-                    error!(error = %e, %onto, "vcs: interactive rebase failed");
+                    error!(error = %e, %onto, "interactive rebase failed");
                     this.error = Some(format!("交互式 Rebase 失败：{e}"));
                 } else {
-                    info!(%onto, "vcs: interactive rebase done");
+                    info!(%onto, "interactive rebase completed");
                     // 历史被改写：history 与所有 diff 缓存都要重建
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);

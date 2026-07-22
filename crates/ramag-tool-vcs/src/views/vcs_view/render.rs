@@ -133,14 +133,14 @@ impl Render for VcsView {
                     Ok(text) => Some(text.clone()),
                     Err(std::sync::TryLockError::WouldBlock) => None,
                     Err(std::sync::TryLockError::Poisoned(error)) => {
-                        tracing::warn!("vcs clone progress lock poisoned");
+                        tracing::warn!("clone progress lock poisoned");
                         Some(error.into_inner().clone())
                     }
                 })
                 .filter(|s| !s.is_empty());
             let cancel_btn = self.clone_cancel.clone().map(|cancel| {
                 ramag_ui::clickable_button("vcs-clone-cancel")
-                    .label("取消 Clone")
+                    .label("取消")
                     .on_click(move |_: &gpui::ClickEvent, _, _| {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     })
