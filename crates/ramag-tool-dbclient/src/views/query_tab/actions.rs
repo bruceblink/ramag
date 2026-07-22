@@ -1,4 +1,4 @@
-//! `impl QueryTab` 行为方法：运行 / 取消 / 格式化 / EXPLAIN / 错误高亮
+//! SQL 查询标签行为。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,7 +22,6 @@ use crate::sql_completion::extract_tables_in_use_for_prefetch;
 use crate::views::result_panel::{ResultPagination, ResultState, TotalRows};
 
 impl QueryTab {
-    /// 取出当前编辑器中的 SQL
     pub(super) fn current_sql(&self, cx: &gpui::App) -> gpui::SharedString {
         self.editor.read(cx).value()
     }
@@ -54,12 +53,10 @@ impl QueryTab {
             return;
         };
         let trimmed = sql.trim().to_string();
-        // run = 用户主动执行，标题用原 SQL 派生，DDL 后刷新 cache
         let title_sql = trimmed.clone();
         self.submit_sql(trimmed, title_sql, true, window, cx);
     }
 
-    /// 仅执行光标所在的那条 SQL（按 `;` 切分；避开字符串/注释/dollar-quoted 里的 `;`）
     pub(super) fn handle_run_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sql) = self.checked_current_sql("运行", cx) else {
             return;
@@ -75,8 +72,6 @@ impl QueryTab {
         self.submit_sql(trimmed, title_sql, true, window, cx);
     }
 
-    /// EXPLAIN 当前 SQL：把 SQL 包一层 `EXPLAIN ` 提交，结果展示在结果区
-    /// 已经以 EXPLAIN 开头的 SQL 不重复加；末尾 `;` 自动 strip
     pub(crate) fn handle_explain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sql) = self.checked_current_sql("生成执行计划", cx) else {
             return;
@@ -91,13 +86,10 @@ impl QueryTab {
         } else {
             format!("EXPLAIN {trimmed}")
         };
-        // 标题用原 SQL（让 Tab 显示用户实际想看的语句，而不是 EXPLAIN xxx）
-        // is_run=false：EXPLAIN 不会改 schema，跳过 DDL cache 刷新
         self.submit_sql(to_run, trimmed, false, window, cx);
     }
 
-    /// run / explain 共用入口：高危语句（DELETE/UPDATE 无 WHERE、DROP、TRUNCATE）
-    /// 先弹确认（显示连接 / 数据库 / 完整 SQL），确认后才进入执行；其余直接执行
+    /// 高危语句确认后执行，其余直接执行。
     pub(super) fn submit_sql(
         &mut self,
         sql_to_run: String,
@@ -121,7 +113,6 @@ impl QueryTab {
             });
             return;
         }
-        // EXPLAIN（is_run=false）只读不拦；生产只读连接由 driver 层拦截，无需在此确认
         let risks = if is_run && !conn.production {
             detect_dangerous_statements(&sql_to_run, conn.driver)
         } else {
@@ -168,8 +159,6 @@ impl QueryTab {
         self.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
     }
 
-    /// 结果工具条「导入」：对当前 pinned 表发起 JSONL 导入；
-    /// 确认后上抛事件，由 session 路由到表树执行（进度条也显示在表树侧）
     pub(super) fn open_table_import_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((schema, table)) = self.pinned_target.clone() else {
             return;
@@ -195,7 +184,6 @@ impl QueryTab {
         );
     }
 
-    /// 确认后（或无需确认）提交执行
     fn submit_prepared(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
@@ -204,7 +192,7 @@ impl QueryTab {
         is_run: bool,
         cx: &mut Context<Self>,
     ) {
-        // 确认弹框期间可能已开始别的查询（如快捷键重复触发），再兜一次
+        // 对话框等待期间可能已启动其他查询，再次防重入。
         if self.running {
             return;
         }
@@ -240,7 +228,7 @@ impl QueryTab {
             (sql_to_run, None)
         };
         self.pager = pager;
-        // 分页首屏：后台并发精确计数（不写历史），算好回填“共 N 行”。翻页复用不重算。
+        // 首屏并发精确计数，翻页复用结果。
         let count_base = self.pager.as_ref().map(|pager| pager.base_sql.clone());
         self.execute_query(
             conn.clone(),
@@ -255,8 +243,7 @@ impl QueryTab {
         }
     }
 
-    /// 分页首屏后台精确计数：把原查询外包成 COUNT(*) 子查询执行（不写历史），
-    /// 回填 Pager 与结果面板底栏。新查询通过 `count_seq` 令在途计数失效。
+    /// 新查询通过代际使旧计数失效。
     fn spawn_total_count(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
@@ -266,7 +253,6 @@ impl QueryTab {
         let counting_sql = match count_sql(&base_sql) {
             Ok(sql) => sql,
             Err(message) => {
-                // 无法构造计数 SQL（极少见的超长查询）：底栏留空，不再尝试。
                 warn!(error = %message, "build count sql failed");
                 if let Some(pager) = self.pager.as_mut() {
                     pager.total = TotalRows::Unavailable;
@@ -294,7 +280,6 @@ impl QueryTab {
                 }
             };
             let _ = this.update(cx, |this, cx| {
-                // 翻页不改 count_seq；仅当被新查询取代时丢弃本次计数。
                 if this.count_seq != count_seq {
                     return;
                 }
@@ -309,7 +294,6 @@ impl QueryTab {
         .detach();
     }
 
-    /// 请求相邻结果页；SQL 基线只保存在当前 QueryTab，不从可变编辑器重新读取。
     pub(super) fn handle_page(&mut self, requested_page: usize, cx: &mut Context<Self>) {
         if self.running {
             return;
@@ -357,7 +341,6 @@ impl QueryTab {
         );
     }
 
-    /// 执行核心：状态置忙 + 后台执行 + 回调落结果
     fn execute_query(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
@@ -378,7 +361,6 @@ impl QueryTab {
         });
         cx.notify();
 
-        // 后台 ticker：每 100ms notify 一次让耗时数字跳动
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -463,8 +445,7 @@ impl QueryTab {
                             r.set_state(ResultState::Ok(Arc::new(qr)), cx);
                             r.set_pagination(pagination, cx);
                         });
-                        // 表树单表数据：异步拉真实主键 / 唯一索引作为行定位键，
-                        // 就绪前增删改保持禁用（绝不按列名猜键）
+                        // 就绪前禁用行写操作，绝不按列名猜定位键。
                         if let Some((schema, table)) = request_pinned_target {
                             this.fetch_row_identity(schema, table, cx);
                         }
@@ -472,9 +453,7 @@ impl QueryTab {
                     Err(e) => {
                         error!(error = %e, "query failed");
                         let err_msg = e.to_string();
-                        // 生产模式只读拦截：弹 toast 并恢复拦截前的结果快照
-                        // （run 开始时已置 Running，不恢复会永久停在"执行中"）；
-                        // 其余错误仍进结果区便于排查 / 复制
+                        // 只读拦截恢复执行前快照，其余错误保留在结果区。
                         if matches!(e, DomainError::Forbidden(_)) {
                             this.pending_notification =
                                 Some(Notification::warning(err_msg).autohide(true));
@@ -495,8 +474,7 @@ impl QueryTab {
         self.current_task = Some(task);
     }
 
-    /// 拉目标表元数据推导行定位键（真实主键，无主键回退全非空唯一索引），注入结果面板。
-    /// 任一步失败仅记日志、键保持 None（行内修改 / 删除持续禁用，宁缺勿猜）
+    /// 仅用主键或全非空唯一索引定位行，失败时保持禁用。
     fn fetch_row_identity(&self, schema: String, table: String, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
@@ -507,7 +485,6 @@ impl QueryTab {
             let identity = match svc.list_columns(&conn, &schema, &table).await {
                 Ok(cols) => {
                     let has_pk = cols.iter().any(|c| c.is_primary_key);
-                    // 有主键就不再多查一次索引
                     let indexes = if has_pk {
                         Vec::new()
                     } else {
@@ -533,8 +510,7 @@ impl QueryTab {
         .detach();
     }
 
-    /// 检查 SQL 是否是 DDL（CREATE / DROP / ALTER / RENAME / TRUNCATE）
-    /// 是的话后台拉默认 schema 的最新表名刷新 cache
+    /// DDL 后刷新默认 Schema 的表缓存。
     pub(super) fn maybe_refresh_cache_after_ddl(&self, sql: &str, cx: &mut Context<Self>) {
         let first = sql
             .split_whitespace()
@@ -599,7 +575,6 @@ impl QueryTab {
         .detach();
     }
 
-    /// 格式化当前编辑器的 SQL（替换原内容）
     pub(crate) fn handle_format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.formatting {
             self.pending_notification =
@@ -672,7 +647,6 @@ impl QueryTab {
         .detach();
     }
 
-    /// 报错后在编辑器对应行加红波浪线 + 错误消息（hover 显示）
     pub(super) fn highlight_sql_error(&mut self, err_msg: &str, cx: &mut Context<Self>) {
         let line_no = parse_mysql_error_line(err_msg);
         let msg_for_diag = err_msg.to_string();
@@ -691,7 +665,6 @@ impl QueryTab {
         });
     }
 
-    /// 清掉编辑器的错误高亮（运行成功 / 内容变化时）
     pub(super) fn clear_sql_diagnostics(&mut self, cx: &mut Context<Self>) {
         self.editor.update(cx, |state, cx| {
             if let Some(diag) = state.diagnostics_mut()
@@ -703,10 +676,7 @@ impl QueryTab {
         });
     }
 
-    /// 取消当前查询
-    /// 1. drop Task 中断客户端 await（这步必然成功，反馈只承诺到这一层）
-    /// 2. 若已拿到后端 thread id，detach 一个任务发 `KILL QUERY <id>`，
-    ///    服务器确认 / 失败后再补一条准确的结果 toast
+    /// 先停止客户端等待，再尽力取消服务端查询。
     pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.current_task.take().is_none() {
             return;
@@ -741,7 +711,6 @@ impl QueryTab {
             })
             .detach();
         } else {
-            // 未拿到后端线程 id（尚在建连等早期阶段）：只能保证客户端不再等待
             window.push_notification(
                 Notification::info("已停止等待；未获取到服务器线程，语句可能仍在服务器执行")
                     .autohide(true),
@@ -758,7 +727,6 @@ impl QueryTab {
         cx.notify();
     }
 
-    /// 连续输入停顿后才扫描 SQL，避免每次按键都解析整段文本并发元数据请求。
     pub(super) fn schedule_column_prefetch(&mut self, cx: &mut Context<Self>) {
         self.column_prefetch_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -770,14 +738,12 @@ impl QueryTab {
         }));
     }
 
-    /// 程序整体替换 SQL 后立即预拉，并取消尚未触发的输入防抖任务。
     pub(super) fn prefetch_columns_now(&mut self, cx: &mut Context<Self>) {
         self.column_prefetch_task.take();
         self.prefetch_columns_for_used_tables(cx);
     }
 
-    /// 扫描当前 SQL 找出 FROM / JOIN 涉及的表，对未在 cache 的表后台拉一次列结构
-    /// schema 推断顺序：SQL 全限定 schema → active_schema → 连接默认 database → cache.tables 反查
+    /// 按 SQL 限定名、活动库、连接默认库依次推断表并预拉列。
     fn prefetch_columns_for_used_tables(&self, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
@@ -848,7 +814,6 @@ impl QueryTab {
     }
 }
 
-/// 从 COUNT(*) 结果取第一行第一列的非负整数总数；类型不符或为空则返回 None。
 fn parse_count_result(result: &QueryResult) -> Option<u64> {
     match result.rows.first()?.values.first()? {
         Value::Int(n) => u64::try_from(*n).ok(),
@@ -857,7 +822,6 @@ fn parse_count_result(result: &QueryResult) -> Option<u64> {
     }
 }
 
-/// 高危 SQL 确认弹框文案：连接、目标数据库、命中的风险点与完整 SQL（超长截断展示）
 fn build_danger_prompt(
     conn: &ramag_domain::entities::ConnectionConfig,
     active_schema: Option<&str>,

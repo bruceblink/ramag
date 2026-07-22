@@ -1,4 +1,4 @@
-//! Key 详情：按 RedisValue variant dispatch 到 scalar / list_block / hash_block / set_block / zset_block / stream_block
+//! Redis Key 详情面板。
 
 mod hash_block;
 mod header;
@@ -33,87 +33,49 @@ const MAX_COLLECTION_ITEMS: usize = MAX_REDIS_COLLECTION_ITEMS;
 
 #[derive(Debug, Clone)]
 pub enum KeyDetailEvent {
-    /// 详情面板触发 DEL 后通知 KeyTree 刷新
     Deleted(String),
-    /// 请求编辑 TTL，弹窗由上层 Session 处理。(key, 当前 ttl_ms)
     RequestEditTtl(String, Option<i64>),
-    /// 请求编辑 String 值（弹窗由上层 Session 处理）
-    /// (key 名, 当前文本值)
     RequestEditValue(String, String),
-    /// 请求新增 Hash 字段（弹窗）
-    /// (key 名)
     RequestAddHashField(String),
-    /// 请求编辑 Hash 字段（弹窗）
-    /// (key 名, field, 当前 value 文本预览)
     RequestEditHashField(String, String, String),
-    /// 请求新增 List 元素（弹窗）
-    /// (key 名)
     RequestAddListElement(String),
-    /// 请求新增 Set 元素（弹窗）
-    /// (key 名)
     RequestAddSetElement(String),
-    /// 请求新增 ZSet 元素（弹窗）
-    /// (key 名)
     RequestAddZSetElement(String),
-    /// 请求编辑 ZSet 成员的 score（弹窗）
-    /// (key 名, member, 当前 score 字符串)
     RequestEditZSetScore(String, String, String),
-    /// 请求新增 Stream 条目（弹窗）
-    /// (key 名)
     RequestAddStreamEntry(String),
-    /// 请求删除 Key（由上层 Session 弹二次确认）
-    /// (key 名)
     RequestDeleteKey(String),
-    /// 请求删除 Hash 字段（由上层 Session 弹二次确认）
-    /// (key 名, field 名)
     RequestDeleteHashField(String, String),
-    /// 请求删除 List 元素（由上层 Session 弹二次确认）
-    /// (key 名, 元素值, 序号)
     RequestDeleteListElement(String, String, usize),
-    /// 请求删除 Set 成员（由上层 Session 弹二次确认）
-    /// (key 名, 成员值)
     RequestDeleteSetElement(String, String),
-    /// 请求删除 ZSet 成员（由上层 Session 弹二次确认）
-    /// (key 名, 成员值)
     RequestDeleteZSetMember(String, String),
-    /// 请求删除 Stream 条目（由上层 Session 弹二次确认）
-    /// (key 名, entry_id)
     RequestDeleteStreamEntry(String, String),
 }
 
 pub struct KeyDetailPanel {
     service: Arc<RedisService>,
     config: Option<ConnectionConfig>,
-    /// pub(super) 让 header 模块读 db / value / ttl_ms / 大小估算状态
     pub(super) db: u8,
-    /// 当前 key 名（None = 未选中任何 key）
     key: Option<String>,
-    /// 当前 key 的值（fetch 后填充）
     pub(super) value: Option<RedisValue>,
     /// TTL 毫秒（-1 永久 / -2 不存在 / >=0 剩余）
     pub(super) ttl_ms: Option<i64>,
     pub(super) ttl_loading: bool,
     /// PTTL 局部错误；值加载成功时不应因 TTL 失败隐藏整个 key。
     pub(super) ttl_error: Option<String>,
-    /// 加载状态
     loading: bool,
     /// 详情读取代际；同一 key 的旧值/TTL/大小回包也不能覆盖较新的刷新。
     request_seq: u64,
     error: Option<String>,
-    /// 写操作的 toast（只读拦截 / 删除失败等，render 时 push，不覆盖内容区）
+    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pending_notification: Option<Notification>,
-    /// 单 Key 字节估算（MEMORY USAGE，需用户主动点击触发）
     pub(super) key_size_bytes: Option<u64>,
     pub(super) estimating_size: bool,
     /// MEMORY USAGE 的局部错误；不得覆盖已成功加载的 key 内容。
     pub(super) size_error: Option<String>,
-    /// 集合服务端总数；None 表示标量或尚未加载。
     pub(super) collection_total: Option<u64>,
     /// 多批集合读取因累计内容字节预算只保留了安全前缀。
     pub(super) value_byte_limited: bool,
-    /// 当前值已达到交互结果内存提示线。
     pub(super) value_memory_warning: bool,
-    /// 标量值视图模式：None=按内容自动（JSON 美化 / Raw），Some=用户手动选定
     value_view_mode: Option<ViewMode>,
     /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 按行切好的内容, gzip 提示)。
     /// 行数组供 uniform_list 行级虚拟化（大值单文本节点渲染会卡死滚动）；
@@ -127,11 +89,8 @@ pub struct KeyDetailPanel {
             Option<SharedString>,
         )>,
     >,
-    /// Session 调 focus_panel 聚焦后，cmd-w 等 action 走焦点链路由到 Session
     focus_handle: FocusHandle,
-    /// 容器值（hash/list/set/zset/stream）uniform_list 行级虚拟化的滚动句柄
     value_scroll: UniformListScrollHandle,
-    /// 标量内容区横向滚动句柄（内容固定宽 + 外层 X 滚动，行尾不被视口裁掉）
     pub(super) scalar_h_scroll: gpui::ScrollHandle,
 }
 
@@ -203,12 +162,10 @@ impl KeyDetailPanel {
         cx.notify();
     }
 
-    /// 当前正在展示的 key 名（None = 未选中任何 key）
     pub fn current_key(&self) -> Option<&str> {
         self.key.as_deref()
     }
 
-    /// 清空当前展示（恢复"未选中 Key"占位态）
     pub fn clear_key(&mut self, cx: &mut Context<Self>) {
         self.request_seq = self.request_seq.wrapping_add(1);
         self.key = None;
@@ -233,13 +190,11 @@ impl KeyDetailPanel {
         cx.notify();
     }
 
-    /// 把整面板焦点拿到（Session 在初始化 / 选中 key 时调）
     pub fn focus_panel(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
-    /// scalar 视图模式切换按钮调用：固定为用户选择的模式（覆盖按内容自动选择）
     pub(super) fn set_value_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
         if self.value_view_mode != Some(mode) {
             self.value_view_mode = Some(mode);

@@ -29,7 +29,6 @@ use super::reflog_view::ReflogRowsCacheEntry;
 use super::repo_list::RepoListRowsCacheEntry;
 use super::workspace_panel::WorkspaceRowsCacheEntry;
 
-/// 仓库标签状态，按仓库隔离。
 #[derive(Clone, Default)]
 pub(super) struct RepoSessionState {
     pub file_tabs: Vec<FileTab>,
@@ -61,18 +60,13 @@ pub struct VcsView {
     pub(super) error: Option<String>,
     pub(super) loading: bool,
     pub(super) loading_label: Option<String>,
-    /// 置位后由底层终止克隆子进程。
     pub(super) clone_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// 克隆进度只保留 stderr 最新行。
     pub(super) clone_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     /// 取消克隆后的残留目录须由用户决定是否删除。
     pub(super) pending_clone_cleanup: Option<std::path::PathBuf>,
-    /// Git 写操作互斥闸门。
     pub(super) busy: bool,
     pub(super) busy_label: Option<&'static str>,
-    /// 置位后由底层终止远端操作子进程。
     pub(super) remote_op_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// 远端操作进度只保留 stderr 最新行。
     pub(super) remote_op_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
@@ -121,13 +115,11 @@ pub struct VcsView {
     pub(super) loading_stashes: bool,
     pub(super) stash_request_seq: u64,
     pub(super) create_branch_input: Entity<InputState>,
-    /// 新建分支的源（None=当前 HEAD；Some(name)=指定分支作 base）
     pub(super) create_branch_base: Option<String>,
     pub(super) tags: Vec<Tag>,
     pub(super) loading_tags: bool,
     pub(super) tag_request_seq: u64,
     pub(super) create_tag_input: Entity<InputState>,
-    /// 新建 tag 输入框：message（可选；非空 → annotated tag，空 → lightweight）
     pub(super) create_tag_message_input: Entity<InputState>,
     pub(super) collapsed_local: bool,
     pub(super) collapsed_remote: bool,
@@ -166,7 +158,6 @@ pub struct VcsView {
     /// 完整 blame / 行级 blame 分开计代，互不干扰且都能取消旧回包
     pub(super) blame_request_seq: u64,
     pub(super) inline_blame_request_seq: u64,
-    /// diff header 切换：false=显示 diff（默认）/ true=显示 blame
     pub(super) showing_blame: bool,
     /// 行号 inline blame：Some = 顶部 banner 显示该行作者；点行号触发，× 关闭
     pub(super) inline_blame_text: Option<SharedString>,
@@ -186,7 +177,6 @@ pub struct VcsView {
     /// 仓库管理页过滤 / 排序索引缓存，普通重渲染不重复处理整表。
     pub(super) repo_list_rows_cache: RefCell<Option<RepoListRowsCacheEntry>>,
     pub(super) repo_search_input: Entity<InputState>,
-    /// 仓库管理页首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
     pub(super) focused_repo_search_once: bool,
     pub(super) files_view_mode: FilesViewMode,
     pub(super) files_search_input: Entity<InputState>,
@@ -206,7 +196,6 @@ pub struct VcsView {
     /// 前者展示**文件内容**，后者展示 diff，避免两个视图模式互相干扰）
     pub(super) selected_pf_path: Option<String>,
     pub(super) current_file_content: Option<FileContentSnapshot>,
-    /// Project Files 主区使用原生 Code Editor：支持编辑、增量解析与可见行渲染。
     pub(super) pf_editor: Entity<InputState>,
     /// 异步读盘完成后，Render 持有 Window 时把正文和语言写入编辑器。
     pub(super) pending_pf_editor_load: Option<PendingFileEditorLoad>,
@@ -234,13 +223,11 @@ pub struct VcsView {
     pub(super) reflog_scroll: UniformListScrollHandle,
     pub(super) stash_scroll: UniformListScrollHandle,
     pub(super) rebase_scroll: UniformListScrollHandle,
-    /// 文件标签栏横向滚动；新标签追加后自动滚到末尾。
     pub(super) file_tabs_h_scroll: ScrollHandle,
     pub(super) diff_h_scroll: ScrollHandle,
     pub(super) history_pane_visible: bool,
     pub(super) diff_fullscreen: bool,
 
-    // 仓库标签
     pub(super) open_repos: Vec<RepoConfig>,
     /// 启动标签恢复只在用户尚未手动操作仓库时生效。
     pub(super) startup_repo_restore_allowed: bool,
@@ -250,21 +237,18 @@ pub struct VcsView {
     pub(super) repo_session_cache: std::collections::HashMap<String, RepoSessionState>,
     pub(super) repo_session_order: std::collections::VecDeque<String>,
 
-    // 克隆
     pub(super) clone_url_input: Entity<InputState>,
     pub(super) clone_dest_path: Option<PathBuf>,
     pub(super) show_clone_panel: bool,
     /// 系统目录选择器单实例闸门；异步选择期间禁用所有仓库目录入口。
     pub(super) directory_picker_busy: bool,
 
-    // 交互变基
     pub(super) show_rebase_plan: bool,
     pub(super) rebase_plan_onto: String,
     pub(super) rebase_todos: Vec<RebaseTodo>,
     pub(super) loading_rebase_plan: bool,
     pub(super) rebase_request_seq: u64,
 
-    // 冲突编辑
     pub(super) conflict_editor_path: Option<String>,
     pub(super) conflict_content: Option<std::rc::Rc<ConflictContent>>,
     pub(super) loading_conflict: bool,
@@ -286,7 +270,6 @@ impl Focusable for VcsView {
 }
 
 impl VcsView {
-    /// 判断异步回包是否仍属于当前仓库。
     pub(super) fn is_current_repo(&self, repo_id: &RepoId) -> bool {
         self.repo.as_ref().map(|r| &r.id) == Some(repo_id)
     }
@@ -304,7 +287,6 @@ impl VcsView {
         false
     }
 
-    /// 工作区是否有未提交改动，包含未跟踪文件。
     pub(super) fn is_working_tree_dirty(&self) -> bool {
         self.status
             .as_ref()
@@ -316,12 +298,10 @@ impl VcsView {
             .unwrap_or(false)
     }
 
-    /// 切换文件视图并刷新对应数据。
     pub(super) fn set_files_view_mode(&mut self, mode: FilesViewMode, cx: &mut Context<Self>) {
         if self.files_view_mode != mode {
             self.capture_active_project_draft(cx);
             self.files_view_mode = mode;
-            // 清除另一模式的选中态，避免主区残留旧内容。
             if !matches!(mode, FilesViewMode::Project) {
                 self.selected_pf_path = None;
                 self.current_file_content = None;
@@ -348,7 +328,6 @@ impl VcsView {
         cx.notify();
     }
 
-    /// 清空仓库级派生状态，避免切仓后显示旧数据。
     pub(super) fn clear_session_data(&mut self) {
         self.selected_file = None;
         self.current_diff = None;
@@ -432,7 +411,6 @@ impl VcsView {
         // busy 属于全局操作；diff 选项属于用户偏好，均跨仓保留。
     }
 
-    /// 首次打开 lazy load 首页 commits，避免仓库打开就预拉 git log
     pub(super) fn toggle_history_pane(&mut self, cx: &mut Context<Self>) {
         self.history_pane_visible = !self.history_pane_visible;
         if self.history_pane_visible

@@ -1,12 +1,9 @@
-//! 单个查询标签：编辑器 + 工具条 + 结果面板
-
 mod actions;
 mod examples;
 mod paging;
 mod render;
 mod sql_utils;
 
-// QueryPanel 的 Tab 栏「示例」下拉用
 pub(crate) use examples::sql_examples;
 
 use std::sync::Arc;
@@ -25,18 +22,12 @@ use ramag_ui::platform::primary_shortcut;
 use crate::sql_completion::SchemaCache;
 use crate::views::result_panel::{ResultPanel, ResultPanelEvent};
 
-/// 单个查询标签
 pub struct QueryTab {
     pub(super) service: Arc<ConnectionService>,
-    /// 当前激活的连接（None 时禁用执行）
     pub(super) connection: Option<ConnectionConfig>,
-    /// 当前激活的默认库；表树点击表/schema 时由父 session 同步进来
     pub(super) active_schema: Option<String>,
-    /// SQL 编辑器
     pub(super) editor: Entity<InputState>,
-    /// 结果面板
     pub(super) result: Entity<ResultPanel>,
-    /// 是否在执行中
     pub(super) running: bool,
     /// 查询请求代际；取消后快速重跑时，旧回包与旧耗时 ticker 不得跟随新查询。
     pub(super) run_seq: u64,
@@ -44,41 +35,32 @@ pub struct QueryTab {
     pub(super) count_seq: u64,
     /// SQL 格式化防重入；CPU 工作在共享有界 worker 中执行。
     pub(super) formatting: bool,
-    /// 当前正在跑的任务句柄（drop 后取消异步任务）
     pub(super) current_task: Option<Task<()>>,
     /// 编辑器停顿后再预拉列元数据；替换句柄会取消尚未触发的旧任务。
     pub(super) column_prefetch_task: Option<Task<()>>,
     /// 取消句柄：driver 在 acquire 后写入 mysql 后端 thread id（0 = 未拿到）
     pub(super) cancel_handle: Option<ramag_domain::traits::CancelHandle>,
-    /// 查询开始时间，仅 running 时为 Some
     pub(super) query_start: Option<Instant>,
-    /// 与编辑器 / 表树共享的补全 schema 缓存（用于 DDL 后自动刷新）
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
-    /// Tab 标题（默认值，如 "Query 1"）
     pub(super) title: String,
-    /// 上次执行的 SQL 摘要：成功执行后从 SQL 派生
     pub(super) short_title: Option<String>,
-    /// 异步任务完成后挂这里的待推送 toast，下次 render 在 window 上推送
+    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pub(super) pending_notification: Option<Notification>,
     /// 上游显式指定的目标表 (schema, table)：表树点击触发的 SELECT 才有
     pub(super) pinned_target: Option<(String, String)>,
-    /// 是否显示 SQL 编辑器
     pub(super) show_editor: bool,
     /// 分页状态：本次 run 命中"未手写 LIMIT 的单条 SELECT"时为 Some
     pager: Option<paging::Pager>,
     /// 上次自动注入的 SQL（表树浏览 / 示例）。编辑器内容仍与之相等 = 用户未手改，
     /// 表树切表可安全原地覆盖；否则视为手写草稿，浏览须另开 Tab（防丢稿）
     pub(super) last_injected_sql: Option<String>,
-    /// 编辑器变化订阅 keep-alive
     pub(super) _editor_sub: gpui::Subscription,
-    /// 结果面板分页事件订阅 keep-alive
     pub(super) _result_sub: gpui::Subscription,
 }
 
 #[derive(Debug, Clone)]
 pub enum QueryTabEvent {
     DraftChanged,
-    /// 结果工具条「导入」确认后上抛：经 QueryPanel / session 路由到表树执行表级 JSONL 导入
     TableImportRequested {
         schema: String,
         table: String,
@@ -110,7 +92,6 @@ impl QueryTab {
                     primary_shortcut("Enter")
                 ))
                 .rows(8);
-            // SQL 补全：关键字 + 表名 + 列名（cache 共享）
             state.lsp.completion_provider = Some(
                 crate::sql_completion::SqlCompletionProvider::new_rc(cache_for_provider),
             );
@@ -119,9 +100,7 @@ impl QueryTab {
         let cache_for_result = schema_cache.clone();
         let result = cx.new(|cx| {
             let mut p = ResultPanel::new(window, cx);
-            // 把执行器注入：单元格编辑弹框「确认修改」需要异步发 UPDATE
             p.set_executor(Some(service.clone()), connection.clone());
-            // schema cache：判断 current_table 是否视图，从而禁用写按钮
             p.set_schema_cache(Some(cache_for_result));
             p
         });
@@ -133,7 +112,6 @@ impl QueryTab {
         });
         result.update(cx, |panel, _| panel.attach_result_memory(lease));
 
-        // 订阅编辑器内容变化：发现新提到的表 → 后台预拉它的列结构
         let editor_for_sub = editor.clone();
         let editor_sub = cx.subscribe_in(
             &editor,
@@ -241,12 +219,10 @@ impl QueryTab {
         self.last_injected_sql = None;
     }
 
-    /// 标记「当前编辑器内容是自动注入的」（表树浏览 / 示例），供草稿判定
     pub fn mark_injected(&mut self, sql: String) {
         self.last_injected_sql = Some(sql);
     }
 
-    /// 由 QueryPanel 全局同步：是否展示顶部 SQL 编辑器
     pub fn set_show_editor(&mut self, v: bool, cx: &mut Context<Self>) {
         if self.show_editor != v {
             self.show_editor = v;
@@ -254,17 +230,14 @@ impl QueryTab {
         }
     }
 
-    /// 切换表时调：清空结果集的列/行过滤框，避免旧过滤条件遮挡新表数据
     pub fn clear_result_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.result.update(cx, |r, cx| r.clear_filters(window, cx));
     }
 
-    /// 上游设定/清除当前 Tab 的目标表（仅表树点击会注入；手动 run 不变）
     pub fn set_pinned_target(&mut self, target: Option<(String, String)>) {
         self.pinned_target = target;
     }
 
-    /// 用于 TabBar 展示的标题：上次成功执行的 SQL 摘要 > 默认 Tab 名
     pub fn display_title(&self) -> &str {
         self.short_title.as_deref().unwrap_or(&self.title)
     }
@@ -286,7 +259,6 @@ impl QueryTab {
         cx.notify();
     }
 
-    /// 父级（ConnectionSession）同步当前活动库；点表树会调用
     pub fn set_active_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
         let normalized = schema.filter(|s| !s.is_empty());
         if self.active_schema != normalized {
@@ -296,7 +268,6 @@ impl QueryTab {
         }
     }
 
-    /// 把 SQL 写入编辑器（替换原有内容）
     pub fn set_sql(
         &mut self,
         sql: impl Into<gpui::SharedString>,
@@ -329,7 +300,6 @@ impl QueryTab {
         cx.notify();
     }
 
-    /// 对外暴露：让其他视图（如点表树后）触发执行
     pub fn run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.handle_run(window, cx);
     }
@@ -342,7 +312,6 @@ impl QueryTab {
         }
     }
 
-    /// 把示例 SQL 写入编辑器：整体覆盖现有内容（与 MongoDB 行为一致，不保留旧语句）
     pub(super) fn insert_example(
         &mut self,
         sql: &str,
@@ -370,7 +339,6 @@ impl QueryTab {
             .update(cx, |result, cx| result.set_pagination(None, cx));
     }
 
-    /// 聚焦编辑器（关闭 / 切换 Tab 后由 QueryPanel 调用，避免用户再点一下）
     pub fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |state, cx| {
             state.focus(window, cx);

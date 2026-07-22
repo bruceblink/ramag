@@ -1,4 +1,4 @@
-//! 表树面板：连接下的 schema → tables
+//! Schema 与数据表树。
 
 mod ops;
 mod render;
@@ -40,39 +40,28 @@ pub struct TableTreePanel {
     pub(super) loading_schemas: bool,
     pub(super) schemas: Vec<Schema>,
     pub(super) error: Option<String>,
-    /// 已加载的 schema 表缓存。是否展开由 `open_schemas` 单独记录，避免搜索加载后清空
-    /// 关键字时把所有 schema 一次性展开。
+    /// 表缓存与展开状态分离，避免搜索改变展开项。
     pub(super) expanded: HashMap<String, SchemaTables>,
     pub(super) open_schemas: HashSet<String>,
     pub(super) full_search: Option<FullSearchProgress>,
     pub(super) full_search_generation: u64,
-    /// 元数据请求代次；刷新或切换连接后丢弃旧异步结果。
+    /// 旧连接的异步结果不得回写。
     pub(super) metadata_generation: u64,
     pub(super) table_request_generation: u64,
     pub(super) column_request_generation: u64,
-    /// 已展开的表 → 列状态
     pub(super) table_columns: HashMap<(String, String), TableColumns>,
     pub(super) selected: Option<(String, String)>,
-    /// 是否显示系统库（默认隐藏）
     pub(super) show_system: bool,
-    /// 搜索输入（按名称过滤 schema 和 table）
     pub(super) search: gpui::Entity<InputState>,
-    /// SQL 补全的 schema 缓存
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
-    /// 父级（QueryPanel via session）注入：当前 SQL 编辑器是否可见
     pub(super) editor_visible: bool,
-    /// 当前激活的 schema
     pub(super) active_schema: Option<String>,
-    /// 树体虚拟列表滚动句柄
     pub(super) uniform_scroll: UniformListScrollHandle,
-    /// 扁平树行只依赖元数据、展开状态、系统库开关与搜索词，普通重渲染直接复用。
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
-    /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// DDL 串行化闸门；切换连接后旧回包不能解锁新连接的操作。
+    /// 旧连接的 DDL 回包不得解锁新连接。
     pub(super) ddl_gate: AsyncMutationGate,
-    /// 库 / 表传输状态（进度行 + 取消位）
     pub(super) transfer: ramag_ui::TransferState,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
 }
@@ -105,24 +94,24 @@ pub(super) struct TableColumns {
 
 #[derive(Debug, Clone)]
 pub enum TreeEvent {
-    /// 用户点了表（高亮 + 父级用 schema 设置默认库 + 自动 SELECT *）
-    TableSelected { schema: String, table: String },
-    /// 用户点了 schema 行（仅切换默认库，不执行任何 SQL）
-    SchemaActivated { schema: String },
-    /// 用户点了表/视图行的 DDL 按钮
+    TableSelected {
+        schema: String,
+        table: String,
+    },
+    SchemaActivated {
+        schema: String,
+    },
     ShowCreateTable {
         schema: String,
         table: String,
         is_view: bool,
     },
-    /// 表树 header 切换 SQL 编辑器
     ToggleSqlEditor,
 }
 
 impl EventEmitter<TreeEvent> for TableTreePanel {}
 
 impl TableTreePanel {
-    /// 元数据加载快照 (loading, has_error)，不代表实时连接健康。
     pub fn health(&self) -> (bool, bool) {
         (self.loading_schemas, self.error.is_some())
     }
@@ -138,10 +127,9 @@ impl TableTreePanel {
                 .placeholder("搜索 schema / table")
                 .clean_on_escape()
         });
-        // 搜索框文本变化时重渲染
         let subs = vec![
             cx.subscribe(&search, |this: &mut Self, _, _e: &InputEvent, cx| {
-                // 搜索应覆盖全库：非空关键字时补拉未加载 schema 的表（幂等），而非只搜已展开节点
+                // 非空搜索覆盖全库，而非仅过滤已展开节点。
                 this.ensure_search_coverage(cx);
                 cx.notify();
             }),
@@ -165,7 +153,6 @@ impl TableTreePanel {
             show_system: false,
             search,
             schema_cache,
-            // 默认 false：与 QueryPanel.show_editor 默认值保持一致
             editor_visible: false,
             active_schema: None,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -178,7 +165,6 @@ impl TableTreePanel {
         }
     }
 
-    /// 父级（QueryPanel）通知 SQL 编辑器当前显隐状态
     pub fn set_editor_visible(&mut self, v: bool, cx: &mut Context<Self>) {
         if self.editor_visible != v {
             self.editor_visible = v;
@@ -190,7 +176,6 @@ impl TableTreePanel {
         self.search.read(cx).value().trim().to_lowercase()
     }
 
-    /// 仅失效派生行缓存，不改变业务状态。
     pub(super) fn invalidate_tree_rows(&mut self) {
         self.tree_revision = self.tree_revision.wrapping_add(1);
         self.tree_rows_cache.get_mut().take();
@@ -198,13 +183,11 @@ impl TableTreePanel {
 
     pub(super) fn toggle_show_system(&mut self, cx: &mut Context<Self>) {
         self.show_system = !self.show_system;
-        // 同步到共享 cache：DB 下拉根据此值决定是否展示系统库
         self.schema_cache.write().show_system = self.show_system;
         self.invalidate_tree_rows();
         cx.notify();
     }
 
-    /// 强制刷新：清空已展开/已缓存的表结构，重新拉 schema 列表
     pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.connection.is_none() {
             return;
@@ -219,8 +202,7 @@ impl TableTreePanel {
         self.load_schemas(cx);
     }
 
-    /// 会话 Tab 被（重新）激活时调用：仅当从未成功加载（无 schema 且非加载中）才补拉，
-    /// 避免每次切 Tab 都清空已展开状态。首次加载失败留下的空状态会在下次激活时自动重试
+    /// 首次加载失败时，重新激活会重试且保留展开状态。
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if self.connection.is_some() && self.schemas.is_empty() && !self.loading_schemas {
             self.load_schemas(cx);
@@ -270,12 +252,10 @@ impl TableTreePanel {
                 this.loading_schemas = false;
                 match result {
                     Ok(schemas) => {
-                        // 写入共享 cache：DB 下拉的选项来自此处
                         let names: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
                         this.schema_cache.write().all_schemas = names;
                         this.schemas = schemas;
                         this.invalidate_tree_rows();
-                        // 首次加载完成后仅激活默认 schema（不展开表列表，树保持默认折叠）
                         if this.active_schema.is_none()
                             && let Some(default_name) = pick_default_schema(&conn, &this.schemas)
                         {
@@ -296,8 +276,7 @@ impl TableTreePanel {
         .detach();
     }
 
-    /// 搜索非空时把所有未加载 schema 的表补拉进来（搜索覆盖全库）。
-    /// 已有 entry 的（含加载中 / 失败）不重复拉，天然幂等；schema 过多时不自动全拉防雪崩
+    /// 搜索按需补拉；库过多时由用户显式触发，避免请求雪崩。
     fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
         const AUTO_LOAD_MAX_SCHEMAS: usize = 50;
         if self.search.read(cx).value().trim().is_empty() {
@@ -333,7 +312,6 @@ impl TableTreePanel {
     }
 
     pub(super) fn toggle_schema(&mut self, schema_name: String, cx: &mut Context<Self>) {
-        // 不论展开还是收起，都把"当前 schema"广播给父级（设默认库）+ 自身 active_schema
         self.active_schema = Some(schema_name.clone());
         cx.emit(TreeEvent::SchemaActivated {
             schema: schema_name.clone(),
@@ -357,8 +335,7 @@ impl TableTreePanel {
         }
     }
 
-    /// schema 很多时由用户显式触发完整搜索。顺序加载用于限制数据库并发；取消会让当前
-    /// 请求完成后停止，且不再把过期结果写回已切换的连接。
+    /// 顺序补拉限制并发；取消后丢弃过期结果。
     pub(super) fn load_all_tables_for_search(&mut self, cx: &mut Context<Self>) {
         if self.full_search.is_some() || self.search.read(cx).value().trim().is_empty() {
             return;
@@ -490,7 +467,6 @@ impl TableTreePanel {
         }
     }
 
-    /// （重新）拉取某 schema 的表列表；entry 不存在则插入（展开态保持不变）
     pub(super) fn load_tables_for(&mut self, schema_name: String, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
@@ -607,7 +583,6 @@ impl TableTreePanel {
         cx.notify();
     }
 
-    /// 表/视图行 DDL 按钮点击：让父级（ConnectionSession）跑 SHOW CREATE TABLE 或 SHOW CREATE VIEW
     pub(super) fn handle_show_ddl(
         &mut self,
         schema: String,
@@ -622,7 +597,6 @@ impl TableTreePanel {
         });
     }
 
-    /// 切换表的列展开状态：第一次展开时异步拉列结构，关闭只是移除状态
     pub(super) fn toggle_table_columns(
         &mut self,
         schema: String,
@@ -668,7 +642,7 @@ impl TableTreePanel {
         let table_async = table.clone();
         let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
-            // 三类元数据并发拉，索引/外键失败只 warn 不阻塞列结构
+            // 索引或外键失败不阻塞列结构。
             let cols_fut = svc.list_columns(&conn, &schema_async, &table_async);
             let idx_fut = svc.list_indexes(&conn, &schema_async, &table_async);
             let fk_fut = svc.list_foreign_keys(&conn, &schema_async, &table_async);

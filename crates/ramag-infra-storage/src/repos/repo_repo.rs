@@ -135,7 +135,7 @@ pub(crate) fn save(db: Arc<Database>, config: RepoConfig) -> Result<()> {
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
-    info!(repo_id = %config.id, name = %config.name, "repo saved");
+    info!(repo_id = %config.id, name = %config.name, "repository saved");
     Ok(())
 }
 
@@ -156,7 +156,7 @@ pub(crate) fn delete(db: Arc<Database>, id: RepoId) -> Result<()> {
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
-    info!(repo_id = %id_str, "repo deleted");
+    info!(repo_id = %id_str, "repository deleted");
     Ok(())
 }
 

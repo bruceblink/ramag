@@ -1,4 +1,4 @@
-//! VCS 视图共享类型 + 辅助函数：视图状态枚举 / 行尾按钮 / 文件状态色 / commit 行渲染
+//! VCS 视图共享类型与辅助函数。
 
 mod commit_row;
 
@@ -18,23 +18,18 @@ pub(super) fn is_current_arc_slot<T>(
     current.is_some_and(|current| std::sync::Arc::ptr_eq(current, expected))
 }
 
-/// 主视图当前展示模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ViewMode {
-    /// 工作区（变更 / commit / 分支）
     Workspace,
-    /// 历史日志
     History,
 }
 
-/// VcsView 顶层视图：RepoList（仓库管理）/ Session（IDE 布局）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActiveView {
     RepoList,
     Session,
 }
 
-/// Files panel 视图：Project（默认，完整目录树）/ Changes（变更分组）/ Stash / Branches
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FilesViewMode {
     Project,
@@ -43,7 +38,6 @@ pub(super) enum FilesViewMode {
 }
 
 impl FilesViewMode {
-    /// 图标标签。
     pub(super) fn label(self) -> &'static str {
         match self {
             FilesViewMode::Project => "项目",
@@ -52,7 +46,6 @@ impl FilesViewMode {
         }
     }
 
-    /// 用于 tab 按钮的 dom id 后缀
     pub(super) fn id_str(self) -> &'static str {
         match self {
             FilesViewMode::Project => "project",
@@ -62,10 +55,8 @@ impl FilesViewMode {
     }
 }
 
-/// History 面板每页加载条数
 pub(super) const HISTORY_PAGE_SIZE: usize = 1_000;
 
-/// Diff 视图二态：[`Standard`]=带少量上下文（git -U3，默认）/ [`FullFile`]=展示全文件（-U999999）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiffViewMode {
     Standard,
@@ -73,7 +64,6 @@ pub(super) enum DiffViewMode {
 }
 
 impl DiffViewMode {
-    /// 后端 unified 上下文行数：3=标准；999999=全文件
     pub(super) fn context_lines(self) -> u32 {
         match self {
             DiffViewMode::Standard => 3,
@@ -81,7 +71,6 @@ impl DiffViewMode {
         }
     }
 
-    /// 切换：标准 ↔ 全文件
     pub(super) fn toggled(self) -> Self {
         match self {
             DiffViewMode::Standard => DiffViewMode::FullFile,
@@ -90,7 +79,6 @@ impl DiffViewMode {
     }
 }
 
-/// 文件级写操作种类（行尾按钮触发）
 #[derive(Debug, Clone, Copy)]
 pub(super) enum FileOp {
     Stage,
@@ -98,18 +86,15 @@ pub(super) enum FileOp {
     Discard,
 }
 
-/// 远程同步操作种类（顶部工具栏按钮触发）
 #[derive(Debug, Clone, Copy)]
 pub(super) enum RemoteOp {
     Fetch,
     Pull,
-    /// 普通 push（force=false）
     Push,
-    /// 安全强推（git push --force-with-lease）—— 用于改写历史后推送（rebase / amend）
+    /// 使用 `--force-with-lease`。
     PushForce,
 }
 
-/// 文件分组所属（决定行尾按钮的 stage/unstage/discard 组合）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GroupKind {
     Staged,
@@ -118,24 +103,17 @@ pub(super) enum GroupKind {
     Conflict,
 }
 
-/// Project Files 文件内容快照。正文完整保留，编辑器负责增量解析和可见行渲染。
 #[derive(Clone)]
 pub(super) struct FileContentSnapshot {
-    /// 仓库根的相对路径（与 ls-files 输出一致）
     pub path: String,
-    /// 当前正文；未保存编辑也保存在对应文件标签中，切换标签不会丢失。
     pub text: std::rc::Rc<String>,
-    /// 当前正文行数，避免渲染标题时重复扫描全文。
     pub line_count: usize,
-    /// 编辑代际；异步保存只可清理同一代草稿的 dirty 状态。
+    /// 异步保存只可清理同代草稿。
     pub revision: u64,
-    /// 是否含尚未写回磁盘的用户修改。
     pub dirty: bool,
-    /// 是否被 4MB 阈值截断；截断预览禁止编辑，避免保存时破坏未加载的尾部。
+    /// 截断预览禁止编辑，避免覆盖未加载内容。
     pub truncated: bool,
-    /// 是否被识别为二进制（前 8KB 含 NUL 字节即视为二进制）
     pub binary: bool,
-    /// 读盘失败时的错误描述（None = 成功）
     pub error: Option<String>,
 }
 
@@ -146,33 +124,27 @@ pub(super) struct PendingFileEditorLoad {
     pub language: gpui::SharedString,
 }
 
-/// 文件 tab 来源：Changes（工作区 diff）/ ProjectFiles（内容）/ Commit（commit diff），共用一套主区渲染
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum FileTabSource {
     Changes(GroupKind),
     ProjectFiles,
-    /// commit_id：完整 hash；change_kind：Modified/Added/Deleted/Renamed/...（决定状态字母）
     Commit {
         commit_id: String,
         change_kind: Option<FileChangeKind>,
     },
 }
 
-/// 主区已打开的文件 tab（统一服务 Changes diff 和 ProjectFiles 内容）
 #[derive(Clone)]
 pub(super) struct FileTab {
     pub path: String,
     pub source: FileTabSource,
-    /// Changes 来源拉到的 diff（ProjectFiles 始终 None）
     pub cached_diff: Option<std::rc::Rc<FileDiff>>,
-    /// 与 cached_diff 同代的持久语法树；内容超限或不支持语言时仍保留纯文本快照。
+    /// 与差异缓存同代的语法树。
     pub cached_diff_syntax: Option<std::rc::Rc<super::syntax::DiffSyntaxSnapshot>>,
-    /// ProjectFiles 来源读到的文件内容快照（Changes 始终 None）
     pub cached_content: Option<FileContentSnapshot>,
 }
 
 impl FileTab {
-    /// Project Files 标签是否仍有尚未落盘的编辑；其他来源不承载可编辑正文。
     pub(super) fn is_dirty(&self) -> bool {
         matches!(self.source, FileTabSource::ProjectFiles)
             && self
@@ -182,28 +154,21 @@ impl FileTab {
     }
 }
 
-/// Stash 行尾按钮触发的操作
 #[derive(Debug, Clone, Copy)]
 pub(super) enum StashOp {
-    /// 应用某个 stash（不删）
     Apply(usize),
-    /// 应用某个 stash 后删除
     Pop(usize),
-    /// 仅删除某个 stash
     Drop(usize),
 }
 
-/// 分支操作（checkout / create / delete / merge / rebase）
 #[derive(Debug, Clone)]
 pub(super) enum BranchOp {
     Checkout(String),
-    /// (name, base) — base=None 从 HEAD 创建；创建后会自动 checkout 到新分支
+    /// `(名称, 基点)`；无基点时基于 HEAD。
     Create(String, Option<String>),
-    /// (name, force) — force=true 用 -D 强制删未合并分支
+    /// `(名称, 是否强制)`。
     Delete(String, bool),
-    /// 把指定分支合并到当前 HEAD（默认 --no-ff，强制建 merge commit）
     Merge(String),
-    /// 把当前 HEAD rebase 到指定分支上（git rebase &lt;name&gt;）
     Rebase(String),
 }
 
@@ -267,19 +232,13 @@ pub(super) fn needs_first_push_remote_picker(
         && !remotes.iter().any(|remote| remote.name == "origin")
 }
 
-/// 冲突文件解决操作（行尾按钮触发）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConflictOp {
-    /// 采纳「我们」（HEAD 侧）的版本
     UseOurs,
-    /// 采纳「他们」（对方分支）的版本
     UseTheirs,
-    /// 单纯标记为已解决（用户手改后调）= git add
     MarkResolved,
 }
 
-/// 进行中操作的「继续 / 中止 / 跳过」按钮触发
-///
 /// `Skip` 仅 rebase 支持（merge / cherry-pick 时按钮置灰）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OperationStep {
@@ -288,7 +247,6 @@ pub(super) enum OperationStep {
     Skip,
 }
 
-/// 进行中操作与步骤的用户可见名称（错误横幅用，避免暴露 Debug 枚举名）
 pub(super) fn operation_label(op: ramag_domain::entities::RepoOperation) -> &'static str {
     use ramag_domain::entities::RepoOperation;
     match op {
@@ -307,7 +265,6 @@ pub(super) fn step_label(step: OperationStep) -> &'static str {
     }
 }
 
-/// Reset 模式的用户可见名（与右键菜单里的 --soft/--mixed/--hard 写法一致）
 pub(super) fn reset_kind_label(kind: ramag_domain::entities::ResetKind) -> &'static str {
     use ramag_domain::entities::ResetKind;
     match kind {
@@ -317,21 +274,16 @@ pub(super) fn reset_kind_label(kind: ramag_domain::entities::ResetKind) -> &'sta
     }
 }
 
-/// Tag 操作（创建 / 删除 / 推送）
 #[derive(Debug, Clone)]
 pub(super) enum TagOp {
-    /// (name, message=None 表示 lightweight；Some 创建 annotated；target=None 基于 HEAD)
     Create {
         name: String,
         message: Option<String>,
     },
-    /// 删除本地 tag
     Delete(String),
-    /// 推送 tag 到 origin
     Push(String),
 }
 
-/// 行尾操作小按钮：触发 self.run_file_op（已转图标按钮 + tooltip）
 pub(super) fn file_op_button(
     id_parts: (&'static str, usize),
     label: &'static str,
@@ -357,8 +309,6 @@ pub(super) fn file_op_button(
     .into_any_element()
 }
 
-/// 侧栏行尾操作小按钮（stash / tag 等通用）：ghost + xsmall + icon + tooltip + disabled。
-/// `id` 由调用方拼好（含前缀去重），`on_click` 由调用方按各自操作构造。
 pub(super) fn side_op_button(
     id: impl Into<SharedString>,
     tooltip: &'static str,
@@ -379,7 +329,6 @@ pub(super) fn side_op_button(
         .into_any_element()
 }
 
-/// 文件状态字母（M / A / D / R / C / T / ? / U）
 pub(super) fn code_to_letter(kind: Option<FileChangeKind>) -> &'static str {
     match kind {
         Some(FileChangeKind::Modified) => "M",
@@ -394,7 +343,6 @@ pub(super) fn code_to_letter(kind: Option<FileChangeKind>) -> &'static str {
     }
 }
 
-/// 不同变更类型用不同颜色（M 暖橙 / A 绿 / D 红 / R 蓝 / U 深红）
 pub(super) fn code_letter_color(code: &str, fallback: gpui::Hsla) -> gpui::Hsla {
     match code {
         "M" => gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0),

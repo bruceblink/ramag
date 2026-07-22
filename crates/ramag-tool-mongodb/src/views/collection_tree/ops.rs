@@ -10,8 +10,6 @@ use serde_json::json;
 
 use super::CollectionTreePanel;
 
-// ===== 右键菜单构造（row.rs 调用） =====
-
 /// collection / view 行右键菜单：完整集合导出 + 写操作
 pub(super) fn collection_context_menu(
     menu: PopupMenu,
@@ -177,8 +175,6 @@ pub(super) fn database_context_menu(
         );
     }))
 }
-
-// ===== 命令执行 =====
 
 impl CollectionTreePanel {
     fn begin_tree_mutation(&mut self, cx: &mut Context<Self>) -> Option<ramag_ui::MutationToken> {

@@ -1,8 +1,4 @@
-//! 单 Tab 编辑器：JSON 命令编辑器 + 工具条 + 结果区。
-//!
-//! 编辑器内容是 MongoDB 原生 runCommand 风格的 JSON：
-//!   `{"find": "users", "filter": {...}}` / `{"aggregate": "...", "pipeline": [...], "cursor": {}}` / `{"count": "users", "query": {...}}`
-//! 运行后若返回带 `cursor.firstBatch`，自动展开为文档列表；否则把整个返回当单文档展示
+//! MongoDB `runCommand` JSON 编辑与结果标签。
 
 mod command;
 mod paging;
@@ -41,15 +37,10 @@ const MAX_CONFIRM_PRETTY_BYTES: usize = 64 * 1024;
 pub struct MongoQueryTab {
     pub(crate) service: Arc<MongoService>,
     pub(crate) config: ConnectionConfig,
-    /// 当前默认 db；由树或连接配置同步
     pub(crate) database: String,
-    /// 当前 collection（仅用于 prefill 时标记）
     pub(crate) collection: Option<String>,
-    /// JSON 命令编辑器（多行）
     pub(crate) editor: Entity<InputState>,
-    /// 编辑器显隐（默认 false 隐藏，与 dbclient 一致；cmd-e 切换）
     pub(crate) show_editor: bool,
-    /// 结果展示
     pub(crate) result: Entity<ResultPanel>,
     pub(crate) running: bool,
     /// JSON 格式化防重入；CPU 工作在共享有界 worker 中执行。
@@ -59,7 +50,7 @@ pub struct MongoQueryTab {
     /// 运行代际号：切库 / 切 collection / 重新运行都自增，慢查询旧回包据此丢弃，
     /// 不串到新上下文（防运行期间切换后旧结果显示在新库/集合的界面里）
     pub(crate) run_seq: u64,
-    /// 待弹出的 toast（生产模式只读拦截等，render 时 push，不覆盖结果区）
+    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pending_notification: Option<Notification>,
     /// 上次自动注入的命令（默认模板 / 树点 collection / 示例）。编辑器内容仍等于它
     /// = 未手改，树点击可原地覆盖；否则视为手写草稿，浏览另开 Tab（防丢稿）
@@ -72,7 +63,6 @@ pub struct MongoQueryTab {
 #[derive(Debug, Clone)]
 pub enum MongoQueryTabEvent {
     DraftChanged,
-    /// 结果区发起的集合级 JSONL 导入，上抛给 session 路由到集合树执行
     CollectionImportRequested {
         db: String,
         collection: String,
@@ -97,7 +87,6 @@ impl MongoQueryTab {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "admin".to_string());
 
-        // code_editor("json") 提供 JSON 语法高亮 + 行号 + 自动缩进；命令补全挂 lsp.completion_provider
         let editor = cx.new(|cx| {
             let mut state = bounded_input(window, cx)
                 .code_editor("json")
@@ -116,12 +105,10 @@ impl MongoQueryTab {
                 .update(app, |panel, cx| panel.evict_result_for_budget(cx))
                 .is_ok()
         });
-        // 注入 DML 执行上下文，让结果区能增删改
         result.update(cx, |r, _| {
             r.attach_result_memory(lease);
             r.set_context(service.clone(), config.clone(), database.clone());
         });
-        // 结果区 DML 成功后请求刷新：重跑当前命令
         let refresh_sub = cx.subscribe_in(
             &result,
             window,
@@ -245,7 +232,6 @@ impl MongoQueryTab {
         cx.notify();
     }
 
-    /// 由 QueryPanel 同步全局开关给新建 / 切换的 Tab
     pub fn set_show_editor(&mut self, v: bool, cx: &mut Context<Self>) {
         if self.show_editor != v {
             self.show_editor = v;
@@ -253,7 +239,6 @@ impl MongoQueryTab {
         }
     }
 
-    /// 用 collection 名预填一段 `find` 模板；由树点击 collection 时调
     pub fn prefill_for_collection(
         &mut self,
         database: String,
@@ -277,7 +262,6 @@ impl MongoQueryTab {
         cx.notify();
     }
 
-    /// 编辑器内容整体替换为给定命令（示例插入用，与点树 prefill 的覆盖语义一致）
     pub fn set_command(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.pager = None;
         self.editor.update(cx, |s, cx| {
@@ -293,7 +277,6 @@ impl MongoQueryTab {
         self.last_injected_cmd = None;
     }
 
-    /// 设置当前 db（点击树上 db 行时调）
     pub fn set_database(&mut self, db: String, cx: &mut Context<Self>) {
         if self.database != db {
             self.database = db;
@@ -637,14 +620,12 @@ impl MongoQueryTab {
         }
     }
 
-    /// 聚焦编辑器（新建 / 切换 / 关闭 Tab 后由 QueryPanel 调用，避免用户再点一下）
     pub fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |state, cx| {
             state.focus(window, cx);
         });
     }
 
-    /// 格式化编辑器 JSON
     pub fn format_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.formatting {
             self.pending_notification =

@@ -127,7 +127,7 @@ impl ZSetElementForm {
                     cx.emit(ZSetElementFormEvent::Saved);
                 }
                 Err(e) => {
-                    error!(error = %e, "zadd failed");
+                    error!(error = %e, "save zset member failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

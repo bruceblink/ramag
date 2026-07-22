@@ -1,4 +1,4 @@
-//! 结果集表格：uniform_list 行级虚拟化；简单查询由数据库按页返回。
+//! SQL 结果表格。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use gpui::{
     div, prelude::*, px, uniform_list,
 };
 
-/// 禁用 GPUI 单轴 scroll 的"另一方向劫持"，wheel 严格按方向消费
+/// 限制滚轮只驱动指定轴。
 trait RestrictScrollExt: Styled + Sized {
     fn restrict_scroll_to_axis(mut self) -> Self {
         self.style().restrict_scroll_to_axis = Some(true);
@@ -34,16 +34,13 @@ const DISPLAY_VIEW_DEBOUNCE: Duration = Duration::from_millis(160);
 /// 横向表格未做列虚拟化；限制交互式列数，避免异常宽结果创建数千个控件。
 const MAX_COLUMNS_DISPLAY: usize = 512;
 
-/// 帧级数据：本次 render_table 计算一次，供 uniform_list closure 共享访问
-/// 用 Rc 包装才能在 'static + Fn 闭包内 capture（不能 borrow 栈局部变量）
+/// 单帧共享数据，供虚拟列表闭包读取。
 struct TableRowFrame {
     result: Arc<QueryResult>,
-    /// 排序 + 过滤后的源行下标；行数据始终从共享 result 读取，不在每帧复制。
     display_indices: Arc<Vec<usize>>,
     visible_col_indices: Arc<Vec<usize>>,
     col_widths: Vec<gpui::Pixels>,
     right_align: Arc<Vec<bool>>,
-    /// 服务端分页造成的全局行号偏移；数据定位仍使用当前页源下标。
     row_number_offset: usize,
     row_num_width: gpui::Pixels,
     checkbox_col_width: gpui::Pixels,
@@ -56,16 +53,13 @@ struct TableRowFrame {
     accent: gpui::Hsla,
 }
 
-/// 表格当前视图（排序 + 列/行过滤后的所见内容）；保留源行索引供渲染与勾选使用。
 #[derive(Clone)]
 pub(crate) struct DisplayView {
-    /// 可见列的原始下标（列过滤后）
     pub(crate) visible_col_indices: Arc<Vec<usize>>,
     /// 列过滤命中总数；可能大于交互式显示上限。
     pub(crate) matched_col_count: usize,
     /// 是否因 MAX_COLUMNS_DISPLAY 仅显示命中列前缀。
     pub(crate) columns_truncated: bool,
-    /// 原始行下标：排序 + 行过滤后的显示序
     pub(crate) display_indices: Arc<Vec<usize>>,
     /// 基于当前显示行样本估算的默认列宽；手动覆盖在渲染时叠加。
     default_col_widths: Arc<Vec<gpui::Pixels>>,
@@ -73,11 +67,8 @@ pub(crate) struct DisplayView {
     right_align: Arc<Vec<bool>>,
     /// 是否因 MAX_ROWS_DISPLAY 截断未分页结果。
     pub(crate) truncated: bool,
-    /// 列过滤是否激活
     pub(crate) cols_filtered: bool,
-    /// 行过滤是否激活
     pub(crate) row_filtering: bool,
-    /// 行过滤前的行数（显示"过滤 N/M"用）
     pub(crate) pre_filter_count: usize,
 }
 
@@ -373,14 +364,9 @@ fn build_display_view_cancellable(
     })
 }
 
-/// 渲染单次查询结果表格
-///
-/// 入口由 ResultPanel::render 调用，接收所有需要的主题色和上下文
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_table(
     panel: &mut ResultPanel,
-    // 借用而非按值：避免每帧深拷贝整个结果集（大结果集卡顿主因）。
-    // Arc 共享结果集；本帧只生成排序 / 过滤索引与少量列元数据。
     result: &Arc<QueryResult>,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
@@ -400,7 +386,6 @@ pub(super) fn render_table(
         .map(|pagination| pagination.page.saturating_mul(pagination.page_size))
         .unwrap_or(0);
 
-    // DML/DDL：没有列，只显示 affected_rows
     if columns.is_empty() {
         return v_flex()
             .size_full()
@@ -478,10 +463,6 @@ pub(super) fn render_table(
     let visible_cols_count = visible_col_indices.len();
     let visible_count = display_indices.len();
 
-    // 注：0 行不再 early return；让 header + 空 body + 状态栏正常渲染，
-    // 用户能看到列头与列类型，避免"查无结果"占位遮蔽元信息
-
-    // 列宽 / 行号宽 / 总宽
     let col_widths: Vec<gpui::Pixels> = default_col_widths
         .iter()
         .enumerate()
@@ -496,7 +477,6 @@ pub(super) fn render_table(
         .map(|&ci| col_widths[ci])
         .fold(row_num_width + checkbox_col_width, |acc, w| acc + w);
 
-    // 数据 cell 用 mono 字体（长 ID / 时间戳纵向对齐）；表头不用
     let mono_font = cx.theme().mono_font_family.clone();
     let current_sort = panel.sort_by();
     let header_cells: Vec<AnyElement> = visible_col_indices
@@ -569,7 +549,6 @@ pub(super) fn render_table(
         .child(row_num_header)
         .children(header_cells);
 
-    // 不变数据装进 frame，Rc 共享给 closure 满足 'static + Fn
     let frame = Rc::new(TableRowFrame {
         result: result.clone(),
         display_indices,
@@ -611,10 +590,8 @@ pub(super) fn render_table(
     .track_scroll(panel.uniform_scroll())
     .w(frame.total_content_width)
     .flex_1()
-    // list 单 Y 滚，限制轴避免 wheel dx 被劫持
     .restrict_scroll_to_axis();
 
-    // selected_cell 存源行下标（与 DML 一致）：直接索引原始 result.rows
     let selected_info: Option<String> = panel.selected_cell().and_then(|(ri, ci)| {
         let col_name = columns.get(ci)?.clone();
         let val = result.rows.get(ri)?.values.get(ci)?;
@@ -656,13 +633,11 @@ pub(super) fn render_table(
         ));
     }
     let pagination_ui = pagination.filter(|pagination| pagination.page > 0 || pagination.has_more);
-    // 总行数文案：紧跟“显示 X-Y 行”之后、耗时之前；计算中/已知/不可用（留空）。
     let total_summary: Option<String> = pagination_ui.and_then(|p| match p.total {
         TotalRows::Counting => Some("总行数计算中…".to_string()),
         TotalRows::Known(n) => Some(format!("共 {n} 行")),
         TotalRows::Unavailable => None,
     });
-    // 精确总数已知时把“第 N 页”升级为“第 N / M 页”。
     let total_pages: Option<u64> = pagination_ui.and_then(|p| match p.total {
         TotalRows::Known(n) if p.page_size > 0 => Some(n.div_ceil(p.page_size as u64).max(1)),
         _ => None,
@@ -689,7 +664,6 @@ pub(super) fn render_table(
             let range_end = row_number_offset.saturating_add(total_rows);
             status_parts.push(format!("显示 {range_start}-{range_end} 行"));
         }
-        // 总行数紧跟范围之后、耗时之前
         if let Some(total_text) = total_summary {
             status_parts.push(total_text);
         }
@@ -782,14 +756,7 @@ pub(super) fn render_table(
             )
         });
 
-    // 外层布局：v_flex 主轴；水平滚动由外层 div 处理，垂直虚拟化由 list 处理
-    // 关键：
-    // 1) 外层 div 用 overflow_x_scroll（仅 X），list 用 track_scroll 管 Y；
-    //    wheel 事件先到 list 消费 Y delta，剩余 X 冒泡给 div 消费 X delta —— 嵌套
-    //    viewport 标准行为，触控板含 Y 噪声时 list 也会少量滚动 Y
-    // 2) 外层 div 通过 panel.h_scroll() 关联 ScrollHandle，跨 render 保持水平位置；
-    //    切表时由 set_state 调 set_offset 主动归位左侧
-    // 3) 内层 v_flex 用 h_full 而非 size_full —— size_full 含 w_full 会重置 width
+    // 外层横向滚动，虚拟列表纵向滚动；两层都限制滚轮轴向。
     v_flex()
         .size_full()
         .min_w_0()
@@ -800,7 +767,6 @@ pub(super) fn render_table(
                 .min_h_0()
                 .min_w_0()
                 .overflow_x_scroll()
-                // 禁止外层 div 把 wheel dy 当 dx 用（div 是单 X 滚，否则 dy 会被劫持横向滚）
                 .restrict_scroll_to_axis()
                 .track_scroll(panel.h_scroll())
                 .child(
@@ -815,7 +781,6 @@ pub(super) fn render_table(
         .into_any_element()
 }
 
-/// Header 单元格：列名（强）+ 类型副标（弱）+ 排序箭头（弱）+ 列宽拖拽 handle
 mod cells;
 mod helpers;
 

@@ -1,5 +1,4 @@
-//! IDE 风布局：toolbar + op banner + 上半（左 files / 右 main）+ 下半 history。
-//! 拖拽：`ide_files_resize` 上下 / `ide_left_resize` 上半左右；侧栏靠 toggle 切换，固定 220px
+//! VCS 工作区布局。
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
@@ -18,26 +17,21 @@ use super::helpers::FilesViewMode;
 use super::vcs_view::VcsView;
 use ramag_ui::PointerDropdownMenu as _;
 
-/// 上半区初始高度（上半 = 工作区 + diff；下半 = history）
 const TOP_HEIGHT_INITIAL: f32 = 600.0;
 const TOP_HEIGHT_MIN: f32 = 200.0;
 const TOP_HEIGHT_MAX: f32 = 1400.0;
-/// 上半区内左侧 Files+Commit panel 初始宽度（默认按最小，避免左栏抢主区宽度）
 const LEFT_WIDTH_INITIAL: f32 = 280.0;
 const LEFT_WIDTH_MIN: f32 = 220.0;
 const LEFT_WIDTH_MAX: f32 = 600.0;
 
 impl VcsView {
-    /// IDE 布局主入口：v_resizable{ 上半 h_resizable, 下半 history（可选） }
     pub(super) fn render_ide_layout(&self, cx: &mut Context<Self>) -> AnyElement {
         let row = h_flex().size_full().min_h_0();
-        // 顶部错误 banner（self.error 不空时显示，可手动关闭）
-        // 与 op_banner（merge/rebase 进行中横幅）并列；不独占 body 不阻塞操作
         let mut main_layout = v_flex().size_full();
         if let Some(banner) = self.render_error_banner(cx) {
             main_layout = main_layout.child(banner);
         }
-        // Diff 全屏时只保留文件标签与 Diff 主区，隐藏 Files / History 两侧辅助区域。
+        // 全屏时仅保留标签和差异主区。
         let main_layout = main_layout.child(self.render_op_banner(cx));
         let fullscreen_diff = self.diff_fullscreen
             && !self.show_rebase_plan
@@ -73,7 +67,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 上半区：左 files + commit panel / 右 diff or commit_detail
     fn render_top_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let border = theme.border;
@@ -98,15 +91,11 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 上半左侧「Files」：tabs/搜索 + 内容区 + commit panel
-    /// 仿 IDEA Git Tool Window：默认 Project Files；分支徽标 / Git 操作菜单都在 toolbar 内
     fn render_files_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .size_full()
             .child(self.render_files_toolbar(cx))
-            // 滚动区分两层：外层 flex_1 + min_h_0 定高，内层 size_full + overflow_y_scrollbar 滚动。
-            // 直接在一个元素上 .flex_1().min_h_0().overflow_y_scrollbar() 会让内容被压扁到视口高度、
-            // 文件列表很长时滚不动（同 Redis key_detail 的修法）
+            // 外层定高、内层滚动，避免长列表被压缩。
             .child(
                 div().flex_1().min_h_0().child(
                     div()
@@ -117,7 +106,6 @@ impl VcsView {
                         .child(self.render_files_content(cx)),
                 ),
             )
-            // commit 面板仅在 Changes 视图下显示（其他模式下隐藏）
             .when(
                 matches!(self.files_view_mode, FilesViewMode::Changes),
                 |c| c.child(self.render_commit_panel(cx)),
@@ -125,8 +113,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// Files panel 顶部工具栏：[mode tabs（一排图标）] + 搜索框 + 刷新按钮
-    /// tabs 用 segmented icon button 风格：4 个图标横排，选中态 selected() 高亮
     fn render_files_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let border = theme.border;
@@ -134,8 +120,6 @@ impl VcsView {
         let busy = self.busy;
         let active = self.files_view_mode;
 
-        // 第 1 行：3 个 segmented icon tabs（项目文件 / 本地变更 / 暂存）
-        // 分支管理通过分支选择器 + 历史面板左栏操作，不再占用独立 tab
         let modes = [
             FilesViewMode::Project,
             FilesViewMode::Changes,
@@ -145,7 +129,6 @@ impl VcsView {
         for mode in modes {
             tabs_row = tabs_row.child(self.mode_tab_button(mode, active, cx));
         }
-        // 中段：busy 指示器（操作进行中显示 spinner + 操作名，慢操作不再像卡死）
         let busy_indicator: AnyElement = if let Some(label) = self.busy_label {
             h_flex()
                 .flex_1()
@@ -166,7 +149,6 @@ impl VcsView {
         } else {
             div().flex_1().into_any_element()
         };
-        // 末尾：分支选择器（显示当前 HEAD 分支名 + dropdown 列出所有分支可切换 / 创建）
         let mode_row = h_flex()
             .w_full()
             .px(px(10.0))
@@ -179,8 +161,6 @@ impl VcsView {
             .child(busy_indicator)
             .child(self.render_branch_picker(cx));
 
-        // 第 2 行：搜索框 + 刷新按钮 + (Project 模式才显示的)全展开/全折叠 toggle
-        // toggle 单按钮模式与 redis key_tree 对齐：根据当前是否有展开目录决定图标和动作
         let mut search_row = h_flex()
             .w_full()
             .items_center()
@@ -201,7 +181,6 @@ impl VcsView {
                     .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             );
-        // 手动刷新：外部（终端 / 编辑器）改动后立即同步；窗口重新激活时也会自动刷
         if self.repo.is_some() {
             search_row = search_row.child(
                 ramag_ui::clickable_button("vcs-refresh")
@@ -236,8 +215,6 @@ impl VcsView {
                     })),
             );
         }
-        // 历史面板 toggle：从 ⋮ 菜单提出来的独立按钮（与展开/折叠并列）
-        // 仅 repo 已打开时显示——RepoList 模式不需要
         if self.repo.is_some() {
             let history_visible = self.history_pane_visible;
             search_row = search_row.child(
@@ -261,7 +238,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 根据当前 mode 渲染 Files panel 内容区
     fn render_files_content(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.files_view_mode {
             FilesViewMode::Changes => self.render_file_groups(cx),
@@ -270,7 +246,6 @@ impl VcsView {
         }
     }
 
-    /// 当前 HEAD 分支按钮 + dropdown：新建分支 / 本地 / 远程
     fn render_branch_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.repo.is_none() {
             return div().into_any_element();
@@ -319,7 +294,6 @@ impl VcsView {
             .as_ref()
             .and_then(|status| status.head_commit.as_ref())
             .is_some();
-        // 加边框 + 深色文字，比纯 ghost+蓝字更醒目（用户反馈纯文字辨识度低）
         let _ = accent;
         ramag_ui::clickable_button("vcs-branch-picker")
             .outline()
@@ -330,10 +304,7 @@ impl VcsView {
             .pointer_dropdown_menu_with_anchor(
                 gpui::Anchor::BottomRight,
                 move |mut m: PopupMenu, window, cx| {
-                    // 父菜单不能 scrollable —— 否则 submenu 不工作（gpui-component 限制）。
-                    // 分支用 group 收纳后顶层项数量可控，通常窗口能装下；
-                    // 多分支的 prefix（如 origin/*）放进各自 submenu，submenu 自身可 scrollable
-                    // max_w 限宽防止超长分支名撑破菜单（叶子内部已做中间省略截断）
+                    // 父菜单滚动会破坏子菜单，分支组在子菜单内自行滚动。
                     m = m.max_w(px(420.0));
                     if shown_branches < total_branches {
                         m = m.item(PopupMenuItem::label(format!(
@@ -341,7 +312,6 @@ impl VcsView {
                         )));
                         m = m.separator();
                     }
-                    // 操作分组
                     m = m.item(PopupMenuItem::label("操作"));
                     let ent_new = entity.clone();
                     let head_for_dlg = local
@@ -372,7 +342,6 @@ impl VcsView {
                             }),
                     );
                     m = m.separator();
-                    // 本地分支：按 / 路径分组（feature/xxx → 「feature」 submenu，hover 展开侧菜单）
                     m = m.item(PopupMenuItem::label("本地"));
                     m = super::branch_picker::render_branches_grouped(
                         m,
@@ -382,7 +351,6 @@ impl VcsView {
                         window,
                         cx,
                     );
-                    // 远程分支：所有 origin/* 自动归入「origin」 submenu（同款 hover 侧栏）
                     if !remote.is_empty() {
                         m = m.separator();
                         m = m.item(PopupMenuItem::label("远程"));
@@ -413,7 +381,6 @@ impl VcsView {
     ) -> AnyElement {
         let id = gpui::SharedString::from(format!("vcs-files-tab-{}", mode.id_str()));
         let is_active = mode == active;
-        // mode 与图标的映射：folder 表项目，file 表本地变更，inbox 表 stash，git-branch 走 ramag-ui
         let mut btn = ramag_ui::clickable_button(id)
             .ghost()
             .small()
@@ -430,9 +397,7 @@ impl VcsView {
         .into_any_element()
     }
 
-    /// Stash 视图：顶部「Stash 工作区改动」入口 + 完整 stash 列表（与左侧栏 Stash 段共用数据）
     fn render_stash_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        // 工作区干净（无任何可 stash 的文件）时禁用入口
         let has_changes = self
             .status
             .as_ref()
@@ -467,8 +432,6 @@ impl VcsView {
                     cx,
                 );
             }));
-        // 复用 sidebar 的 stash 段渲染：列表 + 行尾按钮（apply / pop / drop）
-        // 给一个独立 wrapper，避免被 sidebar 的折叠样式影响
         v_flex()
             .size_full()
             .gap(px(8.0))
@@ -477,12 +440,10 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 下半区 History：commit 列表 + 搜索 / Reflog 切换。横跨右半（侧栏外）
     fn render_history_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         self.render_history_view(cx)
     }
 
-    /// 优先级：rebase 计划 > 冲突编辑器 > file_tab（Changes / Commit / ProjectFiles 共用 render_diff_block）
     fn render_main_area(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.show_rebase_plan {
             return self.render_rebase_plan(cx);

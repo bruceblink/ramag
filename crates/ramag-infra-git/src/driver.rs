@@ -1,4 +1,4 @@
-//! `impl GitDriver`：thin wrapper。模式：取 handle → 参数 owned 化 → run_blocking / run_write_blocking
+//! Git 驱动入口。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -49,7 +49,6 @@ impl GitDriver for GitDriverImpl {
             self.by_path.remove(&canonical);
         }
 
-        // 阻塞线程打开（gix 有 I/O）
         let canonical_for_open = canonical.clone();
         let repo =
             run_blocking(move || gix::open(&canonical_for_open).map_err(errors::map_open_error))
@@ -158,7 +157,7 @@ impl GitDriver for GitDriverImpl {
         .await
     }
 
-    // 写操作走 subprocess git（gix 写 API 还在演进）
+    // gix 写入 API 尚不稳定，写操作使用 Git 子进程。
 
     async fn stage(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
         git_cmd::validate_path_args(paths, "待暂存文件列表")?;
@@ -631,8 +630,6 @@ impl GitDriver for GitDriverImpl {
         run_blocking(move || reflog::list(&handle.path, ref_name.as_deref(), limit)).await
     }
 
-    // ---- Clone / Init ----
-
     async fn clone_repo(&self, url: &str, dest: &Path) -> Result<RepoConfig> {
         git_cmd::validate_positional_arg(url, "仓库 URL")?;
         let url = url.to_string();
@@ -661,8 +658,6 @@ impl GitDriver for GitDriverImpl {
         run_blocking(move || clone::init_repo(&path_init)).await?;
         self.open_repo(path).await
     }
-
-    // ---- Interactive Rebase ----
 
     async fn interactive_rebase_plan(&self, repo: &RepoId, onto: &str) -> Result<Vec<RebaseTodo>> {
         git_cmd::validate_positional_arg(onto, "rebase 上游引用")?;

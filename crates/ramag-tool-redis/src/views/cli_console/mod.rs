@@ -1,9 +1,4 @@
-//! Redis 命令行控制台：自由输入命令 + redis-cli 风格的滚动应答历史（transcript）。
-//!
-//! - 输入框 Enter 执行；上方滚动显示「命令 + 应答」块流，内容保留至手动清空
-//! - argv 经 format::tokenize 解析（支持引号）；应答经 format::lines_of 递归格式化
-//! - 写命令在生产（只读）连接由 driver 层拦截返回 Forbidden，这里按错误行展示
-//! - 显隐由 RedisSession 控制（cmd-e / 工具栏图标 / 点击外部关闭），本面板只管内容
+//! Redis 命令控制台与应答历史。
 
 mod complete;
 mod danger;
@@ -32,7 +27,6 @@ use tracing::{error, info};
 
 use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 
-/// 单条命令 + 应答历史
 struct Entry {
     id: u64,
     command: String,
@@ -53,19 +47,20 @@ enum Outcome {
     Err(String),
 }
 
-/// transcript 扁平行模型：全体历史展平成等高行，单个 uniform_list 虚拟化渲染
-/// （逐条 entry 全量建 div 树在大应答下会卡死滚动）
+/// 扁平等高行，避免大应答生成完整元素树。
 enum TranscriptRow {
-    /// 命令头：`> cmd` + 右侧 meta
     Header {
         command: SharedString,
         meta: SharedString,
     },
-    /// 应答行；tone 决定颜色
-    Body { line: SharedString, tone: LineTone },
-    /// 应答被分段截断：点击继续展开下一段
-    Continue { entry_id: u64, hint: SharedString },
-    /// 条目间距
+    Body {
+        line: SharedString,
+        tone: LineTone,
+    },
+    Continue {
+        entry_id: u64,
+        hint: SharedString,
+    },
     Spacer,
 }
 
@@ -77,7 +72,6 @@ enum LineTone {
     Error,
 }
 
-/// 成功按行分色：整数/浮点/布尔→强调色，nil/empty→弱化，余→前景
 fn tone_of(line: &str) -> LineTone {
     if line.contains("(integer)") || line.contains("(double)") || line.contains("(boolean)") {
         LineTone::Accent
@@ -88,7 +82,6 @@ fn tone_of(line: &str) -> LineTone {
     }
 }
 
-/// 格式化行 → 硬切后的显示行（超长单行切段，供等高行虚拟化）
 fn wrap_display_lines(raw_lines: Vec<String>) -> Vec<SharedString> {
     let mut lines: Vec<SharedString> = Vec::new();
     for line in raw_lines {
@@ -100,7 +93,6 @@ fn wrap_display_lines(raw_lines: Vec<String>) -> Vec<SharedString> {
     lines
 }
 
-/// 「继续展开」提示：未展开的剩余量（标量按字节，容器按元素数）
 fn remaining_hint(raw: &RedisValue, cursor: usize) -> String {
     fn bytes_text(remaining: usize) -> String {
         if remaining >= 1024 * 1024 {
@@ -137,15 +129,13 @@ pub struct CliConsole {
     history: Vec<Entry>,
     next_entry_id: u64,
     input: Entity<InputState>,
-    /// 已提交命令的输入历史（旧→新），供 ↑/↓ 召回；与上方应答历史 history 是两回事
+    /// 已提交命令，与应答历史分离。
     cmd_history: VecDeque<String>,
     cmd_history_bytes: usize,
-    /// 当前 ↑/↓ 浏览位置：None = 停在实时输入行，Some(i) = 正显示 cmd_history[i]
+    /// `None` 表示实时输入行。
     history_cursor: Option<usize>,
-    /// 展平后的 transcript 行模型（history 变化时重建）与其虚拟滚动句柄
     transcript_rows: Vec<TranscriptRow>,
     transcript_scroll: UniformListScrollHandle,
-    /// transcript 横向滚动句柄（内容固定宽，行尾不被窄面板裁掉）
     transcript_h_scroll: gpui::ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -162,7 +152,6 @@ impl CliConsole {
             let mut state = InputState::new(window, cx)
                 .validate(|value, _| value.len() <= MAX_COMMAND_BYTES)
                 .placeholder("输入 Redis 命令，Enter 执行（如 GET foo）");
-            // 命令名补全 + 语法提示
             state.lsp.completion_provider = Some(complete::RedisCompletionProvider::new_rc());
             state
         });
@@ -192,7 +181,6 @@ impl CliConsole {
         }
     }
 
-    /// 会话切 DB 时同步（应答按执行时所在 db 记录）
     pub fn set_db(&mut self, db: u8, cx: &mut Context<Self>) {
         self.db = db;
         cx.notify();
@@ -228,9 +216,8 @@ impl CliConsole {
         if self.reject_if_command_queue_full(&raw, cx) {
             return;
         }
-        // 记录到输入历史（含被拦截 / 解析失败的命令，便于 ↑ 召回后修正）
+        // 被拦截或解析失败的命令也可召回修正。
         self.record_history(&raw);
-        // 引号解析失败：就地记错误行，不发后端
         let argv = match format::tokenize(&raw) {
             Ok(a) if a.is_empty() => return,
             Ok(a) => a,
@@ -257,9 +244,7 @@ impl CliConsole {
             cx.notify();
             return;
         }
-        // 命令行本地拦截两类会破坏复用连接的命令，就地报错不发后端：
-        // - SELECT：改变底层连接 DB 却仍缓存为原 db，后续命令打错库（引导用 DB 选择器）
-        // - MONITOR/SUBSCRIBE 等：会把连接卡在特殊接收模式，不可逆
+        // SELECT 会污染连接池的 DB 上下文，订阅类命令会独占连接。
         let blocked_reason = argv.first().and_then(|c| {
             let up = c.to_ascii_uppercase();
             if up == "SELECT" {
@@ -280,8 +265,7 @@ impl CliConsole {
             return;
         }
 
-        // 高危命令（FLUSHALL / SHUTDOWN / CONFIG SET / CLIENT KILL 等）先弹确认，
-        // 明示连接名 + DB；取消则保留输入供修改
+        // 高危命令确认时固定连接、DB 和命令，避免上下文漂移。
         if let Some(reason) = danger::dangerous_reason(&argv) {
             let preview = command_preview(&raw, 4096);
             let desc = format!(
@@ -327,7 +311,6 @@ impl CliConsole {
         self.dispatch(raw, argv, window, cx);
     }
 
-    /// 真正执行：登记应答历史 + 清输入 + 异步发后端（危险命令确认后也走这里）
     fn dispatch(
         &mut self,
         raw: String,
@@ -356,7 +339,7 @@ impl CliConsole {
                     let outcome = match result {
                         Ok(v) => {
                             info!(elapsed_ms = elapsed, "command completed");
-                            // 超限应答分段：保留原始值 + 游标，支持点击继续展开
+                            // 保留游标，按需展开超限应答。
                             let chunk = format::lines_of_first(&v);
                             entry.cursor = chunk.cursor;
                             entry.raw = chunk.cursor.map(|_| Arc::new(v));
@@ -364,7 +347,6 @@ impl CliConsole {
                         }
                         Err(e) => {
                             error!(error = %e, "command failed");
-                            // 仿 redis-cli：(error) + 纯消息体，不带「查询执行失败:」SQL 腔前缀
                             Outcome::Err(format!("(error) {}", e.message()))
                         }
                     };
@@ -422,10 +404,9 @@ impl CliConsole {
         self.rebuild_transcript_rows();
     }
 
-    /// 历史变化后重建扁平行模型（push / 回包 / 清空 / 修剪统一走 prune_transcript）
     fn rebuild_transcript_rows(&mut self) {
         let mut rows = Vec::new();
-        // 最新在上：刚执行的命令结果紧贴输入框下方，无需滚动
+        // 最新结果紧邻输入框。
         for entry in self.history.iter().rev() {
             let meta = if matches!(entry.outcome, Outcome::Pending) {
                 format!("DB {}", entry.db)
@@ -469,7 +450,6 @@ impl CliConsole {
         self.transcript_rows = rows;
     }
 
-    /// 点击「继续展开」：从游标续格式化下一段并追加；行数达 transcript 上限时终止并提示
     fn continue_entry(&mut self, entry_id: u64, cx: &mut Context<Self>) {
         let Some(entry) = self.history.iter_mut().find(|entry| entry.id == entry_id) else {
             return;
@@ -499,8 +479,6 @@ impl CliConsole {
         cx.notify();
     }
 
-    /// 记录一条输入历史：跳过与上一条完全相同的（避免连按重复堆积），上限 500 条防无界增长；
-    /// 记录后浏览位置复位到实时行
     fn record_history(&mut self, cmd: &str) {
         push_command_history(
             &mut self.cmd_history,
@@ -512,7 +490,6 @@ impl CliConsole {
         self.history_cursor = None;
     }
 
-    /// ↑ 召回更旧命令：从实时行首按即跳到最新一条，再按逐条往旧，至最旧停住
     fn history_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(idx) = prev_cursor(self.cmd_history.len(), self.history_cursor) else {
             return;
@@ -521,7 +498,6 @@ impl CliConsole {
         self.apply_history_value(idx, window, cx);
     }
 
-    /// ↓ 走向更新命令：越过最新一条即回到空的实时输入行
     fn history_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(cur) = self.history_cursor else {
             return;
@@ -606,7 +582,6 @@ impl Render for CliConsole {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 
-        // transcript：扁平行模型 + uniform_list 行级虚拟化（自持滚动，滚轮不再穿透下层面板）
         let transcript: gpui::AnyElement = if self.history.is_empty() {
             div()
                 .p(px(12.0))
@@ -617,7 +592,6 @@ impl Render for CliConsole {
                 )
                 .into_any_element()
         } else {
-            // 外层横向滚动 + 内层固定内容宽：行尾不被窄面板裁掉
             div()
                 .id("cli-transcript-hscroll")
                 .size_full()
@@ -671,15 +645,12 @@ impl Render for CliConsole {
                     })),
             );
 
-        // 顶部输入（补全朝下展开、最新结果就在其下）；下方 transcript 最新在上。
-        // occlude：本面板悬浮于 key 树 / 详情之上，拦下鼠标与滚轮事件不穿透下层
         v_flex()
             .size_full()
             .occlude()
             .bg(bg)
-            // 单行输入不挂 up/down handler（gpui-component 限制），手动把 ↑/↓ 转发给补全菜单导航
+            // 输入组件不直接处理上下键，先交给补全菜单。
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| {
-                // 补全菜单打开时 ↑ 交其导航；菜单关闭（未消费）时召回更旧的历史命令
                 let handled = this.input.update(cx, |state, cx| {
                     state.handle_action_for_context_menu(Box::new(MoveUp), window, cx)
                 });
@@ -697,12 +668,10 @@ impl Render for CliConsole {
             }))
             .child(toolbar)
             .child(input_row)
-            // 外层 flex_1+min_h_0 给 uniform_list 确定高度
             .child(div().flex_1().min_h_0().child(transcript))
     }
 }
 
-/// transcript 等高行高（uniform_list 行级虚拟化要求等高）
 const ROW_H: f32 = 20.0;
 
 fn render_transcript_row(
@@ -862,10 +831,6 @@ fn command_preview(command: &str, max_chars: usize) -> String {
     preview
 }
 
-/// 应答单行配色：按 redis-cli 类型标记粗判
-/// ↑ 召回时的目标光标（纯逻辑，便于测试）。`len` = 历史条数，`cur` = 当前浏览位置。
-/// 返回 None 表示历史为空、无动作；Some(i) 表示定位到第 i 条：
-/// 从实时行（cur=None）首按跳到最新一条，往旧逐条递减，到最旧（0）停住
 fn prev_cursor(len: usize, cur: Option<usize>) -> Option<usize> {
     if len == 0 {
         return None;
@@ -877,8 +842,6 @@ fn prev_cursor(len: usize, cur: Option<usize>) -> Option<usize> {
     })
 }
 
-/// ↓ 前进时的目标光标。返回 Some(i) 定位到第 i 条；返回 None 表示已越过最新一条、
-/// 应回到空的实时输入行。仅在 cur 有效（正在浏览历史）时调用
 fn next_cursor(len: usize, cur: usize) -> Option<usize> {
     if cur + 1 < len { Some(cur + 1) } else { None }
 }
@@ -892,7 +855,6 @@ mod tests {
     };
     use std::collections::VecDeque;
 
-    /// 测试便捷构造：文本 → 已切行的成功应答
     fn ok_lines(text: &str) -> Outcome {
         Outcome::Ok(std::sync::Arc::new(split_display_lines(text)))
     }

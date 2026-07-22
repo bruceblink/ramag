@@ -20,8 +20,6 @@ const SCAN_BATCH: usize = MAX_REDIS_SCAN_COUNT as usize;
 /// 单条 DEL 携带的 key 数上限：避免超长命令阻塞服务端
 const DEL_CHUNK: usize = 500;
 
-// ===== 右键菜单构造（render.rs 调用） =====
-
 /// key / 命名空间行右键菜单。两种身份兼具的节点（`user` 同时是 key 和前缀）两项都给
 pub(super) fn node_context_menu(
     menu: PopupMenu,
@@ -194,8 +192,6 @@ pub(super) fn toolbar_more_menu(
         }),
     )
 }
-
-// ===== 删除 / 重命名执行 =====
 
 impl KeyTreePanel {
     fn begin_tree_mutation(&mut self, cx: &mut Context<Self>) -> Option<ramag_ui::MutationToken> {

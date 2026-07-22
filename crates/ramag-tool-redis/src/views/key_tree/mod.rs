@@ -1,6 +1,4 @@
-//! Key 树：增量 SCAN 分批加载（服务端 MATCH 下推 + 进度 + 可停止，状态机在 scan.rs），
-//! 按 `:` 折叠命名空间。同时是叶子+命名空间的节点（`user` 与 `user:1` 共存）单击仅展开，
-//! 类型 badge 才加载值
+//! 基于增量 SCAN 与命名空间折叠的 Redis Key 树。
 
 mod ops;
 mod render;
@@ -60,34 +58,24 @@ impl VisibleRowsCacheEntry {
 const MAX_LOADED_KEYS: usize = MAX_REDIS_LOADED_ITEMS;
 const MAX_LOADED_KEY_BYTES: usize = MAX_INTERACTIVE_RESULT_BYTES;
 
-/// 命名空间分隔符（业界事实标准）
 const NAMESPACE_SEP: char = ':';
 
-/// 单层缩进（像素）
 pub(super) const INDENT_PX: f32 = 14.0;
 
 #[derive(Debug, Clone)]
 pub enum KeyTreeEvent {
-    /// 用户选中某个 key
     Selected(String),
-    /// 请求新建 Key（点击顶部 "+" 按钮）；由上层弹出 KeyCreateForm 对话框处理
     RequestCreate,
-    /// 请求打开命令行控制台（点击工具栏命令行图标）；由 Session 展开右侧浮层
     RequestOpenConsole,
-    /// 用户切换 DB（0-15）；由 Session 处理（同步详情 + 重新加载树）
     DbSelected(u8),
-    /// 树侧右键删除完成（key / 前缀 / 整库）；Session 据此清理详情面板
     KeysDeleted(DeletedScope),
 }
 
-/// 树侧删除操作的影响范围
 #[derive(Debug, Clone)]
 pub enum DeletedScope {
-    /// 单个 key
     Key(String),
     /// 前缀路径（如 "user"，实际删除 user:* 全部）
     Prefix(String),
-    /// 当前 DB 整库（FLUSHDB）
     Db,
 }
 
@@ -95,16 +83,13 @@ pub struct KeyTreePanel {
     service: Arc<RedisService>,
     config: Option<ConnectionConfig>,
     db: u8,
-    /// 已加载（缓存）的 key 列表（原始顺序）
     keys: Vec<KeyMeta>,
     /// 已加载 key 名集合：SCAN 弱一致会跨批重复返回同一 key，追加前据此去重
     /// （否则计数虚高、Trie 重复插入）
     seen_keys: HashSet<String>,
     /// `keys` 中原始 Key 名的总字节数；避免超长名称在多份树索引中放大内存。
     key_bytes: usize,
-    /// 已加载 key 的 Trie 树（按 NAMESPACE_SEP 分层）
     tree: Vec<TreeNode>,
-    /// 已展开的命名空间路径集合（按 full_path 索引）
     expanded: HashSet<String>,
     /// Trie 内容与展开状态代次；可见行缓存只依赖这两者和查询词。
     tree_revision: u64,
@@ -114,7 +99,6 @@ pub struct KeyTreePanel {
     /// 至少收到过一批有效 SCAN 回包；空数据库也算已加载，避免 Tab 激活时反复重扫。
     has_loaded: bool,
     error: Option<String>,
-    /// 客户端搜索框 / 关键字（小写）
     search: Entity<InputState>,
     query: String,
     /// 服务端 MATCH 模式（Enter 下推触发重扫）；None = 全库扫描
@@ -126,7 +110,6 @@ pub struct KeyTreePanel {
     scan_generation: u64,
     /// 上次重建 Trie 时的 key 数（分批加载期间节流重建，避免每批 O(N) 重建）
     last_rebuilt_count: usize,
-    /// 当前选中的 key（高亮）
     selected: Option<String>,
     /// 手动停止或批次出错后暂停，仍可从断点继续扫描。
     truncated: bool,
@@ -137,11 +120,10 @@ pub struct KeyTreePanel {
     /// 虚拟列表滚动句柄：树扁平化后用 uniform_list 行级虚拟化，
     /// 支持 5w+ key 仍流畅
     uniform_scroll: UniformListScrollHandle,
-    /// 右键删除操作完成后的 toast，下次 render 推送
+    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pending_notification: Option<gpui_component::notification::Notification>,
     /// 树级写操作串行化闸门；切换连接或 DB 后旧任务 token 失效。
     mutation_gate: AsyncMutationGate,
-    /// DB / Key / 前缀传输状态（进度行 + 取消位）
     transfer: ramag_ui::TransferState,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -206,7 +188,6 @@ impl KeyTreePanel {
         }
     }
 
-    /// 切换连接 / DB → 重新拉一次 SCAN
     pub fn set_connection(
         &mut self,
         config: Option<ConnectionConfig>,
@@ -252,8 +233,6 @@ impl KeyTreePanel {
         }
     }
 
-    /// 由 keys 重建 Trie 树；默认全折叠（与 SQL / Mongo 树一致）。
-    /// 记录重建时 key 数供分批加载节流
     fn rebuild_tree(&mut self) {
         self.tree = build_tree(&self.keys);
         self.last_rebuilt_count = self.keys.len();
@@ -277,7 +256,6 @@ impl KeyTreePanel {
         cx.notify();
     }
 
-    /// 外部触发选中（如新建 Key 后由 Session 调用）
     pub fn select_key_external(&mut self, key: String, cx: &mut Context<Self>) {
         self.selected = Some(key.clone());
         cx.emit(KeyTreeEvent::Selected(key));
@@ -318,7 +296,6 @@ fn should_ensure_loaded(configured: bool, has_loaded: bool, loading: bool) -> bo
 
 impl Render for KeyTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 右键删除操作异步完成的 toast 在这里推送
         if let Some(n) = self.pending_notification.take() {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
@@ -373,7 +350,6 @@ impl Render for KeyTreePanel {
             count_label.push_str(" · 写操作执行中…");
         }
 
-        // 顶部第 1 行：DB 选择
         let current_db = self.db;
         let session_entity = cx.entity();
         let db_picker_label = format!("DB {current_db} ▾");
@@ -454,7 +430,6 @@ impl Render for KeyTreePanel {
                     }),
             );
 
-        // 顶部第 2 行：搜索 + 刷新 + 展开/折叠 + 命令行 + 更多（新建与清空 DB 收进「更多」）
         let header = h_flex()
             .w_full()
             .px(px(10.0))
@@ -471,8 +446,6 @@ impl Render for KeyTreePanel {
                 ),
             )
             .child({
-                // 刷新 / 停止扫描移到最前：高频操作触手可及。
-                // 扫描中该位变「停止」：保留已加载部分，随时可中断大库扫描
                 let scanning = self.loading;
                 let icon = if scanning {
                     Icon::new(IconName::CircleX)
@@ -522,7 +495,6 @@ impl Render for KeyTreePanel {
                     })),
             )
             .child({
-                // 新建 Key + DB 级毁灭性操作收进「更多」菜单，工具栏更清爽
                 let entity_for_menu = cx.entity().clone();
                 let current_db = self.db;
                 let more_tip: Option<&'static str> = if read_only {
@@ -547,7 +519,6 @@ impl Render for KeyTreePanel {
         let theme_bg = theme.background;
         let theme_muted = theme.muted;
 
-        // 树形渲染：缓存后的扁平行喂给 uniform_list 行级虚拟化
         let row_count = visible_rc.len();
 
         let empty_hint =

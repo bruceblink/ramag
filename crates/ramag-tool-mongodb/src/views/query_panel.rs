@@ -1,8 +1,4 @@
-//! 多 Tab 查询面板：顶部 TabBar + 当前 QueryTab。仿 dbclient::QueryPanel 行为：
-//! - 横向溢出滚动（tabs_scroll 句柄 + overflow_x_scroll）
-//! - 新建 Tab 自动滚到末尾
-//! - cmd-w 关当前 Tab；最后一个 Tab 关闭后 propagate 给全局 fallback 关窗
-//! - 由 mongo_session 在 TreeEvent::CollectionSelected 时调 prefill_collection 自动开 Tab + 运行
+//! MongoDB 多标签查询面板。
 
 mod drafts;
 
@@ -25,10 +21,8 @@ use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_ta
 use crate::actions::{NewMongoQueryTab, ToggleMongoEditor};
 use crate::views::query_tab::{MongoQueryTab, MongoQueryTabEvent};
 
-/// 面板对外事件：Tab 内部请求经此上抛给 session 路由
 #[derive(Debug, Clone)]
 pub enum MongoQueryPanelEvent {
-    /// 结果工具条发起的集合级 JSONL 导入（由集合树执行，进度显示在树侧）
     CollectionImportRequested {
         db: String,
         collection: String,
@@ -43,23 +37,16 @@ pub struct MongoQueryPanel {
     service: Arc<MongoService>,
     result_memory: ResultMemoryBudget,
     connection: Option<ConnectionConfig>,
-    /// 当前默认 db（由 session 同步：连接配置 OR 树点击 db 行）
     database: String,
     tabs: Vec<Entity<MongoQueryTab>>,
-    /// Tab 标题（与 tabs 一一对应；查询 N 自动编号，与 dbclient 一致）
     titles: Vec<String>,
     active: usize,
-    /// 当前连接会话是否是窗口里正在显示的会话。
     session_active: bool,
-    /// Tab Bar 横向滚动句柄：tab 多到溢出时新建后滚到末尾
     tabs_scroll: ScrollHandle,
-    /// 命令编辑器显隐（默认 false 隐藏；cmd-e 切换；新 Tab 跟随）
     show_editor: bool,
     /// 面板根焦点：隐藏编辑器后焦点收回这里，保证 cmd-e 仍能再次触发
     focus_handle: FocusHandle,
-    /// 历史弹框事件订阅（单槽：重复打开整体替换，不随打开次数累积）
     history_sub: Option<Subscription>,
-    /// 每个查询标签的草稿变化订阅，与 tabs 同下标。
     draft_subscriptions: Vec<Subscription>,
     /// 草稿落盘防抖代际；会话关闭后最后一次后台写仍可完成。
     draft_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -89,7 +76,6 @@ impl MongoQueryPanel {
             active: 0,
             session_active: false,
             tabs_scroll: ScrollHandle::new(),
-            // 隐藏编辑器，让结果区直接占满（与 dbclient 默认一致）
             show_editor: false,
             focus_handle: cx.focus_handle(),
             history_sub: None,
@@ -233,7 +219,6 @@ impl MongoQueryPanel {
         true
     }
 
-    /// 「查询 N」自动编号：找最小未使用编号，关闭再新建会回收
     fn next_tab_title(&self) -> String {
         let mut n = 1usize;
         loop {
@@ -245,7 +230,6 @@ impl MongoQueryPanel {
         }
     }
 
-    /// 聚焦当前激活 Tab 的编辑器；让 KeyContext 立即锁定到 MongoQueryTab，cmd-enter 等快捷键无需先点编辑器
     fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| t.focus_editor(window, cx));
@@ -263,13 +247,11 @@ impl MongoQueryPanel {
         cx.notify();
     }
 
-    /// 大负 offset 让 tab bar 滚末尾；GPUI 自动 clamp 到 max_offset
     fn scroll_tabs_to_end(&self) {
         self.tabs_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
     }
 
-    /// 打开查询历史弹框：搜索 / 复制 / 填入 / 重跑 / 删除 / 清空（与 SQL 历史中心同构）
     fn open_history_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
@@ -485,8 +467,6 @@ impl Render for MongoQueryPanel {
         let muted = theme.muted_foreground;
         let border = theme.border;
 
-        // Tab Bar 元素列表（一会儿放进可滚动容器）；
-        // 只有 1 个 Tab 时不渲染关闭按钮（与 dbclient::QueryPanel 一致：保证至少一个 Tab）
         let only_one = self.tabs.len() <= 1;
         let can_add_tab = can_open_editor_tab(self.tabs.len());
         let add_tab_disabled = self.connection.is_none() || !can_add_tab;
@@ -540,7 +520,6 @@ impl Render for MongoQueryPanel {
             })
             .collect();
 
-        // 主体：当前 Tab 内容；没 Tab 时引导提示
         let body: gpui::AnyElement = if let Some(tab) = self.tabs.get(self.active) {
             tab.clone().into_any_element()
         } else {
@@ -606,7 +585,6 @@ impl Render for MongoQueryPanel {
                         ),
                 )
             })
-            // 始终关闭当前查询标签；最后一个关闭后会立即补一个空白标签。
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.tab_count() > 0 {
                     let i = this.active;
@@ -615,11 +593,9 @@ impl Render for MongoQueryPanel {
                     cx.propagate();
                 }
             }))
-            // cmd-e 切换编辑器显隐
             .on_action(cx.listener(|this, _: &ToggleMongoEditor, window, cx| {
                 this.toggle_editor(window, cx);
             }))
-            // Tab Bar 仅在 show_editor=true 时渲染（与 dbclient::QueryPanel 同款）
             .when(self.show_editor, |panel| {
                 panel.child(
                     h_flex()
@@ -630,7 +606,6 @@ impl Render for MongoQueryPanel {
                         .border_b_1()
                         .border_color(border)
                         .bg(theme.muted.opacity(0.10))
-                        // 左：tabs 滚动区 + 「+」新建（跟在 tabs 之后，与 dbclient 一致）
                         .child(
                             h_flex()
                                 .id("mongo-tabs-scroll")
@@ -661,7 +636,6 @@ impl Render for MongoQueryPanel {
                                         )),
                                 ),
                         )
-                        // 右：示例 + 格式化（运行已移到结果区工具栏，与 dbclient 同位）
                         .child(
                             h_flex()
                                 .flex_none()

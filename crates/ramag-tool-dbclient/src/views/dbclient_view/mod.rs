@@ -1,5 +1,3 @@
-//! DB Client 根视图：多连接 Tab，顶部连接 tab bar + 中心 session / picker
-
 mod dialogs;
 mod render;
 
@@ -18,15 +16,12 @@ use ramag_tool_redis::RedisSessionPanel;
 use crate::views::connection_list::{ConnectionListPanel, ListEvent};
 use crate::views::connection_session::ConnectionSession;
 
-/// 当前主区显示什么
 pub(super) enum CenterMode {
-    /// 显示某个 Session（active_session 索引）
     Session,
-    /// 显示连接管理（保存的连接列表 + 新建）
     ConnectionPicker,
 }
 
-/// SQL 类（MySQL / Postgres / 未来 SQLite）走 ConnectionSession；Redis 走 RedisSessionPanel；MongoDB 走 MongoSessionPanel
+/// 各数据库会话的统一视图句柄。
 pub(super) enum SessionEntity {
     Sql(Entity<ConnectionSession>),
     Redis(Entity<RedisSessionPanel>),
@@ -49,8 +44,7 @@ impl SessionEntity {
             SessionEntity::Mongo(e) => e.clone().into(),
         }
     }
-    /// Tab 被激活时触发：各 session 内部按「树为空才补拉」决定是否真正加载，
-    /// 既保证「打开就能用」，连接放久后切回也会重新请求（驱动层在取连接时自愈死连接）
+    /// 仅在元数据尚未成功加载时补拉。
     pub(super) fn ensure_loaded(&self, cx: &mut App) {
         match self {
             SessionEntity::Sql(e) => e.update(cx, |s, cx| s.ensure_loaded(cx)),
@@ -59,7 +53,6 @@ impl SessionEntity {
         }
     }
 
-    /// Tab 激活时聚焦内容，让各会话 cmd-e 等快捷键的 handler 立即在焦点链上（无需先点内容区）
     pub(super) fn focus(&self, window: &mut Window, cx: &mut App) {
         match self {
             SessionEntity::Sql(e) => e.update(cx, |s, cx| s.focus(window, cx)),
@@ -81,19 +74,13 @@ impl SessionEntity {
     }
 }
 
-/// 顶部一个连接 Tab 对应的槽位。实体惰性创建：跨重启恢复的标签先只有配置，
-/// 首次激活才真正建会话连库；连接配置保存后旧实体立即丢弃并置 stale，
-/// 由用户在标签内一键重连（草稿按连接 id 持久化，重连自动恢复）
+/// 会话实体首次激活才创建；配置变化后须由用户重连。
 pub(super) struct SessionSlot {
-    /// None = 尚未创建（恢复占位 / 配置更新后待重连）
     pub(super) entity: Option<SessionEntity>,
-    /// 该槽位当前应使用的连接配置（保存连接后同步为最新）
     pub(super) config: ConnectionConfig,
-    /// 配置已更新：旧实体已丢弃，暂停查询与写入，等待用户重连
     pub(super) stale: bool,
 }
 
-/// 数据库类型副标签（Tab Bar 副标题；无需实体即可从配置得出）
 pub(super) fn driver_kind_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",
@@ -119,19 +106,13 @@ pub struct DbClientView {
     pub(super) service: Arc<ConnectionService>,
     pub(super) redis_service: Arc<RedisService>,
     pub(super) mongo_service: Arc<MongoService>,
-    /// SQL 与 MongoDB 全部查询标签共享的结果内存预算。
     pub(super) result_memory: ramag_ui::ResultMemoryBudget,
-    /// 已打开的连接会话槽位（含 MySQL + Redis + MongoDB）
     pub(super) sessions: Vec<SessionSlot>,
-    /// 当前激活的 session 索引
     pub(super) active_session: Option<usize>,
-    /// 中央显示模式
     pub(super) center: CenterMode,
-    /// 连接管理面板（始终持有，按需展示）
     pub(super) picker: Entity<ConnectionListPanel>,
-    /// 顶部连接 tab bar 横向滚动句柄：连接多到溢出时新开后滚到末尾
     pub(super) sessions_scroll: ScrollHandle,
-    /// 异步操作（如删除连接）失败时挂起的提示，render 持 Window 时推送
+    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     /// 跨重启恢复：启动异步读回上次打开的连接（按保存顺序）与上次激活的连接 id，
     /// render 首帧消费逐个重开（render 才有 Window；不自动连库，树惰性拉取）
@@ -141,19 +122,16 @@ pub struct DbClientView {
     )>,
     /// 启动恢复只在用户尚未手动改动标签时生效；慢回包不得覆盖用户刚做出的选择。
     pub(super) restore_allowed: bool,
-    /// 当前连接表单订阅；关闭后释放，避免反复打开表单累积实体与输入缓冲。
     pub(super) form_subscription: Option<Subscription>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
-/// 打开中的连接列表的偏好 key（JSON：{ids, active}；兼容旧版纯 id 数组）
 const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
 /// 单窗口连接会话上限；每个实体都可能持有连接池、元数据树、编辑器与后台订阅。
 const MAX_CONNECTION_SESSIONS: usize = 32;
 /// 恢复偏好只应包含少量 UUID；先限制原始 JSON，避免异常数据放大反序列化成本。
 const MAX_OPEN_SESSIONS_PREF_BYTES: usize = 64 * 1024;
 
-/// open sessions 偏好的落盘结构；`active` 记录上次激活的连接（重启回到原位）
 #[derive(serde::Serialize, serde::Deserialize)]
 struct OpenSessionsPref {
     ids: Vec<ramag_domain::entities::ConnectionId>,
@@ -375,7 +353,6 @@ impl DbClientView {
         }
     }
 
-    /// 按 driver 真正创建会话实体（此刻起才会连库 / 拉元数据）
     fn build_session_entity(
         &self,
         config: ConnectionConfig,
@@ -427,8 +404,6 @@ impl DbClientView {
         cx.notify();
     }
 
-    /// 配置更新后的一键重连：丢弃 stale 标记，用槽内新配置重建会话
-    /// （手写草稿按连接 id 持久化，新会话创建时自动恢复）
     pub(super) fn reconnect_slot(
         &mut self,
         idx: usize,
@@ -443,7 +418,6 @@ impl DbClientView {
         self.materialize_slot(idx, window, cx);
     }
 
-    /// 打开一个连接作为新 Session（如果已开就切到那个 Tab）
     fn open_session(
         &mut self,
         config: ConnectionConfig,
@@ -506,7 +480,6 @@ impl DbClientView {
         cx.notify();
     }
 
-    /// 关闭某个 Session Tab
     pub(super) fn close_session(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx >= self.sessions.len() {
             return;
@@ -528,16 +501,13 @@ impl DbClientView {
             &self.mongo_service,
             &config.id,
         );
-        // 调整 active
         if self.sessions.is_empty() {
             self.active_session = None;
             self.center = CenterMode::ConnectionPicker;
         } else if let Some(active) = self.active_session {
             if active == idx {
-                // 关闭的就是当前激活：切到前一个或 0
                 self.active_session = Some(idx.saturating_sub(1).min(self.sessions.len() - 1));
             } else if active > idx {
-                // 关闭的在前面：索引减 1
                 self.active_session = Some(active - 1);
             }
         }
@@ -573,11 +543,9 @@ impl DbClientView {
         }
     }
 
-    /// 切到"打开连接"面板
     pub(super) fn show_picker(&mut self, cx: &mut Context<Self>) {
         self.center = CenterMode::ConnectionPicker;
         self.sync_result_activity(cx);
-        // 刷新一下列表
         self.picker.update(cx, |p, cx| p.refresh(cx));
         cx.notify();
     }

@@ -95,7 +95,7 @@ impl SetElementForm {
                 Err(e) => {
                     this.editor
                         .update(cx, |editor, cx| editor.set_disabled(false, cx));
-                    error!(error = %e, "sadd failed");
+                    error!(error = %e, "add set element failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

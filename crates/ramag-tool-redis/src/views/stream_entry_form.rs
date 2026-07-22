@@ -97,7 +97,7 @@ impl StreamEntryForm {
                 Err(e) => {
                     this.editor
                         .update(cx, |editor, cx| editor.set_disabled(false, cx));
-                    error!(error = %e, "xadd failed");
+                    error!(error = %e, "add stream entry failed");
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

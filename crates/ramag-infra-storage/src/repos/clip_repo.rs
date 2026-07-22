@@ -399,7 +399,7 @@ pub(crate) fn clear(db: Arc<Database>) -> Result<()> {
     ensure_table(&write_txn)?;
     search::mark_ready(&write_txn)?;
     write_txn.commit().map_err(store_err)?;
-    info!("clips cleared");
+    info!("clipboard entries cleared");
     Ok(())
 }
 
@@ -492,7 +492,7 @@ pub(crate) fn prune(
         scanned,
         max_items,
         max_age_days,
-        "clips pruned"
+        "clipboard entries pruned"
     );
     Ok(images)
 }

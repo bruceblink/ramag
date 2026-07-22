@@ -1,5 +1,3 @@
-//! 主入口：tracing → 装配数据层 → 注册 Tool → 启动 GPUI App → 打开主窗口
-
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod logging;
@@ -49,32 +47,27 @@ use tracing::{error, info, warn};
 
 use crate::window_layout::{drawer_bounds, preferred_display};
 
-/// 绑定跨平台退出动作和原生菜单
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct Quit;
 
-/// 帮助菜单：快捷键一览弹窗
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct ShowShortcuts;
 
-/// 帮助菜单：关于（版本 + 日志路径）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct ShowAbout;
 
-/// 帮助菜单：复制诊断信息（版本 / 平台 / 日志路径）到剪贴板，便于反馈
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct CopyDiagnostics;
 
-/// 帮助菜单：在系统文件管理器中打开日志目录
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct OpenLogDir;
 
-// 原生「编辑」菜单项：paired action 仅占位，macOS 由 os_action 角色经响应链处理标准编辑命令
+// macOS 标准编辑命令通过 os_action 沿响应链处理，这些 action 仅用于配对。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct EditUndo;
@@ -94,7 +87,6 @@ struct EditPaste;
 #[action(namespace = ramag)]
 struct EditSelectAll;
 
-/// 在系统文件管理器中打开目录（打开日志目录用）
 fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
@@ -113,7 +105,6 @@ fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-/// 诊断信息文本：版本 + 平台 + 日志路径（复制 / 关于弹窗共用）
 fn diagnostics_text(log_path: &Option<std::path::PathBuf>) -> String {
     let log_line = log_path
         .as_ref()
@@ -128,7 +119,7 @@ fn diagnostics_text(log_path: &Option<std::path::PathBuf>) -> String {
     )
 }
 
-/// 全部工具服务与存储的共享句柄；主窗口重建（on_reopen / 托盘 / 单实例激活）复用
+/// 主窗口重建时复用的依赖。
 #[derive(Clone)]
 struct AppDeps {
     registry: Arc<ToolRegistry>,
@@ -139,7 +130,7 @@ struct AppDeps {
     storage: Arc<dyn Storage>,
 }
 
-/// 最近一次打开的主窗口句柄；托盘 / 单实例激活时优先前台化它而非重开
+/// 托盘和单实例激活优先复用此窗口。
 struct MainWindowGlobal(gpui::AnyWindowHandle);
 
 impl gpui::Global for MainWindowGlobal {}
@@ -179,7 +170,6 @@ fn finish_main_window_open(cx: &mut App) {
     }
 }
 
-/// 唤起主窗口：已有则前台激活（含最小化恢复），已关闭则重开
 fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
     if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|g| g.0)
         && handle
@@ -223,11 +213,8 @@ fn main() {
         }
     };
 
-    // Redis 共用同一 storage
     let redis_service: Arc<RedisService> = build_redis_service(storage.clone());
-    // MongoDB 共用同一 storage
     let mongo_service: Arc<MongoService> = build_mongo_service(storage.clone());
-    // 剪贴板共用同一 storage（历史与设置走同一份加密 redb）
     let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
@@ -271,13 +258,10 @@ fn main() {
 
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
-        // 主题两态（浅 / 深），默认浅色；开窗前初始化避免首帧闪烁
         init_theme(initial_pref.as_deref(), cx);
-        // storage 注入 cx 全局，ActivityBar 切主题用它持久化
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
 
-        // 必须先 bind_keys 把退出快捷键绑到 Quit，原生菜单项才会显示快捷键
         cx.on_action(|_: &Quit, cx| cx.quit());
 
         // 退出时关闭全部 SSH 隧道子进程，避免残留孤儿 ssh 占用端口
@@ -342,13 +326,11 @@ fn main() {
 
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
-            // 工具切换：主修饰键+1/2/3 跳到第 N 个工具；Ctrl+Tab 循环区段（Shell 处理）
             KeyBinding::new("secondary-1", SelectTool1, None),
             KeyBinding::new("secondary-2", SelectTool2, None),
             KeyBinding::new("secondary-3", SelectTool3, None),
             KeyBinding::new("ctrl-tab", CycleSection, None),
             KeyBinding::new("ctrl-shift-tab", CycleSectionReverse, None),
-            // dbclient (MySQL / PG) 视图的快捷键（context=QueryPanel/QueryTab 见 dbclient 视图实现）
             KeyBinding::new("secondary-enter", RunQuery, None),
             KeyBinding::new("secondary-shift-enter", RunStatementAtCursor, None),
             KeyBinding::new("secondary-t", NewQueryTab, None),
@@ -357,14 +339,11 @@ fn main() {
             KeyBinding::new("secondary-shift-f", FormatSql, None),
             KeyBinding::new("secondary-shift-e", ExplainQuery, None),
             KeyBinding::new("secondary-e", ToggleSqlEditor, None),
-            // MongoDB 视图的快捷键，用 KeyContext 限定（焦点在 Mongo 视图时优先）
             KeyBinding::new("secondary-enter", RunMongoQuery, Some("MongoQueryTab")),
             KeyBinding::new("secondary-t", NewMongoQueryTab, Some("MongoQueryPanel")),
             KeyBinding::new("secondary-shift-f", FormatMongoJson, Some("MongoQueryTab")),
             KeyBinding::new("secondary-e", ToggleMongoEditor, Some("MongoQueryPanel")),
-            // Redis 命令行控制台：主修饰键+E 在会话上下文切换显隐
             KeyBinding::new("secondary-e", ToggleRedisConsole, Some("RedisSession")),
-            // VCS 视图快捷键（context=VcsView，焦点在 VCS 视图时优先于上面的 None context 绑定）
             KeyBinding::new("secondary-k", FocusCommitMessage, Some("VcsView")),
             KeyBinding::new("secondary-enter", CommitNow, Some("VcsView")),
             KeyBinding::new("secondary-shift-k", PushNow, Some("VcsView")),
@@ -372,7 +351,6 @@ fn main() {
             KeyBinding::new("secondary-r", RefreshWorkspace, Some("VcsView")),
             KeyBinding::new("secondary-s", SaveProjectFile, Some("VcsView")),
             KeyBinding::new("secondary-shift-h", ToggleHistoryPane, Some("VcsView")),
-            // 剪贴板视图快捷键（KeyContext=ClipboardView，焦点在剪贴板视图时生效）
             KeyBinding::new("secondary-f", FocusClipSearch, Some("ClipboardView")),
             KeyBinding::new("enter", CopySelectedClip, Some("ClipboardView")),
             KeyBinding::new("delete", DeleteSelectedClip, Some("ClipboardView")),
@@ -381,7 +359,6 @@ fn main() {
             KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
         ]);
 
-        // 启动时清理孤儿媒体文件（崩溃 / 库磁盘不一致残留）
         {
             let svc = deps.clipboard_service.clone();
             cx.spawn(async move |_| {
@@ -391,18 +368,13 @@ fn main() {
             })
             .detach();
         }
-        // 预热窗口缓存：解密最近 N 条入内存，让首次唤起抽屉即同步带满内容
         {
             let svc = deps.clipboard_service.clone();
             cx.spawn(async move |_| svc.preload().await).detach();
         }
-        // App 级剪贴板采集循环：独立于窗口生死（Windows 托盘常驻期间同样持续记录）
         spawn_clipboard_capture(deps.clipboard_service.clone(), cx);
-        // 平台全局热键（macOS Command+Shift+V / Windows Ctrl+Shift+V）唤起抽屉；
-        // 同一循环把总开关同步到工具入口可见性
         spawn_clipboard_hotkey(deps.clipboard_service.clone(), deps.registry.clone(), cx);
 
-        // 帮助入口：快捷键一览 / 关于（active window 上开 dialog；无窗口时静默）
         cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
             if let Some(handle) = cx.active_window() {
                 let _ = handle.update(cx, |_, window, cx| open_shortcuts_dialog(window, cx));
@@ -417,13 +389,11 @@ fn main() {
                 });
             }
         });
-        // 复制诊断信息：版本 / 平台 / 日志路径写入剪贴板
         let log_path_for_diag = log_path.clone();
         cx.on_action(move |_: &CopyDiagnostics, cx: &mut App| {
             let text = diagnostics_text(&log_path_for_diag);
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         });
-        // 打开日志目录：在系统文件管理器中定位日志文件所在目录
         let log_path_for_open = log_path.clone();
         cx.on_action(move |_: &OpenLogDir, cx: &mut App| {
             let Some(dir) = log_path_for_open
@@ -455,8 +425,6 @@ fn main() {
                 items: vec![MenuItem::action("退出 Ramag", Quit)],
                 disabled: false,
             },
-            // 原生编辑菜单：os_action 角色让 macOS 标准编辑命令（撤销 / 剪切 / 复制 / 粘贴 / 全选）
-            // 在菜单可见且沿响应链生效，输入框内到处可用
             Menu {
                 name: "编辑".into(),
                 items: vec![
@@ -473,10 +441,10 @@ fn main() {
             Menu {
                 name: "帮助".into(),
                 items: vec![
-                    MenuItem::action("快捷键一览", ShowShortcuts),
+                    MenuItem::action("快捷键", ShowShortcuts),
                     MenuItem::separator(),
-                    MenuItem::action("复制诊断信息", CopyDiagnostics),
-                    MenuItem::action("打开日志目录", OpenLogDir),
+                    MenuItem::action("复制诊断", CopyDiagnostics),
+                    MenuItem::action("打开日志", OpenLogDir),
                     MenuItem::separator(),
                     MenuItem::action("关于 Ramag", ShowAbout),
                 ],
@@ -497,8 +465,7 @@ fn next_capture_retry_interval(current: std::time::Duration) -> std::time::Durat
     current.saturating_mul(2).min(CAPTURE_MAX_RETRY_INTERVAL)
 }
 
-/// App 级采集循环：启动预热一次设置；之后仅在 changeCount 变化时读取内存快照并处理。
-/// driver 读取在前台 executor 执行，满足 macOS AppKit 的主线程约束。
+/// 驱动读取留在前台 executor，满足 macOS AppKit 主线程约束。
 fn spawn_clipboard_capture(service: Arc<ClipboardService>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last_count = service.driver().change_count();
@@ -532,20 +499,15 @@ fn spawn_clipboard_capture(service: Arc<ClipboardService>, cx: &mut App) {
     .detach();
 }
 
-/// 热键轮询间隔：channel 有事件即触发，间隔短以保证唤起手感
 const HOTKEY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
 
-/// 剪贴板总开关 → 工具入口可见性；变化时刷新全部窗口，ActivityBar 与首页即时增删入口
 fn sync_clipboard_tool_visibility(registry: &Arc<ToolRegistry>, enabled: bool, cx: &mut App) {
     if registry.set_enabled(ClipboardTool::ID, enabled) {
         cx.refresh_windows();
     }
 }
 
-/// 注册全局热键并轮询：触发切换抽屉；并在每拍检测失焦自动隐藏（点击外部即关）。
-/// 热键随「启用剪贴板」总开关动态注册/注销，关闭即释放平台全局热键，
-/// 并同步工具入口可见性（侧边栏 / 首页卡片随开关增删）。
-/// 注册失败（缺权限等）仅记日志，不影响其余功能
+/// 热键随剪贴板总开关注册或释放；注册失败不影响其他功能。
 fn spawn_clipboard_hotkey(
     service: Arc<ClipboardService>,
     registry: Arc<ToolRegistry>,
@@ -656,8 +618,7 @@ fn spawn_clipboard_hotkey(
     .detach();
 }
 
-/// 在前台应用所在显示器底部打开满宽 Floating 抽屉窗口。
-/// 用 Floating（非 PopUp）+ 激活 app，搜索框输入法（中文）才能工作；可见区贴底避开 Dock
+/// 在前台应用所在显示器底部打开抽屉。
 fn open_drawer_window(
     service: Arc<ClipboardService>,
     cx: &mut App,
@@ -700,7 +661,6 @@ fn open_drawer_window(
     }
 }
 
-/// init / on_reopen / 托盘唤起共用；成功后把窗口句柄记入 MainWindowGlobal
 fn open_main_window(deps: AppDeps, cx: &mut App) {
     if !begin_main_window_open(cx) {
         return;
@@ -839,7 +799,6 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
     .detach();
 }
 
-/// 托盘事件轮询：Open 唤起主窗口；Quit 先删图标（防任务栏残影）再退出
 #[cfg(target_os = "windows")]
 fn spawn_tray_loop(
     tray: std::rc::Rc<std::cell::RefCell<Option<tray::TrayIcon>>>,
@@ -867,7 +826,6 @@ fn spawn_tray_loop(
     .detach();
 }
 
-/// 单实例激活轮询：后启进程置位命名事件 → 唤起主窗口
 #[cfg(target_os = "windows")]
 fn spawn_instance_activation(guard: single_instance::PrimaryGuard, deps: AppDeps, cx: &mut App) {
     const ACTIVATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
@@ -882,7 +840,6 @@ fn spawn_instance_activation(guard: single_instance::PrimaryGuard, deps: AppDeps
     .detach();
 }
 
-/// 注册 SQL 类 driver 到 `HashMap<DriverKind, Arc<dyn Driver>>`，按 `config.driver` 分发；Redis 走独立 service
 fn build_connection_service() -> anyhow::Result<(Arc<ConnectionService>, Arc<dyn Storage>)> {
     use ramag_domain::entities::DriverKind;
     use std::collections::HashMap;
@@ -900,7 +857,6 @@ fn build_connection_service() -> anyhow::Result<(Arc<ConnectionService>, Arc<dyn
     Ok((svc, storage))
 }
 
-/// 快捷键一览弹窗（静态内容；⌘=macOS / Ctrl=Windows 同位）
 fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
     use gpui::{ParentElement as _, Styled as _};
     use gpui_component::WindowExt as _;
@@ -936,7 +892,7 @@ fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
         dialog
             .title(ramag_ui::closable_dialog_title(
                 "shortcuts-dialog-close",
-                "快捷键一览",
+                "快捷键",
                 |_, _| {},
             ))
             .close_button(false)
@@ -972,7 +928,6 @@ fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
     });
 }
 
-/// 关于弹窗：版本 + 日志路径（可复制排查）
 fn open_about_dialog(
     log_path: Option<std::path::PathBuf>,
     window: &mut gpui::Window,
@@ -1046,7 +1001,6 @@ fn read_preferences(
     preferences
 }
 
-/// MySQL / Postgres / Redis 共用 DbClient 入口，driver 在表单选择器内
 fn build_tool_registry() -> Arc<ToolRegistry> {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(DbClientTool::new()));

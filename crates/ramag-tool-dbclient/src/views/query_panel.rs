@@ -1,5 +1,3 @@
-//! 多标签查询面板：顶部 TabBar + 当前 QueryTab 视图
-
 mod drafts;
 mod history;
 
@@ -26,10 +24,8 @@ use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_ta
 use crate::sql_completion::SchemaCache;
 use crate::views::query_tab::{QueryTab, QueryTabEvent};
 
-/// 面板对外事件：Tab 内部请求经此上抛给 session 路由
 #[derive(Debug, Clone)]
 pub enum QueryPanelEvent {
-    /// 结果工具条发起的表级 JSONL 导入（由表树执行，进度显示在树侧）
     TableImportRequested {
         schema: String,
         table: String,
@@ -42,28 +38,17 @@ impl EventEmitter<QueryPanelEvent> for QueryPanel {}
 
 pub struct QueryPanel {
     service: Arc<ConnectionService>,
-    /// 共享给每个 Tab 的 SQL 补全缓存
     schema_cache: Arc<RwLock<SchemaCache>>,
     result_memory: ResultMemoryBudget,
-    /// 各个标签页
     tabs: Vec<Entity<QueryTab>>,
-    /// 标签页标题
     titles: Vec<String>,
-    /// 当前激活的索引
     active: usize,
-    /// 当前连接会话是否是窗口里正在显示的会话。
     session_active: bool,
-    /// 当前激活的连接（同步给所有 Tab + 历史面板）
     connection: Option<ConnectionConfig>,
-    /// 当前激活的默认库（点表树/schema 行后同步给所有 Tab）
     active_schema: Option<String>,
-    /// SQL 编辑器显隐（cmd-e 或表树按钮切换；全局生效，新 Tab 按此初始化）
     show_editor: bool,
-    /// tab bar 横向滚动句柄：tab 多到溢出时，新建后滚到末尾让新 tab 可见
     tabs_scroll: ScrollHandle,
-    /// 历史弹框「填入编辑器」订阅：每次打开弹框整体替换，不随打开次数累积
     history_sub: Option<gpui::Subscription>,
-    /// 每个 QueryTab 的草稿变化订阅，与 tabs 同下标。
     draft_subscriptions: Vec<gpui::Subscription>,
     /// 草稿落盘防抖代际；Arc 让会话关闭后最后一次写入仍可完成。
     draft_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -106,12 +91,10 @@ impl QueryPanel {
             restoring_drafts: false,
             draft_persist_error: None,
         };
-        // 默认创建一个 Tab
         this.add_tab(window, cx);
         this
     }
 
-    /// 设置当前连接（会同步给所有 Tab + 历史面板）
     pub fn set_connection(
         &mut self,
         conn: Option<ConnectionConfig>,
@@ -131,7 +114,6 @@ impl QueryPanel {
         cx.notify();
     }
 
-    /// 同步当前默认库到所有 Tab（避免 SQL 写裸表名报 No database selected）
     pub fn set_active_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
         let normalized = schema.filter(|s| !s.is_empty());
         if self.active_schema == normalized {
@@ -291,19 +273,16 @@ impl QueryPanel {
         }
     }
 
-    /// 聚焦当前激活 Tab 的编辑器
     pub fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| t.focus_editor(window, cx));
         }
     }
 
-    /// SQL 编辑器当前是否可见（供会话决定 Tab 激活时聚焦编辑器还是会话根）
     pub fn is_editor_visible(&self) -> bool {
         self.show_editor
     }
 
-    /// 把 SQL 写入当前激活 Tab 并立即执行
     pub fn prefill_active_sql_and_run(
         &mut self,
         sql: String,
@@ -370,7 +349,6 @@ impl QueryPanel {
         self.prefill_active_sql_and_run(sql, window, cx);
     }
 
-    /// 活动 Tab 是否存在手写草稿（防丢稿：示例 / 历史填入前判定，有稿改道新 Tab）
     fn active_has_draft(&self, cx: &Context<Self>) -> bool {
         self.tabs
             .get(self.active)
@@ -425,7 +403,6 @@ impl Render for QueryPanel {
         let accent = theme.accent;
 
         let active = self.active;
-        // 优先用 QueryTab 的 display_title（执行后变 SQL 摘要），fallback 到默认 titles
         let titles: Vec<String> = self
             .tabs
             .iter()
@@ -442,10 +419,8 @@ impl Render for QueryPanel {
         let only_one = titles.len() <= 1;
         let can_add_tab = can_open_editor_tab(self.tabs.len());
 
-        // 当前主区视图：始终是 active Tab
         let current_view: Option<AnyView> = self.tabs.get(active).map(|t| t.clone().into());
 
-        // Tab Bar 渲染
         let tab_bar_items: Vec<gpui::AnyElement> = titles
             .iter()
             .enumerate()
@@ -498,7 +473,6 @@ impl Render for QueryPanel {
         v_flex()
             .size_full()
             .key_context("QueryPanel")
-            // 监听 NewQueryTab / CloseTab，绑定见 main.rs
             .on_action(cx.listener(|this, _: &NewQueryTab, window, cx| {
                 this.add_tab(window, cx);
             }))
@@ -541,7 +515,6 @@ impl Render for QueryPanel {
                         ),
                 )
             })
-            // 始终关闭当前查询标签；最后一个关闭后会立即补一个空白标签。
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if !this.tabs.is_empty() {
                     let idx = this.active;
@@ -550,7 +523,6 @@ impl Render for QueryPanel {
                     cx.propagate();
                 }
             }))
-            // Tab Bar 仅在 SQL 编辑器可见时渲染
             .when(self.show_editor, |panel| {
                 panel.child(
                     h_flex()
@@ -559,7 +531,6 @@ impl Render for QueryPanel {
                         .border_b_1()
                         .border_color(border)
                         .bg(secondary_bg)
-                        // 左：tabs 区，溢出时横向滚动；min_w_0 让它能被压缩
                         .child(
                             h_flex()
                                 .id("query-tabs-scroll")
@@ -568,7 +539,6 @@ impl Render for QueryPanel {
                                 .overflow_x_scroll()
                                 .track_scroll(&self.tabs_scroll)
                                 .children(tab_bar_items)
-                                // + 新建按钮跟在最后一个 tab 之后
                                 .child(
                                     ramag_ui::clickable_button("tab-add")
                                         .ghost()
@@ -587,7 +557,6 @@ impl Render for QueryPanel {
                                         )),
                                 ),
                         )
-                        // 右：历史（弹框）/ 示例 / 格式化 / EXPLAIN
                         .child(
                             h_flex()
                                 .flex_none()
@@ -689,7 +658,6 @@ impl Render for QueryPanel {
                         ),
                 )
             })
-            // 当前 Tab 内容
             .child(
                 div()
                     .flex_1()
@@ -699,7 +667,6 @@ impl Render for QueryPanel {
     }
 }
 
-/// 选中 Tab 的背景色：在 secondary 上叠加微弱 accent
 fn theme_active_bg(_secondary: gpui::Hsla, accent: gpui::Hsla) -> gpui::Hsla {
     let mut a = accent;
     a.a = 0.15;

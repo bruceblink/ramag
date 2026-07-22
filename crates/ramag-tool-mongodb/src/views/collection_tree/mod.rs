@@ -1,4 +1,4 @@
-//! Database → Collection 双层树。点 collection 触发查询 Tab 自动 find({})
+//! MongoDB 数据库与集合树。
 
 mod ops;
 mod row;
@@ -35,53 +35,41 @@ const MAX_LOADED_COLLECTION_BYTES: usize = ramag_domain::entities::MAX_METADATA_
 pub struct CollectionTreePanel {
     service: Arc<MongoService>,
     connection: Option<ConnectionConfig>,
-    /// 已加载的 database 列表
     databases: Vec<MongoDatabase>,
-    /// 加载中标记
     loading: bool,
     error: Option<String>,
-    /// 已加载的 db → collection 缓存；用户展开态单独存放，避免搜索加载后永久展开全部库。
+    /// 集合缓存与展开状态分离，避免搜索改变展开项。
     expanded: HashMap<String, ExpandedState>,
     expanded_bytes: usize,
     open_databases: HashSet<String>,
-    /// 元数据请求代次；刷新或切换连接后丢弃旧异步结果。
+    /// 旧连接的异步结果不得回写。
     metadata_generation: u64,
     collection_request_generation: u64,
     search_load_generation: u64,
     search_loading: bool,
-    /// 当前选中（database, collection）
     selected: Option<(String, String)>,
-    /// 当前激活的 database（用户点 db 行或 collection 行时更新；顶部 header 显示）
     active_db: Option<String>,
-    /// 搜索框（按名字模糊过滤 db / collection）
     search: Entity<InputState>,
-    /// 是否显示系统库（admin / config / local）。默认隐藏
     show_system: bool,
-    /// 父级（query_panel）当前命令编辑器是否可见。仅用于按钮图标朝向；点按后 emit 给父级
     editor_visible: bool,
-    /// 树体行虚拟化滚动句柄（与 dbclient::table_tree 同款）
     uniform_scroll: UniformListScrollHandle,
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
-    /// 切连接后是否待自动展开默认库（仅首次加载消费一次，refresh 不重复展开）
     auto_activate_pending: bool,
-    /// 右键操作（清空/删除）完成后的 toast，下次 render 推送
     pending_notification: Option<gpui_component::notification::Notification>,
-    /// 集合级写操作串行化闸门；连接切换会使旧任务 token 失效。
+    /// 连接切换会使旧写任务失效。
     mutation_gate: AsyncMutationGate,
-    /// 库 / 集合传输状态（进度行 + 取消位）
     transfer: ramag_ui::TransferState,
     _subscriptions: Vec<Subscription>,
 }
 
-/// MongoDB 系统库名（与 MySQL information_schema / mysql 等同位）
 const SYSTEM_DBS: &[&str] = &["admin", "config", "local"];
 
 pub(super) fn is_system_db(name: &str) -> bool {
     SYSTEM_DBS.contains(&name)
 }
 
-/// 选默认展开的 db：连接配置的 database 优先（须在列表内），否则首个非系统库
+/// 优先使用连接配置，否则选择首个非系统库。
 fn pick_default_db(conn: Option<&ConnectionConfig>, databases: &[MongoDatabase]) -> Option<String> {
     if let Some(db) = conn
         .and_then(|c| c.database.as_deref())
@@ -124,7 +112,6 @@ struct ExpandedState {
 
 #[derive(Debug, Clone)]
 pub enum TreeEvent {
-    /// 用户点了 collection：父级在新 Tab 自动 `find({}).limit(10000)`（与 dbclient AUTO_LIMIT 同款）
     CollectionSelected {
         database: String,
         collection: String,
@@ -140,9 +127,9 @@ pub enum TreeEvent {
         database: String,
         collection: String,
     },
-    /// 用户点了 database 行，切换"当前 db"
-    DatabaseActivated { database: String },
-    /// 用户点了"切换命令编辑器"按钮，父级（query_panel）执行 toggle_editor 并把新状态回填给 tree
+    DatabaseActivated {
+        database: String,
+    },
     ToggleEditor,
 }
 
@@ -157,7 +144,7 @@ impl CollectionTreePanel {
         });
         let subs = vec![
             cx.subscribe(&search, |this: &mut Self, _, _e: &InputEvent, cx| {
-                // 搜索应覆盖全部库：非空关键字时补拉未加载 db 的 collection（幂等）
+                // 非空搜索覆盖全库，而非仅过滤已展开节点。
                 this.ensure_search_coverage(cx);
                 cx.notify();
             }),
@@ -204,7 +191,6 @@ impl CollectionTreePanel {
         self.tree_rows_cache.get_mut().take();
     }
 
-    /// 父级（query_panel）切完编辑器后回填新可见态，让按钮图标朝向匹配
     pub fn set_editor_visible(&mut self, v: bool, cx: &mut Context<Self>) {
         if self.editor_visible != v {
             self.editor_visible = v;
@@ -212,7 +198,6 @@ impl CollectionTreePanel {
         }
     }
 
-    /// 连接切换：清空旧状态，异步拉 db 列表。如果连接配置带 database 字段，预填到 active_db
     pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
         self.mutation_gate.reset();
         self.cancel_search_load();
@@ -228,7 +213,6 @@ impl CollectionTreePanel {
         self.selected = None;
         self.error = None;
         self.invalidate_tree_rows();
-        // 切连接后首次加载完 db 列表时自动激活默认库（仅一次；不展开，与 SQL 树一致）
         self.auto_activate_pending = self.connection.is_some();
         if self.connection.is_some() {
             self.refresh_databases(cx);
@@ -241,20 +225,17 @@ impl CollectionTreePanel {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_databases(cx);
-        // 同时强制重拉所有已展开 db 的 collection 列表，否则新建的 collection 不会出现
         let expanded_dbs: Vec<String> = self.expanded.keys().cloned().collect();
         for db in expanded_dbs {
             self.load_collections(db, cx);
         }
     }
 
-    /// collection 元数据加载快照 (loading, has_error)，不代表实时连接健康。
     pub fn health(&self) -> (bool, bool) {
         (self.loading, self.error.is_some())
     }
 
-    /// 会话 Tab 被（重新）激活时调用：仅当从未成功加载（无 db 且非加载中）才拉库列表，
-    /// 避免每次切 Tab 都重置展开。首次加载失败留下的空状态会在下次激活时自动重试
+    /// 首次加载失败时，重新激活会重试且保留展开状态。
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if self.connection.is_some() && self.databases.is_empty() && !self.loading {
             self.refresh_databases(cx);
@@ -285,12 +266,9 @@ impl CollectionTreePanel {
                 match r {
                     Ok(mut dbs) => {
                         info!(count = dbs.len(), "databases loaded");
-                        // 配置指定了库但 MongoDB listDatabases 不返回它（库内无任何集合/数据）→
-                        // 仍补一行展示，便于直接在其下建集合，不必先绕开再回来
+                        // 空库可能不在服务端列表中，仍展示连接配置里的库。
                         insert_configured_database(&mut dbs, conf.database.clone());
                         this.databases = dbs;
-                        // 首次加载：仅激活默认库（config.database 优先，否则首个非系统库），
-                        // 不自动展开集合列表，与 MySQL / PG 树的默认折叠一致
                         if this.auto_activate_pending {
                             this.auto_activate_pending = false;
                             if let Some(default_db) =
@@ -316,8 +294,7 @@ impl CollectionTreePanel {
         .detach();
     }
 
-    /// 搜索非空时顺序补拉未加载 db 的 collection。顺序执行避免一次搜索同时占满连接池；
-    /// 清空搜索会取消后续请求，并回收仅由搜索产生的缓存。
+    /// 顺序补拉限制并发；清空搜索会取消并回收临时缓存。
     fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
         if self.search.read(cx).value().trim().is_empty() {
             self.cancel_search_load();
@@ -593,7 +570,6 @@ impl CollectionTreePanel {
     }
 
     fn toggle_database(&mut self, db: &str, cx: &mut Context<Self>) {
-        // 同时记录"当前激活 db"用于顶部展示，并 emit 给查询面板
         self.active_db = Some(db.to_string());
         if !self.open_databases.insert(db.to_string()) {
             self.open_databases.remove(db);
@@ -700,7 +676,6 @@ impl CollectionTreePanel {
         cx.notify();
     }
 
-    /// picker 选库：激活 + 确保展开 + 通知（不像 toggle_database 会把已展开的库收起）
     fn select_database(&mut self, db: String, cx: &mut Context<Self>) {
         self.active_db = Some(db.clone());
         let opened = self.open_databases.insert(db.clone());
@@ -748,7 +723,6 @@ fn prospective_collection_bytes(current: usize, previous: usize, replacement: us
 
 impl Render for CollectionTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 右键操作（清空/删除）异步完成的 toast 在这里推送
         if let Some(n) = self.pending_notification.take() {
             use gpui_component::WindowExt as _;
             window.push_notification(n, cx);
@@ -760,7 +734,6 @@ impl Render for CollectionTreePanel {
 
         let filter = self.current_filter(cx);
 
-        // 顶栏第 1 行：DB picker 下拉（仿 dbclient::table_tree 的 schema picker，点开切换 active_db）
         let show_system = self.show_system;
         let active_label = self
             .active_db
@@ -809,7 +782,6 @@ impl Render for CollectionTreePanel {
                     }),
             );
 
-        // 顶栏第 2 行：搜索框 + 三个工具按钮（眼睛 / 刷新 / 命令编辑器切换）—— 与 MySQL 同款布局
         let editor_visible = self.editor_visible;
         let search_row = h_flex()
             .w_full()
@@ -859,7 +831,6 @@ impl Render for CollectionTreePanel {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TreeEvent::ToggleEditor))),
             );
 
-        // 扁平化树行 → uniform_list 行虚拟化（仿 dbclient::table_tree）
         let tree_view = self.tree_rows_view(&filter);
         let tree_rows = tree_view.rows;
         let body = uniform_list(
@@ -879,7 +850,6 @@ impl Render for CollectionTreePanel {
         .py(px(4.0))
         .flex_1();
 
-        // 底部状态栏：「数据库 (可见数/总数)」，与 dbclient::table_tree:403-413 同款
         let total_dbs = self.databases.len();
         let visible_dbs = tree_view.visible_databases;
         let mut footer_text = if total_dbs == visible_dbs {
@@ -887,7 +857,6 @@ impl Render for CollectionTreePanel {
         } else {
             format!("数据库 ({visible_dbs}/{total_dbs})")
         };
-        // 库过多时搜索不自动补拉未加载 db（防雪崩，见 ensure_search_coverage）——如实标注范围
         if !filter.is_empty() && total_dbs > 50 {
             footer_text.push_str(" · 库过多，搜索仅覆盖已展开的库");
         }

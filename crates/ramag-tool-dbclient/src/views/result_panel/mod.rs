@@ -1,5 +1,3 @@
-//! 结果集面板：Empty / Running / Error / Ok 四态
-
 mod export;
 mod helpers;
 mod ops;
@@ -28,7 +26,6 @@ use ramag_ui::{ResultMemoryLease, ResultMemoryUpdate};
 use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 
-// QueryTab 在查询成功后据元数据推导行定位键并注入
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
 
 /// 服务端分页的可见页大小，也是未分页结果的 UI 渲染上限。
@@ -36,7 +33,6 @@ pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
 /// 行内新增最多创建的输入框数量，避免异常元数据一次生成数万控件。
 pub(super) const MAX_INSERT_COLUMNS: usize = 512;
 
-/// 结果集状态
 #[derive(Debug, Clone, Default)]
 pub enum ResultState {
     #[default]
@@ -48,7 +44,6 @@ pub enum ResultState {
     Ok(Arc<QueryResult>),
 }
 
-/// 排序方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDir {
     Asc,
@@ -59,11 +54,8 @@ pub enum SortDir {
 /// 精确总数由首屏后台 COUNT(*) 回填，故需三态区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TotalRows {
-    /// 计数进行中，底栏显示“计算中…”
     Counting,
-    /// 已知精确总数
     Known(u64),
-    /// 计数失败或不可用，底栏留空
     Unavailable,
 }
 
@@ -91,29 +83,23 @@ struct VisibleSelectionCache {
 
 pub struct ResultPanel {
     pub(super) state: ResultState,
-    /// 异步任务（如导出）完成后挂这里，下次 render 在 window 上下文里 push
+    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pub(super) pending_notification: Option<Notification>,
-    /// 当前选中单元格 (row_idx, col_idx)，用于高亮 + cmd-c 复制
     pub(super) selected_cell: Option<(usize, usize)>,
-    /// 多选行：表格首列 checkbox 勾选的行索引集合
     pub(super) selected_rows: BTreeSet<usize>,
     /// 选择变化代次与当前可见行交集缓存，避免普通重渲染反复扫描最多一万行。
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
-    /// 当前结果对应的源 SQL（QueryTab 在 run/explain 后注入）
     pub(super) source_sql: Option<String>,
-    /// 上游显式注入的目标 (schema, table)：表树点击时由 QueryPanel 传入
     pub(super) pinned_target: Option<(Option<String>, String)>,
     /// 行定位键（真实主键 / 全非空唯一索引）：QueryTab 查询成功后异步注入；
     /// None = 元数据未就绪或该表无键，行内修改 / 删除一律禁用
     pub(super) row_identity: Option<RowIdentity>,
-    /// 列宽手动覆盖：用户拖动列分隔线后写入
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
     /// DML（增删改）防重入闸：spawn 前置位、回包复位；置位期间再次提交被 dml_conn 拦下
     pub(super) dml_busy: bool,
     /// 导出防重入闸；后台任务完成（含取消/失败）后复位。
     pub(super) exporting: bool,
-    /// 当前排序列与方向：单击列头切换 None→Asc→Desc→None
     pub(super) sort_by: Option<(usize, SortDir)>,
     /// 当前服务端结果页；None 表示本次 SQL 不具备安全分页资格。
     pub(super) pagination: Option<ResultPagination>,
@@ -128,26 +114,16 @@ pub struct ResultPanel {
     pub(super) display_view_cancel: Option<Arc<AtomicBool>>,
     pub(super) display_view_request_seq: u64,
     pub(super) display_view_error: Option<String>,
-    /// 列过滤输入框：逗号分隔多列名（命中即显示该列）
     pub(super) column_filter_input: Entity<InputState>,
-    /// 行过滤输入框：单一关键字
     pub(super) row_filter_input: Entity<InputState>,
-    /// 单元格编辑弹框输入框：保活引用
     pub(super) cell_edit_input: Option<Entity<InputState>>,
-    /// 行内编辑用的执行器（由 QueryTab 注入）
     pub(super) service: Option<Arc<ConnectionService>>,
     pub(super) connection: Option<ConnectionConfig>,
-    /// 表元数据 cache（由 QueryTab 注入）：用于禁用视图上的写按钮
     pub(super) schema_cache: Option<Arc<RwLock<SchemaCache>>>,
-    /// 新增草稿行：表格末尾追加可编辑空行
     pub(super) pending_insert: Option<PendingInsert>,
-    /// 结果表格虚拟列表的垂直滚动句柄
     pub(super) uniform_scroll: UniformListScrollHandle,
-    /// 外层水平滚动 div 的 ScrollHandle
     pub(super) h_scroll: ScrollHandle,
-    /// 列过滤框的补全候选源
     pub(super) column_completion_source: Arc<RwLock<Vec<String>>>,
-    /// SHOW WARNINGS 面板是否展开
     pub(super) warnings_expanded: bool,
     /// 当前标签在全部查询结果内存预算中的登记。
     result_memory: Option<ResultMemoryLease>,
@@ -168,7 +144,6 @@ impl ResultPanel {
         let row_filter_input = cx.new(|cx| {
             ramag_ui::bounded_search_input(window, cx).placeholder("过滤行（任意单元格包含）")
         });
-        // 输入变化 → 触发 ResultPanel 重渲染
         cx.observe(&column_filter_input, |_, _, cx| cx.notify())
             .detach();
         cx.observe(&row_filter_input, |_, _, cx| cx.notify())
@@ -229,7 +204,6 @@ impl ResultPanel {
         &self.h_scroll
     }
 
-    /// 进入新增模式：表格末尾追加可编辑草稿行（DataGrip 风格）
     pub fn start_insert(
         &mut self,
         columns: Vec<Column>,
@@ -256,7 +230,6 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// 提交新增：遍历每列 InputState 校验后调 apply_insert_async
     pub(super) fn submit_insert(&mut self, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_insert.as_ref() else {
             return;

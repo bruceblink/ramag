@@ -1,5 +1,4 @@
-//! SQL 补全：实现 gpui-component CompletionProvider。
-//! 覆盖关键字 / 表名 / 列名 / 点号限定（`表.列`、`库.表`）补全
+//! SQL 关键字、表名与列名补全。
 
 mod cache;
 
@@ -24,28 +23,20 @@ pub use cache::SchemaCache;
 /// 单次补全 / 预拉最多跟踪这些不同表，避免异常长 SQL 发起大量元数据请求。
 const MAX_EXTRACTED_TABLE_REFERENCES: usize = 128;
 
-/// SQL 上下文：根据光标前的最后一个关键字猜测应补全什么
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SqlContext {
-    /// 应补表名：FROM / JOIN / INTO / UPDATE / TABLE 后
     Table,
-    /// 应补列名：SELECT 后（FROM 之前）/ WHERE / AND / OR / ON / HAVING / SET /
-    /// ORDER BY / GROUP BY 后
     Column,
-    /// 其他位置：仅补关键字
     Other,
 }
 
-/// 通过 cursor 前的纯大写文本，找最近的关键字判定上下文
 fn detect_context(before_cursor: &str) -> SqlContext {
     let mut tokens = before_cursor.split_ascii_whitespace().rev().peekable();
-    // 倒着扫，碰到第一个能定上下文的 token 就返回；不再复制整段 token 列表。
     while let Some(token) = tokens.next() {
         let token = token.trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
         if token.is_empty() {
             continue;
         }
-        // 多词关键字：BY 前面是 ORDER / GROUP → 列名上下文。
         if token.eq_ignore_ascii_case("BY")
             && tokens.peek().is_some_and(|previous| {
                 let previous =
@@ -104,14 +95,10 @@ fn column_filter_matches(
         && (already.is_empty() || !already.contains(&name.to_lowercase()))
 }
 
-/// 公开版本：让 QueryTab 编辑器变化时可以预拉这些表的列结构
-/// 返回 (schema_可选, table) 对，schema 来自 `db.table` 这种全限定形式
 pub fn extract_tables_in_use_for_prefetch(sql: &str) -> Vec<(Option<String>, String)> {
     extract_tables_with_schema(sql)
 }
 
-/// 从 SQL 中提取 FROM / JOIN / UPDATE / INTO 后的表名（仅名字版本）
-/// 用于列名补全的查表名匹配（跨 schema）
 fn extract_tables_in_use(sql: &str) -> Vec<String> {
     extract_tables_with_schema(sql)
         .into_iter()
@@ -119,8 +106,6 @@ fn extract_tables_in_use(sql: &str) -> Vec<String> {
         .collect()
 }
 
-/// 提取 (schema, table) 对：schema 来自全限定 `schema.table` 形式
-/// 若是裸表名（无 schema 前缀），返回 (None, table)
 fn extract_tables_with_schema(sql: &str) -> Vec<(Option<String>, String)> {
     let mut tables = Vec::new();
     let mut seen = HashSet::new();
@@ -196,7 +181,6 @@ fn completion_source_window(rope: &Rope, offset: usize) -> (String, usize, usize
     )
 }
 
-/// `documentation` 走 markdown，长名在右侧 docs 面板可见（上游 CompletionMenu 行为）
 fn make_item(
     label: String,
     kind: CompletionItemKind,
@@ -223,7 +207,6 @@ fn make_item(
     }
 }
 
-/// SQL 补全 provider：关键字 + 表名（基于 cache）
 pub struct SqlCompletionProvider {
     cache: Arc<RwLock<SchemaCache>>,
 }
@@ -233,7 +216,6 @@ impl SqlCompletionProvider {
         Rc::new(Self { cache })
     }
 
-    /// 点号限定补全：qualifier 命中别名/表名 → 补该表的列；命中库名 → 补该库的表
     fn qualified_completions(
         &self,
         text: &str,
@@ -244,7 +226,6 @@ impl SqlCompletionProvider {
         let mut items = Vec::new();
         let cache = self.cache.read();
         let refs = alias::extract_table_refs(text);
-        // 1) qualifier 命中别名或表名 → 补该表的列
         let target = refs
             .iter()
             .find(|r| {
@@ -261,7 +242,6 @@ impl SqlCompletionProvider {
                 if !t.eq_ignore_ascii_case(&tref.table) {
                     continue;
                 }
-                // ref 带库名时要求库匹配，避免同名表跨库串列
                 if let Some(rs) = &tref.schema
                     && !rs.eq_ignore_ascii_case(schema)
                 {
@@ -285,7 +265,6 @@ impl SqlCompletionProvider {
             }
             return items;
         }
-        // 2) qualifier 是库名 → 补该库的表（`mydb.` → 表名）
         for (s, ts) in cache.tables.iter() {
             if !s.eq_ignore_ascii_case(qualifier) {
                 continue;
@@ -322,7 +301,6 @@ impl CompletionProvider for SqlCompletionProvider {
         let (text, real_offset, window_start_byte) = completion_source_window(rope, offset);
         let bytes = text.as_bytes();
 
-        // 取光标前的"单词"作为补全前缀（点号场景下即点号后的 partial）
         let mut start = real_offset;
         while start > 0 {
             let b = bytes[start - 1];
@@ -339,8 +317,7 @@ impl CompletionProvider for SqlCompletionProvider {
             lsp_types::Range::new(rope.offset_to_position(window_start_byte + start), end_pos);
         let prefix_lower = prefix.to_ascii_lowercase();
 
-        // 点号限定：partial 前若紧跟 `限定符.`，取出限定符（别名 / 表名 / 库名）走专门补全
-        // 例：`u.na`→u；`users.`→users；`mydb.`→mydb。命中即返回，不掺关键字噪音
+        // 点号前可能是别名、表名或库名，命中后不混入关键字。
         if start > 0 && bytes[start - 1] == b'.' {
             let dot = start - 1;
             let mut qs = dot;
@@ -354,25 +331,21 @@ impl CompletionProvider for SqlCompletionProvider {
             }
         }
 
-        // 非点号且前缀为空 → 没有可补的
         if prefix.is_empty() {
             return Task::ready(Ok(CompletionResponse::Array(vec![])));
         }
 
         let prefix_upper = prefix.to_ascii_uppercase();
 
-        // 上下文判定：取前缀单词之前的全部文本（不含当前正在敲的）
         let before = &text[..start];
         let context = detect_context(before);
 
         let mut items: Vec<CompletionItem> = Vec::new();
 
         match context {
-            // Table：建议表名（默认 schema 优先）；documentation 走 markdown 让长名在 docs 面板可见
             SqlContext::Table => {
                 let cache = self.cache.read();
                 let default_schema = cache.default_schema.clone();
-                // 默认 schema 先直接遍历；达到候选上限后不再扫描其余大缓存。
                 if let Some(d) = default_schema.as_ref()
                     && let Some(ts) = cache.tables.get(d)
                 {
@@ -399,7 +372,6 @@ impl CompletionProvider for SqlCompletionProvider {
                         }
                         for name in tables {
                             if starts_with_ascii_case_insensitive(name, &prefix_lower) {
-                                // 不用反引号 inline code（上游 markdown 渲染会染成饱和蓝块）。
                                 let doc = format!("**{name}**\n\nTable · schema **{schema}**");
                                 items.push(make_item(
                                     name.clone(),
@@ -416,7 +388,6 @@ impl CompletionProvider for SqlCompletionProvider {
                     }
                 }
             }
-            // Column：用整段 SQL 解析（FROM 可能在光标后，如 `SELECT t|<cursor> FROM users`）
             SqlContext::Column => {
                 let tables_in_use = extract_tables_in_use(&text);
                 let cache = self.cache.read();
@@ -432,7 +403,6 @@ impl CompletionProvider for SqlCompletionProvider {
                             {
                                 continue;
                             }
-                            // 同表名补全：避免反引号 inline code 染成蓝块
                             let doc = format!("**{col}**\n\nColumn · in **{schema}.{t}**");
                             items.push(make_item(
                                 col.clone(),
@@ -451,9 +421,7 @@ impl CompletionProvider for SqlCompletionProvider {
             SqlContext::Other => {}
         }
 
-        // 多词关键字短语前缀：从光标回退到最近的 SQL 分隔符，
-        // 让"已敲完第一个词、正敲第二个词"的输入（如 "DROP T"）也能补出 "DROP TABLE"
-        // —— 此时单词 prefix 只剩 "T"，匹配不到带空格的整短语
+        // 多词关键字需用完整短语前缀匹配。
         let phrase = phrase_prefix(&text, real_offset);
         let phrase_upper = phrase.to_ascii_uppercase();
         let phrase_replace_range = lsp_types::Range::new(
@@ -461,13 +429,11 @@ impl CompletionProvider for SqlCompletionProvider {
             end_pos,
         );
 
-        // 关键字兜底，总数 ≤ 50
         for kw in SQL_KEYWORDS {
             if items.len() >= 50 {
                 break;
             }
             if kw.starts_with(&prefix_upper) {
-                // 单词前缀：替换当前词
                 items.push(make_item(
                     kw.to_string(),
                     CompletionItemKind::KEYWORD,
@@ -479,7 +445,6 @@ impl CompletionProvider for SqlCompletionProvider {
                 && kw.len() > phrase_upper.len()
                 && kw.starts_with(&phrase_upper)
             {
-                // 多词关键字第二个词起：用整段短语匹配，替换整个短语
                 items.push(make_item(
                     kw.to_string(),
                     CompletionItemKind::KEYWORD,
@@ -499,14 +464,12 @@ impl CompletionProvider for SqlCompletionProvider {
         new_text: &str,
         _cx: &mut Context<InputState>,
     ) -> bool {
-        // 字母 / 数字 / 下划线 + 点号（点号触发 `表.列` 限定补全）
         new_text
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
     }
 }
 
-/// 候选列 = ResultPanel 的当前结果列名，按光标前最近的 `,` 切 token 仅匹配最后一段
 pub struct ColumnFilterCompletionProvider {
     columns: Arc<RwLock<Vec<String>>>,
 }
@@ -530,12 +493,10 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         let bytes = text.as_bytes();
         let real_offset = rope.floor_char_boundary(offset.min(bytes.len()));
 
-        // 找当前 token 起点：从光标向前扫到最近的逗号（或文本起点）
         let mut tok_start = real_offset;
         while tok_start > 0 && bytes[tok_start - 1] != b',' {
             tok_start -= 1;
         }
-        // 跳过前导空格
         while tok_start < real_offset && bytes[tok_start].is_ascii_whitespace() {
             tok_start += 1;
         }
@@ -549,7 +510,6 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         let end_pos = rope.offset_to_position(real_offset);
         let replace_range = lsp_types::Range::new(start_pos, end_pos);
 
-        // 已经填进过滤框的列（其它 token）不再建议，避免重复
         let already: std::collections::HashSet<String> = text
             .split(',')
             .map(|t| t.trim().to_lowercase())
@@ -559,7 +519,6 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         let cols = self.columns.read();
         let mut items: Vec<CompletionItem> = Vec::new();
         for name in cols.iter() {
-            // 子串匹配（与表格过滤逻辑一致：大小写不敏感 contains）
             if !column_filter_matches(name, &prefix_lower, &already) {
                 continue;
             }
@@ -583,7 +542,6 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         new_text: &str,
         _cx: &mut Context<InputState>,
     ) -> bool {
-        // 字母 / 数字 / 下划线触发；逗号不触发（逗号后用户还要输入下一个 token）
         new_text.chars().all(|c| c.is_alphanumeric() || c == '_')
     }
 }

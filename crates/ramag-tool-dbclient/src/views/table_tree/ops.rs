@@ -22,8 +22,6 @@ enum AfterDdl {
     FullRefresh { invalidated_schema: String },
 }
 
-// ===== 右键菜单构造（row.rs 调用） =====
-
 /// 表 / 视图行右键菜单：查看 DDL + 完整表导出 + 写操作
 pub(super) fn table_context_menu(
     menu: PopupMenu,
@@ -241,8 +239,6 @@ pub(super) fn schema_context_menu(
         );
     }))
 }
-
-// ===== DDL 执行 =====
 
 impl TableTreePanel {
     pub(super) fn truncate_table(&mut self, schema: String, table: String, cx: &mut Context<Self>) {
@@ -462,8 +458,6 @@ fn clear_invalidated_table_state(
     }
     table_columns.remove(&(schema.to_string(), table.to_string()));
 }
-
-// ===== DDL 语句生成（纯函数） =====
 
 fn ddl_truncate_table(driver: DriverKind, schema: &str, table: &str) -> String {
     format!(

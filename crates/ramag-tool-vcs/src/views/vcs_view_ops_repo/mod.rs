@@ -1,5 +1,4 @@
-//! 仓库 / Session 管理 ops：pick_directory / open_recent_repo / remove_recent_repo /
-//! remove_open_repo / open_repo_async（共享异步流：open + 拉 status / 分支 / stash 等）
+//! 仓库与会话操作。
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -13,18 +12,14 @@ use super::helpers::{
 };
 use super::vcs_view::{RepoSessionState, VcsView};
 
-/// Project Files 点击文件后读盘上限（4MB）；超过截断后 UI 显示提示
 pub(super) const PF_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
-/// 连续输入只在停顿后写盘，避免每个字符都触发 truncate + sync_all。
+/// 避免每次输入都同步磁盘。
 const PF_FILE_AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(300);
-/// 自身写盘事件的短期识别窗口；过期后必须按外部修改处理。
+/// 过期事件按外部修改处理。
 pub(super) const PF_FILE_SELF_WRITE_TTL: Duration = Duration::from_secs(2);
-/// 单窗口打开仓库标签上限；每个标签会保留会话元数据，并可能在驱动层持有仓库句柄。
 pub(super) const MAX_OPEN_REPOS: usize = 32;
-/// 仅保留最近访问仓库的轻量 UI 会话，避免长时间运行后路径与草稿无限累积。
 const REPO_SESSION_CACHE_LIMIT: usize = 32;
 
-/// worker 线程跨线程返回结构（Send）；主线程 finalize 后包 Rc 成 FileContentSnapshot
 pub(super) struct RawFileContent {
     pub(super) path: String,
     pub(super) lines: Vec<String>,
@@ -46,7 +41,6 @@ impl RawFileContent {
 }
 
 impl VcsView {
-    /// 弹出系统目录选择器；用户选完后异步打开仓库
     pub(super) fn pick_directory(&mut self, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
         if self.loading || self.directory_picker_busy {
@@ -108,7 +102,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 异步选择待初始化目录，避免原生对话框阻塞 GPUI 前台线程。
     pub(super) fn pick_init_directory(&mut self, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
         if self.loading || self.directory_picker_busy {
@@ -142,7 +135,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 异步选择 Clone 父目录；只更新表单，不启动网络操作。
     pub(super) fn pick_clone_destination(&mut self, cx: &mut Context<Self>) {
         if self.loading || self.busy || self.directory_picker_busy {
             return;
@@ -166,7 +158,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 从最近列表点击仓库行 → 直接打开（不弹文件对话框）
     pub(super) fn open_recent_repo(&mut self, path: String, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
         if self.loading {
@@ -196,7 +187,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 新仓库标签创建闸门；已打开仓库始终允许切换。
     pub(super) fn ensure_open_repo_capacity(&mut self, path: &str, cx: &mut Context<Self>) -> bool {
         if self.open_repos.iter().any(|repo| repo.path == path)
             || self.open_repos.len() < MAX_OPEN_REPOS
@@ -210,7 +200,7 @@ impl VcsView {
         false
     }
 
-    /// 超限草稿既不能提交，也不能安全进入有界会话缓存；先让用户缩短，避免切仓时丢稿。
+    /// 超限草稿不能进入有界缓存。
     pub(super) fn ensure_commit_draft_within_limit(&mut self, cx: &mut Context<Self>) -> bool {
         if self.repo.is_none()
             || self.commit_input.read(cx).value().len() <= MAX_COMMIT_MESSAGE_BYTES
@@ -226,7 +216,7 @@ impl VcsView {
         false
     }
 
-    /// 自动保存尚未完成时不允许切仓或关闭，避免异步写入失去所属会话。
+    /// 自动保存完成前禁止切仓，避免写入失去所属会话。
     pub(super) fn ensure_project_file_drafts_saved(&mut self, cx: &mut Context<Self>) -> bool {
         self.capture_active_project_draft(cx);
         let dirty_paths = self
@@ -256,7 +246,6 @@ impl VcsView {
         false
     }
 
-    /// 从最近列表移除（不删磁盘）；按 path 找 RepoId 后调 storage.delete_repo
     pub(super) fn remove_recent_repo(&mut self, path: String, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
         let repo_id = self
@@ -271,7 +260,6 @@ impl VcsView {
         cx.notify();
     }
 
-    /// 刷新 Files panel 当前视图（Changes/Stash/Project 各调对应 reload）
     pub(super) fn refresh_current_files_view(&mut self, cx: &mut Context<Self>) {
         match self.files_view_mode {
             FilesViewMode::Changes => self.reload_status_silent(cx),
@@ -280,7 +268,6 @@ impl VcsView {
         }
     }
 
-    /// 异步拉 Project Files（git ls-files：tracked + 未 ignore 的 untracked）
     pub(super) fn reload_project_files(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
@@ -298,17 +285,14 @@ impl VcsView {
                 }
                 this.loading_project_files = false;
                 match result {
-                    // driver 已在受限 Git worker 中按字母序整理，UI 只交换结果。
                     Ok(paths) => this.project_files = paths,
                     Err(e) => {
                         error!(error = %e, "load project files failed");
-                        // 失败时仍清空避免显示旧数据；错误以 banner 形式提示
                         this.project_files = Vec::new();
                         this.error = Some(format!("加载 Project Files 失败: {e}"));
                     }
                 }
                 this.prune_project_expanded_dirs();
-                // 列表内容变了 → 递增版本号让 render 缓存失效
                 this.project_files_version = this.project_files_version.wrapping_add(1);
                 cx.notify();
             });
@@ -316,7 +300,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 点击文件复用 file_tabs：命中已开则激活，否则追加并在线程池读盘。4MB 上限 + NUL 字节判二进制
     pub(super) fn select_pf_file(&mut self, path: String, cx: &mut Context<Self>) {
         let Some((repo_path, repo_id)) = self
             .repo
@@ -343,7 +326,6 @@ impl VcsView {
         }
         self.capture_active_project_draft(cx);
         self.diff_fullscreen = false;
-        // 点击 Project Files 文件 → 关掉 commit detail，避免主区残留 commit diff
         if self.viewing_commit.is_some() {
             self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
             self.viewing_commit = None;
@@ -425,7 +407,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 切换标签前把当前编辑器草稿写回对应 tab 的内存快照，不触碰磁盘。
+    /// 切换标签前仅更新内存草稿。
     pub(super) fn capture_active_project_draft(&mut self, cx: &mut Context<Self>) {
         if !self.pf_editor_dirty {
             return;
@@ -458,7 +440,7 @@ impl VcsView {
         self.current_file_content = Some(snapshot);
     }
 
-    /// 输入事件只更新轻量元数据，让标签蓝点立即出现；正文复制留到防抖命中时。
+    /// 输入时只更新元数据，防抖命中后再复制正文。
     pub(super) fn mark_active_project_file_dirty(&mut self) {
         let Some(path) = self.pf_editor_loaded_path.as_deref() else {
             return;
@@ -482,7 +464,6 @@ impl VcsView {
         self.current_file_content = Some(snapshot.clone());
     }
 
-    /// 为 Render 安排一次编辑器正文切换；set_value 会同时把编辑器滚动位置复位到顶部。
     pub(super) fn queue_project_editor_load(&mut self, snapshot: &FileContentSnapshot) {
         self.pf_editor_loaded_path = None;
         self.pf_editor_dirty = snapshot.dirty;
@@ -497,12 +478,10 @@ impl VcsView {
         });
     }
 
-    /// 输入停顿后自动保存当前 Project Files 正文。
     pub(super) fn schedule_project_file_autosave(&mut self, cx: &mut Context<Self>) {
         self.schedule_current_project_file_save(PF_FILE_AUTOSAVE_DEBOUNCE, cx);
     }
 
-    /// 快捷键可跳过去抖并立即重试；常规编辑无需显式保存。
     pub(super) fn save_project_file(&mut self, cx: &mut Context<Self>) {
         self.schedule_current_project_file_save(Duration::ZERO, cx);
     }
@@ -535,7 +514,7 @@ impl VcsView {
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
 
-            // 只在最新代际命中后复制正文；快速输入不会反复克隆最多 4 MiB 的文本。
+            // 仅最新代际复制正文，避免快速输入反复克隆大文本。
             let text = this
                 .update(cx, |this, cx| {
                     if !this.is_current_repo(&repo_id) {
@@ -563,7 +542,7 @@ impl VcsView {
                         && !snapshot.binary
                         && !snapshot.truncated)
                         .then(|| snapshot.text.as_ref().clone())?;
-                    // 写入前登记，确保 watcher 事件无论先于还是后于写盘回包都只消费一次。
+                    // 写入前登记，确保监听事件只消费一次。
                     let now = std::time::Instant::now();
                     this.project_file_self_writes
                         .retain(|_, (_, saved_at)| {
@@ -599,7 +578,7 @@ impl VcsView {
                 }
                 match result {
                     Ok(()) => {
-                        // 写盘期间的新编辑会提升 revision，旧回包不得清除新一代蓝点。
+                        // 旧回包不得清除新一代编辑状态。
                         let current = mark_project_file_revision_saved(
                             &mut this.file_tabs,
                             &path,
@@ -611,7 +590,6 @@ impl VcsView {
                             this.pf_editor_dirty = snapshot.dirty;
                             this.current_file_content = Some(snapshot);
                         }
-                        // 文件监听会按路径增量刷新 Git 状态，无需再发起一次全量刷新。
                     }
                     Err(error) => {
                         tracing::error!(error = %error, path = %path, "autosave project file failed");
@@ -630,7 +608,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 静默拉一次工作区状态（不显 loading 占整屏，仅写回 self.status）
     pub(super) fn reload_status_silent(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
@@ -642,7 +619,7 @@ impl VcsView {
             let new_status = match driver.status(&repo).await {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    // 静默刷新失败保留旧状态（仓库可能被外部删除/损坏），留日志可排查
+                    // 后台刷新失败时保留旧状态。
                     tracing::warn!(error = %e, "background status refresh failed");
                     None
                 }
@@ -660,7 +637,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 关闭指定路径的 tab；若是当前 tab 则尝试切到下一个，否则直接移除
     pub(super) fn remove_open_repo(&mut self, path: String, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
         if self.busy || self.loading {
@@ -683,7 +659,7 @@ impl VcsView {
             {
                 return;
             }
-            // 关闭标签不应静默丢掉尚未提交的 message 与已打开文件；本次进程内重开可恢复。
+            // 关闭前保留会话，进程内重开可恢复。
             self.save_current_session_to_cache(cx);
         }
         self.loading = true;
@@ -732,16 +708,13 @@ impl VcsView {
         cx.notify();
     }
 
-    /// 把当前仓库的文件 tab + commit 草稿状态保存到缓存（切换仓库前调用）
-    ///
-    /// commit_input 的当前文本同时入快照——切回该仓库时再原样恢复，避免跨仓库串扰
     pub(super) fn save_current_session_to_cache(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.repo.as_ref().map(|r| r.path.clone()) else {
             return;
         };
         let commit_text = self.commit_input.read(cx).value();
         debug_assert!(commit_text.len() <= MAX_COMMIT_MESSAGE_BYTES);
-        // 切仓即持久化当前草稿（作废在途防抖任务——其读到的将是新仓文本），重启后可恢复
+        // 切仓时立即持久化并作废在途防抖任务。
         let generation = self
             .commit_draft_gen
             .fetch_add(1, Ordering::Relaxed)
@@ -754,7 +727,7 @@ impl VcsView {
             let text = commit_text.clone();
             cx.spawn(async move |this, cx| {
                 let _guard = write_lock.lock().await;
-                // 切仓快照必须落盘；后续新仓输入会推进全局代际，但写的是不同 key，不能取消本次。
+                // 不同仓库使用独立键，后续输入不能取消本次落盘。
                 let result = storage.set_preference(&key, &text).await;
                 if let Err(error) = &result {
                     tracing::warn!(error = %error, "persist commit draft on switch failed");
@@ -778,8 +751,7 @@ impl VcsView {
             })
             .detach();
         }
-        // 切回仓库时本就必须重读磁盘 / Git 状态；缓存只保留 tab 元数据，不能让旧 diff
-        // 或 4MB 文件快照在每个访问过的仓库中长期占用内存。
+        // 缓存只保留标签元数据，内容切回时重读。
         let mut file_tabs = self.file_tabs.clone();
         strip_file_tab_payloads(&mut file_tabs);
         cache_repo_session(
@@ -796,8 +768,7 @@ impl VcsView {
         );
     }
 
-    /// 提交草稿防抖持久化：输入停顿 800ms 后按当前仓库 path 写 prefs；
-    /// 期间再输入 / 切仓则代际不符自动作废（切仓另有同步写兜底）
+    /// 输入停顿后持久化，同代校验防止旧任务覆盖。
     pub(super) fn schedule_commit_draft_persist(&mut self, cx: &mut gpui::Context<Self>) {
         let Some(path) = self.repo.as_ref().map(|repo| repo.path.clone()) else {
             return;
@@ -855,8 +826,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 从缓存还原文件 tab + commit 面板状态；commit 文本通过 pending_commit_text 让
-    /// Render 阶段（持有 Window）写回 InputState。返回 true 表示命中缓存
+    /// 返回是否命中缓存。
     pub(super) fn restore_session_from_cache(&mut self, path: &str) -> bool {
         let cached = self.repo_session_cache.get(path).cloned();
         if cached.is_some() {
@@ -864,7 +834,7 @@ impl VcsView {
         }
         match cached {
             Some(mut state) => {
-                // 切回仓库时磁盘 / HEAD 可能已被终端或其它工具修改；保留 tab，丢弃内容缓存。
+                // 外部可能已修改仓库，恢复标签但丢弃内容缓存。
                 for tab in &mut state.file_tabs {
                     tab.cached_diff = None;
                     tab.cached_diff_syntax = None;
@@ -874,7 +844,7 @@ impl VcsView {
                 self.active_file_tab_idx = state.active_file_tab_idx;
                 self.commit_amend = state.commit_amend;
                 self.commit_sign = state.commit_sign;
-                // 即使文本相同也写：保证 Render 一定走 set_value 覆盖前一个仓库残留
+                // 强制覆盖前一个仓库的输入残留。
                 self.pending_commit_text = Some(state.commit_text);
                 if let Some(idx) = self.active_file_tab_idx
                     && let Some(tab) = self.file_tabs.get(idx).cloned()
@@ -884,7 +854,6 @@ impl VcsView {
                 true
             }
             None => {
-                // 全新仓库：清空 commit 面板，避免延续上一个仓库的草稿 / amend / sign
                 self.commit_amend = false;
                 self.commit_sign = false;
                 self.pending_commit_text = Some(gpui::SharedString::default());
@@ -894,7 +863,6 @@ impl VcsView {
     }
 }
 
-/// 实际打开 repo + 拉 status / 分支 / stash / tag / remote。pick_directory 与 open_recent_repo 共用
 pub(super) async fn open_repo_async(
     this: &gpui::WeakEntity<VcsView>,
     driver: std::sync::Arc<dyn ramag_domain::traits::GitDriver>,
@@ -935,7 +903,7 @@ pub(super) async fn open_repo_async(
         return;
     }
 
-    // 文件对话框或远程操作期间仍做一次防御性复核，避免异步间隙中的超限草稿被切仓丢弃。
+    // 异步间隙后再次确认草稿安全。
     let draft_safe = this
         .update(cx, |this, cx| {
             let switching_repo = this
@@ -968,7 +936,7 @@ pub(super) async fn open_repo_async(
         this.loading = false;
         this.loading_label = None;
         let mut repo_config = repo_config;
-        // driver 返回运行时配置；名称与收藏属于用户元数据，重新打开时必须保留。
+        // 运行时配置不得覆盖用户名称与收藏。
         if let Some(existing) = this
             .recent_repos
             .iter()
@@ -978,7 +946,6 @@ pub(super) async fn open_repo_async(
             repo_config.favorite = existing.favorite;
         }
         repo_config.last_opened_at = Some(chrono::Utc::now());
-        // 是否首次打开（区分「新开仓库」和「tab 切换」）
         let is_new = !this.open_repos.iter().any(|r| r.path == repo_config.path);
         this.save_current_session_to_cache(cx);
         let recent_repos = std::rc::Rc::make_mut(&mut this.recent_repos);
@@ -1004,7 +971,7 @@ pub(super) async fn open_repo_async(
             *open = repo_config.clone();
         }
         this.persist_open_repos(cx);
-        // 仓库打开成功但状态 / 分支查询失败：保留已成功部分，并明确显示失败项。
+        // 状态与分支独立失败，保留成功部分。
         let mut load_errors = Vec::new();
         match status {
             Ok(s) => this.status = Some(s),
@@ -1031,10 +998,8 @@ pub(super) async fn open_repo_async(
         }
         this.active_view = ActiveView::Session;
 
-        // 已访问过的仓库：还原文件 tab 状态；新仓库：空 tabs 让用户自己选
         let session_hit = this.restore_session_from_cache(&repo_config.path);
-        // 重启后 session cache 为空：从 prefs 恢复上次的提交草稿（异步读回后经
-        // pending_commit_text 让 Render 写回输入框；期间用户已输入则不覆盖）
+        // 缓存未命中时恢复持久化草稿，但不覆盖新输入。
         if !session_hit {
             let storage = this.storage.clone();
             let path = repo_config.path.clone();
@@ -1069,7 +1034,6 @@ pub(super) async fn open_repo_async(
             })
             .detach();
         }
-        // session 只恢复“打开了哪些 tab”，内容必须基于本次刚读取的仓库状态重拉。
         if let Some(tab) = this
             .active_file_tab_idx
             .and_then(|idx| this.file_tabs.get(idx))
@@ -1083,22 +1047,19 @@ pub(super) async fn open_repo_async(
                 }
             }
         }
-        // 启动该仓库的文件系统监听（旧仓库的 watcher 在内部先 drop）
         this.start_fs_watcher(cx);
         cx.notify();
         this.reload_stashes(cx);
         this.reload_tags(cx);
         this.reload_remotes(cx);
         this.reload_project_files(cx);
-        // 切仓库后 clear_session_data 已清空 history_commits；若下半 pane 处于打开态，
-        // 立即拉新仓库首页，避免用户看到「空 commit 列表」（原行为只有手动 toggle 才 lazy load）
+        // 历史面板可见时立即加载新仓库首页。
         if this.history_pane_visible && this.repo.is_some() {
             this.load_history_page(0, cx);
         }
     });
 }
 
-/// 提交草稿的 prefs key（按仓库 path 隔离）
 pub(super) fn commit_draft_pref_key(path: &str) -> String {
     format!("vcs_commit_draft:{path}")
 }
@@ -1237,8 +1198,6 @@ mod tests {
 }
 
 mod admin;
-/// worker 线程完成读盘、二进制 / 截断检测与语法快照准备。
 mod file_io;
-use file_io::{finalize_file_snapshot, prepare_file_snapshot, write_project_file};
-// untracked 伪 diff 预览（vcs_view_ops_file_tab）复用同一读盘函数
 pub(in crate::views) use file_io::read_raw_file_content;
+use file_io::{finalize_file_snapshot, prepare_file_snapshot, write_project_file};

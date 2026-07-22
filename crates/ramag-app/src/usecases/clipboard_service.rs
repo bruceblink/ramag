@@ -1,6 +1,4 @@
-//! ClipboardService：剪贴板采集 + 历史聚合。与 ConnectionService 并列，共用同一份 redb。
-//! 采集判定（去重 / 黑名单 / 大小 / 分类）抽成纯函数 `decide_capture` 便于测试，
-//! `capture_tick` 仅做 driver/storage 编排
+//! 剪贴板采集与历史服务。
 
 mod media_ops;
 mod pending_media;
@@ -22,7 +20,6 @@ use tracing::{debug, warn};
 use crate::usecases::clip_thumb::{THUMB_MAX_W, make_thumbnail};
 use pending_media::PendingMediaDeletes;
 
-/// 设置持久化 key（prefs 表，JSON）
 const SETTINGS_KEY: &str = "clipboard_settings";
 /// 剪贴设置远小于通用偏好 16 MiB 上限；先拒绝异常大 JSON，避免反序列化时无谓分配。
 const MAX_SETTINGS_JSON_BYTES: usize = 256 * 1024;
@@ -54,54 +51,43 @@ fn validate_search_query(query: &str) -> Result<()> {
     Ok(())
 }
 
-/// 采集判定结果（纯逻辑产物，不触 IO）
+/// 不触发 IO 的采集判定结果。
 #[derive(Debug, PartialEq)]
 pub enum CaptureDecision {
-    /// 跳过：隐私标记 / 黑名单 / 超限 / 空内容
     Skip(&'static str),
-    /// 内容指纹（用于查重）+ 待入库条目骨架（image_path 由编排层补）
     Record { hash: String, kind: ClipKind },
 }
 
 pub struct ClipboardService {
     driver: Arc<dyn ClipboardDriver>,
     storage: Arc<dyn Storage>,
-    /// 历史变更版本号：任何写操作（采集 / 复制 / 删除）后自增。
-    /// 视图轮询此值，仅在变化时才重载解密，避免每拍全表解密
+    /// 写操作后自增，视图仅在变化时重载解密。
     revision: Arc<AtomicU64>,
-    /// 已解密的最近 N 条窗口缓存（最近优先）。写操作增量维护，视图同步快照取
     cache: Arc<RwLock<Vec<Arc<ClipItem>>>>,
-    /// 采集开关内存镜像：设置读取/保存时在同一串行区间内同步。
-    /// 供 App 级热键循环每拍读，避免每拍解密设置；关采集即据此释放全局热键
+    /// 避免热键循环每拍读取并解密设置。
     capture_enabled: Arc<AtomicBool>,
-    /// 备用热键内存镜像（主修饰键+Alt+V），维护方式同 capture_enabled。
     alternate_hotkey: Arc<AtomicBool>,
     /// 自动粘贴设置镜像。抽屉构造时同步读取，避免异步加载设置期间误执行自动粘贴。
     auto_paste: Arc<AtomicBool>,
-    /// 设置快照与版本号：多个设置入口共享同一真实状态，避免各自长期持有过期副本。
+    /// 多个设置入口共享同一快照。
     settings_cache: Arc<RwLock<ClipboardSettings>>,
     settings_revision: Arc<AtomicU64>,
     /// 设置读写串行化，避免慢读取或旧保存晚完成后覆盖新值。
     settings_save_lock: Arc<futures::lock::Mutex<()>>,
     /// 历史与媒体写操作串行化，避免采集、清空、删除和复制提升相互穿插后留下断链媒体。
     history_mutation_lock: Arc<futures::lock::Mutex<()>>,
-    /// 全局热键注册状态（见 HotkeyState）：App 级热键循环写，设置面板读，
-    /// 让「热键没注册上（如被占用）」对用户可见而非只留日志
+    /// 热键循环写、设置面板读，使注册失败对用户可见。
     hotkey_state: Arc<AtomicU8>,
-    /// 设置降级标记：读取失败 / JSON 损坏时置位（采集 fail-closed），设置面板显示告警
+    /// 设置异常时暂停采集并向用户告警。
     settings_degraded: Arc<AtomicBool>,
-    /// 图片删除的待清理媒体；存在即仍在撤销窗口内。
     pending_media_deletes: Arc<PendingMediaDeletes>,
 }
 
 /// 全局热键注册状态（AtomicU8 编码）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyState {
-    /// 采集关闭，未注册（主动释放）
     Disabled,
-    /// 已注册，热键可用
     Registered,
-    /// 注册失败（热键被其它应用占用等）
     Failed,
 }
 
@@ -144,12 +130,10 @@ impl ClipboardService {
         }
     }
 
-    /// 当前全局热键注册状态（设置面板展示用）
     pub fn hotkey_state(&self) -> HotkeyState {
         HotkeyState::from_u8(self.hotkey_state.load(Ordering::Relaxed))
     }
 
-    /// 热键循环在注册 / 注销 / 失败时上报状态
     pub fn set_hotkey_state(&self, state: HotkeyState) {
         self.hotkey_state.store(state.as_u8(), Ordering::Relaxed);
     }
@@ -158,7 +142,6 @@ impl ClipboardService {
         &self.driver
     }
 
-    /// 当前历史版本号（视图据此判断是否需要重载）
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed)
     }
@@ -167,9 +150,6 @@ impl ClipboardService {
         self.revision.fetch_add(1, Ordering::Relaxed);
     }
 
-    // —— 内存窗口缓存 ——
-
-    /// 启动预热：解密最近 CACHE_WINDOW 条入缓存（仅启动调一次）
     pub async fn preload(&self) {
         // 与采集/清空共用锁，避免慢预热最后用旧快照覆盖启动期间刚写入的缓存。
         let _guard = self.history_mutation_lock.lock().await;
@@ -188,12 +168,10 @@ impl ClipboardService {
         }
     }
 
-    /// 同步取缓存快照（已解密、最近优先）。视图唤起 / 刷新用，无 IO、无解密
     pub fn cached_snapshot(&self) -> Vec<Arc<ClipItem>> {
         self.cache.read().clone()
     }
 
-    /// 缓存增量更新：移除旧同 id → 插最前 → 去超龄 + 截窗口（全内存，不解密）
     fn cache_upsert(&self, item: ClipItem) {
         let cutoff = Utc::now() - chrono::Duration::days(i64::from(MAX_AGE_DAYS));
         let item = Arc::new(item);
@@ -212,11 +190,7 @@ impl ClipboardService {
         self.cache.write().clear();
     }
 
-    // —— 设置 ——
-
-    /// 读取设置。隐私 fail-closed：存储读取失败或 JSON 损坏时**默认关闭采集**并置
-    /// 降级标记（设置面板显示告警），绝不因异常回退到「继续记录」；仅「从未保存过」
-    /// 才用出厂默认（enabled=true，首次使用语义）
+    /// 读取失败或损坏时暂停采集；仅无已存设置时采用默认值。
     pub async fn load_settings(&self) -> ClipboardSettings {
         // 与保存共用串行锁：防止早先发起的慢读取在新设置保存后才回包，
         // 又把内存快照覆盖回旧值。
@@ -261,7 +235,6 @@ impl ClipboardService {
         settings
     }
 
-    /// 设置是否处于降级态（读取失败 / 损坏，采集已 fail-closed 暂停）
     pub fn settings_degraded(&self) -> bool {
         self.settings_degraded.load(Ordering::Relaxed)
     }
@@ -310,7 +283,7 @@ impl ClipboardService {
         }
     }
 
-    /// 采集循环读取设置：等待在途保存完成后取内存镜像，不为每次剪贴变化重复访问磁盘。
+    /// 等待在途保存后读取一致的内存快照。
     pub async fn capture_settings_snapshot(&self) -> ClipboardSettings {
         let _guard = self.settings_save_lock.lock().await;
         self.settings_cache.read().clone()
@@ -320,31 +293,22 @@ impl ClipboardService {
         self.settings_revision.load(Ordering::Acquire)
     }
 
-    /// 采集是否开启（内存镜像，热键循环每拍读）
     pub fn capture_enabled(&self) -> bool {
         self.capture_enabled.load(Ordering::Relaxed)
     }
 
-    /// 是否使用备用热键组合（内存镜像，热键循环每拍读）
     pub fn alternate_hotkey(&self) -> bool {
         self.alternate_hotkey.load(Ordering::Relaxed)
     }
 
-    /// 抽屉当前是否应在复制后自动粘贴（启动预热与设置保存都会同步更新）。
     pub fn auto_paste(&self) -> bool {
         self.auto_paste.load(Ordering::Relaxed)
     }
 
-    /// 启动时预热持久化设置并返回采集开关。`load_settings` 已在串行区间内
-    /// 同步全部内存镜像，这里不再二次写入，避免启动期覆盖用户刚保存的新值。
     pub async fn prime_capture_enabled(&self) -> bool {
         self.load_settings().await.enabled
     }
 
-    // —— 采集 ——
-
-    /// 轮询一拍：changeCount 变化时读取并按设置决定是否入库。
-    /// 返回 true 表示历史有变更（UI 需刷新）
     pub async fn capture_tick(&self, settings: &ClipboardSettings) -> Result<bool> {
         if !settings.enabled {
             return Ok(false);
@@ -371,7 +335,6 @@ impl ClipboardService {
         }
     }
 
-    /// 入库：命中指纹则提升旧条目，否则新建（图片先落盘）
     async fn record(
         &self,
         mut captured: CapturedClip,
@@ -448,7 +411,8 @@ impl ClipboardService {
                             warn!(
                                 error = %cleanup_error,
                                 path = %full,
-                                "rollback clipboard image after thumbnail failure failed"
+                                stage = "thumbnail",
+                                "rollback clipboard image failed"
                             );
                         }
                         return Err(error);
@@ -501,7 +465,8 @@ impl ClipboardService {
                 warn!(
                     error = %cleanup_error,
                     clip_id = %item.id,
-                    "rollback clipboard media after record save failure failed"
+                    stage = "record_save",
+                    "rollback clipboard media failed"
                 );
             }
             return Err(error);
@@ -543,9 +508,6 @@ impl ClipboardService {
         }
     }
 
-    // —— 历史读取 / 操作 ——
-
-    /// 全量搜索（覆盖缓存窗口之外的历史）。主视图后台去抖调用，匹配 preview/text
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<ClipItem>> {
         validate_search_query(query)?;
         self.storage.clip_search(query, limit).await
@@ -564,7 +526,6 @@ impl ClipboardService {
             .await
     }
 
-    /// 复制条目回剪贴板（不自动粘贴）
     pub async fn copy_to_clipboard(&self, item: &ClipItem) -> Result<()> {
         let _guard = self.history_mutation_lock.lock().await;
         let current = self.current_clip(&item.id).await?;
@@ -631,12 +592,10 @@ impl ClipboardService {
         self.touch_current_clip(current).await
     }
 
-    /// 来源应用图标 PNG（按 bundle_id 缓存）；卡片右上角显示用
     pub fn app_icon(&self, bundle_id: &str) -> Option<std::sync::Arc<Vec<u8>>> {
         self.driver.app_icon_png(bundle_id)
     }
 
-    /// 用默认浏览器打开链接
     pub fn open_url(&self, url: &str) -> Result<()> {
         let url = url.trim();
         if !is_safe_http_url(url) {
@@ -647,7 +606,6 @@ impl ClipboardService {
         self.driver.open_url(url)
     }
 
-    /// 在系统文件管理器中显示文件
     pub fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()> {
         self.driver.reveal_in_file_manager(paths)
     }

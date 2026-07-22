@@ -1,4 +1,4 @@
-//! 连接新增 / 编辑表单。在 DbClientView 内嵌入，提供「测试连接」+「保存」
+//! 数据库连接表单。
 
 use std::sync::Arc;
 
@@ -18,14 +18,12 @@ use ramag_domain::entities::{
     MAX_CONNECTION_PASSWORD_BYTES, MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
 };
 
-/// 表单模式：新增 or 编辑
 #[derive(Debug, Clone)]
 pub enum FormMode {
     Create,
     Edit(ConnectionId),
 }
 
-/// 测试结果
 #[derive(Debug, Clone)]
 pub(super) enum TestState {
     Idle,
@@ -34,16 +32,13 @@ pub(super) enum TestState {
     Failed(String),
 }
 
-/// 表单事件
 #[derive(Debug, Clone)]
 pub enum FormEvent {
-    /// 用户保存成功（Box 压缩枚举尺寸，config 已有十余字段）
+    /// Box 避免大型配置撑大枚举。
     Saved(Box<ConnectionConfig>),
-    /// 用户取消
     Cancelled,
 }
 
-/// driver 元数据 (id, 显示名, 当前可用)。UI 选择器按此顺序从左到右渲染
 const DRIVERS: &[(&str, &str, bool)] = &[
     ("mysql", "MySQL", true),
     ("postgres", "PostgreSQL", true),
@@ -61,15 +56,11 @@ fn bounded_input(
     InputState::new(window, cx).validate(move |value, _| value.len() <= max_bytes)
 }
 
-/// 连接表单面板
 pub struct ConnectionFormPanel {
     service: Arc<ConnectionService>,
-    /// Redis 服务（test_connection 时按 driver 路由）；Storage 与 service 共用
     redis_service: Arc<RedisService>,
-    /// MongoDB 服务（同上，按 driver 路由）
     mongo_service: Arc<MongoService>,
     pub(super) mode: FormMode,
-    /// 当前选中的 driver id（"mysql" / "postgres" / ...）
     pub(super) driver_id: &'static str,
     pub(super) name: Entity<InputState>,
     pub(super) host: Entity<InputState>,
@@ -79,25 +70,16 @@ pub struct ConnectionFormPanel {
     /// 密码显示状态仅影响界面，不属于连接配置或脏检测内容。
     pub(super) password_masked: bool,
     pub(super) database: Entity<InputState>,
-    /// MongoDB 认证库（authSource）输入框；仅 MongoDB 渲染，留空 = admin
     pub(super) auth_source: Entity<InputState>,
     /// 当前表单不渲染备注字段；编辑时仍需原样保留，避免静默丢失历史数据。
     pub(super) remark: Option<String>,
-    /// 环境标签输入框（dev / test / prod 预设快捷填充或自定义；留空不打标）
     pub(super) environment: Entity<InputState>,
-    /// 生产模式：开启后该连接由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     pub(super) production: bool,
-    /// 启用 TLS 加密传输
     pub(super) tls: bool,
-    /// TLS 身份验证等级（Full 推荐 / Ca / None 仅加密）
     pub(super) tls_verify: ramag_domain::entities::TlsVerify,
-    /// 自定义 CA 证书路径输入框（PEM，可选；仅 tls 开启时渲染）
     pub(super) ca_cert_path: Entity<InputState>,
-    /// 连接 URI 粘贴框（各 driver 通用）：解析回填地址 / 凭证 / 库 / TLS，MongoDB 额外 authSource
     pub(super) uri: Entity<InputState>,
-    /// SSH 跳板目标（user@host / 别名；留空不走隧道，认证由系统 ssh 处理）
     pub(super) ssh_target: Entity<InputState>,
-    /// SSH 跳板端口（留空 = 22 或 ~/.ssh/config 决定）
     pub(super) ssh_port: Entity<InputState>,
     pub(super) test_state: TestState,
     /// 测试结果代次：连接参数变更即递增，在途测试结果代次不符则丢弃
@@ -108,7 +90,6 @@ pub struct ConnectionFormPanel {
     _subscriptions: Vec<Subscription>,
 }
 
-/// 表单可编辑项的值快照（脏检测用；输入框取字符串值，开关取枚举/布尔）
 #[derive(PartialEq)]
 struct FormSnapshot {
     driver_id: &'static str,
@@ -168,8 +149,6 @@ impl ConnectionFormPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // 新建：输入框留空，默认值以 placeholder 虚影呈现（保存留空回退，见 ops::validate）
-        // 编辑：回填已有连接的真实值
         let is_create = prefill.is_none();
         let p = prefill.unwrap_or_else(|| ConnectionConfig {
             id: ConnectionId::new(),
@@ -197,7 +176,6 @@ impl ConnectionFormPanel {
         } else {
             p.port.to_string()
         };
-        // 名称留空时保存即用 Host 作为连接名，虚影同步显示这一默认
         let name_placeholder = if p.host.is_empty() {
             defaults::DEFAULT_HOST.to_string()
         } else {
@@ -235,30 +213,25 @@ impl ConnectionFormPanel {
                 .placeholder(defaults::database_placeholder(driver_id))
                 .default_value(p.database.unwrap_or_default())
         });
-        // 认证库（authSource）：仅 MongoDB 渲染，虚影提示默认 admin
         let auth_source = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_IDENTIFIER_BYTES, window, cx)
                 .placeholder("admin")
                 .default_value(p.auth_source.unwrap_or_default())
         });
-        // 环境标签：预设按钮快捷填充或直接输入自定义值；仅列表徽章展示，不影响连接
         let environment = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_ENVIRONMENT_BYTES, window, cx)
                 .placeholder("自定义，如 staging（留空不打标）")
                 .default_value(p.environment.unwrap_or_default())
         });
-        // 自定义 CA 证书路径（仅 TLS 开启时渲染；留空用系统信任链）
         let ca_cert_path = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_PATH_BYTES, window, cx)
                 .placeholder("CA 证书路径（PEM，可选；留空用系统信任链）")
                 .default_value(p.ca_cert_path.unwrap_or_default())
         });
-        // 连接 URI 粘贴框（各 driver 通用）：粘贴后点「填充」解析回填表单
         let uri = cx.new(|cx| {
             bounded_input(uri::MAX_URI_BYTES, window, cx)
                 .placeholder(defaults::uri_placeholder(driver_id))
         });
-        // SSH 跳板：target 非空即启用；认证走系统 ssh（密钥 / agent / config 别名）
         let ssh_target = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_SSH_TARGET_BYTES, window, cx)
                 .placeholder("user@bastion 或 ~/.ssh/config 别名（留空不启用）")
@@ -270,7 +243,7 @@ impl ConnectionFormPanel {
                 .default_value(p.ssh_port.map(|v| v.to_string()).unwrap_or_default())
         });
 
-        // host 变化 → 名称虚影跟随（名称始终留给用户输入，不写入真实值）
+        // 名称留空时跟随主机名，但不写入真实值。
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
             &host,
@@ -288,7 +261,6 @@ impl ConnectionFormPanel {
             },
         ));
 
-        // 环境标签输入变化 → 刷新预设按钮选中态；标签不影响连通性，不重置测试结论
         subscriptions.push(cx.subscribe_in(
             &environment,
             window,
@@ -299,7 +271,7 @@ impl ConnectionFormPanel {
             },
         ));
 
-        // 连接参数变化 → 重置已显示的测试结论（旧结论对新参数不成立）；名称/颜色不影响连通性
+        // 连接参数变化后，旧测试结论失效。
         for input in [
             &host,
             &port,
@@ -361,12 +333,10 @@ impl ConnectionFormPanel {
             },
             _subscriptions: subscriptions,
         };
-        // 快照要读输入框真实值（default_value 已写入），struct 建好后再取一次
         this.initial = this.snapshot(cx);
         this
     }
 
-    /// 当前表单值快照（与 initial 比对做脏检测）
     fn snapshot(&self, cx: &gpui::App) -> FormSnapshot {
         let fields = [
             &self.name,
@@ -394,7 +364,6 @@ impl ConnectionFormPanel {
         }
     }
 
-    /// 是否有未保存的修改（关闭前脏保护判定）
     pub fn is_dirty(&self, cx: &gpui::App) -> bool {
         self.snapshot(cx) != self.initial
     }
@@ -404,7 +373,6 @@ impl ConnectionFormPanel {
     }
 }
 
-/// 在调用方使用：根据 mode 计算 dialog 标题（不显示具体 driver，已由表单内 driver 选择行体现）
 pub fn dialog_title(mode: &FormMode) -> &'static str {
     match mode {
         FormMode::Create => "新建连接",
@@ -413,7 +381,6 @@ pub fn dialog_title(mode: &FormMode) -> &'static str {
 }
 
 impl ConnectionFormPanel {
-    /// 公开 mode 给 dialog 标题使用
     pub fn mode(&self) -> &FormMode {
         &self.mode
     }
@@ -445,7 +412,6 @@ pub(super) fn field_row(label: &str, input: Input) -> impl IntoElement {
         .child(div().w_full().child(input))
 }
 
-/// DriverKind → driver_id 字符串（用于 UI 选择器内部状态）
 fn driver_kind_to_id(kind: DriverKind) -> &'static str {
     match kind {
         DriverKind::Mysql => "mysql",
@@ -455,7 +421,6 @@ fn driver_kind_to_id(kind: DriverKind) -> &'static str {
     }
 }
 
-/// driver id → 显示名（查 DRIVERS 表）；未知 id 原样返回
 pub(super) fn driver_display_name(id: &str) -> &str {
     DRIVERS
         .iter()
@@ -463,7 +428,6 @@ pub(super) fn driver_display_name(id: &str) -> &str {
         .map_or(id, |(_, name, _)| *name)
 }
 
-/// driver_id → DriverKind；不可用 / 未来 driver 返回 None
 fn id_to_driver_kind(id: &str) -> Option<DriverKind> {
     match id {
         "mysql" => Some(DriverKind::Mysql),
@@ -473,10 +437,6 @@ fn id_to_driver_kind(id: &str) -> Option<DriverKind> {
         _ => None,
     }
 }
-
-// 注：ConnectionFormPanel 没有提供 cx.new 工厂函数，因为 InputState 需要 &mut Window，
-// 而 cx.new 的闭包只能拿到 Context。调用方必须在持有 Window 的上下文里直接调用：
-//   `cx.new(|cx| ConnectionFormPanel::new_create(svc, window, cx))`
 
 mod defaults;
 mod ops;
