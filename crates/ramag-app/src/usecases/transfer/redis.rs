@@ -15,8 +15,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, DriverKind, ProgressFn, RedisType, RedisValue, StreamEntry,
-    TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS, TransferSummary, ValuePageCursor,
+    ConflictPolicy, ConnectionConfig, DriverKind, MAX_REDIS_VALUE_PAGE_BATCH, ProgressFn,
+    RedisType, RedisValue, RedisValuePage, StreamEntry, TRANSFER_BATCH_BYTES,
+    TRANSFER_BATCH_ITEMS, TransferSummary,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
@@ -61,35 +62,53 @@ pub async fn export_redis_db(
         let mut line = Vec::with_capacity(64 * 1024);
         let mut cursor = 0u64;
         let mut vanished = 0u64;
+        let key_source = ExportKeySource { svc, config, db };
         loop {
             let batch = svc
                 .scan_batch(config, db, cursor, None, None, SCAN_BATCH)
                 .await?;
-            for meta in &batch.keys {
+            for key_batch in batch.keys.chunks(MAX_REDIS_VALUE_PAGE_BATCH) {
                 if is_cancelled(cancel) {
                     summary.cancelled = true;
                     return Ok(finish_summary(summary, start));
                 }
-                match export_key(
-                    svc,
-                    config,
-                    db,
-                    &meta.key,
-                    &mut sink,
-                    &mut line,
-                    &mut summary,
-                )
-                .await?
-                {
-                    KeyOutcome::Exported => {
-                        summary.objects += 1;
-                    }
-                    KeyOutcome::Vanished => vanished += 1,
+                let keys = key_batch
+                    .iter()
+                    .map(|meta| meta.key.clone())
+                    .collect::<Vec<_>>();
+                let pages = svc
+                    .read_value_first_pages(config, db, &keys, PAGE_ITEMS)
+                    .await?;
+                if pages.len() != key_batch.len() {
+                    return Err(DomainError::QueryFailed(format!(
+                        "Redis 批量首页数量不一致：{} / {}",
+                        pages.len(),
+                        key_batch.len()
+                    )));
                 }
-                reporter.snapshot.objects_done += 1;
-                reporter.snapshot.items_done = summary.items;
-                reporter.snapshot.bytes = sink.bytes_written();
-                reporter.emit_every(PROGRESS_EVERY_KEYS);
+                for (meta, page) in key_batch.iter().zip(pages) {
+                    if is_cancelled(cancel) {
+                        summary.cancelled = true;
+                        return Ok(finish_summary(summary, start));
+                    }
+                    match export_key(
+                        &key_source,
+                        &meta.key,
+                        page,
+                        &mut sink,
+                        &mut line,
+                        &mut summary,
+                    )
+                    .await?
+                    {
+                        KeyOutcome::Exported => summary.objects += 1,
+                        KeyOutcome::Vanished => vanished += 1,
+                    }
+                    reporter.snapshot.objects_done += 1;
+                    reporter.snapshot.items_done = summary.items;
+                    reporter.snapshot.bytes = sink.bytes_written();
+                    reporter.emit_every(PROGRESS_EVERY_KEYS);
+                }
             }
             cursor = batch.cursor;
             if cursor == 0 {
@@ -114,19 +133,20 @@ enum KeyOutcome {
     Vanished,
 }
 
-async fn export_key(
-    svc: &RedisService,
-    config: &ConnectionConfig,
+struct ExportKeySource<'a> {
+    svc: &'a RedisService,
+    config: &'a ConnectionConfig,
     db: u8,
+}
+
+async fn export_key(
+    source: &ExportKeySource<'_>,
     key: &str,
+    mut page: RedisValuePage,
     sink: &mut super::ExportSink,
     line: &mut Vec<u8>,
     summary: &mut TransferSummary,
 ) -> Result<KeyOutcome> {
-    // 首页 kind=None：driver 单次调用内探测 TYPE + PTTL 并带回首批内容
-    let mut page = svc
-        .read_value_page(config, db, key, None, ValuePageCursor::Start, PAGE_ITEMS)
-        .await?;
     let Some(kind) = value_kind(&page.items) else {
         return Ok(KeyOutcome::Vanished);
     };
@@ -142,8 +162,9 @@ async fn export_key(
         summary.items += count;
         write_fragment_records(sink, line, key, kind, ttl_ms, &mut first, fragment)?;
         let Some(next) = page.next.clone() else { break };
-        page = svc
-            .read_value_page(config, db, key, Some(kind), next, PAGE_ITEMS)
+        page = source
+            .svc
+            .read_value_page(source.config, source.db, key, Some(kind), next, PAGE_ITEMS)
             .await?;
     }
     if skipped_items > 0 {

@@ -26,6 +26,8 @@ pub const MAX_REDIS_COLLECTION_BYTES: usize = super::MAX_INTERACTIVE_RESULT_BYTE
 pub const MAX_REDIS_SCAN_COUNT: u32 = 5_000;
 /// `scan_all` 是小批辅助接口，不允许被直接调用成无界全库加载。
 pub const MAX_REDIS_SCAN_ALL_KEYS: usize = 10_000;
+/// 全量迁移首页预取窗口；限制同时驻留的值页数量，避免并发吞吐放大内存峰值。
+pub const MAX_REDIS_VALUE_PAGE_BATCH: usize = 16;
 
 pub fn validate_redis_key(key: &str) -> Result<()> {
     if key.len() > MAX_REDIS_KEY_BYTES {

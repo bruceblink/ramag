@@ -77,6 +77,7 @@ impl RedbStorage {
         repos::clip_repo::migrate_indexes(db.clone(), cipher.clone())?;
         let _ = repos::connection_repo::list(db.clone(), cipher.clone())?;
         repos::clip_repo::validate_key(db.clone(), cipher.clone())?;
+        repos::clip_repo::initialize_search_index(db.clone(), cipher.clone())?;
 
         info!(path = %path.display(), "redb storage opened");
 

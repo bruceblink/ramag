@@ -49,7 +49,7 @@ pub fn list_branches(repo_path: &Path, kind: BranchKind) -> Result<Vec<Branch>> 
     })
 }
 
-/// 本地与远程分支共用一次 `for-each-ref`，与 Zed 的批量读取策略一致。
+/// 本地与远程分支共用一次 `for-each-ref`，避免重复启动 Git 子进程。
 pub fn list_all_branches(repo_path: &Path) -> Result<(Vec<Branch>, Vec<Branch>)> {
     query_branches(repo_path, &["refs/heads/", "refs/remotes/"])
 }

@@ -1,12 +1,13 @@
 //! RedisDriver。实现 KvDriver。每个方法：clone config + pool 句柄 → run_in_tokio → 取 mgr 发命令 → 解码 → 映射错
 
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt as _};
 use ramag_domain::entities::{
     ConnectionConfig, DriverKind, INTERACTIVE_RESULT_WARNING_BYTES, KeyMeta,
-    MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS, RedisType, RedisValue, RedisValueLoad,
-    RedisValuePage, ScanResult, StreamEntry, ValuePageCursor, validate_redis_collection_limit,
-    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
-    validate_redis_scan_count,
+    MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_VALUE_PAGE_BATCH, RedisType,
+    RedisValue, RedisValueLoad, RedisValuePage, ScanResult, StreamEntry, ValuePageCursor,
+    validate_redis_collection_limit, validate_redis_command, validate_redis_key,
+    validate_redis_match_pattern, validate_redis_scan_count,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
@@ -254,6 +255,54 @@ impl KvDriver for RedisDriver {
         run_in_tokio(async move {
             let mut mgr = pools.get_or_create(&config, db).await?;
             crate::value_page::read_page(&mut mgr, &key, kind, cursor, max_items).await
+        })
+        .await
+    }
+
+    async fn read_value_first_pages(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+        max_items: u32,
+    ) -> Result<Vec<RedisValuePage>> {
+        ensure_redis_config(config)?;
+        crate::value_page::validate_page_items(max_items)?;
+        if keys.len() > MAX_REDIS_VALUE_PAGE_BATCH {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis 值页批量读取超过 {MAX_REDIS_VALUE_PAGE_BATCH} 个上限"
+            )));
+        }
+        for key in keys {
+            validate_redis_key(key)?;
+        }
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let config = config.clone();
+        let keys = keys.to_vec();
+        let pools = self.pools.clone_handle();
+        run_in_tokio(async move {
+            let mgr = pools.get_or_create(&config, db).await?;
+            let reads = keys.into_iter().map(|key| {
+                let mut connection = mgr.clone();
+                async move {
+                    crate::value_page::read_page(
+                        &mut connection,
+                        &key,
+                        None,
+                        ValuePageCursor::Start,
+                        max_items,
+                    )
+                    .await
+                }
+            });
+            let results = stream::iter(reads)
+                .buffered(MAX_REDIS_VALUE_PAGE_BATCH)
+                .collect::<Vec<_>>()
+                .await;
+            results.into_iter().collect()
         })
         .await
     }

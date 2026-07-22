@@ -1,14 +1,17 @@
 //! 仓库文件系统监听：按路径增量刷新工作区，Git 元数据变化才刷新完整状态与分支。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use ramag_domain::entities::{MAX_INCREMENTAL_STATUS_PATH_BYTES, MAX_INCREMENTAL_STATUS_PATHS};
 
-/// 路径级 status 成本有界，因此用短于 Zed 100ms 的尾缘窗口降低保存后的可见延迟。
-const DEBOUNCE: Duration = Duration::from_millis(60);
+/// 单次文件保存通常在数毫秒内产生一组事件；安静一个短窗口后立即刷新。
+const DEBOUNCE_QUIET: Duration = Duration::from_millis(12);
+/// 持续事件流也必须定期交付，避免尾缘防抖无限延后界面状态。
+const DEBOUNCE_MAX: Duration = Duration::from_millis(40);
 const MAX_GIT_POINTER_FILE_BYTES: u64 = 4 * 1024;
 
 /// 一批文件系统事件对应的最小刷新范围。
@@ -137,8 +140,14 @@ impl RepoWatcher {
             .name("ramag-vcs-fs-debounce".into())
             .spawn(move || {
                 while rx.recv().is_ok() {
+                    let deadline = Instant::now() + DEBOUNCE_MAX;
                     loop {
-                        match rx.recv_timeout(DEBOUNCE) {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            break;
+                        }
+                        let timeout = DEBOUNCE_QUIET.min(deadline.saturating_duration_since(now));
+                        match rx.recv_timeout(timeout) {
                             Ok(()) => continue,
                             Err(mpsc::RecvTimeoutError::Timeout) => break,
                             Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -300,23 +309,18 @@ fn coalesce_paths(paths: &mut Vec<String>) {
     paths.sort_unstable();
     paths.dedup();
     let mut coalesced: Vec<String> = Vec::with_capacity(paths.len());
+    let mut retained = HashSet::with_capacity(paths.len());
     for path in paths.drain(..) {
-        if coalesced
-            .iter()
-            .any(|ancestor| path_matches_prefix(&path, ancestor))
-        {
+        let has_ancestor = path
+            .match_indices('/')
+            .any(|(separator, _)| retained.contains(&path[..separator]));
+        if has_ancestor {
             continue;
         }
+        retained.insert(path.clone());
         coalesced.push(path);
     }
     *paths = coalesced;
-}
-
-fn path_matches_prefix(path: &str, prefix: &str) -> bool {
-    path == prefix
-        || path
-            .strip_prefix(prefix)
-            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn merge_pending(pending: &Mutex<RepoRefresh>, change: RepoRefresh) {
@@ -363,6 +367,15 @@ mod tests {
         assert!(!refresh.full_status);
         assert!(!refresh.refresh_refs);
         assert_eq!(refresh.paths, ["src"]);
+    }
+
+    #[test]
+    fn coalescing_keeps_ancestor_across_lexically_interleaved_sibling() {
+        let mut paths = vec!["a/x".into(), "a-b".into(), "a".into()];
+
+        coalesce_paths(&mut paths);
+
+        assert_eq!(paths, ["a", "a-b"]);
     }
 
     #[test]

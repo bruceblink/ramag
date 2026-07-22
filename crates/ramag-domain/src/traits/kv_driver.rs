@@ -4,10 +4,10 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    ConnectionConfig, ConnectionId, RedisType, RedisValue, RedisValueLoad, RedisValuePage,
-    ScanResult, ValuePageCursor,
+    ConnectionConfig, ConnectionId, MAX_REDIS_VALUE_PAGE_BATCH, RedisType, RedisValue,
+    RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor,
 };
-use crate::error::Result;
+use crate::error::{DomainError, Result};
 
 #[async_trait]
 pub trait KvDriver: Send + Sync {
@@ -69,6 +69,30 @@ pub trait KvDriver: Send + Sync {
         Err(crate::error::DomainError::NotImplemented(
             "read_value_page".into(),
         ))
+    }
+
+    /// 导出首页的有界批量读取。返回顺序必须与 `keys` 一致；默认实现保持串行兼容，
+    /// Redis 驱动可在内部复用多路连接并发，调用方仍按原顺序流式写出。
+    async fn read_value_first_pages(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+        max_items: u32,
+    ) -> Result<Vec<RedisValuePage>> {
+        if keys.len() > MAX_REDIS_VALUE_PAGE_BATCH {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis 值页批量读取超过 {MAX_REDIS_VALUE_PAGE_BATCH} 个上限"
+            )));
+        }
+        let mut pages = Vec::with_capacity(keys.len());
+        for key in keys {
+            pages.push(
+                self.read_value_page(config, db, key, None, ValuePageCursor::Start, max_items)
+                    .await?,
+            );
+        }
+        Ok(pages)
     }
 
     /// 导入用分段写：把片段合并进 key（List→RPUSH / Hash→HSET / Set→SADD /

@@ -7,7 +7,6 @@
 //! - `clip_uuid_meta`：key=uuid，value="recency_key\thash" —— 更新/删除时反查清旧索引
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
@@ -16,9 +15,7 @@ use redb::{
 };
 use tracing::{debug, info};
 
-use ramag_domain::entities::{
-    ClipItem, ClipSearchResult, MAX_CLIPBOARD_SEARCH_BYTES, contains_case_insensitive,
-};
+use ramag_domain::entities::ClipItem;
 use ramag_domain::error::{DomainError, Result};
 
 use crate::encryption::Cipher;
@@ -32,6 +29,14 @@ const MAX_CLIP_MEDIA_PATHS: usize = 200_000;
 const MAX_CLIP_MEDIA_PATH_BYTES: usize = 256 * 1024;
 const MAX_CLIP_MEDIA_PATH_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CLIP_PRUNE_BATCH: usize = 10_000;
+
+mod prune;
+mod search;
+use prune::{PruneSelection, select_prune_candidates};
+pub(crate) use search::{
+    initialize_index as initialize_search_index, search, search_cancellable,
+    search_cancellable_bounded,
+};
 
 /// 主表：key=ClipId UUID，value=加密 JSON（hex）
 pub(crate) const CLIPS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("clips");
@@ -52,20 +57,28 @@ fn encode(item: &ClipItem, cipher: &Cipher) -> Result<String> {
     cipher.encrypt(&json)
 }
 
-fn decode(hex: &str, cipher: &Cipher) -> Result<ClipItem> {
-    let json = cipher.decrypt(hex)?;
-    serde_json::from_str(&json)
-        .map_err(|e| DomainError::Storage(format!("反序列化剪贴条目失败：{e}")))
+fn decode_record(uuid: &str, hex: &str, cipher: &Cipher) -> Result<ClipItem> {
+    decode_record_reusing(uuid, hex, cipher, &mut Vec::new())
 }
 
-fn decode_record(uuid: &str, hex: &str, cipher: &Cipher) -> Result<ClipItem> {
+fn decode_record_reusing(
+    uuid: &str,
+    hex: &str,
+    cipher: &Cipher,
+    scratch: &mut Vec<u8>,
+) -> Result<ClipItem> {
     bounded_json::ensure_len(
         hex.len(),
         MAX_CLIP_RECORD_HEX_BYTES,
         &format!("剪贴条目 {uuid} 密文"),
     )?;
-    decode(hex, cipher).map_err(|error| {
+    let json = cipher.decrypt_hex_into(hex, scratch).map_err(|error| {
         DomainError::Storage(format!("读取剪贴条目 {uuid} 失败：{}", error.message()))
+    })?;
+    serde_json::from_slice(json).map_err(|error| {
+        DomainError::Storage(format!(
+            "读取剪贴条目 {uuid} 失败：反序列化剪贴条目失败：{error}"
+        ))
     })
 }
 
@@ -139,6 +152,7 @@ fn load_all(db: &Arc<Database>, cipher: &Cipher) -> Result<Vec<ClipItem>> {
     let table = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
     let mut out = Vec::new();
     let mut retained_bytes = 0usize;
+    let mut scratch = Vec::new();
     for entry in table.iter().map_err(store_err)? {
         let (uuid, value) = entry.map_err(store_err)?;
         let (_, next_bytes) = bounded_json::next_collection_budget(
@@ -150,19 +164,27 @@ fn load_all(db: &Arc<Database>, cipher: &Cipher) -> Result<Vec<ClipItem>> {
             "剪贴板全量列表",
         )?;
         retained_bytes = next_bytes;
-        out.push(decode_record(uuid.value(), value.value(), cipher)?);
+        out.push(decode_record_reusing(
+            uuid.value(),
+            value.value(),
+            cipher,
+            &mut scratch,
+        )?);
     }
     Ok(out)
 }
 
 pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipItem) -> Result<()> {
-    let enc = {
-        let cipher = cipher.read();
-        encode(&item, &cipher)?
-    };
     let uuid = item.id.to_string();
     let hash = item.content_hash.clone();
     let rk = recency_key(item.last_used_at, &uuid);
+    let (enc, search_filter) = {
+        let cipher = cipher.read();
+        (
+            encode(&item, &cipher)?,
+            search::build_filter(&item, &cipher),
+        )
+    };
 
     let write_txn = db.begin_write().map_err(store_err)?;
     {
@@ -170,6 +192,9 @@ pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipIte
         let mut by_time = write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
         let mut by_hash = write_txn.open_table(CLIP_BY_HASH).map_err(store_err)?;
         let mut meta = write_txn.open_table(CLIP_UUID_META).map_err(store_err)?;
+        let mut search_filters = write_txn
+            .open_table(search::CLIP_SEARCH_FILTERS)
+            .map_err(store_err)?;
 
         // 已存在（更新 last_used）→ 删旧时间索引项（recency_key 已变）
         let old_meta = match meta.get(uuid.as_str()).map_err(store_err)? {
@@ -186,6 +211,7 @@ pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipIte
         };
         if let Some((old_rk, old_hash)) = old_meta {
             by_time.remove(old_rk.as_str()).map_err(store_err)?;
+            search_filters.remove(old_rk.as_str()).map_err(store_err)?;
             if old_hash != hash {
                 remove_hash_if_owned(&mut by_hash, &old_hash, &uuid)?;
             }
@@ -196,6 +222,9 @@ pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipIte
             .map_err(store_err)?;
         by_time
             .insert(rk.as_str(), uuid.as_str())
+            .map_err(store_err)?;
+        search_filters
+            .insert(rk.as_str(), search_filter.as_slice())
             .map_err(store_err)?;
         by_hash
             .insert(hash.as_str(), uuid.as_str())
@@ -238,9 +267,10 @@ pub(crate) fn media_paths(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Res
     let clips = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
     let mut paths = Vec::new();
     let mut retained_bytes = 0usize;
+    let mut scratch = Vec::new();
     for entry in clips.iter().map_err(store_err)? {
         let (uuid, value) = entry.map_err(store_err)?;
-        let item = decode_record(uuid.value(), value.value(), &cipher)?;
+        let item = decode_record_reusing(uuid.value(), value.value(), &cipher, &mut scratch)?;
         for path in [item.image_path, item.thumb_path].into_iter().flatten() {
             push_media_path(&mut paths, &mut retained_bytes, path)?;
         }
@@ -273,13 +303,14 @@ pub(crate) fn list_recent_bounded(
     let clips = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
     let mut out = Vec::new();
     let mut total_inline_bytes = 0u64;
+    let mut scratch = Vec::new();
     for entry in by_time.iter().map_err(store_err)?.take(limit) {
         let (rk, uuid_g) = entry.map_err(store_err)?;
         let uuid = uuid_g.value();
         let enc_g = clips.get(uuid).map_err(store_err)?.ok_or_else(|| {
             DomainError::Storage(format!("剪贴时间索引 {} 指向缺失条目 {uuid}", rk.value()))
         })?;
-        let item = decode_record(uuid, enc_g.value(), &cipher)?;
+        let item = decode_record_reusing(uuid, enc_g.value(), &cipher, &mut scratch)?;
         let next_total = total_inline_bytes.saturating_add(item.inline_payload_bytes());
         if !out.is_empty() && next_total > max_inline_bytes {
             break;
@@ -293,98 +324,6 @@ pub(crate) fn list_recent_bounded(
     Ok(out)
 }
 
-/// 全量搜索：时间索引最近优先遍历，解密匹配 query（preview/text，大小写不敏感），到 limit 停。
-/// 早停让"最近匹配"快；罕见词最坏 O(N) 解密，但在后台、仅主动搜索时触发
-pub(crate) fn search(
-    db: Arc<Database>,
-    cipher: Arc<RwLock<Cipher>>,
-    query: String,
-    limit: usize,
-) -> Result<Vec<ClipItem>> {
-    Ok(search_cancellable_bounded(
-        db,
-        cipher,
-        query,
-        limit,
-        u64::MAX,
-        Arc::new(AtomicBool::new(false)),
-    )?
-    .items)
-}
-
-/// 搜索过程中响应上层代际取消，避免过期查询继续占用存储工作线程并全表解密。
-pub(crate) fn search_cancellable(
-    db: Arc<Database>,
-    cipher: Arc<RwLock<Cipher>>,
-    query: String,
-    limit: usize,
-    cancelled: Arc<AtomicBool>,
-) -> Result<Vec<ClipItem>> {
-    Ok(search_cancellable_bounded(db, cipher, query, limit, u64::MAX, cancelled)?.items)
-}
-
-/// 搜索命中在加入结果向量前同时检查条数与正文预算，并返回明确截断状态。
-pub(crate) fn search_cancellable_bounded(
-    db: Arc<Database>,
-    cipher: Arc<RwLock<Cipher>>,
-    query: String,
-    limit: usize,
-    max_inline_bytes: u64,
-    cancelled: Arc<AtomicBool>,
-) -> Result<ClipSearchResult> {
-    if query.len() > MAX_CLIPBOARD_SEARCH_BYTES {
-        return Err(DomainError::InvalidConfig(format!(
-            "剪贴历史搜索词超过 {MAX_CLIPBOARD_SEARCH_BYTES} bytes 上限"
-        )));
-    }
-    let q = query.trim().to_lowercase();
-    if q.is_empty() || cancelled.load(Ordering::Relaxed) {
-        return Ok(ClipSearchResult {
-            items: Vec::new(),
-            truncated: false,
-        });
-    }
-    let cipher = cipher.read();
-    let read_txn = db.begin_read().map_err(store_err)?;
-    let by_time = read_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-    let clips = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
-    let mut out = Vec::new();
-    let mut total_inline_bytes = 0u64;
-    let mut truncated = false;
-    for entry in by_time.iter().map_err(store_err)? {
-        if cancelled.load(Ordering::Relaxed) {
-            break;
-        }
-        let (rk, uuid_g) = entry.map_err(store_err)?;
-        let uuid = uuid_g.value();
-        let enc_g = clips.get(uuid).map_err(store_err)?.ok_or_else(|| {
-            DomainError::Storage(format!("剪贴时间索引 {} 指向缺失条目 {uuid}", rk.value()))
-        })?;
-        let item = decode_record(uuid, enc_g.value(), &cipher)?;
-        let hit = contains_case_insensitive(&item.preview, &q)
-            || item
-                .text
-                .as_deref()
-                .is_some_and(|text| contains_case_insensitive(text, &q));
-        if hit {
-            let next_total = total_inline_bytes.saturating_add(item.inline_payload_bytes());
-            let count_full = out.len() >= limit;
-            let bytes_full =
-                max_inline_bytes == 0 || (!out.is_empty() && next_total > max_inline_bytes);
-            if count_full || bytes_full {
-                truncated = true;
-                break;
-            }
-            total_inline_bytes = next_total;
-            out.push(item);
-        }
-    }
-    Ok(ClipSearchResult {
-        items: out,
-        truncated,
-    })
-}
-
 pub(crate) fn delete(db: Arc<Database>, id: String) -> Result<()> {
     let write_txn = db.begin_write().map_err(store_err)?;
     {
@@ -392,6 +331,9 @@ pub(crate) fn delete(db: Arc<Database>, id: String) -> Result<()> {
         let mut by_time = write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
         let mut by_hash = write_txn.open_table(CLIP_BY_HASH).map_err(store_err)?;
         let mut meta = write_txn.open_table(CLIP_UUID_META).map_err(store_err)?;
+        let mut search_filters = write_txn
+            .open_table(search::CLIP_SEARCH_FILTERS)
+            .map_err(store_err)?;
 
         let clip_exists = clips.get(id.as_str()).map_err(store_err)?.is_some();
         let info = match meta.get(id.as_str()).map_err(store_err)? {
@@ -408,6 +350,7 @@ pub(crate) fn delete(db: Arc<Database>, id: String) -> Result<()> {
         };
         if let Some((rk, hash)) = info {
             by_time.remove(rk.as_str()).map_err(store_err)?;
+            search_filters.remove(rk.as_str()).map_err(store_err)?;
             remove_hash_if_owned(&mut by_hash, &hash, &id)?;
         }
         meta.remove(id.as_str()).map_err(store_err)?;
@@ -447,7 +390,14 @@ pub(crate) fn clear(db: Arc<Database>) -> Result<()> {
     write_txn.delete_table(CLIP_BY_TIME).map_err(store_err)?;
     write_txn.delete_table(CLIP_BY_HASH).map_err(store_err)?;
     write_txn.delete_table(CLIP_UUID_META).map_err(store_err)?;
+    write_txn
+        .delete_table(search::CLIP_SEARCH_FILTERS)
+        .map_err(store_err)?;
+    write_txn
+        .delete_table(search::CLIP_SEARCH_META)
+        .map_err(store_err)?;
     ensure_table(&write_txn)?;
+    search::mark_ready(&write_txn)?;
     write_txn.commit().map_err(store_err)?;
     info!("clips cleared");
     Ok(())
@@ -462,11 +412,15 @@ pub(crate) fn prune(
 ) -> Result<Vec<String>> {
     let cutoff_millis = (Utc::now() - Duration::days(i64::from(max_age_days))).timestamp_millis();
 
-    // 快速路径：未超量 + 最旧未超龄 → 无需清理，避免正常采集每次都全表扫描索引
-    {
+    let PruneSelection {
+        doomed,
+        batch_full: prune_batch_full,
+        scanned,
+    } = {
         let read_txn = db.begin_read().map_err(store_err)?;
         let by_time = read_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
         let total = by_time.len().map_err(store_err)?;
+        // 快速路径：未超量 + 最旧未超龄 → 无需清理，避免正常采集每次都扫描索引。
         let oldest_over_age = match by_time.iter().map_err(store_err)?.next_back() {
             Some(entry) => {
                 let (rk_g, _) = entry.map_err(store_err)?;
@@ -477,25 +431,8 @@ pub(crate) fn prune(
         if total <= u64::from(max_items) && !oldest_over_age {
             return Ok(Vec::new());
         }
-    }
-
-    let (doomed, prune_batch_full): (Vec<String>, bool) = {
-        let read_txn = db.begin_read().map_err(store_err)?;
-        let by_time = read_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-        let mut doomed = Vec::with_capacity(MAX_CLIP_PRUNE_BATCH);
-        for (idx, entry) in by_time.iter().map_err(store_err)?.enumerate() {
-            let (rk_g, uuid_g) = entry.map_err(store_err)?;
-            let over_count = idx >= max_items as usize;
-            let over_age = millis_from_recency_key(rk_g.value())? < cutoff_millis;
-            if over_count || over_age {
-                doomed.push(uuid_g.value().to_string());
-                if doomed.len() >= MAX_CLIP_PRUNE_BATCH {
-                    break;
-                }
-            }
-        }
-        let full = doomed.len() >= MAX_CLIP_PRUNE_BATCH;
-        (doomed, full)
+        let excess = total.saturating_sub(u64::from(max_items));
+        select_prune_candidates(&by_time, excess, cutoff_millis)?
     };
     if doomed.is_empty() {
         return Ok(Vec::new());
@@ -508,6 +445,7 @@ pub(crate) fn prune(
         let clips = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
         let mut imgs = Vec::new();
         let mut retained_bytes = 0usize;
+        let mut scratch = Vec::new();
         for uuid in &doomed {
             let value = clips
                 .get(uuid.as_str())
@@ -515,7 +453,7 @@ pub(crate) fn prune(
                 .ok_or_else(|| {
                     DomainError::Storage(format!("待清理剪贴索引指向缺失条目 {uuid}"))
                 })?;
-            let item = decode_record(uuid, value.value(), &cipher)?;
+            let item = decode_record_reusing(uuid, value.value(), &cipher, &mut scratch)?;
             for path in [item.image_path, item.thumb_path].into_iter().flatten() {
                 push_media_path(&mut imgs, &mut retained_bytes, path)?;
             }
@@ -529,6 +467,9 @@ pub(crate) fn prune(
         let mut by_time = write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
         let mut by_hash = write_txn.open_table(CLIP_BY_HASH).map_err(store_err)?;
         let mut meta = write_txn.open_table(CLIP_UUID_META).map_err(store_err)?;
+        let mut search_filters = write_txn
+            .open_table(search::CLIP_SEARCH_FILTERS)
+            .map_err(store_err)?;
         for uuid in &doomed {
             let value = meta.get(uuid.as_str()).map_err(store_err)?.ok_or_else(|| {
                 DomainError::Storage(format!("待清理剪贴条目 {uuid} 缺少索引元数据"))
@@ -538,6 +479,7 @@ pub(crate) fn prune(
             let hash = hash.to_string();
             drop(value);
             by_time.remove(rk.as_str()).map_err(store_err)?;
+            search_filters.remove(rk.as_str()).map_err(store_err)?;
             remove_hash_if_owned(&mut by_hash, &hash, uuid)?;
             meta.remove(uuid.as_str()).map_err(store_err)?;
             clips.remove(uuid.as_str()).map_err(store_err)?;
@@ -547,6 +489,7 @@ pub(crate) fn prune(
     info!(
         removed = doomed.len(),
         batch_full = prune_batch_full,
+        scanned,
         max_items,
         max_age_days,
         "clips pruned"
@@ -573,12 +516,18 @@ fn push_media_path(
     Ok(())
 }
 
-/// 由 lib.rs 在 open 时调：建主表 + 三张索引表
+/// 由 lib.rs 在 open 时调：建主表与派生索引表。
 pub(crate) fn ensure_table(write_txn: &redb::WriteTransaction) -> Result<()> {
     write_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
     write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
     write_txn.open_table(CLIP_BY_HASH).map_err(store_err)?;
     write_txn.open_table(CLIP_UUID_META).map_err(store_err)?;
+    write_txn
+        .open_table(search::CLIP_SEARCH_FILTERS)
+        .map_err(store_err)?;
+    write_txn
+        .open_table(search::CLIP_SEARCH_META)
+        .map_err(store_err)?;
     Ok(())
 }
 
@@ -597,19 +546,30 @@ pub(crate) fn migrate_indexes(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) ->
 
     let cipher = cipher.read();
     let write_txn = db.begin_write().map_err(store_err)?;
+    write_txn
+        .delete_table(search::CLIP_SEARCH_FILTERS)
+        .map_err(store_err)?;
     let mut migrated = 0usize;
     {
         let clips = write_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
         let mut by_time = write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
         let mut by_hash = write_txn.open_table(CLIP_BY_HASH).map_err(store_err)?;
         let mut meta = write_txn.open_table(CLIP_UUID_META).map_err(store_err)?;
+        let mut search_filters = write_txn
+            .open_table(search::CLIP_SEARCH_FILTERS)
+            .map_err(store_err)?;
+        let mut scratch = Vec::new();
         // 主表逐条解密后立即写三个索引；不再额外保留整表 (uuid, key, hash) 向量。
         for entry in clips.iter().map_err(store_err)? {
             let (uuid, value) = entry.map_err(store_err)?;
-            let item = decode_record(uuid.value(), value.value(), &cipher)?;
+            let item = decode_record_reusing(uuid.value(), value.value(), &cipher, &mut scratch)?;
             let rk = recency_key(item.last_used_at, uuid.value());
             by_time
                 .insert(rk.as_str(), uuid.value())
+                .map_err(store_err)?;
+            let search_filter = search::build_filter(&item, &cipher);
+            search_filters
+                .insert(rk.as_str(), search_filter.as_slice())
                 .map_err(store_err)?;
             by_hash
                 .insert(item.content_hash.as_str(), uuid.value())
@@ -619,7 +579,11 @@ pub(crate) fn migrate_indexes(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) ->
             migrated = migrated.saturating_add(1);
         }
     }
+    search::mark_ready(&write_txn)?;
     write_txn.commit().map_err(store_err)?;
     info!(count = migrated, "clip indexes migrated");
     Ok(())
 }
+
+#[cfg(test)]
+mod performance_tests;

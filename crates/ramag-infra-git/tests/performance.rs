@@ -160,8 +160,8 @@ fn reports_workspace_refresh_latency() -> Result<()> {
                     .len())
             })
             .await?;
-            report_operation("zed-equivalent rich path status", iterations, || async {
-                run_zed_reference_status(&repo_path, &path)
+            report_operation("four-command rich path status", iterations, || async {
+                run_rich_reference_status(&repo_path, &path)
             })
             .await?;
         }
@@ -206,9 +206,8 @@ fn reports_workspace_refresh_latency() -> Result<()> {
     })
 }
 
-/// 当前 Zed 路径刷新并发执行 status 与三种 numstat；这里只计进程与输出，不计解析，
-/// 因而是偏向 Zed 的保守对照下界。
-fn run_zed_reference_status(repo_path: &std::path::Path, path: &str) -> Result<usize> {
+/// 并发执行 status 与三种 numstat；这里只计进程与输出，不计解析，作为富状态保守下界。
+fn run_rich_reference_status(repo_path: &std::path::Path, path: &str) -> Result<usize> {
     let commands = [
         vec![
             "status",
@@ -245,18 +244,20 @@ fn run_zed_reference_status(repo_path: &std::path::Path, path: &str) -> Result<u
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|error| DomainError::QueryFailed(format!("启动 Zed 对照命令失败：{error}")))?;
+            .map_err(|error| {
+                DomainError::QueryFailed(format!("启动富状态对照命令失败：{error}"))
+            })?;
         children.push(child);
     }
 
     let mut bytes = 0usize;
     for child in children {
-        let output = child
-            .wait_with_output()
-            .map_err(|error| DomainError::QueryFailed(format!("等待 Zed 对照命令失败：{error}")))?;
+        let output = child.wait_with_output().map_err(|error| {
+            DomainError::QueryFailed(format!("等待富状态对照命令失败：{error}"))
+        })?;
         if !output.status.success() {
             return Err(DomainError::QueryFailed(format!(
-                "Zed 对照命令失败：{}",
+                "富状态对照命令失败：{}",
                 String::from_utf8_lossy(&output.stderr)
             )));
         }

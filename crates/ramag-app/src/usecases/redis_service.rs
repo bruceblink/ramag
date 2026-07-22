@@ -192,6 +192,23 @@ impl RedisService {
         )
     }
 
+    /// 导出首页的有界批量读取；结果顺序与 `keys` 完全一致。
+    pub async fn read_value_first_pages(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+        max_items: u32,
+    ) -> Result<Vec<RedisValuePage>> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver
+                .read_value_first_pages(config, db, keys, max_items)
+                .await
+        )
+    }
+
     /// 导入用分段写（写操作不做断连重试）
     pub async fn write_value_items(
         &self,

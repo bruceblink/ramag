@@ -32,9 +32,14 @@ tracing = { workspace = true }
 # 路径定位
 directories = { workspace = true }
 parking_lot = { workspace = true }
+# 深度搜索后台扫描与带密钥 Bloom 预筛。
+rayon = { workspace = true }
+siphasher = { workspace = true }
 
 # 加密
 aes-gcm = { workspace = true }
+# 从主密钥域分离派生搜索 token 密钥。
+sha2 = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 

@@ -717,6 +717,32 @@ async fn value_page_roundtrip_and_pagination() {
     assert!(matches!(gone.items, RedisValue::Nil));
     assert_eq!(gone.ttl_ms, Some(-2));
 
+    // 批量首页保持输入顺序、类型与 TTL；导出依赖该顺序写出稳定 JSONL。
+    let batch_keys = [
+        "vp:text",
+        "vp:bin",
+        "vp:list",
+        "vp:hash",
+        "vp:zset",
+        "vp:stream",
+        "vp:missing",
+    ]
+    .map(str::to_string);
+    let pages = driver
+        .read_value_first_pages(&config, TEST_DB, &batch_keys, 500)
+        .await
+        .expect("批量读取首页失败");
+    assert_eq!(pages.len(), batch_keys.len());
+    assert!(matches!(pages[0].items, RedisValue::Text(_)));
+    assert!(pages[0].ttl_ms.is_some_and(|ttl| ttl > 0));
+    assert!(matches!(pages[1].items, RedisValue::Bytes(_)));
+    assert!(matches!(pages[2].items, RedisValue::List(_)));
+    assert!(matches!(pages[3].items, RedisValue::Hash(_)));
+    assert!(matches!(pages[4].items, RedisValue::ZSet(_)));
+    assert!(matches!(pages[5].items, RedisValue::Stream(_)));
+    assert!(matches!(pages[6].items, RedisValue::Nil));
+    assert_eq!(pages[6].ttl_ms, Some(-2));
+
     // 生产（只读）模式拦截导入写
     let mut readonly = config.clone();
     readonly.production = true;

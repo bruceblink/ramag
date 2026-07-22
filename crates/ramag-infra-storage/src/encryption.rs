@@ -1,19 +1,41 @@
 //! AES-256-GCM 加密。格式：`nonce(12) || ciphertext || tag(16)`，hex 编码后落库
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use std::hash::Hasher as _;
+
+use aes_gcm::aead::{Aead, AeadCore, AeadInPlace, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Key, Nonce, Tag};
 use ramag_domain::error::{DomainError, Result};
+use sha2::{Digest as _, Sha256};
+use siphasher::sip::SipHasher13;
 
 pub struct Cipher {
     inner: Aes256Gcm,
+    search_hash_keys: [u64; 2],
 }
 
 impl Cipher {
     pub fn new(master_key: &[u8; 32]) -> Self {
         let key = Key::<Aes256Gcm>::from_slice(master_key);
+        let mut derivation = Sha256::new();
+        derivation.update(b"ramag-clipboard-search-index-v1\0");
+        derivation.update(master_key);
+        let derived = derivation.finalize();
+        let mut first = [0u8; 8];
+        first.copy_from_slice(&derived[..8]);
+        let mut second = [0u8; 8];
+        second.copy_from_slice(&derived[8..16]);
         Self {
             inner: Aes256Gcm::new(key),
+            search_hash_keys: [u64::from_le_bytes(first), u64::from_le_bytes(second)],
         }
+    }
+
+    /// 以主密钥派生出的独立密钥计算搜索 token；落盘索引不暴露可反查的明文摘要。
+    pub(crate) fn search_token_hash(&self, token: &[u8]) -> u64 {
+        let mut hasher =
+            SipHasher13::new_with_keys(self.search_hash_keys[0], self.search_hash_keys[1]);
+        hasher.write(token);
+        hasher.finish()
     }
 
     pub fn encrypt(&self, plaintext: &str) -> Result<String> {
@@ -47,6 +69,35 @@ impl Cipher {
 
         String::from_utf8(plaintext)
             .map_err(|e| DomainError::Storage(format!("解密结果不是 UTF-8：{e}")))
+    }
+
+    /// 把 hex 密文解入调用方复用的缓冲区，并直接返回其中的 UTF-8 JSON 字节。
+    /// 批量读取可避免每条记录重复分配 hex 解码与 AES 明文缓冲区。
+    pub(crate) fn decrypt_hex_into<'a>(
+        &self,
+        hex_blob: &str,
+        buffer: &'a mut Vec<u8>,
+    ) -> Result<&'a [u8]> {
+        let decoded_len = hex_blob.len() / 2;
+        buffer.resize(decoded_len, 0);
+        hex::decode_to_slice(hex_blob, buffer.as_mut_slice())
+            .map_err(|e| DomainError::Storage(format!("密文 hex 解析失败：{e}")))?;
+        if buffer.len() < 12 + 16 {
+            return Err(DomainError::Storage("密文长度异常".into()));
+        }
+
+        let (nonce_bytes, payload) = buffer.split_at_mut(12);
+        let ciphertext_len = payload.len() - 16;
+        let (ciphertext, tag_bytes) = payload.split_at_mut(ciphertext_len);
+        self.inner
+            .decrypt_in_place_detached(
+                Nonce::from_slice(nonce_bytes),
+                &[],
+                ciphertext,
+                Tag::from_slice(tag_bytes),
+            )
+            .map_err(|e| DomainError::Storage(format!("解密失败（密钥可能错误）：{e}")))?;
+        Ok(ciphertext)
     }
 
     /// 加密任意字节，返回 `nonce(12) || ciphertext || tag(16)` 原始字节（不 hex，图片落盘用）
