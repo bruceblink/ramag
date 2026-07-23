@@ -6,7 +6,7 @@
 //! - 大 key 续记录 `{"key":"k","more":true,"value":<片段>}`——两端全程流式、内存有界
 //!
 //! 值片段编码：string `{"text"|"hex"}`；list/set `[item…]`；hash `[[field,item]…]`；
-//! zset `[[item,score]…]`；stream `[{"id","fields":[[f,v]…]}…]`；
+//! 格式：zset `[[item,score]…]`；stream `[{"id","fields":[[f,v]…]}…]`；
 //! item = `{"t":文本}|{"x":hex}|{"i":整数}|{"f":浮点}`（二进制走 hex 保真）。
 //! TTL 语义：导出时的剩余毫秒，导入完成后 PEXPIRE 生效
 

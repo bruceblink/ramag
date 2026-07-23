@@ -1,4 +1,4 @@
-//! `redis::Value`（RESP2/RESP3）→ Domain `RedisValue`。
+//! 将 `redis::Value`（RESP2/RESP3）转换为领域层 `RedisValue`。
 //! 类型专属命令（HGETALL/LRANGE/ZRANGE/XRANGE）走配套解码函数整理结构
 
 use ramag_domain::entities::{RedisValue, StreamEntry};

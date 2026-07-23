@@ -200,7 +200,7 @@ fn apply_light_palette(theme: &mut Theme) {
     theme.blue_light = hsl(207.0, 100.0, 75.0);
 }
 
-/// 0-360 / 0-100 / 0-100 → Hsla
+/// 将 HSL 数值范围转换为 Hsla。
 fn hsl(h: f32, s: f32, l: f32) -> Hsla {
     hsla(h / 360.0, s / 100.0, l / 100.0, 1.0)
 }

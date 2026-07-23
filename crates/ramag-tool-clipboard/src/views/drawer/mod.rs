@@ -1,6 +1,4 @@
-//! 底部悬浮抽屉：全局热键唤起，仿 Paste.app 横向大卡片墙。
-//! 双击卡片 / 数字键 / 回车 → 写回剪贴板并粘贴回原应用。
-//! 由 ramag-bin 在 PopUp（NonactivatingPanel）窗口内装载
+//! 剪贴板快捷抽屉。
 
 mod card;
 
@@ -22,34 +20,29 @@ use ramag_domain::entities::ClipItem;
 
 use crate::views::helpers::filter_items;
 
-/// 过滤后最多展示的条目数（搜索在全量历史上进行，仅显示前 N 张）
+/// 可见条目上限。
 const DRAWER_LIMIT: usize = 60;
 
-/// 全量搜索去抖间隔（与主视图一致）
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
-/// 抽屉全量搜索结果上限：展示只取前 60，多取些供去重后仍填满
+/// 后台搜索多取一段，供缓存结果去重。
 const DRAWER_SEARCH_LIMIT: usize = 200;
 
 pub struct ClipboardDrawer {
     service: Arc<ClipboardService>,
-    /// 最近窗口缓存快照（即时过滤层）
     items: Vec<Arc<ClipItem>>,
-    /// 后台全量存储搜索结果（覆盖缓存窗口之外的历史；与主视图同款）
     search_results: Vec<Arc<ClipItem>>,
     search_truncated: bool,
-    /// 全量搜索去抖代际：输入变化即自增，旧回包据此丢弃
+    /// 用于丢弃过期搜索结果。
     search_gen: u64,
-    /// 当前全量搜索取消标记；新输入或抽屉关闭时终止旧扫描。
+    /// 新输入或关闭抽屉时终止旧搜索。
     search_cancel: Arc<AtomicBool>,
-    /// 过滤后可见列表上的选中下标
     selected: usize,
     search: Entity<InputState>,
-    /// 唤起时记录的平台激活标识，粘贴时恢复原窗口
+    /// 自动粘贴前恢复的原窗口。
     activation_target: Option<String>,
     auto_paste: bool,
-    /// 粘贴失败提示：渲染时经窗口通知层弹出（此时抽屉保持打开）
     pending_notification: Option<Notification>,
-    /// 粘贴进行中：关窗改为异步后防止重复回车触发二次粘贴
+    /// 防止异步关窗前重复触发粘贴。
     pasting: bool,
     scroll: ScrollHandle,
     focus_handle: FocusHandle,
@@ -79,14 +72,12 @@ impl ClipboardDrawer {
         let search = cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索…"));
 
         let mut subs = Vec::new();
-        // 输入即过滤：内容变化重置选中到首项；回车粘贴当前选中
         subs.push(cx.subscribe_in(
             &search,
             window,
             |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     this.selected = 0;
-                    // 全量搜索：覆盖缓存窗口之外的历史（旧记录也能搜到）
                     this.schedule_search(cx);
                     cx.notify();
                 }
@@ -94,10 +85,8 @@ impl ClipboardDrawer {
                 _ => {}
             },
         ));
-        // 搜索框默认聚焦，唤起即可打字过滤
         search.update(cx, |s, cx| s.focus(window, cx));
 
-        // 同步从缓存取最近窗口快照：首帧即满内容，无异步 list 的"先空后填"
         let items = service.cached_snapshot();
         Self {
             service: service.clone(),
@@ -123,7 +112,7 @@ impl ClipboardDrawer {
         &self.service
     }
 
-    /// 取缩略图解密内存图片；缓存命中同步返回，miss 异步解密填充后 notify
+    /// 缓存未命中时异步加载缩略图。
     pub(super) fn thumb_image(
         &self,
         item: Arc<ClipItem>,
@@ -164,9 +153,7 @@ impl ClipboardDrawer {
         None
     }
 
-    /// 按搜索框内容过滤 + 截断的可见列表（渲染 / 选中 / 粘贴共用同一份）。
-    /// 有搜索词时：缓存即时匹配层在前，后台全量结果去重补后（与主视图同款），
-    /// 让缓存窗口之外的旧记录也能被搜到
+    /// 合并即时缓存与后台搜索结果。
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<Arc<ClipItem>> {
         self.visible_items_with_status(cx).0
     }
@@ -199,13 +186,12 @@ impl ClipboardDrawer {
         (out, truncated)
     }
 
-    /// 搜索框变化：去抖后台全量搜索，补充缓存窗口之外的匹配（与主视图 schedule_search 同款）
     fn schedule_search(&mut self, cx: &mut Context<Self>) {
         self.search_gen = self.search_gen.wrapping_add(1);
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
         self.search_cancel.store(true, Ordering::Relaxed);
-        // 去抖等待期间只显示当前关键词的即时匹配，不能混入上一轮后台结果。
+        // 去抖期间不能混入上一轮结果。
         self.search_results.clear();
         self.search_truncated = false;
         if query.trim().is_empty() {
@@ -249,9 +235,7 @@ impl ClipboardDrawer {
         .detach();
     }
 
-    /// 粘贴可见列表第 idx 条：写回剪贴板，并按平台恢复原窗口后模拟粘贴。
-    /// 成功才关窗——恢复原窗口须在抽屉仍持有前台时执行（Windows 的
-    /// SetForegroundWindow 仅对前台进程放行）；失败保持打开并弹提示，不静默
+    /// 保持抽屉在前台直至恢复原窗口，满足 Windows 激活限制。
     pub(super) fn paste(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.pasting {
             return;
@@ -287,7 +271,6 @@ impl ClipboardDrawer {
         .detach();
     }
 
-    /// 方向键移动选中：过滤后可见列表内边界 clamp，并滚动到可见
     fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
         let n = self.visible_items(cx).len();
         if n == 0 {
@@ -302,8 +285,7 @@ impl ClipboardDrawer {
         }
     }
 
-    /// 键盘：Esc 关闭；↑/↓ 选卡片；主修饰键+1..9 直贴第 N 张。
-    /// ←/→ 被搜索框占作光标移动——GPUI 中 action 派发先于按键监听器、拦不住，故选择用上下
+    /// 左右键由输入框处理，因此上下键用于切换卡片。
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         if key == "escape" {
@@ -333,7 +315,6 @@ impl ClipboardDrawer {
         }
     }
 
-    /// 顶部工具栏：仿 Paste 居中搜索框
     fn render_topbar(&self, truncated: bool) -> impl IntoElement {
         h_flex()
             .w_full()
@@ -360,21 +341,20 @@ impl Render for ClipboardDrawer {
             window.push_notification(n, cx);
         }
 
-        // 先取 owned 颜色释放 theme 借用，否则与下方 render_card 的 &mut cx 冲突
+        // 释放主题借用，避免与 render_card 的可变借用冲突。
         let bg = cx.theme().background;
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let focus = self.focus_handle.clone();
 
         let (visible, truncated) = self.visible_items_with_status(cx);
-        // 过滤后列表变短时把选中夹回范围内
         if self.selected >= visible.len() {
             self.selected = visible.len().saturating_sub(1);
         }
         let empty = visible.is_empty();
 
         let topbar = self.render_topbar(truncated).into_any_element();
-        // for 循环（非 map 闭包）：render_card 需 &mut Context，闭包会触发借用逃逸
+        // 闭包会让 render_card 的可变借用逃逸。
         let mut cards = Vec::with_capacity(visible.len());
         for (ix, item) in visible.iter().enumerate() {
             cards.push(self.render_card(ix, item.clone(), cx).into_any_element());

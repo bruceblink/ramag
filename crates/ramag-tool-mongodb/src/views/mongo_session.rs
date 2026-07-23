@@ -2,7 +2,7 @@
 //!
 //! 由 dbclient 在 SessionEntity::Mongo 路径下装载。事件链：
 //!   tree.CollectionSelected → panel.prefill_collection（新 Tab + 自动运行 find）
-//!   tree.DatabaseActivated  → panel.set_database
+//!   数据库激活事件：tree.DatabaseActivated → panel.set_database
 
 use std::sync::Arc;
 

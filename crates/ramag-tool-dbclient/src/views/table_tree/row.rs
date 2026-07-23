@@ -1,4 +1,4 @@
-//! 扁平化树行 + 渲染。所有 TreeRow 变体高度统一 28px（uniform_list 硬约束）
+//! 数据库对象树行，统一高度 28px。
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -21,33 +21,37 @@ use crate::views::tree_helpers::{render_column_row, render_columns_placeholder};
 
 #[derive(Clone)]
 pub(super) enum TreeRow {
-    /// schema 行：可点击展开/折叠
     Schema {
         name: String,
         is_expanded: bool,
         is_system: bool,
     },
-    /// schema 下的占位行：loading / error / 空
-    SchemaPlaceholder { text: String, is_error: bool },
-    /// 分组小标题："表 (N)" / "视图 (N)"
-    GroupHeader { text: String },
-    /// 表/视图行
+    SchemaPlaceholder {
+        text: String,
+        is_error: bool,
+    },
+    GroupHeader {
+        text: String,
+    },
     Table {
         key: Rc<(String, String)>,
         is_view: bool,
         is_cols_expanded: bool,
     },
-    /// 表的列结构占位行：loading / error
-    TablePlaceholder { text: String, is_error: bool },
-    /// 列定义行
+    TablePlaceholder {
+        text: String,
+        is_error: bool,
+    },
     Column {
         key: Rc<(String, String)>,
         column_index: usize,
     },
-    /// "索引 (N)" / "外键 (N)" 小标题
-    SectionLabel { text: String },
-    /// 索引 / 外键 的详情行
-    DetailLine { text: String },
+    SectionLabel {
+        text: String,
+    },
+    DetailLine {
+        text: String,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -77,7 +81,7 @@ impl TreeRowsCacheEntry {
 }
 
 impl TableTreePanel {
-    /// 当前扁平树行；选中表、编辑器显隐等普通重渲染不再重复克隆全部元数据。
+    /// 普通重渲染复用已派生的树行。
     pub(super) fn tree_rows_view(&self, filter: &str) -> TreeRowsView {
         let key = TreeRowsCacheKey {
             tree_revision: self.tree_revision,
@@ -106,7 +110,6 @@ impl TableTreePanel {
         view
     }
 
-    /// 渲染单条 TreeRow（在 uniform_list 闭包内被调）
     pub(super) fn render_tree_row(&self, row: &TreeRow, cx: &mut Context<Self>) -> AnyElement {
         let muted_fg = cx.theme().muted_foreground;
         let muted_bg = cx.theme().muted;
@@ -241,7 +244,7 @@ impl TableTreePanel {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.handle_table_click(s_for_click.clone(), t_for_click.clone(), cx);
                     }))
-                    // chevron 单击只展开列结构，不触发 TableSelected
+                    // 展开箭头不能触发表选择。
                     .child(
                         div()
                             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {

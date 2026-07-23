@@ -42,7 +42,7 @@ pub const SQL_KEYWORDS: &[&str] = &[
     "SOME",
     "ASC",
     "DESC",
-    // DDL
+    // DDL 关键字
     "CREATE TABLE",
     "DROP TABLE",
     "ALTER TABLE",
@@ -163,11 +163,11 @@ pub const SQL_KEYWORDS: &[&str] = &[
 
 /// SQL 系统内置库（MySQL + PostgreSQL union；默认隐藏；下拉/表树排序时下沉）
 pub const SYSTEM_SCHEMAS: &[&str] = &[
-    // MySQL
+    // MySQL 关键字
     "mysql",
     "performance_schema",
     "sys",
-    // PostgreSQL
+    // PostgreSQL 关键字
     "pg_catalog",
     "pg_toast",
     // 共用（MySQL + PG 都有）

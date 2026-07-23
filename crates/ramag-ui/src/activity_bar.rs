@@ -1,4 +1,4 @@
-//! 左侧 Activity Bar：纯图标导航。顶部 Home 图标 + 每个工具图标，选中发 NavEvent
+//! 左侧工具导航栏。
 
 use std::sync::Arc;
 
@@ -54,8 +54,7 @@ impl ActivityBar {
         cx.notify();
     }
 
-    /// MySQL/Redis/Postgres 共用 dbclient 入口，driver 在连接表单内选。
-    /// 首页工具卡片复用同一映射，保证入口图标一致
+    /// 首页复用此映射，保证入口图标一致。
     pub(crate) fn icon_for_tool(tool_id: &str) -> Icon {
         match tool_id {
             "dbclient" => icons::database(),
@@ -126,7 +125,6 @@ impl Render for ActivityBar {
             ));
         }
 
-        // 底部：主题快捷切换 + 完整设置中心。
         container = container.child(div().flex_1());
         let (theme_icon, theme_tip) =
             if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
@@ -142,7 +140,6 @@ impl Render for ActivityBar {
             transparent,
             Some(SharedString::from(theme_tip)),
             |_: &ClickEvent, _, app| {
-                // 两态互切：浅色 ↔ 深色
                 let next = match crate::theme::current_mode(app) {
                     crate::theme::Mode::Light => crate::theme::Mode::Dark,
                     crate::theme::Mode::Dark => crate::theme::Mode::Light,
@@ -167,7 +164,6 @@ impl Render for ActivityBar {
     }
 }
 
-/// 切浅 / 深主题 + 持久化
 fn set_theme(mode: crate::theme::Mode, app: &mut gpui::App) {
     if crate::theme::current_mode(app) == mode {
         return;
@@ -188,7 +184,6 @@ fn persist_theme_pref(app: &mut gpui::App, value: &'static str) {
     crate::preferences::persist_preference_latest("theme_mode", value.to_string(), app);
 }
 
-/// 选中时左侧 2px accent 竖条
 fn activity_item(
     id: &str,
     icon: Icon,

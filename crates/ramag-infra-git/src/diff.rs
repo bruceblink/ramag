@@ -137,7 +137,7 @@ fn parse_unified_diff(text: &str, path: &str) -> Result<FileDiff> {
             if let Some(h) = current.take() {
                 push_validated_hunk(h, old_no, new_no, &mut hunks)?;
             }
-            // `@@ -os[,ol] +ns[,nl] @@ heading`
+            // 补丁头格式：`@@ -os[,ol] +ns[,nl] @@ heading`
             let header = line
                 .strip_prefix("@@ ")
                 .and_then(|value| value.split_once(" @@"))

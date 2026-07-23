@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn unicode_path_matching_does_not_slice_by_lowercase_byte_length() {
-        // U+0130 lowercases to `i` + combining dot, whose UTF-8 byte length differs from the source.
+        // U+0130 转小写后字节数变化，不能按转换后的偏移切原文。
         let parent = normalized_path_segments("İ");
         let (child, expandable) = child_after_path("İ.名称.deep", &parent).unwrap();
 

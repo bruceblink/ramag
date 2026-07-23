@@ -1,4 +1,4 @@
-//! VcsView 异步操作：分支 / commit / 文件 op / 历史分页（stash/tag/remote 在子模块）
+//! 版本管理异步操作。
 
 mod remote;
 mod stash;
@@ -13,7 +13,6 @@ use super::vcs_view::VcsView;
 use super::vcs_view_ops_history::parse_search_query;
 
 impl VcsView {
-    /// checkout / create / delete / merge / rebase
     pub(in crate::views) fn run_branch_op(&mut self, op: BranchOp, cx: &mut Context<Self>) {
         if let Some(operation) = self.status.as_ref().and_then(|status| status.operation) {
             self.error = Some(format!(

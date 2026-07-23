@@ -1,4 +1,4 @@
-//! 设置面板：热键 / 图片采集 / 自动粘贴 / 排除应用 / 清空（总开关在全局设置中心）
+//! 剪贴板设置面板。
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div, prelude::*, px};
 use gpui_component::{
@@ -34,13 +34,12 @@ impl ClipboardView {
             .when(self.settings_saving, |view| {
                 view.child(div().text_xs().text_color(muted).child("保存中…"))
             })
-            // 设置降级（读取失败 / 损坏）：采集已 fail-closed 暂停，必须让用户知情
+            // 设置异常时采集已暂停，必须明确告知用户。
             .when(self.service.settings_degraded(), |view| {
                 view.child(div().text_xs().text_color(gpui::red()).child(
                     "设置读取异常，采集已自动暂停（不会记录新内容）；重新保存任一设置可尝试修复",
                 ))
             })
-            // 热键注册失败对用户可见（常见原因：组合键被其它应用占用），成功时不打扰
             .when(
                 matches!(self.service.hotkey_state(), ramag_app::HotkeyState::Failed),
                 |view| {
@@ -138,7 +137,6 @@ impl ClipboardView {
                     )
             }))
             .child(div().h(px(1.0)).bg(border))
-            // 清空历史（移入设置，避免顶栏误触）
             .child(
                 h_flex().w_full().items_center().justify_between().child(
                     ramag_ui::clickable_button("clip-clear-all")
@@ -176,7 +174,6 @@ impl ClipboardView {
             .child(
                 v_flex()
                     .gap(px(2.0))
-                    // 禁用时标题随之弱化，与变灰的开关呼应
                     .child(
                         div()
                             .text_sm()
@@ -193,7 +190,6 @@ impl ClipboardView {
             )
     }
 
-    /// 清空历史二次确认（复用 ramag-ui 通用确认弹窗）
     pub(super) fn confirm_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.entity().clone();
         open_confirm(

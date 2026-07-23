@@ -95,7 +95,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "COPY",
     "RESTORE",
     "MIGRATE",
-    // List
+    // 列表
     "LPUSH",
     "RPUSH",
     "LPUSHX",
@@ -114,7 +114,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "BRPOPLPUSH",
     "LMPOP",
     "BLMPOP",
-    // Set
+    // 集合
     "SADD",
     "SREM",
     "SPOP",
@@ -122,7 +122,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "SINTERSTORE",
     "SUNIONSTORE",
     "SDIFFSTORE",
-    // Hash
+    // 哈希
     "HSET",
     "HSETNX",
     "HMSET",
@@ -134,7 +134,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "HEXPIREAT",
     "HPEXPIREAT",
     "HPERSIST",
-    // ZSet
+    // 有序集合
     "ZADD",
     "ZREM",
     "ZINCRBY",
@@ -151,7 +151,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "ZUNIONSTORE",
     "ZMPOP",
     "BZMPOP",
-    // Stream
+    // 流
     "XADD",
     "XDEL",
     "XTRIM",
@@ -161,7 +161,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "XAUTOCLAIM",
     "XACK",
     "XREADGROUP",
-    // HyperLogLog
+    // HyperLogLog 基数统计
     "PFADD",
     "PFMERGE",
     // Geo（带 STORE 写，保守归写）
@@ -169,7 +169,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "GEOSEARCHSTORE",
     "GEORADIUS",
     "GEORADIUSBYMEMBER",
-    // Bitmap
+    // 位图
     "SETBIT",
     "BITOP",
     "BITFIELD",

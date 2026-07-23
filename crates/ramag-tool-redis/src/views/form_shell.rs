@@ -1,4 +1,4 @@
-//! Redis 各元素 / 字段 / 新建表单的共享件：统一提交态 + 底部按钮条
+//! Redis 表单共享状态与操作栏。
 
 use std::collections::HashSet;
 
@@ -7,7 +7,6 @@ use gpui::{
 };
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 
-/// 表单提交态：空闲 / 提交中 / 失败（带错误文案）
 #[derive(Debug, Clone)]
 pub enum SubmitState {
     Idle,
@@ -16,7 +15,6 @@ pub enum SubmitState {
 }
 
 impl SubmitState {
-    /// 仅 Failed 时返回错误文案，其余为 None
     pub fn error(&self) -> Option<String> {
         match self {
             SubmitState::Failed(s) => Some(s.clone()),
@@ -24,7 +22,6 @@ impl SubmitState {
         }
     }
 
-    /// 是否处于提交中
     pub fn is_submitting(&self) -> bool {
         matches!(self, SubmitState::Submitting)
     }
@@ -46,10 +43,7 @@ pub fn deduplicate_preserving_order(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// 渲染表单底部一行：左错误文字 + 右「取消 / 主操作」按钮条。
-/// 调用方负责在其上方保留分隔线；`id_prefix` 用于按钮 ElementId 去重，
-/// `save_label` 是主操作基础文案（提交中自动加「中…」后缀），
-/// 两个回调由调用方按各自 handle 方法构造。
+/// 提交中自动给主操作添加“中…”后缀。
 pub fn form_footer<V: 'static>(
     id_prefix: &str,
     save_label: &str,

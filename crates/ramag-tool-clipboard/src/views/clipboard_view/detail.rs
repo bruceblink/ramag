@@ -76,8 +76,7 @@ impl ClipboardView {
             })
     }
 
-    /// 详情底部只保留卡片行没有的上下文动作（浏览器打开 / 文件管理器显示 / 纯文本复制）。
-    /// 复制 / 删除已由卡片行图标按钮覆盖，不在详情重复。无适用动作时返回 None
+    /// 只展示卡片行没有的上下文操作。
     fn detail_actions(
         &self,
         item: Arc<ClipItem>,
@@ -141,7 +140,7 @@ impl ClipboardView {
                 ramag_ui::clickable_button("detail-blacklist-source")
                     .danger()
                     .small()
-                    .label("排除应用")
+                    .label("排除")
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.blacklist_source(source_id.clone(), cx);
                     }))
@@ -161,7 +160,6 @@ impl ClipboardView {
         )
     }
 
-    /// 详情主体：图片显示大图（解密原图），文件列路径，文本显示全文
     fn detail_body(&mut self, item: Arc<ClipItem>, cx: &mut Context<Self>) -> gpui::AnyElement {
         match item.kind {
             ClipKind::Image => match self.image_for(item.clone(), false, cx) {

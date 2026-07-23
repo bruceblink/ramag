@@ -1,5 +1,4 @@
-//! 工作区文件分组渲染（IDE Files 内容）。4 组（冲突/已暂存/未暂存/未跟踪）扁平为
-//! 单个 uniform_list（分组表头行 + 目录行 + 文件行，全 28px 等高），万级变更也只渲染可见行
+//! 工作区变更树，使用 28px 等高虚拟列表。
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -24,7 +23,6 @@ use super::workspace_conflict::conflict_buttons;
 /// 行高固定 28px：uniform_list 行级虚拟化要求所有行等高（表头 / 目录 / 文件同高）
 const ROW_H: f32 = 28.0;
 
-/// 扁平后的 Changes 行：分组表头 / 目录 / 文件
 enum ChangeRow {
     Header {
         title: &'static str,
@@ -86,7 +84,6 @@ impl VcsView {
         }
     }
 
-    /// 工作区文件分组：4 组扁平为单 uniform_list（分组表头行 + 目录 / 文件行）
     pub(super) fn render_file_groups(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -96,7 +93,6 @@ impl VcsView {
             return div().into_any_element();
         };
 
-        // 文件路径过滤关键词（来自 ide_layout 顶部搜索框，空 = 不过滤）
         let query = self
             .files_search_input
             .read(cx)
@@ -225,7 +221,6 @@ impl VcsView {
         rows
     }
 
-    /// 把一组文件（build_tree → flatten）追加成 Header + Dir/File 行
     fn append_change_group(
         &self,
         title: &'static str,
@@ -270,7 +265,6 @@ impl VcsView {
         }
     }
 
-    /// uniform_list 单行分发：表头 / 目录 / 文件
     fn render_change_row(&self, i: usize, row: &ChangeRow, cx: &mut Context<Self>) -> AnyElement {
         match row {
             ChangeRow::Header {
@@ -316,7 +310,6 @@ impl VcsView {
         }
     }
 
-    /// 分组表头行：色块徽标 + 计数 + 全组批量按钮（顶边线分隔相邻组）
     fn render_change_header_row(
         &self,
         title: &'static str,
@@ -338,7 +331,6 @@ impl VcsView {
         let mut badge_bg = badge_color;
         badge_bg.a = 0.14;
 
-        // 按组提供"全部 stage / unstage"批量操作
         let bulk_btn: Option<AnyElement> = match kind {
             GroupKind::Unstaged | GroupKind::Untracked if !file_indices.is_empty() => {
                 Some(bulk_op_button(
@@ -398,7 +390,6 @@ impl VcsView {
         row.into_any_element()
     }
 
-    /// 目录行：折叠图标 + 名 + 文件计数（整行可点切换折叠）
     #[allow(clippy::too_many_arguments)]
     fn render_change_dir_row(
         &self,
@@ -460,7 +451,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 切换 Changes 文件树某目录的折叠状态
     pub(super) fn toggle_changes_dir(&mut self, dir_path: String, cx: &mut Context<Self>) {
         self.prune_changes_collapsed_dirs();
         if !self.changes_collapsed_dirs.remove(&dir_path) {
@@ -471,7 +461,6 @@ impl VcsView {
         cx.notify();
     }
 
-    /// 单文件行：变更字母 + 路径 + 行尾按钮；整行可点击查看 diff（固定 28px 高，适配虚拟列表）
     pub(super) fn render_file_row(
         &self,
         idx: usize,
@@ -641,7 +630,6 @@ fn collect_parent_dirs<'a>(paths: impl IntoIterator<Item = &'a str>) -> HashSet<
     dirs
 }
 
-/// 「全部 Stage」「全部 Unstage」按钮：同组所有文件批量执行 file_op
 #[allow(clippy::too_many_arguments)]
 fn bulk_op_button(
     kind: &'static str,

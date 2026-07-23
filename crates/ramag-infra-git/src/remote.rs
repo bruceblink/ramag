@@ -86,7 +86,7 @@ pub fn pull(repo_path: &Path, remote: &str, branch: &str, rebase: bool) -> Resul
     run_git_bytes(repo_path, &args).map(|_| ())
 }
 
-// —— 流式变体（带进度 + 可取消）：与 clone_repo_streaming 同哲学，供 UI 展示进度并中止 ——
+// 支持进度与取消的流式操作。
 
 /// Fetch（带进度 + 可取消）。remote 为空拉全部
 pub fn fetch_streaming(
@@ -159,7 +159,7 @@ fn parse_remotes(text: &str) -> Result<Vec<Remote>> {
             continue;
         }
         ensure_git_record_size(trimmed.as_bytes(), "Git remote 记录", line_index + 1)?;
-        // name\turl (fetch|push)
+        // 行格式：name\turl (fetch|push)。
         let (name, rest) = trimmed
             .split_once('\t')
             .ok_or_else(|| remote_parse_error(line_index, "缺少名称与 URL 分隔符"))?;

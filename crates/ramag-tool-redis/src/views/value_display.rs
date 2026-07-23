@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn hex_dump_format() {
         let out = to_hex_dump(b"AB12");
-        // "00000000  41 42 31 32                                       |AB12|"
+        // 十六进制行格式："00000000  41 42 31 32  |AB12|"。
         assert!(out.starts_with("00000000  41 42 31 32"));
         assert!(out.contains("|AB12|"));
     }

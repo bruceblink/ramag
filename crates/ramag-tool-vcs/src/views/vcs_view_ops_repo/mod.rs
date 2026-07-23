@@ -898,7 +898,7 @@ pub(super) async fn open_repo_async(
         .unwrap_or(false);
     if !capacity_available {
         if let Err(error) = driver.close_repo(&repo_config.id).await {
-            tracing::warn!(error = %error, "close repo after tab limit rejection failed");
+            tracing::warn!(error = %error, "close repository after tab limit rejection failed");
         }
         return;
     }
@@ -922,7 +922,7 @@ pub(super) async fn open_repo_async(
         .unwrap_or(false);
     if !draft_safe {
         if let Err(error) = driver.close_repo(&repo_config.id).await {
-            tracing::warn!(error = %error, "close repo after commit draft rejection failed");
+            tracing::warn!(error = %error, "close repository after commit draft rejection failed");
         }
         return;
     }

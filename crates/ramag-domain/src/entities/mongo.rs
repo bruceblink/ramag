@@ -229,8 +229,8 @@ pub struct MongoIndex {
 }
 
 /// MongoDB 文档。Extended JSON 风格，
-/// `ObjectId → {"$oid": "..."}`、`Decimal128 → {"$numberDecimal": "..."}`、
-/// `DateTime → {"$date": "ISO8601"}`、`Binary → {"$binary": {"base64": "...", "subType": "..."}}`
+/// 扩展 JSON：`ObjectId → {"$oid": "..."}`、`Decimal128 → {"$numberDecimal": "..."}`、
+/// `DateTime → {"$date": "ISO8601"}`、`Binary → {"$binary": {"base64": "...", "subType": "..."}}`。
 pub type MongoDocument = Value;
 
 /// `find` 查询规格

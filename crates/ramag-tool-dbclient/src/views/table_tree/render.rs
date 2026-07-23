@@ -1,4 +1,4 @@
-//! TableTreePanel Render：DB picker + 搜索 + 工具按钮 + uniform_list 行级虚拟化 + status bar
+//! 数据库对象树布局。
 
 use std::ops::Range;
 
@@ -17,14 +17,12 @@ use crate::sql_completion::is_system_schema;
 
 impl Render for TableTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 右键操作（清空/删除）异步完成的 toast 在这里推送
         if let Some(n) = self.pending_notification.take() {
             window.push_notification(n, cx);
         }
         let muted_fg = cx.theme().muted_foreground;
         let red = gpui::red();
 
-        // 早期返回
         if self.connection.is_none() {
             return v_flex()
                 .size_full()
@@ -69,7 +67,6 @@ impl Render for TableTreePanel {
                 .into_any_element();
         }
 
-        // 派生树行按元数据代次、系统库开关和搜索词缓存。
         let show_system = self.show_system;
         let filter = self.current_filter(cx);
         let has_filter = !filter.is_empty();
@@ -101,8 +98,6 @@ impl Render for TableTreePanel {
             IconName::EyeOff
         };
         let qp_visible = self.editor_visible;
-        // 顶部第 1 行：schema picker（与 Redis 的 DB picker 对齐布局）
-        // PG：picker 显示 `database / schema`
         let driver = self.connection.as_ref().map(|c| c.driver);
         let pg_database: Option<String> = self
             .connection
@@ -174,7 +169,6 @@ impl Render for TableTreePanel {
                     ),
             );
 
-        // 顶部第 2 行：搜索框 + 三个工具按钮
         let header_bar = h_flex()
             .w_full()
             .items_center()
@@ -253,7 +247,6 @@ impl Render for TableTreePanel {
                 header_bar
             };
 
-        // 导出 / 导入进行中：进度行 + 取消按钮
         let transfer_row = ramag_ui::transfer_progress_row(
             "table-transfer-cancel",
             &self.transfer,
@@ -261,7 +254,7 @@ impl Render for TableTreePanel {
             cx,
         );
 
-        // uniform_list 行级虚拟化：仅渲染屏幕可见行
+        // 仅渲染可见行。
         let tree_rows_rc = tree_view.rows;
         let body = uniform_list(
             "mysql-tree-rows",

@@ -337,7 +337,7 @@ impl DbClientView {
                         ramag_ui::clickable_button("stale-reconnect")
                             .primary()
                             .small()
-                            .label("重新连接")
+                            .label("重连")
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.reconnect_slot(idx, window, cx);
                             })),

@@ -27,7 +27,7 @@ pub async fn ping(client: &Client) -> Result<()> {
     Ok(())
 }
 
-/// `buildInfo.version`
+/// 读取 `buildInfo.version`。
 pub async fn server_version(client: &Client) -> Result<String> {
     let r: Document = client
         .database("admin")

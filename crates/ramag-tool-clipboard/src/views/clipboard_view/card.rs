@@ -1,4 +1,4 @@
-//! 单张剪贴卡片渲染：类型角标 + 预览 + 来源 + 时间 + 复制/删除按钮
+//! 剪贴记录卡片。
 
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ impl ClipboardView {
         item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // 临时借用取 owned 颜色，释放 theme 借用，否则与 card_preview 的 &mut cx 冲突
+        // 释放主题借用，避免与 card_preview 的可变借用冲突。
         let accent = cx.theme().accent;
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
@@ -56,12 +56,10 @@ impl ClipboardView {
             .px(px(12.0))
             .py(px(8.0))
             .gap(px(5.0))
-            // 内容居中：文本卡留白均匀，图片缩略图卡不顶边
             .justify_center()
             .border_b_1()
             .border_color(border)
             .cursor_pointer()
-            // 单击选中，双击复制回剪贴板
             .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                 if ev.click_count() >= 2 {
                     this.copy_clip(item_dbl.clone(), cx);
@@ -69,7 +67,6 @@ impl ClipboardView {
                     this.select_id(id.clone(), cx);
                 }
             }))
-            // 元信息行：类型角标 + 来源 + 时间，整体弱化
             .child(
                 h_flex()
                     .items_center()
@@ -87,7 +84,6 @@ impl ClipboardView {
                     )
                     .child(div().flex_none().child(time)),
             )
-            // 内容行：预览为主，右侧复制/删除
             .child(
                 h_flex()
                     .items_center()
@@ -131,7 +127,6 @@ impl ClipboardView {
         card
     }
 
-    /// 卡片中部预览：颜色显示色卡，图片显示缩略图，其余显示文本
     fn card_preview(&self, item: Arc<ClipItem>, cx: &mut Context<Self>) -> gpui::AnyElement {
         match item.kind {
             ClipKind::Color => {
@@ -162,7 +157,6 @@ impl ClipboardView {
     }
 }
 
-/// 类型角标（彩色小标签）
 fn kind_badge(kind: ClipKind, theme: &gpui_component::Theme) -> impl IntoElement {
     let bg = kind_color(kind, theme);
     div()

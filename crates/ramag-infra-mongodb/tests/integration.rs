@@ -123,7 +123,7 @@ async fn test_demo_data_full_queries() {
     }
     let driver = MongoDriver::new();
 
-    // 1) list_collections
+    // 集合列表
     let colls = driver
         .list_collections(&cfg, &db)
         .await
@@ -134,7 +134,7 @@ async fn test_demo_data_full_queries() {
     assert!(names.contains(&"products"));
     assert!(names.contains(&"orders"));
 
-    // 2) list_indexes(users) — 含 _id_ / idx_age / idx_email_uniq
+    // users 索引
     let idxs = driver
         .list_indexes(&cfg, &db, "users")
         .await
@@ -146,7 +146,7 @@ async fn test_demo_data_full_queries() {
     assert!(idx_names.contains(&"idx_email_uniq"));
     assert!(idxs.iter().any(|i| i.name == "idx_email_uniq" && i.unique));
 
-    // 3) collection_stats
+    // 集合统计
     let stats = driver
         .collection_stats(&cfg, &db, "users")
         .await

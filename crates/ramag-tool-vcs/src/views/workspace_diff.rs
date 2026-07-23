@@ -1,4 +1,4 @@
-//! workspace 右侧主区：顶部按钮组（视图切换 / Blame toggle / Stage|Unstage 选中）+ diff / blame 内容
+//! 工作区差异视图。
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
@@ -13,7 +13,6 @@ use super::helpers::{FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
 
 impl VcsView {
-    /// Diff 面板：当前选中文件的 unified/split diff 或 blame（无选中时显空状态提示）
     pub(super) fn render_diff_block(&self, cx: &mut Context<Self>) -> AnyElement {
         // 提前 clone 主题字段，避免后续 cx.listener 借用冲突
         let (fg, muted_fg, accent, muted_bg, border, mono) = {
@@ -28,8 +27,6 @@ impl VcsView {
             )
         };
 
-        // 优先级：active file_tab → 派生 path / kind_tag / kind（用于 stage 选中按钮）
-        // file_tab 是 Commit / ProjectFiles 时 selected_file 为 None，此时从 tab 推 kind_tag
         let active_tab = self.active_file_tab_idx.and_then(|i| self.file_tabs.get(i));
         let Some(tab) = active_tab else {
             self.diff_layout_cache.borrow_mut().take();
@@ -67,7 +64,6 @@ impl VcsView {
             FileTabSource::Changes(GroupKind::Staged | GroupKind::Unstaged)
                 | FileTabSource::Commit { .. }
         );
-        // Commit tab 走只读 diff 路径（不开 stage/unstage）；Changes 走 GroupKind 原逻辑
         let (path, kind, kind_tag): (String, GroupKind, String) = match &tab.source {
             FileTabSource::Changes(k) => {
                 let tag = match k {
@@ -87,7 +83,6 @@ impl VcsView {
                 )
             }
             FileTabSource::ProjectFiles => {
-                // 不会进这条路（render_main_area 已分流到 render_pf_content）
                 self.diff_layout_cache.borrow_mut().take();
                 return div().into_any_element();
             }
@@ -116,8 +111,6 @@ impl VcsView {
             accent,
             cx,
         );
-        // blame 不再替换主区：开启 blame 后点行号 → 顶部 banner 展示该行作者
-        // 行号 cell 的点击交互仍然有效，无论 showing_blame 与否
         let body_layout: AnyElement = div()
             .flex_1()
             .min_h_0()
@@ -139,7 +132,6 @@ impl VcsView {
         col.child(body_layout).into_any_element()
     }
 
-    /// 文件 tab 条（Changes diff 与 ProjectFiles 内容统一显示在主区顶部）
     pub(super) fn render_file_tab_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.file_tabs.is_empty() {
             return div().into_any_element();
@@ -238,7 +230,6 @@ impl VcsView {
         bar.into_any_element()
     }
 
-    /// 顶部 header：kind 徽标 + 路径 + Stage/Unstage 选中 + Blame toggle + 视图切换
     #[allow(clippy::too_many_arguments)]
     fn render_diff_header(
         &self,
@@ -269,7 +260,6 @@ impl VcsView {
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_blame(cx);
             }));
-        // Diff 视图模式：图标 toggle（点击在「标准」与「全文件」间切换）
         let is_full = matches!(self.diff_view_mode, super::helpers::DiffViewMode::FullFile);
         let view_mode_btn = ramag_ui::clickable_button("vcs-diff-view-mode")
             .ghost()
@@ -351,7 +341,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 中间 body：diff（loading / 占位 / unified or split）；blame 单独由 render_diff_block 摆放
     #[allow(clippy::too_many_arguments)]
     fn render_diff_body(
         &self,
@@ -369,7 +358,6 @@ impl VcsView {
             self.diff_layout_cache.borrow_mut().take();
             return placeholder("拉取中…", muted_fg);
         }
-        // Untracked 不再短路：读盘伪 diff 已写入 current_diff，走正常渲染
         if matches!(kind, GroupKind::Conflict) {
             self.diff_layout_cache.borrow_mut().take();
             return placeholder("（点击左侧冲突文件行，直接打开三栏冲突解决器）", muted_fg);
@@ -378,11 +366,9 @@ impl VcsView {
             self.diff_layout_cache.borrow_mut().take();
             return placeholder("（无差异）", muted_fg);
         };
-        // Changes（Staged/Unstaged）允许 hunk 回滚（中间列按钮）；commit 等只读源关闭
         let enable_discard = enable_hunk_ops;
         // render 期间 entity 已被 mut 借用，状态必须从 &self 读出后传给纯函数渲染器
         let has_blame = self.showing_blame && !self.blame_lines.is_empty();
-        // Standard 折叠长 context（少量上下文）；FullFile 不折叠（展示所有内容）
         let collapse = matches!(self.diff_view_mode, super::helpers::DiffViewMode::Standard);
         let layout = super::diff_panel_split::prepare_diff_layout(
             &self.diff_layout_cache,
@@ -419,8 +405,6 @@ fn placeholder(text: &'static str, muted_fg: gpui::Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// inline blame 顶部 banner：行号点击后显示该行的 commit / 作者 / 日期 / subject
-/// 右侧 [×] 按钮关闭
 fn render_inline_blame_banner(
     text: SharedString,
     accent: gpui::Hsla,

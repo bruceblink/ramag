@@ -1,5 +1,4 @@
-//! TTL chip picker：永久 / 4 预设 / 自定义。新建 Key + 编辑 TTL 共用。
-//! collect 返回 Ok(None)=永久，Ok(Some(secs))=设 TTL，Err=自定义输入非法
+//! Redis TTL 选择器。
 
 use gpui::{
     App, ClickEvent, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
@@ -44,7 +43,7 @@ impl TtlPicker {
         }
     }
 
-    /// PTTL 回填：None/-1/-2→Forever；命中 PRESETS→对应 Preset；正秒数→Custom 填入框
+    /// 将 PTTL 回填为永久、预设或自定义秒数。
     pub fn set_initial_ms(&mut self, ms: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let secs_opt: Option<i64> = match ms {
             Some(m) if m > 0 => Some(m / 1000),
@@ -80,7 +79,7 @@ impl TtlPicker {
         }
     }
 
-    /// 当前选择 → 秒数
+    /// 永久返回 `None`，自定义输入非法时返回错误。
     pub fn collect(&self, cx: &App) -> Result<Option<i64>, String> {
         match self.mode {
             Mode::Forever => Ok(None),

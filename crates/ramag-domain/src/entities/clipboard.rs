@@ -282,11 +282,11 @@ pub fn is_safe_http_url(value: &str) -> bool {
 }
 
 fn is_color(t: &str) -> bool {
-    // #RGB / #RGBA / #RRGGBB / #RRGGBBAA
+    // 十六进制格式：#RGB / #RGBA / #RRGGBB / #RRGGBBAA。
     if let Some(hex) = t.strip_prefix('#') {
         return matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit());
     }
-    // rgb(...) / rgba(...) / hsl(...) / hsla(...)
+    // 函数格式：rgb(...) / rgba(...) / hsl(...) / hsla(...)。
     let lower = t.to_ascii_lowercase();
     for prefix in ["rgb(", "rgba(", "hsl(", "hsla("] {
         if lower.starts_with(prefix) && lower.ends_with(')') {

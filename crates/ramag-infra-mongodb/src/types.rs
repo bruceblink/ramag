@@ -1,5 +1,5 @@
 //! BSON ↔ serde_json::Value 双向转换。BSON 特殊类型走 Extended JSON 风格：
-//! ObjectId → `{"$oid":"..."}`、Decimal128 → `{"$numberDecimal":"..."}`、DateTime → `{"$date":"ISO8601"}`
+//! 扩展 JSON：ObjectId → `{"$oid":"..."}`、Decimal128 → `{"$numberDecimal":"..."}`、DateTime → `{"$date":"ISO8601"}`。
 
 use bson::{Bson, Document};
 use ramag_domain::error::{DomainError, Result};

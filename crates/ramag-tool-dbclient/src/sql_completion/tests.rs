@@ -23,7 +23,7 @@ fn detect_table_context() {
 fn detect_column_context() {
     // SELECT 后到 FROM 之前
     assert_eq!(detect_context("SELECT "), SqlContext::Column);
-    // WHERE / AND / OR / ON / HAVING
+    // 条件关键字
     assert_eq!(
         detect_context("SELECT * FROM users WHERE "),
         SqlContext::Column
@@ -45,7 +45,7 @@ fn detect_column_context() {
         detect_context("SELECT * FROM x GROUP BY "),
         SqlContext::Column
     );
-    // UPDATE ... SET
+    // UPDATE SET 语句
     assert_eq!(detect_context("UPDATE x SET "), SqlContext::Column);
 }
 

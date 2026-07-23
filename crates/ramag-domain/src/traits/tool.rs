@@ -8,7 +8,7 @@ pub struct ToolMeta {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// lucide icon name
+    /// Lucide 图标名。
     pub icon: Option<String>,
 }
 

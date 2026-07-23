@@ -37,11 +37,7 @@ pub fn clipboard_hotkey(alternate: bool) -> String {
 }
 
 pub fn file_manager_reveal_label() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "在 Finder 显示"
-    } else {
-        "在文件资源管理器中显示"
-    }
+    "显示文件"
 }
 
 pub fn auto_paste_description() -> &'static str {

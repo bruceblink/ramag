@@ -479,7 +479,7 @@ impl VcsView {
             "重命名远程仓库",
             format!("为远程「{name}」输入新名称："),
             name,
-            "重命名",
+            "改名",
             MAX_GIT_NAME_ARG_BYTES,
             move |this, new, cx| this.rename_remote_op(old.clone(), new, cx),
             window,

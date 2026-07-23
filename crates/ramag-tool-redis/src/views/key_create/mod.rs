@@ -1,6 +1,4 @@
-//! 新建 Key 对话框，按类型分 5 个子编辑器。
-//! 命令：String=SET、List=RPUSH/LPUSH、Set=SADD（客户端去重）、Hash=HSET、ZSet=ZADD、Stream=`XADD * ...`。
-//! TTL 写入后单独 EXPIRE，避免命令对 EX/EXAT 支持不一
+//! Redis Key 新建表单。
 
 use std::sync::Arc;
 
@@ -28,7 +26,7 @@ use crate::views::ttl_picker::TtlPicker;
 
 #[derive(Debug, Clone)]
 pub enum KeyCreateEvent {
-    /// Key 写入成功；TTL 后处理失败时携带警告，避免用户重试导致集合内容重复追加。
+    /// TTL 后处理失败时携带警告，避免用户重复写入。
     Created {
         key: String,
         ttl_warning: Option<String>,
@@ -36,7 +34,6 @@ pub enum KeyCreateEvent {
     Cancelled,
 }
 
-/// 类型选择按钮的展示顺序
 const CREATE_TYPES: &[RedisType] = &[
     RedisType::String,
     RedisType::List,
@@ -100,8 +97,7 @@ impl KeyCreateForm {
         let key_name = cx.new(|cx| {
             bounded_input(MAX_REDIS_KEY_BYTES, window, cx).placeholder("如 user:1001:cache")
         });
-        // String multi_line input 的高度必须通过 Input view 的 .h() 设置，
-        // 不能靠外层 div h() ——后者在 multi_line 渲染路径中被忽略
+        // 多行输入高度必须设在 Input 上。
         let string_input = cx.new(|cx| {
             bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
@@ -148,7 +144,6 @@ impl KeyCreateForm {
     fn select_type(&mut self, t: RedisType, cx: &mut Context<Self>) {
         if !self.state.is_submitting() && self.selected_type != t {
             self.selected_type = t;
-            // 切换类型时清掉旧错误，避免误导
             if let SubmitState::Failed(_) = self.state {
                 self.state = SubmitState::Idle;
             }
@@ -156,7 +151,6 @@ impl KeyCreateForm {
         }
     }
 
-    /// 校验 + 拼 argv + 拼 TTL
     fn build_argv_and_ttl(&self, cx: &gpui::App) -> Result<(Vec<String>, Option<i64>), String> {
         let key = self.key_name.read(cx).value().trim().to_string();
         if key.is_empty() {
@@ -259,10 +253,7 @@ impl KeyCreateForm {
         let config = self.config.clone();
         let db = self.db;
         cx.spawn(async move |this, cx| {
-            // 第 1 步：预检 key 类型，拒绝跨类型覆盖
-            // - None    → 不存在，安全继续
-            // - 同类型  → 允许（Redis 行为：String SET 覆盖；List/Hash/Set/ZSet 合并；Stream XADD 追加）
-            // - 不同类型 → 拒绝，避免 WRONGTYPE 错误前已知拦下
+            // 允许新 Key 与同类型写入，拒绝跨类型覆盖。
             let existing = match svc.key_type(&config, db, &key).await {
                 Ok(existing) => existing,
                 Err(error) => {
@@ -296,7 +287,6 @@ impl KeyCreateForm {
                 return;
             }
 
-            // 第 2 步：写入命令
             let write_result = svc.execute_command(&config, db, argv).await;
             let ttl_action = post_write_ttl(existing, ttl);
             let outcome = match write_result {
@@ -373,11 +363,8 @@ impl KeyCreateForm {
             .update(cx, |picker, cx| picker.set_disabled(disabled, cx));
     }
 
-    /// 当前类型对应的 editor 元素
     fn render_editor(&self, disabled: bool) -> AnyElement {
         match self.selected_type {
-            // multi_line 高度走 Input 自己的 .h()（外层 div h() 在 multi_line 渲染中被忽略）
-            // 220px 与编辑弹窗 value_edit.rs 同款，避免新建 / 修改两边视觉跳变
             RedisType::String => Input::new(&self.string_input)
                 .h(px(220.0))
                 .disabled(disabled)
@@ -405,7 +392,6 @@ impl Render for KeyCreateForm {
         let mut card_bg = secondary_bg;
         card_bg.a = 0.45;
 
-        // 类型 chip 行：6 等分，前缀色点
         let mut type_row = h_flex().w_full().items_center().gap(px(6.0));
         for t in CREATE_TYPES {
             let is_selected = self.selected_type == *t;
@@ -528,7 +514,6 @@ impl Render for KeyCreateForm {
     }
 }
 
-/// 通用 section 标题：可选前缀类型色 dot + 标签 + 右侧极淡分隔线
 fn section_title(text: &str, muted_fg: Hsla, dot_color: Option<Hsla>) -> impl IntoElement {
     let mut row = h_flex().items_center().gap(px(8.0));
     if let Some(c) = dot_color {

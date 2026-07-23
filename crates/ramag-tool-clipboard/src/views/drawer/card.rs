@@ -1,5 +1,4 @@
-//! 仿 Paste.app 大卡片：彩色标题条（类型/时间/来源图标）+ 主体（图片棋盘格/文本）+ 底部元信息。
-//! 双击卡片 = 粘贴
+//! 剪贴板抽屉卡片。
 
 use std::sync::Arc;
 
@@ -15,7 +14,6 @@ use ramag_domain::entities::{ClipItem, ClipKind};
 use super::ClipboardDrawer;
 use crate::views::helpers::relative_time;
 
-/// 卡片尺寸（仿 Paste 大卡片）
 const CARD_W: f32 = 232.0;
 
 impl ClipboardDrawer {
@@ -25,14 +23,13 @@ impl ClipboardDrawer {
         item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // 临时借用取 owned 颜色，释放 theme 借用（card_body 需 &mut cx 解密图片）
+        // 释放主题借用，避免与图片加载的可变借用冲突。
         let border = cx.theme().border;
         let secondary = cx.theme().secondary;
         let muted = cx.theme().muted_foreground;
         let selected = ix == self.selected;
         let header_bg = kind_color(item.kind);
         let blue = gpui::hsla(212.0 / 360.0, 1.0, 0.52, 1.0);
-        // 图片缩略图解密（&mut cx）提前算，避免与后续不可变借用冲突
         let thumb = if matches!(item.kind, ClipKind::Image) {
             self.thumb_image(item.clone(), cx)
         } else {
@@ -54,7 +51,6 @@ impl ClipboardDrawer {
             .border_color(if selected { blue } else { border })
             .bg(secondary)
             .cursor_pointer()
-            // 单击选中，双击粘贴
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                 if ev.click_count() >= 2 {
                     this.paste(ix, window, cx);
@@ -68,7 +64,6 @@ impl ClipboardDrawer {
             .child(card_footer(item.as_ref(), muted))
     }
 
-    /// 标题条：左上类型名 + 时间，右上来源应用图标
     fn card_header(&self, item: &ClipItem, bg: Hsla, cx: &Context<Self>) -> impl IntoElement {
         let mut sub = gpui::white();
         sub.a = 0.75;
@@ -103,7 +98,6 @@ impl ClipboardDrawer {
             .children(icon)
     }
 
-    /// 来源应用图标（内存 PNG → gpui Image，按 bundle_id 缓存）
     fn source_icon(&self, item: &ClipItem, _cx: &Context<Self>) -> Option<gpui::AnyElement> {
         let bundle = item.source.as_ref().map(|s| s.bundle_id.as_str())?;
         let cache_key = format!("app-icon:{bundle}");
@@ -135,7 +129,6 @@ impl ClipboardDrawer {
     }
 }
 
-/// 主体：图片显示棋盘格透明底 + 缩略图（解密内存图片）；文本/其它显示内容
 fn card_body(item: &ClipItem, thumb: Option<Arc<Image>>) -> gpui::AnyElement {
     match item.kind {
         ClipKind::Image => div()
@@ -144,7 +137,6 @@ fn card_body(item: &ClipItem, thumb: Option<Arc<Image>>) -> gpui::AnyElement {
             .min_h_0()
             .w_full()
             .overflow_hidden()
-            // 棋盘格透明背景层（svg pattern 平铺）
             .child(
                 gpui::svg()
                     .absolute()
@@ -174,7 +166,6 @@ fn card_body(item: &ClipItem, thumb: Option<Arc<Image>>) -> gpui::AnyElement {
     }
 }
 
-/// 底部元信息：图片报尺寸，文本报字符数
 fn card_footer(item: &ClipItem, muted: Hsla) -> impl IntoElement {
     let label = match item.kind {
         ClipKind::Image => item
@@ -199,7 +190,6 @@ fn card_footer(item: &ClipItem, muted: Hsla) -> impl IntoElement {
         .child(label)
 }
 
-/// 标题条配色（Image 绿 / Text 深 / Link 蓝 / Color 紫 / Files 橙），对齐 Paste 观感
 fn kind_color(kind: ClipKind) -> Hsla {
     use gpui::hsla;
     match kind {

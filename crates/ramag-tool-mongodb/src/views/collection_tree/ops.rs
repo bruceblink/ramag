@@ -34,23 +34,21 @@ pub(super) fn collection_context_menu(
         menu
     } else {
         let (d, c, ent) = (db.clone(), coll.clone(), entity.clone());
-        menu.item(
-            ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
-                let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
-                open_bounded_prompt(
-                    "重命名集合",
-                    format!("输入 {d}.{c} 的新名称"),
-                    &c.clone(),
-                    "重命名",
-                    MAX_MONGO_COLLECTION_NAME_BYTES,
-                    move |new_name, _, app| {
-                        ent.update(app, |this, cx| this.rename_collection(d, c, new_name, cx));
-                    },
-                    window,
-                    app,
-                );
-            }),
-        )
+        menu.item(ramag_ui::menu_item("改名").on_click(move |_, window, app| {
+            let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
+            open_bounded_prompt(
+                "重命名集合",
+                format!("输入 {d}.{c} 的新名称"),
+                &c.clone(),
+                "改名",
+                MAX_MONGO_COLLECTION_NAME_BYTES,
+                move |new_name, _, app| {
+                    ent.update(app, |this, cx| this.rename_collection(d, c, new_name, cx));
+                },
+                window,
+                app,
+            );
+        }))
     };
 
     let menu = if is_view {

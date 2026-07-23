@@ -298,9 +298,9 @@ pub struct ReflogEntry {
     pub commit: CommitId,
     /// 形如 "HEAD@{0}"
     pub selector: String,
-    /// commit / checkout / reset / merge / rebase ...
+    /// 操作类型。
     pub action: String,
-    /// reflog message
+    /// Reflog 消息。
     pub subject: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
@@ -310,7 +310,7 @@ pub struct ReflogEntry {
 pub struct BlameLine {
     pub commit: CommitId,
     pub author: String,
-    /// author time
+    /// 作者时间。
     pub timestamp: chrono::DateTime<chrono::Utc>,
     /// 当前文件中的行号（1-based）
     pub line_no: u32,

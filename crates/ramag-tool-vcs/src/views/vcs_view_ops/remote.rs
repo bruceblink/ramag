@@ -348,7 +348,6 @@ impl VcsView {
         .detach();
     }
 
-    /// git remote remove
     pub(in crate::views) fn remove_remote_op(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
@@ -395,7 +394,6 @@ impl VcsView {
         .detach();
     }
 
-    /// git remote rename
     pub(in crate::views) fn rename_remote_op(
         &mut self,
         old: String,

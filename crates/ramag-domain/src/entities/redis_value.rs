@@ -13,9 +13,9 @@ pub enum RedisValue {
     Bytes(Vec<u8>),
     /// INCR 应答 / String 数字编码
     Int(i64),
-    /// RESP3 Double / ZSCORE
+    /// RESP3 浮点数或 ZSCORE。
     Float(f64),
-    /// RESP3 Boolean
+    /// RESP3 布尔值。
     Bool(bool),
     /// 保留服务端顺序
     List(Vec<RedisValue>),

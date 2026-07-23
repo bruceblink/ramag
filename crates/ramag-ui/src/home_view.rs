@@ -1,4 +1,4 @@
-//! 首页：ANSI Shadow Logo + tagline + 工具入口卡片（与左侧 ActivityBar 同源）
+//! 首页与工具入口。
 
 use std::sync::Arc;
 
@@ -15,7 +15,6 @@ pub enum HomeEvent {
     OpenTool(String),
 }
 
-/// ANSI Shadow 大字，等宽对齐
 const RAMAG_LOGO: &[&str] = &[
     "██████╗  █████╗ ███╗   ███╗ █████╗  ██████╗ ",
     "██╔══██╗██╔══██╗████╗ ████║██╔══██╗██╔════╝ ",
@@ -88,7 +87,6 @@ impl Render for HomeView {
                 .child(div().text_xs().text_color(muted_fg).child(description))
         });
 
-        // 内容整块窗口内垂直居中（logo + 卡片 < 最小窗高，无需滚动）
         v_flex()
             .size_full()
             .bg(bg)
@@ -103,7 +101,6 @@ impl Render for HomeView {
                     .items_center()
                     .child(render_logo(mono, accent, muted_fg))
                     .child(
-                        // 原生 flex 行（默认 align 为 stretch）：同排卡片一律等高
                         div()
                             .w_full()
                             .flex()
@@ -118,7 +115,6 @@ impl Render for HomeView {
 }
 
 fn render_logo(mono: SharedString, accent: gpui::Hsla, muted_fg: gpui::Hsla) -> impl IntoElement {
-    // 顶部稍亮往下逐行掉 alpha 做层次
     let mut lines = Vec::with_capacity(RAMAG_LOGO.len());
     for (i, line) in RAMAG_LOGO.iter().enumerate() {
         let alpha = 1.0 - (i as f32) * 0.06;

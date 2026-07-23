@@ -1,5 +1,4 @@
-//! Project Files：排序路径 → 可见行 → uniform_list 行级虚拟化（28px 等高）。
-//! 默认全部折叠（IDE 习惯，避免一打开全展开）；状态字母色复用 `helpers::code_letter_color`
+//! 项目文件树。
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -15,17 +14,15 @@ use ramag_domain::entities::{FileChangeKind, FileStatus, contains_case_insensiti
 use super::helpers::{code_letter_color, code_to_letter};
 use super::vcs_view::VcsView;
 
-/// uniform_list 行单元，所有变体高度必须等于 28px
+/// 行高固定为 28px。
 #[derive(Clone)]
 pub(super) enum ProjectRow {
-    /// 目录行：箭头 + 名字，可点击折叠/展开
     Dir {
         name: String,
         dir_path: String,
         depth: usize,
         is_expanded: bool,
     },
-    /// 文件行：状态字母 + 名字，可点击查看 diff
     File {
         name: String,
         path_index: usize,
@@ -33,7 +30,7 @@ pub(super) enum ProjectRow {
     },
 }
 
-/// 缓存：三 key (files_version, expanded_version, query) 全等命中复用 rows
+/// 三个缓存键全部命中时复用可见行。
 pub(super) struct ProjectRowsCacheEntry {
     pub rows: Rc<Vec<ProjectRow>>,
     pub files_version: u64,
@@ -41,7 +38,7 @@ pub(super) struct ProjectRowsCacheEntry {
     pub query: String,
 }
 
-/// Project 文件行只需展示一个状态字母；按 status Vec 身份缓存路径索引。
+/// 按状态数组身份缓存文件状态。
 pub(super) struct ProjectStatusCacheEntry {
     project_files_version: u64,
     files_identity: usize,
@@ -63,7 +60,7 @@ impl ProjectStatusCacheEntry {
     }
 }
 
-/// 已排序路径按前缀范围递归生成可见行；折叠目录只生成自身，不物化隐藏后代。
+/// 按路径前缀生成可见行，折叠目录不物化后代。
 fn build_project_rows(
     project_files: &[String],
     path_indices: &[usize],
@@ -175,7 +172,6 @@ impl VcsView {
         }
     }
 
-    /// Project Files 视图主入口（IDE 左侧 panel Project 模式）
     pub(super) fn render_project_files_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -190,7 +186,6 @@ impl VcsView {
                 .into_any_element();
         }
 
-        // 文件路径过滤（与 Changes 视图共用同一搜索框）
         let query = self
             .files_search_input
             .read(cx)
@@ -198,7 +193,6 @@ impl VcsView {
             .trim()
             .to_lowercase();
 
-        // 三 key 全等命中缓存复用 rows，跳过 build_tree + flatten
         let rows_rc: Rc<Vec<ProjectRow>> = {
             let cache = self.project_rows_cache.borrow();
             let hit = cache.as_ref().filter(|e| {
@@ -214,7 +208,6 @@ impl VcsView {
             }
         };
 
-        // 空仓库 / 无匹配：缓存内 rows 也是空，给独立占位
         if rows_rc.is_empty() {
             let msg = if self.project_files.is_empty() {
                 "(空仓库 / 全部文件被 .gitignore 排除)"
@@ -230,7 +223,7 @@ impl VcsView {
                 .into_any_element();
         }
 
-        // uniform_list 行级虚拟化：仅渲染屏幕可见行，万级文件也流畅
+        // 仅渲染可见行。
         let status_kinds = self.project_status_kinds();
         let body = uniform_list(
             "vcs-project-files",
@@ -284,7 +277,6 @@ impl VcsView {
         kinds
     }
 
-    /// 渲染单条扁平行（uniform_list closure 内调用）
     fn render_project_row(
         &self,
         row_index: usize,
@@ -326,7 +318,6 @@ impl VcsView {
         }
     }
 
-    /// 目录行：折叠图标 + 名字，整行可点切换展开
     fn render_pf_dir_row(
         &self,
         row_index: usize,
@@ -379,7 +370,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 行：状态字母 + 名字。Project 模式点文件走 select_pf_file 看内容，不走 diff
     fn render_pf_file_row(
         &self,
         path_index: usize,
@@ -399,7 +389,6 @@ impl VcsView {
         let letter = code_to_letter(status_kind);
         let letter_color = code_letter_color(letter, muted_fg);
 
-        // 选中态用 selected_pf_path（与 selected_file 区分，互不影响）
         let is_selected = self.selected_pf_path.as_deref() == Some(full_path.as_str());
 
         let path_for_open = full_path.clone();
@@ -443,11 +432,8 @@ impl VcsView {
         row.into_any_element()
     }
 
-    /// 缓存 miss 时：过滤并按展开状态生成可见行，结果包 Rc 写入 cache。
-    ///
-    /// 仅在 (files_version / expanded_version / query) 任一变化时调；命中路径直接复用。
+    /// 仅在缓存键变化时重建可见行。
     fn rebuild_project_rows(&self, query: &str) -> Rc<Vec<ProjectRow>> {
-        // filter：搜索词非空时按 substring 过滤
         let filtered_indices: Vec<usize> = self
             .project_files
             .iter()
@@ -456,7 +442,7 @@ impl VcsView {
                 (query.is_empty() || contains_case_insensitive(path, query)).then_some(index)
             })
             .collect();
-        // 搜索时：自动展开所有命中路径的祖先目录
+        // 搜索时展开命中项的祖先。
         let auto_expanded: std::collections::HashSet<String> = if query.is_empty() {
             self.project_expanded_dirs.clone()
         } else {
@@ -471,7 +457,6 @@ impl VcsView {
             &filtered_indices,
             &auto_expanded,
         ));
-        // 写回 cache（同一 render 帧内只调一次）
         *self.project_rows_cache.borrow_mut() = Some(ProjectRowsCacheEntry {
             rows: rows_rc.clone(),
             files_version: self.project_files_version,
@@ -481,7 +466,6 @@ impl VcsView {
         rows_rc
     }
 
-    /// 切换 Project Files 目录的折叠状态
     pub(super) fn toggle_project_dir(&mut self, dir_path: String, cx: &mut Context<Self>) {
         self.prune_project_expanded_dirs();
         if !self.project_expanded_dirs.remove(&dir_path) {
@@ -491,14 +475,12 @@ impl VcsView {
         cx.notify();
     }
 
-    /// 全部展开：把仓库内所有目录路径加入 expanded set（项目大时谨慎使用）
     pub(super) fn expand_all_project_dirs(&mut self, cx: &mut Context<Self>) {
         self.project_expanded_dirs = collect_ancestors(&self.project_files);
         self.project_expanded_dirs_version = self.project_expanded_dirs_version.wrapping_add(1);
         cx.notify();
     }
 
-    /// 全部折叠：清空 expanded set，回到默认状态（仅顶层节点可见）
     pub(super) fn collapse_all_project_dirs(&mut self, cx: &mut Context<Self>) {
         self.project_expanded_dirs.clear();
         self.project_expanded_dirs_version = self.project_expanded_dirs_version.wrapping_add(1);
@@ -506,7 +488,7 @@ impl VcsView {
     }
 }
 
-/// 文件 FileStatus → 显示状态：未暂存优先（与日常关注一致）；其次暂存；冲突最高优先
+/// 显示优先级：冲突、未暂存、暂存。
 fn pick_display_kind(f: &FileStatus) -> Option<FileChangeKind> {
     if f.is_conflicted() {
         return Some(FileChangeKind::Conflicted);
@@ -533,9 +515,7 @@ fn build_status_kind_map(
     kinds
 }
 
-/// 搜索时收集所有命中路径的祖先目录（让用户能看到匹配文件）
-///
-/// 例：`["a/b/c.rs"]` → `{"a", "a/b"}`
+/// 收集路径的所有祖先目录。
 fn collect_ancestors(paths: &[String]) -> std::collections::HashSet<String> {
     collect_ancestors_iter(paths.iter().map(String::as_str))
 }

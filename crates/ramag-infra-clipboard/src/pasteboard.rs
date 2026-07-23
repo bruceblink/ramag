@@ -18,7 +18,6 @@ use ramag_domain::error::{DomainError, Result};
 /// nspasteboard.org 约定：带这些标记的内容不应被剪贴板管理器记录
 const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
 const TRANSIENT_TYPE: &str = "org.nspasteboard.TransientType";
-/// NSPasteboardTypeRTF
 const RTF_TYPE: &str = "public.rtf";
 const MAX_PASTEBOARD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FILE_PATHS: usize = 10_000;

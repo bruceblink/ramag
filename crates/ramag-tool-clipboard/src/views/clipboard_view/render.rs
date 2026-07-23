@@ -1,4 +1,4 @@
-//! ClipboardView Render：顶部工具条（搜索 + 类型筛选 + 设置）+ 左卡片流 + 右详情
+//! 剪贴板主视图布局。
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
@@ -18,7 +18,6 @@ use crate::actions::{
 
 impl Render for ClipboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 首次显示即聚焦搜索框，进入页面直接可打字过滤
         if !self.focused_search_once {
             self.focused_search_once = true;
             self.search.update(cx, |state, cx| state.focus(window, cx));
@@ -60,7 +59,6 @@ impl Render for ClipboardView {
                             .h_full()
                             .border_r_1()
                             .border_color(border)
-                            // 列表占满，计数固定在左列底部
                             .child(
                                 div()
                                     .flex_1()
@@ -104,7 +102,6 @@ impl ClipboardView {
             .flex_none()
             .border_b_1()
             .border_color(border)
-            // 左段：对齐左侧列表列宽（360），搜索框 + 设置；竖线与下方 list/detail 分界对齐
             .child(
                 h_flex()
                     .w(px(360.0))
@@ -134,7 +131,6 @@ impl ClipboardView {
                             })),
                     ),
             )
-            // 右段：类型筛选 chips（对齐详情列）
             .child(
                 h_flex()
                     .flex_1()
@@ -146,11 +142,9 @@ impl ClipboardView {
             )
     }
 
-    /// 类型筛选 chips：全部 + 各 ClipKind
     fn render_filter_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut row = h_flex().items_center().gap(px(4.0));
 
-        // 全部
         row = row.child(
             ramag_ui::clickable_button("filter-all")
                 .ghost()
@@ -159,7 +153,6 @@ impl ClipboardView {
                 .selected(self.filter.is_none())
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.filter = None;
-                    // 切换筛选回到列表浏览，关闭设置面板
                     this.show_settings = false;
                     cx.notify();
                 })),
@@ -189,7 +182,6 @@ impl ClipboardView {
     ) -> impl IntoElement {
         if visible.is_empty() {
             let muted = cx.theme().muted_foreground;
-            // 空态按场景区分：搜索无命中 / 类型筛选无命中 / 采集关闭 / 真·无历史
             let query = self.search.read(cx).value().trim().to_string();
             let hint = if !query.is_empty() {
                 format!("没有匹配「{query}」的条目")
@@ -228,7 +220,6 @@ impl ClipboardView {
     }
 }
 
-// —— Action handlers ——
 impl ClipboardView {
     fn on_focus_search(
         &mut self,

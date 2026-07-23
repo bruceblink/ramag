@@ -139,11 +139,6 @@ impl Render for LinesEditor {
         let mut accent_border = accent;
         accent_border.a = 0.55;
 
-        // toolbar：添加 + 计数 + List 方向
-        let label_add = match self.kind {
-            LinesKind::List => "添加元素",
-            LinesKind::Set => "添加成员",
-        };
         let count_label = match self.kind {
             LinesKind::List => format!("{} 个元素", self.rows.len()),
             LinesKind::Set => format!("{} 行（提交时去重）", self.rows.len()),
@@ -158,7 +153,7 @@ impl Render for LinesEditor {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
-                    .label(label_add)
+                    .label("添加")
                     .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
                     .when(self.rows.len() >= MAX_EDITOR_ROWS, |button| {
                         button.tooltip("最多 200 行")

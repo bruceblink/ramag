@@ -171,7 +171,7 @@ async fn scalar_value(
         .unwrap_or_else(|| panic!("无结果（SQL: {sql}）"))
 }
 
-// ===== MySQL =====
+// MySQL 测试
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mysql_export_import_roundtrip() {
@@ -353,7 +353,7 @@ async fn mysql_export_import_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
-// ===== PostgreSQL =====
+// PostgreSQL 测试
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_export_import_roundtrip() {
@@ -581,7 +581,7 @@ async fn postgres_export_import_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
-// ===== Redis =====
+// Redis 测试
 
 #[tokio::test(flavor = "multi_thread")]
 async fn redis_export_import_roundtrip() {
@@ -778,7 +778,7 @@ async fn flush_db(svc: &RedisService, config: &ConnectionConfig, db: u8) {
         .await;
 }
 
-// ===== MongoDB =====
+// MongoDB 测试
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mongo_export_import_roundtrip() {
@@ -1251,7 +1251,7 @@ async fn perf_probe_seeded_exports() {
     }
 }
 
-// ===== 表级 JSONL 导入 =====
+// 表级 JSONL 导入
 
 /// 覆盖：键名匹配 / 缺列走默认与自增 / 未知键告警 / 脏行计失败 /
 /// Skip 幂等 / Overwrite 重建 / Fail 冲突即停

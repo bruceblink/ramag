@@ -17,7 +17,7 @@ use crate::repos::bounded_json;
 const MAX_CONNECTION_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTION_LIST_BYTES: usize = 64 * 1024 * 1024;
 
-/// key=ConnectionId UUID，value=`EncryptedConnection` JSON
+/// 键为 ConnectionId UUID，值为 `EncryptedConnection` JSON。
 pub(crate) const CONNECTIONS_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("connections");
 

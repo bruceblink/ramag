@@ -1,10 +1,4 @@
-//! 文档扁平化：只解析第一层字段（列 = 顶层 key）。嵌套对象/数组出摘要，完整内容靠表格双击查看；
-//! Extended JSON 包装类型（$oid / $numberDecimal / $date / $binary）取内部值
-//!
-//! 例：
-//!   `{"specs":{"cpu":"i7"}}` → `{"specs": "{1 字段}"}`（不再展开成 specs.cpu）
-//!   `{"tags":["x","y"]}` → `{"tags": "[2 项]"}`
-//!   `{"_id":{"$oid":"abc..."}}` → `{"_id": "abc..."}`
+//! MongoDB 文档按首层字段展平，嵌套值保留摘要并支持按需展开。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,27 +11,22 @@ const MAX_TABLE_COLUMNS: usize = 512;
 const MAX_TABLE_CELLS: usize = 2_000_000;
 const MAX_COMPLETION_PATHS: usize = 10_000;
 
-/// 单列元信息
 #[derive(Debug, Clone)]
 pub struct Column {
-    /// dotted path
     pub path: String,
-    /// 类型：取该列下首个非 null 的 kind
     pub kind: &'static str,
 }
 
-/// 扁平化的表格
 #[derive(Debug, Clone, Default)]
 pub struct FlatTable {
     pub columns: Vec<Column>,
-    /// 大于 columns.len() 表示表格矩阵按资源预算裁剪；超限时该值是已知下界。
+    /// 大于 `columns.len()` 表示矩阵已按预算裁剪。
     pub total_columns: usize,
-    /// 每行 = 列对齐的 cell 字符串（缺字段填空字符串，kind=null）
     pub rows: Vec<Vec<Cell>>,
 }
 
 impl FlatTable {
-    /// 表格派生视图的常驻内存估算，纳入全部查询标签预算。
+    /// 估算表格派生视图的常驻内存。
     pub fn retained_bytes(&self) -> usize {
         let mut bytes = std::mem::size_of::<Self>()
             .saturating_add(
@@ -63,8 +52,7 @@ impl FlatTable {
         bytes
     }
 
-    /// 在最左插入前导列（下钻时展示祖先文档 id）。`lead_rows[i]` 与第 i 行对齐、
-    /// 长度与 `lead` 一致；行数不足处补空。lead 为空则不动
+    /// 在左侧插入与原行对齐的祖先列。
     pub fn prepend_lead(&mut self, mut lead: Vec<Column>, lead_rows: Vec<Vec<Cell>>) {
         if lead.is_empty() {
             return;
@@ -75,7 +63,7 @@ impl FlatTable {
         if n == 0 {
             return;
         }
-        // 预算不足时保留更接近当前层的祖先列。
+        // 预算不足时优先保留更近的祖先。
         lead.drain(..discovered - n);
         let empty = Cell {
             text: String::new(),
@@ -95,12 +83,12 @@ impl FlatTable {
         }
     }
 
-    /// 下钻层的祖先值对所有行相同；直接逐行写入，避免先构造完整 `lead_rows` 中间矩阵。
+    /// 直接写入各行，避免构造完整祖先矩阵。
     pub fn prepend_constant_lead(&mut self, lead: Vec<(Column, Cell)>) {
         self.prepend_constant_lead_impl(lead, None);
     }
 
-    /// 可取消地插入祖先列；返回 false 表示旧表格任务已失效。
+    /// 返回 `false` 表示任务已取消。
     pub fn prepend_constant_lead_cancellable(
         &mut self,
         lead: Vec<(Column, Cell)>,
@@ -143,19 +131,18 @@ impl FlatTable {
     }
 }
 
-/// 测试便捷入口：不展开（等价 build_flat_table_with 传空集）
 #[cfg(test)]
 fn build_flat_table(docs: &[Value]) -> FlatTable {
     build_flat_table_with(docs, &BTreeSet::new())
 }
 
-/// 带展开路径的扁平化：expanded 里的对象路径递归展开成 `父.子` 子列（array 不展开，仍走 unwind）
+/// 将指定对象路径递归展开为点分列。
 #[cfg(test)]
 pub fn build_flat_table_with(docs: &[Value], expanded: &BTreeSet<String>) -> FlatTable {
     build_flat_table_impl(docs, expanded, None).unwrap_or_default()
 }
 
-/// 可取消表格构建；新结果或下钻到来后，旧任务按文档批次尽快退出。
+/// 新结果到来后可取消旧表格构建。
 pub fn build_flat_table_with_cancellable(
     docs: &[Value],
     expanded: &BTreeSet<String>,
@@ -174,7 +161,7 @@ fn build_flat_table_impl(
     let mut col_order: Vec<String> = Vec::new();
     let mut col_kinds: HashMap<String, &'static str> = HashMap::new();
     let mut columns_truncated = false;
-    // 列名达到最终矩阵上限后，不再为其构造 Cell / map entry，避免宽文档先制造巨大中间表。
+    // 达到列预算后不再构造中间单元格。
     let mut flat_rows: Vec<BTreeMap<String, Cell>> = Vec::with_capacity(docs.len());
     for (index, document) in docs.iter().enumerate() {
         if index % 64 == 0 && is_cancelled(cancelled) {
@@ -191,7 +178,6 @@ fn build_flat_table_impl(
         ));
     }
 
-    // 2) 排序：_id 优先；其它按插入顺序
     col_order.sort_by(|a, b| match (a.as_str(), b.as_str()) {
         ("_id", _) => std::cmp::Ordering::Less,
         (_, "_id") => std::cmp::Ordering::Greater,
@@ -209,7 +195,6 @@ fn build_flat_table_impl(
         })
         .collect();
 
-    // 3) 行 → 列对齐
     let empty_cell = Cell {
         text: String::new(),
         kind: "null",
@@ -246,7 +231,7 @@ fn table_column_limit(row_count: usize) -> usize {
     MAX_TABLE_COLUMNS.min(cell_limited.max(1))
 }
 
-/// 扁平化单文档：只为最终可展示的列构造 Cell；其余字段仅标记“存在截断”。
+/// 只构造可展示列，其余字段标记为已裁剪。
 #[allow(clippy::too_many_arguments)]
 fn flatten_doc_bounded(
     value: &Value,
@@ -287,8 +272,7 @@ fn flatten_doc_bounded(
     out
 }
 
-/// 递归展开：path 在 expanded 且值为普通对象（排除 $oid 等 ExtJSON 包装）→ 展开成 path.child 子列；
-/// 否则该字段作为单列（嵌套对象仍出 `{N 字段}` 摘要）。prefix 空表示顶层
+/// 展开指定普通对象；其余嵌套值保留摘要列。
 #[allow(clippy::too_many_arguments)]
 fn flatten_into_bounded(
     map: &serde_json::Map<String, Value>,
@@ -405,14 +389,13 @@ fn insert_bounded_cell(
     out.insert(path, cell);
 }
 
-/// 收集过滤列补全候选：顶层字段 + 嵌套对象的 dotted 子字段路径（到 max_depth 层）。
-/// 让「consume.」能补全出 consume.cost；array 与 ExtJSON 包装不深入
+/// 收集有限深度的点分字段补全候选。
 #[cfg(test)]
 pub fn collect_paths(docs: &[Value], max_depth: usize) -> Vec<String> {
     collect_paths_impl(docs, max_depth, None).unwrap_or_default()
 }
 
-/// 可取消地收集补全路径；新结果到来后无需继续遍历旧文档。
+/// 新结果到来后可取消旧补全遍历。
 pub fn collect_paths_cancellable(
     docs: &[Value],
     max_depth: usize,
@@ -461,7 +444,7 @@ fn collect_into(
             Value::Object(child) if extjson_cell(child).is_none() => {
                 collect_into(child, &path, depth - 1, out);
             }
-            // 数组：采样首个对象元素，按同前缀收集（jobs → jobs.connectors）
+            // 数组只采样首个对象元素。
             Value::Array(arr) => {
                 if let Some(Value::Object(child)) = arr.iter().find(|e| e.is_object()) {
                     collect_into(child, &path, depth - 1, out);
@@ -527,7 +510,6 @@ mod tests {
     #[test]
     fn flatten_nested_object_is_summary() {
         let t = build_flat_table(&[json!({"specs": {"cpu": "i7", "ram": 16}})]);
-        // 只解析第一层：specs 是一列摘要，不展开成 specs.cpu / specs.ram
         assert_eq!(t.columns.len(), 1);
         assert_eq!(t.columns[0].path, "specs");
         assert_eq!(t.columns[0].kind, "object");
@@ -572,7 +554,6 @@ mod tests {
 
     #[test]
     fn flatten_date_canonical_form() {
-        // canonical {$date: {$numberLong: "ms"}}
         let t = build_flat_table(&[json!({"ts": {"$date": {"$numberLong": "1700000000000"}}})]);
         assert_eq!(t.rows[0][0].kind, "date");
         assert_eq!(t.rows[0][0].text, "1700000000000");
@@ -651,7 +632,6 @@ mod tests {
 
     #[test]
     fn flatten_int64_numberlong_is_long() {
-        // Int64（driver 包装成 $numberLong）→ 独立 "long" kind，当标量不误判嵌套
         let t = build_flat_table(&[json!({"n": {"$numberLong": "9999999999"}})]);
         assert_eq!(t.rows[0][0].kind, "long");
         assert_eq!(t.rows[0][0].text, "9999999999");
@@ -678,7 +658,6 @@ mod tests {
         let docs = vec![json!({"consume": {"cost": 12, "name": "x"}, "id": 1})];
         let exp = BTreeSet::from(["consume".to_string()]);
         let t = build_flat_table_with(&docs, &exp);
-        // consume 展开成 consume.cost / consume.name，不再是 {N 字段} 摘要
         assert!(t.columns.iter().any(|c| c.path == "consume.cost"));
         assert!(t.columns.iter().any(|c| c.path == "consume.name"));
         assert!(!t.columns.iter().any(|c| c.path == "consume"));
@@ -694,7 +673,6 @@ mod tests {
 
     #[test]
     fn expand_skips_extjson_wrapper() {
-        // _id 是 $oid 包装，即使在 expanded 也按标量取值，不展开成 _id.$oid
         let docs = vec![json!({"_id": {"$oid": "507f1f77bcf86cd799439011"}})];
         let exp = BTreeSet::from(["_id".to_string()]);
         let t = build_flat_table_with(&docs, &exp);
@@ -704,7 +682,6 @@ mod tests {
 
     #[test]
     fn no_expand_keeps_summary() {
-        // 不传展开路径 → 维持现有「第一层摘要」行为
         let t = build_flat_table(&[json!({"consume": {"cost": 12}})]);
         assert_eq!(t.rows[0][0].kind, "object");
         assert_eq!(t.rows[0][0].text, "{1 字段}");
@@ -727,7 +704,6 @@ mod tests {
 
     #[test]
     fn collect_paths_skips_extjson() {
-        // $oid 包装不深入成 _id.$oid
         let docs = vec![json!({"_id": {"$oid": "abc"}})];
         let paths = collect_paths(&docs, 4);
         assert!(paths.contains(&"_id".to_string()));
@@ -736,7 +712,6 @@ mod tests {
 
     #[test]
     fn collect_paths_through_array() {
-        // 数组采样首个对象元素穿透收集（jobs → jobs.connectors）
         let docs = vec![json!({"jobs": [{"connectors": {"x": 1}, "cover": 2}]})];
         let paths = collect_paths(&docs, 5);
         for want in ["jobs", "jobs.connectors", "jobs.cover", "jobs.connectors.x"] {
@@ -762,12 +737,10 @@ mod tests {
             }],
         ];
         t.prepend_lead(lead, lead_rows);
-        // 前导列在最左，原列保留在后
         assert_eq!(t.columns[0].path, "‹父1›");
         assert!(t.columns.iter().any(|c| c.path == "a"));
         assert_eq!(t.rows[0][0].text, "p1");
         assert_eq!(t.rows[1][0].text, "p2");
-        // 每行列数 = 前导 1 + 原 1
         assert_eq!(t.rows[0].len(), t.columns.len());
     }
 

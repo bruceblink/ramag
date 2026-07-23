@@ -1,4 +1,4 @@
-//! ConnectionFormPanel Render：driver 选择 + 字段分组 + 测试 / 取消 / 保存
+//! 数据库连接表单。
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
@@ -12,8 +12,7 @@ use gpui_component::{
 use super::{ConnectionFormPanel, FormMode, TestState, field_row, section_title};
 
 impl ConnectionFormPanel {
-    /// 生产模式开关：track + thumb 拨动样式，开启呈红色警示。
-    /// 开启后由 driver 层拦截该连接的一切写 / 改 / 删操作，与颜色标签相互独立
+    /// 生产模式由驱动层拦截写操作。
     fn render_production_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -68,7 +67,6 @@ impl ConnectionFormPanel {
 }
 
 impl ConnectionFormPanel {
-    /// 环境标签：dev / test / prod 预设快捷填充 + 自定义输入；再点已选中的预设可清除
     fn render_environment_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.environment.read(cx).value().trim().to_string();
         let mut row = h_flex().w_full().items_center().gap(px(8.0));
@@ -118,14 +116,11 @@ impl Render for ConnectionFormPanel {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
-        // 主体最大高度按窗口计算：小窗口时表单主体滚动、底部按钮区固定可见，
-        // 避免长表单（TLS + SSH 展开）把保存 / 取消按钮挤出屏幕。
-        // Dialog 自身不限高且从视口 1/10 处起排，可用高 ≈ 视口 90% 减去标题 / 按钮区 / 内边距
+        // 小窗口仅滚动主体，保证底部操作可见。
         let viewport_h = window.viewport_size().height;
         let body_max_h = (viewport_h * 0.9 - px(210.0)).max(px(200.0));
 
-        // 失败时须能读全 + 复制诊断，故单列 test_failed 标记：失败文案换行展开、附复制按钮，
-        // 成功 / 测试中沿用单行省略
+        // 失败诊断完整展示，其他状态保持单行。
         let (test_msg, test_failed) = match &self.test_state {
             TestState::Idle => (None, false),
             TestState::Testing => (Some(("测试中…".to_string(), muted_fg)), false),
@@ -133,14 +128,9 @@ impl Render for ConnectionFormPanel {
             TestState::Failed(msg) => (Some((msg.clone(), gpui::red())), true),
         };
 
-        // 内容（不带 dialog 标题/边框，dialog 系统提供）：
-        // driver 选择器（仅新建可见）→ 字段分组 → 底部按钮区
-        // 注：dialog 自身有 16px padding，这里只补少量上下间距
         let driver_selector: Option<gpui::AnyElement> = matches!(self.mode, FormMode::Create)
             .then(|| self.render_driver_selector(cx).into_any_element());
 
-        // driver 相关的标签 / 占位
-        // PG 协议要求连接时必须绑定具体 database，单独标"必填"以区别 MySQL 的可选
         let is_redis = self.driver_id == "redis";
         let database_label = match self.driver_id {
             "redis" => "DB（默认 0-15）",
@@ -169,9 +159,7 @@ impl Render for ConnectionFormPanel {
                         v_flex()
                             .w_full()
                             .gap(px(18.0))
-            // —— 数据库类型（仅新建时显示，编辑模式 driver 不可变更）——
             .children(driver_selector)
-            // —— 从 URI 填充：任意支持的连接地址回填；新建时按 scheme 自动切换类型 ——
             .child(
                 h_flex()
                     .w_full()
@@ -191,7 +179,6 @@ impl Render for ConnectionFormPanel {
                             })),
                     ),
             )
-            // —— 连接信息（两列紧凑排布）——
             .child(
                 v_flex()
                     .gap(px(12.0))
@@ -223,7 +210,6 @@ impl Render for ConnectionFormPanel {
                             ))),
                     ),
             )
-            // —— 认证（用户名 / 密码同行；MongoDB 追加 authSource 列）——
             .child(
                 v_flex()
                     .gap(px(12.0))
@@ -236,7 +222,6 @@ impl Render for ConnectionFormPanel {
                                 username_label,
                                 Input::new(&self.username).disabled(self.saving),
                             )))
-                            // 密码默认掩码显示，右侧提供显示/隐藏切换按钮
                             .child(div().flex_1().min_w_0().child(field_row(
                                 "密码",
                                 Input::new(&self.password)
@@ -279,7 +264,6 @@ impl Render for ConnectionFormPanel {
                             }),
                     ),
             )
-            // —— 标签与保护（元信息置于凭证之后，密码不被挤出首屏）——
             .child(
                 v_flex()
                     .gap(px(12.0))
@@ -287,7 +271,6 @@ impl Render for ConnectionFormPanel {
                     .child(self.render_environment_row(cx))
                     .child(self.render_production_toggle(cx)),
             )
-            // —— 传输安全 ——
             .child(
                 v_flex()
                     .gap(px(12.0))
@@ -400,7 +383,6 @@ impl Render for ConnectionFormPanel {
             )
                     ),
             )
-            // —— 分隔 + 按钮区（固定在滚动区外，小窗口下始终可见；上下留白对称）——
             .child(div().h(px(1.0)).bg(border).my(px(10.0)))
             .child(
                 h_flex()

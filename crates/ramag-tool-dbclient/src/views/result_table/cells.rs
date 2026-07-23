@@ -1,4 +1,4 @@
-//! 表格 cell：表头 / 数据行 / 草稿插入行
+//! SQL 结果表格单元格。
 
 use gpui::{
     AnyElement, ClickEvent, ClipboardItem, Context, InteractiveElement as _, IntoElement,
@@ -99,8 +99,6 @@ pub(super) fn render_header_cell(
         .into_any_element()
 }
 
-/// 单行数据渲染：在 uniform_list closure 内被调
-/// `frame` 是 Rc 共享数据（列宽 / 颜色 / mono 字体等不变量）
 pub(super) fn render_data_row(
     panel: &mut ResultPanel,
     frame: &TableRowFrame,
@@ -119,7 +117,6 @@ pub(super) fn render_data_row(
     let selected = panel.selected_cell();
     let panel_entity = cx.entity();
 
-    // 数据 cell
     let cells: Vec<AnyElement> = frame
         .visible_col_indices
         .iter()
@@ -128,7 +125,7 @@ pub(super) fn render_data_row(
             let display =
                 value.map_or_else(|| "NULL".to_string(), |value| value.display_preview(60));
             let is_null = value.is_none_or(|value| matches!(value, Value::Null));
-            // 选中态按源下标比对（selected_cell 存的是源行下标）
+            // 选择状态使用源行下标，不能使用排序后的可见下标。
             let is_selected = selected == Some((source_idx, ci));
             let is_right = *frame.right_align.get(ci).unwrap_or(&false);
             let cw = frame.col_widths[ci];
@@ -192,7 +189,6 @@ pub(super) fn render_data_row(
         })
         .collect();
 
-    // 行号
     let row_num_cell = div()
         .w(frame.row_num_width)
         .flex_none()
@@ -212,7 +208,7 @@ pub(super) fn render_data_row(
         ))
         .into_any_element();
 
-    // 多选 checkbox：选中集按源下标存（供 DML 定位真实行）
+    // 多选同样保存源行下标，供 DML 定位。
     let row_checkbox_cell = {
         let row_idx = source_idx;
         let is_row_selected = panel.selected_rows().contains(&source_idx);
@@ -257,8 +253,7 @@ pub(super) fn render_data_row(
         .into_any_element()
 }
 
-/// 草稿插入行：作为 uniform_list 最后一项；高度同数据行 32px 保持等高
-/// 不可勾选（checkbox 占位），行号位置用 "+" 标记
+/// 草稿行与数据行等高，作为虚拟列表最后一项。
 pub(super) fn render_pending_row(
     panel: &mut ResultPanel,
     frame: &TableRowFrame,

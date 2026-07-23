@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use tracing::{info, warn};
 
-// —— Carbon 类型（HIToolbox）——
+// Carbon FFI 类型。
 type OsStatus = i32;
 type EventTargetRef = *mut c_void;
 type EventHandlerRef = *mut c_void;
@@ -52,14 +52,14 @@ unsafe extern "C" {
     fn RemoveEventHandler(handler: EventHandlerRef) -> OsStatus;
 }
 
-// kEventClassKeyboard = 'keyb'，kEventHotKeyPressed = 5
+// Carbon 常量：kEventClassKeyboard = 'keyb'，kEventHotKeyPressed = 5。
 const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
 const EVENT_HOTKEY_PRESSED: u32 = 5;
 // Carbon 修饰键掩码
 const CMD_KEY: u32 = 0x0100;
 const SHIFT_KEY: u32 = 0x0200;
 const OPTION_KEY: u32 = 0x0800;
-// kVK_ANSI_V = 9
+// V 键码为 9。
 const KEY_V: u32 = 9;
 
 /// 热键事件回调：经 user_data 还原 Sender 并发信号。回调全程不 panic（跨 FFI 边界）

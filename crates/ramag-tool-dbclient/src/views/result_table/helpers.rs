@@ -31,7 +31,7 @@ pub(super) fn estimate_col_width(
     let header_chars = col_chars + type_chars;
 
     let mut max_chars = header_chars;
-    // display_preview(60) 与渲染保持一致：被截断成 60 的内容自然不会撑爆 380 上限
+    // 预览按 60 字符截断，与渲染保持一致。
     for &ri in row_indices.iter().take(100) {
         let Some(row) = result.rows.get(ri) else {
             continue;

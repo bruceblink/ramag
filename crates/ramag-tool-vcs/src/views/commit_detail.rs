@@ -1,6 +1,4 @@
-//! Commit 详情面板（左侧 sidebar）：commit metadata + 文件树（按目录组织 + 中间空目录压缩）
-//!
-//! 与 Changes 文件分组共用 [`super::file_tree`] 构建相同的目录结构，保证两边视觉一致
+//! 提交详情与文件树。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -38,7 +36,6 @@ impl CommitFilesRowsCacheEntry {
 }
 
 impl VcsView {
-    /// Commit 详情面板：close 按钮 + 简略 metadata + 文件树
     pub(super) fn render_commit_detail_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(commit) = self.viewing_commit.clone() else {
             return div().into_any_element();
@@ -50,7 +47,6 @@ impl VcsView {
         render_left_sidebar(self, &commit, fg, muted_fg, accent, border, cx)
     }
 
-    /// 切换 commit 文件树目录的折叠状态
     pub(super) fn toggle_commit_files_dir(&mut self, dir_path: String, cx: &mut Context<Self>) {
         if !self.commit_files_collapsed.remove(&dir_path) {
             self.commit_files_collapsed.insert(dir_path);
@@ -150,7 +146,6 @@ fn render_left_sidebar(
                 }))
         });
 
-    // commit 元信息：完整 subject / body / 作者 / 时间——列表行里被截断的内容在此完整可读
     let meta = render_commit_meta(commit, fg, muted_fg, border, mono);
     let body = render_files_tree(view, fg, muted_fg, cx);
 
@@ -164,7 +159,6 @@ fn render_left_sidebar(
         .into_any_element()
 }
 
-/// commit 元信息块：subject 完整换行展示，body 限高滚动，作者 + 邮箱 + 绝对时间
 fn render_commit_meta(
     commit: &Commit,
     fg: gpui::Hsla,
@@ -211,7 +205,6 @@ fn render_commit_meta(
     .into_any_element()
 }
 
-/// 树状文件列表：build_tree → flatten → uniform_list 行级虚拟化渲染
 fn render_files_tree(
     view: &VcsView,
     fg: gpui::Hsla,

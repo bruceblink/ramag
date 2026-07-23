@@ -1,4 +1,4 @@
-//! 顶部 Tab Bar：固定「仓库管理」tab + 每仓一个 tab（×=关，全关后回管理页）
+//! 仓库标签栏。
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
@@ -13,7 +13,6 @@ use super::helpers::ActiveView;
 use super::vcs_view::VcsView;
 
 impl VcsView {
-    /// 渲染顶部 Tab Bar
     pub(super) fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let fg = theme.foreground;
@@ -34,7 +33,6 @@ impl VcsView {
             .border_color(border)
             .bg(tab_bar_bg);
 
-        // [仓库管理] 固定 tab：点击回管理页，不影响已打开的仓库
         let mut list_tab = h_flex()
             .id("vcs-tab-repo-list")
             .items_center()
@@ -65,7 +63,6 @@ impl VcsView {
         }
         bar = bar.child(list_tab);
 
-        // 每个已打开仓库对应一个 tab；仓库开多了超出宽度时横向滚动，固定「仓库管理」tab 常驻不参与
         let mut strip = h_flex()
             .id("vcs-repo-tabs-scroll")
             .flex_1()
@@ -86,7 +83,7 @@ impl VcsView {
             let label_id = SharedString::from(format!("vcs-tab-label-{}", repo.id));
             let close_id = SharedString::from(format!("vcs-tab-close-{}", repo.id));
 
-            // 外层无 on_click，内层标签区单独响应切换，关闭按钮独立，避免事件冒泡冲突
+            // 标签与关闭按钮独立处理点击。
             let mut tab = h_flex()
                 .id(tab_id)
                 .flex_none()

@@ -1,5 +1,4 @@
-//! 嵌套数据原地下钻：双击嵌套单元格 → 把该值当新结果集，复用大列表渲染；面包屑导航返回。
-//! 下钻层只读（内嵌数据非独立 collection，编辑需回写父文档，暂不支持）。
+//! MongoDB 嵌套结果下钻。
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -23,29 +22,26 @@ const MAX_DRILL_DOCUMENTS: usize = 50_000;
 const MAX_DRILL_LEVELS: usize = 32;
 const MAX_DRILL_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 
-/// 下钻栈一层：label 用于面包屑显示，documents 为该层文档
 pub(crate) struct DrillLevel {
     pub label: String,
     pub documents: Arc<Vec<Value>>,
-    /// 顶层文档 _id（回写定位用，一路继承；顶层与无 _id 时为 None）
+    /// 继承的顶层文档 `_id`，用于回写定位。
     pub parent_id: Option<Value>,
-    /// 从根到本层的 dotted 路径前缀（如 "project" / "project.sub"；顶层为空）
+    /// 从根到本层的字段路径。
     pub path_prefix: String,
-    /// 本层能否回写编辑：对象下钻=true，数组下钻=false（丢了元素下标）
+    /// 数组层因缺少元素下标不可回写。
     pub editable: bool,
-    /// 本层为下钻额外克隆的近似内存；根层共享查询结果，不计入预算。
+    /// 本层额外持有的近似字节数。
     pub owned_bytes: usize,
-    /// 祖先 (对象名, id) 链（根→直接父，本层常量）：作前导列展示，列名即对象名（面包屑里的层级名）
+    /// 从根到直接父级的对象标识。
     pub ancestors: Vec<(String, Cell)>,
 }
 
 impl ResultPanel {
-    /// 是否已下钻（栈深 > 1）→ 显示面包屑（对象层可编辑，数组层只读）
     pub(crate) fn is_drilled(&self) -> bool {
         self.drill_stack.len() > 1
     }
 
-    /// 当前下钻层可否回写编辑：对象下钻层 + 已知顶层 _id
     pub(crate) fn drill_editable(&self) -> bool {
         self.drill_stack
             .last()
@@ -53,12 +49,10 @@ impl ResultPanel {
             .unwrap_or(false)
     }
 
-    /// 当前下钻层对应的顶层文档 _id（回写 filter 用）
     pub(crate) fn drill_parent_id(&self) -> Option<Value> {
         self.drill_stack.last().and_then(|l| l.parent_id.clone())
     }
 
-    /// 下钻层裸字段 → 完整 dotted 路径（path_prefix.field）
     pub(crate) fn drill_full_path(&self, field: &str) -> String {
         match self.drill_stack.last() {
             Some(l) if !l.path_prefix.is_empty() => format!("{}.{}", l.path_prefix, field),
@@ -66,7 +60,6 @@ impl ResultPanel {
         }
     }
 
-    /// 重置下钻栈为顶层（新查询时由 set_result 调）
     pub(crate) fn reset_drill(&mut self, label: String, documents: Arc<Vec<Value>>) {
         self.drill_stack = vec![DrillLevel {
             label: inline_text_preview(&label, 96),
@@ -79,8 +72,7 @@ impl ResultPanel {
         }];
     }
 
-    /// 双击嵌套单元格 → 下钻：数组→元素逐行；对象→单行；标量不下钻。
-    /// row_id 是被下钻那一行的 _id（首次下钻=顶层文档 _id），用于记录回写定位上下文
+    /// 数组按元素下钻，对象按单行下钻，标量忽略。
     pub(crate) fn drill_into(
         &mut self,
         field: String,
@@ -108,9 +100,8 @@ impl ResultPanel {
             _ => return,
         });
         let top = self.drill_stack.last();
-        // 顶层 _id 一路继承；首次下钻栈顶是顶层文档，用其行 _id
+        // 顶层 `_id` 跨层继承。
         let parent_id = top.and_then(|l| l.parent_id.clone()).or(row_id);
-        // 祖先链：继承父层，再追加"被下钻那一层"的对象名 + 该行 id（_id 或 id），列名即对象名
         let mut ancestors = top.map(|l| l.ancestors.clone()).unwrap_or_default();
         let from_label = top.map(|l| l.label.clone()).unwrap_or_default();
         if let Some(ident) = &row_ident {
@@ -160,7 +151,7 @@ impl ResultPanel {
         else {
             return Ok(None);
         };
-        // ExtJSON 包装（$oid 等）是标量，双击不下钻（否则会拆出字面 $oid 列）
+        // ExtJSON 包装是标量，不能拆成字面字段。
         let is_extjson_scalar = matches!(value, Value::Object(map) if extjson_cell(map).is_some());
         if is_extjson_scalar || !matches!(value, Value::Object(_) | Value::Array(_)) {
             return Ok(None);
@@ -184,7 +175,6 @@ impl ResultPanel {
         Ok(Some((value.clone(), owned_bytes)))
     }
 
-    /// 点面包屑第 index 层 → 截断栈并恢复该层
     pub(crate) fn drill_to(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index + 1 >= self.drill_stack.len() {
             return;
@@ -193,7 +183,6 @@ impl ResultPanel {
         self.apply_top_level(window, cx);
     }
 
-    /// 栈顶 documents → 当前显示：同步文档 + 重算表格 + 清过滤 + 滚动归零
     fn apply_top_level(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let docs = self
             .drill_stack
@@ -201,19 +190,17 @@ impl ResultPanel {
             .map(|l| l.documents.clone())
             .unwrap_or_else(|| Arc::new(Vec::new()));
         self.clear_selected_rows();
-        // 换层清空过滤（新层新列，旧过滤无意义）→ 展开路径随之清空
+        // 旧层过滤条件不适用于新列。
         self.column_filter
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.row_filter
             .update(cx, |s, cx| s.set_value("", window, cx));
         self.docs_arc = Some(docs);
-        // 重建基础表 + 补全源（过滤已清空）
         self.schedule_table_rebuild(cx);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
         cx.notify();
     }
 
-    /// 面包屑栏（仅下钻后渲染）：可点段返回上层，当前层高亮，右侧「只读」提示
     pub(crate) fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let fg = cx.theme().foreground;
         let muted = cx.theme().muted_foreground;
@@ -259,7 +246,6 @@ impl ResultPanel {
             }
         }
         let bar = bar.child(div().flex_1());
-        // 对象下钻层可改字段；数组层 / 无 _id 层仍只读，右侧提示用户当前层能力
         if self.drill_editable() {
             bar.child(div().text_color(muted).child(SharedString::from("可编辑")))
         } else {
@@ -267,9 +253,7 @@ impl ResultPanel {
         }
     }
 
-    /// 过滤列输入对象/数组路径 → 钻进去（逐段穿透数组）：终值 object 一行 / array 元素逐行 /
-    /// 标量与 ExtJSON 包装为 _value 单列一行。
-    /// 返回 (钻取文档, 钻取表, 路径)；非钻取路径返回 None。与双击下钻并存，是"过滤框输入路径"这条额外入口。
+    /// 按列过滤路径穿透对象和数组，返回只读钻取表。
     pub(crate) fn try_drill_path(
         &self,
         cx: &App,
@@ -278,8 +262,7 @@ impl ResultPanel {
         let level = self.drill_stack.last()?;
         let docs = &level.documents;
         const MAX_ELEMS: usize = 5000;
-        // 逐段穿透并携带每行的 (对象名, id) 祖先链：从当前层已有祖先起步。
-        // node_label = 正被穿过的那层对象名（首层 = 当前 drill 层名，之后 = 上一路径段）
+        // 穿透时保留每行的祖先标识。
         let base: Vec<(String, Cell)> = level.ancestors.clone();
         let mut node_label = level.label.clone();
         let mut current: Vec<(Vec<(String, Cell)>, &Value)> =
@@ -314,8 +297,6 @@ impl ResultPanel {
             node_label = seg.to_string();
             current = next;
         }
-        // 终值：array → 元素逐行；object → 一行；标量与 ExtJSON 包装 → _value 单列一行。
-        // 祖先链随行一并带出
         let mut rows: Vec<(Vec<(String, Cell)>, Value)> = Vec::new();
         for (anc, v) in current {
             if rows.len() >= MAX_ELEMS {
@@ -338,7 +319,7 @@ impl ResultPanel {
         }
         let flat: Vec<Value> = rows.iter().map(|(_, v)| v.clone()).collect();
         let anc_rows: Vec<Vec<(String, Cell)>> = rows.into_iter().map(|(a, _)| a).collect();
-        // 钻取视图上限 MAX_ELEMS 行，同步展平即可（不占用后台表格构建通道）。
+        // 行数已受限，可同步展平。
         let mut ft =
             build_flat_table_with_cancellable(&flat, &BTreeSet::new(), &AtomicBool::new(false))
                 .unwrap_or_default();
@@ -347,8 +328,7 @@ impl ResultPanel {
     }
 }
 
-/// 祖先前导列名：`对象名._id`，让用户一眼看出这列是"上层对象的 id"（值优先取 _id，无则取 id）。
-/// 对象名为空时退化为 `_id`。
+/// 祖先标识列使用 `对象名._id`，空对象名退化为 `_id`。
 pub(super) fn ancestor_id_column_name(object_name: &str) -> String {
     if object_name.is_empty() {
         "_id".to_string()
@@ -357,7 +337,7 @@ pub(super) fn ancestor_id_column_name(object_name: &str) -> String {
     }
 }
 
-/// 取对象的标识 id 作 cell：优先 `_id`，否则 `id`；都无则空 cell
+/// 对象标识优先取 `_id`，其次取 `id`。
 fn id_cell_of(m: &serde_json::Map<String, Value>) -> Cell {
     if let Some(v) = m.get("_id").or_else(|| m.get("id")) {
         cell_for_value(v)
@@ -369,7 +349,7 @@ fn id_cell_of(m: &serde_json::Map<String, Value>) -> Cell {
     }
 }
 
-/// 给钻取表加「祖先」前导列：每层一列、根→深保序，列名即对象名；整列为空的层（中间无 id 的对象）丢弃
+/// 添加祖先标识列，跳过整列为空的层。
 fn prepend_ancestor_columns(ft: &mut FlatTable, anc_rows: &[Vec<(String, Cell)>]) {
     let depth = anc_rows.iter().map(|a| a.len()).max().unwrap_or(0);
     if depth == 0 {
@@ -390,7 +370,6 @@ fn prepend_ancestor_columns(ft: &mut FlatTable, anc_rows: &[Vec<(String, Cell)>]
         if !nonempty {
             continue;
         }
-        // 该层对象名（各行一致，取首个出现的）作列名
         let label = anc_rows
             .iter()
             .find_map(|a| a.get(layer))
@@ -477,21 +456,17 @@ mod tests {
 
     #[test]
     fn id_cell_prefers_id_then_id_field() {
-        // _id（$oid 包装）优先，解出裸 id
         let c = id_cell_of(&obj(
             json!({"_id": {"$oid": "507f1f77bcf86cd799439011"}, "x": 1}),
         ));
         assert_eq!(c.text, "507f1f77bcf86cd799439011");
-        // 无 _id 时退回 id 字段
         assert_eq!(id_cell_of(&obj(json!({"id": "uuid-123"}))).text, "uuid-123");
-        // 都没有 → 空
         assert!(id_cell_of(&obj(json!({"x": 1}))).text.is_empty());
     }
 
     #[test]
     fn ancestor_columns_use_object_name_and_drop_empty_layer() {
         let mut ft = build_flat_table_with(&[json!({"a": 1}), json!({"a": 2})], &BTreeSet::new());
-        // 层0 对象名 "root" 都有 id；层1 "mid" 全空（中间无 id）→ 应丢弃层1
         let anc_rows = vec![
             vec![
                 (
@@ -527,7 +502,6 @@ mod tests {
             ],
         ];
         prepend_ancestor_columns(&mut ft, &anc_rows);
-        // 列名为「对象名._id」（让用户认出这是上层 id）；空层 "mid" 被丢弃
         assert_eq!(ft.columns[0].path, "root._id");
         assert!(!ft.columns.iter().any(|c| c.path.starts_with("mid")));
         assert_eq!(ft.rows[0][0].text, "t1");
@@ -537,7 +511,6 @@ mod tests {
     #[test]
     fn ancestor_id_column_name_appends_id_suffix() {
         assert_eq!(ancestor_id_column_name("metrics"), "metrics._id");
-        // 对象名为空 → 退化为 _id
         assert_eq!(ancestor_id_column_name(""), "_id");
     }
 }

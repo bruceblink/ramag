@@ -1,4 +1,4 @@
-//! 树行扁平化 + 渲染（与 dbclient::table_tree::row 同款）。所有 TreeRow 变体高度统一 28px
+//! MongoDB 对象树行，统一高度 28px。
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -20,14 +20,18 @@ pub(super) enum TreeRow {
         database_index: usize,
         is_expanded: bool,
     },
-    /// db 展开后的占位行：loading / error
-    DbPlaceholder { text: String, is_error: bool },
+    DbPlaceholder {
+        text: String,
+        is_error: bool,
+    },
     Collection {
         database_index: usize,
         collection_index: usize,
     },
-    /// 全局占位：加载 / 错误 / 空
-    GlobalPlaceholder { text: String, is_error: bool },
+    GlobalPlaceholder {
+        text: String,
+        is_error: bool,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -55,7 +59,7 @@ impl TreeRowsCacheEntry {
 }
 
 impl CollectionTreePanel {
-    /// 当前扁平树行；选中集合、编辑器显隐等普通重渲染直接复用。
+    /// 普通重渲染复用已派生的树行。
     pub(super) fn tree_rows_view(&self, filter: &str) -> TreeRowsView {
         let key = TreeRowsCacheKey {
             tree_revision: self.tree_revision,
@@ -85,7 +89,6 @@ impl CollectionTreePanel {
         view
     }
 
-    /// 单行渲染（在 uniform_list 闭包内被调）；与 dbclient::table_tree::row 同款 28px 固定高度
     pub(super) fn render_tree_row(&self, row: &TreeRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let fg = theme.foreground;

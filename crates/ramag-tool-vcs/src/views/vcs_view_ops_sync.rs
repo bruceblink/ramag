@@ -313,12 +313,8 @@ impl VcsView {
         }
     }
 
-    /// 把 Changes 来源的文件 tabs 与最新 `self.status` 对齐：
-    /// - 文件已无任何变更 → 关闭 tab（diff 必为空，保留无意义）
-    /// - 文件变更组别迁移（如 stage 后 Unstaged → Staged）→ 重定向 tab 的 GroupKind
-    /// - 全量刷新清全部 Changes 缓存；watcher 增量刷新只清命中路径并重拉命中的 active tab
-    ///
-    /// ProjectFiles / Commit 来源的 tabs 不受影响（仅索引可能因关闭前移）
+    /// 同步变更来源标签：关闭无变更项、迁移分组并刷新相应缓存。
+    /// 项目文件和提交来源不受影响。
     pub(super) fn sync_changes_tabs_with_status(&mut self, cx: &mut Context<Self>) {
         self.sync_changes_tabs_with_status_paths(None, cx);
     }

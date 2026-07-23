@@ -279,12 +279,12 @@ impl ResultPanel {
         }
     }
 
-    /// 上游（QueryTab.run）注入精确目标表，避免 SQL parse 误差
+    /// 注入精确目标表，避免 SQL 解析误差。
     pub fn set_pinned_target(&mut self, target: Option<(Option<String>, String)>) {
         self.pinned_target = target;
     }
 
-    /// 注入行定位键，但仅当结果集仍对应该目标表（防慢回包串到新查询）
+    /// 仅向匹配的结果集注入行定位键。
     pub(crate) fn set_row_identity_if_target(
         &mut self,
         schema: &str,
@@ -302,7 +302,7 @@ impl ResultPanel {
         }
     }
 
-    /// 用户手改 SQL 后立即失去"表树单表数据"资格：清目标表与定位键，结果区转只读
+    /// 手改 SQL 后清除可编辑目标。
     pub fn clear_editable_target(&mut self, cx: &mut Context<Self>) {
         if self.pinned_target.is_some() || self.row_identity.is_some() {
             self.pinned_target = None;
@@ -311,7 +311,7 @@ impl ResultPanel {
         }
     }
 
-    /// 行内新增被禁用的原因；None = 可新增（INSERT 不依赖行定位键）
+    /// 返回行内新增的禁用原因。
     pub(crate) fn insert_block_reason(&self) -> Option<&'static str> {
         if self.dml_busy {
             return Some("上一写操作尚未完成");
@@ -335,7 +335,7 @@ impl ResultPanel {
         self.dml_busy
     }
 
-    /// 行内修改 / 删除被禁用的原因；None = 允许（比新增额外要求行定位键）
+    /// 返回行内修改或删除的禁用原因。
     pub(crate) fn modify_block_reason(&self) -> Option<&'static str> {
         if let Some(r) = self.insert_block_reason() {
             return Some(r);
@@ -377,7 +377,6 @@ impl ResultPanel {
         self.schema_cache = cache;
     }
 
-    /// 当前结果集对应的目标是否视图（视图禁止 INSERT/UPDATE/DELETE）
     pub(super) fn target_is_view(&self) -> bool {
         let Some(cache) = &self.schema_cache else {
             return false;
@@ -409,8 +408,7 @@ impl ResultPanel {
         Some((col_name, display, truncated))
     }
 
-    /// 单元格编辑弹框的只读原因：写入闸门未过 → 相应原因；二进制单元格 → 防损坏只读。
-    /// None = 可编辑提交
+    /// 返回单元格编辑的只读原因。
     pub(super) fn cell_edit_block_reason(&self, ri: usize, ci: usize) -> Option<String> {
         if let Some(reason) = self.modify_block_reason() {
             return Some(reason.to_string());
@@ -423,7 +421,6 @@ impl ResultPanel {
         None
     }
 
-    /// 行定位方式的提示文案（"主键" / "唯一键"）；编辑弹框展示用
     pub(super) fn identity_label(&self) -> &'static str {
         self.row_identity
             .as_ref()
@@ -431,7 +428,6 @@ impl ResultPanel {
             .unwrap_or("主键")
     }
 
-    /// 删除 / 预览用的展示列：行定位键第一列在结果集中的下标，无键回退第 0 列
     fn preview_col_idx(&self, result: &QueryResult) -> usize {
         self.row_identity
             .as_ref()
@@ -445,8 +441,7 @@ impl ResultPanel {
             .unwrap_or(0)
     }
 
-    /// 该单元格是否为二进制值。二进制显示的是 hex 文本，编辑保存会把它写成 hex 的
-    /// ASCII 文本（损坏原始字节），故弹框强制只读（可查看 / 复制，不能提交）
+    /// 二进制显示值无法无损回写，必须只读。
     pub(super) fn cell_is_binary(&self, ri: usize, ci: usize) -> bool {
         let ResultState::Ok(result) = &self.state else {
             return false;
@@ -481,7 +476,6 @@ impl ResultPanel {
         self.state = state;
         self.pagination = None;
         self.mark_result_changed();
-        // 数据集变更后清除选中、排序、列宽覆盖、新增草稿
         self.selected_cell = None;
         self.clear_selected_rows();
         self.sort_by = None;
@@ -489,16 +483,13 @@ impl ResultPanel {
         self.pending_insert = None;
         // 客户端资源警告直接展开，避免用户把已截断结果误认为完整结果。
         self.warnings_expanded = has_client_warning;
-        // 行定位键跟随结果集：新结果由 QueryTab 在查询成功后重新拉元数据注入
         self.row_identity = None;
-        // 切表/重跑时双向归位：垂直回顶 + 水平回左
         self.uniform_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
         cx.notify();
     }
 
-    /// 恢复被 Running 覆盖前的状态快照（生产只读拦截 Forbidden 时用）：
-    /// 不走 set_state 的清理逻辑，选中 / 排序 / 滚动位置全部保持原样
+    /// 恢复状态快照，不清理选择、排序与滚动位置。
     pub fn restore_state(&mut self, state: ResultState, cx: &mut Context<Self>) {
         let state = self.account_result_memory(state, cx);
         if matches!(&state, ResultState::Released(_)) {
@@ -544,7 +535,7 @@ impl ResultPanel {
         state
     }
 
-    /// 全局预算回收回调：只释放结果，不触碰编辑器里的 SQL。
+    /// 释放旧结果，保留编辑器中的查询文本。
     pub fn evict_result_for_budget(&mut self, cx: &mut Context<Self>) {
         self.state = ResultState::Released(
             "旧结果已按 LRU 释放，以保持全部标签结果不超过 512 MiB；查询文本仍保留".into(),
@@ -562,7 +553,6 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// 编辑器持有唯一需要保留的查询文本；结果面板内的 SQL 副本与编辑状态一并释放。
     fn clear_released_result_context(&mut self) {
         self.source_sql = None;
         self.pinned_target = None;
@@ -570,13 +560,13 @@ impl ResultPanel {
         self.row_identity = None;
     }
 
-    /// 标记结果数据已变化，并丢弃所有依赖旧行内容的派生缓存。
+    /// 标记结果变化并丢弃派生缓存。
     pub(super) fn mark_result_changed(&mut self) {
         self.result_revision = self.result_revision.wrapping_add(1);
         self.invalidate_display_view();
     }
 
-    /// 排序、筛选或结果变化后取消旧 CPU 任务并释放派生索引。
+    /// 取消旧派生任务并释放索引。
     pub(super) fn invalidate_display_view(&mut self) {
         self.cancel_display_view_build();
         self.display_view_request_seq = self.display_view_request_seq.wrapping_add(1);
@@ -690,7 +680,7 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// 后台 COUNT 返回后回填精确总数；当前无分页结果时忽略（如已被新查询清空）。
+    /// 仍有分页结果时回填精确总数。
     pub(crate) fn set_pagination_total(&mut self, total: TotalRows, cx: &mut Context<Self>) {
         let Some(pagination) = self.pagination.as_mut() else {
             return;

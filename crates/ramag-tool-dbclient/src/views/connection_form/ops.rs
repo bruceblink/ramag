@@ -1,4 +1,4 @@
-//! ConnectionForm 状态 + 异步：driver 切换 / 校验 / 测试 / 保存。render_driver_selector 也在这里
+//! 连接表单操作与异步任务。
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, img, prelude::*,
@@ -14,9 +14,7 @@ use super::{
 };
 
 impl ConnectionFormPanel {
-    /// 「从 URI 填充」：解析连接地址回填表单各字段；scheme 决定数据库类型。
-    /// 新建模式按 scheme 自动切换类型；编辑模式类型固定，URI 不符时显式报错。
-    /// 解析失败复用测试结论区显示红字；副本集多主机明确拒绝，避免静默改变拓扑。
+    /// 新建时按 URI 切换类型，编辑时拒绝类型不符的 URI。
     pub(super) fn apply_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -67,7 +65,7 @@ impl ConnectionFormPanel {
         cx.notify();
     }
 
-    /// 连接参数变更后调用：丢弃在途测试的结果，并清掉已显示的测试结论
+    /// 参数变化后作废在途测试。
     pub(super) fn invalidate_test(&mut self, cx: &mut Context<Self>) {
         self.test_epoch = self.test_epoch.wrapping_add(1);
         if !matches!(self.test_state, TestState::Idle) {
@@ -76,7 +74,7 @@ impl ConnectionFormPanel {
         }
     }
 
-    /// 切换 driver：端口未被用户修改（空或仍是旧 driver 默认）时清空，让新 driver 虚影默认值显示
+    /// 未修改旧默认端口时，切换驱动后使用新默认值。
     pub(super) fn set_driver(
         &mut self,
         id: &'static str,
@@ -108,7 +106,7 @@ impl ConnectionFormPanel {
         cx.notify();
     }
 
-    /// 校验表单并返回 ConnectionConfig；留空字段回退到 placeholder 虚影显示的默认值
+    /// 校验表单，空字段回退到已展示的默认值。
     pub(super) fn validate(&self, cx: &gpui::App) -> Result<ConnectionConfig, String> {
         let driver =
             id_to_driver_kind(self.driver_id).ok_or_else(|| "请选择数据库类型".to_string())?;
@@ -213,7 +211,6 @@ impl ConnectionFormPanel {
         Ok(config)
     }
 
-    /// 渲染 driver 选择器：按钮横排，仅可用 driver 可点
     pub(super) fn render_driver_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -245,20 +242,17 @@ impl ConnectionFormPanel {
                 .rounded_md()
                 .border_1()
                 .text_sm();
-            // 品牌彩色 logo（img 渲染保留原色，禁用态由按钮整体 opacity 一并变暗）+ 名称
             if let Some(icon) = ramag_ui::icons::db_brand_icon(id) {
                 btn = btn.child(img(icon).size(px(16.0)).flex_none());
             }
             btn = btn.child(name.to_string());
 
             if is_selected {
-                // 选中态：accent 描边 + 浅 accent 底
                 btn = btn
                     .bg(accent_tint)
                     .border_color(accent_border)
                     .text_color(accent);
             } else if available && !self.saving {
-                // 可点击未选中
                 btn = btn
                     .bg(secondary_bg)
                     .border_color(border)
@@ -269,7 +263,6 @@ impl ConnectionFormPanel {
                         this.set_driver(id, window, cx);
                     }));
             } else {
-                // 禁用：dim、不可点
                 btn = btn
                     .bg(secondary_bg)
                     .border_color(border)
@@ -287,7 +280,7 @@ impl ConnectionFormPanel {
     }
 
     pub(super) fn handle_test(&mut self, cx: &mut Context<Self>) {
-        // 防重入：测试进行中不再发起（结果竞态已由 epoch 挡，这里挡资源重复占用）
+        // epoch 处理竞态，此处避免重复占用资源。
         if self.saving || matches!(self.test_state, TestState::Testing) {
             return;
         }
@@ -299,16 +292,13 @@ impl ConnectionFormPanel {
                 return;
             }
         };
-        // 测试一律用一次性 id 的副本：池 / SSH 隧道按 ConnectionId 缓存——
-        // ① 不污染正式 id 的缓存（Edit 模式下否则会复用旧参数的池，测的不是新参数）
-        // ② 测完立即释放，不留孤儿池 / 隧道
+        // 一次性 ID 隔离正式连接池与 SSH 隧道缓存。
         let mut config = config;
         config.id = ConnectionId::new();
         self.test_state = TestState::Testing;
         let epoch = self.test_epoch;
         cx.notify();
 
-        // 按 driver 走对应的 service.test：SQL 类（MySQL/Postgres）→ ConnectionService；Redis → RedisService；MongoDB → MongoService
         let sql_svc = self.service.clone();
         let redis_svc = self.redis_service.clone();
         let mongo_svc = self.mongo_service.clone();
@@ -381,7 +371,7 @@ impl ConnectionFormPanel {
         .detach();
     }
 
-    /// 「取消」按钮：有未保存修改先确认，确认「放弃修改」才发 Cancelled 关闭表单
+    /// 有未保存修改时确认后再取消。
     pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;

@@ -81,7 +81,7 @@ impl StreamEntryForm {
         let config = self.config.clone();
         let db = self.db;
         let key = self.key.clone();
-        // XADD key * field1 value1 field2 value2 ...
+        // 命令格式：XADD key * field1 value1 field2 value2 ...
         let mut argv = vec!["XADD".to_string(), key, "*".to_string()];
         for (f, v) in pairs {
             argv.push(f);

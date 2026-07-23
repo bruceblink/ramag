@@ -158,7 +158,7 @@ pub trait GitDriver: Send + Sync {
         not_impl("fetch")
     }
 
-    /// push。set_upstream=`-u`，force_with_lease=`--force-with-lease`
+    /// 推送；`set_upstream` 对应 `-u`，`force_with_lease` 对应租约强推。
     async fn push(
         &self,
         _repo: &RepoId,
@@ -181,7 +181,7 @@ pub trait GitDriver: Send + Sync {
         not_impl("pull")
     }
 
-    // —— 流式变体（带进度 + 可取消）：与 clone_repo_streaming 同哲学。默认回退到无进度版 ——
+    // 默认回退到无进度实现。
 
     /// Fetch（带进度 + 可取消）
     async fn fetch_streaming(
@@ -449,7 +449,7 @@ pub trait GitDriver: Send + Sync {
         self.clone_repo(url, dest).await
     }
 
-    /// `git init`
+    /// 初始化仓库。
     async fn init_repo(&self, _path: &Path) -> Result<RepoConfig> {
         not_impl("init_repo")
     }

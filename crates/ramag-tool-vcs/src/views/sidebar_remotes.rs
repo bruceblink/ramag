@@ -140,7 +140,7 @@ pub(super) fn remote_row(
                     let name = name.clone();
                     side_op_button(
                         format!("vcs-side-remote-rename-{idx}"),
-                        "重命名",
+                        "改名",
                         ramag_ui::icons::pencil(),
                         busy,
                         move |this, window, cx| this.prompt_remote_rename(name.clone(), window, cx),

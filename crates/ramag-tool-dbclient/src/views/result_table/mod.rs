@@ -705,7 +705,7 @@ pub(super) fn render_table(
                 ramag_ui::clickable_button("result-page-previous")
                     .ghost()
                     .small()
-                    .label("上一页")
+                    .label("上页")
                     .disabled(!has_previous_page)
                     .on_click(move |_, _, app| {
                         panel_for_previous.update(app, |_, cx| {
@@ -721,7 +721,7 @@ pub(super) fn render_table(
                 ramag_ui::clickable_button("result-page-next")
                     .ghost()
                     .small()
-                    .label("下一页")
+                    .label("下页")
                     .tooltip("下一页；未写 ORDER BY 时数据库不保证分页顺序")
                     .disabled(!pagination.has_more)
                     .on_click(move |_, _, app| {

@@ -1,4 +1,4 @@
-//! 工作区底部 commit 面板：subject 输入 + amend 切换 + 提交按钮
+//! 工作区提交面板。
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
@@ -13,7 +13,6 @@ use ramag_ui::PointerDropdownMenu as _;
 use super::vcs_view::VcsView;
 
 impl VcsView {
-    /// commit 面板：底部固定区，subject 输入 + amend toggle + 提交
     pub(super) fn render_commit_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -45,7 +44,6 @@ impl VcsView {
             && (has_message || self.commit_amend)
             && !message_too_large;
 
-        // 主按钮：普通模式提交暂存区；Amend 模式改写上一次 commit
         let committing = self.busy_label == Some("提交中…");
         let commit_btn = ramag_ui::clickable_button("vcs-commit")
             .primary()
@@ -64,7 +62,6 @@ impl VcsView {
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.confirm_commit(window, cx);
             }));
-        // 右侧小箭头：下拉切换 Amend 模式（与主按钮拼成分体按钮）
         let amend_on = self.commit_amend;
         let sign_on = self.commit_sign;
         let entity = cx.entity();
@@ -74,13 +71,7 @@ impl VcsView {
             .icon(IconName::ChevronDown)
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let ent = entity.clone();
-                let label = if !has_head {
-                    "修订（不可用）"
-                } else if amend_on {
-                    "✓ 修订"
-                } else {
-                    "修订"
-                };
+                let label = if amend_on { "✓ 修订" } else { "修订" };
                 m = m.item(
                     ramag_ui::menu_item_with_disabled(label, !has_head).on_click(
                         move |_, _, app| {

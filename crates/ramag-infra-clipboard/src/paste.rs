@@ -90,7 +90,7 @@ fn frontmost_pid() -> Option<i32> {
 }
 
 fn post_cmd_v() {
-    // kVK_ANSI_V = 9
+    // V 键码为 9。
     let Ok(src) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else {
         warn!("create CGEventSource failed");
         return;

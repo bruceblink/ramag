@@ -56,7 +56,7 @@ where
     /// MySQL 反引号 / PG 双引号
     fn quote_identifier(&self, ident: &str) -> String;
 
-    /// MySQL `KILL QUERY` / PG `pg_cancel_backend()`
+    /// 取消语句：MySQL `KILL QUERY`，PG `pg_cancel_backend()`。
     fn cancel_query_sql(&self, backend_id: u64) -> String;
 
     /// MySQL `USE <db>`；PG None（连接时绑定 db）

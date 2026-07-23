@@ -57,25 +57,23 @@ pub(super) fn table_context_menu(
         "重命名表"
     };
     let (s, t, ent) = (schema.clone(), table.clone(), entity.clone());
-    let menu = menu.item(
-        ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
-            let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
-            open_bounded_prompt(
-                rename_title,
-                format!("输入 {s}.{t} 的新名称"),
-                &t.clone(),
-                "重命名",
-                MAX_CONNECTION_IDENTIFIER_BYTES,
-                move |new_name, _, app| {
-                    ent.update(app, |this, cx| {
-                        this.rename_table(s, t, new_name, is_view, cx)
-                    });
-                },
-                window,
-                app,
-            );
-        }),
-    );
+    let menu = menu.item(ramag_ui::menu_item("改名").on_click(move |_, window, app| {
+        let (s, t, ent) = (s.clone(), t.clone(), ent.clone());
+        open_bounded_prompt(
+            rename_title,
+            format!("输入 {s}.{t} 的新名称"),
+            &t.clone(),
+            "改名",
+            MAX_CONNECTION_IDENTIFIER_BYTES,
+            move |new_name, _, app| {
+                ent.update(app, |this, cx| {
+                    this.rename_table(s, t, new_name, is_view, cx)
+                });
+            },
+            window,
+            app,
+        );
+    }));
 
     let menu = if is_view {
         menu
@@ -189,23 +187,21 @@ pub(super) fn schema_context_menu(
     // schema 重命名仅 PG 支持（ALTER SCHEMA … RENAME TO）；MySQL 官方已移除 RENAME DATABASE
     let menu = if matches!(driver, DriverKind::Postgres) {
         let (s, ent) = (schema.clone(), entity.clone());
-        menu.item(
-            ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
-                let (s, ent) = (s.clone(), ent.clone());
-                open_bounded_prompt(
-                    "重命名",
-                    format!("输入 schema {s} 的新名称"),
-                    &s.clone(),
-                    "重命名",
-                    MAX_CONNECTION_IDENTIFIER_BYTES,
-                    move |new_name, _, app| {
-                        ent.update(app, |this, cx| this.rename_schema(s, new_name, cx));
-                    },
-                    window,
-                    app,
-                );
-            }),
-        )
+        menu.item(ramag_ui::menu_item("改名").on_click(move |_, window, app| {
+            let (s, ent) = (s.clone(), ent.clone());
+            open_bounded_prompt(
+                "改名",
+                format!("输入 schema {s} 的新名称"),
+                &s.clone(),
+                "改名",
+                MAX_CONNECTION_IDENTIFIER_BYTES,
+                move |new_name, _, app| {
+                    ent.update(app, |this, cx| this.rename_schema(s, new_name, cx));
+                },
+                window,
+                app,
+            );
+        }))
     } else {
         menu
     };

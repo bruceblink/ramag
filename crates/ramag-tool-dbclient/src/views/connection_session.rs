@@ -1,4 +1,4 @@
-//! 一个打开的连接会话，对应顶部一个 Tab：表树 + 查询面板
+//! 数据库连接会话。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,26 +20,21 @@ use crate::sql_completion::{SchemaCache, is_system_schema};
 use crate::views::query_panel::{QueryPanel, QueryPanelEvent};
 use crate::views::table_tree::{TableTreePanel, TreeEvent};
 
-/// 补全 cache 的 TTL：超过这个时长后台异步重拉一次
-/// 兜底「别人改了表 / 我没看到的 schema」这类 cache 漂移
+/// 元数据缓存刷新间隔，用于同步外部结构变更。
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
-/// 表树初始宽度（用户可拖拽分隔条改）
 const TREE_WIDTH_INITIAL: f32 = 280.0;
 const TREE_WIDTH_MIN: f32 = 180.0;
 const TREE_WIDTH_MAX: f32 = 600.0;
 
-/// 一个连接会话
 pub struct ConnectionSession {
     config: ConnectionConfig,
     tree: Entity<TableTreePanel>,
     queries: Entity<QueryPanel>,
-    /// 表树 / 查询面板分隔条状态（拖拽改变两侧宽度）
     resize_state: Entity<ResizableState>,
-    /// 会话根焦点：隐藏 SQL 编辑器后把焦点收回这里，保证 cmd-e 仍能再次触发
+    /// 隐藏编辑器后承接焦点，保证快捷键仍在焦点链中。
     focus_handle: FocusHandle,
-    /// SQL 补全用的 schema 缓存（background 填充；持有 keep-alive，
-    /// 实际由 QueryPanel 内部 Tab 通过 Arc 共享读取）
+    /// 持有补全缓存，查询标签通过 `Arc` 共享。
     _schema_cache: Arc<RwLock<SchemaCache>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -53,7 +48,6 @@ impl ConnectionSession {
         cx: &mut Context<Self>,
     ) -> Self {
         let schema_cache = SchemaCache::new_shared();
-        // 默认 schema 立即记录
         schema_cache.write().default_schema = config.database.clone();
 
         let tree =
@@ -68,23 +62,17 @@ impl ConnectionSession {
             )
         });
 
-        // 立即设置连接 → 加载 schemas + 同步 queries
         let conn_for_tree = config.clone();
         tree.update(cx, |t, cx| t.set_connection(Some(conn_for_tree), cx));
         let conn_for_q = config.clone();
         queries.update(cx, |q, cx| q.set_connection(Some(conn_for_q), window, cx));
 
-        // 后台拉表名填补全 cache（默认 schema 优先；无默认时拉所有非系统库）
         Self::warm_schema_cache(service.clone(), config.clone(), schema_cache.clone(), cx);
-        // 启动 TTL 周期任务：每 60s 重新拉一次，兜底外部修改造成的漂移
         Self::start_cache_ttl(service.clone(), config.clone(), schema_cache.clone(), cx);
 
         let mut subs = Vec::new();
 
-        // 订阅表树事件：填 SELECT 到当前 Tab 并自动执行；同时把 schema
-        // 同步到所有 Tab（写裸表名 SQL 时不会再报 No database selected）
         let queries_clone = queries.clone();
-        // 当前 session 的 driver（mysql/pg），订阅闭包内决定方言写法时用
         let driver_kind = config.driver;
         subs.push(cx.subscribe_in(
             &tree,
@@ -95,8 +83,7 @@ impl ConnectionSession {
                     queries_clone.update(cx, |q, cx| {
                         q.set_active_schema(Some(schema.clone()), cx);
                     });
-                    // 按 driver 方言加引号（mysql 反引号 / pg 双引号）。
-                    // 不显式写 LIMIT：交给自动注入（同样上限），裸 SELECT 才有分页资格
+                    // LIMIT 交给查询层注入，保留裸查询的分页资格。
                     let qschema = driver_kind.quote_identifier(schema);
                     let qtable = driver_kind.quote_identifier(table);
                     let sql = format!("SELECT * FROM {qschema}.{qtable};");
@@ -117,7 +104,6 @@ impl ConnectionSession {
                     is_view,
                 } => {
                     info!(schema = %schema, table = %table, is_view, "show create");
-                    // 按 driver 选 DDL 查询语句（mysql SHOW CREATE / pg 拼装版）
                     let sql = ramag_domain::entities::build_ddl_query(
                         driver_kind,
                         schema,
@@ -129,15 +115,12 @@ impl ConnectionSession {
                     });
                 }
                 TreeEvent::ToggleSqlEditor => {
-                    // 切 QueryPanel 的 SQL 编辑器（含焦点处理，保证 cmd-e 可反复触发）
                     this.toggle_sql_editor(window, cx);
                 }
             },
         ));
 
         let resize_state = cx.new(|_| ResizableState::default());
-        // 表树 / 查询区分隔宽度跨重启（所有 SQL 会话共用同一偏好，布局一致）
-        // 结果工具条发起的表级 JSONL 导入 → 表树执行（复用其进度行与取消）
         let tree_for_import = tree.clone();
         subs.push(cx.subscribe(
             &queries,
@@ -180,8 +163,7 @@ impl ConnectionSession {
         }
     }
 
-    /// 切 SQL 编辑器并处理焦点：显示→聚焦编辑器；隐藏→焦点收回会话根。
-    /// 否则编辑器失焦后 cmd-e 的 handler 脱离焦点链，无法再次唤出编辑器
+    /// 切换编辑器并保持快捷键焦点链。
     fn toggle_sql_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let visible = self.queries.update(cx, |q, cx| q.toggle_editor(cx));
         info!(visible, "toggle sql editor");
@@ -195,7 +177,6 @@ impl ConnectionSession {
         }
     }
 
-    /// 后台预拉一次 schema → tables 填补全 cache
     fn warm_schema_cache(
         service: Arc<ConnectionService>,
         config: ConnectionConfig,
@@ -208,8 +189,7 @@ impl ConnectionSession {
         .detach();
     }
 
-    /// TTL 周期刷新：每 CACHE_TTL 后台拉一次最新表名
-    /// 通过 this.update 检测 entity 是否已 drop，drop 后自动退出循环
+    /// 会话销毁后停止周期刷新。
     fn start_cache_ttl(
         service: Arc<ConnectionService>,
         config: ConnectionConfig,
@@ -219,7 +199,6 @@ impl ConnectionSession {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(CACHE_TTL).await;
-                // session drop 后退出 ticker
                 if this.update(cx, |_, _| ()).is_err() {
                     break;
                 }
@@ -233,17 +212,14 @@ impl ConnectionSession {
         &self.config
     }
 
-    /// 连接健康快照 (loading, has_error)：取表树的元数据加载状态
     pub fn health(&self, cx: &gpui::App) -> (bool, bool) {
         self.tree.read(cx).health()
     }
 
-    /// Tab 标题（连接名）
     pub fn title(&self) -> &str {
         &self.config.name
     }
 
-    /// 数据库类型副标题（用于 Tab Bar 二级展示）
     pub fn kind_label(&self) -> &'static str {
         match self.config.driver {
             DriverKind::Mysql => "MySQL",
@@ -253,7 +229,6 @@ impl ConnectionSession {
         }
     }
 
-    /// Tab 被（重新）激活时调用：表树为空才补拉，避免空面板（连接放久后切回也会重新请求）
     pub fn ensure_loaded(&self, cx: &mut Context<Self>) {
         self.tree.update(cx, |t, cx| t.ensure_loaded(cx));
     }
@@ -263,8 +238,7 @@ impl ConnectionSession {
             .update(cx, |queries, cx| queries.set_session_active(active, cx));
     }
 
-    /// Tab 激活时聚焦：编辑器可见则聚焦编辑器（cmd-enter 的 handler 在 QueryTab 层，需焦点在内），
-    /// 隐藏则聚焦会话根，让 cmd-e（ToggleSqlEditor）能唤出编辑器
+    /// 激活标签时把焦点放回当前可交互区域。
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.queries.read(cx).is_editor_visible() {
             self.queries
@@ -280,13 +254,10 @@ impl Render for ConnectionSession {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
 
-        // h_resizable 让用户拖拽中间分隔条调整左右宽度
-        // 表树初始 280px，限制 [180, 600]；查询面板占剩余
         h_flex()
             .size_full()
             .track_focus(&self.focus_handle)
             .bg(theme.background)
-            // cmd-e 切 SQL 编辑器，dispatch 冒泡到此；与表树按钮的 ToggleSqlEditor 同路径
             .on_action(
                 cx.listener(|this, _: &crate::actions::ToggleSqlEditor, window, cx| {
                     this.toggle_sql_editor(window, cx);
@@ -315,8 +286,6 @@ impl Render for ConnectionSession {
     }
 }
 
-/// 实际刷新逻辑：异步拉一次目标 schema 的所有表名 → 写入 cache
-/// 初次预热与 TTL 周期任务都用这一份
 async fn warm_once(
     service: &ConnectionService,
     config: &ConnectionConfig,

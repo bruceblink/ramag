@@ -250,8 +250,6 @@ impl VcsView {
         if self.repo.is_none() {
             return div().into_any_element();
         }
-        let theme = cx.theme();
-        let accent = theme.accent;
         let head = self
             .status
             .as_ref()
@@ -294,7 +292,6 @@ impl VcsView {
             .as_ref()
             .and_then(|status| status.head_commit.as_ref())
             .is_some();
-        let _ = accent;
         ramag_ui::clickable_button("vcs-branch-picker")
             .outline()
             .small()

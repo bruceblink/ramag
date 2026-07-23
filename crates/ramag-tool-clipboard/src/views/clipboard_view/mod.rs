@@ -1,5 +1,4 @@
-//! ClipboardView：剪贴板历史主视图。左卡片流 + 右详情，搜索 / 类型筛选。
-//! 历史由 App 级采集循环写入 storage；视图轮询 `service.revision()` 仅在变化时重载
+//! 剪贴板历史主视图。
 
 mod card;
 mod detail;
@@ -19,39 +18,33 @@ use gpui_component::input::{InputEvent, InputState};
 use ramag_app::ClipboardService;
 use ramag_domain::entities::{ClipId, ClipItem, ClipKind, ClipboardSettings};
 
-/// 轮询间隔：采集循环写库后，视图最迟此间隔内刷新
+/// 采集结果的界面刷新间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(600);
 
 pub struct ClipboardView {
     pub(super) service: Arc<ClipboardService>,
-    /// 最近窗口快照（来自 service 缓存，最近优先）
     pub(super) items: Vec<Arc<ClipItem>>,
     pub(super) settings: ClipboardSettings,
     pub(super) loaded_settings_revision: u64,
     pub(super) settings_save_generation: u64,
     pub(super) settings_saving: bool,
     pub(super) search: Entity<InputState>,
-    /// 类型筛选；None = 全部
     pub(super) filter: Option<ClipKind>,
     pub(super) selected: Option<ClipId>,
     /// 当前详情文本的有界展示缓存；避免轮询重绘反复复制、排版大文本。
     pub(super) detail_text_cache: Option<(ClipId, SharedString)>,
-    /// 上次已加载的版本号，轮询时与 service.revision() 比对
     pub(super) loaded_revision: u64,
-    /// 后台全量搜索结果：补充缓存窗口之外的匹配（搜索词非空时与缓存即时结果合并）
     pub(super) search_results: Vec<Arc<ClipItem>>,
     /// 后台搜索命中超过 SEARCH_LIMIT；状态栏必须明确提示结果被截断。
     pub(super) search_truncated: bool,
-    /// 搜索去抖代号：每次输入自增，异步任务到期比对以丢弃过期搜索
+    /// 用于丢弃过期搜索结果。
     pub(super) search_gen: u64,
     /// 当前全量搜索的取消标记；输入变化或视图销毁时停止旧扫描。
     pub(super) search_cancel: Arc<AtomicBool>,
-    /// 设置面板是否展开
     pub(super) show_settings: bool,
     pub(super) list_scroll: UniformListScrollHandle,
     pub(super) focus_handle: FocusHandle,
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// 图片解密缓存（缩略图 / 原图）
     pub(super) img_cache: crate::views::image_cache::ImageCache,
     /// 首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
     pub(super) focused_search_once: bool,
@@ -80,7 +73,6 @@ impl ClipboardView {
             cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索剪贴历史…"));
 
         let mut subscriptions = Vec::new();
-        // 搜索框输入即重渲染（过滤是纯内存操作）
         subscriptions.push(
             cx.subscribe(&search, |this: &mut Self, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
@@ -121,7 +113,7 @@ impl ClipboardView {
         view
     }
 
-    /// 后台计时轮询：版本号变化才重载（重载只同步拷贝缓存快照，不解密）
+    /// 仅在版本变化时同步缓存快照。
     fn start_polling(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {

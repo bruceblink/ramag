@@ -160,7 +160,6 @@ pub(super) fn branch_row(
     .into_any_element()
 }
 
-/// 分支操作菜单（右键与行尾「⋯」共用）：checkout / merge / rebase / 交互式 rebase / 删除
 fn branch_actions_menu(
     menu: PopupMenu,
     ent: Entity<VcsView>,
@@ -174,14 +173,13 @@ fn branch_actions_menu(
     let n4 = n.clone();
     let mut m = menu;
     if !is_remote {
-        // 切换
         m = m.item(ramag_ui::menu_item("切换").on_click(move |_, w, app| {
             e1.update(app, |this, cx| {
                 this.confirm_branch_op(BranchOp::Checkout(n1.clone()), w, cx);
             });
         }));
     } else {
-        m = m.item(ramag_ui::menu_item("检出分支").on_click(move |_, w, app| {
+        m = m.item(ramag_ui::menu_item("检出").on_click(move |_, w, app| {
             e1.update(app, |this, cx| {
                 let op = match checkout_remote_branch_op(&n1, &this.local_branches) {
                     Ok(op) => op,
@@ -195,20 +193,17 @@ fn branch_actions_menu(
             });
         }));
     }
-    // 合并
     m = m.item(ramag_ui::menu_item("合并").on_click(move |_, w, app| {
         e2.update(app, |this, cx| {
             this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);
         });
     }));
-    // Rebase
     m = m.item(ramag_ui::menu_item("变基").on_click(move |_, w, app| {
         e3.update(app, |this, cx| {
             this.confirm_branch_op(BranchOp::Rebase(n3.clone()), w, cx);
         });
     }));
     if !is_remote {
-        // 交互式 Rebase（仅本地分支）
         let (ei, ni) = (ent.clone(), n.clone());
         m = m.item(ramag_ui::menu_item("交互变基").on_click(move |_, _, app| {
             if !busy {
@@ -218,7 +213,6 @@ fn branch_actions_menu(
             }
         }));
         m = m.separator();
-        // 删除分支
         let ed = ent.clone();
         m = m.item(ramag_ui::menu_item("删除").on_click(move |_, w, app| {
             let view = ed.clone();

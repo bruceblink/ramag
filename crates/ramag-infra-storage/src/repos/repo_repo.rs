@@ -14,7 +14,7 @@ const MAX_REPO_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_REPO_RECORDS: usize = 2048;
 const MAX_REPO_LIST_BYTES: usize = 64 * 1024 * 1024;
 
-/// key=RepoId UUID，value=RepoConfig JSON
+/// 键为 RepoId UUID，值为 RepoConfig JSON。
 pub(crate) const REPOS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("repos");
 
 fn decode_repo(key: &str, value: &str) -> Result<RepoConfig> {

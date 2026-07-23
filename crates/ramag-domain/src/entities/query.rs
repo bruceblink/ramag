@@ -149,7 +149,7 @@ impl QueryResult {
 /// 服务端警告（MySQL SHOW WARNINGS 一行）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warning {
-    /// "Note" / "Warning" / "Error"
+    /// 服务端级别：Note、Warning 或 Error。
     pub level: String,
     /// 对应 mysql_errno()
     pub code: u32,
@@ -725,7 +725,7 @@ mod tests {
             Value::Text("a\\b".to_string()).to_sql_literal_for(DriverKind::Postgres),
             "'a\\b'"
         );
-        // PG bytea：'\xHEX'
+        // PG bytea 格式：'\xHEX'。
         assert_eq!(
             Value::Bytes(vec![0xde, 0xad]).to_sql_literal_for(DriverKind::Postgres),
             "'\\xdead'"

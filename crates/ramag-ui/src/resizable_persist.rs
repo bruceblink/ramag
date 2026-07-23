@@ -61,7 +61,7 @@ pub fn persist_resizable_sizes<V: 'static>(
     })
     .detach();
 
-    // —— 恢复：等首帧 panels 建立后按存储值逐面板应用 ——
+    // 首帧建立面板后恢复尺寸。
     if let Some(storage) = crate::theme::storage_from_cx(cx) {
         let state_for_restore = state.clone();
         let pending_for_load = pending_restore.clone();
@@ -103,7 +103,7 @@ pub fn persist_resizable_sizes<V: 'static>(
         .detach();
     }
 
-    // —— 落盘：Resized（拖动中逐次发）→ 代际防抖，停顿后才写 ——
+    // 拖动事件按代次防抖后落盘。
     let generation = Arc::new(AtomicU64::new(0));
     let write_lock = Arc::new(futures::lock::Mutex::new(()));
     let pending_for_persist = pending_restore.clone();

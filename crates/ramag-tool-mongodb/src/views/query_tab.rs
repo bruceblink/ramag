@@ -457,7 +457,7 @@ impl MongoQueryTab {
         );
     }
 
-    /// 加载相邻结果页；原始编辑器命令不变，派生的 skip / limit 不写入历史。
+    /// 加载相邻结果页，不改写编辑器或历史。
     fn handle_page(&mut self, requested_page: usize, cx: &mut Context<Self>) {
         if self.running {
             return;
@@ -490,7 +490,7 @@ impl MongoQueryTab {
         );
     }
 
-    /// 执行原始命令或其分页派生命令。
+    /// 执行原始命令或分页命令。
     fn execute_command(
         &mut self,
         base_command: Value,
@@ -500,9 +500,7 @@ impl MongoQueryTab {
         page_request: Option<PageRequest>,
         cx: &mut Context<Self>,
     ) {
-        // 提取命令目标 collection + 同步当前 db，一并注入结果区作为增删改上下文。
-        // self.database 切库 / 切 collection 时已更新，必须同步给结果区；否则写操作沿用 tab
-        // 初始库，filter 匹配不到文档（matched 0）→ 更新 / 删除「不生效」
+        // 同步命令目标与当前库，避免写操作仍使用标签初始库。
         let target = extract_collection(&base_command);
         self.collection = target.clone();
         let db_now = self.database.clone();

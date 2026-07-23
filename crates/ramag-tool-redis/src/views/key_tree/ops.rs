@@ -50,23 +50,21 @@ pub(super) fn node_context_menu(
     menu = menu.separator();
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
-        menu = menu.item(
-            ramag_ui::menu_item("重命名").on_click(move |_, window, app| {
-                let (key, ent) = (key.clone(), ent.clone());
-                open_bounded_prompt(
-                    "重命名 Key",
-                    format!("输入「{}」的新名称", truncate_label(&key, 60)),
-                    &key.clone(),
-                    "重命名",
-                    MAX_REDIS_KEY_BYTES,
-                    move |new_name, _, app| {
-                        ent.update(app, |this, cx| this.rename_key_op(key, new_name, cx));
-                    },
-                    window,
-                    app,
-                );
-            }),
-        );
+        menu = menu.item(ramag_ui::menu_item("改名").on_click(move |_, window, app| {
+            let (key, ent) = (key.clone(), ent.clone());
+            open_bounded_prompt(
+                "重命名 Key",
+                format!("输入「{}」的新名称", truncate_label(&key, 60)),
+                &key.clone(),
+                "改名",
+                MAX_REDIS_KEY_BYTES,
+                move |new_name, _, app| {
+                    ent.update(app, |this, cx| this.rename_key_op(key, new_name, cx));
+                },
+                window,
+                app,
+            );
+        }));
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(ramag_ui::menu_item("删除").on_click(move |_, window, app| {
             let (key, ent) = (key.clone(), ent.clone());

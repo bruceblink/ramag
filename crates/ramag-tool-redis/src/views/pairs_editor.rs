@@ -140,10 +140,10 @@ impl Render for PairsEditor {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
 
-        let (add_label, count_unit, left_width) = match self.kind {
-            PairsKind::Hash => ("添加字段", "字段", 180.0_f32),
-            PairsKind::ZSet => ("添加成员", "成员", 120.0_f32),
-            PairsKind::Stream => ("添加字段", "字段", 180.0_f32),
+        let (count_unit, left_width) = match self.kind {
+            PairsKind::Hash => ("字段", 180.0_f32),
+            PairsKind::ZSet => ("成员", 120.0_f32),
+            PairsKind::Stream => ("字段", 180.0_f32),
         };
 
         let toolbar = h_flex()
@@ -155,7 +155,7 @@ impl Render for PairsEditor {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
-                    .label(add_label)
+                    .label("添加")
                     .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
                     .when(self.rows.len() >= MAX_EDITOR_ROWS, |button| {
                         button.tooltip("最多 200 行")

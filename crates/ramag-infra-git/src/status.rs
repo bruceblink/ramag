@@ -365,7 +365,7 @@ fn parse_branch_count(value: Option<&str>, prefix: char, index: usize) -> Result
 }
 
 fn parse_ordinary(record: &[u8], index: usize) -> Result<FileStatus> {
-    // "1 XY sub mH mI mW hH hI path"
+    // 普通记录："1 XY sub mH mI mW hH hI path"。
     let text = decode_status_record(record, index)?;
     let parts: Vec<&str> = text.splitn(9, ' ').collect();
     if parts.len() != 9 || parts[0] != "1" {
@@ -386,7 +386,7 @@ fn parse_ordinary(record: &[u8], index: usize) -> Result<FileStatus> {
 }
 
 fn parse_rename(record: &[u8], old_path: &[u8], index: usize) -> Result<FileStatus> {
-    // "2 XY sub mH mI mW hH hI Xscore newpath"
+    // 重命名记录："2 XY sub mH mI mW hH hI Xscore newpath"。
     let text = decode_status_record(record, index)?;
     let parts: Vec<&str> = text.splitn(10, ' ').collect();
     if parts.len() != 10 || parts[0] != "2" {
@@ -409,7 +409,7 @@ fn parse_rename(record: &[u8], old_path: &[u8], index: usize) -> Result<FileStat
 }
 
 fn parse_untracked(record: &[u8], index: usize) -> Result<FileStatus> {
-    // "? path"
+    // 未跟踪记录："? path"。
     let text = decode_status_record(record, index)?;
     let path = text
         .strip_prefix("? ")
@@ -427,7 +427,7 @@ fn parse_untracked(record: &[u8], index: usize) -> Result<FileStatus> {
 }
 
 fn parse_unmerged(record: &[u8], index: usize) -> Result<FileStatus> {
-    // "u XY sub m1 m2 m3 mW h1 h2 h3 path"
+    // 冲突记录："u XY sub m1 m2 m3 mW h1 h2 h3 path"。
     let text = decode_status_record(record, index)?;
     let parts: Vec<&str> = text.splitn(11, ' ').collect();
     if parts.len() != 11 || parts[0] != "u" {

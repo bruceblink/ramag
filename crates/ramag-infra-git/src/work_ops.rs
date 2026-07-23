@@ -18,7 +18,7 @@ pub fn stage(repo_path: &Path, paths: &[String]) -> Result<()> {
     )
 }
 
-/// `git ls-files --cached --others --exclude-standard -z`
+/// 使用 `git ls-files --cached --others --exclude-standard -z`。
 pub fn list_files(repo_path: &Path) -> Result<Vec<String>> {
     let bytes = run_git_bytes(
         repo_path,

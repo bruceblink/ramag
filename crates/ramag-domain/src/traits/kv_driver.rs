@@ -14,13 +14,13 @@ pub trait KvDriver: Send + Sync {
     /// 用于日志 / UI 显示，如 "redis"
     fn name(&self) -> &'static str;
 
-    /// PING
+    /// PING 健康检查。
     async fn test_connection(&self, config: &ConnectionConfig) -> Result<()>;
 
     /// INFO server 的 redis_version
     async fn server_version(&self, config: &ConnectionConfig) -> Result<String>;
 
-    /// DBSIZE
+    /// DBSIZE 键数量。
     async fn db_size(&self, config: &ConnectionConfig, db: u8) -> Result<u64>;
 
     /// SCAN 分批迭代。`cursor`=0 起、返回 0 终；`count` 推荐 100-500（仅 hint）
