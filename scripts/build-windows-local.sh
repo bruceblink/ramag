@@ -118,6 +118,12 @@ esac
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
+# cargo install 默认把子命令放在 Cargo home；Homebrew rustup 不一定将它加入 PATH。
+CARGO_INSTALL_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+if [ -d "$CARGO_INSTALL_BIN" ]; then
+    export PATH="$CARGO_INSTALL_BIN:$PATH"
+fi
+
 resolve_executable() {
     local candidate="$1"
     if [[ "$candidate" == */* ]]; then
