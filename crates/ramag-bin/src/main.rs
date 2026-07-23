@@ -53,39 +53,7 @@ struct Quit;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
-struct ShowShortcuts;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct ShowAbout;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct CopyDiagnostics;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
 struct OpenLogDir;
-
-// macOS 标准编辑命令通过 os_action 沿响应链处理，这些 action 仅用于配对。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct EditUndo;
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct EditRedo;
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct EditCut;
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct EditCopy;
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct EditPaste;
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct EditSelectAll;
 
 fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
@@ -103,20 +71,6 @@ fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
             "系统文件管理器退出状态：{status}"
         )))
     }
-}
-
-fn diagnostics_text(log_path: &Option<std::path::PathBuf>) -> String {
-    let log_line = log_path
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "（日志未启用）".to_string());
-    format!(
-        "Ramag {}\n平台：{} {}\n日志：{}",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        log_line
-    )
 }
 
 /// 主窗口重建时复用的依赖。
@@ -375,25 +329,6 @@ fn main() {
         spawn_clipboard_capture(deps.clipboard_service.clone(), cx);
         spawn_clipboard_hotkey(deps.clipboard_service.clone(), deps.registry.clone(), cx);
 
-        cx.on_action(|_: &ShowShortcuts, cx: &mut App| {
-            if let Some(handle) = cx.active_window() {
-                let _ = handle.update(cx, |_, window, cx| open_shortcuts_dialog(window, cx));
-            }
-        });
-        let log_path_for_about = log_path.clone();
-        cx.on_action(move |_: &ShowAbout, cx: &mut App| {
-            let log_path = log_path_for_about.clone();
-            if let Some(handle) = cx.active_window() {
-                let _ = handle.update(cx, move |_, window, cx| {
-                    open_about_dialog(log_path, window, cx)
-                });
-            }
-        });
-        let log_path_for_diag = log_path.clone();
-        cx.on_action(move |_: &CopyDiagnostics, cx: &mut App| {
-            let text = diagnostics_text(&log_path_for_diag);
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        });
         let log_path_for_open = log_path.clone();
         cx.on_action(move |_: &OpenLogDir, cx: &mut App| {
             let Some(dir) = log_path_for_open
@@ -401,6 +336,7 @@ fn main() {
                 .and_then(|path| path.parent())
                 .map(std::path::Path::to_path_buf)
             else {
+                warn!("log file unavailable");
                 return;
             };
             cx.spawn(async move |_| {
@@ -413,7 +349,7 @@ fn main() {
                 })
                 .await;
                 if let Err(error) = result {
-                    tracing::warn!(error = %error, "open log directory failed");
+                    warn!(error = %error, "open log directory failed");
                 }
             })
             .detach();
@@ -426,28 +362,8 @@ fn main() {
                 disabled: false,
             },
             Menu {
-                name: "编辑".into(),
-                items: vec![
-                    MenuItem::os_action("撤销", EditUndo, gpui::OsAction::Undo),
-                    MenuItem::os_action("重做", EditRedo, gpui::OsAction::Redo),
-                    MenuItem::separator(),
-                    MenuItem::os_action("剪切", EditCut, gpui::OsAction::Cut),
-                    MenuItem::os_action("复制", EditCopy, gpui::OsAction::Copy),
-                    MenuItem::os_action("粘贴", EditPaste, gpui::OsAction::Paste),
-                    MenuItem::os_action("全选", EditSelectAll, gpui::OsAction::SelectAll),
-                ],
-                disabled: false,
-            },
-            Menu {
                 name: "帮助".into(),
-                items: vec![
-                    MenuItem::action("快捷键", ShowShortcuts),
-                    MenuItem::separator(),
-                    MenuItem::action("复制诊断", CopyDiagnostics),
-                    MenuItem::action("打开日志", OpenLogDir),
-                    MenuItem::separator(),
-                    MenuItem::action("关于 Ramag", ShowAbout),
-                ],
+                items: vec![MenuItem::action("查看日志", OpenLogDir)],
                 disabled: false,
             },
         ]);
@@ -855,120 +771,6 @@ fn build_connection_service() -> anyhow::Result<(Arc<ConnectionService>, Arc<dyn
 
     let svc = Arc::new(ConnectionService::new(drivers, storage.clone()));
     Ok((svc, storage))
-}
-
-fn open_shortcuts_dialog(window: &mut gpui::Window, cx: &mut App) {
-    use gpui::{ParentElement as _, Styled as _};
-    use gpui_component::WindowExt as _;
-    const ROWS: &[(&str, &str)] = &[
-        (
-            "⌘/Ctrl ⇧ V",
-            "全局唤起剪贴板抽屉（系统级，应用不在前台也可）",
-        ),
-        (
-            "⌘/Ctrl Q · ⌘/Ctrl W",
-            "退出应用 · 关闭当前标签（主窗口不因 W 关闭）",
-        ),
-        ("Ctrl Tab · Ctrl ⇧ Tab", "向前 / 向后切换首页、工具与设置"),
-        ("⌘/Ctrl 1 / 2 / 3", "直接切换到第 1 / 2 / 3 个工具"),
-        ("⌘/Ctrl Enter", "DB：运行查询 ｜ VCS：提交（提交框聚焦时）"),
-        ("⌘/Ctrl ⇧ Enter", "DB：运行光标处语句"),
-        ("⌘/Ctrl T", "DB：新建查询标签 ｜ VCS：Pull"),
-        (
-            "⌘/Ctrl E",
-            "DB：显示 / 隐藏编辑器（SQL · Mongo · Redis 控制台）",
-        ),
-        ("⌘/Ctrl F", "DB：结果内查找 ｜ 剪贴板：聚焦搜索"),
-        ("⌘/Ctrl ⇧ F", "DB：格式化 SQL / JSON"),
-        ("⌘/Ctrl ⇧ E", "SQL：EXPLAIN 当前查询"),
-        ("⌘/Ctrl K · ⌘/Ctrl ⇧ K", "VCS：聚焦提交输入 · Push"),
-        ("⌘/Ctrl R · ⌘/Ctrl ⇧ H", "VCS：刷新工作区 · 底部历史面板"),
-        (
-            "Enter / Delete / ↑ ↓",
-            "剪贴板：复制选中 / 删除选中 / 上下选择",
-        ),
-    ];
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .title(ramag_ui::closable_dialog_title(
-                "shortcuts-dialog-close",
-                "快捷键",
-                |_, _| {},
-            ))
-            .close_button(false)
-            .width(gpui::px(560.0))
-            .content(move |content, _, cx| {
-                let muted = gpui_component::ActiveTheme::theme(cx).muted_foreground;
-                let mut col = gpui_component::v_flex().w_full().gap(gpui::px(6.0));
-                for (keys, desc) in ROWS {
-                    col = col.child(
-                        gpui_component::h_flex()
-                            .w_full()
-                            .gap(gpui::px(12.0))
-                            .child(
-                                gpui::div()
-                                    .w(gpui::px(170.0))
-                                    .flex_none()
-                                    .text_sm()
-                                    .font_family("monospace")
-                                    .child(*keys),
-                            )
-                            .child(
-                                gpui::div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .child(*desc),
-                            ),
-                    );
-                }
-                content.child(col)
-            })
-    });
-}
-
-fn open_about_dialog(
-    log_path: Option<std::path::PathBuf>,
-    window: &mut gpui::Window,
-    cx: &mut App,
-) {
-    use gpui::{ParentElement as _, Styled as _};
-    use gpui_component::WindowExt as _;
-    let version = env!("CARGO_PKG_VERSION").to_string();
-    let log_text = log_path
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "（日志文件不可用）".to_string());
-    window.open_dialog(cx, move |dialog, _, _| {
-        let version = version.clone();
-        let log_text = log_text.clone();
-        dialog
-            .title(ramag_ui::closable_dialog_title(
-                "about-dialog-close",
-                "关于 Ramag",
-                |_, _| {},
-            ))
-            .close_button(false)
-            .width(gpui::px(520.0))
-            .content(move |content, _, cx| {
-                let muted = gpui_component::ActiveTheme::theme(cx).muted_foreground;
-                content.child(
-                    gpui_component::v_flex()
-                        .w_full()
-                        .gap(gpui::px(8.0))
-                        .child(gpui::div().text_sm().child(format!("版本：{version}")))
-                        .child(
-                            gpui::div()
-                                .text_sm()
-                                .text_color(muted)
-                                .child(format!("日志：{log_text}")),
-                        )
-                        .child(gpui::div().text_xs().text_color(muted).child(
-                            "本地优先：连接密码经系统钥匙串主密钥 AES-GCM 加密落盘，剪贴板历史全量本地加密存储",
-                        )),
-                )
-            })
-    });
 }
 
 /// 启动期同步批量读取偏好。current-thread runtime 不创建后台工作线程；同一批 key 共用一次初始化。

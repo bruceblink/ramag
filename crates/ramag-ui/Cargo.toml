@@ -36,3 +36,7 @@ futures = { workspace = true }
 rfd = { workspace = true }
 # 按需出现的分隔面板需共享一次性待恢复状态；复用 workspace 既有同步原语。
 parking_lot = { workspace = true }
+
+[dev-dependencies]
+# 侧栏交互测试：验证外部链接交由 GPUI 测试平台打开。
+gpui = { workspace = true, features = ["test-support"] }
