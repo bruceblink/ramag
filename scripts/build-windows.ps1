@@ -53,9 +53,7 @@ function Find-Dumpbin {
         return $Command.Source
     }
 
-    $ProgramFilesX86 = [System.Environment]::GetFolderPath(
-        [System.Environment+SpecialFolder]::ProgramFilesX86
-    )
+    $ProgramFilesX86 = [System.Environment]::GetFolderPath("ProgramFilesX86")
     $Vswhere = Join-Path $ProgramFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path -LiteralPath $Vswhere -PathType Leaf)) {
         return $null
@@ -167,12 +165,38 @@ $Dumpbin = Find-Dumpbin
 if ([string]::IsNullOrWhiteSpace($Dumpbin)) {
     throw "dumpbin.exe not found. Repair the Visual Studio C++ Build Tools installation."
 }
+$DumpbinVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Dumpbin).ProductVersion
+Write-Host "Using PE inspector: $Dumpbin ($DumpbinVersion)"
 $Dependencies = (& $Dumpbin /nologo /dependents $Exe) -join "`n"
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to inspect executable dependencies with dumpbin.exe."
 }
-if ($Dependencies -match '(?im)^\s*(VCRUNTIME|MSVCP|api-ms-win-crt-)[^\s]*\.dll\s*$') {
-    throw "The executable depends on the dynamic MSVC/UCRT runtime; the portable build check failed."
+$DependencyNames = @(
+    [regex]::Matches(
+        $Dependencies,
+        '(?im)^\s*([A-Z0-9._+-]+\.dll)\s*$'
+    ) |
+        ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique
+)
+if ($DependencyNames.Count -eq 0) {
+    throw "dumpbin.exe returned no PE dependencies for $Exe."
+}
+Write-Host "PE dependencies: $($DependencyNames -join ', ')"
+
+if ($DependencyNames -match '^(VCRUNTIME|MSVCP|api-ms-win-crt-)[^\s]*\.dll$' -or
+    $DependencyNames -contains 'ucrtbase.dll') {
+    throw "The executable depends on the dynamic MSVC/UCRT runtime; the release build check failed."
+}
+
+$SystemDirectory = [System.Environment]::SystemDirectory
+$NonSystemDependencies = @(
+    $DependencyNames | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $SystemDirectory $_) -PathType Leaf)
+    }
+)
+if ($NonSystemDependencies.Count -gt 0) {
+    throw "The executable has unpackaged non-system dependencies: $($NonSystemDependencies -join ', ')"
 }
 
 $Size = (Get-Item -LiteralPath $Exe).Length

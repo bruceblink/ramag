@@ -277,7 +277,7 @@ fi
 
 IMPORTS="$("$LLVM_BIN/llvm-readobj" --coff-imports "$EXE")"
 if grep -Eiq 'Name: (VCRUNTIME|MSVCP|api-ms-win-crt-)' <<<"$IMPORTS"; then
-    fail "Windows 可执行文件仍依赖动态 MSVC/CRT，便携构建校验失败"
+    fail "Windows 可执行文件仍依赖动态 MSVC/CRT，发布构建校验失败"
 fi
 
 echo ""

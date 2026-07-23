@@ -7,9 +7,9 @@
         db-test db-test-up db-test-seed db-test-run db-test-workspace \
         db-test-status db-test-down db-test-clean \
         _db-test-test _db-test-check _db-test-clippy _db-test-fmt \
-        dmg dmg-x86 dmg-arm64 dmg-universal \
+        dmg dmg-x86 dmg-arm64 mac-package mac-package-test \
         win-debug \
-        clean clean-all \
+        clean \
         deps-update lock-refresh
 
 .DEFAULT_GOAL := help
@@ -18,7 +18,7 @@ help:
 	@printf "\033[1mRamag — 常用命令\033[0m\n\n"
 	@printf "  \033[36m开发\033[0m\n"
 	@printf "    make develop        cargo run -p ramag-bin（debug，编译快）\n"
-	@printf "    make release        cargo run --release -p ramag-bin（首次 ~2-3 分钟）\n"
+	@printf "    make release        本地运行优化构建，不创建或发布安装包\n"
 	@printf "\n  \033[36m检查\033[0m\n"
 	@printf "    make check          cargo check --all-targets\n"
 	@printf "    make fmt            cargo fmt --all\n"
@@ -38,14 +38,13 @@ help:
 	@printf "    make dmg            当前架构：svg → icns → cargo build → Ramag.app → Ramag.dmg\n"
 	@printf "    make dmg-x86        交叉编译 Intel mac\n"
 	@printf "    make dmg-arm64      交叉编译 Apple Silicon\n"
-	@printf "    make dmg-universal  Intel + Apple Silicon 通用二进制（约 2 倍编译时间）\n"
+	@printf "    make mac-package    验证并生成 ARM64 与 Intel 两个正式 DMG；对外 Release 走 Actions\n"
 	@printf "\n  \033[36mWindows x64\033[0m\n"
 	@printf "    make win-debug      macOS 交叉构建 debug（用于编译验证）\n"
 	@printf "    build-windows.ps1   Windows 原生构建 debug / release（-Release）\n"
-	@printf "    （当前输出便携 exe；安装包与签名属于发布流程）\n"
+	@printf "    package-windows.ps1 Windows 原生打包；正式 Release 统一走 GitHub Actions\n"
 	@printf "\n  \033[36m清理\033[0m\n"
 	@printf "    make clean          cargo clean\n"
-	@printf "    make clean-all      clean + 删 Ramag.app / dmg / icns\n"
 	@printf "\n  \033[36m依赖\033[0m\n"
 	@printf "    make deps-update    cargo update\n"
 	@printf "    make lock-refresh   删除 Cargo.lock 重新解析（git 依赖会拉最新 master）\n"
@@ -142,8 +141,11 @@ dmg-x86:
 dmg-arm64:
 	./scripts/build-dmg.sh --target=arm64
 
-dmg-universal:
-	./scripts/build-dmg.sh --target=universal
+mac-package:
+	./scripts/package-macos.sh
+
+mac-package-test:
+	./scripts/macos/package-tests.sh
 
 # === 跨编（macOS → Windows）==========================================
 # 在 macOS 上直接编出 debug ramag.exe（x64），无需 Windows 机器。脚本内含前置依赖检查
@@ -155,12 +157,6 @@ win-debug:
 # === 清理 ============================================================
 clean:
 	cargo clean
-
-clean-all: clean
-	rm -rf target/Ramag*.app
-	rm -rf target/dmg-staging*
-	rm -f target/Ramag*.dmg
-	rm -f scripts/icons/ramag.icns
 
 # === 依赖 ============================================================
 deps-update:

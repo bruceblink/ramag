@@ -135,6 +135,7 @@ Ramag 支持 macOS Apple Silicon / Intel，以及 Windows 10/11 x64。Git 功能
 
 - [性能报告：VCS、数据库与剪贴板](docs/performance.md)
 - [架构说明](docs/architecture.md)
+- [桌面端构建与发布](docs/desktop-release.md)
 
 ## License
 

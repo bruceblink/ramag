@@ -3,11 +3,6 @@
 **/*.rs.bk
 Cargo.lock.bak
 
-# 生成的图标资源（由 scripts/build-icon.sh 生成）
-/scripts/icons/ramag.icns
-/scripts/icons/ramag.iconset/
-/scripts/icons/*.png
-
 # IDE
 /.idea
 /.vscode

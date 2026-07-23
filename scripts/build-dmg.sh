@@ -4,7 +4,6 @@
 # 依赖（macOS 自带）：
 #   - sips、iconutil（Xcode CLT 提供 iconutil；svg 转 png 用 sips）
 #   - hdiutil（DMG 打包）
-#   - lipo（Xcode CLT 提供，universal 合并用）
 #   - cargo（项目自带 rust-toolchain.toml）
 #
 # 用法：
@@ -12,21 +11,20 @@
 #   ./scripts/build-dmg.sh --debug             # debug 二进制（更快编译，dmg 体积大）
 #   ./scripts/build-dmg.sh --target=x86_64     # 交叉编译到 Intel mac
 #   ./scripts/build-dmg.sh --target=arm64      # 交叉编译到 Apple Silicon
-#   ./scripts/build-dmg.sh --target=universal  # Intel + Apple Silicon 通用二进制
 #
 # 产物（带架构后缀，避免互相覆盖）：
 #   - native：    target/Ramag.app    / target/Ramag.dmg
 #   - x86_64：    target/Ramag-x86_64.app    / target/Ramag-x86_64.dmg
 #   - arm64：     target/Ramag-arm64.app     / target/Ramag-arm64.dmg
-#   - universal： target/Ramag-universal.app / target/Ramag-universal.dmg
-#
-# 注意：release profile 是 lto=fat + codegen-units=1，单架构编译已经较慢，
-#       universal 需要编两次再 lipo 合并，时间约 2 倍。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+RELEASE_LIB="$SCRIPT_DIR/macos/release-lib.sh"
+
+# shellcheck source=macos/release-lib.sh
+source "$RELEASE_LIB"
 
 # === 参数解析 ========================================================
 PROFILE="release"
@@ -40,14 +38,14 @@ for arg in "$@"; do
             exit 0
             ;;
         *)
-            echo "❌ 未知参数：$arg"
-            echo "   见 $0 --help"
+            echo "Unknown argument: $arg" >&2
+            echo "Run $0 --help for usage." >&2
             exit 1
             ;;
     esac
 done
 
-# 把 --target 标准化成 cargo target triple（"" 代表 native，universal 单独处理）
+# 把 --target 标准化成 cargo target triple（"" 代表 native）
 case "$TARGET" in
     native)
         TARGET_TRIPLE=""
@@ -61,146 +59,123 @@ case "$TARGET" in
         TARGET_TRIPLE="aarch64-apple-darwin"
         SUFFIX="-arm64"
         ;;
-    universal)
-        TARGET_TRIPLE="universal"
-        SUFFIX="-universal"
-        ;;
     *)
-        echo "❌ 未知 --target=${TARGET}（支持：native / x86_64 / arm64 / universal）"
+        echo "Unsupported target '$TARGET'. Use native, x86_64, or arm64." >&2
         exit 1
         ;;
 esac
 
 if [[ "$PROFILE" == "release" ]]; then
-    CARGO_FLAGS="--release"
+    CARGO_FLAGS=(--release)
     PROFILE_DIR="release"
 else
-    CARGO_FLAGS=""
+    # Bash 3.2 + nounset 不能安全展开空数组，显式指定 dev profile。
+    CARGO_FLAGS=(--profile dev)
     PROFILE_DIR="debug"
 fi
 
 # === 路径 ============================================================
-ICON_DIR="$SCRIPT_DIR/icons"
-SVG="$ICON_DIR/ramag.svg"
-ICONSET="$ICON_DIR/ramag.iconset"
-ICNS="$ICON_DIR/ramag.icns"
+ICON_SOURCE_DIR="$SCRIPT_DIR/icons"
+SVG="$ICON_SOURCE_DIR/ramag.svg"
+ICON_WORK_DIR="$REPO_DIR/target/macos-icon${SUFFIX}"
+ICONSET="$ICON_WORK_DIR/ramag.iconset"
+ICNS="$ICON_WORK_DIR/ramag.icns"
 
 APP="$REPO_DIR/target/Ramag${SUFFIX}.app"
 DMG="$REPO_DIR/target/Ramag${SUFFIX}.dmg"
 STAGING="$REPO_DIR/target/dmg-staging${SUFFIX}"
 
+cleanup_build_temp() {
+    rm -rf "$STAGING" "$ICON_WORK_DIR"
+}
+trap cleanup_build_temp EXIT
+
 # === 依赖检查 ========================================================
-NEED_CMDS=(sips iconutil hdiutil codesign cargo)
-if [[ "$TARGET_TRIPLE" == "universal" ]]; then
-    NEED_CMDS+=(lipo)
-fi
+NEED_CMDS=(sips iconutil hdiutil codesign cargo jq rustup)
 for cmd in "${NEED_CMDS[@]}"; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo "❌ 缺命令：$cmd"
+        echo "Required command not found: $cmd" >&2
         case "$cmd" in
-            iconutil|lipo) echo "   Xcode CLT 提供，运行 xcode-select --install" ;;
-            cargo)         echo "   先安装 Rust：https://rustup.rs" ;;
+            iconutil|lipo) echo "Install Xcode Command Line Tools with xcode-select --install." >&2 ;;
+            cargo|rustup)  echo "Install Rust with rustup: https://rustup.rs" >&2 ;;
+            jq)            echo "Install jq with Homebrew: brew install jq" >&2 ;;
         esac
         exit 1
     fi
 done
 
 if [[ ! -f "$SVG" ]]; then
-    echo "❌ 找不到 SVG 源：$SVG"
+    echo "Application SVG icon is missing: $SVG" >&2
     exit 1
 fi
+if [[ ! -f "$REPO_DIR/LICENSE" ]]; then
+    echo "Project license is missing: $REPO_DIR/LICENSE" >&2
+    exit 1
+fi
+
+APP_VERSION="$(macos_get_app_version "$REPO_DIR")"
+BUNDLE_VERSION="$(macos_get_bundle_version "$APP_VERSION")"
+export MACOSX_DEPLOYMENT_TARGET="12.0"
 
 # 确认 rustup target 已安装；缺失则 rustup target add（按 rust-toolchain.toml 当前 toolchain）
 ensure_target_installed() {
     local triple="$1"
     if ! rustup target list --installed 2>/dev/null | grep -qx "$triple"; then
-        echo "▶ rustup target 未安装：${triple}，自动安装中 ..."
+        echo "Installing Rust target: $triple"
         rustup target add "$triple"
     fi
 }
 
-case "$TARGET_TRIPLE" in
-    "")
-        : # native，不需要额外 target
-        ;;
-    universal)
-        ensure_target_installed "x86_64-apple-darwin"
-        ensure_target_installed "aarch64-apple-darwin"
-        ;;
-    *)
-        ensure_target_installed "$TARGET_TRIPLE"
-        ;;
-esac
-
-# === 1) svg → icns（若 svg 比 icns 新或 icns 不存在）==================
-if [[ ! -f "$ICNS" || "$SVG" -nt "$ICNS" ]]; then
-    echo "▶ 1/4 svg → icns ..."
-    rm -rf "$ICONSET"
-    mkdir -p "$ICONSET"
-
-    # Apple iconset 标准尺寸：16/32/64/128/256/512/1024，含 @2x
-    sips -s format png -Z 16   "$SVG" --out "$ICONSET/icon_16x16.png"      >/dev/null
-    sips -s format png -Z 32   "$SVG" --out "$ICONSET/icon_16x16@2x.png"   >/dev/null
-    sips -s format png -Z 32   "$SVG" --out "$ICONSET/icon_32x32.png"      >/dev/null
-    sips -s format png -Z 64   "$SVG" --out "$ICONSET/icon_32x32@2x.png"   >/dev/null
-    sips -s format png -Z 128  "$SVG" --out "$ICONSET/icon_128x128.png"    >/dev/null
-    sips -s format png -Z 256  "$SVG" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
-    sips -s format png -Z 256  "$SVG" --out "$ICONSET/icon_256x256.png"    >/dev/null
-    sips -s format png -Z 512  "$SVG" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
-    sips -s format png -Z 512  "$SVG" --out "$ICONSET/icon_512x512.png"    >/dev/null
-    sips -s format png -Z 1024 "$SVG" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
-
-    iconutil -c icns "$ICONSET" -o "$ICNS"
-    rm -rf "$ICONSET"
-else
-    echo "▶ 1/4 icns 已是最新，跳过"
+if [[ -n "$TARGET_TRIPLE" ]]; then
+    ensure_target_installed "$TARGET_TRIPLE"
 fi
+
+# === 1) svg → icns ===================================================
+# 中间图标只写入 target，避免在源码目录留下构建缓存。
+echo "Step 1/4: generating ICNS icon"
+rm -rf "$ICON_WORK_DIR"
+mkdir -p "$ICONSET"
+
+# Apple iconset 标准尺寸：16/32/64/128/256/512/1024，含 @2x
+sips -s format png -Z 16   "$SVG" --out "$ICONSET/icon_16x16.png"      >/dev/null
+sips -s format png -Z 32   "$SVG" --out "$ICONSET/icon_16x16@2x.png"   >/dev/null
+sips -s format png -Z 32   "$SVG" --out "$ICONSET/icon_32x32.png"      >/dev/null
+sips -s format png -Z 64   "$SVG" --out "$ICONSET/icon_32x32@2x.png"   >/dev/null
+sips -s format png -Z 128  "$SVG" --out "$ICONSET/icon_128x128.png"    >/dev/null
+sips -s format png -Z 256  "$SVG" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+sips -s format png -Z 256  "$SVG" --out "$ICONSET/icon_256x256.png"    >/dev/null
+sips -s format png -Z 512  "$SVG" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+sips -s format png -Z 512  "$SVG" --out "$ICONSET/icon_512x512.png"    >/dev/null
+sips -s format png -Z 1024 "$SVG" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+
+iconutil -c icns "$ICONSET" -o "$ICNS"
+rm -rf "$ICONSET"
 
 # === 2) cargo build ==================================================
 cd "$REPO_DIR"
 
-# 单架构 build：$1 = triple；输出 binary 路径到 stdout
-build_one_triple() {
-    local triple="$1"
-    echo "▶ cargo build $CARGO_FLAGS --target=$triple -p ramag-bin ..." >&2
-    # shellcheck disable=SC2086
-    cargo build $CARGO_FLAGS --target="$triple" -p ramag-bin
-    echo "$REPO_DIR/target/$triple/$PROFILE_DIR/ramag"
-}
-
 if [[ -z "$TARGET_TRIPLE" ]]; then
     # native：不带 --target，产物在 target/$PROFILE_DIR/
-    echo "▶ 2/4 cargo build $CARGO_FLAGS -p ramag-bin (native) ..."
-    # shellcheck disable=SC2086
-    cargo build $CARGO_FLAGS -p ramag-bin
+    echo "Step 2/4: building ramag-bin for the native architecture ($PROFILE)"
+    cargo build --locked "${CARGO_FLAGS[@]}" -p ramag-bin
     BIN_PATH="$REPO_DIR/target/$PROFILE_DIR/ramag"
-elif [[ "$TARGET_TRIPLE" == "universal" ]]; then
-    echo "▶ 2/4 cargo build (Universal: x86_64 + arm64) ..."
-    BIN_X86="$(build_one_triple "x86_64-apple-darwin")"
-    BIN_ARM="$(build_one_triple "aarch64-apple-darwin")"
-
-    UNI_DIR="$REPO_DIR/target/universal-apple-darwin/$PROFILE_DIR"
-    mkdir -p "$UNI_DIR"
-    BIN_PATH="$UNI_DIR/ramag"
-
-    echo "▶ lipo -create 合并 universal binary ..."
-    lipo -create -output "$BIN_PATH" "$BIN_X86" "$BIN_ARM"
-    lipo -info "$BIN_PATH"
 else
-    echo "▶ 2/4 cargo build $CARGO_FLAGS --target=$TARGET_TRIPLE -p ramag-bin ..."
-    BIN_PATH="$(build_one_triple "$TARGET_TRIPLE")"
+    echo "Step 2/4: building ramag-bin for $TARGET_TRIPLE ($PROFILE)"
+    cargo build --locked "${CARGO_FLAGS[@]}" --target="$TARGET_TRIPLE" -p ramag-bin
+    BIN_PATH="$REPO_DIR/target/$TARGET_TRIPLE/$PROFILE_DIR/ramag"
 fi
 
 # === 3) 组装 Ramag.app ===============================================
-echo "▶ 3/4 组装 $(basename "$APP") ..."
+echo "Step 3/4: assembling $(basename "$APP")"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
 cp "$BIN_PATH" "$APP/Contents/MacOS/Ramag"
 cp "$ICNS" "$APP/Contents/Resources/ramag.icns"
+cp "$REPO_DIR/LICENSE" "$APP/Contents/Resources/LICENSE"
 
-cat > "$APP/Contents/Info.plist" <<'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -212,9 +187,11 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleIdentifier</key>
     <string>com.axemc.ramag</string>
     <key>CFBundleVersion</key>
-    <string>0.0.1</string>
+    <string>${BUNDLE_VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.0.1</string>
+    <string>${BUNDLE_VERSION}</string>
+    <key>RamagCargoVersion</key>
+    <string>${APP_VERSION}</string>
     <key>CFBundleExecutable</key>
     <string>Ramag</string>
     <key>CFBundleIconFile</key>
@@ -237,22 +214,15 @@ EOF
 # 1) 消除「linker 只签了 Mach-O、bundle 没有 _CodeSignature」的不一致（codesign --verify 告警）
 # 2) 满足 Apple Silicon 对可执行文件必须签名的要求
 # 注意：adhoc 签名无法通过 Gatekeeper 公证校验，传输后仍会被打隔离标记，需 xattr 解除（见文末）
-echo "▶ codesign --force --sign - (adhoc) ..."
+echo "Applying ad hoc code signature..."
 codesign --force --sign - "$APP"
-codesign --verify --verbose "$APP" 2>&1 | sed 's/^/   /' || true
-
-# 让 LaunchServices 重新注册，避免 dock 图标缓存
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [[ -x "$LSREGISTER" ]]; then
-    "$LSREGISTER" -f "$APP" 2>/dev/null || true
-fi
-touch "$APP" 2>/dev/null || true
+codesign --verify --deep --strict --verbose=2 "$APP"
 
 # === 4) 打包成 DMG ===================================================
-echo "▶ 4/4 hdiutil 打包 $(basename "$DMG") ..."
+echo "Step 4/4: creating $(basename "$DMG")"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
-cp -R "$APP" "$STAGING/$(basename "$APP")"
+cp -R "$APP" "$STAGING/Ramag.app"
 ln -s /Applications "$STAGING/Applications"
 rm -f "$DMG"
 
@@ -265,20 +235,20 @@ hdiutil create \
     "$DMG" >/dev/null
 
 rm -rf "$STAGING"
+hdiutil verify "$DMG" >/dev/null
 
 echo ""
-echo "ok 已生成 DMG："
+echo "DMG created successfully:"
 ls -lh "$DMG"
-if [[ -n "$TARGET_TRIPLE" && "$TARGET_TRIPLE" != "universal" ]]; then
-    echo "架构：${TARGET_TRIPLE}"
-elif [[ "$TARGET_TRIPLE" == "universal" ]]; then
-    echo "架构：universal（Intel + Apple Silicon 双切片，体积约为单架构两倍）"
+if [[ -n "$TARGET_TRIPLE" ]]; then
+    echo "Architecture: ${TARGET_TRIPLE}"
 fi
-echo "签名：adhoc（已签 bundle，可本机运行）"
+echo "Version: $APP_VERSION"
+echo "Signature: ad hoc (not notarized)"
 echo ""
-echo "测试：open $DMG"
-echo "（挂载后把 $(basename "$APP") 拖到 Applications 即可安装）"
+echo "Test with: open $DMG"
+echo "Drag Ramag.app to Applications after mounting the DMG."
 echo ""
-echo "⚠ 经浏览器/企业微信等传输后会被 Gatekeeper 拦成「已损坏」（adhoc 未公证）。"
-echo "  接收方解除隔离即可打开（一次性）："
+echo "This build is not notarized and may be blocked by Gatekeeper after download."
+echo "For local testing only, remove quarantine with:"
 echo "  xattr -dr com.apple.quarantine /Applications/Ramag.app"
