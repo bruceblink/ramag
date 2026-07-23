@@ -26,7 +26,7 @@ use super::{
 };
 use crate::usecases::MongoService;
 
-/// 导出页与导入批统一为 5,000 条或 32 MiB。
+/// 导出与导入统一使用 5,000 条 / 32 MiB 批次。
 const PAGE_DOCS: i64 = TRANSFER_BATCH_ITEMS as i64;
 const IMPORT_BATCH_DOCS: usize = TRANSFER_BATCH_ITEMS;
 const IMPORT_BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;

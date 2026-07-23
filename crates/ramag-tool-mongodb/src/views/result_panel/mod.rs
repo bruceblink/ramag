@@ -52,7 +52,7 @@ pub struct ResultPanel {
     /// 当前层文档由此共享，避免渲染时复制。
     pub(crate) docs_arc: Option<Arc<Vec<serde_json::Value>>>,
     pub(crate) error: Option<String>,
-    /// 单结果或全部标签内存达到提示线时展示的说明。
+    /// 当前结果的内存提示。
     memory_notice: Option<String>,
     pub(crate) running: bool,
     pagination: Option<MongoResultPagination>,
@@ -94,7 +94,7 @@ pub struct ResultPanel {
     row_view_cancel: Option<Arc<AtomicBool>>,
     /// 后台行视图构建失败时显式展示，修改条件或重建表格会清除。
     pub(crate) row_view_error: Option<String>,
-    /// 当前标签在全部查询结果内存预算中的登记。
+    /// 当前标签的结果内存登记。
     result_memory: Option<ResultMemoryLease>,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -453,7 +453,7 @@ impl ResultPanel {
         self.clear_selected_rows();
     }
 
-    /// 全局预算回收回调：只释放结果，不触碰标签编辑器里的命令文本。
+    /// 释放旧结果，保留编辑器命令。
     pub fn evict_result_for_budget(&mut self, cx: &mut Context<Self>) {
         self.release_result_payload();
         self.error =
@@ -578,8 +578,7 @@ impl ResultPanel {
                         if let Some(result) = &this.result
                             && let Some(notice) = memory_notice(result, combined_bytes, outcome)
                         {
-                            // 新结果刚触发过 LRU 时保留该提示；表格派生内存的后续登记
-                            // 不应因为总量已回落就立刻把提示抹掉。
+                            // 表格占用更新不清除刚产生的 LRU 提示。
                             this.memory_notice = Some(notice);
                         }
                         this.table = Some(table);
@@ -1016,7 +1015,7 @@ impl Render for ResultPanel {
             warn_bg.a = 0.14;
             let message = if self.pagination.is_some() {
                 format!(
-                    "⚠ 当前页达到 256 MiB 硬上限，仅加载 {total_docs} 条；可用下一页从实际断点继续，统计、排序、过滤与导出均只基于当前页。"
+                    "⚠ 当前页达到 256 MiB 硬上限，仅加载 {total_docs} 条；可从实际断点继续翻页，统计、排序、过滤与导出均只基于当前页。"
                 )
             } else {
                 format!(
@@ -1107,7 +1106,7 @@ fn render_status_bar(
                 ramag_ui::clickable_button("mongo-result-page-previous")
                     .ghost()
                     .small()
-                    .label("上一页")
+                    .label("上页")
                     .disabled(pagination.page == 0)
                     .on_click(move |_, _, app| {
                         panel_for_previous.update(app, |_, cx| {
@@ -1124,8 +1123,8 @@ fn render_status_bar(
                 ramag_ui::clickable_button("mongo-result-page-next")
                     .ghost()
                     .small()
-                    .label("下一页")
-                    .tooltip("下一页；未指定 sort 时 MongoDB 不保证分页顺序")
+                    .label("下页")
+                    .tooltip("未指定 sort 时分页顺序不固定")
                     .disabled(!pagination.has_more)
                     .on_click(move |_, _, app| {
                         panel_for_next.update(app, |_, cx| {

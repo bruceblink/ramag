@@ -277,7 +277,7 @@ mod tests {
         let oversized_argument = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES + 1);
         assert!(validate_redis_command_parts(["SET", oversized_argument.as_str()]).is_err());
 
-        // 7 个完整 4 MiB 参数 + 命令名 + 余量，恰好命中 32 MiB 总边界。
+        // 7 个 4 MiB 参数恰好命中 32 MiB 边界。
         let exact_remainder = "v".repeat(MAX_REDIS_COMMAND_ARG_BYTES - "SET".len());
         assert!(
             validate_redis_command_parts(

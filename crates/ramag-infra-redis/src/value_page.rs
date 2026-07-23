@@ -17,7 +17,7 @@ use crate::driver::{ensure_response_budget, scan_parts};
 use crate::errors::map_redis_error;
 use crate::value::{decode_value, decode_zset_with_scores};
 
-/// 单页条目上限；与 32 MiB 传输批次及响应节点预算保持一致。
+/// 单页条目上限，与传输和响应预算一致。
 pub const MAX_PAGE_ITEMS: u32 = TRANSFER_BATCH_ITEMS as u32;
 /// String 类型单页读取字节数
 const STRING_PAGE_BYTES: u64 = 1024 * 1024;

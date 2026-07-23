@@ -1,18 +1,18 @@
-//! 数据库客户端共用的资源边界。
+//! 数据库资源边界。
 
-/// 单个交互结果接近该常驻内存时提示用户收窄查询。
+/// 单个交互结果提示线。
 pub const INTERACTIVE_RESULT_WARNING_BYTES: usize = 128 * 1024 * 1024;
-/// 单个交互结果允许保留的最大常驻内存。
+/// 单个交互结果硬上限。
 pub const MAX_INTERACTIVE_RESULT_BYTES: usize = 256 * 1024 * 1024;
 
-/// 一次元数据查询允许返回的最大条目数。
+/// 元数据查询条目上限。
 pub const MAX_METADATA_ITEMS: usize = 50_000;
-/// 一次元数据查询允许保留的最大常驻内存。
+/// 元数据查询内存上限。
 pub const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 
-/// 导入导出一次批处理允许包含的最大条目数。
+/// 传输批次条目上限。
 pub const TRANSFER_BATCH_ITEMS: usize = 5_000;
-/// 导入导出一次批处理允许包含的最大内容字节数。
+/// 传输批次字节上限。
 pub const TRANSFER_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(test)]

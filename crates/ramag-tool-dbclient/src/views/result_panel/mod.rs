@@ -39,7 +39,7 @@ pub enum ResultState {
     Empty,
     Running,
     Error(String),
-    /// 结果因全部标签的全局预算被释放；查询文本仍保留在编辑器。
+    /// 因全局预算释放的结果。
     Released(String),
     Ok(Arc<QueryResult>),
 }
@@ -125,7 +125,7 @@ pub struct ResultPanel {
     pub(super) h_scroll: ScrollHandle,
     pub(super) column_completion_source: Arc<RwLock<Vec<String>>>,
     pub(super) warnings_expanded: bool,
-    /// 当前标签在全部查询结果内存预算中的登记。
+    /// 当前标签的结果内存登记。
     result_memory: Option<ResultMemoryLease>,
 }
 

@@ -1,4 +1,4 @@
-//! MongoDB `find` 的客户端分页：编辑器保留原命令，每页按 skip/limit 派生执行命令。
+//! MongoDB `find` 客户端分页。
 
 use ramag_domain::entities::MongoQueryResult;
 use serde_json::{Value, json};
@@ -10,8 +10,7 @@ pub(super) struct MongoPager {
     base_command: Value,
     base_skip: u64,
     user_limit: Option<u64>,
-    /// 每页相对原始 skip 的真实起点。结果因 256 MiB 提前截断时，下一页从实际
-    /// 已展示文档数继续，不能机械跳过 10,000 条。
+    /// 各页相对原始 `skip` 的实际偏移，支持按截断点续页。
     page_offsets: Vec<u64>,
     pub(super) page: usize,
     pub(super) has_more: bool,
@@ -27,7 +26,7 @@ pub(super) struct PageRequest {
 }
 
 impl MongoPager {
-    /// 仅对普通 `find` 自动分页；tailable / singleBatch / 负 limit 保持原生命令语义。
+    /// 仅为普通 `find` 启用自动分页。
     pub(super) fn from_command(command: &Value) -> Option<Self> {
         let object = command.as_object()?;
         object.get("find")?.as_str()?;
@@ -104,7 +103,7 @@ impl MongoPager {
         &self.base_command
     }
 
-    /// 记录本页实际消费数量，生成下一页的精确 offset。
+    /// 记录实际消费数，生成下一页偏移。
     pub(super) fn finish_request(
         &mut self,
         request: PageRequest,
@@ -113,7 +112,7 @@ impl MongoPager {
     ) {
         let displayed = u64::try_from(displayed).unwrap_or(u64::MAX);
         let next_offset = request.relative_offset.saturating_add(displayed);
-        // 避免异常空页造成“下一页”原地循环。
+        // 空页不能继续。
         if next_offset == request.relative_offset {
             has_more = false;
         }

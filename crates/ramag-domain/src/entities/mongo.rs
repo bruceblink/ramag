@@ -18,12 +18,12 @@ pub const MAX_MONGO_VALUE_NODES: usize = 100_000;
 pub const MAX_MONGO_NESTING_DEPTH: usize = 100;
 pub const MAX_MONGO_PIPELINE_STAGES: usize = 1_000;
 
-/// 估算单个 Extended JSON 值的常驻内存，包含容器预留空间与字符串容量。
+/// 估算 Extended JSON 值的常驻内存。
 pub fn mongo_value_retained_bytes(value: &Value) -> usize {
     std::mem::size_of::<Value>().saturating_add(mongo_value_dynamic_bytes(value))
 }
 
-/// 估算一组 MongoDB 文档的常驻内存，供结果与传输批次预算使用。
+/// 估算 MongoDB 文档集合的常驻内存。
 pub fn mongo_documents_retained_bytes(documents: &[Value], capacity: usize) -> usize {
     let mut bytes = capacity.saturating_mul(std::mem::size_of::<Value>());
     for document in documents {
@@ -47,7 +47,7 @@ fn mongo_value_dynamic_bytes(root: &Value) -> usize {
                 stack.extend(items);
             }
             Value::Object(fields) => {
-                // serde_json::Map 的节点布局不公开，额外计三个指针作为保守开销。
+                // 保守计入 serde_json::Map 节点开销。
                 let entry_bytes = std::mem::size_of::<(String, Value)>()
                     .saturating_add(3 * std::mem::size_of::<usize>());
                 total = total.saturating_add(fields.len().saturating_mul(entry_bytes));
@@ -244,9 +244,9 @@ pub struct MongoQuerySpec {
     pub sort: Option<Value>,
     /// 跳过文档数（分页）
     pub skip: Option<u64>,
-    /// 返回上限。None 表示不限制条数，仍受调用方结果字节预算约束。
+    /// 返回条数上限；`None` 仅受字节预算约束。
     pub limit: Option<i64>,
-    /// 调用方单页内存预算；None 使用交互结果的 256 MiB 上限。
+    /// 单页内存上限；`None` 使用交互结果上限。
     #[serde(default)]
     pub result_byte_limit: Option<usize>,
 }
@@ -303,10 +303,10 @@ pub struct MongoQueryResult {
     /// 导出也据此告知用户导出的是已加载数据而非完整查询结果
     #[serde(default)]
     pub truncated: bool,
-    /// 文档在客户端的常驻内存估算。
+    /// 客户端常驻内存估算。
     #[serde(default)]
     pub retained_bytes: usize,
-    /// 单个结果已达到 128 MiB 提示线。
+    /// 是否达到单结果提示线。
     #[serde(default)]
     pub memory_warning: bool,
 }
@@ -345,7 +345,7 @@ impl MongoQueryResult {
         Self::read_with_budget(documents, elapsed_ms, truncated, retained_bytes)
     }
 
-    /// read 类构造，复用驱动流式累计出的内存估算。
+    /// 使用驱动累计的内存估算构造读取结果。
     pub fn read_with_budget(
         documents: Vec<MongoDocument>,
         elapsed_ms: u64,

@@ -41,7 +41,7 @@ pub struct RedisValueLoad {
     /// 内容因累计字节预算只保留了安全前缀；调用方不得把它当作完整值覆盖回服务端。
     #[serde(default)]
     pub byte_limited: bool,
-    /// 已加载内容达到 128 MiB 提示线。
+    /// 是否达到单结果提示线。
     #[serde(default)]
     pub memory_warning: bool,
 }

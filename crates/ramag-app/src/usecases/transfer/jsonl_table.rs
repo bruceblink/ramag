@@ -19,7 +19,7 @@ use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use super::{Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
 
-/// 单批 INSERT 的统一行数 / 字节阈值。
+/// INSERT 批次的行数与字节阈值。
 const BATCH_ROWS: usize = TRANSFER_BATCH_ITEMS;
 const BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;
 /// 单行长度保护（异常长行直接拒绝，防脏文件撑爆内存）

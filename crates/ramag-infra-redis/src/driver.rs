@@ -494,7 +494,7 @@ fn parse_redis_version(info: &str) -> String {
 const DEFAULT_COLLECTION_LIMIT: usize = MAX_REDIS_COLLECTION_ITEMS;
 /// 大集合在后台按固定批次读取，避免把全局 100 万条上限直接变成单次超大响应。
 const COLLECTION_FETCH_BATCH: usize = 5_000;
-/// String 详情与其它交互结果共用 256 MiB 硬上限；渲染层仍只构造有界文本预览。
+/// String 详情与其它结果共用 256 MiB 上限。
 const MAX_STRING_BYTES: u64 = MAX_REDIS_COLLECTION_BYTES as u64;
 
 async fn fetch_value_len(

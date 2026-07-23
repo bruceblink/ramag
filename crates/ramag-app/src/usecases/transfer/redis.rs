@@ -16,8 +16,8 @@ use std::time::Instant;
 
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, DriverKind, MAX_REDIS_VALUE_PAGE_BATCH, ProgressFn,
-    RedisType, RedisValue, RedisValuePage, StreamEntry, TRANSFER_BATCH_BYTES,
-    TRANSFER_BATCH_ITEMS, TransferSummary, validate_redis_key,
+    RedisType, RedisValue, RedisValuePage, StreamEntry, TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS,
+    TransferSummary, validate_redis_key,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
@@ -174,8 +174,7 @@ pub(crate) async fn export_key(
     Ok(KeyOutcome::Exported)
 }
 
-/// 把一个 Redis 页进一步切成不超过 32 MiB 的 JSONL 记录。条目不会拆半；单个条目
-/// 自身超限时明确报错，避免生成导入端无法按统一批次处理的文件。
+/// 将 Redis 页切为不超过 32 MiB 的完整 JSONL 记录；条目不拆分。
 fn write_fragment_records(
     sink: &mut super::ExportSink,
     line: &mut Vec<u8>,
@@ -265,7 +264,7 @@ fn fragment_value_budget(
     let empty_bytes = serde_json::to_vec(&empty_record)
         .map_err(|error| DomainError::Storage(format!("序列化 Redis 导出记录失败：{error}")))?
         .len();
-    // empty_record 已包含 2 字节的 []；write_json_line 还会追加换行。
+    // 预算扣除记录头、数组括号与换行。
     let fixed_bytes = empty_bytes.saturating_sub(2).saturating_add(1);
     TRANSFER_BATCH_BYTES
         .checked_sub(fixed_bytes)

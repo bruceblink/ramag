@@ -55,7 +55,7 @@ pub struct MongoQueryTab {
     /// 上次自动注入的命令（默认模板 / 树点 collection / 示例）。编辑器内容仍等于它
     /// = 未手改，树点击可原地覆盖；否则视为手写草稿，浏览另开 Tab（防丢稿）
     last_injected_cmd: Option<String>,
-    /// 普通 find 的服务端分页状态；基线命令独立于可变编辑器文本。
+    /// 普通 `find` 分页状态，基线命令与编辑器文本隔离。
     pager: Option<MongoPager>,
     _subscriptions: Vec<Subscription>,
 }

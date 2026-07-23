@@ -40,7 +40,7 @@ const SINK_QUEUE_BLOCKS: usize = 64;
 /// 写线程通道断开（生产端取消 / 出错提前 drop）时的内部哨兵，转成「放弃临时文件」
 const SINK_ABORT_MESSAGE: &str = "__ramag_transfer_abort__";
 const SINK_CLOSED_MESSAGE: &str = "导出写文件线程已退出";
-/// MySQL 导入每批需在同一连接上临时关闭外键检查；批次预算必须预留该前缀。
+/// 为 MySQL 外键检查前缀预留批次空间。
 pub(crate) const MYSQL_IMPORT_PREFIX: &str = "SET FOREIGN_KEY_CHECKS=0;\n";
 
 enum SinkMsg {
@@ -150,8 +150,7 @@ pub(crate) fn is_cancelled(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
-/// 有界读取一行：最多只从底层读取 `max_bytes + 1` 字节，超长脏文件不会先把整行
-/// 分配进内存再报错。返回 0 表示 EOF。
+/// 有界读取一行，避免超长文件先触发大额分配；返回 0 表示 EOF。
 pub(crate) fn read_line_bounded(
     reader: &mut impl std::io::BufRead,
     line: &mut String,

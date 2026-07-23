@@ -17,7 +17,7 @@ pub struct Query {
     /// 追加 `LIMIT n`。当前 UI 不再使用（恒传 None），保留供 driver 兜底与未来复用
     #[serde(default)]
     pub auto_limit: Option<u32>,
-    /// 调用方的结果常驻内存预算；None 使用交互查询的 256 MiB 硬上限。
+    /// 结果常驻内存上限；`None` 使用交互结果上限。
     #[serde(default)]
     pub result_byte_limit: Option<usize>,
 }
@@ -94,13 +94,13 @@ pub struct QueryResult {
     /// MySQL SHOW WARNINGS；多语句执行时累积所有 statement 的警告
     #[serde(default)]
     pub warnings: Vec<Warning>,
-    /// 驱动因结果字节预算停止读取，调用方可据此继续分页。
+    /// 是否因字节预算截断。
     #[serde(default)]
     pub truncated: bool,
 }
 
 impl QueryResult {
-    /// 结果集在客户端的常驻内存保守估算，供跨标签总预算使用。
+    /// 客户端常驻内存估算。
     pub fn retained_bytes(&self) -> u64 {
         let mut bytes = std::mem::size_of::<Self>()
             .saturating_add(
@@ -130,7 +130,7 @@ impl QueryResult {
             bytes = bytes.saturating_add(column_type.capacity());
         }
         for row in &self.rows {
-            // Row 本体已计入 rows 的容量，只追加其动态内容。
+            // Row 容量已计入，只累加动态内容。
             bytes = bytes.saturating_add(
                 usize::try_from(row.retained_bytes())
                     .unwrap_or(usize::MAX)

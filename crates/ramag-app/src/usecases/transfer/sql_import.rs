@@ -4,7 +4,7 @@
 //! MySQL 块前缀 `SET FOREIGN_KEY_CHECKS=0` 消除建表 / 导数顺序问题。
 //! 无标记的普通 .sql 走 generic 模式：顺序执行，错误按策略停止或计警告继续
 
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -20,7 +20,7 @@ use super::sql_catalog::parse_marker;
 use super::{MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
 
-/// 单块累计字节 / 语句数达到统一批次阈值即执行。
+/// 达到字节或语句数上限后执行批次。
 const CHUNK_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
 const CHUNK_FLUSH_STMTS: usize = TRANSFER_BATCH_ITEMS;
 /// 单行长度保护（自家文件单行 ≤ ~1 MiB；异常长行直接拒绝）
@@ -84,7 +84,7 @@ struct Segment {
     kind: SegmentKind,
     name: String,
     buffer: String,
-    /// 尚未遇到行尾分号的当前语句；不能在中间按字节截断。
+    /// 尚未遇到行尾分号的语句。
     pending_statement: String,
     stmt_lines: usize,
     skip: bool,
@@ -537,7 +537,7 @@ async fn apply_policy(
     Ok(())
 }
 
-/// 把一条完整 SQL 加入待执行批次；加入前先冲洗，保证实际请求不越过 32 MiB。
+/// 加入完整 SQL 前先冲洗，确保批次不超限。
 #[allow(clippy::too_many_arguments)]
 async fn queue_statement(
     svc: &ConnectionService,

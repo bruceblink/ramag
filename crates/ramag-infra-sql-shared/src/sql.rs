@@ -2,8 +2,7 @@
 
 use ramag_domain::error::{DomainError, Result};
 
-/// 单次执行最多 5,000 条业务语句；额外 1 条给 MySQL 导入内部添加的
-/// `SET FOREIGN_KEY_CHECKS=0`，避免它挤占用户批准的传输批次。
+/// 单次最多执行 5,000 条业务语句，并为 MySQL 外键前缀预留 1 条。
 pub const MAX_SQL_STATEMENTS: usize = ramag_domain::entities::TRANSFER_BATCH_ITEMS + 1;
 
 /// 多语句切分选项

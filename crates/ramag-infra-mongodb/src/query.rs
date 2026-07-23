@@ -408,7 +408,7 @@ struct ResultBudget {
 }
 
 impl ResultBudget {
-    /// 返回 false 表示本次文档超过字节预算；只有实际读到额外文档时才标记截断。
+    /// 返回 `false` 表示当前文档超限；仅在读到额外文档时标记截断。
     fn try_reserve(&mut self, bytes: usize, max_bytes: usize) -> bool {
         let Some(total_bytes) = self.retained_bytes.checked_add(bytes) else {
             return false;

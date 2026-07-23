@@ -103,7 +103,7 @@ pub(super) fn render_header(
             info_row = info_row.child(
                 div()
                     .text_color(accent)
-                    .child("内存占用已超过 128 MiB，建议缩小加载范围"),
+                    .child("内存已超过 128 MiB，建议缩小加载范围"),
             );
         }
         if panel.has_more() && panel.value_byte_limited {

@@ -1,13 +1,13 @@
-//! SQL / MongoDB 查询标签共享的结果内存预算。
+//! 查询标签共享的结果内存预算。
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::App;
 
-/// 全部查询标签结果达到该值时提示。
+/// 全局提示线。
 pub const GLOBAL_RESULT_WARNING_BYTES: usize = 384 * 1024 * 1024;
-/// 全部查询标签结果允许保留的硬上限。
+/// 全局硬上限。
 pub const MAX_GLOBAL_RESULT_BYTES: usize = 512 * 1024 * 1024;
 
 type EvictCallback = Rc<dyn Fn(&mut App) -> bool>;
@@ -17,7 +17,7 @@ pub struct ResultMemoryBudget {
     state: Rc<RefCell<BudgetState>>,
 }
 
-/// 单个结果面板的登记凭证；面板销毁时自动从总预算移除。
+/// 结果面板的预算登记；销毁时自动移除。
 pub struct ResultMemoryLease {
     budget: ResultMemoryBudget,
     id: u64,
@@ -25,13 +25,13 @@ pub struct ResultMemoryLease {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResultMemoryUpdate {
-    /// 本次更新前的总量是否达到提示线。
+    /// 是否达到提示线。
     pub warning: bool,
-    /// 当前标签的新结果是否因无法容纳而被释放。
+    /// 当前结果是否被释放。
     pub current_evicted: bool,
-    /// 本次按 LRU 释放的其它非活动标签数量。
+    /// 已释放的非活动结果数。
     pub evicted_results: usize,
-    /// 清理后的全部标签结果总量。
+    /// 清理后的总占用。
     pub total_bytes: usize,
 }
 
@@ -71,7 +71,7 @@ impl ResultMemoryBudget {
 }
 
 impl ResultMemoryLease {
-    /// 更新当前面板占用，并在超过硬上限时释放最久未使用的非活动结果。
+    /// 更新占用，并按 LRU 释放非活动结果。
     pub fn update_bytes(&self, bytes: usize, cx: &mut App) -> ResultMemoryUpdate {
         let (callbacks, outcome) = self.budget.state.borrow_mut().update_entry(self.id, bytes);
         for callback in callbacks {
@@ -145,8 +145,7 @@ impl BudgetState {
             }
         }
 
-        // 正常情况下只有一个活动标签，单结果又不超过 256 MiB，因此不会走到这里。
-        // 若外部状态异常或新结果本身超预算，拒绝当前结果以保证硬上限绝不失守。
+        // 无可回收结果时拒绝当前结果，保证硬上限。
         let mut current_evicted = false;
         if self.total_bytes() > MAX_GLOBAL_RESULT_BYTES && self.entries[current_index].bytes > 0 {
             self.entries[current_index].bytes = 0;

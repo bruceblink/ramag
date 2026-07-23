@@ -27,7 +27,7 @@ use super::{
 };
 use crate::usecases::ConnectionService;
 
-/// 导出读取页与生成 INSERT 共用统一批次上限。
+/// 导出读取与 INSERT 生成共用批次上限。
 const PAGE_ROWS: u32 = TRANSFER_BATCH_ITEMS as u32;
 const INSERT_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
 const INSERT_MAX_ROWS: usize = TRANSFER_BATCH_ITEMS;
@@ -458,7 +458,7 @@ async fn export_table_data(
     let mut offset: u64 = 0;
     let mut insert_buf = String::with_capacity(INSERT_FLUSH_BYTES + 4096);
     let mut buffered_rows = 0usize;
-    // MySQL 导入每次执行都会补 FK 前缀；导出时预留它，确保回放请求仍不超过 32 MiB。
+    // 预留 MySQL 导入时追加的外键检查前缀。
     let insert_payload_limit = sql_transfer_payload_limit(driver);
     loop {
         if is_cancelled(cancel) {
