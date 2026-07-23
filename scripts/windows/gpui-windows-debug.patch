@@ -1,0 +1,53 @@
+--- a/src/directx_renderer.rs
++++ b/src/directx_renderer.rs
+@@ -1584,2 +1584,2 @@
+-            Fxc::{D3DCOMPILE_DEBUG, D3DCOMPILE_SKIP_OPTIMIZATION, D3DCompileFromFile},
+-            ID3DBlob,
++            Fxc::{D3DCOMPILE_DEBUG, D3DCOMPILE_SKIP_OPTIMIZATION, D3DCompile},
++            ID3DBlob, ID3DInclude,
+@@ -1587 +1587 @@
+-        core::{HSTRING, PCSTR},
++        core::PCSTR,
+@@ -1686,9 +1686,12 @@
+-            use windows::Win32::Graphics::{
+-                Direct3D::ID3DInclude, Hlsl::D3D_COMPILE_STANDARD_FILE_INCLUDE,
+-            };
+-
+-            let shader_name = if matches!(entry, ShaderModule::EmojiRasterization) {
+-                "color_text_raster.hlsl"
+-            } else {
+-                "shaders.hlsl"
+-            };
++            let (shader_source, shader_name): (&[u8], &[u8]) =
++                if matches!(entry, ShaderModule::EmojiRasterization) {
++                    (
++                        include_bytes!("color_text_raster_embedded.hlsl"),
++                        b"color_text_raster.hlsl\0",
++                    )
++                } else {
++                    (
++                        include_bytes!("shaders_embedded.hlsl"),
++                        b"shaders.hlsl\0",
++                    )
++                };
+@@ -1711,4 +1714 @@
+-            let shader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+-                .join(&format!("src/{}", shader_name))
+-                .canonicalize()?;
+-
++            let source_name = PCSTR::from_raw(shader_name.as_ptr());
+@@ -1718,7 +1718,4 @@
+-            // really dirty trick because winapi bindings are unhappy otherwise
+-            let include_handler = &std::mem::transmute::<usize, ID3DInclude>(
+-                D3D_COMPILE_STANDARD_FILE_INCLUDE as usize,
+-            );
+-
+-            let ret = D3DCompileFromFile(
+-                &HSTRING::from(shader_path.to_str().unwrap()),
++            let ret = D3DCompile(
++                shader_source.as_ptr().cast(),
++                shader_source.len(),
++                source_name,
+@@ -1726 +1723 @@
+-                include_handler,
++                None::<&ID3DInclude>,

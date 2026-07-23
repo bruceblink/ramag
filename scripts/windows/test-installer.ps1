@@ -107,6 +107,20 @@ try {
         throw "Installed version $InstalledVersion does not match Cargo version $ExpectedVersion."
     }
 
+    $AppProcess = Start-Process -FilePath $InstalledExe -PassThru
+    try {
+        if ($AppProcess.WaitForExit(5000)) {
+            throw "Installed application exited during startup with code $($AppProcess.ExitCode)."
+        }
+    }
+    finally {
+        if (-not $AppProcess.HasExited) {
+            Stop-Process -Id $AppProcess.Id -Force
+            $AppProcess.WaitForExit()
+        }
+        $AppProcess.Dispose()
+    }
+
     $Uninstallers = @(Get-ChildItem -LiteralPath $InstallDir -Filter "unins*.exe" -File)
     if ($Uninstallers.Count -ne 1) {
         throw "Expected exactly one uninstaller, found $($Uninstallers.Count)."

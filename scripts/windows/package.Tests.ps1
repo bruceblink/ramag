@@ -1,6 +1,7 @@
 # Windows 打包的纯逻辑回归测试；不编译应用或运行安装器。
 BeforeAll {
     . (Join-Path $PSScriptRoot "..\package-windows.ps1")
+    . (Join-Path $PSScriptRoot "pe-dependencies.ps1")
 }
 
 Describe "Get-VersionInfoNumber" {
@@ -109,5 +110,59 @@ Describe "Inno Setup metadata" {
 
         $IssContent | Should -Match '#define MyAppURL GetEnv\("RAMAG_PACKAGE_URL"\)'
         $IssContent | Should -Not -Match 'github\.com/axemc/ramag'
+    }
+}
+
+Describe "PE dependency classification" {
+    BeforeAll {
+        $SystemDirectory = Join-Path $TestDrive "System32"
+        New-Item -ItemType Directory -Path $SystemDirectory | Out-Null
+        Set-Content -LiteralPath (Join-Path $SystemDirectory "kernel32.dll") -Value "test"
+    }
+
+    It "accepts Windows API Set contracts without physical files" {
+        $Dependencies = @(
+            "api-ms-win-core-synch-l1-2-0.dll",
+            "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "api-ms-win-core-winrt-l1-1-0.dll",
+            "api-ms-win-shcore-scaling-l1-1-1.dll",
+            "ext-ms-win-ntuser-window-l1-1-0.dll"
+        )
+
+        $Result = @(
+            Get-UnpackagedPeDependencies `
+                -DependencyNames $Dependencies `
+                -SystemDirectory $SystemDirectory
+        )
+        $Result.Count | Should -Be 0
+    }
+
+    It "accepts a physical DLL from the system directory" {
+        $Result = @(
+            Get-UnpackagedPeDependencies `
+                -DependencyNames @("kernel32.dll") `
+                -SystemDirectory $SystemDirectory
+        )
+        $Result.Count | Should -Be 0
+    }
+
+    It "rejects a missing ordinary DLL" {
+        $Result = @(
+            Get-UnpackagedPeDependencies `
+                -DependencyNames @("missing-runtime.dll") `
+                -SystemDirectory $SystemDirectory
+        )
+        $Result | Should -HaveCount 1
+        $Result[0] | Should -BeExactly "missing-runtime.dll"
+    }
+
+    It "does not accept a filename that only resembles an API Set contract" {
+        $Result = @(
+            Get-UnpackagedPeDependencies `
+                -DependencyNames @("api-ms-win-core-test.dll.backup") `
+                -SystemDirectory $SystemDirectory
+        )
+        $Result | Should -HaveCount 1
+        $Result[0] | Should -BeExactly "api-ms-win-core-test.dll.backup"
     }
 }

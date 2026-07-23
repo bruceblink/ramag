@@ -8,10 +8,15 @@ $ErrorActionPreference = "Stop"
 $Target = "x86_64-pc-windows-msvc"
 $BuildProfile = if ($Release) { "release" } else { "debug" }
 $RepoDir = Split-Path -Parent $PSScriptRoot
+$DependencyHelper = Join-Path $PSScriptRoot "windows\pe-dependencies.ps1"
 
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "This script must run on Windows. Use scripts/build-windows-local.sh for macOS cross-checks."
 }
+if (-not (Test-Path -LiteralPath $DependencyHelper -PathType Leaf)) {
+    throw "PE dependency helper is missing: $DependencyHelper"
+}
+. $DependencyHelper
 
 Set-Location $RepoDir
 
@@ -191,9 +196,9 @@ if ($DependencyNames -match '^(VCRUNTIME|MSVCP|api-ms-win-crt-)[^\s]*\.dll$' -or
 
 $SystemDirectory = [System.Environment]::SystemDirectory
 $NonSystemDependencies = @(
-    $DependencyNames | Where-Object {
-        -not (Test-Path -LiteralPath (Join-Path $SystemDirectory $_) -PathType Leaf)
-    }
+    Get-UnpackagedPeDependencies `
+        -DependencyNames $DependencyNames `
+        -SystemDirectory $SystemDirectory
 )
 if ($NonSystemDependencies.Count -gt 0) {
     throw "The executable has unpackaged non-system dependencies: $($NonSystemDependencies -join ', ')"
