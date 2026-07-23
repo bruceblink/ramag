@@ -6,12 +6,15 @@
 use std::collections::HashSet;
 
 use ramag_domain::entities::{
-    ConnectionConfig, MAX_REDIS_LOADED_ITEMS, RedisType, RedisValue, StreamEntry, ValuePageCursor,
+    ConnectionConfig, MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_LOADED_ITEMS, RedisType, RedisValue,
+    StreamEntry, ValuePageCursor,
 };
 use ramag_domain::traits::KvDriver;
 use ramag_infra_redis::RedisDriver;
 
 const TEST_DB: u8 = 15;
+const SEEDED_STRING_BYTES: usize = 8 * 1024 * 1024;
+const _: () = assert!(SEEDED_STRING_BYTES < MAX_REDIS_COLLECTION_BYTES);
 
 /// 缺 host/port 就跳过测试
 fn config_from_env() -> Option<ConnectionConfig> {
@@ -422,7 +425,7 @@ async fn missing_key_returns_nil() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn seeded_dataset_scans_full_keyspace_and_bounds_large_values() {
+async fn seeded_dataset_scans_full_keyspace_and_applies_current_value_limits() {
     let config = require_env!();
     if !seeded_dataset_enabled() {
         eprintln!("[SKIP] seeded dataset test skipped: RAMAG_TEST_DATASET != full");
@@ -451,8 +454,10 @@ async fn seeded_dataset_scans_full_keyspace_and_bounds_large_values() {
         .get_value_limited(&config, 0, "large:string", 100)
         .await
         .unwrap();
-    assert_eq!(string.total, Some(8 * 1024 * 1024));
-    assert!(string.has_more());
+    assert_eq!(string.total, Some(SEEDED_STRING_BYTES as u64));
+    assert_eq!(string.loaded_len(), Some(SEEDED_STRING_BYTES));
+    assert!(!string.has_more());
+    assert!(!string.byte_limited);
 
     let list = driver
         .get_value_limited(&config, 0, "large:list", 100)
@@ -461,6 +466,7 @@ async fn seeded_dataset_scans_full_keyspace_and_bounds_large_values() {
     assert_eq!(list.total, Some(20_000));
     assert_eq!(list.loaded_len(), Some(100));
     assert!(list.has_more());
+    assert!(!list.byte_limited);
 }
 
 #[tokio::test(flavor = "multi_thread")]
