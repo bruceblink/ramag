@@ -220,7 +220,7 @@ jobs:
             fi
             gh release upload "$tag" "${assets[@]}" --clobber
           else
-            release_flags=(--draft --verify-tag --generate-notes --title "$title")
+            release_flags=(--draft --verify-tag --notes-from-tag --title "$title")
             if [[ "$tag" == *-* ]]; then
               release_flags+=(--prerelease)
             fi
