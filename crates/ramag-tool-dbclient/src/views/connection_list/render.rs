@@ -71,16 +71,6 @@ impl Render for ConnectionListPanel {
                 ),
             )
             .child(
-                ramag_ui::clickable_button("export-connections")
-                    .ghost()
-                    .small()
-                    .icon(ramag_ui::icons::upload())
-                    .disabled(self.transferring)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.prompt_export_passphrase(window, cx);
-                    })),
-            )
-            .child(
                 ramag_ui::clickable_button("import-connections")
                     .ghost()
                     .small()
@@ -88,6 +78,16 @@ impl Render for ConnectionListPanel {
                     .disabled(self.transferring)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.import_connections(window, cx);
+                    })),
+            )
+            .child(
+                ramag_ui::clickable_button("export-connections")
+                    .ghost()
+                    .small()
+                    .icon(ramag_ui::icons::upload())
+                    .disabled(self.transferring)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.prompt_export_passphrase(window, cx);
                     })),
             )
             .child(
