@@ -1,17 +1,25 @@
-# Ramag v0.0.1：用 Rust + GPUI 做了一个本地优先的开发者桌面工作台
+# Ramag v0.0.1 发布：用 Rust + GPUI 把数据库、Git 和剪贴板装进同一个原生工作台
 
-大家好，我最近用 Rust 和 GPUI 开发了一个桌面应用：**Ramag**。
+大家好，今天正式发布 **Ramag v0.0.1**。
+
+这是一个用 Rust + GPUI 构建的原生开发者桌面工作台，一套应用直接覆盖三条高频工作流：
+
+```text
+查数据库 ↔ 管 Git 工作区 ↔ 找回并粘贴上下文
+```
+
+它不是概念 Demo，也不是只搭好了界面的空壳。MySQL、PostgreSQL、Redis、MongoDB 的查询与迁移，Git 的 Diff、提交与分支操作，以及带本地加密的剪贴板历史都已经可以实际使用。
 
 - GitHub：https://github.com/tools-rs/ramag
 - Release：https://github.com/tools-rs/ramag/releases
 - 架构说明：https://github.com/tools-rs/ramag/blob/main/docs/architecture.md
 - 性能报告：https://github.com/tools-rs/ramag/blob/main/docs/performance.md
 
-目前发布了早期版本 `v0.0.1`，支持 macOS Apple Silicon、macOS Intel 和 Windows x64。
+现在可以直接下载 macOS Apple Silicon、macOS Intel 和 Windows x64 安装包。
 
-Ramag 想解决的问题很直接：开发过程中，我们经常需要在数据库客户端、Git 工具和剪贴板历史工具之间来回切换。这些工具处理的数据彼此相关，却通常分散在多个窗口中。
+如果你每天都在数据库客户端、Git 工具、编辑器和剪贴板工具之间反复切换，Ramag 就是为这个问题做的。
 
-因此，我尝试把它们整合到一个原生桌面工作台里：
+它不是把三个按钮塞进同一个窗口，而是让三个工具共享统一的窗口、标签、快捷键、主题和本地数据边界：
 
 ```text
 数据库工作台 + Git 工作台 + 剪贴板工作台
@@ -19,9 +27,9 @@ Ramag 想解决的问题很直接：开发过程中，我们经常需要在数�
 
 ![Ramag 首页](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/home-dark-clipboard-enabled.png)
 
-项目采用本地优先设计，不依赖浏览器壳，不要求登录账号，也不会把数据库连接、Git 仓库或剪贴板内容上传到 Ramag 服务。
+Ramag 不依赖浏览器壳，不要求登录账号，也不会把数据库连接、Git 仓库或剪贴板内容上传到 Ramag 服务。密码和剪贴历史加密后保存在本地，主密钥进入系统凭据库。
 
-## 一、目前包含哪些功能
+## 一、它已经能做什么
 
 ### 1. 数据库工作台
 
@@ -38,7 +46,7 @@ Ramag 想解决的问题很直接：开发过程中，我们经常需要在数�
 
 #### MySQL 与 PostgreSQL
 
-目前已经实现：
+SQL 工作流已经覆盖：
 
 - Schema、表、视图、列、索引和 DDL 浏览
 - SQL 高亮、补全和格式化
@@ -49,7 +57,7 @@ Ramag 想解决的问题很直接：开发过程中，我们经常需要在数�
 - 表级 JSONL 导入导出
 - Schema 或数据库级 SQL 导入导出
 
-类型展示方面，对大整数、高精度数值、JSON/JSONB、二进制、日期时间以及 PostgreSQL 原生类型做了保真处理，尽量避免在 UI 展示和导出过程中丢失精度。
+大整数、高精度数值、JSON/JSONB、二进制、日期时间以及 PostgreSQL 原生类型都做了保真处理，避免在 UI 展示和导出过程中丢失精度。
 
 大表读取使用分页和资源预算，不会一次性把整张表加载进内存。带主键的表在导出时优先使用 keyset 分页，避免深分页反复扫描前面的数据。
 
@@ -57,7 +65,7 @@ Ramag 想解决的问题很直接：开发过程中，我们经常需要在数�
 
 #### Redis
 
-Redis 部分目前支持：
+Redis 工作流覆盖：
 
 - 使用 `:` 自动折叠 Key 命名空间
 - SCAN 游标遍历和大型 Keyspace 虚拟列表
@@ -72,7 +80,7 @@ Redis 部分目前支持：
 
 #### MongoDB
 
-MongoDB 部分目前支持：
+MongoDB 工作流覆盖：
 
 - Database、Collection、索引和统计信息浏览
 - `find`、`aggregate` 与通用命令
@@ -85,7 +93,7 @@ MongoDB 部分目前支持：
 
 ### 2. Git 工作台
 
-Git 功能目前还是试验性功能，但已经覆盖了一套相对完整的日常工作流：
+Git 工作台仍标记为试验性功能，但日常核心工作流已经打通：
 
 ```text
 打开仓库 → 查看工作区 → 检查 Diff → Stage → Commit → Push / Pull
@@ -101,13 +109,13 @@ Git 功能目前还是试验性功能，但已经覆盖了一套相对完整的�
 - 冲突处理
 - 文件编辑与自动保存
 
-Diff 和文件内容支持多种语言的语法高亮，大型 Diff 使用虚拟化展示。文件监听会尽量按变化路径增量刷新，普通文件保存不会直接触发整个仓库的完整扫描。
+Diff 和文件内容支持多种语言的语法高亮，大型 Diff 使用虚拟化展示。文件监听按变化路径增量刷新，普通文件保存不会触发整个仓库的完整扫描。
 
 ![Git 工作区、文件编辑与提交历史](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/git-workspace-dark.png)
 
 Git 实现上没有完全重新实现一套凭据和网络认证体系。Ramag 使用 `gix` 发现仓库，同时让写操作和网络操作复用系统 Git、SSH Agent、Git 配置及已有凭据链。
 
-这样做的主要考虑是兼容用户现有的 Git 环境，而不是在应用里再维护一套可能与命令行行为不一致的认证实现。
+这保证了 Ramag 与用户现有 Git 环境一致，不会在应用里再造一套和命令行行为不同的认证系统。
 
 ### 3. 剪贴板工作台
 
@@ -135,9 +143,9 @@ Windows 关闭主窗口后，Ramag 可以驻留系统托盘，剪贴板采集和
 
 ![剪贴板隐私与采集设置](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/clipboard-settings-light.png)
 
-## 二、为什么选择 Rust + GPUI
+## 二、为什么坚持 Rust + GPUI 原生实现
 
-这个项目最初就希望做成原生桌面应用，而不是 WebView 或 Electron 应用。
+Ramag 从第一天就确定做原生桌面应用，不使用 WebView 或 Electron。
 
 主要技术栈包括：
 
@@ -151,17 +159,17 @@ Windows 关闭主窗口后，Ramag 可以驻留系统托盘，剪贴板采集和
 - aes-gcm
 - tokio 与 smol
 
-选择 Rust 的原因主要有三个。
+选择 Rust 不是为了技术标签，而是因为这个产品天然需要 Rust 擅长的能力。
 
-第一，数据库结果、Git Diff、剪贴板图片等场景很容易碰到大数据量。Rust 可以让内存边界、并发模型和资源生命周期更加明确。
+数据库结果、Git Diff、剪贴板图片都很容易碰到大数据量，内存边界、并发模型和资源生命周期必须明确。
 
-第二，项目需要同时接入数据库、Git、系统剪贴板、系统凭据库、文件监听和桌面窗口，Rust 在这类系统集成场景中比较合适。
+应用还要同时接入数据库、Git、系统剪贴板、系统凭据库、文件监听和原生桌面窗口，这正是 Rust 适合的系统集成场景。
 
-第三，我希望把耗时操作和 UI 线程之间的边界设计清楚，而不是等界面卡顿后再到处补异步任务。
+更重要的是，耗时操作和 UI 线程的边界从架构阶段就必须清楚，而不是界面卡顿后再到处补异步任务。
 
 GPUI 的优势是原生渲染和 Rust 内部一致的状态管理模型。不过它目前仍在快速演进，依赖通常需要直接跟随 Git 版本，编译时间和 API 稳定性也是实际开发中必须面对的问题。
 
-## 三、项目架构
+## 三、不是“能跑就行”：18 个 crate 的清晰边界
 
 Ramag 是一个由 18 个 crate 组成的 Cargo workspace，采用务实版本的 Clean Architecture。
 
@@ -206,11 +214,11 @@ MySQL 和 PostgreSQL 之间还有一个 `ramag-infra-sql-shared`，集中处理 
 
 Tool 层承载数据库、Redis、MongoDB、Git 和剪贴板界面。最终由 `ramag-bin` 完成依赖注入、工具注册、快捷键绑定和平台生命周期管理。
 
-## 四、异步运行时怎么处理
+## 四、GPUI、tokio 和 smol 如何协作
 
-这个项目里有一个比较现实的问题：GPUI 内部使用 smol，而 sqlx、redis-rs 和 MongoDB Driver 依赖 tokio runtime。
+GPUI 内部使用 smol，而 sqlx、redis-rs 和 MongoDB Driver 依赖 tokio runtime，这是应用必须正面解决的运行时边界。
 
-如果直接在 GPUI 的执行环境中调用相关代码，可能因为找不到 tokio reactor 而出现运行时问题。目前分别维护了独立 runtime：
+直接在 GPUI 执行环境中调用这些驱动会因为缺少 tokio reactor 出现运行时问题。Ramag 为不同负载维护独立 runtime：
 
 | Runtime | 用途 |
 |---|---|
@@ -243,7 +251,7 @@ Ramag 使用 redb 保存数据库连接、查询历史、Git 仓库列表、用�
 
 这个项目没有把“Rust 写的”直接等同于“自然就快”。
 
-目前主要使用这些策略控制资源消耗：
+Ramag 使用这些策略控制资源消耗：
 
 - 增量刷新代替全量刷新
 - 分页读取代替一次性载入
@@ -336,11 +344,9 @@ make test
 make db-test
 ```
 
-## 八、当前限制
+## 八、现在就能用，但边界必须说清
 
-这是一个 `0.0.x` 阶段的早期项目，还有不少需要继续验证和完善的地方。
-
-目前已知的主要限制：
+`v0.0.1` 是第一个公开版本，核心工作流已经可用，但下面这些边界必须明确：
 
 - Git 工作台仍属于试验性功能
 - Windows 安装包尚未做 Authenticode 签名
@@ -352,11 +358,11 @@ make db-test
 - GPUI 仍在快速演进，升级可能带来接口兼容问题
 - 首次源码编译需要下载并编译较多依赖，耗时较长
 
-因此，现阶段更适合愿意尝鲜、反馈问题或参与开发的用户。涉及重要数据库或 Git 写操作时，也建议先确认目标环境并保留可恢复点。
+这不会影响你下载、连接本地测试库和体验完整工作流。涉及生产数据库或关键 Git 写操作时，请像使用任何早期开发工具一样确认目标环境并保留恢复点。
 
-## 九、希望获得哪些反馈
+## 九、下载、Star，也欢迎直接挑战它
 
-这是 Ramag 的第一个公开版本，希望听到 Rust 社区对以下问题的意见：
+Ramag 已经把第一版完整交出来了。现在最需要的不是客气的鼓励，而是真实使用和具体问题：
 
 - Rust 原生桌面应用的交互和性能体验
 - GPUI 在独立桌面工具中的实际使用体验
@@ -367,7 +373,7 @@ make db-test
 - Windows 和 macOS 上的兼容性问题
 - 安装、首次启动和编译过程中遇到的问题
 
-如果遇到问题，欢迎在 GitHub Issues 中附上操作系统及版本、Ramag 版本、可复现步骤和必要的错误日志。提交日志前请删除数据库连接、用户名、密码和业务数据。
+如果它解决了你的问题，请给项目一个 Star；如果它哪里做得不够好，请直接提 Issue。附上操作系统、Ramag 版本、复现步骤和必要日志，我会按可复现问题继续推进。提交日志前请删除数据库连接、用户名、密码和业务数据。
 
 ## 十、项目链接
 
@@ -379,4 +385,10 @@ make db-test
 - 构建与发布：https://github.com/tools-rs/ramag/blob/main/docs/desktop-release.md
 - License：Apache-2.0
 
-如果你也对 Rust 原生桌面应用、GPUI、数据库工具或 Git 可视化感兴趣，欢迎试用、提 Issue，或者一起参与完善 Ramag。
+**数据库、Git、剪贴板，不需要再开三个工具。**
+
+现在就可以下载 Ramag v0.0.1：
+
+https://github.com/tools-rs/ramag/releases
+
+如果你关心 Rust 原生桌面应用、GPUI、数据库工具或 Git 可视化，欢迎 Star、试用、提 Issue，也欢迎直接参与开发。
