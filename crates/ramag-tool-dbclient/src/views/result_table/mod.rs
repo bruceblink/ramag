@@ -9,23 +9,15 @@ use std::sync::{
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled,
-    div, prelude::*, px, uniform_list,
+    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, div,
+    prelude::*, px, uniform_list,
 };
-
-/// 限制滚轮只驱动指定轴。
-trait RestrictScrollExt: Styled + Sized {
-    fn restrict_scroll_to_axis(mut self) -> Self {
-        self.style().restrict_scroll_to_axis = Some(true);
-        self
-    }
-}
-impl<T: Styled> RestrictScrollExt for T {}
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use ramag_domain::entities::{QueryResult, contains_case_insensitive};
+use ramag_ui::RestrictScrollToAxisExt as _;
 
 use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, SortDir, TotalRows};
 
@@ -756,25 +748,38 @@ pub(super) fn render_table(
             )
         });
 
-    // 外层横向滚动，虚拟列表纵向滚动；两层都限制滚轮轴向。
+    // 外层横向滚动，虚拟列表纵向滚动；透明输入层统一锁定一次手势的主轴。
     v_flex()
         .size_full()
         .min_w_0()
         .child(
             div()
-                .id("result-h-scroll")
+                .relative()
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
-                .overflow_x_scroll()
-                .restrict_scroll_to_axis()
-                .track_scroll(panel.h_scroll())
                 .child(
-                    v_flex()
-                        .w(frame.total_content_width)
-                        .h_full()
-                        .child(header)
-                        .child(body),
+                    div()
+                        .id("result-h-scroll")
+                        .debug_selector(|| "result-h-scroll".into())
+                        .size_full()
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .track_scroll(panel.h_scroll())
+                        .child(
+                            v_flex()
+                                .w(frame.total_content_width)
+                                .h_full()
+                                .child(header)
+                                .child(body),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("result-scroll-input")
+                        .absolute()
+                        .inset_0()
+                        .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
                 ),
         )
         .child(status_bar)
@@ -783,6 +788,8 @@ pub(super) fn render_table(
 
 mod cells;
 mod helpers;
+#[cfg(test)]
+mod render_test;
 
 use cells::{render_data_row, render_header_cell, render_pending_row};
 use helpers::{compare_values, detect_numeric_column, estimate_col_width};

@@ -198,6 +198,7 @@ impl ResultPanel {
         self.docs_arc = Some(docs);
         self.schedule_table_rebuild(cx);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
+        self.scroll_gesture.reset();
         cx.notify();
     }
 

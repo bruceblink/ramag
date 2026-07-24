@@ -6,11 +6,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, UniformListScrollHandle,
-    Window, div, prelude::*, px, uniform_list,
+    ClickEvent, Context, IntoElement, ParentElement, ScrollWheelEvent, SharedString, Styled,
+    UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use ramag_domain::entities::RedisValue;
+use ramag_ui::RestrictScrollToAxisExt as _;
 
 use super::{KeyDetailEvent, KeyDetailPanel};
 use crate::views::value_display::{self, ViewMode};
@@ -124,40 +125,55 @@ pub(super) fn render_scalar(
                 }))
         })
         .child(
-            // 外层横向滚动（带 id 跨帧保位），内层固定内容宽，行尾不再被视口裁掉
+            // 透明输入层统一分流横纵手势；不渲染滚动条。
             div()
-                .id("redis-scalar-hscroll")
+                .relative()
                 .size_full()
-                .overflow_x_scroll()
-                .track_scroll(&panel.scalar_h_scroll)
                 .child(
-                    uniform_list(
-                        "redis-scalar-lines",
-                        line_count,
-                        cx.processor(move |this, range: Range<usize>, _w, _cx| {
-                            let cache = this.scalar_cache.borrow();
-                            let Some((_, _, lines, _)) = cache.as_ref() else {
-                                return Vec::new();
-                            };
-                            range
-                                .filter_map(|index| lines.get(index).cloned())
-                                .map(|line| {
-                                    div()
-                                        .h(px(ROW_H))
-                                        .px(px(10.0))
-                                        .whitespace_nowrap()
-                                        .text_sm()
-                                        .text_color(fg)
-                                        .font_family("monospace")
-                                        .child(line)
-                                        .into_any_element()
-                                })
-                                .collect()
-                        }),
-                    )
-                    .track_scroll(scroll)
-                    .h_full()
-                    .w(px(DISPLAY_CONTENT_WIDTH_PX)),
+                    div()
+                        .id("redis-scalar-hscroll")
+                        .debug_selector(|| "redis-scalar-scroll-region".into())
+                        .size_full()
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .track_scroll(&panel.scalar_h_scroll)
+                        .child(
+                            uniform_list(
+                                "redis-scalar-lines",
+                                line_count,
+                                cx.processor(move |this, range: Range<usize>, _w, _cx| {
+                                    let cache = this.scalar_cache.borrow();
+                                    let Some((_, _, lines, _)) = cache.as_ref() else {
+                                        return Vec::new();
+                                    };
+                                    range
+                                        .filter_map(|index| lines.get(index).cloned())
+                                        .map(|line| {
+                                            div()
+                                                .h(px(ROW_H))
+                                                .px(px(10.0))
+                                                .whitespace_nowrap()
+                                                .text_sm()
+                                                .text_color(fg)
+                                                .font_family("monospace")
+                                                .child(line)
+                                                .into_any_element()
+                                        })
+                                        .collect()
+                                }),
+                            )
+                            .track_scroll(scroll)
+                            .restrict_scroll_to_axis()
+                            .h_full()
+                            .w(px(DISPLAY_CONTENT_WIDTH_PX)),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("redis-scalar-scroll-input")
+                        .absolute()
+                        .inset_0()
+                        .on_scroll_wheel(cx.listener(KeyDetailPanel::on_scalar_scroll)),
                 ),
         );
 
@@ -219,4 +235,24 @@ pub(super) fn render_scalar(
             )
         })
         .child(content_div)
+}
+
+impl KeyDetailPanel {
+    fn on_scalar_scroll(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let horizontal = self.scalar_h_scroll.clone();
+        let vertical = self.value_scroll.0.borrow().base_handle.clone();
+        ramag_ui::handle_axis_scroll(
+            &mut self.scalar_scroll_gesture,
+            event,
+            window,
+            &horizontal,
+            &vertical,
+            cx,
+        );
+    }
 }

@@ -24,6 +24,7 @@ use gpui_component::{
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COLLECTION_ITEMS, RedisValue};
+use ramag_ui::AxisScrollGesture;
 
 use helpers::render_value;
 
@@ -92,6 +93,8 @@ pub struct KeyDetailPanel {
     focus_handle: FocusHandle,
     value_scroll: UniformListScrollHandle,
     pub(super) scalar_h_scroll: gpui::ScrollHandle,
+    /// 大文本内容区双轴手势状态，跨渲染帧保留。
+    scalar_scroll_gesture: AxisScrollGesture,
 }
 
 impl EventEmitter<KeyDetailEvent> for KeyDetailPanel {}
@@ -128,6 +131,7 @@ impl KeyDetailPanel {
             estimating_size: false,
             value_scroll: UniformListScrollHandle::new(),
             scalar_h_scroll: gpui::ScrollHandle::new(),
+            scalar_scroll_gesture: AxisScrollGesture::default(),
         }
     }
 
@@ -159,6 +163,7 @@ impl KeyDetailPanel {
         self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.scalar_h_scroll
             .set_offset(gpui::Point::new(px(0.0), px(0.0)));
+        self.scalar_scroll_gesture.reset();
         cx.notify();
     }
 
@@ -187,6 +192,7 @@ impl KeyDetailPanel {
         self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.scalar_h_scroll
             .set_offset(gpui::Point::new(px(0.0), px(0.0)));
+        self.scalar_scroll_gesture.reset();
         cx.notify();
     }
 

@@ -35,6 +35,7 @@ impl KeyDetailPanel {
         self.value_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.scalar_h_scroll
             .set_offset(gpui::Point::new(gpui::px(0.0), gpui::px(0.0)));
+        self.scalar_scroll_gesture.reset();
         self.ttl_loading = true;
         self.ttl_error = None;
         self.error = None;

@@ -9,17 +9,18 @@ use std::rc::{Rc, Weak};
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement,
-    ScrollHandle, SharedString, Styled, UniformListScrollHandle, div, prelude::*, px, uniform_list,
+    ScrollHandle, SharedString, UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex,
 };
 use ramag_domain::entities::{DiffLineKind, FileDiff};
+use ramag_ui::RestrictScrollToAxisExt as _;
 
 use super::diff_keys::{SplitKey, UnifiedKey, build_split_keys, build_unified_keys};
 use super::diff_panel::{
-    CONTENT_PAD, DIFF_ROW_H, LINE_NO_W, MONO_CHAR_W, RestrictScrollExt as _, SPLIT_MARKER_W,
-    render_diff_empty, render_file_diff,
+    CONTENT_PAD, DIFF_ROW_H, LINE_NO_W, MONO_CHAR_W, SPLIT_MARKER_W, render_diff_empty,
+    render_diff_scroll_input, render_file_diff,
 };
 use super::diff_split_cells::{
     render_content_cell, render_content_header, render_content_spacer, render_gutter_cell,
@@ -218,6 +219,7 @@ pub(super) fn render_file_diff_split(
 
     let scroll_v = scroll.clone();
     let h_shared = h_scroll.clone();
+    let vertical_input = scroll.0.borrow().base_handle.clone();
 
     // 左右共用同一内容宽度（取较长侧）：共享横滚 handle 时两栏滚动范围才一致，都能滚到行尾
     let content_w = (max_chars as f32) * MONO_CHAR_W + CONTENT_PAD;
@@ -274,36 +276,45 @@ pub(super) fn render_file_diff_split(
         "R", false, total, diff_rc, keys, syntax, mono, content_w, scroll_v, cx,
     );
 
-    h_flex()
-        .items_stretch()
+    div()
+        .relative()
+        .debug_selector(|| "vcs-diff-scroll-region".into())
         .size_full()
         .min_w_0()
         .min_h_0()
-        .child(make_pane(
-            left_gutter_list,
-            left_content_list,
-            SPLIT_GUTTER_W,
-            content_w,
-            &h_shared,
-            "L",
-        ))
-        .child(div().flex_none().w(px(1.0)).h_full().bg(muted_fg))
         .child(
-            div()
-                .flex_none()
-                .w(px(middle_w))
-                .h_full()
-                .child(middle_list),
+            h_flex()
+                .items_stretch()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .child(make_pane(
+                    left_gutter_list,
+                    left_content_list,
+                    SPLIT_GUTTER_W,
+                    content_w,
+                    &h_shared,
+                    "L",
+                ))
+                .child(div().flex_none().w(px(1.0)).h_full().bg(muted_fg))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(middle_w))
+                        .h_full()
+                        .child(middle_list),
+                )
+                .child(div().flex_none().w(px(1.0)).h_full().bg(muted_fg))
+                .child(make_pane(
+                    right_gutter_list,
+                    right_content_list,
+                    SPLIT_GUTTER_W,
+                    content_w,
+                    &h_shared,
+                    "R",
+                )),
         )
-        .child(div().flex_none().w(px(1.0)).h_full().bg(muted_fg))
-        .child(make_pane(
-            right_gutter_list,
-            right_content_list,
-            SPLIT_GUTTER_W,
-            content_w,
-            &h_shared,
-            "R",
-        ))
+        .child(render_diff_scroll_input(h_shared, vertical_input, cx))
         .into_any_element()
 }
 

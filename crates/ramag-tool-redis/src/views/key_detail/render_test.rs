@@ -8,7 +8,9 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use gpui::{AppContext as _, TestAppContext, px};
+use gpui::{
+    AppContext as _, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
+};
 use ramag_app::RedisService;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, MAX_REDIS_LOADED_ITEMS, QueryRecord, QueryRecordId, RedisType,
@@ -251,4 +253,55 @@ fn container_value_blocks_have_nonzero_bounds(cx: &mut TestAppContext) {
             );
         }
     }
+}
+
+/// 大文本横向浏览时，触控板附带的少量纵向位移不能带着文本行上下移动。
+#[gpui::test]
+fn scalar_diagonal_scroll_moves_only_horizontally(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let text = (0..100)
+        .map(|index| format!("line-{index}:{}", "x".repeat(600)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut panel_entity = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = KeyDetailPanel::new(mock_service(), cx);
+            panel.config = Some(mock_config());
+            panel.key = Some("large:text".into());
+            panel.collection_total = Some(text.len() as u64);
+            panel.value = Some(RedisValue::Text(text));
+            panel
+        });
+        panel_entity = Some(panel.clone());
+        gpui_component::Root::new(panel, window, cx)
+    });
+    let panel = panel_entity.expect("KeyDetailPanel should be initialized");
+    cx.simulate_resize(size(px(1000.0), px(700.0)));
+    cx.run_until_parked();
+
+    panel.read_with(cx, |panel, _| {
+        assert!(
+            panel.scalar_h_scroll.max_offset().x > px(0.0),
+            "测试内容必须产生横向溢出"
+        );
+    });
+
+    let position = cx
+        .debug_bounds("redis-scalar-scroll-region")
+        .expect("scalar scroll region should be rendered")
+        .center();
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(-80.0), px(-8.0))),
+        touch_phase: TouchPhase::Moved,
+        ..Default::default()
+    });
+
+    panel.read_with(cx, |panel, _| {
+        let horizontal = panel.scalar_h_scroll.offset();
+        let vertical = panel.value_scroll.0.borrow().base_handle.offset();
+        assert!(horizontal.x < px(0.0), "横向手势应移动大文本内容");
+        assert_eq!(vertical.y, px(0.0), "横向手势不应移动文本行");
+    });
 }

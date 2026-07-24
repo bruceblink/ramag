@@ -176,6 +176,7 @@ impl VcsView {
                 .scroll_to_item(0, gpui::ScrollStrategy::Top);
             self.diff_h_scroll
                 .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+            self.diff_scroll_gesture.reset();
         }
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         let request_seq = self.diff_request_seq;

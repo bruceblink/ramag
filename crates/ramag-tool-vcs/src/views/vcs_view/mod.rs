@@ -17,6 +17,7 @@ use ramag_domain::entities::{
     Stash, Tag, WorkingTreeStatus,
 };
 use ramag_domain::traits::{GitDriver, Storage};
+use ramag_ui::AxisScrollGesture;
 
 use super::commit_detail::CommitFilesRowsCacheEntry;
 use super::helpers::{
@@ -225,6 +226,8 @@ pub struct VcsView {
     pub(super) rebase_scroll: UniformListScrollHandle,
     pub(super) file_tabs_h_scroll: ScrollHandle,
     pub(super) diff_h_scroll: ScrollHandle,
+    /// Diff 内容区双轴手势状态，跨渲染帧保留。
+    pub(super) diff_scroll_gesture: AxisScrollGesture,
     pub(super) history_pane_visible: bool,
     pub(super) diff_fullscreen: bool,
 

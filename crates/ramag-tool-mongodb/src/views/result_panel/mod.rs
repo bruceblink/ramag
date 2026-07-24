@@ -11,6 +11,9 @@ mod row;
 mod table;
 mod toolbar;
 
+#[cfg(test)]
+mod render_test;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{
@@ -34,7 +37,7 @@ use ramag_app::MongoService;
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, MongoQueryResult, json_pretty_bounded,
 };
-use ramag_ui::{ResultMemoryLease, ResultMemoryUpdate};
+use ramag_ui::{AxisScrollGesture, ResultMemoryLease, ResultMemoryUpdate};
 use serde_json::Value;
 
 pub use flatten::FlatTable;
@@ -65,6 +68,8 @@ pub struct ResultPanel {
     pub(crate) row_filter: Entity<InputState>,
     pub(crate) uniform_scroll: UniformListScrollHandle,
     pub(crate) h_scroll: ScrollHandle,
+    /// 表格双轴手势状态，跨渲染帧保留。
+    scroll_gesture: AxisScrollGesture,
     pub(crate) column_completion_source: Arc<RwLock<Vec<String>>>,
     pub(crate) service: Option<Arc<MongoService>>,
     pub(crate) config: Option<ConnectionConfig>,
@@ -221,6 +226,7 @@ impl ResultPanel {
             row_filter,
             uniform_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
+            scroll_gesture: AxisScrollGesture::default(),
             column_completion_source,
             service: None,
             config: None,
@@ -417,6 +423,7 @@ impl ResultPanel {
         self.running = false;
         self.pagination = None;
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
+        self.scroll_gesture.reset();
         // 建基础表 + 刷新补全源（最多 200 万单元格，必须离开 UI 线程）。
         self.schedule_table_rebuild(cx);
         cx.notify();

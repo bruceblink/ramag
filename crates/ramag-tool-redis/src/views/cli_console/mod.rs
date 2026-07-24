@@ -10,8 +10,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    ClickEvent, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    ClickEvent, Context, Entity, IntoElement, ParentElement, Render, ScrollWheelEvent,
+    SharedString, Styled, Subscription, UniformListScrollHandle, Window, div, prelude::*, px,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
@@ -23,6 +24,7 @@ use gpui_component::{
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, RedisValue, validate_redis_command};
 use ramag_domain::error::READ_ONLY_MESSAGE;
+use ramag_ui::{AxisScrollGesture, RestrictScrollToAxisExt as _};
 use tracing::{error, info};
 
 use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
@@ -137,6 +139,7 @@ pub struct CliConsole {
     transcript_rows: Vec<TranscriptRow>,
     transcript_scroll: UniformListScrollHandle,
     transcript_h_scroll: gpui::ScrollHandle,
+    transcript_scroll_gesture: AxisScrollGesture,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -177,6 +180,7 @@ impl CliConsole {
             transcript_rows: Vec::new(),
             transcript_scroll: UniformListScrollHandle::new(),
             transcript_h_scroll: gpui::ScrollHandle::new(),
+            transcript_scroll_gesture: AxisScrollGesture::default(),
             _subscriptions: subs,
         }
     }
@@ -363,7 +367,26 @@ impl CliConsole {
     fn clear(&mut self, cx: &mut Context<Self>) {
         clear_completed_entries(&mut self.history);
         self.rebuild_transcript_rows();
+        self.transcript_scroll_gesture.reset();
         cx.notify();
+    }
+
+    fn on_transcript_scroll(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let horizontal = self.transcript_h_scroll.clone();
+        let vertical = self.transcript_scroll.0.borrow().base_handle.clone();
+        ramag_ui::handle_axis_scroll(
+            &mut self.transcript_scroll_gesture,
+            event,
+            window,
+            &horizontal,
+            &vertical,
+            cx,
+        );
     }
 
     fn reject_if_command_queue_full(&mut self, command: &str, cx: &mut Context<Self>) -> bool {
@@ -593,26 +616,43 @@ impl Render for CliConsole {
                 .into_any_element()
         } else {
             div()
-                .id("cli-transcript-hscroll")
+                .relative()
                 .size_full()
-                .overflow_x_scroll()
-                .track_scroll(&self.transcript_h_scroll)
                 .child(
-                    uniform_list(
-                        "cli-transcript",
-                        self.transcript_rows.len(),
-                        cx.processor(move |this, range: Range<usize>, _w, cx| {
-                            range
-                                .filter_map(|index| {
-                                    let row = this.transcript_rows.get(index)?;
-                                    Some(render_transcript_row(row, fg, muted_fg, accent, cx))
-                                })
-                                .collect()
-                        }),
-                    )
-                    .track_scroll(&self.transcript_scroll)
-                    .h_full()
-                    .w(px(DISPLAY_CONTENT_WIDTH_PX)),
+                    div()
+                        .id("cli-transcript-hscroll")
+                        .debug_selector(|| "cli-transcript-scroll-region".into())
+                        .size_full()
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .track_scroll(&self.transcript_h_scroll)
+                        .child(
+                            uniform_list(
+                                "cli-transcript",
+                                self.transcript_rows.len(),
+                                cx.processor(move |this, range: Range<usize>, _w, cx| {
+                                    range
+                                        .filter_map(|index| {
+                                            let row = this.transcript_rows.get(index)?;
+                                            Some(render_transcript_row(
+                                                row, fg, muted_fg, accent, cx,
+                                            ))
+                                        })
+                                        .collect()
+                                }),
+                            )
+                            .track_scroll(&self.transcript_scroll)
+                            .restrict_scroll_to_axis()
+                            .h_full()
+                            .w(px(DISPLAY_CONTENT_WIDTH_PX)),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("cli-transcript-scroll-input")
+                        .absolute()
+                        .inset_0()
+                        .on_scroll_wheel(cx.listener(Self::on_transcript_scroll)),
                 )
                 .into_any_element()
         };

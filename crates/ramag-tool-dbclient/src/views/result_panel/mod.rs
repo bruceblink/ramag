@@ -2,6 +2,7 @@ mod export;
 mod helpers;
 mod ops;
 mod render;
+mod scroll;
 
 use std::collections::BTreeSet;
 use std::sync::{
@@ -21,7 +22,7 @@ use ramag_app::ConnectionService;
 use ramag_domain::entities::{
     Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, Value, Warning,
 };
-use ramag_ui::{ResultMemoryLease, ResultMemoryUpdate};
+use ramag_ui::{AxisScrollGesture, ResultMemoryLease, ResultMemoryUpdate};
 
 use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
@@ -123,6 +124,8 @@ pub struct ResultPanel {
     pub(super) pending_insert: Option<PendingInsert>,
     pub(super) uniform_scroll: UniformListScrollHandle,
     pub(super) h_scroll: ScrollHandle,
+    /// 结果表触控板手势的轴锁定状态，必须跨帧保留。
+    result_scroll_gesture: AxisScrollGesture,
     pub(super) column_completion_source: Arc<RwLock<Vec<String>>>,
     pub(super) warnings_expanded: bool,
     /// 当前标签的结果内存登记。
@@ -180,6 +183,7 @@ impl ResultPanel {
             pending_insert: None,
             uniform_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
+            result_scroll_gesture: AxisScrollGesture::default(),
             column_completion_source,
             warnings_expanded: false,
             result_memory: None,
@@ -486,6 +490,7 @@ impl ResultPanel {
         self.row_identity = None;
         self.uniform_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
+        self.result_scroll_gesture.reset();
         cx.notify();
     }
 

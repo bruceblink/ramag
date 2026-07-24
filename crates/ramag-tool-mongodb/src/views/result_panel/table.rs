@@ -4,22 +4,14 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    Context, Hsla, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled, div,
-    prelude::*, px, uniform_list,
+    Context, Hsla, InteractiveElement as _, IntoElement, ParentElement, ScrollWheelEvent,
+    SharedString, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{ActiveTheme, h_flex, v_flex};
+use ramag_ui::RestrictScrollToAxisExt as _;
 
 use super::flatten::{Column, FlatTable};
 use super::{ResultPanel, SortDir};
-
-/// 限制滚动事件只作用于当前轴。
-trait RestrictScrollExt: Styled + Sized {
-    fn restrict_scroll_to_axis(mut self) -> Self {
-        self.style().restrict_scroll_to_axis = Some(true);
-        self
-    }
-}
-impl<T: Styled> RestrictScrollExt for T {}
 
 pub(super) const CELL_WIDTH: f32 = 200.0;
 pub(super) const ROW_HEIGHT: f32 = 32.0;
@@ -166,24 +158,57 @@ pub(super) fn render(
     .flex_1()
     .restrict_scroll_to_axis();
 
-    // 外层横向滚动，内层纵向虚拟化。
+    // 外层横向滚动，内层纵向虚拟化；透明输入层保证一次手势只移动一个轴。
     v_flex().size_full().min_w_0().child(
         div()
-            .id("mongo-table-h-scroll")
+            .relative()
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .overflow_x_scroll()
-            .restrict_scroll_to_axis()
-            .track_scroll(&panel.h_scroll)
             .child(
-                v_flex()
-                    .w(total_width)
-                    .h_full()
-                    .child(header_row.flex_none())
-                    .child(body),
+                div()
+                    .id("mongo-table-h-scroll")
+                    .debug_selector(|| "mongo-table-h-scroll".into())
+                    .size_full()
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&panel.h_scroll)
+                    .child(
+                        v_flex()
+                            .w(total_width)
+                            .h_full()
+                            .child(header_row.flex_none())
+                            .child(body),
+                    ),
+            )
+            .child(
+                div()
+                    .id("mongo-table-scroll-input")
+                    .absolute()
+                    .inset_0()
+                    .on_scroll_wheel(cx.listener(ResultPanel::on_table_scroll)),
             ),
     )
+}
+
+impl ResultPanel {
+    fn on_table_scroll(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let horizontal = self.h_scroll.clone();
+        let vertical = self.uniform_scroll.0.borrow().base_handle.clone();
+        ramag_ui::handle_axis_scroll(
+            &mut self.scroll_gesture,
+            event,
+            window,
+            &horizontal,
+            &vertical,
+            cx,
+        );
+    }
 }
 
 fn checkbox_placeholder(border: Hsla) -> gpui::AnyElement {

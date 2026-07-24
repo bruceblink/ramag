@@ -5,10 +5,11 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement,
-    ScrollHandle, SharedString, Styled, UniformListScrollHandle, div, prelude::*, px, uniform_list,
+    ScrollHandle, SharedString, UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{ActiveTheme, h_flex};
 use ramag_domain::entities::{DiffLine, DiffLineKind, FileDiff};
+use ramag_ui::RestrictScrollToAxisExt as _;
 
 use super::vcs_view::VcsView;
 
@@ -26,15 +27,6 @@ pub(super) const SPLIT_MARKER_W: f32 = 10.0;
 pub(super) const CONTENT_PAD: f32 = 8.0;
 
 use super::diff_keys::UnifiedKey;
-
-/// 关闭 GPUI 单轴 scroll 的"另一方向劫持"行为（与 pf_content 同款 trick）
-pub(super) trait RestrictScrollExt: Styled + Sized {
-    fn restrict_scroll_to_axis(mut self) -> Self {
-        self.style().restrict_scroll_to_axis = Some(true);
-        self
-    }
-}
-impl<T: Styled> RestrictScrollExt for T {}
 
 /// Unified diff。固定 list w + 外层 overflow_x_scroll 共享 ScrollHandle，restrict_scroll_to_axis 防 wheel 错位
 #[allow(clippy::too_many_arguments)]
@@ -135,22 +127,51 @@ pub(super) fn render_file_diff(
     .restrict_scroll_to_axis()
     .flex_1();
 
+    let vertical_input = scroll.0.borrow().base_handle.clone();
     div()
-        .id("vcs-diff-unified-h-scroll")
+        .relative()
         .size_full()
         .min_w_0()
         .min_h_0()
-        .overflow_x_scroll()
-        .restrict_scroll_to_axis()
-        .track_scroll(&h_scroll)
         .child(
-            gpui_component::v_flex()
-                .min_w_full()
-                .w(px(total_w))
-                .h_full()
-                .child(body),
+            div()
+                .id("vcs-diff-unified-h-scroll")
+                .debug_selector(|| "vcs-diff-scroll-region".into())
+                .size_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .track_scroll(&h_scroll)
+                .child(
+                    gpui_component::v_flex()
+                        .min_w_full()
+                        .w(px(total_w))
+                        .h_full()
+                        .child(body),
+                ),
         )
+        .child(render_diff_scroll_input(h_scroll, vertical_input, cx))
         .into_any_element()
+}
+
+pub(super) fn render_diff_scroll_input(
+    horizontal: ScrollHandle,
+    vertical: ScrollHandle,
+    cx: &mut Context<VcsView>,
+) -> impl IntoElement {
+    div()
+        .id("vcs-diff-scroll-input")
+        .absolute()
+        .inset_0()
+        .on_scroll_wheel(cx.listener(move |this, event, window, cx| {
+            ramag_ui::handle_axis_scroll(
+                &mut this.diff_scroll_gesture,
+                event,
+                window,
+                &horizontal,
+                &vertical,
+                cx,
+            );
+        }))
 }
 
 /// hunk header unified：整行宽，enable_discard 时显示回滚按钮

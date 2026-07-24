@@ -340,6 +340,7 @@ impl VcsView {
             rebase_scroll: UniformListScrollHandle::new(),
             file_tabs_h_scroll: ScrollHandle::new(),
             diff_h_scroll: ScrollHandle::new(),
+            diff_scroll_gesture: Default::default(),
             history_pane_visible: false,
             diff_fullscreen: false,
             open_repos: Vec::new(),

@@ -7,7 +7,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gpui::{AppContext, Entity, TestAppContext, VisualTestContext};
+use gpui::{
+    AppContext, Entity, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
+    VisualTestContext, point, px,
+};
 use ramag_domain::entities::{
     Branch, BranchKind, Commit, ConnectionConfig, ConnectionId, DiffKind, DiffLine, DiffLineKind,
     FileChangeKind, FileDiff, FileStatus, Hunk, LogOptions, QueryRecord, QueryRecordId, RepoConfig,
@@ -129,6 +132,32 @@ fn test_diff() -> FileDiff {
     }
 }
 
+fn scroll_test_diff() -> FileDiff {
+    FileDiff {
+        path: "wide.rs".into(),
+        old_path: None,
+        change_kind: FileChangeKind::Modified,
+        binary: false,
+        old_mode: None,
+        new_mode: None,
+        hunks: vec![Hunk {
+            old_start: 1,
+            old_lines: 120,
+            new_start: 1,
+            new_lines: 120,
+            heading: None,
+            lines: (0..120)
+                .map(|index| DiffLine {
+                    kind: DiffLineKind::Context,
+                    old_lineno: Some(index + 1),
+                    new_lineno: Some(index + 1),
+                    text: format!("let line_{index} = \"{}\";", "x".repeat(400)),
+                })
+                .collect(),
+        }],
+    }
+}
+
 fn mock_status() -> WorkingTreeStatus {
     WorkingTreeStatus {
         head_branch: Some("main".into()),
@@ -166,6 +195,20 @@ fn inject_diff_session(v: &mut VcsView) {
         cached_content: None,
     }];
     v.active_file_tab_idx = Some(0);
+}
+
+fn inject_scroll_diff_session(v: &mut VcsView) {
+    inject_diff_session(v);
+    let diff = std::rc::Rc::new(scroll_test_diff());
+    let syntax = std::rc::Rc::new(super::super::syntax::DiffSyntaxSnapshot::new(
+        &diff,
+        Some("rust"),
+    ));
+    v.current_diff = Some(diff.clone());
+    v.current_diff_syntax = Some(syntax.clone());
+    v.file_tabs[0].cached_diff = Some(diff);
+    v.file_tabs[0].cached_diff_syntax = Some(syntax);
+    v.diff_view_mode = super::super::helpers::DiffViewMode::FullFile;
 }
 
 /// 注入 Project Files 直接查看文件内容的 Session 态。
@@ -237,6 +280,35 @@ fn vcs_view_renders_diff_split_without_panic(cx: &mut TestAppContext) {
     // 再渲染一帧（状态不变），验证幂等不崩
     view.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
+}
+
+/// 横向查看长代码时，触控板附带的少量纵向位移不能带着 Diff 行上下移动。
+#[gpui::test]
+fn diff_diagonal_scroll_moves_only_horizontally(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    view.update(cx, |view, cx| {
+        inject_scroll_diff_session(view);
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let position = cx
+        .debug_bounds("vcs-diff-scroll-region")
+        .expect("diff scroll region should be rendered")
+        .center();
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(-80.0), px(-8.0))),
+        touch_phase: TouchPhase::Moved,
+        ..Default::default()
+    });
+
+    view.read_with(cx, |view, _| {
+        let horizontal = view.diff_h_scroll.offset();
+        let vertical = view.diff_scroll.0.borrow().base_handle.offset();
+        assert!(horizontal.x < px(0.0), "横向手势应移动 Diff 内容");
+        assert_eq!(vertical.y, px(0.0), "横向手势不应移动 Diff 行");
+    });
 }
 
 /// 切到「全文件」diff 视图模式后仍能渲染（context_lines 路径）

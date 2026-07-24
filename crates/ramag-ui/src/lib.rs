@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod activity_bar;
 pub mod assets;
+pub mod axis_scroll;
 pub mod confirm_dialog;
 pub mod editor_workspace;
 pub mod home_view;
@@ -30,6 +31,7 @@ pub use prompt_dialog::{
 };
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget};
+pub use axis_scroll::{AxisScrollGesture, RestrictScrollToAxisExt, handle_axis_scroll};
 pub use editor_workspace::{
     EditorDraftPref, EditorWorkspacePref, MAX_EDITOR_DRAFT_BYTES, MAX_EDITOR_TABS,
     MAX_EDITOR_WORKSPACE_PREF_BYTES, MAX_EDITOR_WORKSPACE_TEXT_BYTES, can_open_editor_tab,

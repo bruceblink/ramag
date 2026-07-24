@@ -37,6 +37,7 @@ impl VcsView {
             // 纵向同样回顶：从长文件底部切到短文件时避免停在越界位置
             self.diff_scroll
                 .scroll_to_item(0, gpui::ScrollStrategy::Top);
+            self.diff_scroll_gesture.reset();
         }
         // 点击 Changes 文件 → 关掉 commit detail，避免主区残留 commit diff
         if self.viewing_commit.is_some() {
