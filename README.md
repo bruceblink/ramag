@@ -16,7 +16,63 @@
   macOS & Windows · Rust + GPUI · Local-first
 </p>
 
+<p align="center">
+  <a href="https://github.com/tools-rs/ramag/releases">下载</a> ·
+  <a href="docs/architecture.md">架构</a> ·
+  <a href="docs/performance.md">性能</a> ·
+  <a href="docs/desktop-release.md">构建与发布</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark-clipboard-enabled.png">
+    <img src="docs/screenshots/home-light.png" alt="Ramag 首页：数据库、Git 与剪贴板统一工作台">
+  </picture>
+</p>
+
 ---
+
+## 快速开始
+
+### 直接安装
+
+前往 [GitHub Releases](https://github.com/tools-rs/ramag/releases)，按系统下载对应安装包：
+
+| 系统 | 安装包 | 最低版本 |
+|---|---|---|
+| Apple Silicon Mac | `Ramag-*-macos-arm64.dmg` | macOS 12 |
+| Intel Mac | `Ramag-*-macos-x86_64.dmg` | macOS 12 |
+| Windows x64 | `Ramag-*-windows-x64-setup.exe` | Windows 10 |
+
+> 项目仍处于 `0.0.x` 早期阶段。当前 Windows 安装包未做 Authenticode 签名，macOS 安装包未做 Developer ID 签名与 Apple 公证，系统可能显示未知发布者或安全警告。请只从本仓库 Releases 下载，并使用同一页面的 `SHA256SUMS.txt` 校验文件；完整状态见[桌面端构建与发布](docs/desktop-release.md#签名与公证状态)。
+
+Git 功能需要系统已安装 `git`，SSH 隧道需要系统 OpenSSH；数据库、Git 仓库和剪贴板内容不会上传到 Ramag 服务。
+
+### 从源码运行
+
+准备 [Git](https://git-scm.com/)、[rustup](https://rustup.rs/) 和平台构建工具。仓库已通过 `rust-toolchain.toml` 固定 Rust nightly，进入目录后会由 rustup 自动选择，无需手动安装其它 Rust 版本。
+
+macOS 还需要 Xcode Command Line Tools：
+
+```bash
+xcode-select --install
+```
+
+克隆并运行：
+
+```bash
+git clone https://github.com/tools-rs/ramag.git
+cd ramag
+make develop
+```
+
+Windows 源码构建需要 Visual Studio C++ Build Tools 与 Windows 10/11 SDK，然后在 PowerShell 中运行：
+
+```powershell
+cargo run -p ramag-bin
+```
+
+首次构建需要下载 GPUI 等依赖，耗时会明显长于后续增量构建。当前不支持 Linux。
 
 ## 不是三个工具的简单拼接
 
@@ -34,6 +90,8 @@ Ramag 把开发中最频繁切换的三类上下文收进一个原生窗口：�
 
 从连接、结构浏览、查询，到结果编辑和完整迁移，四类数据库共用一套清晰的工作流。
 
+![MySQL、PostgreSQL、Redis 与 MongoDB 统一连接管理](docs/screenshots/database-connections-light.png)
+
 ### MySQL 与 PostgreSQL
 
 - Schema、表、视图、列、索引与 DDL 浏览。
@@ -41,6 +99,11 @@ Ramag 把开发中最频繁切换的三类上下文收进一个原生窗口：�
 - 查询取消、结果分页、排序、筛选和单元格编辑。
 - 大整数、高精度数值、JSON/JSONB、二进制、时间以及 PostgreSQL 原生类型保真展示。
 - 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/database-mysql-query-dark.png">
+  <img src="docs/screenshots/database-mysql-query-light.png" alt="Ramag MySQL 查询编辑器与十万行结果分页">
+</picture>
 
 ### Redis
 
@@ -83,6 +146,11 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 
 写操作与网络认证直接复用系统 Git、SSH Agent 和用户已有配置，不在应用中再造一套不兼容的凭据体系。
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/git-workspace-dark.png">
+  <img src="docs/screenshots/git-workspace-light.png" alt="Ramag Git 工作区、文件编辑与提交历史">
+</picture>
+
 ## 剪贴板工作台
 
 ```text
@@ -96,6 +164,21 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 - 最近历史常驻有界缓存，完整历史与图片媒体在本地加密保存。
 - 按数量和时间自动清理；图片使用缩略图、并发加载上限和内存预算。
 - Windows 关闭主窗口后可驻留系统托盘，采集与全局快捷抽屉继续工作。
+
+| 剪贴历史与类型筛选 | 采集、自动粘贴与应用黑名单设置 |
+|---|---|
+| ![剪贴历史、搜索与类型筛选](docs/screenshots/clipboard-history-light.png) | ![剪贴板隐私与采集设置](docs/screenshots/clipboard-settings-light.png) |
+
+剪贴板采集默认关闭，需要在设置中主动启用。常用快捷键：
+
+| 操作 | macOS | Windows |
+|---|---|---|
+| 打开剪贴板抽屉 | `⌘⇧V` | `Ctrl+Shift+V` |
+| 执行 SQL / MongoDB 查询 | `⌘Enter` | `Ctrl+Enter` |
+| 执行光标所在 SQL | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
+| 新建查询标签 | `⌘T` | `Ctrl+T` |
+| 格式化 SQL / MongoDB JSON | `⌘⇧F` | `Ctrl+Shift+F` |
+| 在数据库、Git、剪贴板间切换 | `⌘1` / `⌘2` / `⌘3` | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
 
 ## 经得起数据量放大的性能设计
 
@@ -129,13 +212,57 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 - 查询结果、元数据、图片、剪贴历史、Redis 集合和导入行都有显式数量与字节预算。
 - 外部命令、路径、连接标识和导入内容在进入执行层前校验，不静默吞掉错误。
 
+应用数据写入操作系统标准用户数据目录，核心数据库文件名为 `ramag.redb`，日志位于同一数据目录的 `logs/ramag.log`。卸载应用不会自动删除用户数据库、凭据、剪贴板媒体或日志；需要清理时请先确认数据不再需要。
+
+## 项目结构
+
+Ramag 是一个 Rust 2024 Cargo workspace，采用务实的 Clean Architecture：业务规则在内层，数据库、Git、剪贴板与 GPUI 都是外层实现，依赖只能向内。
+
+```text
+ramag-bin              应用入口、依赖注入、快捷键与平台生命周期
+├── ramag-tool-*       数据库、Redis、MongoDB、Git、剪贴板界面
+├── ramag-ui           GPUI 主壳、主题和共享组件
+├── ramag-infra-*      数据库、Git、剪贴板、SSH 隧道和本地存储适配器
+├── ramag-app          用例编排与工具注册
+└── ramag-domain       实体和抽象接口，不依赖 GUI 或具体基础设施
+```
+
+这种分层让核心逻辑可以脱离 GUI 测试，也避免 SQL、KV、文档数据库和 Git 被塞进一个含义模糊的通用接口。详细依赖方向、各 crate 职责和扩展方式见[架构说明](docs/architecture.md)。
+
+## 开发与验证
+
+日常任务统一通过仓库 `Makefile` 执行，运行 `make` 可以查看完整列表：
+
+| 命令 | 用途 |
+|---|---|
+| `make develop` | Debug 模式运行桌面应用 |
+| `make release` | Release 模式在本机运行，不生成安装包 |
+| `make check` | 检查所有 target 是否可编译 |
+| `make fmt-check` | 检查 Rust 格式 |
+| `make clippy` | 对所有 target 执行 Clippy，警告视为错误 |
+| `make test` | 运行整个 workspace 测试 |
+| `make db-test` | 用 Docker 启动并填充四类数据库，执行数据库测试与质量门禁 |
+
+提交改动前建议依次运行：
+
+```bash
+make fmt-check
+make check
+make clippy
+make test
+```
+
+外部数据库集成测试在缺少 `RAMAG_TEST_*` 环境变量时会自动跳过；需要完整验证时使用 `make db-test`，它会管理专用 Docker 容器、测试数据与本地测试凭据。`make db-test-clean` 会删除这些专用容器、数据卷和凭据，属于破坏性操作，请确认后再执行。
+
 ## 平台与文档
 
-Ramag 支持 macOS Apple Silicon / Intel，以及 Windows 10/11 x64。Git 功能依赖系统 Git；SSH 隧道依赖系统 OpenSSH。
+Ramag 支持 macOS 12+（Apple Silicon / Intel）和 Windows 10/11 x64。Windows on ARM 仅计划通过系统 x64 模拟运行，尚未列为已完成人工验收的平台。
 
 - [性能报告：VCS、数据库与剪贴板](docs/performance.md)
 - [架构说明](docs/architecture.md)
 - [桌面端构建与发布](docs/desktop-release.md)
+
+发现问题时，请在 [GitHub Issues](https://github.com/tools-rs/ramag/issues) 中附上操作系统、Ramag 版本、复现步骤和必要日志；提交前请移除连接地址、用户名、密码和业务数据。
 
 ## License
 
