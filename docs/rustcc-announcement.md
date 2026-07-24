@@ -25,7 +25,7 @@
 数据库工作台 + Git 工作台 + 剪贴板工作台
 ```
 
-![Ramag 首页](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/home-dark-clipboard-enabled.png)
+![Ramag 首页](https://cdn.jsdelivr.net/gh/tools-rs/ramag@main/docs/screenshots/home-dark-clipboard-enabled.png)
 
 Ramag 不依赖浏览器壳，不要求登录账号，也不会把数据库连接、Git 仓库或剪贴板内容上传到 Ramag 服务。密码和剪贴历史加密后保存在本地，主密钥进入系统凭据库。
 
@@ -42,7 +42,7 @@ Ramag 不依赖浏览器壳，不要求登录账号，也不会把数据库连�
 
 连接管理、查询、结果浏览、数据编辑和导入导出都在同一个工作台中完成。
 
-![四类数据库统一连接管理](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/database-connections-light.png)
+![四类数据库统一连接管理](https://cdn.jsdelivr.net/gh/tools-rs/ramag@main/docs/screenshots/database-connections-light.png)
 
 #### MySQL 与 PostgreSQL
 
@@ -61,7 +61,7 @@ SQL 工作流已经覆盖：
 
 大表读取使用分页和资源预算，不会一次性把整张表加载进内存。带主键的表在导出时优先使用 keyset 分页，避免深分页反复扫描前面的数据。
 
-![MySQL 查询与十万行分页](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/database-mysql-query-dark.png)
+![MySQL 查询与十万行分页](https://cdn.jsdelivr.net/gh/tools-rs/ramag@main/docs/screenshots/database-mysql-query-dark.png)
 
 #### Redis
 
@@ -111,7 +111,7 @@ Git 工作台仍标记为试验性功能，但日常核心工作流已经打通�
 
 Diff 和文件内容支持多种语言的语法高亮，大型 Diff 使用虚拟化展示。文件监听按变化路径增量刷新，普通文件保存不会触发整个仓库的完整扫描。
 
-![Git 工作区、文件编辑与提交历史](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/git-workspace-dark.png)
+![Git 工作区、文件编辑与提交历史](https://cdn.jsdelivr.net/gh/tools-rs/ramag@main/docs/screenshots/git-workspace-dark.png)
 
 Git 实现上没有完全重新实现一套凭据和网络认证体系。Ramag 使用 `gix` 发现仓库，同时让写操作和网络操作复用系统 Git、SSH Agent、Git 配置及已有凭据链。
 
@@ -141,7 +141,7 @@ macOS 下会识别 Concealed 和 Transient 等剪贴板隐私标记。还可以�
 
 Windows 关闭主窗口后，Ramag 可以驻留系统托盘，剪贴板采集和全局快捷键仍可继续工作。
 
-![剪贴板隐私与采集设置](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/clipboard-settings-light.png)
+![剪贴板隐私与采集设置](https://cdn.jsdelivr.net/gh/tools-rs/ramag@main/docs/screenshots/clipboard-settings-light.png)
 
 ## 二、为什么坚持 Rust + GPUI 原生实现
 
