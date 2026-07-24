@@ -182,8 +182,8 @@ fn main() {
     {
         Ok(runtime) => runtime.block_on(clipboard_service.prime_capture_enabled()),
         Err(error) => {
-            warn!(error = %error, fallback = "tool_visible", "load clipboard settings failed");
-            true
+            warn!(error = %error, fallback = "tool_hidden", "load clipboard settings failed");
+            false
         }
     };
 

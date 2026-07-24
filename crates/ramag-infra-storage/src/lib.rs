@@ -58,14 +58,11 @@ impl RedbStorage {
     }
 
     fn initialize(db: Database, path: &Path, master_key: &[u8; 32]) -> Result<Self> {
-        // 首次打开建表
+        // 每次启动都补齐完整结构，兼容全新数据库和旧版本升级。
         let write_txn = db
             .begin_write()
             .map_err(|e| DomainError::Storage(format!("启动写事务失败：{e}")))?;
-        repos::connection_repo::ensure_table(&write_txn)?;
-        repos::repo_repo::ensure_table(&write_txn)?;
-        repos::history_repo::ensure_table(&write_txn)?;
-        repos::clip_repo::ensure_table(&write_txn)?;
+        repos::ensure_schema(&write_txn)?;
         write_txn
             .commit()
             .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
@@ -444,6 +441,76 @@ mod tests {
         let path = storage.path().to_path_buf();
         drop(storage);
         assert!(RedbStorage::open_with_key(&path, &[0x24; 32]).is_err());
+    }
+
+    #[tokio::test]
+    async fn fresh_storage_returns_missing_preference() {
+        let (storage, _tmp) = make_test_storage();
+
+        assert!(matches!(
+            storage.get_preference("never_saved").await,
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn fresh_storage_initializes_complete_schema() {
+        use std::collections::BTreeSet;
+
+        use redb::TableHandle as _;
+
+        let (storage, _tmp) = make_test_storage();
+        let read_txn = storage.db.begin_read().unwrap();
+        let actual = read_txn
+            .list_tables()
+            .unwrap()
+            .map(|table| table.name().to_string())
+            .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([
+            "clip_by_hash".to_string(),
+            "clip_by_time".to_string(),
+            "clip_search_filters_v1".to_string(),
+            "clip_search_meta".to_string(),
+            "clip_uuid_meta".to_string(),
+            "clips".to_string(),
+            "connections".to_string(),
+            "preferences".to_string(),
+            "query_history".to_string(),
+            "query_history_meta".to_string(),
+            "repos".to_string(),
+        ]);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn reopening_repairs_missing_schema_without_losing_existing_data() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("partial.redb");
+        let key = [0x31; 32];
+        let repo = RepoConfig::from_path(tmp.path().join("kept-repo").display().to_string());
+
+        {
+            let storage = RedbStorage::open_with_key(&path, &key).unwrap();
+            storage.save_repo(&repo).await.unwrap();
+        }
+        {
+            let db = Database::create(&path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            write_txn
+                .delete_table(repos::prefs_repo::PREFERENCES_TABLE)
+                .unwrap();
+            write_txn.commit().unwrap();
+        }
+
+        let repaired = RedbStorage::open_with_key(&path, &key).unwrap();
+        assert!(matches!(
+            repaired.get_preference("never_saved").await,
+            Ok(None)
+        ));
+        let repos = repaired.list_repos().await.unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].id, repo.id);
     }
 
     #[tokio::test]

@@ -116,8 +116,8 @@ impl ClipboardService {
             storage,
             revision: Arc::new(AtomicU64::new(0)),
             cache: Arc::new(RwLock::new(Vec::new())),
-            // 默认开（同 ClipboardSettings::default）；启动由 prime_capture_enabled 校正
-            capture_enabled: Arc::new(AtomicBool::new(true)),
+            // 首次初始化默认关闭；启动由 prime_capture_enabled 恢复用户已保存的选择
+            capture_enabled: Arc::new(AtomicBool::new(false)),
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
             auto_paste: Arc::new(AtomicBool::new(true)),
             settings_cache: Arc::new(RwLock::new(ClipboardSettings::default())),

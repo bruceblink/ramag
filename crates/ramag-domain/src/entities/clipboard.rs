@@ -194,7 +194,7 @@ impl ClipboardSettings {
 impl Default for ClipboardSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             capture_images: true,
             max_item_bytes: 10 * 1024 * 1024,
             blacklist: Vec::new(),
@@ -360,6 +360,11 @@ fn file_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_capture_is_disabled_by_default() {
+        assert!(!ClipboardSettings::default().enabled);
+    }
 
     #[test]
     fn blacklist_matching_survives_versioned_install_dirs() {

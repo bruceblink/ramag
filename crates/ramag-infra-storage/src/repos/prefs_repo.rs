@@ -13,6 +13,13 @@ const MAX_PREFERENCE_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const PREFERENCES_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("preferences");
 
+pub(crate) fn ensure_table(write_txn: &redb::WriteTransaction) -> Result<()> {
+    write_txn
+        .open_table(PREFERENCES_TABLE)
+        .map_err(|e| DomainError::Storage(format!("打开 preferences 表失败：{e}")))?;
+    Ok(())
+}
+
 pub(crate) fn get(db: Arc<Database>, key: String) -> Result<Option<String>> {
     let read_txn = db
         .begin_read()
