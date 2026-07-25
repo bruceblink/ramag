@@ -261,6 +261,7 @@ Ramag 支持 macOS 12+（Apple Silicon / Intel）和 Windows 10/11 x64。Windows
 - [性能报告：VCS、数据库与剪贴板](docs/performance.md)
 - [架构说明](docs/architecture.md)
 - [桌面端构建与发布](docs/desktop-release.md)
+- [SSH + SFTP 工具设计方案（规划）](docs/ssh-sftp-design.md)
 
 发现问题时，请在 [GitHub Issues](https://github.com/tools-rs/ramag/issues) 中附上操作系统、Ramag 版本、复现步骤和必要日志；提交前请移除连接地址、用户名、密码和业务数据。
 
