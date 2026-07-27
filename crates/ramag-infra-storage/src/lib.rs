@@ -21,7 +21,7 @@ use tracing::info;
 
 use ramag_domain::entities::{
     ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, MAX_CLIPBOARD_SEARCH_BYTES,
-    QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId,
+    QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId, SshProfile, SshProfileId,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::Storage;
@@ -73,6 +73,7 @@ impl RedbStorage {
         // 首启迁移：为存量历史构建时间 / 去重索引（空库或已建则瞬时返回）
         repos::clip_repo::migrate_indexes(db.clone(), cipher.clone())?;
         let _ = repos::connection_repo::list(db.clone(), cipher.clone())?;
+        let _ = repos::ssh_profile_repo::list(db.clone(), cipher.clone())?;
         repos::clip_repo::validate_key(db.clone(), cipher.clone())?;
         repos::clip_repo::initialize_search_index(db.clone(), cipher.clone())?;
 
@@ -128,6 +129,7 @@ fn database_has_encrypted_records(db: &Database) -> Result<bool> {
     for definition in [
         repos::connection_repo::CONNECTIONS_TABLE,
         repos::clip_repo::CLIPS_TABLE,
+        repos::ssh_profile_repo::SSH_PROFILES_TABLE,
     ] {
         match read_txn.open_table(definition) {
             Ok(table)
@@ -188,6 +190,32 @@ impl Storage for RedbStorage {
         let db = self.db.clone();
         let id_str = id.to_string();
         run_blocking(move || repos::connection_repo::delete(db, id_str)).await
+    }
+
+    async fn list_ssh_profiles(&self) -> Result<Vec<SshProfile>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        run_blocking(move || repos::ssh_profile_repo::list(db, cipher)).await
+    }
+
+    async fn get_ssh_profile(&self, id: &SshProfileId) -> Result<Option<SshProfile>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let id = id.to_string();
+        run_blocking(move || repos::ssh_profile_repo::get(db, cipher, id)).await
+    }
+
+    async fn save_ssh_profile(&self, profile: &SshProfile) -> Result<()> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let profile = profile.clone();
+        run_blocking(move || repos::ssh_profile_repo::save(db, cipher, profile)).await
+    }
+
+    async fn delete_ssh_profile(&self, id: &SshProfileId) -> Result<()> {
+        let db = self.db.clone();
+        let id = id.clone();
+        run_blocking(move || repos::ssh_profile_repo::delete(db, id)).await
     }
 
     async fn list_repos(&self) -> Result<Vec<RepoConfig>> {
@@ -478,6 +506,7 @@ mod tests {
             "query_history".to_string(),
             "query_history_meta".to_string(),
             "repos".to_string(),
+            "ssh_profiles".to_string(),
         ]);
 
         assert_eq!(actual, expected);
@@ -612,6 +641,34 @@ mod tests {
 
         let got = storage.get_connection(&cfg.id).await.unwrap().unwrap();
         assert_eq!(got.host, "10.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn ssh_profiles_are_encrypted_and_round_trip() {
+        let (storage, _tmp) = make_test_storage();
+        let mut profile = SshProfile::new("production", "server.example.com");
+        profile.username = "deploy".into();
+
+        storage.save_ssh_profile(&profile).await.unwrap();
+        let listed = storage.list_ssh_profiles().await.unwrap();
+        assert_eq!(listed, vec![profile.clone()]);
+        assert_eq!(
+            storage.get_ssh_profile(&profile.id).await.unwrap(),
+            Some(profile.clone())
+        );
+
+        let read_txn = storage.db.begin_read().unwrap();
+        let table = read_txn
+            .open_table(repos::ssh_profile_repo::SSH_PROFILES_TABLE)
+            .unwrap();
+        let raw = table.get(profile.id.to_string().as_str()).unwrap().unwrap();
+        assert!(!raw.value().contains("server.example.com"));
+        drop(raw);
+        drop(table);
+        drop(read_txn);
+
+        storage.delete_ssh_profile(&profile.id).await.unwrap();
+        assert!(storage.list_ssh_profiles().await.unwrap().is_empty());
     }
 
     #[tokio::test]

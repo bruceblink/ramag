@@ -15,14 +15,19 @@ use gpui::{
     WindowKind, WindowOptions, prelude::*, px, size,
 };
 use gpui_component::Root;
-use ramag_app::{ClipboardService, ConnectionService, MongoService, RedisService, ToolRegistry};
-use ramag_domain::traits::{ClipboardDriver, DocDriver, Driver, GitDriver, KvDriver, Storage};
+use ramag_app::{
+    ClipboardService, ConnectionService, MongoService, RedisService, SshService, ToolRegistry,
+};
+use ramag_domain::traits::{
+    ClipboardDriver, DocDriver, Driver, GitDriver, KvDriver, SshDriver, Storage,
+};
 use ramag_infra_clipboard::{HotkeyListener, PlatformClipboardDriver, foreground_display_index};
 use ramag_infra_git::GitDriverImpl;
 use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
 use ramag_infra_postgres::PostgresDriver;
 use ramag_infra_redis::RedisDriver;
+use ramag_infra_ssh::OpenSshDriver;
 use ramag_infra_storage::RedbStorage;
 use ramag_tool_clipboard::{
     ClipboardTool, CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip,
@@ -33,13 +38,15 @@ use ramag_tool_dbclient::{
     RunStatementAtCursor, ToggleRedisConsole, ToggleSqlEditor, create_dbclient_view,
 };
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
+use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, RefreshSftp, SshTool, create_ssh_view};
 use ramag_tool_vcs::{
     CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
     ToggleHistoryPane, VcsTool, create_vcs_view,
 };
 use ramag_ui::{
     CloseTab, CycleSection, CycleSectionReverse, HomeEvent, HomeView, NavTarget, RamagAssets,
-    SelectTool1, SelectTool2, SelectTool3, SettingsView, Shell, StorageGlobal, init_theme,
+    SelectTool1, SelectTool2, SelectTool3, SelectTool4, SettingsView, Shell, StorageGlobal,
+    init_theme,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -81,6 +88,7 @@ struct AppDeps {
     redis_service: Arc<RedisService>,
     mongo_service: Arc<MongoService>,
     clipboard_service: Arc<ClipboardService>,
+    ssh_service: Arc<SshService>,
     storage: Arc<dyn Storage>,
 }
 
@@ -170,6 +178,7 @@ fn main() {
     let redis_service: Arc<RedisService> = build_redis_service(storage.clone());
     let mongo_service: Arc<MongoService> = build_mongo_service(storage.clone());
     let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
+    let ssh_service: Arc<SshService> = build_ssh_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
     let startup_preferences = read_preferences(&storage, &["theme_mode"]);
@@ -197,6 +206,7 @@ fn main() {
         redis_service,
         mongo_service,
         clipboard_service,
+        ssh_service,
         storage,
     };
 
@@ -219,8 +229,15 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
 
         // 退出时关闭全部 SSH 隧道子进程，避免残留孤儿 ssh 占用端口
-        cx.on_app_quit(|_| async {
-            ramag_infra_tunnel::shutdown_all();
+        let ssh_service_for_quit = deps.ssh_service.clone();
+        cx.on_app_quit(move |_| {
+            let ssh_service = ssh_service_for_quit.clone();
+            async move {
+                if let Err(error) = ssh_service.shutdown().await {
+                    warn!(error = %error, "shutdown ssh tool resources failed");
+                }
+                ramag_infra_tunnel::shutdown_all();
+            }
         })
         .detach();
 
@@ -283,6 +300,7 @@ fn main() {
             KeyBinding::new("secondary-1", SelectTool1, None),
             KeyBinding::new("secondary-2", SelectTool2, None),
             KeyBinding::new("secondary-3", SelectTool3, None),
+            KeyBinding::new("secondary-4", SelectTool4, None),
             KeyBinding::new("ctrl-tab", CycleSection, None),
             KeyBinding::new("ctrl-shift-tab", CycleSectionReverse, None),
             KeyBinding::new("secondary-enter", RunQuery, None),
@@ -311,6 +329,9 @@ fn main() {
             KeyBinding::new("backspace", DeleteSelectedClip, Some("ClipboardView")),
             KeyBinding::new("down", SelectNextClip, Some("ClipboardView")),
             KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
+            KeyBinding::new("secondary-t", NewSshTerminal, Some("SshWorkspace")),
+            KeyBinding::new("secondary-w", CloseSshTerminal, Some("SshWorkspace")),
+            KeyBinding::new("secondary-r", RefreshSftp, Some("SshWorkspace")),
         ]);
 
         {
@@ -607,6 +628,7 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
         redis_service,
         mongo_service,
         clipboard_service,
+        ssh_service,
         storage,
     } = deps;
     let fallback = Bounds::centered(None, size(px(1200.0), px(780.0)), cx);
@@ -665,6 +687,7 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
                 let vcs_view = create_vcs_view(git_driver, storage.clone(), window, cx);
 
                 let clipboard_view = create_clipboard_view(clipboard_service.clone(), window, cx);
+                let ssh_view = create_ssh_view(ssh_service.clone(), window, cx);
                 let settings_view = cx.new(|cx| SettingsView::new(clipboard_service.clone(), cx));
 
                 let shell = cx.new(|cx| {
@@ -674,6 +697,7 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
                     shell.register_tool_view(DbClientTool::ID, dbclient_view.clone().into());
                     shell.register_tool_view(VcsTool::ID, vcs_view.into());
                     shell.register_tool_view(ClipboardTool::ID, clipboard_view.clone().into());
+                    shell.register_tool_view(SshTool::ID, ssh_view.into());
 
                     let home_subscription: Subscription = cx.subscribe_in(
                         &home_view,
@@ -808,6 +832,7 @@ fn build_tool_registry() -> Arc<ToolRegistry> {
     registry.register(Arc::new(DbClientTool::new()));
     registry.register(Arc::new(VcsTool::new()));
     registry.register(Arc::new(ClipboardTool::new()));
+    registry.register(Arc::new(SshTool::new()));
     registry
 }
 
@@ -824,6 +849,11 @@ fn build_mongo_service(storage: Arc<dyn Storage>) -> Arc<MongoService> {
 fn build_clipboard_service(storage: Arc<dyn Storage>) -> Arc<ClipboardService> {
     let driver: Arc<dyn ClipboardDriver> = Arc::new(PlatformClipboardDriver::new());
     Arc::new(ClipboardService::new(driver, storage))
+}
+
+fn build_ssh_service(storage: Arc<dyn Storage>) -> Arc<SshService> {
+    let driver: Arc<dyn SshDriver> = Arc::new(OpenSshDriver::new());
+    Arc::new(SshService::new(driver, storage))
 }
 
 #[cfg(test)]

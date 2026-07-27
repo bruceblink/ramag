@@ -1,0 +1,20 @@
+[package]
+name = "ramag-terminal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ramag 通用 GPUI 终端视图（独立实现）"
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+alacritty_terminal = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

@@ -5,4 +5,4 @@ pub mod error;
 pub mod traits;
 
 pub use error::{DomainError, Result};
-pub use traits::{Driver, KvDriver, Storage, Tool, ToolMeta};
+pub use traits::{Driver, KvDriver, SshDriver, Storage, Tool, ToolMeta};

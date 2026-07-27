@@ -21,7 +21,7 @@ pub mod theme;
 pub mod transfer_ui;
 
 pub use actions::{
-    CloseTab, CycleSection, CycleSectionReverse, SelectTool1, SelectTool2, SelectTool3,
+    CloseTab, CycleSection, CycleSectionReverse, SelectTool1, SelectTool2, SelectTool3, SelectTool4,
 };
 pub use assets::RamagAssets;
 pub use confirm_dialog::open_confirm;

@@ -1,0 +1,29 @@
+[package]
+name = "ramag-infra-ssh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ramag 系统 OpenSSH、结构化 SFTP 与传输实现"
+
+[lints]
+workspace = true
+
+[dependencies]
+ramag-domain = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+russh-sftp = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+dunce = { workspace = true }
+once_cell = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.57", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"

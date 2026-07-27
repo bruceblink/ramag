@@ -1,0 +1,192 @@
+//! SSH 根布局、工作区标签与快捷键入口。
+
+use gpui::{
+    ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
+    prelude::*, px,
+};
+use gpui_component::{
+    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
+};
+
+use super::SshView;
+use super::model::ViewMode;
+use crate::{CloseSshTerminal, NewSshTerminal, RefreshSftp};
+
+impl SshView {
+    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let border = theme.border;
+        let fg = theme.foreground;
+        let muted = theme.muted_foreground;
+        let accent = theme.accent;
+        let muted_bg = theme.muted;
+        let manager_selected = self.view_mode == ViewMode::Manager;
+        let mut manager_tab = h_flex()
+            .id("ssh-manager-tab")
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py(px(7.0))
+            .border_r_1()
+            .border_color(border)
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.show_manager(cx);
+            }))
+            .child(
+                gpui_component::Icon::new(IconName::Network)
+                    .small()
+                    .text_color(if manager_selected { fg } else { muted }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if manager_selected { fg } else { muted })
+                    .child("连接管理"),
+            );
+        if manager_selected {
+            let mut active_bg = accent;
+            active_bg.a = 0.15;
+            manager_tab = manager_tab.bg(active_bg);
+        } else {
+            manager_tab = manager_tab.hover(move |tab| tab.bg(muted_bg));
+        }
+
+        let mut workspace_strip = h_flex()
+            .id("ssh-workspace-tabs-scroll")
+            .flex_1()
+            .min_w_0()
+            .overflow_x_scroll();
+        for workspace in &self.workspaces {
+            let id = workspace.profile.id.clone();
+            let id_for_close = id.clone();
+            let selected = self.view_mode == ViewMode::Workspace
+                && self.active_workspace_id.as_ref() == Some(&id);
+            let label = workspace.profile.name.clone();
+            let dot_color = if workspace.terminal_loading || workspace.sftp_loading {
+                gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
+            } else if workspace.sftp_error.is_some() {
+                theme.danger
+            } else {
+                super::render_manager::parse_hex_color(&workspace.profile.color).unwrap_or(muted)
+            };
+            let mut tab = h_flex()
+                .id(SharedString::from(format!("ssh-workspace-tab-{id}")))
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py(px(7.0))
+                .border_r_1()
+                .border_color(border)
+                .cursor_pointer()
+                .child(div().size(px(8.0)).rounded_full().bg(dot_color))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if selected { fg } else { muted })
+                        .child(label),
+                )
+                .child(div().text_xs().text_color(muted).child("SSH"))
+                .child(
+                    ramag_ui::clickable_button(SharedString::from(format!(
+                        "close-ssh-workspace-{id_for_close}"
+                    )))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .on_click(cx.listener(
+                        move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.request_close_workspace(id_for_close.clone(), window, cx);
+                        },
+                    )),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.select_workspace(id.clone(), cx);
+                }));
+            if selected {
+                let mut active_bg = accent;
+                active_bg.a = 0.15;
+                tab = tab.bg(active_bg);
+            } else {
+                tab = tab.hover(move |tab| tab.bg(muted_bg));
+            }
+            workspace_strip = workspace_strip.child(tab);
+        }
+
+        h_flex()
+            .id("ssh-workspace-tabs")
+            .w_full()
+            .flex_none()
+            .border_b_1()
+            .border_color(border)
+            .bg(theme.secondary)
+            .child(manager_tab)
+            .child(workspace_strip)
+    }
+
+    fn render_notice(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let notice = self.notice.as_ref()?;
+        let color = if notice.error {
+            cx.theme().danger
+        } else {
+            cx.theme().success
+        };
+        Some(
+            h_flex()
+                .w_full()
+                .flex_none()
+                .min_h(px(32.0))
+                .px(px(12.0))
+                .py(px(6.0))
+                .gap(px(8.0))
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .text_xs()
+                .text_color(color)
+                .child(div().flex_1().min_w_0().child(notice.message.clone()))
+                .child(
+                    ramag_ui::clickable_button("dismiss-ssh-notice")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.notice = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+impl Render for SshView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match self.view_mode {
+            ViewMode::Manager => self.render_manager(window, cx).into_any_element(),
+            ViewMode::Workspace => self.render_workspace(window, cx).into_any_element(),
+        };
+        v_flex()
+            .key_context("SshWorkspace")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .bg(cx.theme().background)
+            .on_action(cx.listener(|this, _: &NewSshTerminal, window, cx| {
+                this.start_active_terminal(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &CloseSshTerminal, _window, cx| {
+                this.close_active_terminal(cx);
+                cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|this, _: &RefreshSftp, _window, cx| {
+                this.refresh_active_directory(cx);
+                cx.stop_propagation();
+            }))
+            .child(self.render_tabs(cx))
+            .children(self.render_notice(cx))
+            .child(div().flex_1().min_h_0().child(body))
+    }
+}

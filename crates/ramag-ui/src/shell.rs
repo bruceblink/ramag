@@ -302,7 +302,7 @@ impl Render for Shell {
             .bg(bg_color)
             .text_color(fg_color)
             .key_context("Shell")
-            // 工具切换快捷键：Cmd/Ctrl+1/2/3 跳工具，Ctrl+Tab 循环区段
+            // 工具切换快捷键：Cmd/Ctrl+1/2/3/4 跳工具，Ctrl+Tab 循环区段
             .on_action(
                 cx.listener(|this, _: &crate::actions::SelectTool1, window, cx| {
                     this.select_tool_index(0, window, cx);
@@ -316,6 +316,11 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &crate::actions::SelectTool3, window, cx| {
                     this.select_tool_index(2, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::SelectTool4, window, cx| {
+                    this.select_tool_index(3, window, cx);
                 }),
             )
             .on_action(

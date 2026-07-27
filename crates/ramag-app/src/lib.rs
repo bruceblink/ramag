@@ -9,4 +9,6 @@ pub mod usecases;
 
 pub use blocking::run_blocking;
 pub use tool_registry::ToolRegistry;
-pub use usecases::{ClipboardService, ConnectionService, HotkeyState, MongoService, RedisService};
+pub use usecases::{
+    ClipboardService, ConnectionService, HotkeyState, MongoService, RedisService, SshService,
+};

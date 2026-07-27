@@ -6,6 +6,7 @@ pub(crate) mod connection_repo;
 pub(crate) mod history_repo;
 pub(crate) mod prefs_repo;
 pub(crate) mod repo_repo;
+pub(crate) mod ssh_profile_repo;
 
 use ramag_domain::error::Result;
 
@@ -15,6 +16,7 @@ pub(crate) fn ensure_schema(write_txn: &redb::WriteTransaction) -> Result<()> {
     repo_repo::ensure_table(write_txn)?;
     history_repo::ensure_table(write_txn)?;
     prefs_repo::ensure_table(write_txn)?;
+    ssh_profile_repo::ensure_table(write_txn)?;
     clip_repo::ensure_table(write_txn)?;
     Ok(())
 }

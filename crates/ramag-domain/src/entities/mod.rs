@@ -11,6 +11,7 @@ pub mod redis_keyspace;
 pub mod redis_value;
 pub mod resource_limits;
 pub mod schema;
+pub mod ssh;
 pub mod transfer;
 
 pub use clipboard::{
@@ -65,6 +66,18 @@ pub use resource_limits::{
     MAX_METADATA_ITEMS, TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS,
 };
 pub use schema::{Column, ColumnKind, ColumnType, ForeignKey, Index, Schema, Table};
+pub use ssh::{
+    MAX_CONCURRENT_TRANSFERS, MAX_QUEUED_TRANSFERS, MAX_REMOTE_DELETE_DEPTH,
+    MAX_REMOTE_DELETE_ENTRIES, MAX_REMOTE_DELETE_RETAINED_BYTES, MAX_REMOTE_DIRECTORY_ENTRIES,
+    MAX_REMOTE_DIRECTORY_RETAINED_BYTES, MAX_SSH_HOST_BYTES, MAX_SSH_PATH_BYTES,
+    MAX_SSH_PROFILE_NAME_BYTES, MAX_SSH_PROFILES, MAX_SSH_TERMINALS_PER_WORKSPACE,
+    MAX_SSH_USERNAME_BYTES, MAX_SSH_WORKSPACES, MAX_TRANSFER_HISTORY, OverwritePolicy,
+    RemoteDirectory, RemoteEntry, RemoteEntryKind, SshAuthMode, SshCapability, SshLaunchCommand,
+    SshProfile, SshProfileId, SshProgressFn, SshWorkspacePreference, SshWorkspaceState,
+    TRANSFER_BUFFER_BYTES, TransferCancellation, TransferDirection, TransferId, TransferStatus,
+    TransferTask, join_remote_path, parent_remote_path, validate_local_transfer_path,
+    validate_remote_name, validate_remote_path,
+};
 pub use transfer::{
     ConflictPolicy, MAX_TRANSFER_WARNINGS, ProgressFn, TransferProgress, TransferSummary,
     format_bytes,

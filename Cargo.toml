@@ -12,11 +12,14 @@ members = [
     "crates/ramag-infra-git",
     "crates/ramag-infra-clipboard",
     "crates/ramag-infra-tunnel",
+    "crates/ramag-infra-ssh",
+    "crates/ramag-terminal",
     "crates/ramag-tool-dbclient",
     "crates/ramag-tool-redis",
     "crates/ramag-tool-mongodb",
     "crates/ramag-tool-vcs",
     "crates/ramag-tool-clipboard",
+    "crates/ramag-tool-ssh",
     "crates/ramag-ui",
     "crates/ramag-bin",
 ]
@@ -42,11 +45,14 @@ ramag-infra-storage = { path = "crates/ramag-infra-storage" }
 ramag-infra-git = { path = "crates/ramag-infra-git" }
 ramag-infra-clipboard = { path = "crates/ramag-infra-clipboard" }
 ramag-infra-tunnel = { path = "crates/ramag-infra-tunnel" }
+ramag-infra-ssh = { path = "crates/ramag-infra-ssh" }
+ramag-terminal = { path = "crates/ramag-terminal" }
 ramag-tool-dbclient = { path = "crates/ramag-tool-dbclient" }
 ramag-tool-redis = { path = "crates/ramag-tool-redis" }
 ramag-tool-mongodb = { path = "crates/ramag-tool-mongodb" }
 ramag-tool-vcs = { path = "crates/ramag-tool-vcs" }
 ramag-tool-clipboard = { path = "crates/ramag-tool-clipboard" }
+ramag-tool-ssh = { path = "crates/ramag-tool-ssh" }
 ramag-ui = { path = "crates/ramag-ui" }
 
 # macOS FFI（剪贴板驱动；与 gpui_macos 同款绑定与版本，依赖树内已有零新增编译单元）
@@ -118,7 +124,16 @@ bson = "2"
 redb = "3"
 
 # 异步运行时（GPUI 用 smol，sqlx/redis-rs 用 tokio，需桥接）
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "macros",
+    "sync",
+    "process",
+    "io-util",
+    "fs",
+    "time",
+] }
 smol = "2"
 async-trait = "0.1"
 futures = "0.3"
@@ -157,6 +172,11 @@ dunce = "1"
 once_cell = "1"
 # 图片缩略图（解码 + 缩放 + 编码 PNG）；GPUI 依赖树已含 image，零新增编译单元
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
+
+# SSH + SFTP：alacritty_terminal 提供 ANSI 内核与 Unix PTY / Windows ConPTY；
+# russh-sftp 只处理系统 OpenSSH 子系统的结构化二进制协议。
+alacritty_terminal = { version = "0.26", default-features = false }
+russh-sftp = "2.3"
 
 # 连接池缓存
 dashmap = "6"

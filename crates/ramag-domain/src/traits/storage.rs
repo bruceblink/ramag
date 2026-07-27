@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::entities::{
     ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, QueryHistoryPage,
-    QueryRecord, QueryRecordId, RepoConfig, RepoId,
+    QueryRecord, QueryRecordId, RepoConfig, RepoId, SshProfile, SshProfileId,
 };
 use crate::error::Result;
 
@@ -25,6 +25,32 @@ pub trait Storage: Send + Sync {
         ))
     }
     async fn delete_connection(&self, id: &ConnectionId) -> Result<()>;
+
+    // SSH 配置（默认 NotImplemented，保持现有测试 mock 兼容）
+
+    async fn list_ssh_profiles(&self) -> Result<Vec<SshProfile>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_ssh_profiles".into(),
+        ))
+    }
+
+    async fn get_ssh_profile(&self, _id: &SshProfileId) -> Result<Option<SshProfile>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "get_ssh_profile".into(),
+        ))
+    }
+
+    async fn save_ssh_profile(&self, _profile: &SshProfile) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "save_ssh_profile".into(),
+        ))
+    }
+
+    async fn delete_ssh_profile(&self, _id: &SshProfileId) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "delete_ssh_profile".into(),
+        ))
+    }
 
     // Git 仓库（VCS 最近仓库列表）
 

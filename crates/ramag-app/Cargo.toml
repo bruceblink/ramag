@@ -31,6 +31,7 @@ image = { workspace = true }
 
 # 缩略图工作线程桥接（oneshot，与 Storage/Git 同款模式；workspace 既有依赖）
 futures = { workspace = true }
+smol = { workspace = true }
 
 [dev-dependencies]
 # decide_capture 等纯逻辑测试无需额外 mock；保留位以备扩展

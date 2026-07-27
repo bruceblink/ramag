@@ -24,6 +24,7 @@ ramag-tool-dbclient = { workspace = true }
 ramag-tool-mongodb = { workspace = true }
 ramag-tool-vcs = { workspace = true }
 ramag-tool-clipboard = { workspace = true }
+ramag-tool-ssh = { workspace = true }
 ramag-infra-mysql = { workspace = true }
 ramag-infra-postgres = { workspace = true }
 ramag-infra-redis = { workspace = true }
@@ -32,6 +33,7 @@ ramag-infra-storage = { workspace = true }
 ramag-infra-git = { workspace = true }
 ramag-infra-clipboard = { workspace = true }
 ramag-infra-tunnel = { workspace = true }
+ramag-infra-ssh = { workspace = true }
 
 # GPUI
 gpui = { workspace = true }
