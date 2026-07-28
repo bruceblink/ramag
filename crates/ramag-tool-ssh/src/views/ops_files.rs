@@ -81,20 +81,6 @@ impl SshView {
         .detach();
     }
 
-    pub(super) fn navigate_parent(&mut self, cx: &mut Context<Self>) {
-        let Some(workspace) = self.active_workspace() else {
-            return;
-        };
-        let id = workspace.profile.id.clone();
-        match parent_remote_path(&workspace.path) {
-            Ok(parent) => self.refresh_directory(id, Some(parent), cx),
-            Err(error) => {
-                self.notice = Some(Notice::error(error));
-                cx.notify();
-            }
-        }
-    }
-
     pub(super) fn select_remote_entry(
         &mut self,
         workspace_id: SshProfileId,
@@ -155,8 +141,8 @@ impl SshView {
         let parent_path = workspace.path.clone();
         let entity = cx.entity();
         ramag_ui::open_bounded_prompt(
-            "新建远程目录",
-            "输入当前目录下的新目录名称。",
+            "新建目录",
+            "目录名称",
             "",
             "新建",
             MAX_SSH_PATH_BYTES,
@@ -201,10 +187,10 @@ impl SshView {
         let entity = cx.entity();
         let initial = entry.name.clone();
         ramag_ui::open_bounded_prompt(
-            "重命名远程条目",
-            format!("将「{}」重命名为：", entry.name),
+            "改名",
+            "新名称",
             &initial,
-            "重命名",
+            "改名",
             MAX_SSH_PATH_BYTES,
             move |name, _window, app| {
                 entity.update(app, |this, cx| {
@@ -266,12 +252,9 @@ impl SshView {
         };
         let entity = cx.entity();
         ramag_ui::open_confirm(
-            "删除远程条目？",
-            format!(
-                "将永久删除「{}」。远程删除通常无法恢复。{}",
-                entry.path, kind_hint
-            ),
-            "永久删除",
+            "确认删除？",
+            format!("「{}」将被永久删除且无法恢复。{}", entry.path, kind_hint),
+            "删除",
             true,
             move |_window, app| {
                 entity.update(app, |this, cx| {

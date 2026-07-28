@@ -69,36 +69,6 @@ impl SshView {
                         ),
                     ),
             )
-            .when(density != RowDensity::Narrow, |header| {
-                let (label, color) = match &self.default_capability {
-                    None => ("正在探测 OpenSSH…".to_string(), muted),
-                    Some(Ok(capability)) => (
-                        format!("{} · {}", capability.version, capability.executable),
-                        cx.theme().success,
-                    ),
-                    Some(Err(_)) => ("OpenSSH 不可用".to_string(), cx.theme().danger),
-                };
-                header.child(
-                    div()
-                        .max_w(px(320.0))
-                        .text_xs()
-                        .text_color(color)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(label),
-                )
-            })
-            .child(
-                ramag_ui::clickable_button("retry-openssh-probe")
-                    .ghost()
-                    .small()
-                    .icon(ramag_ui::icons::refresh_cw())
-                    .disabled(self.default_capability.is_none())
-                    .tooltip("重新探测系统 OpenSSH")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.retry_openssh_probe(cx);
-                    })),
-            )
             .child(
                 ramag_ui::clickable_button("new-ssh-profile")
                     .outline()
@@ -164,18 +134,7 @@ impl SshView {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .text_sm()
-                        .child(format!("没有匹配「{}」的 SSH 连接", self.query)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child("尝试修改关键字或清空搜索"),
-                )
+                .child(div().text_sm().child("暂无匹配"))
                 .into_any_element()
         } else {
             let mut rows = v_flex().w_full();
@@ -222,19 +181,29 @@ impl SshView {
         let id = profile.id.clone();
         let id_for_edit = id.clone();
         let id_for_delete = id.clone();
-        let endpoint = format!("{}:{}", profile.host, profile.port);
+        let endpoint = profile.port.map_or_else(
+            || profile.host.clone(),
+            |port| format!("{}:{port}", profile.host),
+        );
         let auth_label = match profile.auth_mode {
-            SshAuthMode::System => "SSH config / Agent",
-            SshAuthMode::KeyFile => "OpenSSH 密钥",
+            SshAuthMode::System => "系统",
+            SshAuthMode::Password => "密码",
+            SshAuthMode::KeyFile => "密钥",
         };
         let username = profile.username.clone();
+        let environment = profile.environment.clone().unwrap_or_default();
+        let production = profile.production;
+        let name = profile.name.clone();
         let selected = self.active_workspace_id.as_ref() == Some(&id);
         let connection_available = self.profile_connection_available(&profile);
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let accent = cx.theme().accent;
+        let danger = cx.theme().danger;
         let mut badge_bg = accent;
         badge_bg.a = 0.12;
+        let mut production_bg = danger;
+        production_bg.a = 0.12;
 
         h_flex()
             .id(SharedString::from(format!("ssh-profile-row-{index}-{id}")))
@@ -263,7 +232,7 @@ impl SshView {
                     .w(px(24.0))
                     .flex()
                     .justify_center()
-                    .child(profile_color(&profile.color)),
+                    .child(Icon::new(IconName::Network).small().text_color(muted)),
             )
             .child(
                 div()
@@ -273,27 +242,42 @@ impl SshView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(profile.name),
+                    .child(name),
+            )
+            .child(environment_badge(environment, muted))
+            .child(
+                div().flex_none().w(px(92.0)).flex().justify_center().child(
+                    div()
+                        .max_w_full()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .text_xs()
+                        .text_color(accent)
+                        .bg(badge_bg)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(auth_label),
+                ),
             )
             .child(
                 div()
                     .flex_none()
-                    .w(px(150.0))
+                    .w(px(44.0))
                     .flex()
                     .justify_center()
-                    .child(
-                        div()
-                            .max_w_full()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .text_xs()
-                            .text_color(accent)
-                            .bg(badge_bg)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(auth_label),
-                    ),
+                    .when(production, |slot| {
+                        slot.child(
+                            div()
+                                .px(px(6.0))
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .text_xs()
+                                .text_color(danger)
+                                .bg(production_bg)
+                                .child("生产"),
+                        )
+                    }),
             )
             .when(density != RowDensity::Narrow, |row| {
                 row.child(secondary_column(220.0, endpoint, muted))
@@ -355,6 +339,10 @@ fn profile_matches_query(profile: &SshProfile, query: &str) -> bool {
     contains_case_insensitive(&profile.name, query)
         || contains_case_insensitive(&profile.host, query)
         || contains_case_insensitive(&profile.username, query)
+        || profile
+            .environment
+            .as_deref()
+            .is_some_and(|environment| contains_case_insensitive(environment, query))
 }
 
 fn secondary_column(width: f32, text: String, color: gpui::Hsla) -> impl IntoElement {
@@ -368,40 +356,68 @@ fn secondary_column(width: f32, text: String, color: gpui::Hsla) -> impl IntoEle
         .child(text)
 }
 
-fn profile_color(color: &str) -> impl IntoElement {
-    let parsed = parse_hex_color(color).unwrap_or(gpui::rgb(0x007acc).into());
-    div().size(px(10.0)).flex_none().rounded_full().bg(parsed)
+fn environment_badge(environment: String, fallback: gpui::Hsla) -> impl IntoElement {
+    let slot = div().flex_none().w(px(64.0)).flex().justify_center();
+    if environment.trim().is_empty() {
+        slot
+    } else {
+        let (foreground, background) = environment_badge_colors(&environment, fallback);
+        slot.child(
+            div()
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .text_xs()
+                .text_color(foreground)
+                .bg(background)
+                .max_w_full()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(environment),
+        )
+    }
 }
 
-pub(super) fn parse_hex_color(value: &str) -> Option<gpui::Hsla> {
-    let value = value.strip_prefix('#')?;
-    (value.len() == 6)
-        .then(|| u32::from_str_radix(value, 16).ok())
-        .flatten()
-        .map(|value| gpui::rgb(value).into())
+pub(super) fn environment_badge_colors(
+    environment: &str,
+    fallback: gpui::Hsla,
+) -> (gpui::Hsla, gpui::Hsla) {
+    let foreground = match environment.trim().to_ascii_lowercase().as_str() {
+        "dev" => gpui::hsla(140.0 / 360.0, 0.55, 0.42, 1.0),
+        "test" => gpui::hsla(35.0 / 360.0, 0.80, 0.45, 1.0),
+        "prod" => gpui::hsla(0.0, 0.70, 0.55, 1.0),
+        _ => fallback,
+    };
+    let mut background = foreground;
+    background.a = 0.12;
+    (foreground, background)
 }
 
 #[cfg(test)]
 mod tests {
     use ramag_domain::entities::SshProfile;
 
-    use super::{parse_hex_color, profile_matches_query};
+    use super::{environment_badge_colors, profile_matches_query};
 
     #[test]
-    fn profile_color_accepts_exact_rgb_hex() {
-        assert!(parse_hex_color("#007ACC").is_some());
-        assert!(parse_hex_color("007ACC").is_none());
-        assert!(parse_hex_color("#XYZXYZ").is_none());
+    fn environment_presets_have_distinct_badge_colors() {
+        let fallback = gpui::black();
+        assert_ne!(
+            environment_badge_colors("dev", fallback).0,
+            environment_badge_colors("prod", fallback).0
+        );
     }
 
     #[test]
     fn profile_search_matches_name_host_and_username() {
         let mut profile = SshProfile::new("Production", "SERVER.EXAMPLE");
         profile.username = "Alice".into();
+        profile.environment = Some("staging".into());
 
         assert!(profile_matches_query(&profile, "production"));
         assert!(profile_matches_query(&profile, "server.example"));
         assert!(profile_matches_query(&profile, "alice"));
-        assert!(!profile_matches_query(&profile, "staging"));
+        assert!(profile_matches_query(&profile, "staging"));
+        assert!(!profile_matches_query(&profile, "missing"));
     }
 }

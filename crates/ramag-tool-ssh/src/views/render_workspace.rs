@@ -1,18 +1,24 @@
 //! SSH 工作区：SFTP 浏览器与多 Terminal 标签。
 
-use std::ops::Range;
-
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
-    prelude::*, px, uniform_list,
+    Anchor, AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled,
+    Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
-    h_flex, v_flex,
+    h_flex, menu::PopupMenu, v_flex,
 };
-use ramag_domain::entities::{RemoteEntry, RemoteEntryKind, SshProfileId};
+use ramag_domain::entities::{RemoteEntryKind, SshProfileId};
+use ramag_ui::PointerDropdownMenu as _;
+use std::ops::Range;
 
 use super::SshView;
+use super::render_directory_helpers::{
+    centered_message, directory_counts, directory_counts_at, filtered_entry_indices,
+    remote_breadcrumbs, remote_entry_row,
+};
+
+const FILE_BROWSER_WIDTH: f32 = 280.0;
 
 impl SshView {
     pub(super) fn render_workspace(
@@ -26,11 +32,11 @@ impl SshView {
                 .items_center()
                 .justify_center()
                 .gap(px(10.0))
-                .child("没有打开的 SSH 工作区")
+                .child("暂无连接")
                 .child(
                     ramag_ui::clickable_button("ssh-empty-manager")
                         .primary()
-                        .label("返回连接管理")
+                        .label("返回")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.show_manager(cx);
                         })),
@@ -39,14 +45,15 @@ impl SshView {
         };
         let workspace_id = workspace.profile.id.clone();
         let main = h_flex()
-            .w_full()
-            .flex_1()
-            .min_h_0()
+            .id("ssh-workspace-main")
+            .debug_selector(|| "ssh-workspace-main".into())
+            .size_full()
             .items_stretch()
             .child(self.render_file_browser(workspace_id.clone(), cx))
             .child(self.render_terminal_pane(workspace_id, window, cx));
-        v_flex()
+        div()
             .size_full()
+            .relative()
             .child(main)
             .child(self.render_transfer_queue(cx))
             .into_any_element()
@@ -66,41 +73,85 @@ impl SshView {
         };
         let path = workspace.path.clone();
         let entries = workspace.entries.clone();
+        let filtered_indices = filtered_entry_indices(&entries, &workspace.directory_query);
+        let visible_len = filtered_indices
+            .as_ref()
+            .map_or(entries.len(), |indices| indices.len());
         let selected_path = workspace.selected_path.clone();
         let loading = workspace.sftp_loading;
         let error = workspace.sftp_error.clone();
         let busy = workspace.operation_busy;
+        let sftp_locked = workspace.profile.production;
         let connection_available = self.profile_connection_available(&workspace.profile);
         let selected_entry = selected_path
             .as_ref()
             .and_then(|selected| entries.iter().find(|entry| &entry.path == selected));
         let can_download = selected_entry.is_some_and(|entry| entry.kind == RemoteEntryKind::File);
         let has_selection = selected_entry.is_some();
+        let (total_directories, total_files) = directory_counts(&entries);
+        let (visible_directories, visible_files) = filtered_indices
+            .as_ref()
+            .map_or((total_directories, total_files), |indices| {
+                directory_counts_at(&entries, indices)
+            });
+        let summary = if filtered_indices.is_some() {
+            format!(
+                "目录 {visible_directories}/{total_directories} · 文件 {visible_files}/{total_files}"
+            )
+        } else {
+            format!("目录 {total_directories} · 文件 {total_files}")
+        };
+        let has_transfers = self
+            .service
+            .transfer_tasks()
+            .iter()
+            .any(|task| task.profile_id == workspace_id);
+        let transfers_visible = workspace.transfers_visible;
         let border = cx.theme().border;
 
+        let menu_entity = cx.entity();
+        let can_create = !loading && !busy && !sftp_locked && connection_available;
+        let can_rename = has_selection && !busy && !sftp_locked && connection_available;
+        let can_delete = can_rename;
+        let show_file_actions = has_selection && !sftp_locked && connection_available;
+        let show_more = show_file_actions || has_transfers;
         let toolbar = h_flex()
             .w_full()
             .h(px(40.0))
             .flex_none()
             .items_center()
-            .gap(px(2.0))
+            .gap(px(4.0))
             .px(px(6.0))
             .bg(cx.theme().secondary)
             .border_b_1()
             .border_color(border)
-            .child(tool_button(
-                "sftp-up",
-                IconName::ArrowUp,
-                "返回上级",
-                loading || !connection_available,
-                cx.listener(|this, _: &ClickEvent, _, cx| this.navigate_parent(cx)),
-            ))
+            .child(
+                div()
+                    .id("ssh-directory-search")
+                    .debug_selector(|| "ssh-directory-search".into())
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        ramag_ui::cleanable_input(
+                            &self.directory_search,
+                            "ssh-directory-search-clear",
+                            false,
+                            cx,
+                        )
+                        .small()
+                        .prefix(
+                            Icon::new(IconName::Search)
+                                .small()
+                                .text_color(cx.theme().muted_foreground),
+                        ),
+                    ),
+            )
             .child(
                 ramag_ui::clickable_button("sftp-refresh")
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
-                    .tooltip("刷新（Cmd/Ctrl+R）")
+                    .tooltip("刷新")
                     .disabled(loading || !connection_available)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_active_directory(cx);
@@ -111,8 +162,8 @@ impl SshView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::upload())
-                    .tooltip("上传文件")
-                    .disabled(loading || busy || !connection_available)
+                    .tooltip("上传")
+                    .disabled(loading || busy || sftp_locked || !connection_available)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.pick_upload(window, cx);
                     })),
@@ -122,49 +173,91 @@ impl SshView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::download())
-                    .tooltip("下载所选文件")
+                    .tooltip("下载")
                     .disabled(!can_download || busy || !connection_available)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.download_selected(window, cx);
                     })),
             )
-            .child(tool_button(
-                "sftp-mkdir",
-                IconName::FolderOpen,
-                "新建目录",
-                loading || busy || !connection_available,
-                cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.prompt_create_directory(window, cx);
-                }),
-            ))
             .child(
-                ramag_ui::clickable_button("sftp-rename")
+                ramag_ui::clickable_button("sftp-mkdir")
                     .ghost()
                     .xsmall()
-                    .icon(ramag_ui::icons::pencil())
-                    .tooltip("重命名")
-                    .disabled(!has_selection || busy || !connection_available)
+                    .icon(IconName::FolderOpen)
+                    .tooltip("新建目录")
+                    .disabled(!can_create)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.prompt_rename_selected(window, cx);
+                        this.prompt_create_directory(window, cx);
                     })),
             )
-            .child(
-                ramag_ui::clickable_button("sftp-delete")
-                    .ghost()
-                    .xsmall()
-                    .icon(ramag_ui::icons::trash())
-                    .tooltip("永久删除")
-                    .disabled(!has_selection || busy || !connection_available)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.request_delete_selected(window, cx);
-                    })),
-            );
+            .when(show_more, |toolbar| {
+                toolbar.child(
+                    div()
+                        .id("ssh-directory-more-trigger")
+                        .debug_selector(|| "ssh-directory-more-trigger".into())
+                        .child(
+                            ramag_ui::clickable_button("ssh-directory-more")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Ellipsis)
+                                .pointer_dropdown_menu_with_anchor(
+                                    Anchor::TopLeft,
+                                    move |mut menu: PopupMenu, _, _| {
+                                        if show_file_actions {
+                                            let rename_entity = menu_entity.clone();
+                                            menu = menu.item(
+                                                ramag_ui::menu_item_with_disabled(
+                                                    "改名",
+                                                    !can_rename,
+                                                )
+                                                .on_click(move |_, window, app| {
+                                                    rename_entity.update(app, |this, cx| {
+                                                        this.prompt_rename_selected(window, cx);
+                                                    });
+                                                }),
+                                            );
+                                            let delete_entity = menu_entity.clone();
+                                            menu = menu.item(
+                                                ramag_ui::menu_item_with_disabled(
+                                                    "删除",
+                                                    !can_delete,
+                                                )
+                                                .on_click(move |_, window, app| {
+                                                    delete_entity.update(app, |this, cx| {
+                                                        this.request_delete_selected(window, cx);
+                                                    });
+                                                }),
+                                            );
+                                        }
+                                        if has_transfers {
+                                            if show_file_actions {
+                                                menu = menu.separator();
+                                            }
+                                            let transfer_entity = menu_entity.clone();
+                                            menu = menu.item(
+                                                ramag_ui::menu_item(if transfers_visible {
+                                                    "收起传输"
+                                                } else {
+                                                    "查看传输"
+                                                })
+                                                .on_click(move |_, _, app| {
+                                                    transfer_entity.update(app, |this, cx| {
+                                                        this.toggle_transfer_panel(cx);
+                                                    });
+                                                }),
+                                            );
+                                        }
+                                        menu
+                                    },
+                                ),
+                        ),
+                )
+            });
 
         let body: AnyElement = if !connection_available && entries.is_empty() {
-            centered_message("OpenSSH 不可用；请在连接管理中重新探测或配置自定义路径", cx)
-                .into_any_element()
+            centered_message("OpenSSH 不可用，请编辑连接", cx).into_any_element()
         } else if loading && entries.is_empty() {
-            centered_message("正在连接 SFTP 并读取目录…", cx).into_any_element()
+            centered_message("加载目录…", cx).into_any_element()
         } else if let Some(error) = error {
             v_flex()
                 .size_full()
@@ -179,15 +272,9 @@ impl SshView {
                         .child(format!("SFTP 连接失败：{error}")),
                 )
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("若主机指纹尚未确认，请先在右侧 Terminal 中确认，然后重试。"),
-                )
-                .child(
                     ramag_ui::clickable_button("retry-sftp")
                         .small()
-                        .label("重试 SFTP")
+                        .label("重试")
                         .disabled(!connection_available)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.refresh_active_directory(cx);
@@ -195,18 +282,24 @@ impl SshView {
                 )
                 .into_any_element()
         } else if entries.is_empty() {
-            centered_message("当前目录为空", cx).into_any_element()
+            centered_message("目录为空", cx).into_any_element()
+        } else if visible_len == 0 {
+            centered_message("暂无匹配", cx).into_any_element()
         } else {
             uniform_list(
                 SharedString::from(format!("sftp-directory-{workspace_id}")),
-                entries.len(),
+                visible_len,
                 cx.processor({
                     let entries = entries.clone();
+                    let filtered_indices = filtered_indices.clone();
                     let selected_path = selected_path.clone();
                     let workspace_id = workspace_id.clone();
                     move |_this, range: Range<usize>, _window, cx| {
                         range
-                            .map(|index| {
+                            .map(|row_index| {
+                                let index = filtered_indices
+                                    .as_ref()
+                                    .map_or(row_index, |indices| indices[row_index]);
                                 remote_entry_row(
                                     entries[index].clone(),
                                     selected_path.as_ref(),
@@ -224,38 +317,90 @@ impl SshView {
         };
 
         v_flex()
-            .w(px(340.0))
+            .id("ssh-file-browser")
+            .debug_selector(|| "ssh-file-browser".into())
+            .w(px(FILE_BROWSER_WIDTH))
             .h_full()
             .flex_none()
             .border_r_1()
             .border_color(border)
-            .child(
-                v_flex()
-                    .w_full()
-                    .min_h(px(52.0))
-                    .flex_none()
-                    .justify_center()
-                    .gap(px(2.0))
-                    .px(px(10.0))
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("远程目录"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(path),
-                    ),
-            )
+            .child(self.render_directory_breadcrumb(workspace_id.clone(), &path, cx))
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(body))
+            .child(
+                h_flex()
+                    .id("ssh-directory-summary")
+                    .debug_selector(|| "ssh-directory-summary".into())
+                    .w_full()
+                    .h(px(32.0))
+                    .flex_none()
+                    .items_center()
+                    .px(px(10.0))
+                    .border_t_1()
+                    .border_color(border)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(summary),
+            )
             .into_any_element()
+    }
+
+    fn render_directory_breadcrumb(
+        &self,
+        workspace_id: SshProfileId,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let parts = remote_breadcrumbs(path);
+        let last = parts.len().saturating_sub(1);
+        let foreground = cx.theme().foreground;
+        let muted = cx.theme().muted_foreground;
+        let mut breadcrumb = h_flex()
+            .id("ssh-directory-breadcrumb")
+            .debug_selector(|| "ssh-directory-breadcrumb".into())
+            .w_full()
+            .h(px(40.0))
+            .flex_none()
+            .items_center()
+            .gap(px(5.0))
+            .px(px(10.0))
+            .overflow_x_scroll()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_xs();
+        for (index, (label, target)) in parts.into_iter().enumerate() {
+            if index > 0 {
+                breadcrumb = breadcrumb.child(
+                    div()
+                        .flex_none()
+                        .text_color(muted)
+                        .child(SharedString::from("›")),
+                );
+            }
+            let id = SharedString::from(format!("ssh-path-part-{index}"));
+            let target_for_click = target.clone();
+            let workspace_id_for_click = workspace_id.clone();
+            breadcrumb = breadcrumb.child(
+                div()
+                    .id(id)
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_color(if index == last { foreground } else { muted })
+                    .when(index == last, |part| {
+                        part.font_weight(gpui::FontWeight::SEMIBOLD)
+                    })
+                    .hover(move |part| part.text_color(foreground))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.refresh_directory(
+                            workspace_id_for_click.clone(),
+                            Some(target_for_click.clone()),
+                            cx,
+                        );
+                    })),
+            );
+        }
+        breadcrumb
     }
 
     fn render_terminal_pane(
@@ -292,14 +437,20 @@ impl SshView {
             )))
             .flex_1()
             .min_w_0()
+            .gap(px(4.0))
+            .px(px(8.0))
+            .py(px(2.0))
             .overflow_x_scroll();
-        for (terminal_id, fallback_label, terminal) in &terminal_views {
+        for (tab_index, (terminal_id, fallback_label, terminal)) in
+            terminal_views.iter().enumerate()
+        {
             let id = *terminal_id;
             let id_for_close = id;
+            let primary = tab_index == 0;
             let reconnect_workspace_id = workspace_id.clone();
             let selected = active_terminal_id == Some(id);
             let state = terminal.read(cx);
-            let label = state.title().unwrap_or_else(|| fallback_label.to_string());
+            let label = fallback_label.to_string();
             let exited = state.core().exit_status();
             let can_reconnect = exited.is_some();
             let display = match exited {
@@ -319,13 +470,14 @@ impl SshView {
                 .gap_2()
                 .px_3()
                 .py(px(7.0))
-                .border_r_1()
+                .border_1()
                 .border_color(border)
+                .rounded(px(4.0))
                 .cursor_pointer()
                 .on_click(cx.listener({
                     let workspace_id = workspace_id.clone();
-                    move |this, _: &ClickEvent, _, cx| {
-                        this.select_terminal(workspace_id.clone(), id, cx);
+                    move |this, _: &ClickEvent, window, cx| {
+                        this.select_terminal(workspace_id.clone(), id, window, cx);
                     }
                 }))
                 .child(
@@ -344,7 +496,7 @@ impl SshView {
                             .ghost()
                             .xsmall()
                             .label("重连")
-                            .tooltip("新建连接，并保留当前终端输出")
+                            .tooltip("保留输出")
                             .disabled(!connection_available)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
@@ -357,19 +509,21 @@ impl SshView {
                             })),
                     )
                 })
-                .child(
-                    ramag_ui::clickable_button(("close-ssh-terminal", id_for_close))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener({
-                            let workspace_id = workspace_id.clone();
-                            move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.close_terminal(workspace_id.clone(), id_for_close, cx);
-                            }
-                        })),
-                );
+                .when(!primary, |tab| {
+                    tab.child(
+                        ramag_ui::clickable_button(("close-ssh-terminal", id_for_close))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener({
+                                let workspace_id = workspace_id.clone();
+                                move |this, _: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close_terminal(workspace_id.clone(), id_for_close, cx);
+                                }
+                            })),
+                    )
+                });
             if selected {
                 let mut active_bg = accent;
                 active_bg.a = 0.15;
@@ -384,7 +538,7 @@ impl SshView {
                 .ghost()
                 .small()
                 .icon(IconName::Plus)
-                .tooltip("新建 Terminal（Cmd/Ctrl+T）")
+                .tooltip("新建")
                 .disabled(terminal_loading || !connection_available)
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.start_active_terminal(window, cx);
@@ -413,16 +567,16 @@ impl SshView {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(if terminal_loading {
-                                "正在启动系统 SSH…"
+                                "正在连接"
                             } else {
-                                "工作区已恢复，但不会自动重连或恢复终端输出"
+                                "尚未连接"
                             }),
                     )
                     .child(
                         ramag_ui::clickable_button("connect-restored-ssh")
                             .primary()
                             .icon(IconName::SquareTerminal)
-                            .label("连接并打开 Terminal")
+                            .label("连接")
                             .disabled(terminal_loading || !connection_available)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.connect_active_workspace(window, cx);
@@ -435,154 +589,13 @@ impl SshView {
             .min_w_0()
             .h_full()
             .child(tabs)
-            .child(div().flex_1().min_h_0().bg(gpui::rgb(0x1e1e1e)).child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .bg(cx.theme().background)
+                    .child(body),
+            )
             .into_any_element()
-    }
-}
-
-fn remote_entry_row(
-    entry: RemoteEntry,
-    selected_path: Option<&String>,
-    workspace_id: SshProfileId,
-    index: usize,
-    cx: &mut Context<SshView>,
-) -> AnyElement {
-    let selected = selected_path == Some(&entry.path);
-    let icon = match entry.kind {
-        RemoteEntryKind::Directory => IconName::Folder,
-        RemoteEntryKind::Symlink => IconName::ExternalLink,
-        RemoteEntryKind::File | RemoteEntryKind::Other => IconName::File,
-    };
-    let metadata = format_entry_metadata(&entry);
-    let entry_for_click = entry.clone();
-    h_flex()
-        .id(("sftp-entry", index))
-        .w_full()
-        .h(px(52.0))
-        .items_center()
-        .gap(px(8.0))
-        .px(px(10.0))
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .bg(if selected {
-            cx.theme().muted
-        } else {
-            gpui::transparent_black()
-        })
-        .cursor_pointer()
-        .hover(|style| style.bg(cx.theme().muted))
-        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-            this.select_remote_entry(workspace_id.clone(), entry_for_click.path.clone(), cx);
-            if event.click_count() >= 2 {
-                this.activate_remote_entry(
-                    workspace_id.clone(),
-                    entry_for_click.clone(),
-                    window,
-                    cx,
-                );
-            }
-        }))
-        .child(
-            Icon::new(icon)
-                .small()
-                .text_color(cx.theme().muted_foreground),
-        )
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .text_sm()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(entry.name),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(metadata),
-                ),
-        )
-        .into_any_element()
-}
-
-fn format_entry_metadata(entry: &RemoteEntry) -> String {
-    let kind = match entry.kind {
-        RemoteEntryKind::File => "文件",
-        RemoteEntryKind::Directory => "目录",
-        RemoteEntryKind::Symlink => "软链接",
-        RemoteEntryKind::Other => "其他",
-    };
-    let size = if entry.kind == RemoteEntryKind::Directory {
-        "—".to_string()
-    } else {
-        format_bytes(entry.size)
-    };
-    let permissions = entry.permissions.map_or_else(
-        || "----".to_string(),
-        |mode| format!("{:04o}", mode & 0o7777),
-    );
-    let modified = entry
-        .modified_at
-        .as_ref()
-        .map_or_else(|| "时间未知".to_string(), |time| time.to_rfc3339());
-    format!("{kind}  {size}  {permissions}  {modified}")
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0usize;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
-fn centered_message(message: &'static str, cx: &gpui::App) -> impl IntoElement {
-    v_flex()
-        .size_full()
-        .items_center()
-        .justify_center()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(message)
-}
-
-fn tool_button(
-    id: &'static str,
-    icon: IconName,
-    tooltip: &'static str,
-    disabled: bool,
-    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    ramag_ui::clickable_button(id)
-        .ghost()
-        .xsmall()
-        .icon(icon)
-        .tooltip(tooltip)
-        .disabled(disabled)
-        .on_click(listener)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn byte_sizes_are_bounded_and_readable() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-        assert!(format_bytes(u64::MAX).ends_with("TiB"));
     }
 }

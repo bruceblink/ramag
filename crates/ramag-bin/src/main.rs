@@ -144,6 +144,10 @@ fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
 }
 
 fn main() {
+    if let Some(exit_code) = ramag_infra_ssh::run_askpass_helper(confirm_ssh_host) {
+        std::process::exit(exit_code);
+    }
+
     let log_path = logging::init();
     info!(version = env!("CARGO_PKG_VERSION"), "ramag launching");
 
@@ -222,6 +226,7 @@ fn main() {
 
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
+        ramag_tool_ssh::init(cx);
         init_theme(initial_pref.as_deref(), cx);
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
@@ -391,6 +396,23 @@ fn main() {
 
         open_main_window(deps.clone(), cx);
     });
+}
+
+fn confirm_ssh_host(prompt: &str) -> bool {
+    let description = if prompt.trim().is_empty() {
+        "OpenSSH 请求确认远程主机指纹。请仅在你确认目标服务器身份后继续。"
+    } else {
+        prompt
+    };
+    matches!(
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("确认 SSH 主机指纹")
+            .set_description(description)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show(),
+        rfd::MessageDialogResult::Yes
+    )
 }
 
 /// 采集间隔。两平台统一轮询系统剪贴板序列号，仅在变化时读取内容。

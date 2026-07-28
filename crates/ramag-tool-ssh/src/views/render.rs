@@ -66,10 +66,17 @@ impl SshView {
             let label = workspace.profile.name.clone();
             let dot_color = if workspace.terminal_loading || workspace.sftp_loading {
                 gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
-            } else if workspace.sftp_error.is_some() {
+            } else if workspace.sftp_error.is_some() || workspace.profile.production {
                 theme.danger
             } else {
-                super::render_manager::parse_hex_color(&workspace.profile.color).unwrap_or(muted)
+                workspace
+                    .profile
+                    .environment
+                    .as_deref()
+                    .map(|environment| {
+                        super::render_manager::environment_badge_colors(environment, muted).0
+                    })
+                    .unwrap_or(muted)
             };
             let mut tab = h_flex()
                 .id(SharedString::from(format!("ssh-workspace-tab-{id}")))
@@ -88,7 +95,20 @@ impl SshView {
                         .text_color(if selected { fg } else { muted })
                         .child(label),
                 )
-                .child(div().text_xs().text_color(muted).child("SSH"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if workspace.profile.production {
+                            theme.danger
+                        } else {
+                            muted
+                        })
+                        .child(if workspace.profile.production {
+                            "生产"
+                        } else {
+                            "SSH"
+                        }),
+                )
                 .child(
                     ramag_ui::clickable_button(SharedString::from(format!(
                         "close-ssh-workspace-{id_for_close}"
@@ -103,8 +123,8 @@ impl SshView {
                         },
                     )),
                 )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.select_workspace(id.clone(), cx);
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.select_workspace(id.clone(), window, cx);
                 }));
             if selected {
                 let mut active_bg = accent;

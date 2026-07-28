@@ -2,12 +2,14 @@
 
 //! 系统 OpenSSH + 结构化 SFTP 基础设施实现。
 
+mod askpass;
 mod command;
 mod runtime;
 mod session;
 mod transfer;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -27,14 +29,17 @@ pub struct OpenSshDriver {
     locator: OpenSshLocator,
     sessions: SessionCache,
     transfers: TransferEngine,
+    askpass: Arc<askpass::AskPassBroker>,
 }
 
 impl OpenSshDriver {
     pub fn new() -> Self {
+        let askpass = Arc::new(askpass::AskPassBroker::new());
         Self {
             locator: OpenSshLocator::default(),
-            sessions: SessionCache::default(),
+            sessions: SessionCache::new(askpass.clone()),
             transfers: TransferEngine::default(),
+            askpass,
         }
     }
 }
@@ -67,10 +72,13 @@ impl SshDriver for OpenSshDriver {
     async fn terminal_command(&self, profile: &SshProfile) -> Result<SshLaunchCommand> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
         let locator = self.locator.clone();
+        let askpass = self.askpass.clone();
         let profile = profile.clone();
         run_in_tokio(async move {
             let capability = locator.probe(profile.ssh_path.clone()).await?;
-            command::terminal_command(&profile, &capability)
+            let mut command = command::terminal_command(&profile, &capability)?;
+            command.env = askpass.environment(&profile)?;
+            Ok(command)
         })
         .await
     }
@@ -253,12 +261,18 @@ impl SshDriver for OpenSshDriver {
 
     async fn shutdown(&self) -> Result<()> {
         let sessions = self.sessions.clone();
+        self.askpass.clear();
         run_in_tokio(async move {
             sessions.shutdown().await;
             Ok(())
         })
         .await
     }
+}
+
+/// 在主程序初始化前处理 OpenSSH AskPass 子进程请求。
+pub fn run_askpass_helper(confirm: impl FnOnce(&str) -> bool) -> Option<i32> {
+    askpass::run_helper(confirm)
 }
 
 async fn connect(

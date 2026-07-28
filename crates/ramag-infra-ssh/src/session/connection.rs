@@ -20,6 +20,7 @@ use tokio::time::timeout;
 use ramag_domain::entities::{SshProfile, SshProfileId, TRANSFER_BUFFER_BYTES};
 use ramag_domain::error::{DomainError, Result};
 
+use crate::askpass::AskPassBroker;
 use crate::command::configure_no_window;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -28,14 +29,24 @@ const STDERR_LIMIT: usize = 16 * 1024;
 const MAX_SFTP_PACKET_BYTES: u32 = 256 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 20;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SessionCache {
     connections: Arc<Mutex<HashMap<SshProfileId, Arc<SftpConnection>>>>,
     connect_locks: Arc<Mutex<HashMap<SshProfileId, Arc<Mutex<()>>>>>,
     shutting_down: Arc<AtomicBool>,
+    askpass: Arc<AskPassBroker>,
 }
 
 impl SessionCache {
+    pub fn new(askpass: Arc<AskPassBroker>) -> Self {
+        Self {
+            connections: Arc::new(Mutex::new(HashMap::new())),
+            connect_locks: Arc::new(Mutex::new(HashMap::new())),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            askpass,
+        }
+    }
+
     pub async fn get_or_connect(
         &self,
         profile: &SshProfile,
@@ -68,7 +79,9 @@ impl SessionCache {
             stale.close().await;
         }
 
-        let created = Arc::new(SftpConnection::connect(profile, program, args).await?);
+        let environment = self.askpass.environment(profile)?;
+        let created =
+            Arc::new(SftpConnection::connect(profile, program, args, &environment).await?);
         let replaced = self
             .connections
             .lock()
@@ -158,10 +171,16 @@ impl StructuredSftpSession {
 }
 
 impl SftpConnection {
-    async fn connect(profile: &SshProfile, program: &str, args: &[String]) -> Result<Self> {
+    async fn connect(
+        profile: &SshProfile,
+        program: &str,
+        args: &[String],
+        environment: &HashMap<String, String>,
+    ) -> Result<Self> {
         let mut command = Command::new(program);
         command
             .args(args)
+            .envs(environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -406,7 +425,8 @@ fn connection_error(protocol_error: String, stderr: &VecDeque<u8>) -> DomainErro
         || lower.contains("password")
         || lower.contains("passphrase")
     {
-        "SFTP 首版不支持交互输入密码或密钥口令；请使用 SSH Agent、已解锁密钥或无需交互的 OpenSSH 密钥。".into()
+        "SSH 认证失败，请检查用户名、密码、密钥或 Agent 配置。加密密钥请先在 SSH Agent 中解锁。"
+            .into()
     } else if detail.is_empty() {
         protocol_error
     } else {
@@ -447,7 +467,7 @@ mod tests {
         assert!(
             connection_error("bad".into(), &auth)
                 .message()
-                .contains("SSH Agent")
+                .contains("认证失败")
         );
     }
 

@@ -6433,6 +6433,7 @@ dependencies = [
  "tracing",
  "uuid",
  "windows 0.57.0",
+ "zeroize",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ mod ops_transfer;
 mod profile_dialog;
 mod profile_form;
 mod render;
+mod render_directory_helpers;
 mod render_manager;
 mod render_profile_form;
 mod render_transfers;
@@ -34,6 +35,7 @@ pub struct SshView {
     default_capability: Option<Result<SshCapability, String>>,
     search: Entity<InputState>,
     query: String,
+    directory_search: Entity<InputState>,
     focused_search_once: bool,
     deleting_profile: bool,
     profile_form_subscription: Option<Subscription>,
@@ -52,9 +54,12 @@ pub struct SshView {
 
 impl SshView {
     pub fn new(service: Arc<SshService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| {
+        let search =
+            cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索连接"));
+        let directory_search = cx.new(|cx| {
             ramag_ui::bounded_search_input(window, cx)
-                .placeholder("搜索 SSH 连接（名称 / 主机 / 用户）")
+                .placeholder("搜索名称")
+                .clean_on_escape()
         });
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
@@ -67,6 +72,22 @@ impl SshView {
                 }
             },
         ));
+        subscriptions.push(cx.subscribe_in(
+            &directory_search,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let query = this.directory_search.read(cx).value().trim().to_lowercase();
+                    if let Some(workspace_id) = this.active_workspace_id.clone()
+                        && let Some(workspace) = this.workspace_mut(&workspace_id)
+                    {
+                        workspace.directory_query = query;
+                        workspace.selected_path = None;
+                    }
+                    cx.notify();
+                }
+            },
+        ));
         let mut this = Self {
             service,
             profiles: Arc::new(Vec::new()),
@@ -75,6 +96,7 @@ impl SshView {
             default_capability: None,
             search,
             query: String::new(),
+            directory_search,
             focused_search_once: false,
             deleting_profile: false,
             profile_form_subscription: None,

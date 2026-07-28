@@ -183,6 +183,29 @@ mod tests {
     }
 
     #[test]
+    fn tab_keys_are_forwarded_to_the_shell() {
+        assert_eq!(
+            encode_key(
+                &TerminalKey::Tab,
+                TerminalModifiers::default(),
+                TermMode::empty(),
+            ),
+            Some(b"\t".to_vec())
+        );
+        assert_eq!(
+            encode_key(
+                &TerminalKey::Tab,
+                TerminalModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                TermMode::empty(),
+            ),
+            Some(b"\x1b[Z".to_vec())
+        );
+    }
+
+    #[test]
     fn function_key_bounds_are_explicit() {
         assert_eq!(
             encode_key(

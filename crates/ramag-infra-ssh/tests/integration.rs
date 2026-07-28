@@ -37,9 +37,9 @@ fn fixture_from_env() -> Result<Option<Fixture>> {
 
     let mut profile = SshProfile::new("integration-test", host);
     if let Ok(port) = std::env::var("RAMAG_TEST_SSH_PORT") {
-        profile.port = port.parse::<u16>().map_err(|error| {
+        profile.port = Some(port.parse::<u16>().map_err(|error| {
             DomainError::InvalidConfig(format!("RAMAG_TEST_SSH_PORT 无效：{error}"))
-        })?;
+        })?);
     }
     profile.username = std::env::var("RAMAG_TEST_SSH_USER").unwrap_or_default();
     if let Ok(key_path) = std::env::var("RAMAG_TEST_SSH_KEY_PATH") {

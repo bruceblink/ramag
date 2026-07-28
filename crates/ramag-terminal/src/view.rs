@@ -16,6 +16,7 @@ use gpui_component::ActiveTheme as _;
 
 use crate::core::{ClipboardRequest, TerminalCore};
 use crate::keys::{TerminalKey, TerminalModifiers, encode_key};
+use crate::{SendBackTab, SendTab};
 
 const FONT_SIZE: Pixels = px(13.0);
 const LINE_HEIGHT: Pixels = px(18.0);
@@ -125,6 +126,10 @@ impl TerminalView {
         let Some(key) = key else {
             return;
         };
+        self.send_key(key, modifiers, cx);
+    }
+
+    fn send_key(&mut self, key: TerminalKey, modifiers: TerminalModifiers, cx: &mut Context<Self>) {
         let mode = self.core.snapshot();
         let mut term_mode = alacritty_terminal::term::TermMode::empty();
         if mode.bracketed_paste {
@@ -242,6 +247,14 @@ impl Render for TerminalView {
         let entity_for_paint = cx.entity().clone();
         let focus_handle = self.focus_handle.clone();
         let mono = cx.theme().mono_font_family.clone();
+        let terminal_background = cx.theme().background;
+        let palette = paint::TerminalPalette::from_theme(
+            terminal_background,
+            cx.theme().foreground,
+            cx.theme().accent,
+            cx.theme().accent_foreground,
+            cx.theme().caret,
+        );
         let terminal = canvas(
             move |bounds, window, app| {
                 entity_for_prepaint.update(app, |view, _cx| {
@@ -263,6 +276,7 @@ impl Render for TerminalView {
                         view.marked_text.clone(),
                         cell_width,
                         mono.clone(),
+                        palette,
                         window,
                     )
                 })
@@ -283,7 +297,23 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
             .size_full()
+            .px(px(10.0))
+            .py(px(8.0))
+            .bg(terminal_background)
             .overflow_hidden()
+            .on_action(cx.listener(|this, _: &SendTab, _window, cx| {
+                this.send_key(TerminalKey::Tab, TerminalModifiers::default(), cx);
+            }))
+            .on_action(cx.listener(|this, _: &SendBackTab, _window, cx| {
+                this.send_key(
+                    TerminalKey::Tab,
+                    TerminalModifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            }))
             .on_key_down(cx.listener(|this, event, _window, cx| this.handle_key(event, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(|this, event, _window, cx| this.mouse_move(event, cx)))
@@ -462,7 +492,27 @@ fn utf8_to_utf16_range(text: &str, range: Range<usize>) -> Range<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
+
     use super::*;
+    #[cfg(unix)]
+    use crate::TerminalCommand;
+
+    #[cfg(unix)]
+    struct TerminalKeyTestRoot {
+        terminal: gpui::Entity<TerminalView>,
+    }
+
+    #[cfg(unix)]
+    impl Render for TerminalKeyTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.terminal.clone())
+                .child(gpui_component::button::Button::new("next-focus-target").label("下一项"))
+        }
+    }
 
     #[test]
     fn ime_ranges_convert_without_splitting_unicode() {
@@ -470,5 +520,62 @@ mod tests {
         assert_eq!(utf16_to_utf8_range(text, 1..2), 1..4);
         assert_eq!(utf8_to_utf16_range(text, 1..4), 1..2);
         assert_eq!(utf16_to_utf8_range(text, 2..4), 4..8);
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn tab_stays_in_terminal_and_reaches_pty(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::init(cx);
+        });
+        let mut terminal = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let core = TerminalCore::start(TerminalCommand::new(
+                "/bin/sh",
+                vec![
+                    "-c".into(),
+                    "stty -echo -icanon min 1 time 0; od -An -t u1 -N 1".into(),
+                ],
+            ))
+            .expect("测试终端应启动");
+            let terminal_view = cx.new(|cx| TerminalView::new(core, window, cx));
+            terminal_view.read(cx).focus_handle(cx).focus(window, cx);
+            terminal = Some(terminal_view.clone());
+            let content = cx.new(|_| TerminalKeyTestRoot {
+                terminal: terminal_view,
+            });
+            gpui_component::Root::new(content, window, cx)
+        });
+        let terminal = terminal.expect("终端视图应创建");
+
+        assert!(
+            cx.update(|window, app| { terminal.read(app).focus_handle(app).is_focused(window) })
+        );
+        cx.simulate_keystrokes("tab");
+        assert!(
+            cx.update(|window, app| { terminal.read(app).focus_handle(app).is_focused(window) })
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let received = loop {
+            let output = terminal.read_with(cx, |terminal, _| {
+                terminal
+                    .core()
+                    .snapshot()
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.iter().map(|cell| cell.text.as_str()))
+                    .collect::<String>()
+            });
+            if output.split_whitespace().any(|value| value == "9") {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(received, "Tab 应作为字节 9 写入 PTY");
     }
 }

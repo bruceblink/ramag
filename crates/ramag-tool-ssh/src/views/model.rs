@@ -42,6 +42,7 @@ pub(super) struct TerminalTab {
 pub(super) struct SshWorkspace {
     pub profile: SshProfile,
     pub path: String,
+    pub directory_query: String,
     pub entries: Arc<Vec<RemoteEntry>>,
     pub selected_path: Option<String>,
     pub terminals: Vec<TerminalTab>,
@@ -50,6 +51,8 @@ pub(super) struct SshWorkspace {
     pub sftp_loading: bool,
     pub sftp_error: Option<String>,
     pub operation_busy: bool,
+    pub transfers_visible: bool,
+    pub next_terminal_ordinal: u64,
     pub directory_generation: u64,
     pub terminal_generation: u64,
 }
@@ -59,6 +62,7 @@ impl SshWorkspace {
         Self {
             profile,
             path,
+            directory_query: String::new(),
             entries: Arc::new(Vec::new()),
             selected_path: None,
             terminals: Vec::new(),
@@ -67,6 +71,8 @@ impl SshWorkspace {
             sftp_loading: false,
             sftp_error: None,
             operation_busy: false,
+            transfers_visible: false,
+            next_terminal_ordinal: 1,
             directory_generation: 0,
             terminal_generation: 0,
         }
@@ -74,5 +80,25 @@ impl SshWorkspace {
 
     pub fn profile_id(&self) -> &SshProfileId {
         &self.profile.id
+    }
+
+    pub fn next_terminal_label(&mut self) -> SharedString {
+        let ordinal = self.next_terminal_ordinal;
+        self.next_terminal_ordinal = self.next_terminal_ordinal.wrapping_add(1).max(1);
+        format!("终端 {ordinal}").into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_labels_remain_unique_when_tabs_are_removed() {
+        let mut workspace =
+            SshWorkspace::placeholder(SshProfile::new("server", "host"), "/".into());
+
+        assert_eq!(workspace.next_terminal_label().as_ref(), "终端 1");
+        assert_eq!(workspace.next_terminal_label().as_ref(), "终端 2");
     }
 }

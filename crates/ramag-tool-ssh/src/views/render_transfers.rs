@@ -2,6 +2,7 @@
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
+    relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
@@ -12,9 +13,13 @@ use super::SshView;
 
 impl SshView {
     pub(super) fn render_transfer_queue(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(profile_id) = self.active_workspace_id.as_ref() else {
+        let Some(workspace) = self.active_workspace() else {
             return div().h_0().into_any_element();
         };
+        if !workspace.transfers_visible {
+            return div().h_0().into_any_element();
+        }
+        let profile_id = workspace.profile_id();
         let tasks = self
             .service
             .transfer_tasks()
@@ -22,6 +27,9 @@ impl SshView {
             .filter(|task| &task.profile_id == profile_id)
             .rev()
             .collect::<Vec<_>>();
+        if tasks.is_empty() {
+            return div().h_0().into_any_element();
+        }
         let border = cx.theme().border;
         let running = tasks
             .iter()
@@ -31,33 +39,20 @@ impl SshView {
         for task in &tasks {
             rows = rows.child(transfer_row(task.clone(), cx));
         }
-        let body = if tasks.is_empty() {
-            div()
-                .w_full()
-                .h(px(78.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("暂无传输任务")
-                .into_any_element()
-        } else {
-            div()
-                .id("ssh-transfer-scroll")
-                .w_full()
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(rows)
-                .into_any_element()
-        };
         v_flex()
-            .w_full()
-            .h(px(160.0))
-            .flex_none()
-            .border_t_1()
+            .id("ssh-transfer-panel")
+            .debug_selector(|| "ssh-transfer-panel".into())
+            .absolute()
+            .top(px(12.0))
+            .right(px(12.0))
+            .w(px(520.0))
+            .max_w(relative(0.8))
+            .max_h(px(360.0))
+            .rounded(px(8.0))
+            .border_1()
             .border_color(border)
+            .bg(cx.theme().background)
+            .shadow_lg()
             .child(
                 h_flex()
                     .w_full()
@@ -72,23 +67,42 @@ impl SshView {
                         div()
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(format!(
-                                "传输队列（进行中 {running} / 历史 {}）",
-                                tasks.len()
-                            )),
+                            .child(format!("传输 {running}/{}", tasks.len())),
                     )
                     .child(
-                        ramag_ui::clickable_button("clear-ssh-transfers")
-                            .ghost()
-                            .xsmall()
-                            .label("清除已完成")
-                            .disabled(!tasks.iter().any(|task| task.status.is_terminal()))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.clear_finished_transfers(cx);
-                            })),
+                        h_flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                ramag_ui::clickable_button("clear-ssh-transfers")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("清理")
+                                    .disabled(!tasks.iter().any(|task| task.status.is_terminal()))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.clear_finished_transfers(cx);
+                                    })),
+                            )
+                            .child(
+                                ramag_ui::clickable_button("hide-ssh-transfers")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_component::IconName::ChevronDown)
+                                    .tooltip("收起")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.hide_transfer_panel(cx);
+                                    })),
+                            ),
                     ),
             )
-            .child(body)
+            .child(
+                div()
+                    .id("ssh-transfer-scroll")
+                    .w_full()
+                    .max_h(px(324.0))
+                    .overflow_y_scroll()
+                    .child(rows),
+            )
             .into_any_element()
     }
 }

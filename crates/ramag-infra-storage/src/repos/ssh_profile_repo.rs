@@ -190,14 +190,43 @@ mod tests {
     #[test]
     fn encrypted_record_does_not_contain_profile_fields() {
         let cipher = Cipher::new(&[9; 32]);
-        let profile = SshProfile::new("production", "secret.example.com");
+        let mut profile = SshProfile::new("production", "secret.example.com");
+        profile.auth_mode = ramag_domain::entities::SshAuthMode::Password;
+        profile.password = "secret-password".into();
         let encoded = encode_profile(&profile, &cipher).unwrap();
 
         assert!(!encoded.contains("production"));
         assert!(!encoded.contains("secret.example.com"));
+        assert!(!encoded.contains("secret-password"));
         assert_eq!(
             decode_profile(&profile.id.to_string(), &encoded, &cipher).unwrap(),
             profile
         );
+    }
+
+    #[test]
+    fn legacy_color_profile_migrates_to_environment_fields() {
+        let cipher = Cipher::new(&[7; 32]);
+        let profile = SshProfile::new("legacy", "server.example");
+        let json = serde_json::json!({
+            "id": profile.id.clone(),
+            "name": "legacy",
+            "color": "#007ACC",
+            "host": "server.example",
+            "port": 2222,
+            "username": "deploy",
+            "auth_mode": "System",
+            "key_path": null,
+            "initial_directory": null,
+            "ssh_path": null
+        })
+        .to_string();
+        let encoded = cipher.encrypt(&json).unwrap();
+
+        let decoded = decode_profile(&profile.id.to_string(), &encoded, &cipher).unwrap();
+        assert_eq!(decoded.environment, None);
+        assert!(!decoded.production);
+        assert_eq!(decoded.port, Some(2222));
+        assert!(decoded.password.is_empty());
     }
 }

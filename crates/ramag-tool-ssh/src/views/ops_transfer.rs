@@ -52,8 +52,8 @@ impl SshView {
                 if exists {
                     let entity = cx.entity();
                     ramag_ui::open_confirm(
-                        "覆盖远程文件？",
-                        format!("远程路径「{remote_path}」已存在。上传成功后将原子替换该文件。"),
+                        "确认覆盖？",
+                        format!("「{remote_path}」已存在，上传后将被替换。"),
                         "覆盖上传",
                         true,
                         move |_window, app| {
@@ -129,8 +129,8 @@ impl SshView {
                     let entity = cx.entity();
                     let display = local_path.display().to_string();
                     ramag_ui::open_confirm(
-                        "覆盖本地文件？",
-                        format!("本地路径「{display}」已存在。下载成功后将原子替换该文件。"),
+                        "确认覆盖？",
+                        format!("「{display}」已存在，下载后将被替换。"),
                         "覆盖下载",
                         true,
                         move |_window, app| {
@@ -230,6 +230,10 @@ impl SshView {
         overwrite: OverwritePolicy,
         cx: &mut Context<Self>,
     ) {
+        if let Some(workspace) = self.workspace_mut(&profile.id) {
+            workspace.transfers_visible = true;
+        }
+        cx.notify();
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
             let result = service.execute_transfer(&id, &profile, overwrite).await;
@@ -256,7 +260,7 @@ impl SshView {
 
     pub(super) fn cancel_transfer(&mut self, id: TransferId, cx: &mut Context<Self>) {
         if self.service.cancel_transfer(&id) {
-            self.notice = Some(Notice::info("已请求取消传输；临时文件会在任务退出前清理"));
+            self.notice = Some(Notice::info("正在取消"));
             cx.notify();
         }
     }
@@ -297,9 +301,9 @@ impl SshView {
     ) {
         let entity = cx.entity();
         ramag_ui::open_confirm(
-            "覆盖并重试传输？",
-            "目标可能已存在。任务成功后会使用临时文件原子替换目标；原内容将被覆盖。",
-            "覆盖并重试",
+            "覆盖重试？",
+            "目标已存在，重试成功后将被替换。",
+            "覆盖重试",
             true,
             move |_window, app| {
                 entity.update(app, |this, cx| {
@@ -313,6 +317,46 @@ impl SshView {
 
     pub(super) fn clear_finished_transfers(&mut self, cx: &mut Context<Self>) {
         self.service.clear_finished_transfers();
+        let Some(workspace_id) = self.active_workspace_id.clone() else {
+            cx.notify();
+            return;
+        };
+        let has_tasks = self
+            .service
+            .transfer_tasks()
+            .iter()
+            .any(|task| task.profile_id == workspace_id);
+        if !has_tasks && let Some(workspace) = self.workspace_mut(&workspace_id) {
+            workspace.transfers_visible = false;
+        }
         cx.notify();
+    }
+
+    pub(super) fn toggle_transfer_panel(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.active_workspace_id.clone() else {
+            return;
+        };
+        let has_tasks = self
+            .service
+            .transfer_tasks()
+            .iter()
+            .any(|task| task.profile_id == workspace_id);
+        if !has_tasks {
+            return;
+        }
+        if let Some(workspace) = self.workspace_mut(&workspace_id) {
+            workspace.transfers_visible = !workspace.transfers_visible;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn hide_transfer_panel(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.active_workspace_id.clone() else {
+            return;
+        };
+        if let Some(workspace) = self.workspace_mut(&workspace_id) {
+            workspace.transfers_visible = false;
+            cx.notify();
+        }
     }
 }

@@ -86,19 +86,24 @@ pub fn terminal_command(
         profile_id: profile.id.clone(),
         program: capability.executable.clone(),
         args,
+        env: HashMap::new(),
     })
 }
 
 pub fn sftp_args(profile: &SshProfile) -> Result<Vec<String>> {
     profile.validate().map_err(DomainError::InvalidConfig)?;
+    let password_auth = profile.auth_mode == SshAuthMode::Password;
     let mut args = vec![
         "-T".into(),
         "-o".into(),
-        "BatchMode=yes".into(),
+        format!("BatchMode={}", if password_auth { "no" } else { "yes" }),
         "-o".into(),
         "StrictHostKeyChecking=yes".into(),
         "-o".into(),
-        "NumberOfPasswordPrompts=0".into(),
+        format!(
+            "NumberOfPasswordPrompts={}",
+            if password_auth { 1 } else { 0 }
+        ),
         "-o".into(),
         "ConnectTimeout=10".into(),
     ];
@@ -111,14 +116,28 @@ pub fn sftp_args(profile: &SshProfile) -> Result<Vec<String>> {
 }
 
 fn common_profile_args(profile: &SshProfile) -> Vec<String> {
-    let mut args = vec!["-p".into(), profile.port.to_string()];
+    let mut args = Vec::new();
+    if let Some(port) = profile.port {
+        args.extend(["-p".into(), port.to_string()]);
+    }
     if !profile.username.is_empty() {
         args.extend(["-l".into(), profile.username.clone()]);
     }
-    if profile.auth_mode == SshAuthMode::KeyFile
-        && let Some(path) = profile.key_path.as_ref()
-    {
-        args.extend(["-i".into(), path.clone()]);
+    match profile.auth_mode {
+        SshAuthMode::Password => {
+            args.extend([
+                "-o".into(),
+                "PreferredAuthentications=password,keyboard-interactive".into(),
+                "-o".into(),
+                "PubkeyAuthentication=no".into(),
+            ]);
+        }
+        SshAuthMode::KeyFile => {
+            if let Some(path) = profile.key_path.as_ref() {
+                args.extend(["-i".into(), path.clone()]);
+            }
+        }
+        SshAuthMode::System => {}
     }
     args
 }
@@ -364,7 +383,7 @@ mod tests {
 
     fn profile() -> SshProfile {
         let mut profile = SshProfile::new("server", "example.com");
-        profile.port = 2222;
+        profile.port = Some(2222);
         profile.username = "alice".into();
         profile
     }
@@ -402,6 +421,38 @@ mod tests {
         assert_eq!(&sftp[sftp.len() - 3..], ["--", "server.example", "sftp"]);
         assert!(sftp.windows(2).any(|args| args == ["-o", "BatchMode=yes"]));
         assert!(!sftp.iter().any(|arg| arg == "StrictHostKeyChecking=no"));
+    }
+
+    #[test]
+    fn config_alias_keeps_config_port_and_hash_username_is_literal() {
+        let mut profile = SshProfile::new("jump", "private-jump");
+        profile.port = None;
+        let args = sftp_args(&profile).unwrap();
+        assert!(!args.iter().any(|arg| arg == "-p"));
+        assert!(!args.iter().any(|arg| arg == "-l"));
+
+        profile.username = "team#account#00000000-0000-0000-0000-000000000000".into();
+        let args = sftp_args(&profile).unwrap();
+        assert!(
+            args.windows(2).any(|args| {
+                args == ["-l", "team#account#00000000-0000-0000-0000-000000000000"]
+            })
+        );
+    }
+
+    #[test]
+    fn password_mode_enables_one_askpass_attempt_without_exposing_secret() {
+        let mut profile = profile();
+        profile.auth_mode = SshAuthMode::Password;
+        profile.password = "top-secret".into();
+
+        let args = sftp_args(&profile).unwrap();
+        assert!(args.windows(2).any(|args| args == ["-o", "BatchMode=no"]));
+        assert!(
+            args.windows(2)
+                .any(|args| args == ["-o", "NumberOfPasswordPrompts=1"])
+        );
+        assert!(args.iter().all(|arg| !arg.contains("top-secret")));
     }
 
     #[test]

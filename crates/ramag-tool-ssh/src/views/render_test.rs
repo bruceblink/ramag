@@ -91,6 +91,7 @@ impl SshDriver for MockSshDriver {
             profile_id: profile.id.clone(),
             program: "/mock/ssh".into(),
             args: vec!["--".into(), profile.host.clone()],
+            env: Default::default(),
         })
     }
 
@@ -280,9 +281,53 @@ fn profile_form_inputs_keep_dialog_width_instead_of_collapsing(cx: &mut TestAppC
         "端口输入框宽度异常：{:?}",
         port.size
     );
+    assert!(
+        cx.debug_bounds("ssh-profile-executable-field-input")
+            .is_some(),
+        "高级选项应默认展开"
+    );
+    let openssh_status = cx
+        .debug_bounds("ssh-openssh-status")
+        .expect("OpenSSH 状态应显示在路径字段标题行");
+    assert!(
+        cx.debug_bounds("ssh-openssh-label").is_some(),
+        "OpenSSH 状态前应显示本机 SSH 标题"
+    );
+    assert!(
+        cx.debug_bounds("ssh-production-label").is_some(),
+        "生产模式标题应参与布局"
+    );
+    assert!(name.origin.y < host.origin.y, "名称应显示在 Host 上方");
+    let executable = cx
+        .debug_bounds("ssh-profile-executable-field")
+        .expect("OpenSSH 路径字段应参与布局");
+    assert!(
+        openssh_status.origin.y >= executable.origin.y,
+        "OpenSSH 状态应移入路径字段"
+    );
 
-    form.read_with(cx, |form, cx| assert!(!form.is_dirty(cx)));
-    form.update(cx, |form, cx| form.set_auth_mode(SshAuthMode::KeyFile, cx));
+    let password_auth = cx
+        .debug_bounds("ssh-auth-password")
+        .expect("password auth button should be rendered");
+    let system_auth = cx
+        .debug_bounds("ssh-auth-system")
+        .expect("system auth button should be rendered");
+    assert!(
+        password_auth.origin.x < system_auth.origin.x,
+        "密码认证应显示在系统认证前"
+    );
+
+    form.read_with(cx, |form, cx| {
+        assert_eq!(form.auth_mode, SshAuthMode::Password);
+        assert!(!form.is_dirty(cx));
+    });
+    assert!(
+        cx.debug_bounds("ssh-profile-password-field-input")
+            .is_some(),
+        "新建连接默认应显示密码输入框"
+    );
+    form.update(cx, |form, cx| form.set_auth_mode(SshAuthMode::System, cx));
+    cx.run_until_parked();
     form.read_with(cx, |form, cx| assert!(form.is_dirty(cx)));
 }
 
@@ -328,5 +373,120 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
         assert!(view.workspaces[0].terminals.is_empty());
         assert_eq!(view.workspaces[0].entries.len(), 1);
     });
+    let file_browser = cx
+        .debug_bounds("ssh-file-browser")
+        .expect("file browser should be rendered");
+    assert_eq!(
+        file_browser.size.width,
+        px(280.0),
+        "目录栏应与数据库侧栏保持同宽"
+    );
+    assert!(
+        cx.debug_bounds("ssh-directory-summary").is_some(),
+        "目录底部应显示文件与目录数量"
+    );
+    assert!(
+        cx.debug_bounds("ssh-directory-breadcrumb").is_some(),
+        "目录顶部应显示可滚动路径"
+    );
+    assert!(
+        cx.debug_bounds("ssh-directory-search").is_some(),
+        "目录操作栏应以搜索框开头"
+    );
+    let entry = cx
+        .debug_bounds("sftp-entry-0")
+        .expect("remote entry should be rendered");
+    assert_eq!(entry.size.height, px(36.0), "目录项应保持单行紧凑布局");
     assert_eq!(service_for_assert.transfer_tasks().len(), 1);
+    assert!(
+        cx.debug_bounds("ssh-directory-more-trigger").is_some(),
+        "目录操作应提供更多菜单"
+    );
+    assert!(
+        cx.debug_bounds("ssh-transfer-panel").is_none(),
+        "传输面板默认不应打开"
+    );
+
+    view.update(cx, |view, cx| view.toggle_transfer_panel(cx));
+    cx.run_until_parked();
+    let workspace = cx
+        .debug_bounds("ssh-workspace-main")
+        .expect("workspace should be rendered");
+    let transfers = cx
+        .debug_bounds("ssh-transfer-panel")
+        .expect("触发传输入口后应显示面板");
+    assert!(
+        transfers.origin.x > workspace.origin.x + workspace.size.width / 2.0,
+        "传输面板应悬浮在工作区右侧"
+    );
+    assert!(
+        transfers.size.width <= px(520.0),
+        "传输面板不应覆盖过多工作区：{:?}",
+        transfers.size
+    );
+
+    view.update(cx, |view, cx| view.hide_transfer_panel(cx));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("ssh-transfer-panel").is_none(),
+        "收起后不应继续占用工作区"
+    );
+}
+
+#[gpui::test]
+fn directory_search_state_is_isolated_by_workspace(cx: &mut TestAppContext) {
+    let first = profile();
+    let mut second = SshProfile::new("staging", "staging.example");
+    second.initial_directory = Some("/srv/app".into());
+    let preference = SshWorkspacePreference {
+        workspaces: vec![
+            SshWorkspaceState {
+                profile_id: first.id.clone(),
+                last_remote_path: "/home/alice".into(),
+            },
+            SshWorkspaceState {
+                profile_id: second.id.clone(),
+                last_remote_path: "/srv/app".into(),
+            },
+        ],
+        active_profile_id: Some(first.id.clone()),
+    };
+    let (view, cx) = add_ssh_window(
+        cx,
+        service(vec![first.clone(), second.clone()], Some(preference)),
+    );
+    cx.run_until_parked();
+    view.update(cx, |view, _| {
+        view.workspace_mut(&first.id)
+            .expect("首个工作区应恢复")
+            .directory_query = "logs".into();
+    });
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.select_workspace(second.id.clone(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, cx| {
+        assert_eq!(view.directory_search.read(cx).value(), "");
+        assert_eq!(
+            view.workspaces
+                .iter()
+                .find(|workspace| workspace.profile_id() == &first.id)
+                .expect("首个工作区应保留")
+                .directory_query,
+            "logs"
+        );
+    });
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.select_workspace(first.id.clone(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, cx| {
+        assert_eq!(view.directory_search.read(cx).value(), "logs");
+    });
 }

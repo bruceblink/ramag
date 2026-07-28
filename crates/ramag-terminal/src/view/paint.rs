@@ -1,7 +1,7 @@
 //! 终端快照到 GPUI 低层绘制命令的转换。
 
 use gpui::{
-    App, Bounds, Font, FontStyle, FontWeight, Hsla, Pixels, SharedString, StrikethroughStyle,
+    App, Bounds, Font, FontStyle, FontWeight, Hsla, Pixels, Rgba, SharedString, StrikethroughStyle,
     TextAlign, TextRun, UnderlineStyle, Window, fill, font, point, px, rgb,
 };
 
@@ -15,7 +15,46 @@ pub(super) struct PreparedTerminal {
     cell_width: Pixels,
     mono: SharedString,
     background: RgbColor,
+    palette: TerminalPalette,
 }
+
+#[derive(Clone, Copy)]
+pub(super) struct TerminalPalette {
+    background: RgbColor,
+    foreground: RgbColor,
+    selection_background: RgbColor,
+    selection_foreground: RgbColor,
+    cursor: RgbColor,
+}
+
+impl TerminalPalette {
+    pub(super) fn from_theme(
+        background: Hsla,
+        foreground: Hsla,
+        selection_background: Hsla,
+        selection_foreground: Hsla,
+        cursor: Hsla,
+    ) -> Self {
+        Self {
+            background: rgb_color(background),
+            foreground: rgb_color(foreground),
+            selection_background: rgb_color(selection_background),
+            selection_foreground: rgb_color(selection_foreground),
+            cursor: rgb_color(cursor),
+        }
+    }
+}
+
+const DARK_BACKGROUND: RgbColor = RgbColor {
+    red: 0x1e,
+    green: 0x1e,
+    blue: 0x1e,
+};
+const DARK_FOREGROUND: RgbColor = RgbColor {
+    red: 0xd4,
+    green: 0xd4,
+    blue: 0xd4,
+};
 
 pub(super) fn measure_cell_width(
     window: &mut Window,
@@ -42,24 +81,16 @@ pub(super) fn prepare(
     marked_text: String,
     cell_width: Pixels,
     mono: SharedString,
+    palette: TerminalPalette,
     _window: &mut Window,
 ) -> PreparedTerminal {
-    let background = snapshot
-        .rows
-        .first()
-        .and_then(|row| row.first())
-        .map(|cell| cell.background)
-        .unwrap_or(RgbColor {
-            red: 0x1e,
-            green: 0x1e,
-            blue: 0x1e,
-        });
     PreparedTerminal {
         snapshot,
         marked_text,
         cell_width,
         mono,
-        background,
+        background: palette.background,
+        palette,
     }
 }
 
@@ -89,15 +120,17 @@ fn paint_backgrounds(
     let mut start = 0usize;
     while start < row.len() {
         let selected = row[start].selected;
-        let background = row[start].background;
+        let background = themed_color(row[start].background, prepared.palette);
         let mut end = start + 1;
-        while end < row.len() && row[end].selected == selected && row[end].background == background
+        while end < row.len()
+            && row[end].selected == selected
+            && themed_color(row[end].background, prepared.palette) == background
         {
             end += 1;
         }
         if selected || background != prepared.background {
             let paint = if selected {
-                rgb(0x264f78).into()
+                color(prepared.palette.selection_background)
             } else {
                 color(background)
             };
@@ -132,13 +165,9 @@ fn paint_text(
         }
         let style = row[start].style;
         let foreground = if row[start].selected {
-            RgbColor {
-                red: 0xff,
-                green: 0xff,
-                blue: 0xff,
-            }
+            prepared.palette.selection_foreground
         } else {
-            row[start].foreground
+            themed_color(row[start].foreground, prepared.palette)
         };
         let mut text = String::new();
         let mut end = start;
@@ -241,9 +270,9 @@ fn paint_cursor(prepared: &PreparedTerminal, bounds: Bounds<Pixels>, window: &mu
         TerminalCursorShape::Hidden => return,
     };
     let color = if cursor.shape == TerminalCursorShape::HollowBlock {
-        gpui::rgba(0xaaaaaa59)
+        color(prepared.palette.cursor).opacity(0.35)
     } else {
-        gpui::rgba(0xaaaaaabf)
+        color(prepared.palette.cursor).opacity(0.75)
     };
     window.paint_quad(fill(cursor_bounds, color));
 }
@@ -266,11 +295,7 @@ fn paint_marked_text(
             underline: true,
             ..Default::default()
         },
-        RgbColor {
-            red: 0xff,
-            green: 0xff,
-            blue: 0xff,
-        },
+        prepared.palette.foreground,
         point(
             bounds.left() + prepared.cell_width * cursor.column as f32,
             bounds.top() + LINE_HEIGHT * cursor.row as f32,
@@ -283,4 +308,42 @@ fn paint_marked_text(
 
 fn color(value: RgbColor) -> Hsla {
     rgb((u32::from(value.red) << 16) | (u32::from(value.green) << 8) | u32::from(value.blue)).into()
+}
+
+fn rgb_color(value: Hsla) -> RgbColor {
+    let value = Rgba::from(value);
+    RgbColor {
+        red: (value.r * 255.0).round() as u8,
+        green: (value.g * 255.0).round() as u8,
+        blue: (value.b * 255.0).round() as u8,
+    }
+}
+
+fn themed_color(value: RgbColor, palette: TerminalPalette) -> RgbColor {
+    if value == DARK_BACKGROUND {
+        palette.background
+    } else if value == DARK_FOREGROUND {
+        palette.foreground
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_palette_replaces_default_terminal_colors() {
+        let palette = TerminalPalette::from_theme(
+            rgb(0xf8f8f8).into(),
+            rgb(0x242424).into(),
+            rgb(0xadd6ff).into(),
+            rgb(0x1f2328).into(),
+            rgb(0x555555).into(),
+        );
+
+        assert_eq!(themed_color(DARK_BACKGROUND, palette), palette.background);
+        assert_eq!(themed_color(DARK_FOREGROUND, palette), palette.foreground);
+    }
 }

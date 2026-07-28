@@ -1,5 +1,6 @@
 //! SSH 配置、远程文件与传输任务实体。
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +13,9 @@ pub const MAX_SSH_PROFILES: usize = 1024;
 pub const MAX_SSH_PROFILE_NAME_BYTES: usize = 256;
 pub const MAX_SSH_HOST_BYTES: usize = 1024;
 pub const MAX_SSH_USERNAME_BYTES: usize = 1024;
+/// AskPass 只读取单行凭据，并使用 1024 字节缓冲区（含结尾 NUL）。
+pub const MAX_SSH_PASSWORD_BYTES: usize = 1023;
+pub const MAX_SSH_ENVIRONMENT_BYTES: usize = 64;
 pub const MAX_SSH_PATH_BYTES: usize = 32 * 1024;
 pub const MAX_REMOTE_DIRECTORY_ENTRIES: usize = 100_000;
 pub const MAX_REMOTE_DIRECTORY_RETAINED_BYTES: usize = 64 * 1024 * 1024;
@@ -50,6 +54,7 @@ impl std::fmt::Display for SshProfileId {
 pub enum SshAuthMode {
     #[default]
     System,
+    Password,
     KeyFile,
 }
 
@@ -57,14 +62,23 @@ pub enum SshAuthMode {
 pub struct SshProfile {
     pub id: SshProfileId,
     pub name: String,
-    /// `#RRGGBB`，只用于连接列表与标签识别。
-    pub color: String,
+    /// 环境仅用于列表徽章展示，不影响连接行为。
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// 生产模式保留 SSH Terminal，仅禁止 SFTP 远程写操作。
+    #[serde(default)]
+    pub production: bool,
     /// 主机名、IP 或 `~/.ssh/config` 别名。
     pub host: String,
-    pub port: u16,
+    /// 留空时由 `~/.ssh/config` 决定，未配置则由 OpenSSH 使用 22。
+    #[serde(default)]
+    pub port: Option<u16>,
     /// 留空时交给 OpenSSH 配置解析。
     pub username: String,
     pub auth_mode: SshAuthMode,
+    /// 仅密码认证使用；整条配置由存储层加密后落盘。
+    #[serde(default)]
+    pub password: String,
     /// 只保存绝对路径，不读取或复制私钥内容。
     pub key_path: Option<String>,
     /// 空值表示由 SFTP canonicalize(".") 解析远端默认目录。
@@ -78,11 +92,13 @@ impl SshProfile {
         Self {
             id: SshProfileId::new(),
             name: name.into(),
-            color: "#007ACC".into(),
+            environment: None,
+            production: false,
             host: host.into(),
-            port: 22,
+            port: None,
             username: String::new(),
             auth_mode: SshAuthMode::System,
+            password: String::new(),
             key_path: None,
             initial_directory: None,
             ssh_path: None,
@@ -91,7 +107,11 @@ impl SshProfile {
 
     pub fn validate(&self) -> Result<(), String> {
         validate_required_single_line("连接名称", &self.name, MAX_SSH_PROFILE_NAME_BYTES)?;
-        validate_color(&self.color)?;
+        validate_optional_single_line(
+            "环境标签",
+            self.environment.as_deref(),
+            MAX_SSH_ENVIRONMENT_BYTES,
+        )?;
         validate_required_single_line("主机或 SSH 别名", &self.host, MAX_SSH_HOST_BYTES)?;
         if self.host.starts_with('-') {
             return Err("主机或 SSH 别名不能以 '-' 开头".into());
@@ -99,7 +119,7 @@ impl SshProfile {
         if self.host.chars().any(char::is_whitespace) {
             return Err("主机或 SSH 别名不能包含空白字符".into());
         }
-        if self.port == 0 {
+        if self.port == Some(0) {
             return Err("SSH 端口必须是 1 - 65535".into());
         }
         validate_optional_single_line("用户名", Some(&self.username), MAX_SSH_USERNAME_BYTES)?;
@@ -108,10 +128,24 @@ impl SshProfile {
         }
 
         match self.auth_mode {
-            SshAuthMode::System if self.key_path.is_some() => {
-                return Err("系统 SSH 配置 / Agent 认证不能同时指定密钥文件".into());
+            SshAuthMode::System => {
+                if self.key_path.is_some() {
+                    return Err("系统 SSH 配置 / Agent 认证不能同时指定密钥文件".into());
+                }
+                if !self.password.is_empty() {
+                    return Err("系统 SSH 配置 / Agent 认证不能同时保存密码".into());
+                }
+            }
+            SshAuthMode::Password => {
+                if self.key_path.is_some() {
+                    return Err("密码认证不能同时指定密钥文件".into());
+                }
+                validate_required_password(&self.password)?;
             }
             SshAuthMode::KeyFile => {
+                if !self.password.is_empty() {
+                    return Err("密钥认证不能同时保存密码".into());
+                }
                 let key_path = self
                     .key_path
                     .as_deref()
@@ -122,7 +156,6 @@ impl SshProfile {
                     return Err("首个版本不支持 PuTTY .ppk 密钥，请转换为 OpenSSH 格式".into());
                 }
             }
-            SshAuthMode::System => {}
         }
 
         if let Some(path) = self.initial_directory.as_deref() {
@@ -150,6 +183,8 @@ pub struct SshLaunchCommand {
     pub profile_id: SshProfileId,
     pub program: String,
     pub args: Vec<String>,
+    /// 不含明文密码；一次性 AskPass 令牌仍只应传给目标进程。
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,15 +426,15 @@ fn validate_absolute_local_path(label: &str, value: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn validate_color(value: &str) -> Result<(), String> {
-    let valid = value.len() == 7
-        && value.starts_with('#')
-        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit());
-    if valid {
-        Ok(())
-    } else {
-        Err("颜色标签必须是 #RRGGBB 格式".into())
+fn validate_required_password(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("密码不能为空".into());
     }
+    validate_protocol_text("密码", value, MAX_SSH_PASSWORD_BYTES)?;
+    if value.chars().any(char::is_control) {
+        return Err("密码不能包含换行或控制字符".into());
+    }
+    Ok(())
 }
 
 fn validate_optional_single_line(
@@ -480,6 +515,34 @@ mod tests {
             profile.validate(),
             Err(error) if error.contains("绝对路径")
         ));
+    }
+
+    #[test]
+    fn password_profile_requires_a_single_line_secret() {
+        let mut profile = SshProfile::new("server", "example.com");
+        profile.auth_mode = SshAuthMode::Password;
+        assert!(matches!(
+            profile.validate(),
+            Err(error) if error.contains("密码不能为空")
+        ));
+
+        profile.password = "secret#value".into();
+        assert!(profile.validate().is_ok());
+
+        profile.password = "bad\npassword".into();
+        assert!(matches!(
+            profile.validate(),
+            Err(error) if error.contains("控制字符")
+        ));
+    }
+
+    #[test]
+    fn profile_accepts_config_alias_and_hash_in_username() {
+        let mut profile = SshProfile::new("jump", "private-jump");
+        profile.username = "team#account#00000000-0000-0000-0000-000000000000".into();
+        profile.port = None;
+
+        assert!(profile.validate().is_ok());
     }
 
     #[test]

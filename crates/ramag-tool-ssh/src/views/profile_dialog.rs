@@ -40,6 +40,7 @@ pub(super) struct FormFeedback {
 struct FormSnapshot {
     values: Vec<String>,
     auth_mode: SshAuthMode,
+    production: bool,
 }
 
 pub(super) struct SshProfileFormPanel {
@@ -47,6 +48,8 @@ pub(super) struct SshProfileFormPanel {
     pub(super) form: ProfileForm,
     pub(super) editing_id: Option<SshProfileId>,
     pub(super) auth_mode: SshAuthMode,
+    pub(super) production: bool,
+    pub(super) password_masked: bool,
     pub(super) operation: Option<FormOperation>,
     pub(super) feedback: Option<FormFeedback>,
     pub(super) default_capability: Option<Result<SshCapability, String>>,
@@ -69,7 +72,8 @@ impl SshProfileFormPanel {
         let editing_id = profile.as_ref().map(|profile| profile.id.clone());
         let auth_mode = profile
             .as_ref()
-            .map_or(SshAuthMode::System, |profile| profile.auth_mode);
+            .map_or(SshAuthMode::Password, |profile| profile.auth_mode);
+        let production = profile.as_ref().is_some_and(|profile| profile.production);
 
         let mut subscriptions = Vec::new();
         for input in form.inputs() {
@@ -87,12 +91,15 @@ impl SshProfileFormPanel {
         let initial = FormSnapshot {
             values: form.values(cx),
             auth_mode,
+            production,
         };
         let mut this = Self {
             service,
             form,
             editing_id,
             auth_mode,
+            production,
+            password_masked: true,
             operation: None,
             feedback: None,
             default_capability,
@@ -109,9 +116,9 @@ impl SshProfileFormPanel {
 
     pub fn title(&self) -> &'static str {
         if self.editing_id.is_some() {
-            "编辑 SSH 连接"
+            "编辑 SSH"
         } else {
-            "新建 SSH 连接"
+            "新建 SSH"
         }
     }
 
@@ -127,6 +134,7 @@ impl SshProfileFormPanel {
         FormSnapshot {
             values: self.form.values(cx),
             auth_mode: self.auth_mode,
+            production: self.production,
         }
     }
 
@@ -135,6 +143,14 @@ impl SshProfileFormPanel {
             return;
         }
         self.auth_mode = mode;
+        self.invalidate_test(cx);
+    }
+
+    pub(super) fn toggle_production(&mut self, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        self.production = !self.production;
         self.invalidate_test(cx);
     }
 
@@ -148,7 +164,7 @@ impl SshProfileFormPanel {
 
     fn profile_from_form(&self, cx: &gpui::App) -> Result<SshProfile, String> {
         self.form
-            .to_profile(self.editing_id.clone(), self.auth_mode, cx)
+            .to_profile(self.editing_id.clone(), self.auth_mode, self.production, cx)
     }
 
     pub(super) fn save(&mut self, cx: &mut Context<Self>) {
@@ -168,7 +184,7 @@ impl SshProfileFormPanel {
         };
         self.operation = Some(FormOperation::Saving);
         self.feedback = Some(FormFeedback {
-            message: "正在加密保存 SSH 配置…".into(),
+            message: "正在保存…".into(),
             kind: FeedbackKind::Info,
         });
         let service = self.service.clone();
@@ -209,7 +225,7 @@ impl SshProfileFormPanel {
         };
         self.operation = Some(FormOperation::Testing);
         self.feedback = Some(FormFeedback {
-            message: "正在测试非交互 SFTP 连接…".into(),
+            message: "正在测试…".into(),
             kind: FeedbackKind::Info,
         });
         let epoch = self.test_epoch;
@@ -225,7 +241,7 @@ impl SshProfileFormPanel {
                 this.operation = None;
                 this.feedback = Some(match result {
                     Ok(()) => FormFeedback {
-                        message: "连接成功：系统 OpenSSH 与非交互 SFTP 可用".into(),
+                        message: "连接成功".into(),
                         kind: FeedbackKind::Success,
                     },
                     Err(error) => FormFeedback {
@@ -274,7 +290,7 @@ impl SshProfileFormPanel {
         let form = cx.entity();
         ramag_ui::open_confirm(
             "放弃修改？",
-            "SSH 连接表单有未保存的修改，关闭将丢弃这些修改。",
+            "未保存内容将丢失。",
             "放弃修改",
             true,
             move |_, app| {

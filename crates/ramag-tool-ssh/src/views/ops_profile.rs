@@ -11,25 +11,6 @@ use super::model::Notice;
 use super::profile_dialog::{ProfileFormEvent, SshProfileFormPanel};
 
 impl SshView {
-    pub(super) fn retry_openssh_probe(&mut self, cx: &mut Context<Self>) {
-        self.capability_generation = self.capability_generation.wrapping_add(1);
-        let generation = self.capability_generation;
-        self.default_capability = None;
-        let service = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            let capability = service.probe(None).await.map_err(|error| error.to_string());
-            let _ = this.update(cx, |this, cx| {
-                if this.capability_generation != generation {
-                    return;
-                }
-                this.default_capability = Some(capability);
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     pub(super) fn open_profile_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_profile_form(None, window, cx);
     }
@@ -86,7 +67,7 @@ impl SshView {
                     let form_inner = form_for_cancel.clone();
                     ramag_ui::open_confirm(
                         "放弃修改？",
-                        "SSH 连接表单有未保存的修改，关闭将丢弃这些修改。",
+                        "未保存内容将丢失。",
                         "放弃修改",
                         true,
                         move |_, app| {
@@ -128,7 +109,7 @@ impl SshView {
                 if let Some(workspace) = self.workspace_mut(&profile.id) {
                     workspace.profile = profile;
                 }
-                self.notice = Some(Notice::info("SSH 连接已加密保存"));
+                self.notice = Some(Notice::info("保存成功"));
                 cx.notify();
             }
             ProfileFormEvent::Cancelled => {
@@ -172,8 +153,8 @@ impl SshView {
         let entity = cx.entity();
         let name = profile.name.clone();
         ramag_ui::open_confirm(
-            "删除 SSH 连接？",
-            format!("将永久删除「{name}」的加密配置，并关闭对应工作区与传输。此操作无法撤销。"),
+            "确认删除？",
+            format!("「{name}」的配置、工作区和传输将被永久删除。"),
             "删除",
             true,
             move |window, app| {
@@ -210,7 +191,7 @@ impl SshView {
                                 .first()
                                 .map(|workspace| workspace.profile.id.clone());
                         }
-                        this.notice = Some(Notice::info("SSH 连接已删除"));
+                        this.notice = Some(Notice::info("删除成功"));
                         this.persist_workspaces(cx);
                     }
                     (Err(error), _) | (_, Err(error)) => {

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use gpui::{AppContext as _, Context, Entity, Window};
+use gpui::{AppContext as _, Context, Entity, Focusable as _, Window};
 use ramag_domain::entities::{
     MAX_SSH_TERMINALS_PER_WORKSPACE, MAX_SSH_WORKSPACES, SshProfileId, SshWorkspacePreference,
     SshWorkspaceState,
@@ -107,13 +107,19 @@ impl SshView {
         cx.notify();
     }
 
-    pub(super) fn select_workspace(&mut self, id: SshProfileId, cx: &mut Context<Self>) {
+    pub(super) fn select_workspace(
+        &mut self,
+        id: SshProfileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self
             .workspaces
             .iter()
             .any(|workspace| workspace.profile_id() == &id)
         {
-            self.active_workspace_id = Some(id);
+            self.active_workspace_id = Some(id.clone());
+            self.sync_directory_filter(&id, window, cx);
             self.view_mode = ViewMode::Workspace;
             self.persist_workspaces(cx);
             cx.notify();
@@ -159,10 +165,28 @@ impl SshView {
             ));
         }
         self.active_workspace_id = Some(id.clone());
+        self.sync_directory_filter(&id, window, cx);
         self.view_mode = ViewMode::Workspace;
         self.persist_workspaces(cx);
         self.connect_workspace(id, window, cx);
         cx.notify();
+    }
+
+    fn sync_directory_filter(
+        &mut self,
+        id: &SshProfileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == id)
+            .map(|workspace| workspace.directory_query.clone())
+            .unwrap_or_default();
+        self.directory_search.update(cx, |state, cx| {
+            state.set_value(query, window, cx);
+        });
     }
 
     pub(super) fn connect_active_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -253,8 +277,9 @@ impl SshView {
             let result = match command {
                 Ok(command) => {
                     let executable = command.program.clone();
-                    let result =
-                        TerminalCore::start(TerminalCommand::new(command.program, command.args));
+                    let mut terminal_command = TerminalCommand::new(command.program, command.args);
+                    terminal_command.env = command.env;
+                    let result = TerminalCore::start(terminal_command);
                     if result.is_err() {
                         service.report_terminal_launch_failure(&executable).await;
                     }
@@ -275,10 +300,11 @@ impl SshView {
                     Ok(core) => {
                         let terminal: Entity<TerminalView> =
                             cx.new(|cx| TerminalView::new(core, window, cx));
-                        let ordinal = workspace.terminals.len() + 1;
+                        let terminal_for_focus = terminal.clone();
+                        let label = workspace.next_terminal_label();
                         workspace.terminals.push(TerminalTab {
                             id: next_terminal_id,
-                            label: format!("Terminal {ordinal}").into(),
+                            label,
                             view: terminal,
                         });
                         workspace.active_terminal_id = Some(next_terminal_id);
@@ -289,6 +315,14 @@ impl SshView {
                         );
                         this.next_terminal_id = this.next_terminal_id.wrapping_add(1).max(1);
                         this.notice = None;
+                        if this.view_mode == ViewMode::Workspace
+                            && this.active_workspace_id.as_ref() == Some(&id)
+                        {
+                            terminal_for_focus
+                                .read(cx)
+                                .focus_handle(cx)
+                                .focus(window, cx);
+                        }
                     }
                     Err(error) => {
                         this.notice =
@@ -305,15 +339,20 @@ impl SshView {
         &mut self,
         workspace_id: SshProfileId,
         terminal_id: u64,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(workspace) = self.workspace_mut(&workspace_id)
-            && workspace
+        let terminal = self.workspace_mut(&workspace_id).and_then(|workspace| {
+            let terminal = workspace
                 .terminals
                 .iter()
-                .any(|terminal| terminal.id == terminal_id)
-        {
+                .find(|terminal| terminal.id == terminal_id)
+                .map(|terminal| terminal.view.clone())?;
             workspace.active_terminal_id = Some(terminal_id);
+            Some(terminal)
+        });
+        if let Some(terminal) = terminal {
+            terminal.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
         }
     }
@@ -350,6 +389,9 @@ impl SshView {
         else {
             return;
         };
+        if index == 0 {
+            return;
+        }
         workspace.terminals.remove(index);
         tracing::info!(
             profile_id = %workspace_id,
@@ -377,24 +419,24 @@ impl SshView {
             .iter()
             .any(|task| task.profile_id == id && !task.status.is_terminal());
         if !has_transfer {
-            self.close_workspace(id, cx);
+            self.close_workspace(id, window, cx);
             return;
         }
         let entity = cx.entity();
         ramag_ui::open_confirm(
-            "关闭 SSH 工作区？",
-            "该工作区仍有等待或进行中的传输。关闭将取消传输并回收 Terminal/SFTP 子进程。",
-            "关闭并取消",
+            "确认关闭？",
+            "仍有传输任务；关闭将取消任务并结束 Terminal/SFTP。",
+            "关闭",
             true,
-            move |_window, app| {
-                entity.update(app, |this, cx| this.close_workspace(id, cx));
+            move |window, app| {
+                entity.update(app, |this, cx| this.close_workspace(id, window, cx));
             },
             window,
             cx,
         );
     }
 
-    fn close_workspace(&mut self, id: SshProfileId, cx: &mut Context<Self>) {
+    fn close_workspace(&mut self, id: SshProfileId, window: &mut Window, cx: &mut Context<Self>) {
         self.workspaces
             .retain(|workspace| workspace.profile_id() != &id);
         if self.active_workspace_id.as_ref() == Some(&id) {
@@ -405,6 +447,11 @@ impl SshView {
         }
         if self.active_workspace_id.is_none() {
             self.view_mode = ViewMode::Manager;
+            self.directory_search.update(cx, |state, cx| {
+                state.set_value("", window, cx);
+            });
+        } else if let Some(active_id) = self.active_workspace_id.clone() {
+            self.sync_directory_filter(&active_id, window, cx);
         }
         self.persist_workspaces(cx);
         let service = self.service.clone();

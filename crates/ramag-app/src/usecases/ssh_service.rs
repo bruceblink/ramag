@@ -18,7 +18,10 @@ use ramag_domain::traits::{SshDriver, Storage};
 
 mod helpers;
 
-use helpers::{bounded_error, normalized_workspace_preference, parse_workspace_preference};
+use helpers::{
+    bounded_error, cancel_tasks, ensure_sftp_writable, normalized_workspace_preference,
+    parse_workspace_preference,
+};
 
 const WORKSPACE_PREFERENCE_KEY: &str = "ssh_workspaces_v1";
 const MAX_WORKSPACE_PREFERENCE_BYTES: usize = 64 * 1024;
@@ -243,12 +246,14 @@ impl SshService {
 
     pub async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
+        ensure_sftp_writable(profile)?;
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         self.driver.create_directory(profile, path).await
     }
 
     pub async fn rename(&self, profile: &SshProfile, old_path: &str, new_path: &str) -> Result<()> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
+        ensure_sftp_writable(profile)?;
         validate_remote_path(old_path).map_err(DomainError::InvalidConfig)?;
         validate_remote_path(new_path).map_err(DomainError::InvalidConfig)?;
         self.driver.rename(profile, old_path, new_path).await
@@ -261,6 +266,7 @@ impl SshService {
         kind: RemoteEntryKind,
     ) -> Result<()> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
+        ensure_sftp_writable(profile)?;
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         self.driver.remove(profile, path, kind).await
     }
@@ -272,6 +278,7 @@ impl SshService {
         remote_path: &str,
     ) -> Result<TransferId> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
+        ensure_sftp_writable(profile)?;
         validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
         validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
         let local_path = local_path
@@ -323,6 +330,16 @@ impl SshService {
             self.transfers.finish(
                 id,
                 &Err(DomainError::InvalidConfig(error.message().into())),
+                false,
+            );
+            return Err(error);
+        }
+        if task.direction == TransferDirection::Upload
+            && let Err(error) = ensure_sftp_writable(profile)
+        {
+            self.transfers.finish(
+                id,
+                &Err(DomainError::Forbidden(error.message().into())),
                 false,
             );
             return Err(error);
@@ -560,24 +577,6 @@ impl SshService {
             smol::Timer::after(TRANSFER_STOP_POLL).await;
         }
     }
-}
-
-fn cancel_tasks(state: &mut TransferState, ids: &[TransferId]) {
-    for id in ids {
-        let waiting = state
-            .tasks
-            .iter()
-            .any(|task| &task.id == id && task.status == TransferStatus::Waiting);
-        if waiting {
-            if let Some(task) = state.tasks.iter_mut().find(|task| &task.id == id) {
-                task.finish(Err("传输已取消".into()), true);
-            }
-            state.cancellations.remove(id);
-        } else if let Some(cancellation) = state.cancellations.get(id) {
-            cancellation.cancel();
-        }
-    }
-    state.prune_history();
 }
 
 #[cfg(test)]

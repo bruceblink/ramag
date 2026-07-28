@@ -183,6 +183,7 @@ dashmap = "6"
 
 # 凭证加密
 aes-gcm = "0.10"
+zeroize = "1"
 # 导出文件口令加密的密钥派生（sha2 / pbkdf2 已在 sqlx 依赖树内，零新增编译单元）
 pbkdf2 = "0.12"
 sha2 = "0.10"

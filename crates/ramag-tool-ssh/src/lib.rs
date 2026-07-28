@@ -14,6 +14,10 @@ use ramag_domain::traits::{Tool, ToolMeta};
 pub use actions::{CloseSshTerminal, NewSshTerminal, RefreshSftp};
 pub use views::SshView;
 
+pub fn init(cx: &mut App) {
+    ramag_terminal::init(cx);
+}
+
 pub fn create_ssh_view(
     service: Arc<SshService>,
     window: &mut Window,
@@ -31,7 +35,7 @@ impl SshTool {
 
     pub fn new() -> Self {
         Self {
-            meta: ToolMeta::new(Self::ID, "SSH + SFTP", "远程终端、文件浏览与安全传输")
+            meta: ToolMeta::new(Self::ID, "SSH", "远程终端、文件浏览与安全传输")
                 .with_icon("terminal"),
         }
     }
@@ -57,6 +61,7 @@ mod tests {
     fn tool_metadata_exposes_ssh_entry() {
         let tool = SshTool::new();
         assert_eq!(tool.meta().id, "ssh");
+        assert_eq!(tool.meta().name, "SSH");
         assert!(tool.meta().icon.is_some());
     }
 }
