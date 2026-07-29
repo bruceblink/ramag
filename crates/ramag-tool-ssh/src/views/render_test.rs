@@ -5,7 +5,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, px, size};
+use gpui::{
+    AppContext as _, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
+    size,
+};
 use ramag_app::SshService;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, RemoteDirectory, RemoteEntry,
@@ -16,7 +19,7 @@ use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{SshDriver, Storage};
 
 use super::SshView;
-use super::model::ViewMode;
+use super::model::{Notice, ViewMode};
 use super::profile_dialog::SshProfileFormPanel;
 
 struct MockStorage {
@@ -108,6 +111,41 @@ impl SshDriver for MockSshDriver {
         })
     }
 
+    async fn read_file_preview(
+        &self,
+        _profile: &SshProfile,
+        _path: &str,
+    ) -> Result<ramag_domain::entities::RemoteFilePreview> {
+        Ok(ramag_domain::entities::RemoteFilePreview {
+            bytes: b"preview".to_vec(),
+            total_bytes: 7,
+            truncated: false,
+        })
+    }
+
+    async fn read_file_chunk(
+        &self,
+        _profile: &SshProfile,
+        _path: &str,
+        _position: ramag_domain::entities::RemoteFileChunkPosition,
+    ) -> Result<ramag_domain::entities::RemoteFileChunk> {
+        Ok(ramag_domain::entities::RemoteFileChunk {
+            bytes: b"readme".to_vec(),
+            offset: 0,
+            total_bytes: 6,
+        })
+    }
+
+    async fn save_file(
+        &self,
+        _profile: &SshProfile,
+        _path: &str,
+        _expected: &[u8],
+        _contents: &[u8],
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn create_directory(&self, _profile: &SshProfile, _path: &str) -> Result<()> {
         Ok(())
     }
@@ -150,6 +188,18 @@ impl SshDriver for MockSshDriver {
     }
 
     async fn disconnect(&self, _profile_id: &SshProfileId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn download_directory(
+        &self,
+        _profile: &SshProfile,
+        _remote_path: &str,
+        _local_path: &Path,
+        _overwrite: ramag_domain::entities::OverwritePolicy,
+        _cancellation: TransferCancellation,
+        _progress: SshProgressFn,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -354,14 +404,24 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
         let workspace = view
             .workspace_mut(&profile.id)
             .expect("workspace should be restored");
-        workspace.entries = Arc::new(vec![RemoteEntry {
-            name: "readme.txt".into(),
-            path: "/home/alice/readme.txt".into(),
-            kind: RemoteEntryKind::File,
-            size: 1536,
-            permissions: Some(0o100644),
-            modified_at: None,
-        }]);
+        workspace.entries = Arc::new(vec![
+            RemoteEntry {
+                name: "readme.txt".into(),
+                path: "/home/alice/readme.txt".into(),
+                kind: RemoteEntryKind::File,
+                size: 1536,
+                permissions: Some(0o100644),
+                modified_at: None,
+            },
+            RemoteEntry {
+                name: "logs".into(),
+                path: "/home/alice/logs".into(),
+                kind: RemoteEntryKind::Directory,
+                size: 0,
+                permissions: Some(0o40755),
+                modified_at: None,
+            },
+        ]);
         cx.notify();
     });
     cx.simulate_resize(size(px(1200.0), px(800.0)));
@@ -370,8 +430,12 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
     view.read_with(cx, |view, _| {
         assert_eq!(view.view_mode, ViewMode::Workspace);
         assert_eq!(view.workspaces.len(), 1);
+        assert!(
+            view.workspaces[0].connection_started,
+            "恢复的活动工作区应自动重连"
+        );
         assert!(view.workspaces[0].terminals.is_empty());
-        assert_eq!(view.workspaces[0].entries.len(), 1);
+        assert_eq!(view.workspaces[0].entries.len(), 2);
     });
     let file_browser = cx
         .debug_bounds("ssh-file-browser")
@@ -379,7 +443,23 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
     assert_eq!(
         file_browser.size.width,
         px(280.0),
-        "目录栏应与数据库侧栏保持同宽"
+        "目录栏默认宽度应与数据库侧栏一致"
+    );
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.workspace_resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(360.0), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("ssh-file-browser")
+            .expect("拖动后文件树应参与布局")
+            .size
+            .width,
+        px(360.0),
+        "文件树宽度应受分隔条状态控制"
     );
     assert!(
         cx.debug_bounds("ssh-directory-summary").is_some(),
@@ -390,18 +470,84 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
         "目录顶部应显示可滚动路径"
     );
     assert!(
+        cx.debug_bounds("ssh-directory-path-label").is_some(),
+        "路径面包屑前应显示路径标签"
+    );
+    assert!(
         cx.debug_bounds("ssh-directory-search").is_some(),
         "目录操作栏应以搜索框开头"
     );
     let entry = cx
         .debug_bounds("sftp-entry-0")
         .expect("remote entry should be rendered");
-    assert_eq!(entry.size.height, px(36.0), "目录项应保持单行紧凑布局");
+    assert_eq!(
+        entry.size.height,
+        px(28.0),
+        "目录项高度应与数据库树保持一致"
+    );
+    view.update(cx, |view, cx| {
+        let workspace = view
+            .workspace_mut(&profile.id)
+            .expect("workspace should remain available");
+        workspace.sftp_loading = true;
+        workspace.directory_loading_path = Some("/home/alice/logs".into());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("sftp-entry-loading-1").is_some(),
+        "正在打开的目录行应显示加载图标"
+    );
+    view.update(cx, |view, cx| {
+        let workspace = view
+            .workspace_mut(&profile.id)
+            .expect("workspace should remain available");
+        workspace.sftp_loading = false;
+        workspace.directory_loading_path = None;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("sftp-entry-loading-1").is_none(),
+        "目录请求结束后应清除加载图标"
+    );
+    let entry_point = point(
+        entry.origin.x + px(8.0),
+        entry.origin.y + entry.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(entry_point, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(entry_point, MouseButton::Right, Modifiers::default());
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.workspaces[0].selected_path.as_deref(),
+            Some("/home/alice/readme.txt"),
+            "右键文件时应同步选中对应条目"
+        )
+    });
+    cx.simulate_keystrokes("escape");
     assert_eq!(service_for_assert.transfer_tasks().len(), 1);
     assert!(
-        cx.debug_bounds("ssh-directory-more-trigger").is_some(),
-        "目录操作应提供更多菜单"
+        cx.debug_bounds("ssh-directory-transfers").is_some(),
+        "目录操作应提供明确的传输入口"
     );
+    let workspace_before_notice = cx
+        .debug_bounds("ssh-workspace-main")
+        .expect("workspace should be rendered");
+    view.update(cx, |view, cx| {
+        view.notice = Some(Notice::error("测试通知"));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let workspace_after_notice = cx
+        .debug_bounds("ssh-workspace-main")
+        .expect("workspace should remain rendered");
+    assert_eq!(
+        workspace_after_notice, workspace_before_notice,
+        "通知应使用浮层，不应挤压工作区布局"
+    );
+    view.read_with(cx, |view, _| {
+        assert!(view.notice.is_none(), "通知应移交给全局消息层")
+    });
     assert!(
         cx.debug_bounds("ssh-transfer-panel").is_none(),
         "传输面板默认不应打开"
@@ -430,6 +576,18 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
     assert!(
         cx.debug_bounds("ssh-transfer-panel").is_none(),
         "收起后不应继续占用工作区"
+    );
+
+    view.update(cx, |view, cx| {
+        view.workspace_mut(&profile.id)
+            .expect("workspace should remain available")
+            .sftp_error = Some("打开远程目录：权限不足".into());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("ssh-directory-direct").is_some(),
+        "目录无权列出时应允许直达已知路径"
     );
 }
 

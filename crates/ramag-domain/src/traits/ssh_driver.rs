@@ -5,8 +5,9 @@ use std::path::Path;
 use async_trait::async_trait;
 
 use crate::entities::{
-    OverwritePolicy, RemoteDirectory, RemoteEntryKind, SshCapability, SshLaunchCommand, SshProfile,
-    SshProfileId, SshProgressFn, TransferCancellation,
+    OverwritePolicy, RemoteDirectory, RemoteEntryKind, RemoteFileChunk, RemoteFileChunkPosition,
+    RemoteFilePreview, SshCapability, SshLaunchCommand, SshProfile, SshProfileId, SshProgressFn,
+    TransferCancellation,
 };
 use crate::error::Result;
 
@@ -22,6 +23,29 @@ pub trait SshDriver: Send + Sync {
     async fn test_connection(&self, profile: &SshProfile) -> Result<()>;
 
     async fn list_directory(&self, profile: &SshProfile, path: &str) -> Result<RemoteDirectory>;
+
+    async fn read_file_preview(
+        &self,
+        profile: &SshProfile,
+        path: &str,
+    ) -> Result<RemoteFilePreview>;
+
+    /// 按位置读取一个有界片段，用于查看任意大小的远程文本文件。
+    async fn read_file_chunk(
+        &self,
+        profile: &SshProfile,
+        path: &str,
+        position: RemoteFileChunkPosition,
+    ) -> Result<RemoteFileChunk>;
+
+    /// 以打开编辑器时读取到的内容作为并发校验，通过临时文件安全替换远程普通文件。
+    async fn save_file(
+        &self,
+        profile: &SshProfile,
+        path: &str,
+        expected: &[u8],
+        contents: &[u8],
+    ) -> Result<()>;
 
     async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()>;
 
@@ -42,6 +66,17 @@ pub trait SshDriver: Send + Sync {
 
     #[allow(clippy::too_many_arguments)]
     async fn download(
+        &self,
+        profile: &SshProfile,
+        remote_path: &str,
+        local_path: &Path,
+        overwrite: OverwritePolicy,
+        cancellation: TransferCancellation,
+        progress: SshProgressFn,
+    ) -> Result<()>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn download_directory(
         &self,
         profile: &SshProfile,
         remote_path: &str,

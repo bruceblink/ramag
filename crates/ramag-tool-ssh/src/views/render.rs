@@ -5,7 +5,8 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
+    ActiveTheme, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
+    notification::Notification, v_flex,
 };
 
 use super::SshView;
@@ -43,7 +44,7 @@ impl SshView {
                 div()
                     .text_xs()
                     .text_color(if manager_selected { fg } else { muted })
-                    .child("连接管理"),
+                    .child("连接"),
             );
         if manager_selected {
             let mut active_bg = accent;
@@ -64,7 +65,10 @@ impl SshView {
             let selected = self.view_mode == ViewMode::Workspace
                 && self.active_workspace_id.as_ref() == Some(&id);
             let label = workspace.profile.name.clone();
-            let dot_color = if workspace.terminal_loading || workspace.sftp_loading {
+            let dot_color = if workspace.terminal_loading
+                || workspace.sftp_loading
+                || workspace.file_preview_loading
+            {
                 gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
             } else if workspace.sftp_error.is_some() || workspace.profile.production {
                 theme.danger
@@ -146,44 +150,18 @@ impl SshView {
             .child(manager_tab)
             .child(workspace_strip)
     }
-
-    fn render_notice(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let notice = self.notice.as_ref()?;
-        let color = if notice.error {
-            cx.theme().danger
-        } else {
-            cx.theme().success
-        };
-        Some(
-            h_flex()
-                .w_full()
-                .flex_none()
-                .min_h(px(32.0))
-                .px(px(12.0))
-                .py(px(6.0))
-                .gap(px(8.0))
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .text_xs()
-                .text_color(color)
-                .child(div().flex_1().min_w_0().child(notice.message.clone()))
-                .child(
-                    ramag_ui::clickable_button("dismiss-ssh-notice")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.notice = None;
-                            cx.notify();
-                        })),
-                )
-                .into_any_element(),
-        )
-    }
 }
 
 impl Render for SshView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(notice) = self.notice.take() {
+            let notification = if notice.error {
+                Notification::error(notice.message)
+            } else {
+                Notification::success(notice.message)
+            };
+            window.push_notification(notification, cx);
+        }
         let body = match self.view_mode {
             ViewMode::Manager => self.render_manager(window, cx).into_any_element(),
             ViewMode::Workspace => self.render_workspace(window, cx).into_any_element(),
@@ -206,7 +184,6 @@ impl Render for SshView {
                 cx.stop_propagation();
             }))
             .child(self.render_tabs(cx))
-            .children(self.render_notice(cx))
             .child(div().flex_1().min_h_0().child(body))
     }
 }

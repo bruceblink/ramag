@@ -116,9 +116,9 @@ impl SshProfileFormPanel {
 
     pub fn title(&self) -> &'static str {
         if self.editing_id.is_some() {
-            "编辑 SSH"
+            "编辑"
         } else {
-            "新建 SSH"
+            "新建"
         }
     }
 
@@ -184,7 +184,7 @@ impl SshProfileFormPanel {
         };
         self.operation = Some(FormOperation::Saving);
         self.feedback = Some(FormFeedback {
-            message: "正在保存…".into(),
+            message: "保存中…".into(),
             kind: FeedbackKind::Info,
         });
         let service = self.service.clone();
@@ -225,7 +225,7 @@ impl SshProfileFormPanel {
         };
         self.operation = Some(FormOperation::Testing);
         self.feedback = Some(FormFeedback {
-            message: "正在测试…".into(),
+            message: "测试中…".into(),
             kind: FeedbackKind::Info,
         });
         let epoch = self.test_epoch;
@@ -241,11 +241,11 @@ impl SshProfileFormPanel {
                 this.operation = None;
                 this.feedback = Some(match result {
                     Ok(()) => FormFeedback {
-                        message: "连接成功".into(),
+                        message: "已连接".into(),
                         kind: FeedbackKind::Success,
                     },
                     Err(error) => FormFeedback {
-                        message: format!("连接测试失败：{error}"),
+                        message: format!("测试失败：{error}"),
                         kind: FeedbackKind::Error,
                     },
                 });
@@ -289,9 +289,9 @@ impl SshProfileFormPanel {
         }
         let form = cx.entity();
         ramag_ui::open_confirm(
-            "放弃修改？",
+            "放弃？",
             "未保存内容将丢失。",
-            "放弃修改",
+            "放弃",
             true,
             move |_, app| {
                 form.update(app, |_this, cx| cx.emit(ProfileFormEvent::Cancelled));
@@ -318,7 +318,7 @@ impl SshProfileFormPanel {
                 };
                 let Some(path) = handle.path().to_str().map(str::to_owned) else {
                     this.feedback = Some(FormFeedback {
-                        message: "所选路径不是有效 UTF-8 路径".into(),
+                        message: "路径不是 UTF-8".into(),
                         kind: FeedbackKind::Error,
                     });
                     cx.notify();

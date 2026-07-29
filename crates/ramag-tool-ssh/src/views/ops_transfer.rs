@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use gpui::{Context, Window};
 use ramag_domain::entities::{
-    OverwritePolicy, RemoteEntry, RemoteEntryKind, SshProfile, SshProfileId, TransferDirection,
-    TransferId, join_remote_path,
+    OverwritePolicy, RemoteEntry, SshProfile, SshProfileId, TransferDirection, TransferId,
+    join_remote_path,
 };
 
 use super::SshView;
@@ -27,7 +27,7 @@ impl SshView {
                 };
                 let local_path = handle.path().to_path_buf();
                 let Some(name) = local_path.file_name().and_then(|name| name.to_str()) else {
-                    this.notice = Some(Notice::error("所选本地文件名不是有效 UTF-8"));
+                    this.notice = Some(Notice::error("文件名不是 UTF-8"));
                     cx.notify();
                     return;
                 };
@@ -52,9 +52,9 @@ impl SshView {
                 if exists {
                     let entity = cx.entity();
                     ramag_ui::open_confirm(
-                        "确认覆盖？",
-                        format!("「{remote_path}」已存在，上传后将被替换。"),
-                        "覆盖上传",
+                        "覆盖？",
+                        format!("「{remote_path}」已存在，将被替换。"),
+                        "覆盖",
                         true,
                         move |_window, app| {
                             entity.update(app, |this, cx| {
@@ -84,23 +84,6 @@ impl SshView {
         .detach();
     }
 
-    pub(super) fn download_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(workspace_id) = self.active_workspace_id.clone() else {
-            return;
-        };
-        let Some(entry) = self.selected_entry(&workspace_id) else {
-            return;
-        };
-        if entry.kind != RemoteEntryKind::File {
-            self.notice = Some(Notice::error(
-                "首个版本仅下载普通文件，不递归目录或跟随软链接",
-            ));
-            cx.notify();
-            return;
-        }
-        self.pick_download(workspace_id, entry, window, cx);
-    }
-
     pub(super) fn pick_download(
         &mut self,
         workspace_id: SshProfileId,
@@ -108,9 +91,15 @@ impl SshView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let archive = entry.kind == ramag_domain::entities::RemoteEntryKind::Directory;
+        let file_name = if archive {
+            format!("{}.tar.gz", entry.name)
+        } else {
+            entry.name.clone()
+        };
         cx.spawn_in(window, async move |this, async_cx| {
             let picked = rfd::AsyncFileDialog::new()
-                .set_file_name(&entry.name)
+                .set_file_name(&file_name)
                 .save_file()
                 .await;
             let _ = this.update_in(async_cx, |this, window, cx| {
@@ -129,9 +118,9 @@ impl SshView {
                     let entity = cx.entity();
                     let display = local_path.display().to_string();
                     ramag_ui::open_confirm(
-                        "确认覆盖？",
-                        format!("「{display}」已存在，下载后将被替换。"),
-                        "覆盖下载",
+                        "覆盖？",
+                        format!("「{display}」已存在，将被替换。"),
+                        "覆盖",
                         true,
                         move |_window, app| {
                             entity.update(app, |this, cx| {
@@ -140,6 +129,7 @@ impl SshView {
                                     entry.path,
                                     local_path,
                                     OverwritePolicy::Overwrite,
+                                    archive,
                                     cx,
                                 )
                             });
@@ -153,6 +143,7 @@ impl SshView {
                         entry.path,
                         local_path,
                         OverwritePolicy::Refuse,
+                        archive,
                         cx,
                     );
                 }
@@ -178,7 +169,7 @@ impl SshView {
         {
             Ok(id) => self.execute_transfer(id, profile, TransferDirection::Upload, overwrite, cx),
             Err(error) => {
-                self.notice = Some(Notice::error(format!("创建上传任务失败：{error}")));
+                self.notice = Some(Notice::error(format!("上传失败：{error}")));
                 cx.notify();
             }
         }
@@ -190,20 +181,30 @@ impl SshView {
         remote_path: String,
         local_path: PathBuf,
         overwrite: OverwritePolicy,
+        archive: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(profile) = self.profile_for_workspace(&workspace_id) else {
             return;
         };
-        match self
-            .service
-            .enqueue_download(&profile, &remote_path, &local_path)
-        {
+        let enqueue = if archive {
+            self.service
+                .enqueue_directory_download(&profile, &remote_path, &local_path)
+        } else {
+            self.service
+                .enqueue_download(&profile, &remote_path, &local_path)
+        };
+        match enqueue {
             Ok(id) => {
-                self.execute_transfer(id, profile, TransferDirection::Download, overwrite, cx)
+                let direction = if archive {
+                    TransferDirection::DownloadArchive
+                } else {
+                    TransferDirection::Download
+                };
+                self.execute_transfer(id, profile, direction, overwrite, cx)
             }
             Err(error) => {
-                self.notice = Some(Notice::error(format!("创建下载任务失败：{error}")));
+                self.notice = Some(Notice::error(format!("下载失败：{error}")));
                 cx.notify();
             }
         }
@@ -241,8 +242,10 @@ impl SshView {
                 match result {
                     Ok(()) => {
                         this.notice = Some(Notice::info(match direction {
-                            TransferDirection::Upload => "上传完成",
-                            TransferDirection::Download => "下载完成",
+                            TransferDirection::Upload => "已上传",
+                            TransferDirection::Download | TransferDirection::DownloadArchive => {
+                                "已下载"
+                            }
                         }));
                         if direction == TransferDirection::Upload {
                             this.refresh_directory(profile.id.clone(), None, cx);
@@ -260,7 +263,7 @@ impl SshView {
 
     pub(super) fn cancel_transfer(&mut self, id: TransferId, cx: &mut Context<Self>) {
         if self.service.cancel_transfer(&id) {
-            self.notice = Some(Notice::info("正在取消"));
+            self.notice = Some(Notice::info("取消中…"));
             cx.notify();
         }
     }
@@ -280,7 +283,7 @@ impl SshView {
             return;
         };
         let Some(profile) = self.profile_for_workspace(&task.profile_id) else {
-            self.notice = Some(Notice::error("原 SSH 配置已不存在，无法重试"));
+            self.notice = Some(Notice::error("SSH 配置已删除"));
             cx.notify();
             return;
         };
@@ -301,9 +304,9 @@ impl SshView {
     ) {
         let entity = cx.entity();
         ramag_ui::open_confirm(
-            "覆盖重试？",
-            "目标已存在，重试成功后将被替换。",
-            "覆盖重试",
+            "覆盖？",
+            "目标已存在，将被替换。",
+            "覆盖",
             true,
             move |_window, app| {
                 entity.update(app, |this, cx| {

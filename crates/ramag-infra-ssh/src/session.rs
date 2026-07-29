@@ -1,6 +1,7 @@
 //! 结构化 SFTP 远程文件操作。
 
 mod connection;
+mod file;
 
 use std::collections::HashSet;
 
@@ -11,11 +12,13 @@ use russh_sftp::protocol::{FileAttributes, StatusCode};
 use ramag_domain::entities::{
     MAX_REMOTE_DELETE_DEPTH, MAX_REMOTE_DELETE_ENTRIES, MAX_REMOTE_DELETE_RETAINED_BYTES,
     MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_DIRECTORY_RETAINED_BYTES, RemoteDirectory,
-    RemoteEntry, RemoteEntryKind, join_remote_path, validate_remote_name, validate_remote_path,
+    RemoteEntry, RemoteEntryKind, contains_case_insensitive, join_remote_path,
+    validate_remote_name, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 
 pub use connection::{SessionCache, SftpConnection, StructuredSftpSession};
+pub use file::{read_file_chunk, read_file_preview};
 
 pub async fn list_directory(
     session: &StructuredSftpSession,
@@ -210,7 +213,7 @@ pub async fn remove(
     Ok(())
 }
 
-async fn read_directory_files(
+pub(crate) async fn read_directory_files(
     session: &StructuredSftpSession,
     path: &str,
     max_entries: usize,
@@ -346,6 +349,12 @@ pub fn map_sftp_error(context: &str, error: SftpError) -> DomainError {
         SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile => {
             DomainError::NotFound(format!("{context}的远程项目"))
         }
+        SftpError::Status(status)
+            if status.status_code == StatusCode::PermissionDenied
+                || contains_case_insensitive(&status.error_message, "permission denied") =>
+        {
+            DomainError::Forbidden(format!("{context}：权限不足"))
+        }
         _ => DomainError::Other(format!("{context}失败：{error}")),
     }
 }
@@ -388,6 +397,21 @@ mod tests {
                 DomainError::ConnectionFailed(_)
             ));
         }
+    }
+
+    #[test]
+    fn generic_sftp_permission_error_has_a_concise_hint() {
+        let error = SftpError::Status(russh_sftp::protocol::Status {
+            id: 1,
+            status_code: StatusCode::Failure,
+            error_message: "permission denied".into(),
+            language_tag: String::new(),
+        });
+
+        assert!(matches!(
+            map_sftp_error("打开远程目录", error),
+            DomainError::Forbidden(message) if message == "打开远程目录：权限不足"
+        ));
     }
 
     #[test]

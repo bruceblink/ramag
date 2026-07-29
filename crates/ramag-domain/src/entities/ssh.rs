@@ -19,9 +19,13 @@ pub const MAX_SSH_ENVIRONMENT_BYTES: usize = 64;
 pub const MAX_SSH_PATH_BYTES: usize = 32 * 1024;
 pub const MAX_REMOTE_DIRECTORY_ENTRIES: usize = 100_000;
 pub const MAX_REMOTE_DIRECTORY_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_REMOTE_FILE_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_REMOTE_DELETE_DEPTH: usize = 64;
 pub const MAX_REMOTE_DELETE_ENTRIES: usize = 100_000;
 pub const MAX_REMOTE_DELETE_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_REMOTE_ARCHIVE_DEPTH: usize = 64;
+pub const MAX_REMOTE_ARCHIVE_ENTRIES: usize = 100_000;
+pub const MAX_REMOTE_ARCHIVE_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFER_HISTORY: usize = 100;
 pub const MAX_QUEUED_TRANSFERS: usize = 64;
 pub const MAX_CONCURRENT_TRANSFERS: usize = 3;
@@ -211,6 +215,34 @@ pub struct RemoteDirectory {
     pub entries: Vec<RemoteEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFilePreview {
+    pub bytes: Vec<u8>,
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+/// 远程文件分段读取位置；每次返回的数据仍受预览字节上限约束。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteFileChunkPosition {
+    From(u64),
+    Before(u64),
+    Tail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFileChunk {
+    pub bytes: Vec<u8>,
+    pub offset: u64,
+    pub total_bytes: u64,
+}
+
+impl RemoteFileChunk {
+    pub fn end_offset(&self) -> u64 {
+        self.offset.saturating_add(self.bytes.len() as u64)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TransferId(pub Uuid);
 
@@ -236,6 +268,7 @@ impl std::fmt::Display for TransferId {
 pub enum TransferDirection {
     Upload,
     Download,
+    DownloadArchive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

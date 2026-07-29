@@ -6,9 +6,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use async_compression::futures::bufread::GzipDecoder;
+use futures::io::{AsyncReadExt as _, BufReader};
+use futures::stream::StreamExt as _;
 use ramag_domain::entities::{
-    OverwritePolicy, RemoteEntryKind, SshAuthMode, SshProfile, SshProgressFn, TransferCancellation,
-    join_remote_path, validate_remote_path,
+    OverwritePolicy, RemoteEntryKind, RemoteFileChunkPosition, SshAuthMode, SshProfile,
+    SshProgressFn, TransferCancellation, join_remote_path, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::SshDriver;
@@ -69,9 +72,11 @@ async fn openssh_sftp_round_trip_is_streamed_and_cleaned() -> Result<()> {
         .map_err(|error| DomainError::Other(format!("创建本地测试目录失败：{error}")))?;
     let local_source = local_directory.path().join("source.bin");
     let local_download = local_directory.path().join("download.bin");
+    let local_archive = local_directory.path().join("case.tar.gz");
     let payload = (0..256 * 1024)
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
+    let edited = b"edited through Ramag\n".to_vec();
     std::fs::write(&local_source, &payload)
         .map_err(|error| DomainError::Other(format!("写入本地测试文件失败：{error}")))?;
     let uploaded = Arc::new(AtomicU64::new(0));
@@ -108,6 +113,26 @@ async fn openssh_sftp_round_trip_is_streamed_and_cleaned() -> Result<()> {
                 "上传后的远程文件元数据不符合预期".into(),
             ));
         }
+        let preview = driver
+            .read_file_preview(&fixture.profile, &source_path)
+            .await?;
+        if preview.bytes != payload || preview.truncated {
+            return Err(DomainError::Other("远程文件预览内容不符合预期".into()));
+        }
+        let chunk = driver
+            .read_file_chunk(
+                &fixture.profile,
+                &source_path,
+                RemoteFileChunkPosition::Tail,
+            )
+            .await?;
+        if chunk.bytes != payload || chunk.offset != 0 || chunk.total_bytes != payload.len() as u64
+        {
+            return Err(DomainError::Other("远程文件分段内容不符合预期".into()));
+        }
+        driver
+            .save_file(&fixture.profile, &source_path, &payload, &edited)
+            .await?;
         driver
             .download(
                 &fixture.profile,
@@ -120,12 +145,58 @@ async fn openssh_sftp_round_trip_is_streamed_and_cleaned() -> Result<()> {
             .await?;
         let downloaded = std::fs::read(&local_download)
             .map_err(|error| DomainError::Other(format!("读取下载结果失败：{error}")))?;
-        if downloaded != payload {
+        if downloaded != edited {
             return Err(DomainError::Other("下载内容与上传源不一致".into()));
         }
         driver
             .rename(&fixture.profile, &source_path, &renamed_path)
             .await?;
+        let archived = Arc::new(AtomicU64::new(0));
+        let archived_for_progress = archived.clone();
+        driver
+            .download_directory(
+                &fixture.profile,
+                &case_directory,
+                &local_archive,
+                OverwritePolicy::Refuse,
+                TransferCancellation::default(),
+                Arc::new(move |transferred, _| {
+                    archived_for_progress.store(transferred, Ordering::Release);
+                }),
+            )
+            .await?;
+        let archive_size = std::fs::metadata(&local_archive)
+            .map_err(|error| DomainError::Other(format!("读取目录归档信息失败：{error}")))?
+            .len();
+        if archive_size == 0 || archived.load(Ordering::Acquire) != edited.len() as u64 {
+            return Err(DomainError::Other("目录归档结果不符合预期".into()));
+        }
+        let archive_file = async_std::fs::File::open(&local_archive)
+            .await
+            .map_err(|error| DomainError::Other(format!("打开目录归档失败：{error}")))?;
+        let mut archive = async_tar::Archive::new(GzipDecoder::new(BufReader::new(archive_file)))
+            .entries()
+            .map_err(|error| DomainError::Other(format!("读取目录归档失败：{error}")))?;
+        let expected_archive_path = format!("{case_name}/renamed.bin");
+        let mut archived_contents = None;
+        while let Some(entry) = archive.next().await {
+            let mut entry = entry
+                .map_err(|error| DomainError::Other(format!("读取目录归档项目失败：{error}")))?;
+            let path = entry
+                .path()
+                .map_err(|error| DomainError::Other(format!("读取归档路径失败：{error}")))?;
+            if path.to_string_lossy() == expected_archive_path {
+                let mut contents = Vec::new();
+                entry
+                    .read_to_end(&mut contents)
+                    .await
+                    .map_err(|error| DomainError::Other(format!("读取归档文件失败：{error}")))?;
+                archived_contents = Some(contents);
+            }
+        }
+        if archived_contents.as_deref() != Some(edited.as_slice()) {
+            return Err(DomainError::Other("目录归档文件内容不符合预期".into()));
+        }
         driver
             .remove(&fixture.profile, &renamed_path, RemoteEntryKind::File)
             .await?;

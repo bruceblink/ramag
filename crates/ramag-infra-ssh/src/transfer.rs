@@ -19,6 +19,7 @@ use ramag_domain::error::{DomainError, Result};
 
 use crate::session::{StructuredSftpSession, map_sftp_error};
 
+mod archive;
 mod commit;
 
 #[cfg(test)]
@@ -41,6 +42,123 @@ impl Default for TransferEngine {
 }
 
 impl TransferEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_directory(
+        &self,
+        session: Arc<StructuredSftpSession>,
+        remote_path: String,
+        local_path: PathBuf,
+        overwrite: OverwritePolicy,
+        cancellation: TransferCancellation,
+        progress: SshProgressFn,
+    ) -> Result<()> {
+        let _permit = acquire_permit(self.semaphore.clone(), &cancellation).await?;
+        archive::download_directory(
+            session,
+            remote_path,
+            local_path,
+            overwrite,
+            cancellation,
+            progress,
+        )
+        .await
+    }
+
+    pub async fn save_file(
+        &self,
+        session: Arc<StructuredSftpSession>,
+        remote_path: String,
+        expected: Vec<u8>,
+        contents: Vec<u8>,
+    ) -> Result<()> {
+        let _permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| DomainError::Other("SSH 传输调度器已关闭".into()))?;
+        let metadata = session
+            .raw
+            .lstat(remote_path.clone())
+            .await
+            .map_err(|error| map_sftp_error("读取远程编辑文件信息", error))?
+            .attrs;
+        if !metadata.is_regular() {
+            return Err(DomainError::Forbidden(
+                "仅支持保存普通文件，不跟随符号链接".into(),
+            ));
+        }
+        ensure_remote_contents_match(&session, &remote_path, &expected).await?;
+
+        let temporary = remote_sibling(&remote_path, "ramag-edit")?;
+        let mut attributes = FileAttributes::empty();
+        attributes.permissions = metadata.permissions;
+        let handle = session
+            .raw
+            .open(
+                temporary.clone(),
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+                attributes,
+            )
+            .await
+            .map_err(|error| map_sftp_error("创建远程编辑临时文件", error))?
+            .handle;
+        let write_result = async {
+            let mut offset = 0u64;
+            for chunk in contents.chunks(session.write_chunk_bytes) {
+                session
+                    .raw
+                    .write(handle.clone(), offset, chunk.to_vec())
+                    .await
+                    .map_err(|error| map_sftp_error("写入远程编辑临时文件", error))?;
+                offset = offset.saturating_add(chunk.len() as u64);
+            }
+            if metadata.permissions.is_some() {
+                let mut preserved = FileAttributes::empty();
+                preserved.permissions = metadata.permissions;
+                session
+                    .raw
+                    .fsetstat(handle.clone(), preserved)
+                    .await
+                    .map_err(|error| map_sftp_error("保留远程文件权限", error))?;
+            }
+            if session.supports_fsync {
+                session
+                    .raw
+                    .fsync(handle.clone())
+                    .await
+                    .map_err(|error| map_sftp_error("同步远程编辑临时文件", error))?;
+            }
+            Ok(())
+        }
+        .await;
+        let close_result = session
+            .raw
+            .close(handle)
+            .await
+            .map(|_| ())
+            .map_err(|error| map_sftp_error("关闭远程编辑临时文件", error));
+        let result = match (write_result, close_result) {
+            (Ok(()), close) => close,
+            (Err(_), Err(error @ DomainError::ConnectionFailed(_))) => Err(error),
+            (Err(error), _) => Err(error),
+        };
+        if let Err(error) = result {
+            cleanup_remote(&session, &temporary).await;
+            return Err(error);
+        }
+
+        if let Err(error) = ensure_remote_contents_match(&session, &remote_path, &expected).await {
+            cleanup_remote(&session, &temporary).await;
+            return Err(error);
+        }
+        if let Err(error) = commit_remote(&session, &temporary, &remote_path, true).await {
+            cleanup_remote(&session, &temporary).await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn upload(
         &self,
@@ -298,6 +416,20 @@ impl TransferEngine {
         progress(total, total);
         Ok(())
     }
+}
+
+async fn ensure_remote_contents_match(
+    session: &StructuredSftpSession,
+    path: &str,
+    expected: &[u8],
+) -> Result<()> {
+    let current = crate::session::read_file_preview(session, path).await?;
+    if current.truncated || current.bytes != expected {
+        return Err(DomainError::Forbidden(
+            "远程文件已变化，请重新打开后再保存".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn copy_upload(

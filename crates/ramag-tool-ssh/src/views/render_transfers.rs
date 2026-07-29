@@ -7,7 +7,9 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
-use ramag_domain::entities::{OverwritePolicy, TransferDirection, TransferStatus, TransferTask};
+use ramag_domain::entities::{
+    OverwritePolicy, TransferDirection, TransferStatus, TransferTask, format_bytes,
+};
 
 use super::SshView;
 
@@ -31,9 +33,9 @@ impl SshView {
             return div().h_0().into_any_element();
         }
         let border = cx.theme().border;
-        let running = tasks
+        let completed = tasks
             .iter()
-            .filter(|task| !task.status.is_terminal())
+            .filter(|task| task.status == TransferStatus::Completed)
             .count();
         let mut rows = v_flex().w_full();
         for task in &tasks {
@@ -67,7 +69,7 @@ impl SshView {
                         div()
                             .text_xs()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(format!("传输 {running}/{}", tasks.len())),
+                            .child(format!("完成 {completed}/{}", tasks.len())),
                     )
                     .child(
                         h_flex()
@@ -117,22 +119,9 @@ fn transfer_row(task: TransferTask, cx: &mut Context<SshView>) -> impl IntoEleme
     };
     let direction = match task.direction {
         TransferDirection::Upload => "上传",
-        TransferDirection::Download => "下载",
+        TransferDirection::Download | TransferDirection::DownloadArchive => "下载",
     };
-    let progress = if task.total_bytes == 0 {
-        if task.transferred_bytes == 0 {
-            "—".to_string()
-        } else {
-            format!("{} bytes", task.transferred_bytes)
-        }
-    } else {
-        format!(
-            "{:.0}% ({}/{})",
-            task.transferred_bytes as f64 * 100.0 / task.total_bytes as f64,
-            task.transferred_bytes,
-            task.total_bytes
-        )
-    };
+    let progress = transfer_progress(&task);
     let id = task.id.clone();
     let id_for_overwrite = id.clone();
     let id_for_cancel = id.clone();
@@ -220,7 +209,7 @@ fn transfer_row(task: TransferTask, cx: &mut Context<SshView>) -> impl IntoEleme
                     )))
                     .danger()
                     .xsmall()
-                    .label("覆盖重试")
+                    .label("覆盖")
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, window, cx| {
                             this.confirm_overwrite_retry(id_for_overwrite.clone(), window, cx);
@@ -231,12 +220,49 @@ fn transfer_row(task: TransferTask, cx: &mut Context<SshView>) -> impl IntoEleme
         )
 }
 
+fn transfer_progress(task: &TransferTask) -> String {
+    if task.total_bytes == 0 {
+        if task.transferred_bytes == 0 {
+            "—".to_string()
+        } else {
+            format_bytes(task.transferred_bytes)
+        }
+    } else {
+        format!(
+            "{:.0}% ({}/{})",
+            task.transferred_bytes as f64 * 100.0 / task.total_bytes as f64,
+            format_bytes(task.transferred_bytes),
+            format_bytes(task.total_bytes)
+        )
+    }
+}
+
 fn transfer_status(status: TransferStatus) -> &'static str {
     match status {
         TransferStatus::Waiting => "等待",
-        TransferStatus::Running => "进行中",
+        TransferStatus::Running => "传输中",
         TransferStatus::Completed => "完成",
         TransferStatus::Failed => "失败",
-        TransferStatus::Cancelled => "已取消",
+        TransferStatus::Cancelled => "取消",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::SshProfileId;
+
+    #[test]
+    fn transfer_progress_uses_readable_sizes() {
+        let mut task = TransferTask::new(
+            SshProfileId::new(),
+            TransferDirection::Download,
+            "/tmp/file",
+            "/remote/file",
+        );
+        task.mark_running();
+        task.update_progress(2_975_097, 2_975_097);
+
+        assert_eq!(transfer_progress(&task), "100% (2.8 MiB/2.8 MiB)");
     }
 }

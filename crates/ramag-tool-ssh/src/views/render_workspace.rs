@@ -1,24 +1,28 @@
 //! SSH 工作区：SFTP 浏览器与多 Terminal 标签。
 
 use gpui::{
-    Anchor, AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled,
-    Window, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
+    prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
-    h_flex, menu::PopupMenu, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    button::ButtonVariants as _,
+    h_flex,
+    resizable::{h_resizable, resizable_panel},
+    v_flex,
 };
-use ramag_domain::entities::{RemoteEntryKind, SshProfileId};
-use ramag_ui::PointerDropdownMenu as _;
+use ramag_domain::entities::{MAX_SSH_TERMINALS_PER_WORKSPACE, SshProfileId};
 use std::ops::Range;
 
 use super::SshView;
 use super::render_directory_helpers::{
-    centered_message, directory_counts, directory_counts_at, filtered_entry_indices,
-    remote_breadcrumbs, remote_entry_row,
+    RemoteEntryMenuState, centered_message, directory_counts, directory_counts_at,
+    filtered_entry_indices, remote_breadcrumbs, remote_entry_row,
 };
 
-const FILE_BROWSER_WIDTH: f32 = 280.0;
+const FILE_BROWSER_WIDTH_INITIAL: f32 = 280.0;
+const FILE_BROWSER_WIDTH_MIN: f32 = 180.0;
+const FILE_BROWSER_WIDTH_MAX: f32 = 600.0;
 
 impl SshView {
     pub(super) fn render_workspace(
@@ -44,13 +48,28 @@ impl SshView {
                 .into_any_element();
         };
         let workspace_id = workspace.profile.id.clone();
-        let main = h_flex()
+        let main = div()
             .id("ssh-workspace-main")
             .debug_selector(|| "ssh-workspace-main".into())
             .size_full()
-            .items_stretch()
-            .child(self.render_file_browser(workspace_id.clone(), cx))
-            .child(self.render_terminal_pane(workspace_id, window, cx));
+            .child(
+                h_resizable("ssh-workspace-resize")
+                    .with_state(&self.workspace_resize)
+                    .child(
+                        resizable_panel()
+                            .flex_none()
+                            .size(px(FILE_BROWSER_WIDTH_INITIAL))
+                            .size_range(px(FILE_BROWSER_WIDTH_MIN)..px(FILE_BROWSER_WIDTH_MAX))
+                            .child(self.render_file_browser(workspace_id.clone(), cx)),
+                    )
+                    .child(resizable_panel().child(
+                        div().size_full().min_w_0().child(self.render_terminal_pane(
+                            workspace_id,
+                            window,
+                            cx,
+                        )),
+                    )),
+            );
         div()
             .size_full()
             .relative()
@@ -79,15 +98,12 @@ impl SshView {
             .map_or(entries.len(), |indices| indices.len());
         let selected_path = workspace.selected_path.clone();
         let loading = workspace.sftp_loading;
+        let loading_path = workspace.directory_loading_path.clone();
         let error = workspace.sftp_error.clone();
         let busy = workspace.operation_busy;
+        let preview_loading = workspace.file_preview_loading;
         let sftp_locked = workspace.profile.production;
         let connection_available = self.profile_connection_available(&workspace.profile);
-        let selected_entry = selected_path
-            .as_ref()
-            .and_then(|selected| entries.iter().find(|entry| &entry.path == selected));
-        let can_download = selected_entry.is_some_and(|entry| entry.kind == RemoteEntryKind::File);
-        let has_selection = selected_entry.is_some();
         let (total_directories, total_files) = directory_counts(&entries);
         let (visible_directories, visible_files) = filtered_indices
             .as_ref()
@@ -109,12 +125,8 @@ impl SshView {
         let transfers_visible = workspace.transfers_visible;
         let border = cx.theme().border;
 
-        let menu_entity = cx.entity();
         let can_create = !loading && !busy && !sftp_locked && connection_available;
-        let can_rename = has_selection && !busy && !sftp_locked && connection_available;
-        let can_delete = can_rename;
-        let show_file_actions = has_selection && !sftp_locked && connection_available;
-        let show_more = show_file_actions || has_transfers;
+        let show_transfers = has_transfers;
         let toolbar = h_flex()
             .w_full()
             .h(px(40.0))
@@ -169,87 +181,30 @@ impl SshView {
                     })),
             )
             .child(
-                ramag_ui::clickable_button("sftp-download")
-                    .ghost()
-                    .xsmall()
-                    .icon(ramag_ui::icons::download())
-                    .tooltip("下载")
-                    .disabled(!can_download || busy || !connection_available)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.download_selected(window, cx);
-                    })),
-            )
-            .child(
                 ramag_ui::clickable_button("sftp-mkdir")
                     .ghost()
                     .xsmall()
                     .icon(IconName::FolderOpen)
-                    .tooltip("新建目录")
+                    .tooltip("新建")
                     .disabled(!can_create)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.prompt_create_directory(window, cx);
                     })),
             )
-            .when(show_more, |toolbar| {
+            .when(show_transfers, |toolbar| {
                 toolbar.child(
                     div()
-                        .id("ssh-directory-more-trigger")
-                        .debug_selector(|| "ssh-directory-more-trigger".into())
+                        .id("ssh-directory-transfers")
+                        .debug_selector(|| "ssh-directory-transfers".into())
                         .child(
-                            ramag_ui::clickable_button("ssh-directory-more")
+                            ramag_ui::clickable_button("ssh-directory-transfers-button")
                                 .ghost()
                                 .xsmall()
-                                .icon(IconName::Ellipsis)
-                                .pointer_dropdown_menu_with_anchor(
-                                    Anchor::TopLeft,
-                                    move |mut menu: PopupMenu, _, _| {
-                                        if show_file_actions {
-                                            let rename_entity = menu_entity.clone();
-                                            menu = menu.item(
-                                                ramag_ui::menu_item_with_disabled(
-                                                    "改名",
-                                                    !can_rename,
-                                                )
-                                                .on_click(move |_, window, app| {
-                                                    rename_entity.update(app, |this, cx| {
-                                                        this.prompt_rename_selected(window, cx);
-                                                    });
-                                                }),
-                                            );
-                                            let delete_entity = menu_entity.clone();
-                                            menu = menu.item(
-                                                ramag_ui::menu_item_with_disabled(
-                                                    "删除",
-                                                    !can_delete,
-                                                )
-                                                .on_click(move |_, window, app| {
-                                                    delete_entity.update(app, |this, cx| {
-                                                        this.request_delete_selected(window, cx);
-                                                    });
-                                                }),
-                                            );
-                                        }
-                                        if has_transfers {
-                                            if show_file_actions {
-                                                menu = menu.separator();
-                                            }
-                                            let transfer_entity = menu_entity.clone();
-                                            menu = menu.item(
-                                                ramag_ui::menu_item(if transfers_visible {
-                                                    "收起传输"
-                                                } else {
-                                                    "查看传输"
-                                                })
-                                                .on_click(move |_, _, app| {
-                                                    transfer_entity.update(app, |this, cx| {
-                                                        this.toggle_transfer_panel(cx);
-                                                    });
-                                                }),
-                                            );
-                                        }
-                                        menu
-                                    },
-                                ),
+                                .label("传输")
+                                .selected(transfers_visible)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.toggle_transfer_panel(cx);
+                                })),
                         ),
                 )
             });
@@ -257,8 +212,9 @@ impl SshView {
         let body: AnyElement = if !connection_available && entries.is_empty() {
             centered_message("OpenSSH 不可用，请编辑连接", cx).into_any_element()
         } else if loading && entries.is_empty() {
-            centered_message("加载目录…", cx).into_any_element()
+            centered_message("加载中…", cx).into_any_element()
         } else if let Some(error) = error {
+            let workspace_for_direct = workspace_id.clone();
             v_flex()
                 .size_full()
                 .items_center()
@@ -269,16 +225,40 @@ impl SshView {
                     div()
                         .text_xs()
                         .text_color(cx.theme().danger)
-                        .child(format!("SFTP 连接失败：{error}")),
+                        .child(format!("加载失败：{error}")),
                 )
                 .child(
-                    ramag_ui::clickable_button("retry-sftp")
-                        .small()
-                        .label("重试")
-                        .disabled(!connection_available)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.refresh_active_directory(cx);
-                        })),
+                    h_flex()
+                        .gap(px(8.0))
+                        .child(
+                            ramag_ui::clickable_button("retry-sftp")
+                                .small()
+                                .label("重试")
+                                .disabled(!connection_available)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.refresh_active_directory(cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("ssh-directory-direct")
+                                .debug_selector(|| "ssh-directory-direct".into())
+                                .child(
+                                    ramag_ui::clickable_button("open-sftp-path")
+                                        .small()
+                                        .label("直达")
+                                        .disabled(!connection_available)
+                                        .on_click(cx.listener(
+                                            move |this, _: &ClickEvent, window, cx| {
+                                                this.prompt_remote_path(
+                                                    workspace_for_direct.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                ),
+                        ),
                 )
                 .into_any_element()
         } else if entries.is_empty() {
@@ -286,6 +266,13 @@ impl SshView {
         } else if visible_len == 0 {
             centered_message("暂无匹配", cx).into_any_element()
         } else {
+            let menu_state = RemoteEntryMenuState {
+                connection_available,
+                allow_write: !sftp_locked,
+                directory_loading: loading,
+                operation_busy: busy,
+                preview_loading,
+            };
             uniform_list(
                 SharedString::from(format!("sftp-directory-{workspace_id}")),
                 visible_len,
@@ -293,6 +280,7 @@ impl SshView {
                     let entries = entries.clone();
                     let filtered_indices = filtered_indices.clone();
                     let selected_path = selected_path.clone();
+                    let loading_path = loading_path.clone();
                     let workspace_id = workspace_id.clone();
                     move |_this, range: Range<usize>, _window, cx| {
                         range
@@ -305,6 +293,10 @@ impl SshView {
                                     selected_path.as_ref(),
                                     workspace_id.clone(),
                                     index,
+                                    loading
+                                        && loading_path.as_deref()
+                                            == Some(entries[index].path.as_str()),
+                                    menu_state,
                                     cx,
                                 )
                             })
@@ -319,9 +311,7 @@ impl SshView {
         v_flex()
             .id("ssh-file-browser")
             .debug_selector(|| "ssh-file-browser".into())
-            .w(px(FILE_BROWSER_WIDTH))
-            .h_full()
-            .flex_none()
+            .size_full()
             .border_r_1()
             .border_color(border)
             .child(self.render_directory_breadcrumb(workspace_id.clone(), &path, cx))
@@ -353,24 +343,18 @@ impl SshView {
     ) -> impl IntoElement {
         let parts = remote_breadcrumbs(path);
         let last = parts.len().saturating_sub(1);
-        let foreground = cx.theme().foreground;
+        let link = cx.theme().link;
+        let link_hover = cx.theme().link_hover;
         let muted = cx.theme().muted_foreground;
-        let mut breadcrumb = h_flex()
-            .id("ssh-directory-breadcrumb")
-            .debug_selector(|| "ssh-directory-breadcrumb".into())
-            .w_full()
-            .h(px(40.0))
-            .flex_none()
-            .items_center()
+        let mut path_parts = h_flex()
+            .id("ssh-directory-path-scroll")
+            .flex_1()
+            .min_w_0()
             .gap(px(5.0))
-            .px(px(10.0))
-            .overflow_x_scroll()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .text_xs();
+            .overflow_x_scroll();
         for (index, (label, target)) in parts.into_iter().enumerate() {
             if index > 0 {
-                breadcrumb = breadcrumb.child(
+                path_parts = path_parts.child(
                     div()
                         .flex_none()
                         .text_color(muted)
@@ -380,16 +364,16 @@ impl SshView {
             let id = SharedString::from(format!("ssh-path-part-{index}"));
             let target_for_click = target.clone();
             let workspace_id_for_click = workspace_id.clone();
-            breadcrumb = breadcrumb.child(
+            path_parts = path_parts.child(
                 div()
                     .id(id)
                     .flex_none()
                     .cursor_pointer()
-                    .text_color(if index == last { foreground } else { muted })
+                    .text_color(link)
                     .when(index == last, |part| {
                         part.font_weight(gpui::FontWeight::SEMIBOLD)
                     })
-                    .hover(move |part| part.text_color(foreground))
+                    .hover(move |part| part.text_color(link_hover))
                     .child(label)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.refresh_directory(
@@ -400,7 +384,32 @@ impl SshView {
                     })),
             );
         }
-        breadcrumb
+        h_flex()
+            .id("ssh-directory-breadcrumb")
+            .debug_selector(|| "ssh-directory-breadcrumb".into())
+            .w_full()
+            .h(px(40.0))
+            .flex_none()
+            .items_center()
+            .gap(px(5.0))
+            .px(px(10.0))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .text_xs()
+            .child(
+                div()
+                    .id("ssh-directory-path-label")
+                    .debug_selector(|| "ssh-directory-path-label".into())
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(move |label| label.text_color(link_hover))
+                    .child("路径")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.prompt_remote_path(workspace_id.clone(), window, cx);
+                    })),
+            )
+            .child(path_parts)
     }
 
     fn render_terminal_pane(
@@ -424,6 +433,7 @@ impl SshView {
             .iter()
             .map(|terminal| (terminal.id, terminal.label.clone(), terminal.view.clone()))
             .collect::<Vec<_>>();
+        let terminal_limit_reached = terminal_views.len() >= MAX_SSH_TERMINALS_PER_WORKSPACE;
         let border = cx.theme().border;
         let secondary = cx.theme().secondary;
         let muted_bg = cx.theme().muted;
@@ -455,7 +465,7 @@ impl SshView {
             let can_reconnect = exited.is_some();
             let display = match exited {
                 Some(status) => format!(
-                    "{label} [已退出{}]",
+                    "{label} [退出{}]",
                     status
                         .code
                         .map_or_else(String::new, |code| format!(": {code}"))
@@ -496,7 +506,6 @@ impl SshView {
                             .ghost()
                             .xsmall()
                             .label("重连")
-                            .tooltip("保留输出")
                             .disabled(!connection_available)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
@@ -539,7 +548,7 @@ impl SshView {
                 .small()
                 .icon(IconName::Plus)
                 .tooltip("新建")
-                .disabled(terminal_loading || !connection_available)
+                .disabled(terminal_loading || terminal_limit_reached || !connection_available)
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.start_active_terminal(window, cx);
                 })),
@@ -567,9 +576,9 @@ impl SshView {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(if terminal_loading {
-                                "正在连接"
+                                "连接中…"
                             } else {
-                                "尚未连接"
+                                "未连接"
                             }),
                     )
                     .child(

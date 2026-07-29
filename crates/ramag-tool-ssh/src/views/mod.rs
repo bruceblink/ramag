@@ -1,5 +1,8 @@
 //! SSH 工具根视图与状态模型。
 
+mod file_chunk;
+mod file_preview;
+mod file_syntax;
 mod model;
 mod ops;
 mod ops_files;
@@ -21,7 +24,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{AppContext as _, Context, Entity, FocusHandle, Focusable, Subscription, Window};
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::{
+    input::{InputEvent, InputState},
+    resizable::ResizableState,
+};
 use ramag_app::SshService;
 use ramag_domain::entities::{SshCapability, SshProfile, SshProfileId};
 
@@ -36,6 +42,7 @@ pub struct SshView {
     search: Entity<InputState>,
     query: String,
     directory_search: Entity<InputState>,
+    workspace_resize: Entity<ResizableState>,
     focused_search_once: bool,
     deleting_profile: bool,
     profile_form_subscription: Option<Subscription>,
@@ -61,6 +68,7 @@ impl SshView {
                 .placeholder("搜索名称")
                 .clean_on_escape()
         });
+        let workspace_resize = cx.new(|_| ResizableState::default());
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
             &search,
@@ -88,6 +96,12 @@ impl SshView {
                 }
             },
         ));
+        subscriptions.push(ramag_ui::persist_resizable_sizes(
+            &workspace_resize,
+            "split_ssh_workspace",
+            window,
+            cx,
+        ));
         let mut this = Self {
             service,
             profiles: Arc::new(Vec::new()),
@@ -97,6 +111,7 @@ impl SshView {
             search,
             query: String::new(),
             directory_search,
+            workspace_resize,
             focused_search_once: false,
             deleting_profile: false,
             profile_form_subscription: None,
@@ -112,7 +127,7 @@ impl SshView {
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
-        this.load_initial_state(cx);
+        this.load_initial_state(window, cx);
         this.spawn_refresh_ticker(window, cx);
         this
     }

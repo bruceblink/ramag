@@ -86,6 +86,41 @@ impl SshDriver for TerminalDriver {
         })
     }
 
+    async fn read_file_preview(
+        &self,
+        _profile: &SshProfile,
+        _path: &str,
+    ) -> Result<RemoteFilePreview> {
+        Ok(RemoteFilePreview {
+            bytes: b"preview".to_vec(),
+            total_bytes: 7,
+            truncated: false,
+        })
+    }
+
+    async fn read_file_chunk(
+        &self,
+        _profile: &SshProfile,
+        _path: &str,
+        _position: RemoteFileChunkPosition,
+    ) -> Result<RemoteFileChunk> {
+        Ok(RemoteFileChunk {
+            bytes: b"preview".to_vec(),
+            offset: 0,
+            total_bytes: 7,
+        })
+    }
+
+    async fn save_file(
+        &self,
+        _profile: &SshProfile,
+        _path: &str,
+        _expected: &[u8],
+        _contents: &[u8],
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn create_directory(&self, _profile: &SshProfile, _path: &str) -> Result<()> {
         Ok(())
     }
@@ -116,6 +151,18 @@ impl SshDriver for TerminalDriver {
     }
 
     async fn download(
+        &self,
+        _profile: &SshProfile,
+        _remote_path: &str,
+        _local_path: &Path,
+        _overwrite: OverwritePolicy,
+        _cancellation: TransferCancellation,
+        _progress: SshProgressFn,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn download_directory(
         &self,
         _profile: &SshProfile,
         _remote_path: &str,
@@ -264,8 +311,108 @@ fn production_profile_allows_terminal_but_blocks_sftp_writes() {
     let command = futures::executor::block_on(service.terminal_command(&profile)).unwrap();
     assert_eq!(command.program, "/mock/ssh");
 
+    let preview =
+        futures::executor::block_on(service.read_file_preview(&profile, "/readme.txt")).unwrap();
+    assert_eq!(preview.bytes, b"preview");
+    let chunk = futures::executor::block_on(service.read_file_chunk(
+        &profile,
+        "/readme.txt",
+        RemoteFileChunkPosition::Tail,
+    ))
+    .unwrap();
+    assert_eq!(chunk.bytes, b"preview");
+    futures::executor::block_on(service.list_directory(&profile, "/")).unwrap();
+    service
+        .enqueue_download(&profile, "/readme.txt", Path::new("/tmp/readme.txt"))
+        .unwrap();
+
     assert!(matches!(
         futures::executor::block_on(service.create_directory(&profile, "/new-directory")),
         Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
     ));
+    assert!(matches!(
+        futures::executor::block_on(service.save_file(
+            &profile,
+            "/readme.txt",
+            b"preview",
+            b"changed"
+        )),
+        Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
+    ));
+    assert!(matches!(
+        futures::executor::block_on(service.rename(
+            &profile,
+            "/readme.txt",
+            "/renamed.txt"
+        )),
+        Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
+    ));
+    assert!(matches!(
+        futures::executor::block_on(service.remove(
+            &profile,
+            "/readme.txt",
+            RemoteEntryKind::File
+        )),
+        Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
+    ));
+    assert!(matches!(
+        service.enqueue_upload(
+            &profile,
+            Path::new("/tmp/readme.txt"),
+            "/readme.txt"
+        ),
+        Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
+    ));
+
+    let mut writable_profile = profile.clone();
+    writable_profile.production = false;
+    let queued = service
+        .enqueue_upload(
+            &writable_profile,
+            Path::new("/tmp/readme.txt"),
+            "/readme.txt",
+        )
+        .unwrap();
+    assert!(matches!(
+        futures::executor::block_on(service.execute_transfer(
+            &queued,
+            &profile,
+            OverwritePolicy::Refuse
+        )),
+        Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
+    ));
+}
+
+#[test]
+fn remote_editor_rejects_content_above_preview_bound() {
+    let profile = SshProfile::new("server", "server.example");
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage));
+    let oversized = vec![b'a'; MAX_REMOTE_FILE_PREVIEW_BYTES + 1];
+
+    assert!(matches!(
+        futures::executor::block_on(service.save_file(
+            &profile,
+            "/readme.txt",
+            b"preview",
+            &oversized
+        )),
+        Err(DomainError::InvalidConfig(message)) if message.contains("2 MiB")
+    ));
+}
+
+#[test]
+fn directory_download_is_queued_as_archive() {
+    let profile = SshProfile::new("server", "server.example");
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage));
+    let local = std::env::temp_dir().join("ramag-directory-download-test.tar.gz");
+
+    let id = service
+        .enqueue_directory_download(&profile, "/srv/logs", &local)
+        .unwrap();
+    let task = service
+        .transfer_tasks()
+        .into_iter()
+        .find(|task| task.id == id)
+        .unwrap();
+    assert_eq!(task.direction, TransferDirection::DownloadArchive);
 }

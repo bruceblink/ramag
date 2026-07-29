@@ -107,9 +107,9 @@ impl SshView {
                     ramag_ui::clickable_button("retry-ssh-profiles")
                         .small()
                         .label("重试")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.loading_profiles = true;
-                            this.load_initial_state(cx);
+                            this.load_initial_state(window, cx);
                             cx.notify();
                         })),
                 )

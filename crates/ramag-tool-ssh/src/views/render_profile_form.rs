@@ -180,7 +180,7 @@ impl SshProfileFormPanel {
                     .id("ssh-production-label")
                     .debug_selector(|| "ssh-production-label".into())
                     .text_sm()
-                    .child("生产模式"),
+                    .child("生产"),
             )
             .child(
                 ramag_ui::clickable_switch("ssh-production")
@@ -270,7 +270,7 @@ impl SshProfileFormPanel {
                         .gap(px(8.0))
                         .child(div().flex_1().min_w_0().child(field(
                             "ssh-profile-key-field",
-                            "密钥文件",
+                            "密钥",
                             Input::new(&self.form.key_path).disabled(busy),
                         )))
                         .child(
@@ -293,12 +293,13 @@ impl SshProfileFormPanel {
             .gap(px(12.0))
             .child(field(
                 "ssh-profile-directory-field",
-                "初始目录",
+                "目录",
                 Input::new(&self.form.initial_directory).disabled(busy),
             ))
             .child(
                 v_flex()
                     .id("ssh-profile-executable-field")
+                    .debug_selector(|| "ssh-profile-executable-field".into())
                     .w_full()
                     .gap(px(6.0))
                     .child(
@@ -306,7 +307,7 @@ impl SshProfileFormPanel {
                             .w_full()
                             .items_center()
                             .gap(px(12.0))
-                            .child(field_label("OpenSSH 路径"))
+                            .child(field_label("SSH 路径"))
                             .child(
                                 div()
                                     .flex_1()
@@ -344,7 +345,7 @@ impl SshProfileFormPanel {
     fn render_openssh_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let probing = self.default_capability.is_none();
         let (message, color) = match &self.default_capability {
-            None => ("正在探测…".to_string(), cx.theme().muted_foreground),
+            None => ("探测中…".to_string(), cx.theme().muted_foreground),
             Some(Ok(capability)) => (
                 format!("{} · {}", capability.version, capability.executable),
                 cx.theme().success,
@@ -364,7 +365,7 @@ impl SshProfileFormPanel {
                     .flex_none()
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("本机 SSH"),
+                    .child("本机"),
             )
             .child(
                 div()

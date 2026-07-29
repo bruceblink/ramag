@@ -48,12 +48,16 @@ pub(super) struct SshWorkspace {
     pub terminals: Vec<TerminalTab>,
     pub active_terminal_id: Option<u64>,
     pub terminal_loading: bool,
+    pub connection_started: bool,
     pub sftp_loading: bool,
+    pub directory_loading_path: Option<String>,
     pub sftp_error: Option<String>,
     pub operation_busy: bool,
+    pub file_preview_loading: bool,
     pub transfers_visible: bool,
     pub next_terminal_ordinal: u64,
     pub directory_generation: u64,
+    pub file_preview_generation: u64,
     pub terminal_generation: u64,
 }
 
@@ -68,12 +72,16 @@ impl SshWorkspace {
             terminals: Vec::new(),
             active_terminal_id: None,
             terminal_loading: false,
+            connection_started: false,
             sftp_loading: false,
+            directory_loading_path: None,
             sftp_error: None,
             operation_busy: false,
+            file_preview_loading: false,
             transfers_visible: false,
             next_terminal_ordinal: 1,
             directory_generation: 0,
+            file_preview_generation: 0,
             terminal_generation: 0,
         }
     }

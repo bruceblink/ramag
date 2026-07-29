@@ -1,16 +1,21 @@
 //! 终端快照到 GPUI 低层绘制命令的转换。
 
+mod semantic;
+
 use gpui::{
     App, Bounds, Font, FontStyle, FontWeight, Hsla, Pixels, Rgba, SharedString, StrikethroughStyle,
     TextAlign, TextRun, UnderlineStyle, Window, fill, font, point, px, rgb,
 };
+use gpui_component::Theme;
 
 use crate::core::{RgbColor, TerminalCell, TerminalCursorShape, TerminalSnapshot, TerminalStyle};
 
 use super::{FONT_SIZE, LINE_HEIGHT};
+use semantic::{SemanticPalette, semantic_terminal_colors};
 
 pub(super) struct PreparedTerminal {
     snapshot: TerminalSnapshot,
+    semantic_colors: Vec<Vec<Option<RgbColor>>>,
     marked_text: String,
     cell_width: Pixels,
     mono: SharedString,
@@ -25,6 +30,7 @@ pub(super) struct TerminalPalette {
     selection_background: RgbColor,
     selection_foreground: RgbColor,
     cursor: RgbColor,
+    semantic: SemanticPalette,
 }
 
 impl TerminalPalette {
@@ -35,13 +41,27 @@ impl TerminalPalette {
         selection_foreground: Hsla,
         cursor: Hsla,
     ) -> Self {
+        let foreground = rgb_color(foreground);
         Self {
             background: rgb_color(background),
-            foreground: rgb_color(foreground),
+            foreground,
             selection_background: rgb_color(selection_background),
             selection_foreground: rgb_color(selection_foreground),
             cursor: rgb_color(cursor),
+            semantic: SemanticPalette::plain(foreground),
         }
+    }
+
+    pub(super) fn from_component_theme(theme: &Theme) -> Self {
+        let mut palette = Self::from_theme(
+            theme.background,
+            theme.foreground,
+            theme.accent,
+            theme.accent_foreground,
+            theme.caret,
+        );
+        palette.semantic = SemanticPalette::from_theme(theme);
+        palette
     }
 }
 
@@ -84,8 +104,10 @@ pub(super) fn prepare(
     palette: TerminalPalette,
     _window: &mut Window,
 ) -> PreparedTerminal {
+    let semantic_colors = semantic_terminal_colors(&snapshot.rows, palette.semantic);
     PreparedTerminal {
         snapshot,
+        semantic_colors,
         marked_text,
         cell_width,
         mono,
@@ -104,7 +126,15 @@ pub(super) fn paint(
 
     for (row_index, row) in prepared.snapshot.rows.iter().enumerate() {
         paint_backgrounds(row, row_index, &prepared, bounds, window);
-        paint_text(row, row_index, &prepared, bounds, window, cx);
+        paint_text(
+            row,
+            &prepared.semantic_colors[row_index],
+            row_index,
+            &prepared,
+            bounds,
+            window,
+            cx,
+        );
     }
     paint_cursor(&prepared, bounds, window);
     paint_marked_text(&prepared, bounds, window, cx);
@@ -151,6 +181,7 @@ fn paint_backgrounds(
 
 fn paint_text(
     row: &[TerminalCell],
+    semantic_colors: &[Option<RgbColor>],
     row_index: usize,
     prepared: &PreparedTerminal,
     bounds: Bounds<Pixels>,
@@ -164,17 +195,13 @@ fn paint_text(
             continue;
         }
         let style = row[start].style;
-        let foreground = if row[start].selected {
-            prepared.palette.selection_foreground
-        } else {
-            themed_color(row[start].foreground, prepared.palette)
-        };
+        let foreground = cell_foreground(&row[start], semantic_colors[start], prepared.palette);
         let mut text = String::new();
         let mut end = start;
         while end < row.len()
             && !row[end].wide_spacer
             && row[end].style == style
-            && row[end].foreground == row[start].foreground
+            && cell_foreground(&row[end], semantic_colors[end], prepared.palette) == foreground
             && row[end].selected == row[start].selected
         {
             text.push_str(&row[end].text);
@@ -196,6 +223,20 @@ fn paint_text(
             );
         }
         start = end.max(start + 1);
+    }
+}
+
+fn cell_foreground(
+    cell: &TerminalCell,
+    semantic: Option<RgbColor>,
+    palette: TerminalPalette,
+) -> RgbColor {
+    if cell.selected {
+        palette.selection_foreground
+    } else if cell.foreground == DARK_FOREGROUND {
+        semantic.unwrap_or_else(|| themed_color(cell.foreground, palette))
+    } else {
+        themed_color(cell.foreground, palette)
     }
 }
 
@@ -345,5 +386,36 @@ mod tests {
 
         assert_eq!(themed_color(DARK_BACKGROUND, palette), palette.background);
         assert_eq!(themed_color(DARK_FOREGROUND, palette), palette.foreground);
+    }
+
+    #[test]
+    fn server_ansi_color_takes_priority_over_semantic_log_color() {
+        let palette = TerminalPalette::from_theme(
+            rgb(0xf8f8f8).into(),
+            rgb(0x242424).into(),
+            rgb(0xadd6ff).into(),
+            rgb(0x1f2328).into(),
+            rgb(0x555555).into(),
+        );
+        let ansi = RgbColor {
+            red: 12,
+            green: 34,
+            blue: 56,
+        };
+        let semantic = RgbColor {
+            red: 200,
+            green: 0,
+            blue: 0,
+        };
+        let cell = TerminalCell {
+            text: "x".into(),
+            foreground: ansi,
+            background: DARK_BACKGROUND,
+            style: TerminalStyle::default(),
+            selected: false,
+            wide_spacer: false,
+        };
+
+        assert_eq!(cell_foreground(&cell, Some(semantic), palette), ansi);
     }
 }

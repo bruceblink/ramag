@@ -248,13 +248,7 @@ impl Render for TerminalView {
         let focus_handle = self.focus_handle.clone();
         let mono = cx.theme().mono_font_family.clone();
         let terminal_background = cx.theme().background;
-        let palette = paint::TerminalPalette::from_theme(
-            terminal_background,
-            cx.theme().foreground,
-            cx.theme().accent,
-            cx.theme().accent_foreground,
-            cx.theme().caret,
-        );
+        let palette = paint::TerminalPalette::from_component_theme(cx.theme());
         let terminal = canvas(
             move |bounds, window, app| {
                 entity_for_prepaint.update(app, |view, _cx| {

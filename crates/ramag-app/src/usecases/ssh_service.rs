@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use ramag_domain::entities::{
-    MAX_QUEUED_TRANSFERS, MAX_TRANSFER_HISTORY, OverwritePolicy, RemoteDirectory, RemoteEntryKind,
+    MAX_QUEUED_TRANSFERS, MAX_REMOTE_FILE_PREVIEW_BYTES, MAX_TRANSFER_HISTORY, OverwritePolicy,
+    RemoteDirectory, RemoteEntryKind, RemoteFileChunk, RemoteFileChunkPosition, RemoteFilePreview,
     SshCapability, SshLaunchCommand, SshProfile, SshProfileId, SshWorkspacePreference,
     TransferCancellation, TransferDirection, TransferId, TransferStatus, TransferTask,
     validate_local_transfer_path, validate_remote_path,
@@ -244,6 +245,50 @@ impl SshService {
         self.driver.list_directory(profile, path).await
     }
 
+    pub async fn read_file_preview(
+        &self,
+        profile: &SshProfile,
+        path: &str,
+    ) -> Result<RemoteFilePreview> {
+        profile.validate().map_err(DomainError::InvalidConfig)?;
+        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+        self.driver.read_file_preview(profile, path).await
+    }
+
+    pub async fn read_file_chunk(
+        &self,
+        profile: &SshProfile,
+        path: &str,
+        position: RemoteFileChunkPosition,
+    ) -> Result<RemoteFileChunk> {
+        profile.validate().map_err(DomainError::InvalidConfig)?;
+        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+        self.driver.read_file_chunk(profile, path, position).await
+    }
+
+    pub async fn save_file(
+        &self,
+        profile: &SshProfile,
+        path: &str,
+        expected: &[u8],
+        contents: &[u8],
+    ) -> Result<()> {
+        profile.validate().map_err(DomainError::InvalidConfig)?;
+        ensure_sftp_writable(profile)?;
+        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+        if expected.len() > MAX_REMOTE_FILE_PREVIEW_BYTES
+            || contents.len() > MAX_REMOTE_FILE_PREVIEW_BYTES
+        {
+            return Err(DomainError::InvalidConfig(format!(
+                "编辑文件不能超过 {} MiB",
+                MAX_REMOTE_FILE_PREVIEW_BYTES / 1024 / 1024
+            )));
+        }
+        self.driver
+            .save_file(profile, path, expected, contents)
+            .await
+    }
+
     pub async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
         ensure_sftp_writable(profile)?;
@@ -312,6 +357,26 @@ impl SshService {
         ))
     }
 
+    pub fn enqueue_directory_download(
+        &self,
+        profile: &SshProfile,
+        remote_path: &str,
+        local_path: &Path,
+    ) -> Result<TransferId> {
+        profile.validate().map_err(DomainError::InvalidConfig)?;
+        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
+        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
+        let local_path = local_path
+            .to_str()
+            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
+        self.transfers.enqueue(TransferTask::new(
+            profile.id.clone(),
+            TransferDirection::DownloadArchive,
+            local_path,
+            remote_path,
+        ))
+    }
+
     pub async fn execute_transfer(
         &self,
         id: &TransferId,
@@ -366,6 +431,18 @@ impl SshService {
             TransferDirection::Download => {
                 self.driver
                     .download(
+                        profile,
+                        &task.remote_path,
+                        &local_path,
+                        overwrite,
+                        cancellation.clone(),
+                        progress,
+                    )
+                    .await
+            }
+            TransferDirection::DownloadArchive => {
+                self.driver
+                    .download_directory(
                         profile,
                         &task.remote_path,
                         &local_path,

@@ -27,7 +27,7 @@ impl SshView {
             .find(|profile| profile.id == id)
             .cloned()
         else {
-            self.notice = Some(Notice::error("SSH 配置已不存在，请刷新后重试"));
+            self.notice = Some(Notice::error("SSH 配置已删除，请刷新"));
             cx.notify();
             return;
         };
@@ -66,9 +66,9 @@ impl SshView {
                     }
                     let form_inner = form_for_cancel.clone();
                     ramag_ui::open_confirm(
-                        "放弃修改？",
+                        "放弃？",
                         "未保存内容将丢失。",
-                        "放弃修改",
+                        "放弃",
                         true,
                         move |_, app| {
                             form_inner.update(app, |_this, cx| {
@@ -109,7 +109,7 @@ impl SshView {
                 if let Some(workspace) = self.workspace_mut(&profile.id) {
                     workspace.profile = profile;
                 }
-                self.notice = Some(Notice::info("保存成功"));
+                self.notice = Some(Notice::info("已保存"));
                 cx.notify();
             }
             ProfileFormEvent::Cancelled => {
@@ -153,8 +153,8 @@ impl SshView {
         let entity = cx.entity();
         let name = profile.name.clone();
         ramag_ui::open_confirm(
-            "确认删除？",
-            format!("「{name}」的配置、工作区和传输将被永久删除。"),
+            "删除？",
+            format!("将永久删除「{name}」及关联工作区、传输。"),
             "删除",
             true,
             move |window, app| {
@@ -191,7 +191,7 @@ impl SshView {
                                 .first()
                                 .map(|workspace| workspace.profile.id.clone());
                         }
-                        this.notice = Some(Notice::info("删除成功"));
+                        this.notice = Some(Notice::info("已删除"));
                         this.persist_workspaces(cx);
                     }
                     (Err(error), _) | (_, Err(error)) => {

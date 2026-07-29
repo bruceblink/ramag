@@ -3,11 +3,12 @@
 use gpui::{Context, Window};
 use ramag_domain::entities::{
     MAX_SSH_PATH_BYTES, RemoteEntry, RemoteEntryKind, SshProfileId, join_remote_path,
-    parent_remote_path, validate_remote_name,
+    parent_remote_path, validate_remote_name, validate_remote_path,
 };
 
 use super::SshView;
 use super::model::Notice;
+use super::render_directory_helpers::{RemoteEntryActivation, remote_entry_activation};
 
 enum RemoteMutation {
     Create(String),
@@ -37,20 +38,24 @@ impl SshView {
             .find(|workspace| workspace.profile_id() == &id)
             .is_some_and(|workspace| self.profile_connection_available(&workspace.profile));
         if !connection_available {
-            self.notice = Some(Notice::error(
-                "OpenSSH 当前不可用；请先在连接管理中重新探测，或配置自定义绝对路径",
-            ));
+            self.notice = Some(Notice::error("OpenSSH 不可用，请重新探测或指定路径"));
             cx.notify();
             return;
         }
         let Some(workspace) = self.workspace_mut(&id) else {
             return;
         };
+        let path = requested_path.unwrap_or_else(|| workspace.path.clone());
+        if workspace.sftp_loading
+            && workspace.directory_loading_path.as_deref() == Some(path.as_str())
+        {
+            return;
+        }
         workspace.directory_generation = workspace.directory_generation.wrapping_add(1);
         let generation = workspace.directory_generation;
         workspace.sftp_loading = true;
+        workspace.directory_loading_path = Some(path.clone());
         workspace.sftp_error = None;
-        let path = requested_path.unwrap_or_else(|| workspace.path.clone());
         let profile = workspace.profile.clone();
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
@@ -63,6 +68,7 @@ impl SshView {
                     return;
                 }
                 workspace.sftp_loading = false;
+                workspace.directory_loading_path = None;
                 match result {
                     Ok(directory) => {
                         workspace.path = directory.path;
@@ -100,37 +106,54 @@ impl SshView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match entry.kind {
-            RemoteEntryKind::Directory => {
+        match remote_entry_activation(entry.kind) {
+            RemoteEntryActivation::OpenDirectory => {
                 self.refresh_directory(workspace_id, Some(entry.path), cx);
             }
-            RemoteEntryKind::File => {
-                self.pick_download(workspace_id, entry, window, cx);
+            RemoteEntryActivation::PreviewFile => {
+                self.preview_remote_file(workspace_id, entry, window, cx);
             }
-            RemoteEntryKind::Symlink => {
-                self.notice = Some(Notice::error(
-                    "首个版本不跟随或下载远程软链接，请选择普通文件",
-                ));
-                cx.notify();
-            }
-            RemoteEntryKind::Other => {
-                self.notice = Some(Notice::error("该远程条目类型不支持下载"));
+            RemoteEntryActivation::Unsupported => {
+                self.notice = Some(Notice::error(match entry.kind {
+                    RemoteEntryKind::Symlink => "软链接不支持查看",
+                    RemoteEntryKind::Other => "类型不支持查看",
+                    RemoteEntryKind::File | RemoteEntryKind::Directory => return,
+                }));
                 cx.notify();
             }
         }
     }
 
-    pub(super) fn selected_entry(&self, workspace_id: &SshProfileId) -> Option<RemoteEntry> {
-        let workspace = self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.profile_id() == workspace_id)?;
-        let selected = workspace.selected_path.as_ref()?;
-        workspace
-            .entries
-            .iter()
-            .find(|entry| &entry.path == selected)
-            .cloned()
+    pub(super) fn prompt_remote_path(
+        &mut self,
+        workspace_id: SshProfileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace_mut(&workspace_id) else {
+            return;
+        };
+        let initial = workspace.path.clone();
+        let entity = cx.entity();
+        ramag_ui::open_bounded_prompt(
+            "直达",
+            "路径",
+            &initial,
+            "打开",
+            MAX_SSH_PATH_BYTES,
+            move |path, _window, app| {
+                entity.update(app, |this, cx| {
+                    if let Err(error) = validate_direct_remote_path(&path) {
+                        this.notice = Some(Notice::error(error));
+                        cx.notify();
+                        return;
+                    }
+                    this.refresh_directory(workspace_id, Some(path), cx);
+                });
+            },
+            window,
+            cx,
+        );
     }
 
     pub(super) fn prompt_create_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -141,8 +164,8 @@ impl SshView {
         let parent_path = workspace.path.clone();
         let entity = cx.entity();
         ramag_ui::open_bounded_prompt(
-            "新建目录",
-            "目录名称",
+            "新建",
+            "名称",
             "",
             "新建",
             MAX_SSH_PATH_BYTES,
@@ -177,18 +200,23 @@ impl SshView {
         }
     }
 
-    pub(super) fn prompt_rename_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(workspace_id) = self.active_workspace_id.clone() else {
+    pub(super) fn prompt_rename_entry(
+        &mut self,
+        workspace_id: SshProfileId,
+        entry: RemoteEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.remote_entry_is_current(&workspace_id, &entry) {
+            self.notice = Some(Notice::error("内容已变化，请刷新"));
+            cx.notify();
             return;
-        };
-        let Some(entry) = self.selected_entry(&workspace_id) else {
-            return;
-        };
+        }
         let entity = cx.entity();
         let initial = entry.name.clone();
         ramag_ui::open_bounded_prompt(
             "改名",
-            "新名称",
+            "名称",
             &initial,
             "改名",
             MAX_SSH_PATH_BYTES,
@@ -238,22 +266,27 @@ impl SshView {
         }
     }
 
-    pub(super) fn request_delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(workspace_id) = self.active_workspace_id.clone() else {
+    pub(super) fn request_delete_entry(
+        &mut self,
+        workspace_id: SshProfileId,
+        entry: RemoteEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.remote_entry_is_current(&workspace_id, &entry) {
+            self.notice = Some(Notice::error("内容已变化，请刷新"));
+            cx.notify();
             return;
-        };
-        let Some(entry) = self.selected_entry(&workspace_id) else {
-            return;
-        };
+        }
         let kind_hint = if entry.kind == RemoteEntryKind::Directory {
-            "目录内的全部内容也会递归删除；软链接不会被跟随。"
+            "目录内容将一并删除。"
         } else {
             ""
         };
         let entity = cx.entity();
         ramag_ui::open_confirm(
-            "确认删除？",
-            format!("「{}」将被永久删除且无法恢复。{}", entry.path, kind_hint),
+            "删除？",
+            format!("将永久删除「{}」。{}", entry.path, kind_hint),
             "删除",
             true,
             move |_window, app| {
@@ -271,6 +304,18 @@ impl SshView {
             window,
             cx,
         );
+    }
+
+    fn remote_entry_is_current(&self, workspace_id: &SshProfileId, entry: &RemoteEntry) -> bool {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == workspace_id)
+            .is_some_and(|workspace| {
+                workspace
+                    .entries
+                    .iter()
+                    .any(|current| current.path == entry.path && current.kind == entry.kind)
+            })
     }
 
     fn run_remote_mutation(
@@ -306,12 +351,35 @@ impl SshView {
                         this.refresh_directory(workspace_id, None, cx);
                     }
                     Err(error) => {
-                        this.notice = Some(Notice::error(format!("远程文件操作失败：{error}")));
+                        this.notice = Some(Notice::error(format!("操作失败：{error}")));
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+}
+
+fn validate_direct_remote_path(path: &str) -> Result<(), String> {
+    validate_remote_path(path)?;
+    if path != "." && !path.starts_with('/') {
+        return Err("路径必须以 / 开头".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_direct_remote_path;
+
+    #[test]
+    fn direct_remote_path_requires_an_absolute_path_or_default_directory() {
+        for path in ["/", "/es01/home/yuansuan", "."] {
+            assert!(validate_direct_remote_path(path).is_ok(), "{path}");
+        }
+        for path in ["", "es01/home/yuansuan", "/tmp\nroot"] {
+            assert!(validate_direct_remote_path(path).is_err(), "{path}");
+        }
     }
 }

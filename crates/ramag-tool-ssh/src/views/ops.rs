@@ -13,17 +13,17 @@ use super::SshView;
 use super::model::{Notice, SshWorkspace, TerminalTab, ViewMode};
 
 impl SshView {
-    pub(super) fn load_initial_state(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn load_initial_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         self.capability_generation = self.capability_generation.wrapping_add(1);
         let capability_generation = self.capability_generation;
         let service = self.service.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, async_cx| {
             let profiles = service.list_profiles().await;
             let preference = service.load_workspace_preference().await;
             let capability = service.probe(None).await.map_err(|error| error.to_string());
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(async_cx, |this, window, cx| {
                 if this.load_generation != generation {
                     return;
                 }
@@ -37,17 +37,21 @@ impl SshView {
                         this.load_error = None;
                     }
                     Err(error) => {
-                        this.load_error = Some(format!("加载 SSH 配置失败：{error}"));
+                        this.load_error = Some(format!("配置加载失败：{error}"));
                         cx.notify();
                         return;
                     }
                 }
                 match preference {
-                    Ok(preference) => this.restore_workspaces(preference),
+                    Ok(preference) => {
+                        this.restore_workspaces(preference);
+                        if let Some(id) = this.active_workspace_id.clone() {
+                            this.sync_directory_filter(&id, window, cx);
+                            this.connect_workspace(id, window, cx);
+                        }
+                    }
                     Err(error) => {
-                        this.notice = Some(Notice::error(format!(
-                            "恢复 SSH 工作区失败，已保留配置列表：{error}"
-                        )));
+                        this.notice = Some(Notice::error(format!("工作区恢复失败：{error}")));
                     }
                 }
                 cx.notify();
@@ -118,10 +122,20 @@ impl SshView {
             .iter()
             .any(|workspace| workspace.profile_id() == &id)
         {
+            let needs_connect = self
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.profile_id() == &id)
+                .is_some_and(|workspace| {
+                    !workspace.connection_started || workspace.sftp_error.is_some()
+                });
             self.active_workspace_id = Some(id.clone());
             self.sync_directory_filter(&id, window, cx);
             self.view_mode = ViewMode::Workspace;
             self.persist_workspaces(cx);
+            if needs_connect {
+                self.connect_workspace(id, window, cx);
+            }
             cx.notify();
         }
     }
@@ -141,9 +155,7 @@ impl SshView {
             return;
         };
         if !self.profile_connection_available(&profile) {
-            self.notice = Some(Notice::error(
-                "OpenSSH 当前不可用；请先在连接管理中重新探测，或配置自定义绝对路径",
-            ));
+            self.notice = Some(Notice::error("OpenSSH 不可用，请重新探测或指定路径"));
             cx.notify();
             return;
         }
@@ -154,7 +166,7 @@ impl SshView {
         {
             if self.workspaces.len() >= MAX_SSH_WORKSPACES {
                 self.notice = Some(Notice::error(format!(
-                    "同时打开的 SSH 工作区已达 {MAX_SSH_WORKSPACES} 个上限"
+                    "工作区已达上限（{MAX_SSH_WORKSPACES}）"
                 )));
                 cx.notify();
                 return;
@@ -199,6 +211,9 @@ impl SshView {
     }
 
     fn connect_workspace(&mut self, id: SshProfileId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace_mut(&id) {
+            workspace.connection_started = true;
+        }
         let should_start_terminal = self
             .workspace_mut(&id)
             .is_some_and(|workspace| workspace.terminals.is_empty());
@@ -248,9 +263,7 @@ impl SshView {
             .find(|workspace| workspace.profile_id() == &id)
             .is_some_and(|workspace| self.profile_connection_available(&workspace.profile));
         if !connection_available {
-            self.notice = Some(Notice::error(
-                "OpenSSH 当前不可用；请先在连接管理中重新探测，或配置自定义绝对路径",
-            ));
+            self.notice = Some(Notice::error("OpenSSH 不可用，请重新探测或指定路径"));
             cx.notify();
             return;
         }
@@ -259,7 +272,7 @@ impl SshView {
         };
         if workspace.terminals.len() >= MAX_SSH_TERMINALS_PER_WORKSPACE {
             self.notice = Some(Notice::error(format!(
-                "每个 SSH 工作区最多打开 {MAX_SSH_TERMINALS_PER_WORKSPACE} 个 Terminal"
+                "终端已达上限（{MAX_SSH_TERMINALS_PER_WORKSPACE}）"
             )));
             cx.notify();
             return;
@@ -325,8 +338,7 @@ impl SshView {
                         }
                     }
                     Err(error) => {
-                        this.notice =
-                            Some(Notice::error(format!("启动 SSH Terminal 失败：{error}")));
+                        this.notice = Some(Notice::error(format!("终端启动失败：{error}")));
                     }
                 }
                 cx.notify();
@@ -424,8 +436,8 @@ impl SshView {
         }
         let entity = cx.entity();
         ramag_ui::open_confirm(
-            "确认关闭？",
-            "仍有传输任务；关闭将取消任务并结束 Terminal/SFTP。",
+            "关闭？",
+            "关闭会取消传输并断开 SSH。",
             "关闭",
             true,
             move |window, app| {
