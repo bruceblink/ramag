@@ -29,6 +29,7 @@ use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
+pub(crate) use row_search::RowSearchConversionStatus;
 use row_search::RowSearchState;
 pub(crate) use row_search::{RowFilter, RowSearchBlocker, RowSearchMode};
 
@@ -75,6 +76,7 @@ pub(crate) struct ResultPagination {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResultPanelEvent {
     PageRequested(usize),
+    RowSearchChanged,
 }
 
 impl EventEmitter<ResultPanelEvent> for ResultPanel {}

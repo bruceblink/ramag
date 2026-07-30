@@ -5,7 +5,7 @@ use std::time::Duration;
 use gpui::{Context, Task};
 use ramag_domain::entities::Value;
 
-use super::ResultPanel;
+use super::{ResultPanel, ResultPanelEvent};
 
 const ID_CONVERSION_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -56,11 +56,44 @@ pub(crate) enum RowSearchBlocker {
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RowSearchConversionStatus {
+    Converting,
+    Ready(i64),
+    Error(String),
+}
+
 enum IdConversionState {
     Idle,
     Converting { input: String },
     Ready { input: String, id: i64 },
     Error { input: String, message: String },
+}
+
+impl IdConversionState {
+    fn visible_status(
+        &self,
+        mode: RowSearchMode,
+        current_input: &str,
+    ) -> Option<RowSearchConversionStatus> {
+        if current_input.is_empty() || matches!(mode, RowSearchMode::Normal) {
+            return None;
+        }
+
+        Some(match self {
+            Self::Converting { input } if input == current_input => {
+                RowSearchConversionStatus::Converting
+            }
+            Self::Ready { input, id } if input == current_input => {
+                RowSearchConversionStatus::Ready(*id)
+            }
+            Self::Error { input, message } if input == current_input => {
+                RowSearchConversionStatus::Error(message.clone())
+            }
+            // 输入变化后，旧结果在新转换完成前不可见。
+            _ => RowSearchConversionStatus::Converting,
+        })
+    }
 }
 
 pub(super) struct RowSearchState {
@@ -112,6 +145,7 @@ impl ResultPanel {
             self.row_search.last_input = input.clone();
             self.schedule_id_conversion(input, cx);
         }
+        cx.emit(ResultPanelEvent::RowSearchChanged);
         cx.notify();
     }
 
@@ -127,6 +161,7 @@ impl ResultPanel {
         if matches!(self.row_search.mode, RowSearchMode::Id) {
             self.schedule_id_conversion(input, cx);
         }
+        cx.emit(ResultPanelEvent::RowSearchChanged);
         cx.notify();
     }
 
@@ -139,6 +174,7 @@ impl ResultPanel {
                 self.row_search.conversion = IdConversionState::Idle;
                 self.invalidate_display_view();
             }
+            cx.emit(ResultPanelEvent::RowSearchChanged);
             cx.notify();
             return;
         }
@@ -146,6 +182,7 @@ impl ResultPanel {
             let input = self.row_filter_text(cx);
             self.schedule_id_conversion(input, cx);
         }
+        cx.emit(ResultPanelEvent::RowSearchChanged);
         cx.notify();
     }
 
@@ -164,37 +201,30 @@ impl ResultPanel {
     }
 
     pub(crate) fn row_search_blocker(&self, cx: &gpui::App) -> Option<RowSearchBlocker> {
-        let input = self.row_filter_text(cx);
-        if input.is_empty() || matches!(self.row_search.mode, RowSearchMode::Normal) {
-            return None;
-        }
-        match &self.row_search.conversion {
-            IdConversionState::Converting {
-                input: converted_input,
-            } if converted_input == &input => Some(RowSearchBlocker::Converting),
-            IdConversionState::Error {
-                input: converted_input,
-                message,
-            } if converted_input == &input => Some(RowSearchBlocker::Error(message.clone())),
-            IdConversionState::Ready {
-                input: converted_input,
-                ..
-            } if converted_input == &input => None,
-            _ => Some(RowSearchBlocker::Converting),
+        match self.row_search_conversion_status(cx) {
+            Some(RowSearchConversionStatus::Converting) => Some(RowSearchBlocker::Converting),
+            Some(RowSearchConversionStatus::Error(message)) => {
+                Some(RowSearchBlocker::Error(message))
+            }
+            Some(RowSearchConversionStatus::Ready(_)) | None => None,
         }
     }
 
     pub(crate) fn converted_row_search_id(&self, cx: &gpui::App) -> Option<i64> {
-        let input = self.row_filter_text(cx);
-        match &self.row_search.conversion {
-            IdConversionState::Ready {
-                input: converted_input,
-                id,
-            } if matches!(self.row_search.mode, RowSearchMode::Id) && converted_input == &input => {
-                Some(*id)
-            }
+        match self.row_search_conversion_status(cx) {
+            Some(RowSearchConversionStatus::Ready(id)) => Some(id),
             _ => None,
         }
+    }
+
+    pub(crate) fn row_search_conversion_status(
+        &self,
+        cx: &gpui::App,
+    ) -> Option<RowSearchConversionStatus> {
+        let input = self.row_filter_text(cx);
+        self.row_search
+            .conversion
+            .visible_status(self.row_search.mode, &input)
     }
 
     fn schedule_id_conversion(&mut self, input: String, cx: &mut Context<Self>) {
@@ -242,6 +272,7 @@ impl ResultPanel {
                     },
                 };
                 this.invalidate_display_view();
+                cx.emit(ResultPanelEvent::RowSearchChanged);
                 cx.notify();
             });
         });
@@ -258,7 +289,7 @@ impl ResultPanel {
 mod tests {
     use ramag_domain::entities::Value;
 
-    use super::{RowFilter, RowSearchMode};
+    use super::{IdConversionState, RowFilter, RowSearchConversionStatus, RowSearchMode};
 
     #[test]
     fn search_mode_labels_use_explicit_tags() {
@@ -282,5 +313,27 @@ mod tests {
 
         assert!(filter.matches(&Value::Text("Alpha Beta".into())));
         assert!(!filter.matches(&Value::Text("Beta".into())));
+    }
+
+    #[test]
+    fn conversion_status_only_exposes_the_current_id_input() {
+        let ready = IdConversionState::Ready {
+            input: "external-id".into(),
+            id: 42,
+        };
+
+        assert_eq!(
+            ready.visible_status(RowSearchMode::Id, "external-id"),
+            Some(RowSearchConversionStatus::Ready(42))
+        );
+        assert_eq!(
+            ready.visible_status(RowSearchMode::Id, "new-input"),
+            Some(RowSearchConversionStatus::Converting)
+        );
+        assert_eq!(ready.visible_status(RowSearchMode::Id, ""), None);
+        assert_eq!(
+            ready.visible_status(RowSearchMode::Normal, "external-id"),
+            None
+        );
     }
 }

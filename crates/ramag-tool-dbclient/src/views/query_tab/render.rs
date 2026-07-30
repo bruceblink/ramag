@@ -20,7 +20,9 @@ use super::sql_utils::format_elapsed;
 
 /// 千分位格式化（10_000 → "10,000"），自动限制档位展示用
 use crate::actions::{ExplainQuery, FormatSql, RunQuery, RunStatementAtCursor};
-use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultPanel, ResultState, RowSearchMode};
+use crate::views::result_panel::{
+    MAX_INSERT_COLUMNS, ResultPanel, ResultState, RowSearchConversionStatus, RowSearchMode,
+};
 
 impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -34,6 +36,7 @@ impl Render for QueryTab {
         let secondary_bg = theme.secondary;
         let bg = theme.background;
         let accent = theme.accent;
+        let danger = theme.danger;
 
         let running = self.running;
         let has_connection = self.connection.is_some();
@@ -110,6 +113,11 @@ impl Render for QueryTab {
                         let col_input = self.result.read(cx).column_filter_entity().clone();
                         let row_input = self.result.read(cx).row_filter_entity().clone();
                         let row_search_mode = self.result.read(cx).row_search_mode();
+                        let row_search_status = self
+                            .result
+                            .read(cx)
+                            .row_search_conversion_status(cx);
+                        let row_filter_has_value = !row_input.read(cx).value().is_empty();
                         let id_conversion_ready = ramag_ui::database_search_settings(cx).is_ready();
                         let result_for_row_mode = self.result.clone();
                         let col_for_up = col_input.clone();
@@ -162,22 +170,26 @@ impl Render for QueryTab {
                             )
                             .child(
                                 div().flex_1().min_w_0().child(
-                                    ramag_ui::cleanable_input(
-                                        &row_input,
-                                        "sql-row-filter-clear",
-                                        false,
-                                        cx,
-                                    )
-                                    .small()
-                                    .bordered(false)
-                                    .focus_bordered(false)
-                                    .when(id_conversion_ready, |input| {
-                                        input.prefix(row_search_mode_button(
-                                            row_search_mode,
-                                            result_for_row_mode,
-                                            accent,
-                                        ))
-                                    }),
+                                    Input::new(&row_input)
+                                        .small()
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .when(id_conversion_ready, |input| {
+                                            input.prefix(row_search_mode_button(
+                                                row_search_mode,
+                                                result_for_row_mode,
+                                                accent,
+                                            ))
+                                        })
+                                        .when(row_filter_has_value, |input| {
+                                            input.suffix(row_search_input_suffix(
+                                                row_input,
+                                                row_search_status,
+                                                accent,
+                                                muted_fg,
+                                                danger,
+                                            ))
+                                        }),
                                 ),
                             )
                     })
@@ -481,4 +493,53 @@ fn row_search_mode_button(
             }
             menu
         })
+}
+
+fn row_search_input_suffix(
+    input: Entity<InputState>,
+    status: Option<RowSearchConversionStatus>,
+    accent: gpui::Hsla,
+    muted: gpui::Hsla,
+    danger: gpui::Hsla,
+) -> impl IntoElement {
+    h_flex()
+        .flex_none()
+        .gap_1()
+        .when_some(status, |suffix, status| {
+            suffix.child(row_search_conversion_label(status, accent, muted, danger))
+        })
+        .child(
+            ramag_ui::clickable_button("sql-row-filter-clear")
+                .icon(IconName::CircleX)
+                .ghost()
+                .xsmall()
+                .tab_stop(false)
+                .text_color(muted)
+                .on_click(move |_, window, cx| {
+                    input.update(cx, |state, cx| {
+                        state.set_value("", window, cx);
+                        state.focus(window, cx);
+                    });
+                }),
+        )
+}
+
+fn row_search_conversion_label(
+    status: RowSearchConversionStatus,
+    accent: gpui::Hsla,
+    muted: gpui::Hsla,
+    danger: gpui::Hsla,
+) -> gpui::AnyElement {
+    let (label, color) = match status {
+        RowSearchConversionStatus::Converting => ("→ 转换中…".to_string(), muted),
+        RowSearchConversionStatus::Ready(id) => (format!("→ {id}"), accent),
+        RowSearchConversionStatus::Error(_) => ("→ 转换失败".to_string(), danger),
+    };
+
+    div()
+        .flex_none()
+        .text_xs()
+        .text_color(color)
+        .child(label)
+        .into_any_element()
 }

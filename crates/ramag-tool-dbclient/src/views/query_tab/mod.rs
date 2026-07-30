@@ -149,6 +149,7 @@ impl QueryTab {
             &result,
             |this: &mut Self, _, event: &ResultPanelEvent, cx| match event {
                 ResultPanelEvent::PageRequested(page) => this.handle_page(*page, cx),
+                ResultPanelEvent::RowSearchChanged => cx.notify(),
             },
         );
 
