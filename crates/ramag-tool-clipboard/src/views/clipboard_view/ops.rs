@@ -10,6 +10,7 @@ use ramag_domain::entities::{
     ClipId, ClipItem, ClipboardSettings, MAX_CLIPBOARD_BLACKLIST_ENTRIES, blacklist_matches,
     normalize_blacklist_source,
 };
+use ramag_ui::open_confirm;
 use tracing::error;
 
 use super::ClipboardView;
@@ -131,15 +132,6 @@ impl ClipboardView {
         settings.blacklist.push(entry);
         if self.save_settings(settings, cx) {
             self.pending_notification = Some(Notification::info("已停止记录该应用的新内容"));
-            cx.notify();
-        }
-    }
-
-    pub(super) fn unblacklist_source(&mut self, source_id: &str, cx: &mut Context<Self>) {
-        let mut settings = self.settings.clone();
-        settings.blacklist.retain(|id| id != source_id);
-        if self.save_settings(settings, cx) {
-            self.pending_notification = Some(Notification::info("已恢复记录该应用"));
             cx.notify();
         }
     }
@@ -362,7 +354,22 @@ impl ClipboardView {
         .detach();
     }
 
-    pub(super) fn clear_all(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn confirm_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity().clone();
+        open_confirm(
+            "清空剪贴历史",
+            "将删除全部历史条目。此操作不可撤销。",
+            "清空",
+            true,
+            move |_window, cx| {
+                entity.update(cx, |this, cx| this.clear_all(cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn clear_all(&mut self, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.clear().await;
@@ -379,8 +386,6 @@ impl ClipboardView {
 
     pub(super) fn select_id(&mut self, id: ClipId, cx: &mut Context<Self>) {
         self.selected = Some(id);
-        // 选中条目即回到详情视图，关闭设置面板
-        self.show_settings = false;
         cx.notify();
     }
 

@@ -1,19 +1,68 @@
-//! 全局设置中心：剪贴板总开关（热键 / 图片采集 / 排除应用等细项在剪贴板工具内管理）。
+//! 设置中心：默认展示全局配置，各大模块使用独立页面。
+
+mod clipboard;
+mod pages;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px};
-use gpui_component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex, notification::Notification,
-    scroll::ScrollableElement as _, v_flex,
-};
+use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
+use gpui_component::{WindowExt as _, h_flex, notification::Notification};
 use ramag_app::ClipboardService;
 use ramag_domain::entities::ClipboardSettings;
 
-use crate::platform::clipboard_hotkey;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SettingsPage {
+    #[default]
+    Global,
+    Database,
+    VersionControl,
+    Clipboard,
+    Ssh,
+}
+
+impl SettingsPage {
+    const ALL: [Self; 5] = [
+        Self::Global,
+        Self::Database,
+        Self::VersionControl,
+        Self::Clipboard,
+        Self::Ssh,
+    ];
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Database => "database",
+            Self::VersionControl => "version-control",
+            Self::Clipboard => "clipboard",
+            Self::Ssh => "ssh",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Global => "全局配置",
+            Self::Database => "数据库客户端",
+            Self::VersionControl => "版本管理",
+            Self::Clipboard => "剪贴板",
+            Self::Ssh => "SSH",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Global => "管理对整个应用生效的设置。",
+            Self::Database => "管理数据库客户端的模块级配置。",
+            Self::VersionControl => "管理 Git 版本控制的模块级配置。",
+            Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与排除应用。",
+            Self::Ssh => "管理 SSH 与 SFTP 的模块级配置。",
+        }
+    }
+}
 
 pub struct SettingsView {
+    selected_page: SettingsPage,
     clipboard_service: Arc<ClipboardService>,
     clipboard: ClipboardSettings,
     loaded_revision: u64,
@@ -64,6 +113,7 @@ impl SettingsView {
         .detach();
 
         Self {
+            selected_page: SettingsPage::default(),
             clipboard_service,
             clipboard,
             loaded_revision,
@@ -110,74 +160,43 @@ impl Render for SettingsView {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
-        let theme = cx.theme();
-        let border = theme.border;
-        let muted = theme.muted_foreground;
-        let clipboard = self.clipboard.clone();
-        let clipboard_disabled = self.saving_clipboard;
-
-        v_flex()
+        h_flex()
             .size_full()
-            .overflow_y_scrollbar()
+            .min_w_0()
+            .child(self.render_navigation(cx))
             .child(
-                v_flex()
-                    .w_full()
-                    .max_w(px(820.0))
-                    .mx_auto()
-                    .p(px(28.0))
-                    .gap(px(24.0))
-                    .child(div().text_xl().font_weight(gpui::FontWeight::SEMIBOLD).child("设置"))
-                    .child(
-                        settings_card("剪贴板", border)
-                            .when(self.clipboard_service.settings_degraded(), |card| {
-                                card.child(div().text_xs().text_color(gpui::red()).child("设置读取异常，采集已自动暂停；重新保存开关可尝试修复。"))
-                            })
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap_4()
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .gap_1()
-                                            .child(div().text_sm().child("启用剪贴板"))
-                                            .child(div().text_xs().text_color(muted).child(format!(
-                                                "侧边栏显示入口并后台记录剪贴历史，全局热键 {}；细项在剪贴板工具内设置",
-                                                clipboard_hotkey(clipboard.alternate_hotkey)
-                                            ))),
-                                    )
-                                    .child(
-                                        crate::clickable_switch("settings-clip-enabled")
-                                            .flex_none()
-                                            .checked(clipboard.enabled)
-                                            .disabled(clipboard_disabled)
-                                            .on_click(cx.listener(|this, _: &bool, _, cx| {
-                                                let mut next = this.clipboard.clone();
-                                                next.enabled = !next.enabled;
-                                                this.save_clipboard(next, cx);
-                                            })),
-                                    ),
-                            ),
-                    ),
+                div()
+                    .flex_1()
+                    .h_full()
+                    .min_w_0()
+                    .child(self.render_selected_page(cx)),
             )
     }
 }
 
-fn settings_card(title: &'static str, border: gpui::Hsla) -> gpui::Div {
-    v_flex()
-        .w_full()
-        .p(px(16.0))
-        .gap(px(12.0))
-        .border_1()
-        .border_color(border)
-        .rounded(px(8.0))
-        .child(
-            div()
-                .text_base()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::SettingsPage;
+
+    #[test]
+    fn global_configuration_is_the_default_page() {
+        assert_eq!(SettingsPage::default(), SettingsPage::Global);
+        assert_eq!(SettingsPage::ALL.first(), Some(&SettingsPage::Global));
+    }
+
+    #[test]
+    fn each_large_module_has_a_distinct_page() {
+        let ids: HashSet<_> = SettingsPage::ALL
+            .into_iter()
+            .map(SettingsPage::id)
+            .collect();
+
+        assert_eq!(ids.len(), SettingsPage::ALL.len());
+        assert!(ids.contains("database"));
+        assert!(ids.contains("version-control"));
+        assert!(ids.contains("clipboard"));
+        assert!(ids.contains("ssh"));
+    }
 }

@@ -4,7 +4,6 @@ mod card;
 mod detail;
 mod ops;
 mod render;
-mod settings;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +40,6 @@ pub struct ClipboardView {
     pub(super) search_gen: u64,
     /// 当前全量搜索的取消标记；输入变化或视图销毁时停止旧扫描。
     pub(super) search_cancel: Arc<AtomicBool>,
-    pub(super) show_settings: bool,
     pub(super) list_scroll: UniformListScrollHandle,
     pub(super) focus_handle: FocusHandle,
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
@@ -99,7 +97,6 @@ impl ClipboardView {
             search_truncated: false,
             search_gen: 0,
             search_cancel: Arc::new(AtomicBool::new(false)),
-            show_settings: false,
             focused_search_once: false,
             list_scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),

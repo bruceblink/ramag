@@ -83,11 +83,7 @@ impl Render for ClipboardView {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(if self.show_settings {
-                                self.render_settings(cx).into_any_element()
-                            } else {
-                                self.render_detail(cx).into_any_element()
-                            }),
+                            .child(self.render_detail(cx)),
                     ),
             )
     }
@@ -119,15 +115,13 @@ impl ClipboardView {
                             .child(Input::new(&self.search).small()),
                     )
                     .child(
-                        ramag_ui::clickable_button("clip-settings")
-                            .ghost()
+                        ramag_ui::clickable_button("clip-clear-history")
+                            .danger()
                             .small()
-                            .icon(icons::settings())
-                            .selected(self.show_settings)
-                            .tooltip("设置")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.show_settings = !this.show_settings;
-                                cx.notify();
+                            .icon(icons::trash())
+                            .tooltip("清空历史")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.confirm_clear(window, cx);
                             })),
                     ),
             )
@@ -153,7 +147,6 @@ impl ClipboardView {
                 .selected(self.filter.is_none())
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.filter = None;
-                    this.show_settings = false;
                     cx.notify();
                 })),
         );
@@ -167,7 +160,6 @@ impl ClipboardView {
                     .selected(active)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.filter = Some(kind);
-                        this.show_settings = false;
                         cx.notify();
                     })),
             );
@@ -188,7 +180,7 @@ impl ClipboardView {
             } else if self.filter.is_some() {
                 "该类型下暂无条目".to_string()
             } else if !self.settings.enabled {
-                "采集已关闭：右上角设置中开启后，复制的内容才会记录".to_string()
+                "采集已关闭：请在“设置 > 剪贴板”中开启后再使用".to_string()
             } else {
                 "暂无剪贴历史；复制任意内容后会出现在这里".to_string()
             };
