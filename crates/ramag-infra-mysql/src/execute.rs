@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use ramag_domain::entities::Warning;
 use ramag_domain::traits::CancelHandle;
 use ramag_infra_sql_shared::MAX_QUERY_WARNINGS;
-use sqlx::mysql::MySqlConnection;
+use sqlx::mysql::{MySqlConnection, MySqlDatabaseError};
 use sqlx::{Column as _, Executor, TypeInfo as _};
 use tracing::warn;
 
@@ -40,8 +40,11 @@ pub async fn fetch_warnings(conn: &mut MySqlConnection) -> Vec<Warning> {
             .collect(),
         Err(e) => {
             // 1295 = command not supported in prepared statement protocol，老版本服务端限制
-            let is_unsupported =
-                e.as_database_error().and_then(|d| d.code()).as_deref() == Some("1295");
+            // DatabaseError::code() 返回的是 SQLSTATE（此处为 HY000），需读取 MySQL 错误号。
+            let is_unsupported = e
+                .as_database_error()
+                .and_then(|error| error.try_downcast_ref::<MySqlDatabaseError>())
+                .is_some_and(|error| error.number() == 1295);
             if !is_unsupported {
                 warn!(error = %e, "query warning lookup failed");
             }
