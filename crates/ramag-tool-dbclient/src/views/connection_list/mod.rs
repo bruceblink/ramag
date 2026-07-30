@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Window};
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::InputState;
 use gpui_component::notification::Notification;
 use ramag_app::{ConnectionService, MongoService, RedisService};
 use ramag_domain::entities::{
@@ -106,16 +106,15 @@ impl ConnectionListPanel {
         });
 
         let mut subs = Vec::new();
-        subs.push(cx.subscribe_in(
-            &search,
-            window,
-            |this: &mut Self, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.query = this.search.read(cx).value().trim().to_lowercase();
-                    cx.notify();
-                }
-            },
-        ));
+        // InputState::set_value 不发 Change 事件，观察实体才能正确处理清除按钮。
+        subs.push(cx.observe(&search, |this: &mut Self, _, cx| {
+            let query = this.search.read(cx).value().trim().to_lowercase();
+            if query == this.query {
+                return;
+            }
+            this.query = query;
+            cx.notify();
+        }));
 
         let mut this = Self {
             service,

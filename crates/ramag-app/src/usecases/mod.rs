@@ -30,6 +30,7 @@ pub mod clip_thumb;
 pub mod clipboard_service;
 pub mod connection_service;
 pub mod export;
+pub mod id_conversion;
 pub mod mongo_service;
 pub mod redis_service;
 pub mod ssh_service;
@@ -37,6 +38,7 @@ pub mod transfer;
 
 pub use clipboard_service::{CaptureDecision, ClipboardService, HotkeyState, decide_capture};
 pub use connection_service::ConnectionService;
+pub use id_conversion::{convert_id_to_integer, convert_id_to_string};
 pub use mongo_service::MongoService;
 pub use redis_service::RedisService;
 pub use ssh_service::SshService;

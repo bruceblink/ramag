@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, EventEmitter, UniformListScrollHandle, Window};
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::InputState;
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema};
@@ -53,6 +53,8 @@ pub struct TableTreePanel {
     pub(super) selected: Option<(String, String)>,
     pub(super) show_system: bool,
     pub(super) search: gpui::Entity<InputState>,
+    /// 小写搜索词；与输入实体分开缓存，避免焦点变化触发元数据补拉。
+    pub(super) search_query: String,
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) editor_visible: bool,
     pub(super) active_schema: Option<String>,
@@ -128,9 +130,16 @@ impl TableTreePanel {
                 .clean_on_escape()
         });
         let subs = vec![
-            cx.subscribe(&search, |this: &mut Self, _, _e: &InputEvent, cx| {
+            // InputState::set_value 不发 Change 事件，观察实体才能正确处理清除按钮。
+            cx.observe(&search, |this: &mut Self, _, cx| {
+                let query = this.search.read(cx).value().trim().to_lowercase();
+                if query == this.search_query {
+                    return;
+                }
+                this.search_query = query;
                 // 非空搜索覆盖全库，而非仅过滤已展开节点。
                 this.ensure_search_coverage(cx);
+                this.invalidate_tree_rows();
                 cx.notify();
             }),
         ];
@@ -152,6 +161,7 @@ impl TableTreePanel {
             selected: None,
             show_system: false,
             search,
+            search_query: String::new(),
             schema_cache,
             editor_visible: false,
             active_schema: None,
@@ -172,8 +182,8 @@ impl TableTreePanel {
         }
     }
 
-    pub(super) fn current_filter(&self, cx: &gpui::App) -> String {
-        self.search.read(cx).value().trim().to_lowercase()
+    pub(super) fn current_filter(&self, _cx: &gpui::App) -> String {
+        self.search_query.clone()
     }
 
     pub(super) fn invalidate_tree_rows(&mut self) {

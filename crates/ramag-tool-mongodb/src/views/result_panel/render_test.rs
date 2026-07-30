@@ -8,7 +8,7 @@ use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px}
 use ramag_domain::entities::MongoQueryResult;
 use serde_json::{Map, Value};
 
-use super::{ResultPanel, RowViewCache, RowViewKey};
+use super::{ResultPanel, RowFilter, RowSearchMode, RowViewCache, RowViewKey};
 
 fn wide_documents() -> Vec<Value> {
     (0..80)
@@ -48,7 +48,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         panel.row_view_cache = Some(RowViewCache {
             key: RowViewKey {
                 generation: panel.table_build_seq,
-                query: String::new(),
+                filter: RowFilter::Text(String::new()),
                 sort_by: None,
             },
             indices: row_indices,
@@ -73,5 +73,53 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         let vertical = panel.uniform_scroll.0.borrow().base_handle.offset();
         assert!(horizontal.x < px(0.0), "横向手势应移动结果列");
         assert_eq!(vertical.y, px(0.0), "横向手势不应移动结果行");
+    });
+}
+
+#[gpui::test]
+fn clearing_layer_filter_preserves_content_search(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let mut panel = ResultPanel::new(window, cx);
+        panel
+            .column_filter
+            .update(cx, |state, cx| state.set_value("metadata", window, cx));
+        panel
+            .row_filter
+            .update(cx, |state, cx| state.set_value("0", window, cx));
+        panel.clear_column_filter(window, cx);
+        panel
+    });
+
+    panel.read_with(cx, |panel, cx| {
+        assert!(panel.column_filter.read(cx).value().is_empty());
+        assert_eq!(panel.row_filter.read(cx).value().as_ref(), "0");
+    });
+}
+
+#[gpui::test]
+fn mongodb_id_search_uses_the_shared_converter_configuration(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        ramag_ui::set_database_search_settings(
+            ramag_ui::DatabaseSearchSettings {
+                id_conversion_enabled: true,
+                ..Default::default()
+            },
+            cx,
+        );
+    });
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let mut panel = ResultPanel::new(window, cx);
+        panel
+            .row_filter
+            .update(cx, |state, cx| state.set_value("qwe", window, cx));
+        panel.set_row_search_mode(RowSearchMode::IdToInteger, cx);
+        panel
+    });
+    cx.run_until_parked();
+
+    panel.read_with(cx, |panel, cx| {
+        assert_eq!(panel.effective_row_filter(cx), RowFilter::Integer(82_489));
     });
 }

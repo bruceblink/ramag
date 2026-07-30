@@ -327,8 +327,8 @@ impl QueryPanel {
                 t.set_sql(sql.clone(), window, cx);
                 t.mark_injected(sql);
                 t.set_pinned_target(target);
-                // 切表时同步清空两个过滤框，避免旧 filter 挡新表数据
-                t.clear_result_filters(window, cx);
+                // 表的列结构会变化；内容搜索作为用户条件跨表保留。
+                t.clear_result_column_filter(window, cx);
                 t.run(window, cx);
             });
         }

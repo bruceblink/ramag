@@ -231,8 +231,9 @@ impl QueryTab {
         }
     }
 
-    pub fn clear_result_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.result.update(cx, |r, cx| r.clear_filters(window, cx));
+    pub fn clear_result_column_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.result
+            .update(cx, |r, cx| r.clear_column_filter(window, cx));
     }
 
     pub fn set_pinned_target(&mut self, target: Option<(String, String)>) {

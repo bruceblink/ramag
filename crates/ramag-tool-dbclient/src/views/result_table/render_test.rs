@@ -81,3 +81,24 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         assert_eq!(vertical.y, px(0.0), "横向手势不应移动结果行");
     });
 }
+
+#[gpui::test]
+fn clearing_table_filter_preserves_content_search(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let mut panel = ResultPanel::new(window, cx);
+        panel
+            .column_filter_entity()
+            .update(cx, |state, cx| state.set_value("metadata", window, cx));
+        panel
+            .row_filter_entity()
+            .update(cx, |state, cx| state.set_value("0", window, cx));
+        panel.clear_column_filter(window, cx);
+        panel
+    });
+
+    panel.read_with(cx, |panel, cx| {
+        assert!(panel.column_filter_entity().read(cx).value().is_empty());
+        assert_eq!(panel.row_filter_entity().read(cx).value().as_ref(), "0");
+    });
+}

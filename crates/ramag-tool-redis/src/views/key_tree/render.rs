@@ -34,6 +34,7 @@ impl KeyTreePanel {
         let rows = Rc::new(flatten_visible_rows(
             &self.tree,
             &self.expanded,
+            &self.search_collapsed,
             &self.query,
         ));
         let leaf_count = rows.iter().filter(|row| row.is_key).count();
@@ -46,9 +47,13 @@ impl KeyTreePanel {
     }
 
     pub(super) fn expand_all(&mut self, cx: &mut Context<Self>) {
-        self.expanded.clear();
-        for node in &self.tree {
-            collect_namespace_paths(node, &mut self.expanded);
+        if self.query.is_empty() {
+            self.expanded.clear();
+            for node in &self.tree {
+                collect_namespace_paths(node, &mut self.expanded);
+            }
+        } else {
+            self.search_collapsed.clear();
         }
         self.expanded_revision = self.expanded_revision.wrapping_add(1);
         self.visible_rows_cache.get_mut().take();
@@ -56,7 +61,14 @@ impl KeyTreePanel {
     }
 
     pub(super) fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.expanded.clear();
+        if self.query.is_empty() {
+            self.expanded.clear();
+        } else {
+            self.search_collapsed.clear();
+            for node in &self.tree {
+                collect_namespace_paths(node, &mut self.search_collapsed);
+            }
+        }
         self.expanded_revision = self.expanded_revision.wrapping_add(1);
         self.visible_rows_cache.get_mut().take();
         cx.notify();
@@ -201,6 +213,7 @@ impl KeyTreePanel {
 fn flatten_visible_rows(
     tree: &[TreeNode],
     expanded: &std::collections::HashSet<String>,
+    search_collapsed: &std::collections::HashSet<String>,
     query: &str,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
@@ -210,7 +223,7 @@ fn flatten_visible_rows(
         }
     } else {
         for node in tree {
-            collect_search_rows(node, 0, "", query, &mut rows);
+            collect_search_rows(node, 0, "", query, search_collapsed, &mut rows);
         }
     }
     rows
@@ -240,6 +253,7 @@ fn collect_search_rows(
     depth: usize,
     parent_path: &str,
     query: &str,
+    search_collapsed: &std::collections::HashSet<String>,
     rows: &mut Vec<VisibleRow>,
 ) -> bool {
     let full_path = joined_path(parent_path, &node.label);
@@ -249,11 +263,16 @@ fn collect_search_rows(
     let self_matches = node.is_key && contains_case_insensitive(&full_path, query);
     let mut descendant_matches = false;
     for child in &node.children {
-        descendant_matches |= collect_search_rows(child, depth + 1, &full_path, query, rows);
+        descendant_matches |=
+            collect_search_rows(child, depth + 1, &full_path, query, search_collapsed, rows);
     }
 
     if self_matches || descendant_matches {
-        rows[row_index].is_expanded = node.is_namespace();
+        let is_expanded = descendant_matches && !search_collapsed.contains(&full_path);
+        rows[row_index].is_expanded = is_expanded;
+        if descendant_matches && !is_expanded {
+            rows.truncate(row_index + 1);
+        }
         true
     } else {
         rows.truncate(row_index);
@@ -313,7 +332,12 @@ mod tests {
             KeyMeta::bare("session:abc"),
         ];
         let tree = super::super::tree::build_tree(&keys);
-        let rows = flatten_visible_rows(&tree, &std::collections::HashSet::new(), "profile");
+        let rows = flatten_visible_rows(
+            &tree,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            "profile",
+        );
         let paths: Vec<&str> = rows.iter().map(|row| row.full_path.as_str()).collect();
 
         assert_eq!(paths, vec!["user", "user:1", "user:1:profile"]);
@@ -325,10 +349,47 @@ mod tests {
     #[test]
     fn search_flatten_keeps_bare_key_without_type() {
         let tree = super::super::tree::build_tree(&[KeyMeta::bare("111")]);
-        let rows = flatten_visible_rows(&tree, &std::collections::HashSet::new(), "111");
+        let rows = flatten_visible_rows(
+            &tree,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            "111",
+        );
 
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_key);
         assert!(rows[0].leaf_type.is_none());
+    }
+
+    #[test]
+    fn search_result_can_collapse_and_expand_without_changing_normal_state() {
+        let tree = super::super::tree::build_tree(&[
+            KeyMeta::bare("zset:1001"),
+            KeyMeta::bare("zset:1002"),
+        ]);
+        let normal_expanded = std::collections::HashSet::from(["other".to_string()]);
+        let collapsed = std::collections::HashSet::from(["zset".to_string()]);
+
+        let collapsed_rows = flatten_visible_rows(&tree, &normal_expanded, &collapsed, "1002");
+        assert_eq!(collapsed_rows.len(), 1);
+        assert_eq!(collapsed_rows[0].full_path.as_str(), "zset");
+        assert!(!collapsed_rows[0].is_expanded);
+
+        let expanded_rows = flatten_visible_rows(
+            &tree,
+            &normal_expanded,
+            &std::collections::HashSet::new(),
+            "1002",
+        );
+        let paths: Vec<&str> = expanded_rows
+            .iter()
+            .map(|row| row.full_path.as_str())
+            .collect();
+        assert_eq!(paths, vec!["zset", "zset:1002"]);
+        assert!(expanded_rows[0].is_expanded);
+        assert_eq!(
+            normal_expanded,
+            std::collections::HashSet::from(["other".to_string()])
+        );
     }
 }

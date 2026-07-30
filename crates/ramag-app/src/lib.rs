@@ -11,4 +11,5 @@ pub use blocking::run_blocking;
 pub use tool_registry::ToolRegistry;
 pub use usecases::{
     ClipboardService, ConnectionService, HotkeyState, MongoService, RedisService, SshService,
+    convert_id_to_integer, convert_id_to_string,
 };

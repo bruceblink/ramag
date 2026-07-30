@@ -15,11 +15,8 @@ use gpui::{
 };
 
 use gpui_component::{
-    ActiveTheme, Selectable as _, Sizable as _,
-    button::ButtonVariants as _,
-    h_flex,
-    input::{InputEvent, InputState},
-    v_flex,
+    ActiveTheme, Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex,
+    input::InputState, v_flex,
 };
 use ramag_app::MongoService;
 use ramag_domain::entities::{ConnectionConfig, MongoCollection, MongoDatabase};
@@ -50,6 +47,8 @@ pub struct CollectionTreePanel {
     selected: Option<(String, String)>,
     active_db: Option<String>,
     search: Entity<InputState>,
+    /// 小写搜索词；与输入实体分开缓存，避免焦点变化触发元数据补拉。
+    search_query: String,
     show_system: bool,
     editor_visible: bool,
     uniform_scroll: UniformListScrollHandle,
@@ -143,9 +142,16 @@ impl CollectionTreePanel {
                 .clean_on_escape()
         });
         let subs = vec![
-            cx.subscribe(&search, |this: &mut Self, _, _e: &InputEvent, cx| {
+            // InputState::set_value 不发 Change 事件，观察实体才能正确处理清除按钮。
+            cx.observe(&search, |this: &mut Self, _, cx| {
+                let query = this.search.read(cx).value().trim().to_lowercase();
+                if query == this.search_query {
+                    return;
+                }
+                this.search_query = query;
                 // 非空搜索覆盖全库，而非仅过滤已展开节点。
                 this.ensure_search_coverage(cx);
+                this.invalidate_tree_rows();
                 cx.notify();
             }),
         ];
@@ -165,6 +171,7 @@ impl CollectionTreePanel {
             selected: None,
             active_db: None,
             search,
+            search_query: String::new(),
             show_system: false,
             editor_visible: false,
             uniform_scroll: UniformListScrollHandle::new(),
@@ -692,8 +699,8 @@ impl CollectionTreePanel {
         cx.notify();
     }
 
-    fn current_filter(&self, cx: &gpui::App) -> String {
-        self.search.read(cx).value().trim().to_lowercase()
+    fn current_filter(&self, _cx: &gpui::App) -> String {
+        self.search_query.clone()
     }
 }
 

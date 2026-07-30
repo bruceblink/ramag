@@ -722,10 +722,9 @@ impl ResultPanel {
         self.pending_notification = n;
     }
 
-    pub fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 切换结果数据源时列结构会变化；内容搜索作为用户条件跨表保留。
+    pub fn clear_column_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.column_filter_input
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        self.row_filter_input
             .update(cx, |s, cx| s.set_value("", window, cx));
     }
 

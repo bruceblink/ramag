@@ -5,6 +5,7 @@ pub mod connection;
 pub mod ddl;
 pub mod git;
 pub mod history;
+pub mod id_conversion;
 pub mod mongo;
 pub mod query;
 pub mod redis_keyspace;
@@ -39,6 +40,11 @@ pub use git::{
 pub use history::{
     MAX_QUERY_HISTORY_ERROR_BYTES, MAX_QUERY_HISTORY_SQL_BYTES, QueryHistoryPage, QueryRecord,
     QueryRecordId, QueryStatus, compact_text_preview,
+};
+pub use id_conversion::{
+    BASE10_ALPHABET, BASE16_ALPHABET, BASE36_ALPHABET, BASE58_BITCOIN_ALPHABET,
+    BASE58_FLICKR_ALPHABET, IdConverterConfig, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
+    MAX_ID_CONVERTER_PROGRAM_BYTES, parse_nonnegative_id_integer, validate_custom_alphabet,
 };
 pub use mongo::{
     InsertManyOutcome, MAX_MONGO_COLLECTION_NAME_BYTES, MAX_MONGO_DATABASE_NAME_BYTES,

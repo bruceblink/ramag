@@ -3,7 +3,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod actions;
-mod id_converter;
 pub mod sql_completion;
 pub mod views;
 

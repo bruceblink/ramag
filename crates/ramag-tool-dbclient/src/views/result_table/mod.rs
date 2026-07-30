@@ -420,7 +420,7 @@ pub(super) fn render_table(
             .child(
                 div()
                     .text_color(muted_fg)
-                    .child("请修改搜索词，或检查设置中的转换程序。"),
+                    .child("请修改搜索词，或检查设置中的转换方式。"),
             )
             .into_any_element();
     }
@@ -637,8 +637,8 @@ pub(super) fn render_table(
     });
 
     let mut status_parts = Vec::with_capacity(3);
-    if let Some(id) = panel.converted_row_search_id(cx) {
-        status_parts.push(format!("@ID → {id}"));
+    if let Some((mode, output)) = panel.converted_row_search(cx) {
+        status_parts.push(format!("{} → {}", mode.label(), output.display_preview(80)));
     }
     if cols_filtered {
         if columns_truncated {
@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn id_filter_matches_exact_integer_in_the_display_pipeline() {
         let result = sample_result();
-        let filter = RowFilter::Id(2);
+        let filter = RowFilter::Integer(2);
         let view =
             build_display_view_cancellable(&result, None, "", &filter, &AtomicBool::new(false))
                 .unwrap();

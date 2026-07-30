@@ -1,20 +1,18 @@
-//! 数据库搜索设置页。
+//! 数据库搜索设置的交互与持久化。
+
+mod algorithm;
+mod render;
 
 use std::time::Duration;
 
-use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div,
-    prelude::FluentBuilder as _, px,
+use gpui::{Context, Window};
+use gpui_component::{input::InputEvent, notification::Notification};
+use ramag_domain::{
+    entities::{IdConverterConfig, IdConverterKind},
+    error::DomainError,
 };
-use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, h_flex,
-    input::{Input, InputEvent},
-    notification::Notification,
-    v_flex,
-};
-use ramag_domain::error::DomainError;
 
-use super::{SettingsView, pages::settings_card};
+use super::{DatabaseConverterTestDirection, DatabaseConverterTestState, SettingsView};
 use crate::{
     DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, set_database_search_settings,
     validate_id_converter_program,
@@ -22,106 +20,19 @@ use crate::{
 
 const DATABASE_SEARCH_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
-impl SettingsView {
-    pub(super) fn render_database_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let disabled = self.picking_id_converter;
-
-        v_flex()
-            .w_full()
-            .gap(px(16.0))
-            .when(self.saving_database, |page| {
-                page.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child("正在自动保存…"),
-                )
-            })
-            .child(
-                settings_card("搜索设置", theme.border)
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(16.0))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(px(2.0))
-                                    .child(div().text_sm().child("启用雪花 ID 外部转换"))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(muted)
-                                            .child("启用后，SQL 结果行搜索可以选择 @ID 模式。"),
-                                    ),
-                            )
-                            .child(
-                                crate::clickable_switch("settings-db-id-conversion")
-                                    .flex_none()
-                                    .checked(self.database_enabled_draft)
-                                    .disabled(disabled)
-                                    .on_click(cx.listener(|this, _: &bool, _, cx| {
-                                        this.database_enabled_draft =
-                                            !this.database_enabled_draft;
-                                        this.schedule_database_search_save(Duration::ZERO, cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap(px(6.0))
-                            .child(div().text_sm().child("转换程序"))
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .gap(px(8.0))
-                                    .child(
-                                        Input::new(&self.database_converter_program)
-                                            .flex_1()
-                                            .small()
-                                            .disabled(disabled),
-                                    )
-                                    .child(
-                                        crate::clickable_button("settings-db-id-converter-pick")
-                                            .outline()
-                                            .small()
-                                            .label(if self.picking_id_converter {
-                                                "选择中…"
-                                            } else {
-                                                "选择…"
-                                            })
-                                            .disabled(disabled)
-                                            .on_click(cx.listener(
-                                                |this, _: &ClickEvent, window, cx| {
-                                                    this.pick_id_converter(window, cx);
-                                                },
-                                            )),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child("协议：Ramag 向 stdin 写入一行 UTF-8 搜索词；程序须在 2 秒内以 stdout 输出一个非负 i64 十进制整数并以状态码 0 退出。"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.warning)
-                            .child("安全提示：程序会以当前用户权限运行。Ramag 不经 shell 执行，但仍应只选择你信任的程序。"),
-                    ),
-            )
-            .into_any_element()
+pub(super) fn id_converter_kind_label(kind: IdConverterKind) -> &'static str {
+    match kind {
+        IdConverterKind::Base10 => "Base10（十进制）",
+        IdConverterKind::Base16 => "Base16（十六进制）",
+        IdConverterKind::Base36 => "Base36",
+        IdConverterKind::Base58Bitcoin => "Base58 Bitcoin",
+        IdConverterKind::Base58Flickr => "Base58 Flickr（gewu）",
+        IdConverterKind::CustomAlphabet => "自定义字符表（Base-N）",
+        IdConverterKind::ExternalProgram => "自定义算法（外部程序）",
     }
+}
 
+impl SettingsView {
     pub(super) fn on_database_converter_input_event(
         &mut self,
         event: &InputEvent,
@@ -129,6 +40,7 @@ impl SettingsView {
     ) {
         match event {
             InputEvent::Change => {
+                self.invalidate_database_converter_test();
                 self.schedule_database_search_save(DATABASE_SEARCH_SAVE_DEBOUNCE, cx);
             }
             InputEvent::PressEnter { .. } | InputEvent::Blur => {
@@ -136,6 +48,32 @@ impl SettingsView {
             }
             InputEvent::Focus => {}
         }
+    }
+
+    pub(super) fn on_database_converter_test_input_event(
+        &mut self,
+        event: &InputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => {
+                self.invalidate_database_converter_test();
+                cx.notify();
+            }
+            // 双向测试共用输入框，回车无法可靠推断方向，由两个按钮显式选择。
+            InputEvent::PressEnter { .. } => {}
+            InputEvent::Focus | InputEvent::Blur => {}
+        }
+    }
+
+    fn select_database_converter_kind(&mut self, kind: IdConverterKind, cx: &mut Context<Self>) {
+        if self.database_converter_kind == kind {
+            return;
+        }
+        self.database_converter_kind = kind;
+        self.invalidate_database_converter_test();
+        self.schedule_database_search_save(Duration::ZERO, cx);
+        cx.notify();
     }
 
     fn pick_id_converter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -151,19 +89,114 @@ impl SettingsView {
                 if let Some(handle) = picked {
                     let Some(path) = handle.path().to_str().map(str::to_owned) else {
                         this.pending_notification =
-                            Some(Notification::error("转换程序路径不是有效的 UTF-8"));
+                            Some(Notification::error("ID 转换器路径不是有效的 UTF-8"));
                         cx.notify();
                         return;
                     };
                     this.database_converter_program.update(cx, |state, cx| {
                         state.set_value(path, window, cx);
                     });
+                    this.invalidate_database_converter_test();
                     this.schedule_database_search_save(Duration::ZERO, cx);
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn database_converter_draft(&self, cx: &gpui::App) -> IdConverterConfig {
+        IdConverterConfig {
+            kind: self.database_converter_kind,
+            custom_alphabet: self.database_custom_alphabet.read(cx).value().to_string(),
+            external_program: self.database_converter_program.read(cx).value().to_string(),
+        }
+    }
+
+    fn run_database_converter_test(
+        &mut self,
+        direction: DatabaseConverterTestDirection,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            self.database_converter_test_state,
+            DatabaseConverterTestState::Testing(_)
+        ) {
+            return;
+        }
+        self.invalidate_database_converter_test();
+
+        let input = self
+            .database_converter_test_input
+            .read(cx)
+            .value()
+            .to_string();
+        let config = self.database_converter_draft(cx);
+        if input.is_empty() {
+            self.database_converter_test_state = DatabaseConverterTestState::Error {
+                direction,
+                message: "请先输入一个示例 ID".to_string(),
+            };
+            cx.notify();
+            return;
+        }
+        if let Err(error) = config.validate_active() {
+            self.database_converter_test_state = DatabaseConverterTestState::Error {
+                direction,
+                message: error,
+            };
+            cx.notify();
+            return;
+        }
+
+        self.database_converter_test_seq = self.database_converter_test_seq.wrapping_add(1);
+        let test_seq = self.database_converter_test_seq;
+        self.database_converter_test_state = DatabaseConverterTestState::Testing(direction);
+        cx.notify();
+
+        let is_external = config.kind.is_external();
+        let program = config.external_program.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result: Result<String, String> = async {
+                if is_external {
+                    ramag_app::run_blocking(move || {
+                        validate_id_converter_program(&program).map_err(DomainError::InvalidConfig)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                }
+                match direction {
+                    DatabaseConverterTestDirection::ToInteger => {
+                        ramag_app::convert_id_to_integer(&config, &input)
+                            .await
+                            .map(|value| value.to_string())
+                    }
+                    DatabaseConverterTestDirection::ToString => {
+                        ramag_app::convert_id_to_string(&config, &input).await
+                    }
+                }
+            }
+            .await;
+
+            let _ = this.update(cx, |this, cx| {
+                if this.database_converter_test_seq != test_seq {
+                    return;
+                }
+                this.database_converter_test_task = None;
+                this.database_converter_test_state = match result {
+                    Ok(output) => DatabaseConverterTestState::Success { direction, output },
+                    Err(message) => DatabaseConverterTestState::Error { direction, message },
+                };
+                cx.notify();
+            });
+        });
+        self.database_converter_test_task = Some(task);
+    }
+
+    fn invalidate_database_converter_test(&mut self) {
+        self.database_converter_test_seq = self.database_converter_test_seq.wrapping_add(1);
+        self.database_converter_test_task.take();
+        self.database_converter_test_state = DatabaseConverterTestState::Idle;
     }
 
     fn schedule_database_search_save(&mut self, delay: Duration, cx: &mut Context<Self>) {
@@ -184,7 +217,7 @@ impl SettingsView {
     fn database_search_draft(&self, cx: &gpui::App) -> DatabaseSearchSettings {
         DatabaseSearchSettings {
             id_conversion_enabled: self.database_enabled_draft,
-            id_converter_program: self.database_converter_program.read(cx).value().to_string(),
+            converter: self.database_converter_draft(cx),
         }
     }
 
@@ -214,8 +247,8 @@ impl SettingsView {
 
         self.saving_database = true;
         cx.notify();
-        let validate_program = next.id_conversion_enabled;
-        let program = next.id_converter_program.clone();
+        let validate_program = next.id_conversion_enabled && next.converter.kind.is_external();
+        let program = next.converter.external_program.clone();
         cx.spawn(async move |this, cx| {
             let result: Result<(), String> = async {
                 if validate_program {

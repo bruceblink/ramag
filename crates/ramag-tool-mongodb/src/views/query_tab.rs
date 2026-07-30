@@ -257,8 +257,9 @@ impl MongoQueryTab {
         });
         // 树点击注入属自动内容：未手改前再点其它 collection 仍原地覆盖
         self.last_injected_cmd = Some(cmd);
-        // 切 collection 是换数据源：清掉结果区残留的列 / 行过滤，避免旧过滤词串到新结果
-        self.result.update(cx, |p, cx| p.clear_filters(window, cx));
+        // collection 的列结构会变化；内容搜索作为用户条件跨集合保留。
+        self.result
+            .update(cx, |p, cx| p.clear_column_filter(window, cx));
         cx.notify();
     }
 

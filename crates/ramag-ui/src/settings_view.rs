@@ -16,9 +16,12 @@ use gpui_component::{
     notification::Notification,
 };
 use ramag_app::ClipboardService;
-use ramag_domain::entities::ClipboardSettings;
+use ramag_domain::entities::{
+    ClipboardSettings, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
+    MAX_ID_CONVERTER_PROGRAM_BYTES,
+};
 
-use crate::database_search::MAX_ID_CONVERTER_PROGRAM_BYTES;
+use crate::MAX_SEARCH_INPUT_BYTES;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum SettingsPage {
@@ -65,6 +68,27 @@ impl SettingsPage {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum DatabaseConverterTestState {
+    #[default]
+    Idle,
+    Testing(DatabaseConverterTestDirection),
+    Success {
+        direction: DatabaseConverterTestDirection,
+        output: String,
+    },
+    Error {
+        direction: DatabaseConverterTestDirection,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatabaseConverterTestDirection {
+    ToInteger,
+    ToString,
+}
+
 pub struct SettingsView {
     selected_page: SettingsPage,
     clipboard_service: Arc<ClipboardService>,
@@ -72,7 +96,13 @@ pub struct SettingsView {
     loaded_revision: u64,
     saving_clipboard: bool,
     database_enabled_draft: bool,
+    database_converter_kind: IdConverterKind,
+    database_custom_alphabet: Entity<InputState>,
     database_converter_program: Entity<InputState>,
+    database_converter_test_input: Entity<InputState>,
+    database_converter_test_state: DatabaseConverterTestState,
+    database_converter_test_seq: u64,
+    database_converter_test_task: Option<Task<()>>,
     saving_database: bool,
     database_save_pending: bool,
     database_save_debounce: Option<Task<()>>,
@@ -89,18 +119,47 @@ impl SettingsView {
         let (clipboard, loaded_revision) = clipboard_service.settings_snapshot_with_revision();
         let database = crate::database_search_settings(cx);
         let database_enabled_draft = database.id_conversion_enabled;
-        let converter_program = database.id_converter_program.clone();
+        let database_converter_kind = database.converter.kind;
+        let custom_alphabet = database.converter.custom_alphabet.clone();
+        let converter_program = database.converter.external_program.clone();
+        let database_custom_alphabet = cx.new(|cx| {
+            InputState::new(window, cx)
+                .validate(|value, _| value.len() <= MAX_CUSTOM_ID_ALPHABET_BYTES)
+                .placeholder("按数值从小到大输入字符，例如 0123456789abcdef")
+                .default_value(custom_alphabet)
+        });
         let database_converter_program = cx.new(|cx| {
             InputState::new(window, cx)
                 .validate(|value, _| value.len() <= MAX_ID_CONVERTER_PROGRAM_BYTES)
-                .placeholder("请选择转换程序的绝对路径")
+                .placeholder("请选择外部程序的绝对路径")
                 .default_value(converter_program)
         });
+        let database_converter_test_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .validate(|value, _| value.len() <= MAX_SEARCH_INPUT_BYTES)
+                .placeholder("输入字符串，或非负十进制整数")
+        });
+        cx.subscribe_in(
+            &database_custom_alphabet,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                this.on_database_converter_input_event(event, cx);
+            },
+        )
+        .detach();
         cx.subscribe_in(
             &database_converter_program,
             window,
             |this, _, event: &InputEvent, _, cx| {
                 this.on_database_converter_input_event(event, cx);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &database_converter_test_input,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                this.on_database_converter_test_input_event(event, cx);
             },
         )
         .detach();
@@ -150,7 +209,13 @@ impl SettingsView {
             loaded_revision,
             saving_clipboard: false,
             database_enabled_draft,
+            database_converter_kind,
+            database_custom_alphabet,
             database_converter_program,
+            database_converter_test_input,
+            database_converter_test_state: DatabaseConverterTestState::Idle,
+            database_converter_test_seq: 0,
+            database_converter_test_task: None,
             saving_database: false,
             database_save_pending: false,
             database_save_debounce: None,

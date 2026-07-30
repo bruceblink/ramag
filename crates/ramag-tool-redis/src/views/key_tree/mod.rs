@@ -90,7 +90,10 @@ pub struct KeyTreePanel {
     /// `keys` 中原始 Key 名的总字节数；避免超长名称在多份树索引中放大内存。
     key_bytes: usize,
     tree: Vec<TreeNode>,
+    /// 普通浏览态的展开项；进入和退出搜索都不改变它。
     expanded: HashSet<String>,
+    /// 搜索结果默认展开，仅记录用户在当前搜索中主动折叠的命名空间。
+    search_collapsed: HashSet<String>,
     /// Trie 内容与展开状态代次；可见行缓存只依赖这两者和查询词。
     tree_revision: u64,
     expanded_revision: u64,
@@ -100,6 +103,9 @@ pub struct KeyTreePanel {
     has_loaded: bool,
     error: Option<String>,
     search: Entity<InputState>,
+    /// 输入框原始内容，用于过滤掉焦点、光标等非文本变化通知。
+    search_text: String,
+    /// 本地不区分大小写匹配使用的小写查询词。
     query: String,
     /// 服务端 MATCH 模式（Enter 下推触发重扫）；None = 全库扫描
     match_pattern: Option<String>,
@@ -136,23 +142,24 @@ impl KeyTreePanel {
             ramag_ui::bounded_search_input(window, cx).placeholder("全库搜索 key（支持 * ? [）")
         });
 
-        let subs = vec![cx.subscribe_in(
-            &search,
-            window,
-            |this: &mut Self, _, e: &InputEvent, _, cx| match e {
-                InputEvent::Change => {
-                    this.query = this.search.read(cx).value().trim().to_lowercase();
-                    this.schedule_server_match(cx);
-                }
-                // Enter 跳过去抖立即全库搜索。
-                InputEvent::PressEnter { .. } => {
-                    this.search_generation = this.search_generation.wrapping_add(1);
-                    this.search_pending = false;
-                    this.apply_server_match(cx);
-                }
-                _ => {}
-            },
-        )];
+        let subs = vec![
+            // InputState::set_value 不发 InputEvent::Change；观察实体才能覆盖清除按钮和 Esc。
+            cx.observe(&search, |this: &mut Self, _, cx| {
+                this.sync_search_input(cx);
+            }),
+            cx.subscribe_in(
+                &search,
+                window,
+                |this: &mut Self, _, e: &InputEvent, _, cx| {
+                    if matches!(e, InputEvent::PressEnter { .. }) {
+                        // Enter 跳过去抖立即全库搜索。
+                        this.search_generation = this.search_generation.wrapping_add(1);
+                        this.search_pending = false;
+                        this.apply_server_match(cx);
+                    }
+                },
+            ),
+        ];
 
         Self {
             service,
@@ -163,6 +170,7 @@ impl KeyTreePanel {
             key_bytes: 0,
             tree: Vec::new(),
             expanded: HashSet::new(),
+            search_collapsed: HashSet::new(),
             tree_revision: 0,
             expanded_revision: 0,
             visible_rows_cache: RefCell::new(None),
@@ -170,6 +178,7 @@ impl KeyTreePanel {
             has_loaded: false,
             error: None,
             search,
+            search_text: String::new(),
             query: String::new(),
             match_pattern: None,
             search_generation: 0,
@@ -204,6 +213,7 @@ impl KeyTreePanel {
         self.key_bytes = 0;
         self.clear_tree();
         self.expanded.clear();
+        self.search_collapsed.clear();
         self.expanded_revision = self.expanded_revision.wrapping_add(1);
         self.truncated = false;
         self.resource_limited = false;
@@ -236,7 +246,14 @@ impl KeyTreePanel {
     fn rebuild_tree(&mut self) {
         self.tree = build_tree(&self.keys);
         self.last_rebuilt_count = self.keys.len();
-        let expanded_changed = prune_expanded_for_tree(&self.tree, &mut self.expanded);
+        // 增量扫描和 MATCH 搜索都只是局部快照，不能据此删除普通浏览态的展开项。
+        let has_complete_full_snapshot = self.match_pattern.is_none()
+            && !self.loading
+            && !self.truncated
+            && !self.resource_limited
+            && self.resume_cursor.is_none();
+        let expanded_changed =
+            has_complete_full_snapshot && prune_expanded_for_tree(&self.tree, &mut self.expanded);
         if expanded_changed {
             self.expanded_revision = self.expanded_revision.wrapping_add(1);
         }
@@ -263,12 +280,32 @@ impl KeyTreePanel {
     }
 
     fn toggle_expanded(&mut self, path: String, cx: &mut Context<Self>) {
-        if !self.expanded.remove(&path) {
-            self.expanded.insert(path);
+        let state = if self.query.is_empty() {
+            &mut self.expanded
+        } else {
+            &mut self.search_collapsed
+        };
+        if !state.remove(&path) {
+            state.insert(path);
         }
         self.expanded_revision = self.expanded_revision.wrapping_add(1);
         self.visible_rows_cache.get_mut().take();
         cx.notify();
+    }
+
+    fn sync_search_input(&mut self, cx: &mut Context<Self>) {
+        let search_text = self.search.read(cx).value().trim().to_string();
+        if search_text == self.search_text {
+            return;
+        }
+        self.search_text = search_text;
+        self.query = self.search_text.to_lowercase();
+        if !self.search_collapsed.is_empty() {
+            self.search_collapsed.clear();
+            self.expanded_revision = self.expanded_revision.wrapping_add(1);
+            self.visible_rows_cache.get_mut().take();
+        }
+        self.schedule_server_match(cx);
     }
 
     pub(super) fn is_read_only(&self) -> bool {
@@ -465,7 +502,7 @@ impl Render for KeyTreePanel {
                     }))
             })
             .child({
-                let any_expanded = !self.expanded.is_empty();
+                let any_expanded = visible_rc.iter().any(|row| row.is_expanded);
                 let (icon, tip) = if any_expanded {
                     (IconName::FolderOpen, "折叠")
                 } else {

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::cell::extjson_cell;
 use super::flatten::FlatTable;
+use super::row_search::RowFilter;
 use ramag_domain::entities::contains_case_insensitive;
 
 /// 过滤列框解析结果
@@ -95,10 +96,10 @@ pub(crate) fn column_indices_for(table: &FlatTable, filters: &[String]) -> Optio
     Some(indices)
 }
 
-/// 行过滤：任意单元格子串包含 query（大小写不敏感）→ 行索引；空 query 返回 None（全显示）
+/// 行过滤：普通模式做子串匹配，ID 模式按目标 BSON 类型和值精确匹配。
 #[cfg(test)]
-pub(crate) fn row_indices_for(table: &FlatTable, query: &str) -> Option<Vec<usize>> {
-    row_indices_for_cancellable(table, query, None)
+pub(crate) fn row_indices_for(table: &FlatTable, filter: &RowFilter) -> Option<Vec<usize>> {
+    row_indices_for_cancellable(table, filter, None)
         .ok()
         .flatten()
 }
@@ -106,11 +107,10 @@ pub(crate) fn row_indices_for(table: &FlatTable, query: &str) -> Option<Vec<usiz
 /// 可取消行过滤；每批行检查一次，旧筛选任务无需继续扫描整张矩阵。
 pub(crate) fn row_indices_for_cancellable(
     table: &FlatTable,
-    query: &str,
+    filter: &RowFilter,
     cancelled: Option<&AtomicBool>,
 ) -> Result<Option<Vec<usize>>, ()> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
+    if !filter.is_active() {
         return Ok(None);
     }
     let mut indices = Vec::new();
@@ -118,10 +118,7 @@ pub(crate) fn row_indices_for_cancellable(
         if index % 64 == 0 && cancelled.is_some_and(|token| token.load(Ordering::Relaxed)) {
             return Err(());
         }
-        if row
-            .iter()
-            .any(|cell| contains_case_insensitive(&cell.text, &q))
-        {
+        if row.iter().any(|cell| filter.matches(cell)) {
             indices.push(index);
         }
     }
@@ -132,7 +129,7 @@ pub(crate) fn row_indices_for_cancellable(
 mod tests {
     use super::super::cell::Cell;
     use super::super::flatten::{Column, FlatTable};
-    use super::{classify_filter, column_indices_for, row_indices_for};
+    use super::{RowFilter, classify_filter, column_indices_for, row_indices_for};
     use serde_json::json;
 
     fn sample() -> Vec<serde_json::Value> {
@@ -232,8 +229,14 @@ mod tests {
             ],
         };
 
-        assert_eq!(row_indices_for(&table, "hello"), Some(vec![0]));
-        assert_eq!(row_indices_for(&table, "über"), Some(vec![1]));
-        assert!(row_indices_for(&table, "").is_none());
+        assert_eq!(
+            row_indices_for(&table, &RowFilter::Text("hello".into())),
+            Some(vec![0])
+        );
+        assert_eq!(
+            row_indices_for(&table, &RowFilter::Text("über".into())),
+            Some(vec![1])
+        );
+        assert!(row_indices_for(&table, &RowFilter::Text(String::new())).is_none());
     }
 }

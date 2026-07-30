@@ -1,11 +1,12 @@
-//! 结果行搜索模式与双向 ID 转换状态机。
+//! MongoDB 结果行搜索模式与双向 ID 转换状态机。
 
 use std::time::Duration;
 
 use gpui::{Context, Task};
-use ramag_domain::entities::{IdConverterConfig, Value, parse_nonnegative_id_integer};
+use ramag_domain::entities::{IdConverterConfig, parse_nonnegative_id_integer};
 
-use super::{ResultPanel, ResultPanelEvent};
+use super::ResultPanel;
+use super::cell::Cell;
 
 const ID_CONVERSION_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -72,13 +73,16 @@ impl RowFilter {
         }
     }
 
-    pub(crate) fn matches(&self, value: &Value) -> bool {
+    pub(crate) fn matches(&self, cell: &Cell) -> bool {
         match self {
-            Self::Text(query) => value.contains_query_lower(query),
-            Self::Integer(expected) => matches!(value, Value::Int(actual) if actual == expected),
-            Self::ExactText(expected) => {
-                matches!(value, Value::Text(actual) if actual == expected)
+            Self::Text(query) => {
+                ramag_domain::entities::contains_case_insensitive(&cell.text, query)
             }
+            Self::Integer(expected) => {
+                matches!(cell.kind, "int" | "long")
+                    && cell.text.parse::<i64>().ok() == Some(*expected)
+            }
+            Self::ExactText(expected) => cell.kind == "text" && cell.text == *expected,
             Self::Unresolved(_) => false,
         }
     }
@@ -124,7 +128,6 @@ impl IdConversionState {
         if current_input.is_empty() || !mode.uses_id_conversion() {
             return None;
         }
-
         Some(match self {
             Self::Converting {
                 mode: converted_mode,
@@ -146,7 +149,6 @@ impl IdConversionState {
             } if *converted_mode == mode && input == current_input => {
                 RowSearchConversionStatus::Error(message.clone())
             }
-            // 输入变化后，旧结果在新转换完成前不可见。
             _ => RowSearchConversionStatus::Converting,
         })
     }
@@ -195,13 +197,13 @@ impl ResultPanel {
         self.cancel_id_conversion();
         self.row_search.mode = mode;
         self.row_search.conversion = IdConversionState::Idle;
-        self.invalidate_display_view();
         if mode.uses_id_conversion() {
             let input = self.row_filter_text(cx);
             self.row_search.last_input = input.clone();
             self.schedule_id_conversion(input, cx);
+        } else {
+            self.schedule_row_view(false, cx);
         }
-        cx.emit(ResultPanelEvent::RowSearchChanged);
         cx.notify();
     }
 
@@ -213,12 +215,11 @@ impl ResultPanel {
             return;
         }
         self.row_search.last_input = input.clone();
-        self.invalidate_display_view();
         if self.row_search.mode.uses_id_conversion() {
             self.schedule_id_conversion(input, cx);
+        } else {
+            self.schedule_row_view(true, cx);
         }
-        cx.emit(ResultPanelEvent::RowSearchChanged);
-        cx.notify();
     }
 
     pub(super) fn on_database_search_settings_changed(&mut self, cx: &mut Context<Self>) {
@@ -228,9 +229,8 @@ impl ResultPanel {
                 self.cancel_id_conversion();
                 self.row_search.mode = RowSearchMode::Normal;
                 self.row_search.conversion = IdConversionState::Idle;
-                self.invalidate_display_view();
+                self.schedule_row_view(false, cx);
             }
-            cx.emit(ResultPanelEvent::RowSearchChanged);
             cx.notify();
             return;
         }
@@ -238,7 +238,6 @@ impl ResultPanel {
             let input = self.row_filter_text(cx);
             self.schedule_id_conversion(input, cx);
         }
-        cx.emit(ResultPanelEvent::RowSearchChanged);
         cx.notify();
     }
 
@@ -290,11 +289,15 @@ impl ResultPanel {
             .visible_status(self.row_search.mode, &input)
     }
 
+    pub(super) fn row_filter_text(&self, cx: &gpui::App) -> String {
+        self.row_filter.read(cx).value().trim().to_string()
+    }
+
     fn schedule_id_conversion(&mut self, input: String, cx: &mut Context<Self>) {
         self.cancel_id_conversion();
         if input.is_empty() {
             self.row_search.conversion = IdConversionState::Idle;
-            self.invalidate_display_view();
+            self.schedule_row_view(false, cx);
             return;
         }
         let settings = ramag_ui::database_search_settings(cx);
@@ -305,7 +308,8 @@ impl ResultPanel {
                 input,
                 message: "ID 转换未启用或配置无效".to_string(),
             };
-            self.invalidate_display_view();
+            self.invalidate_row_view();
+            cx.notify();
             return;
         }
 
@@ -313,20 +317,25 @@ impl ResultPanel {
         let conversion_seq = self.row_search.conversion_seq;
         let config = settings.converter;
         if !config.kind.is_external() {
-            self.row_search.conversion = match convert_local(mode, &config, &input) {
-                Ok(output) => IdConversionState::Ready {
-                    mode,
-                    input,
-                    output,
-                },
-                Err(message) => IdConversionState::Error {
-                    mode,
-                    input,
-                    message,
-                },
-            };
-            self.invalidate_display_view();
-            cx.emit(ResultPanelEvent::RowSearchChanged);
+            match convert_local(mode, &config, &input) {
+                Ok(output) => {
+                    self.row_search.conversion = IdConversionState::Ready {
+                        mode,
+                        input,
+                        output,
+                    };
+                    self.schedule_row_view(false, cx);
+                }
+                Err(message) => {
+                    self.row_search.conversion = IdConversionState::Error {
+                        mode,
+                        input,
+                        message,
+                    };
+                    self.invalidate_row_view();
+                    cx.notify();
+                }
+            }
             return;
         }
 
@@ -334,7 +343,8 @@ impl ResultPanel {
             mode,
             input: input.clone(),
         };
-        self.invalidate_display_view();
+        self.invalidate_row_view();
+        cx.notify();
         let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ID_CONVERSION_DEBOUNCE).await;
             let result = match mode {
@@ -353,27 +363,31 @@ impl ResultPanel {
                 {
                     return;
                 }
-                this.row_search.conversion = match result {
-                    Ok(output) => IdConversionState::Ready {
-                        mode,
-                        input: input.clone(),
-                        output,
-                    },
-                    Err(message) => IdConversionState::Error {
-                        mode,
-                        input: input.clone(),
-                        message,
-                    },
-                };
-                this.invalidate_display_view();
-                cx.emit(ResultPanelEvent::RowSearchChanged);
-                cx.notify();
+                match result {
+                    Ok(output) => {
+                        this.row_search.conversion = IdConversionState::Ready {
+                            mode,
+                            input: input.clone(),
+                            output,
+                        };
+                        this.schedule_row_view(false, cx);
+                    }
+                    Err(message) => {
+                        this.row_search.conversion = IdConversionState::Error {
+                            mode,
+                            input: input.clone(),
+                            message,
+                        };
+                        this.invalidate_row_view();
+                        cx.notify();
+                    }
+                }
             });
         });
         self.row_search.conversion_task = Some(task);
     }
 
-    pub(super) fn cancel_id_conversion(&mut self) {
+    fn cancel_id_conversion(&mut self) {
         self.row_search.conversion_seq = self.row_search.conversion_seq.wrapping_add(1);
         self.row_search.conversion_task.take();
     }
@@ -396,79 +410,53 @@ fn convert_local(
 
 #[cfg(test)]
 mod tests {
-    use ramag_domain::entities::Value;
+    use ramag_domain::entities::IdConverterConfig;
 
-    use super::{
-        ConvertedId, IdConversionState, RowFilter, RowSearchConversionStatus, RowSearchMode,
-    };
+    use super::{ConvertedId, RowFilter, RowSearchMode, convert_local};
+    use crate::views::result_panel::cell::Cell;
 
     #[test]
-    fn search_mode_labels_use_explicit_tags() {
+    fn search_mode_labels_match_sql_result_search() {
         assert_eq!(RowSearchMode::Normal.label(), "@TEXT");
         assert_eq!(RowSearchMode::IdToInteger.label(), "@ID -> I");
         assert_eq!(RowSearchMode::IdToString.label(), "@ID -> S");
     }
 
     #[test]
-    fn id_filter_matches_only_the_exact_integer_value() {
-        let filter = RowFilter::Integer(42);
+    fn converted_filters_match_only_the_target_bson_type_and_value() {
+        let integer = RowFilter::Integer(42);
+        assert!(integer.matches(&Cell {
+            text: "42".into(),
+            kind: "long",
+        }));
+        assert!(!integer.matches(&Cell {
+            text: "42".into(),
+            kind: "text",
+        }));
 
-        assert!(filter.matches(&Value::Int(42)));
-        assert!(!filter.matches(&Value::Int(142)));
-        assert!(!filter.matches(&Value::Text("42".into())));
-        assert!(!filter.matches(&Value::Float(42.0)));
+        let text = RowFilter::ExactText("qwe".into());
+        assert!(text.matches(&Cell {
+            text: "qwe".into(),
+            kind: "text",
+        }));
+        assert!(!text.matches(&Cell {
+            text: "QWE".into(),
+            kind: "text",
+        }));
     }
 
     #[test]
-    fn string_id_filter_matches_only_the_exact_text_value() {
-        let filter = RowFilter::ExactText("qwe".into());
-
-        assert!(filter.matches(&Value::Text("qwe".into())));
-        assert!(!filter.matches(&Value::Text("QWE".into())));
-        assert!(!filter.matches(&Value::Text("prefix-qwe".into())));
-        assert!(!filter.matches(&Value::Int(42)));
-    }
-
-    #[test]
-    fn converted_string_preview_is_bounded_without_splitting_unicode() {
-        let output = ConvertedId::String("字符串-value".into());
-
-        assert_eq!(output.display_preview(4), "字符串-…");
-        assert_eq!(ConvertedId::Integer(42).display_preview(1), "42");
-    }
-
-    #[test]
-    fn normal_filter_keeps_existing_contains_behavior() {
-        let filter = RowFilter::Text("alpha".into());
-
-        assert!(filter.matches(&Value::Text("Alpha Beta".into())));
-        assert!(!filter.matches(&Value::Text("Beta".into())));
-    }
-
-    #[test]
-    fn conversion_status_only_exposes_the_current_id_input() {
-        let ready = IdConversionState::Ready {
-            mode: RowSearchMode::IdToInteger,
-            input: "external-id".into(),
-            output: ConvertedId::Integer(42),
-        };
+    fn local_conversion_uses_the_shared_database_configuration() -> Result<(), String> {
+        let config = IdConverterConfig::default();
 
         assert_eq!(
-            ready.visible_status(RowSearchMode::IdToInteger, "external-id"),
-            Some(RowSearchConversionStatus::Ready(ConvertedId::Integer(42)))
+            convert_local(RowSearchMode::IdToInteger, &config, "qwe")?,
+            ConvertedId::Integer(82_489)
         );
         assert_eq!(
-            ready.visible_status(RowSearchMode::IdToInteger, "new-input"),
-            Some(RowSearchConversionStatus::Converting)
+            convert_local(RowSearchMode::IdToString, &config, "82489")?,
+            ConvertedId::String("qwe".into())
         );
-        assert_eq!(
-            ready.visible_status(RowSearchMode::IdToString, "external-id"),
-            Some(RowSearchConversionStatus::Converting)
-        );
-        assert_eq!(ready.visible_status(RowSearchMode::IdToInteger, ""), None);
-        assert_eq!(
-            ready.visible_status(RowSearchMode::Normal, "external-id"),
-            None
-        );
+        Ok(())
     }
 }

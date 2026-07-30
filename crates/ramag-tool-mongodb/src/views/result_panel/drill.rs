@@ -190,11 +190,8 @@ impl ResultPanel {
             .map(|l| l.documents.clone())
             .unwrap_or_else(|| Arc::new(Vec::new()));
         self.clear_selected_rows();
-        // 旧层过滤条件不适用于新列。
-        self.column_filter
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        self.row_filter
-            .update(cx, |s, cx| s.set_value("", window, cx));
+        // 列结构随层级变化；内容搜索是用户条件，返回上层后继续应用。
+        self.clear_column_filter(window, cx);
         self.docs_arc = Some(docs);
         self.schedule_table_rebuild(cx);
         self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));

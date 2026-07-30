@@ -468,28 +468,27 @@ fn row_search_mode_button(
     ramag_ui::clickable_button("sql-row-search-mode")
         .text()
         .small()
-        .label(current.label())
+        // 文本自带显式颜色，避免 Text 按钮按下态短暂继承主题前景色。
+        .child(div().flex_none().text_color(accent).child(current.label()))
         .dropdown_caret(true)
         .text_color(accent)
         .tooltip(match current {
             RowSearchMode::Normal => "@TEXT：按单元格展示文本包含搜索",
-            RowSearchMode::Id => "@ID：外部转换后精确匹配整数单元格",
+            RowSearchMode::IdToInteger => "@ID -> I：将字符串转为整数，精确匹配整数单元格",
+            RowSearchMode::IdToString => "@ID -> S：将非负十进制整数转为字符串，精确匹配文本单元格",
         })
         .pointer_dropdown_menu(move |mut menu, _, _| {
-            for mode in [RowSearchMode::Normal, RowSearchMode::Id] {
-                let label = if mode == current {
-                    format!("✓ {}", mode.label())
-                } else {
-                    format!("  {}", mode.label())
-                };
+            for mode in RowSearchMode::ALL {
                 let result = result.clone();
-                menu = menu.item(ramag_ui::menu_item(label).on_click(
-                    move |_: &ClickEvent, _, app| {
-                        result.update(app, |panel, cx| {
-                            panel.set_row_search_mode(mode, cx);
-                        });
-                    },
-                ));
+                menu = menu.item(
+                    ramag_ui::menu_item(mode.label())
+                        .checked(mode == current)
+                        .on_click(move |_: &ClickEvent, _, app| {
+                            result.update(app, |panel, cx| {
+                                panel.set_row_search_mode(mode, cx);
+                            });
+                        }),
+                );
             }
             menu
         })
@@ -532,7 +531,9 @@ fn row_search_conversion_label(
 ) -> gpui::AnyElement {
     let (label, color) = match status {
         RowSearchConversionStatus::Converting => ("→ 转换中…".to_string(), muted),
-        RowSearchConversionStatus::Ready(id) => (format!("→ {id}"), accent),
+        RowSearchConversionStatus::Ready(output) => {
+            (format!("→ {}", output.display_preview(40)), accent)
+        }
         RowSearchConversionStatus::Error(_) => ("→ 转换失败".to_string(), danger),
     };
 

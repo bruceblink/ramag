@@ -8,6 +8,7 @@ mod filter;
 mod flatten;
 mod ops;
 mod row;
+mod row_search;
 mod table;
 mod toolbar;
 
@@ -29,7 +30,7 @@ use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
     button::ButtonVariants as _,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputState},
     v_flex,
 };
 use parking_lot::RwLock;
@@ -44,6 +45,8 @@ pub use flatten::FlatTable;
 
 use crate::views::inline_text_preview;
 use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for_cancellable};
+use row_search::{RowFilter, RowSearchBlocker, RowSearchState};
+pub(crate) use row_search::{RowSearchConversionStatus, RowSearchMode};
 
 /// 过滤列补全收集的最大嵌套深度（支持 consume.detail.x 这类多层）
 const PATH_COMPLETION_DEPTH: usize = 5;
@@ -66,6 +69,7 @@ pub struct ResultPanel {
     table_build_cancel: Option<Arc<AtomicBool>>,
     pub(crate) column_filter: Entity<InputState>,
     pub(crate) row_filter: Entity<InputState>,
+    row_search: RowSearchState,
     pub(crate) uniform_scroll: UniformListScrollHandle,
     pub(crate) h_scroll: ScrollHandle,
     /// 表格双轴手势状态，跨渲染帧保留。
@@ -134,7 +138,7 @@ pub(crate) enum SortDir {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RowViewKey {
     generation: u64,
-    query: String,
+    filter: RowFilter,
     sort_by: Option<(String, SortDir)>,
 }
 
@@ -154,7 +158,7 @@ fn build_row_view_indices(
     key: &RowViewKey,
     cancelled: &AtomicBool,
 ) -> Option<Arc<Vec<usize>>> {
-    let mut indices = row_indices_for_cancellable(table, &key.query, Some(cancelled))
+    let mut indices = row_indices_for_cancellable(table, &key.filter, Some(cancelled))
         .ok()?
         .unwrap_or_else(|| (0..table.rows.len()).collect());
     if cancelled.load(Ordering::Relaxed) {
@@ -201,13 +205,13 @@ impl ResultPanel {
         });
 
         let subs = vec![
-            cx.subscribe(&column_filter, |_this, _, _e: &InputEvent, cx| {
-                cx.notify();
+            // set_value 不发 InputEvent::Change；观察实体才能响应清除按钮和程序写值。
+            cx.observe(&column_filter, |_this, _, cx| cx.notify()),
+            cx.observe(&row_filter, |this: &mut Self, _, cx| {
+                this.on_row_filter_input_updated(cx);
             }),
-            cx.subscribe(&row_filter, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.schedule_row_view(true, cx);
-                }
+            cx.observe_global::<ramag_ui::DatabaseSearchSettingsGlobal>(|this, cx| {
+                this.on_database_search_settings_changed(cx);
             }),
         ];
 
@@ -224,6 +228,7 @@ impl ResultPanel {
             table_build_cancel: None,
             column_filter,
             row_filter,
+            row_search: RowSearchState::default(),
             uniform_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
             scroll_gesture: AxisScrollGesture::default(),
@@ -294,10 +299,9 @@ impl ResultPanel {
         }
     }
 
-    pub fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 切换结果层级或数据源时，列结构会变化；内容搜索作为用户条件跨层保留。
+    pub fn clear_column_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.column_filter
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        self.row_filter
             .update(cx, |s, cx| s.set_value("", window, cx));
     }
 
@@ -609,11 +613,11 @@ impl ResultPanel {
     }
 
     pub(crate) fn display_row_indices(&self, cx: &gpui::App) -> Option<(Arc<Vec<usize>>, bool)> {
-        let query = self.row_filter.read(cx).value().trim().to_string();
-        let filtered = !query.is_empty();
+        let filter = self.effective_row_filter(cx);
+        let filtered = filter.is_active();
         let key = RowViewKey {
             generation: self.table_build_seq,
-            query,
+            filter,
             sort_by: self.sort_by.clone(),
         };
         self.row_view_cache
@@ -639,7 +643,7 @@ impl ResultPanel {
         };
         let key = RowViewKey {
             generation: self.table_build_seq,
-            query: self.row_filter.read(cx).value().trim().to_string(),
+            filter: self.effective_row_filter(cx),
             sort_by: self.sort_by.clone(),
         };
         if self
@@ -897,13 +901,25 @@ impl Render for ResultPanel {
             return root.child(empty_hint(hint, muted)).into_any_element();
         };
 
+        if let Some(blocker) = self.row_search_blocker(cx) {
+            let (hint, color) = match blocker {
+                RowSearchBlocker::Converting => ("正在通过外部程序转换 ID…".to_string(), muted),
+                RowSearchBlocker::Error(error) => (format!("ID 转换失败：{error}"), danger),
+            };
+            let mut root = v_flex().size_full().bg(bg).child(toolbar::render(self, cx));
+            if self.is_drilled() {
+                root = root.child(self.render_breadcrumb(cx));
+            }
+            return root.child(empty_hint(hint, color)).into_any_element();
+        }
+
         // 路径过滤可临时生成只读钻取视图。
         if let Some((flat_docs, flat_table, drill_path)) = self.try_drill_path(cx) {
             let n = flat_docs.len();
             let filters = self.parse_column_filter(cx).filters;
             let col_indices = column_indices_for(&flat_table, &filters);
-            let row_q = self.row_filter.read(cx).value().trim().to_string();
-            let mut row_indices = row_indices_for_cancellable(&flat_table, &row_q, None)
+            let row_filter = self.effective_row_filter(cx);
+            let mut row_indices = row_indices_for_cancellable(&flat_table, &row_filter, None)
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| (0..flat_table.rows.len()).collect());
@@ -916,7 +932,19 @@ impl Render for ResultPanel {
                 );
                 table::sort_row_indices(&flat_table, ci, numeric, dir, &mut row_indices);
             }
+            let filtered_rows = row_indices.len();
             let row_indices = Arc::new(row_indices);
+            let mut summary = if row_filter.is_active() {
+                format!("钻取「{drill_path}」· 命中 {filtered_rows} / {n} 条")
+            } else {
+                format!("钻取「{drill_path}」· {n} 条")
+            };
+            if let Some((mode, output)) = self.converted_row_search(cx) {
+                summary.insert_str(
+                    0,
+                    &format!("{} → {} · ", mode.label(), output.display_preview(80)),
+                );
+            }
             let mut root = v_flex()
                 .size_full()
                 .bg(bg)
@@ -937,7 +965,7 @@ impl Render for ResultPanel {
                     cx,
                 )))
                 .child(render_status_bar(
-                    format!("钻取「{drill_path}」· {n} 条"),
+                    summary,
                     border,
                     muted,
                     bg,
@@ -949,18 +977,18 @@ impl Render for ResultPanel {
 
         let col_indices = self.filtered_column_indices(cx);
         let Some((row_indices, rows_filtered)) = self.display_row_indices(cx) else {
-            let hint = if self.row_view_building {
-                format!("正在筛选 / 排序…（{total_docs} 行）")
+            let (hint, hint_color) = if self.row_view_building {
+                (format!("正在筛选 / 排序…（{total_docs} 行）"), muted)
             } else if let Some(error) = &self.row_view_error {
-                error.clone()
+                (error.clone(), danger)
             } else {
-                "正在准备行视图…".to_string()
+                ("正在准备行视图…".to_string(), muted)
             };
             let mut root = v_flex().size_full().bg(bg).child(toolbar::render(self, cx));
             if self.is_drilled() {
                 root = root.child(self.render_breadcrumb(cx));
             }
-            return root.child(empty_hint(hint, muted)).into_any_element();
+            return root.child(empty_hint(hint, hint_color)).into_any_element();
         };
         let filtered_rows = row_indices.len();
         let visible_selected = if rows_filtered {
@@ -985,6 +1013,12 @@ impl Render for ResultPanel {
             ),
             (false, false) => format!("{total_docs} 行 · 耗时 {elapsed}ms"),
         };
+        if let Some((mode, output)) = self.converted_row_search(cx) {
+            summary.insert_str(
+                0,
+                &format!("{} → {} · ", mode.label(), output.display_preview(80)),
+            );
+        }
         if !self.selected_rows.is_empty() {
             if hidden_selected > 0 {
                 summary.push_str(&format!(
@@ -1231,7 +1265,7 @@ mod row_view_tests {
     fn row_view_combines_filter_and_numeric_sort() {
         let key = RowViewKey {
             generation: 1,
-            query: "bo".into(),
+            filter: RowFilter::Text("bo".into()),
             sort_by: Some(("n".into(), SortDir::Desc)),
         };
 
@@ -1245,7 +1279,7 @@ mod row_view_tests {
     fn row_view_stops_before_scanning_when_cancelled() {
         let key = RowViewKey {
             generation: 1,
-            query: "bo".into(),
+            filter: RowFilter::Text("bo".into()),
             sort_by: None,
         };
         let cancelled = AtomicBool::new(true);
@@ -1257,7 +1291,7 @@ mod row_view_tests {
     fn row_view_cache_key_changes_with_generation() {
         let key = RowViewKey {
             generation: 2,
-            query: String::new(),
+            filter: RowFilter::Text(String::new()),
             sort_by: None,
         };
         let cache = RowViewCache {
@@ -1269,6 +1303,21 @@ mod row_view_tests {
         let mut stale = key;
         stale.generation += 1;
         assert_ne!(cache.key, stale);
+    }
+
+    #[test]
+    fn row_view_cache_key_changes_with_search_mode() {
+        let text = RowViewKey {
+            generation: 2,
+            filter: RowFilter::Text("82489".into()),
+            sort_by: None,
+        };
+        let integer = RowViewKey {
+            filter: RowFilter::Integer(82_489),
+            ..text.clone()
+        };
+
+        assert_ne!(text, integer);
     }
 
     #[test]
