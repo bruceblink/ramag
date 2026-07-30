@@ -33,6 +33,7 @@ impl Render for QueryTab {
         let border = theme.border;
         let secondary_bg = theme.secondary;
         let bg = theme.background;
+        let accent = theme.accent;
 
         let running = self.running;
         let has_connection = self.connection.is_some();
@@ -160,28 +161,24 @@ impl Render for QueryTab {
                                     ),
                             )
                             .child(
-                                h_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap_1()
-                                    .child(row_search_mode_button(
-                                        row_search_mode,
-                                        id_conversion_ready,
-                                        result_for_row_mode,
-                                    ))
-                                    .child(
-                                        div().flex_1().min_w_0().child(
-                                            ramag_ui::cleanable_input(
-                                                &row_input,
-                                                "sql-row-filter-clear",
-                                                false,
-                                                cx,
-                                            )
-                                                .small()
-                                                .bordered(false)
-                                                .focus_bordered(false),
-                                        ),
-                                    ),
+                                div().flex_1().min_w_0().child(
+                                    ramag_ui::cleanable_input(
+                                        &row_input,
+                                        "sql-row-filter-clear",
+                                        false,
+                                        cx,
+                                    )
+                                    .small()
+                                    .bordered(false)
+                                    .focus_bordered(false)
+                                    .when(id_conversion_ready, |input| {
+                                        input.prefix(row_search_mode_button(
+                                            row_search_mode,
+                                            result_for_row_mode,
+                                            accent,
+                                        ))
+                                    }),
+                                ),
                             )
                     })
                     // 生产只读徽标：常驻工具条，与连接 Tab 徽标、写入口禁用同一语义
@@ -453,31 +450,28 @@ impl Render for QueryTab {
 
 fn row_search_mode_button(
     current: RowSearchMode,
-    id_conversion_ready: bool,
     result: Entity<ResultPanel>,
+    accent: gpui::Hsla,
 ) -> impl IntoElement {
     ramag_ui::clickable_button("sql-row-search-mode")
-        .ghost()
+        .text()
         .small()
-        .w(px(68.0))
         .label(current.label())
         .dropdown_caret(true)
+        .text_color(accent)
         .tooltip(match current {
             RowSearchMode::Normal => "@TEXT：按单元格展示文本包含搜索",
             RowSearchMode::Id => "@ID：外部转换后精确匹配整数单元格",
         })
         .pointer_dropdown_menu(move |mut menu, _, _| {
             for mode in [RowSearchMode::Normal, RowSearchMode::Id] {
-                let disabled = matches!(mode, RowSearchMode::Id) && !id_conversion_ready;
-                let label = if disabled {
-                    "@ID（请先在设置中启用）".to_string()
-                } else if mode == current {
+                let label = if mode == current {
                     format!("✓ {}", mode.label())
                 } else {
                     format!("  {}", mode.label())
                 };
                 let result = result.clone();
-                menu = menu.item(ramag_ui::menu_item_with_disabled(label, disabled).on_click(
+                menu = menu.item(ramag_ui::menu_item(label).on_click(
                     move |_: &ClickEvent, _, app| {
                         result.update(app, |panel, cx| {
                             panel.set_row_search_mode(mode, cx);

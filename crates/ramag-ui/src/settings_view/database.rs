@@ -1,12 +1,16 @@
 //! 数据库搜索设置页。
 
+use std::time::Duration;
+
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex,
-    input::Input, notification::Notification, v_flex,
+    ActiveTheme as _, Disableable as _, Sizable as _, h_flex,
+    input::{Input, InputEvent},
+    notification::Notification,
+    v_flex,
 };
 use ramag_domain::error::DomainError;
 
@@ -16,17 +20,24 @@ use crate::{
     validate_id_converter_program,
 };
 
+const DATABASE_SEARCH_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+
 impl SettingsView {
     pub(super) fn render_database_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let disabled = self.saving_database || self.picking_id_converter;
+        let disabled = self.picking_id_converter;
 
         v_flex()
             .w_full()
             .gap(px(16.0))
             .when(self.saving_database, |page| {
-                page.child(div().text_xs().text_color(muted).child("保存中…"))
+                page.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("正在自动保存…"),
+                )
             })
             .child(
                 settings_card("搜索设置", theme.border)
@@ -57,6 +68,7 @@ impl SettingsView {
                                     .on_click(cx.listener(|this, _: &bool, _, cx| {
                                         this.database_enabled_draft =
                                             !this.database_enabled_draft;
+                                        this.schedule_database_search_save(Duration::ZERO, cx);
                                         cx.notify();
                                     })),
                             ),
@@ -105,25 +117,29 @@ impl SettingsView {
                             .text_xs()
                             .text_color(theme.warning)
                             .child("安全提示：程序会以当前用户权限运行。Ramag 不经 shell 执行，但仍应只选择你信任的程序。"),
-                    )
-                    .child(
-                        h_flex().w_full().justify_end().child(
-                            crate::clickable_button("settings-db-search-save")
-                                .primary()
-                                .small()
-                                .label("保存搜索设置")
-                                .disabled(disabled)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.save_database_search_settings(cx);
-                                })),
-                        ),
                     ),
             )
             .into_any_element()
     }
 
+    pub(super) fn on_database_converter_input_event(
+        &mut self,
+        event: &InputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => {
+                self.schedule_database_search_save(DATABASE_SEARCH_SAVE_DEBOUNCE, cx);
+            }
+            InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                self.schedule_database_search_save(Duration::ZERO, cx);
+            }
+            InputEvent::Focus => {}
+        }
+    }
+
     fn pick_id_converter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving_database || self.picking_id_converter {
+        if self.picking_id_converter {
             return;
         }
         self.picking_id_converter = true;
@@ -142,6 +158,7 @@ impl SettingsView {
                     this.database_converter_program.update(cx, |state, cx| {
                         state.set_value(path, window, cx);
                     });
+                    this.schedule_database_search_save(Duration::ZERO, cx);
                 }
                 cx.notify();
             });
@@ -149,24 +166,48 @@ impl SettingsView {
         .detach();
     }
 
-    fn save_database_search_settings(&mut self, cx: &mut Context<Self>) {
-        if self.saving_database {
+    fn schedule_database_search_save(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        self.database_save_debounce.take();
+        if delay.is_zero() {
+            self.request_database_search_save(cx);
             return;
         }
-        let next = DatabaseSearchSettings {
+
+        self.database_save_debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |this, cx| {
+                this.request_database_search_save(cx);
+            });
+        }));
+    }
+
+    fn database_search_draft(&self, cx: &gpui::App) -> DatabaseSearchSettings {
+        DatabaseSearchSettings {
             id_conversion_enabled: self.database_enabled_draft,
             id_converter_program: self.database_converter_program.read(cx).value().to_string(),
-        };
+        }
+    }
+
+    fn request_database_search_save(&mut self, cx: &mut Context<Self>) {
+        if self.saving_database {
+            self.database_save_pending = true;
+            return;
+        }
+        self.database_save_pending = false;
+        let next = self.database_search_draft(cx);
+        if next == crate::database_search_settings(cx) {
+            return;
+        }
         let json = match next.to_json() {
             Ok(json) => json,
             Err(error) => {
-                self.pending_notification = Some(Notification::error(error));
+                self.handle_database_search_save_error(error, cx);
                 cx.notify();
                 return;
             }
         };
         let Some(storage) = crate::theme::storage_from_cx(cx) else {
-            self.pending_notification = Some(Notification::error("本地存储尚未初始化"));
+            self.handle_database_search_save_error("本地存储尚未初始化".to_string(), cx);
             cx.notify();
             return;
         };
@@ -193,22 +234,33 @@ impl SettingsView {
 
             let _ = this.update(cx, |this, cx| {
                 this.saving_database = false;
+                let draft_changed = this.database_search_draft(cx) != next;
                 match result {
                     Ok(()) => {
-                        this.database_enabled_draft = next.id_conversion_enabled;
-                        set_database_search_settings(next, cx);
-                        this.pending_notification =
-                            Some(Notification::success("数据库搜索设置已保存").autohide(true));
+                        // 每次写入均串行完成，成功后全局状态必须与当前落盘值一致。
+                        set_database_search_settings(next.clone(), cx);
                     }
                     Err(error) => {
-                        this.pending_notification = Some(Notification::error(format!(
-                            "数据库搜索设置保存失败：{error}"
-                        )));
+                        if !draft_changed {
+                            this.handle_database_search_save_error(error, cx);
+                        }
                     }
+                }
+                let save_latest = this.database_save_pending || draft_changed;
+                this.database_save_pending = false;
+                if save_latest {
+                    this.schedule_database_search_save(Duration::ZERO, cx);
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn handle_database_search_save_error(&mut self, error: String, cx: &gpui::App) {
+        self.database_enabled_draft = crate::database_search_settings(cx).id_conversion_enabled;
+        self.pending_notification = Some(Notification::error(format!(
+            "数据库搜索设置自动保存失败：{error}"
+        )));
     }
 }

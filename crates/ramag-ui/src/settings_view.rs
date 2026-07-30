@@ -8,9 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Task, Window, div,
 };
-use gpui_component::{WindowExt as _, h_flex, input::InputState, notification::Notification};
+use gpui_component::{
+    WindowExt as _, h_flex,
+    input::{InputEvent, InputState},
+    notification::Notification,
+};
 use ramag_app::ClipboardService;
 use ramag_domain::entities::ClipboardSettings;
 
@@ -75,6 +79,8 @@ pub struct SettingsView {
     database_enabled_draft: bool,
     database_converter_program: Entity<InputState>,
     saving_database: bool,
+    database_save_pending: bool,
+    database_save_debounce: Option<Task<()>>,
     picking_id_converter: bool,
     pending_notification: Option<Notification>,
 }
@@ -95,6 +101,14 @@ impl SettingsView {
                 .placeholder("请选择转换程序的绝对路径")
                 .default_value(converter_program)
         });
+        cx.subscribe_in(
+            &database_converter_program,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                this.on_database_converter_input_event(event, cx);
+            },
+        )
+        .detach();
 
         let service = clipboard_service.clone();
         cx.spawn(async move |this, cx| {
@@ -143,6 +157,8 @@ impl SettingsView {
             database_enabled_draft,
             database_converter_program,
             saving_database: false,
+            database_save_pending: false,
+            database_save_debounce: None,
             picking_id_converter: false,
             pending_notification: None,
         }
