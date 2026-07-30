@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use ramag_domain::entities::{
-    MAX_SSH_WORKSPACES, SshProfile, SshWorkspacePreference, TransferId, TransferStatus,
-    validate_remote_path,
+    MAX_SSH_FAVORITE_PATHS_PER_PROFILE, MAX_SSH_PROFILES, MAX_SSH_WORKSPACES, SshProfile,
+    SshWorkspacePreference, TransferId, TransferStatus, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 
@@ -35,6 +35,32 @@ pub(super) fn normalized_workspace_preference(
     }) {
         preference.active_profile_id = None;
     }
+
+    let mut seen_profiles = HashSet::new();
+    preference.path_favorites.retain(|favorite| {
+        seen_profiles.len() < MAX_SSH_PROFILES && seen_profiles.insert(favorite.profile_id.clone())
+    });
+    for favorite in &mut preference.path_favorites {
+        let mut seen_paths = HashSet::new();
+        favorite.paths.retain(|path| {
+            if seen_paths.len() >= MAX_SSH_FAVORITE_PATHS_PER_PROFILE || seen_paths.contains(path) {
+                return false;
+            }
+            seen_paths.insert(path.clone());
+            true
+        });
+        for path in &favorite.paths {
+            validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+            if !path.starts_with('/') {
+                return Err(DomainError::InvalidConfig(
+                    "SSH 常用路径必须以 / 开头".into(),
+                ));
+            }
+        }
+    }
+    preference
+        .path_favorites
+        .retain(|favorite| !favorite.paths.is_empty());
     Ok(preference)
 }
 

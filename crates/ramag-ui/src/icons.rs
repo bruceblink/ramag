@@ -43,6 +43,11 @@ pub fn upload() -> Icon {
 }
 
 #[inline]
+pub fn folder_plus() -> Icon {
+    Icon::default().path("icons/folder-plus.svg")
+}
+
+#[inline]
 pub fn arrow_up_down() -> Icon {
     Icon::default().path("icons/arrow-up-down.svg")
 }

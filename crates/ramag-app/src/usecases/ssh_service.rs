@@ -203,6 +203,9 @@ impl SshService {
                 preference
                     .workspaces
                     .retain(|workspace| &workspace.profile_id != id);
+                preference
+                    .path_favorites
+                    .retain(|favorite| &favorite.profile_id != id);
                 if preference.active_profile_id.as_ref() == Some(id) {
                     preference.active_profile_id = None;
                 }

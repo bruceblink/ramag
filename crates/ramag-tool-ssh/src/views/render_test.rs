@@ -12,8 +12,8 @@ use gpui::{
 use ramag_app::SshService;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, RemoteDirectory, RemoteEntry,
-    RemoteEntryKind, SshAuthMode, SshCapability, SshLaunchCommand, SshProfile, SshProfileId,
-    SshProgressFn, SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
+    RemoteEntryKind, SshAuthMode, SshCapability, SshLaunchCommand, SshPathFavorites, SshProfile,
+    SshProfileId, SshProgressFn, SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{SshDriver, Storage};
@@ -390,6 +390,7 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
             last_remote_path: "/home/alice".into(),
         }],
         active_profile_id: Some(profile.id.clone()),
+        path_favorites: Vec::new(),
     };
     let service = service(vec![profile.clone()], Some(preference));
     let local_path = std::env::temp_dir().join("ramag-render-download.txt");
@@ -608,6 +609,7 @@ fn directory_search_state_is_isolated_by_workspace(cx: &mut TestAppContext) {
             },
         ],
         active_profile_id: Some(first.id.clone()),
+        path_favorites: Vec::new(),
     };
     let (view, cx) = add_ssh_window(
         cx,
@@ -646,5 +648,30 @@ fn directory_search_state_is_isolated_by_workspace(cx: &mut TestAppContext) {
     cx.run_until_parked();
     view.read_with(cx, |view, cx| {
         assert_eq!(view.directory_search.read(cx).value(), "logs");
+    });
+}
+
+#[gpui::test]
+fn restored_workspace_keeps_favorites_per_profile(cx: &mut TestAppContext) {
+    let profile = profile();
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile.id.clone(),
+            last_remote_path: "/home/alice".into(),
+        }],
+        active_profile_id: Some(profile.id.clone()),
+        path_favorites: vec![SshPathFavorites {
+            profile_id: profile.id.clone(),
+            paths: vec!["/var/log".into()],
+        }],
+    };
+    let (view, cx) = add_ssh_window(cx, service(vec![profile.clone()], Some(preference)));
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.path_favorites.get(&profile.id),
+            Some(&vec!["/var/log".into()])
+        );
     });
 }

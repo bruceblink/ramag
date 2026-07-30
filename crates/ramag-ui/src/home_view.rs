@@ -23,6 +23,9 @@ const RAMAG_LOGO: &[&str] = &[
     "██║  ██║██║  ██║██║ ╚═╝ ██║██║  ██║╚██████╔╝",
     "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ",
 ];
+const TOOL_CARD_WIDTH: f32 = 280.0;
+const TOOL_CARD_GAP: f32 = 16.0;
+const TOOL_GRID_WIDTH: f32 = TOOL_CARD_WIDTH * 2.0 + TOOL_CARD_GAP;
 
 pub struct HomeView {
     registry: Arc<ToolRegistry>,
@@ -59,7 +62,7 @@ impl Render for HomeView {
 
             v_flex()
                 .id(card_id)
-                .w(px(280.0))
+                .w(px(TOOL_CARD_WIDTH))
                 .p(px(20.0))
                 .gap(px(10.0))
                 .bg(card_bg)
@@ -103,11 +106,12 @@ impl Render for HomeView {
                     .child(
                         div()
                             .w_full()
+                            .max_w(px(TOOL_GRID_WIDTH))
                             .flex()
                             .flex_row()
                             .flex_wrap()
-                            .justify_center()
-                            .gap(px(16.0))
+                            .justify_start()
+                            .gap(px(TOOL_CARD_GAP))
                             .children(cards),
                     ),
             )

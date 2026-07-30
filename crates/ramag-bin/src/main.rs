@@ -863,8 +863,8 @@ fn build_tool_registry() -> Arc<ToolRegistry> {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(DbClientTool::new()));
     registry.register(Arc::new(VcsTool::new()));
-    registry.register(Arc::new(ClipboardTool::new()));
     registry.register(Arc::new(SshTool::new()));
+    registry.register(Arc::new(ClipboardTool::new()));
     registry
 }
 
@@ -891,7 +891,7 @@ fn build_ssh_service(storage: Arc<dyn Storage>) -> Arc<SshService> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAPTURE_INTERVAL, CAPTURE_MAX_RETRY_INTERVAL, MainWindowOpenGate,
+        CAPTURE_INTERVAL, CAPTURE_MAX_RETRY_INTERVAL, MainWindowOpenGate, build_tool_registry,
         next_capture_retry_interval,
     };
 
@@ -920,5 +920,16 @@ mod tests {
             next_capture_retry_interval(interval),
             CAPTURE_MAX_RETRY_INTERVAL
         );
+    }
+
+    #[test]
+    fn clipboard_tool_is_registered_last() {
+        let ids = build_tool_registry()
+            .list()
+            .into_iter()
+            .map(|tool| tool.meta().id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["dbclient", "vcs", "ssh", "clipboard"]);
     }
 }

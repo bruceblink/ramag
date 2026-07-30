@@ -31,6 +31,7 @@ pub const MAX_QUEUED_TRANSFERS: usize = 64;
 pub const MAX_CONCURRENT_TRANSFERS: usize = 3;
 pub const MAX_SSH_WORKSPACES: usize = 16;
 pub const MAX_SSH_TERMINALS_PER_WORKSPACE: usize = 8;
+pub const MAX_SSH_FAVORITE_PATHS_PER_PROFILE: usize = 16;
 pub const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -383,10 +384,18 @@ pub struct SshWorkspaceState {
     pub last_remote_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshPathFavorites {
+    pub profile_id: SshProfileId,
+    pub paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SshWorkspacePreference {
     pub workspaces: Vec<SshWorkspaceState>,
     pub active_profile_id: Option<SshProfileId>,
+    #[serde(default)]
+    pub path_favorites: Vec<SshPathFavorites>,
 }
 
 pub fn validate_remote_path(path: &str) -> Result<(), String> {

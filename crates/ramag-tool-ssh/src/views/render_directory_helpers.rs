@@ -1,5 +1,6 @@
 //! SSH 远程目录行、筛选、计数与路径拆分。
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use gpui::{
@@ -32,6 +33,84 @@ pub(super) enum RemoteEntryActivation {
     OpenDirectory,
     PreviewFile,
     Unsupported,
+}
+
+pub(super) fn sort_remote_entries(entries: &mut [RemoteEntry]) {
+    entries.sort_unstable_by(|left, right| {
+        remote_entry_kind_rank(left.kind)
+            .cmp(&remote_entry_kind_rank(right.kind))
+            .then_with(|| natural_ascii_cmp(&left.name, &right.name))
+    });
+}
+
+fn remote_entry_kind_rank(kind: RemoteEntryKind) -> u8 {
+    match kind {
+        RemoteEntryKind::Directory => 0,
+        RemoteEntryKind::File => 1,
+        RemoteEntryKind::Symlink => 2,
+        RemoteEntryKind::Other => 3,
+    }
+}
+
+/// 常见 ASCII 文件名按数字大小排序；非 ASCII 仍保持稳定的 UTF-8 字节序。
+fn natural_ascii_cmp(left: &str, right: &str) -> Ordering {
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    let (mut left_index, mut right_index) = (0usize, 0usize);
+
+    while left_index < left_bytes.len() && right_index < right_bytes.len() {
+        let left_byte = left_bytes[left_index];
+        let right_byte = right_bytes[right_index];
+        if left_byte.is_ascii_digit() && right_byte.is_ascii_digit() {
+            let left_end = digit_run_end(left_bytes, left_index);
+            let right_end = digit_run_end(right_bytes, right_index);
+            let left_significant = significant_digit_start(left_bytes, left_index, left_end);
+            let right_significant = significant_digit_start(right_bytes, right_index, right_end);
+            let ordering = (left_end - left_significant)
+                .cmp(&(right_end - right_significant))
+                .then_with(|| {
+                    left_bytes[left_significant..left_end]
+                        .cmp(&right_bytes[right_significant..right_end])
+                })
+                .then_with(|| (left_end - left_index).cmp(&(right_end - right_index)));
+            if ordering != Ordering::Equal {
+                return ordering;
+            }
+            left_index = left_end;
+            right_index = right_end;
+            continue;
+        }
+
+        let ordering = left_byte
+            .to_ascii_lowercase()
+            .cmp(&right_byte.to_ascii_lowercase());
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+        left_index += 1;
+        right_index += 1;
+    }
+
+    left_bytes
+        .len()
+        .cmp(&right_bytes.len())
+        .then_with(|| left.cmp(right))
+}
+
+fn digit_run_end(bytes: &[u8], start: usize) -> usize {
+    let mut end = start;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    end
+}
+
+fn significant_digit_start(bytes: &[u8], start: usize, end: usize) -> usize {
+    let mut significant = start;
+    while significant + 1 < end && bytes[significant] == b'0' {
+        significant += 1;
+    }
+    significant
 }
 
 #[derive(Clone, Copy)]
@@ -340,6 +419,35 @@ mod tests {
                 .expect("query should create an index")
                 .as_slice(),
             &[1]
+        );
+    }
+
+    #[test]
+    fn remote_entries_sort_directories_first_and_names_naturally() {
+        let entry = |name: &str, kind| RemoteEntry {
+            name: name.into(),
+            path: format!("/{name}"),
+            kind,
+            size: 0,
+            permissions: None,
+            modified_at: None,
+        };
+        let mut entries = vec![
+            entry("file10", RemoteEntryKind::File),
+            entry("Zoo", RemoteEntryKind::Directory),
+            entry("file2", RemoteEntryKind::File),
+            entry("alpha", RemoteEntryKind::Directory),
+            entry("file02", RemoteEntryKind::File),
+        ];
+
+        sort_remote_entries(&mut entries);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "Zoo", "file2", "file02", "file10"]
         );
     }
 

@@ -8,7 +8,9 @@ use ramag_domain::entities::{
 
 use super::SshView;
 use super::model::Notice;
-use super::render_directory_helpers::{RemoteEntryActivation, remote_entry_activation};
+use super::render_directory_helpers::{
+    RemoteEntryActivation, remote_entry_activation, sort_remote_entries,
+};
 
 enum RemoteMutation {
     Create(String),
@@ -72,7 +74,9 @@ impl SshView {
                 match result {
                     Ok(directory) => {
                         workspace.path = directory.path;
-                        workspace.entries = std::sync::Arc::new(directory.entries);
+                        let mut entries = directory.entries;
+                        sort_remote_entries(&mut entries);
+                        workspace.entries = std::sync::Arc::new(entries);
                         workspace.selected_path = None;
                         workspace.sftp_error = None;
                         this.persist_workspaces(cx);
@@ -135,22 +139,16 @@ impl SshView {
         };
         let initial = workspace.path.clone();
         let entity = cx.entity();
-        ramag_ui::open_bounded_prompt(
-            "直达",
-            "路径",
-            &initial,
-            "打开",
-            MAX_SSH_PATH_BYTES,
-            move |path, _window, app| {
-                entity.update(app, |this, cx| {
-                    if let Err(error) = validate_direct_remote_path(&path) {
-                        this.notice = Some(Notice::error(error));
-                        cx.notify();
-                        return;
-                    }
-                    this.refresh_directory(workspace_id, Some(path), cx);
-                });
-            },
+        let favorites = self
+            .path_favorites
+            .get(&workspace_id)
+            .cloned()
+            .unwrap_or_default();
+        super::path_dialog::open_remote_path_dialog(
+            entity,
+            workspace_id,
+            initial,
+            favorites,
             window,
             cx,
         );
@@ -361,7 +359,7 @@ impl SshView {
     }
 }
 
-fn validate_direct_remote_path(path: &str) -> Result<(), String> {
+pub(super) fn validate_direct_remote_path(path: &str) -> Result<(), String> {
     validate_remote_path(path)?;
     if path != "." && !path.starts_with('/') {
         return Err("路径必须以 / 开头".into());

@@ -185,6 +185,7 @@ impl SshView {
                         this.profiles = Arc::new(profiles);
                         this.workspaces
                             .retain(|workspace| workspace.profile_id() != &id);
+                        this.path_favorites.remove(&id);
                         if this.active_workspace_id.as_ref() == Some(&id) {
                             this.active_workspace_id = this
                                 .workspaces

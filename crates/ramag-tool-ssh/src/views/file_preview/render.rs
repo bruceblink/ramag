@@ -203,22 +203,22 @@ impl Render for RemoteFileEditor {
                             .opacity(1.0)
                             .disabled(self.saving || chunk_loading),
                     )
-                    // 编辑器仍可滚动，只遮住上游组件持续绘制的滚动条。
+                    // 遮罩内收 1px，隐藏滚动条但保留完整边框。
                     .child(
                         div()
                             .absolute()
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
+                            .right(px(1.0))
+                            .top(px(1.0))
+                            .bottom(px(1.0))
                             .w(px(18.0))
                             .bg(editor_background),
                     )
                     .child(
                         div()
                             .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
+                            .left(px(1.0))
+                            .right(px(1.0))
+                            .bottom(px(1.0))
                             .h(px(18.0))
                             .bg(editor_background),
                     ),

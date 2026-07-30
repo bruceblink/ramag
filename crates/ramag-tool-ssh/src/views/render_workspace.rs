@@ -184,7 +184,7 @@ impl SshView {
                 ramag_ui::clickable_button("sftp-mkdir")
                     .ghost()
                     .xsmall()
-                    .icon(IconName::FolderOpen)
+                    .icon(ramag_ui::icons::folder_plus())
                     .tooltip("新建")
                     .disabled(!can_create)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -452,12 +452,9 @@ impl SshView {
             .px(px(8.0))
             .py(px(2.0))
             .overflow_x_scroll();
-        for (tab_index, (terminal_id, fallback_label, terminal)) in
-            terminal_views.iter().enumerate()
-        {
+        for (terminal_id, fallback_label, terminal) in &terminal_views {
             let id = *terminal_id;
             let id_for_close = id;
-            let primary = tab_index == 0;
             let reconnect_workspace_id = workspace_id.clone();
             let selected = active_terminal_id == Some(id);
             let state = terminal.read(cx);
@@ -519,21 +516,19 @@ impl SshView {
                             })),
                     )
                 })
-                .when(!primary, |tab| {
-                    tab.child(
-                        ramag_ui::clickable_button(("close-ssh-terminal", id_for_close))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener({
-                                let workspace_id = workspace_id.clone();
-                                move |this, _: &ClickEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    this.close_terminal(workspace_id.clone(), id_for_close, cx);
-                                }
-                            })),
-                    )
-                });
+                .child(
+                    ramag_ui::clickable_button(("close-ssh-terminal", id_for_close))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .on_click(cx.listener({
+                            let workspace_id = workspace_id.clone();
+                            move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.close_terminal(workspace_id.clone(), id_for_close, cx);
+                            }
+                        })),
+                );
             if selected {
                 let mut active_bg = accent;
                 active_bg.a = 0.15;

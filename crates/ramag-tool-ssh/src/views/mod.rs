@@ -9,6 +9,7 @@ mod ops;
 mod ops_files;
 mod ops_profile;
 mod ops_transfer;
+mod path_dialog;
 mod profile_dialog;
 mod profile_form;
 mod render;
@@ -21,6 +22,7 @@ mod render_workspace;
 #[cfg(test)]
 mod render_test;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +52,7 @@ pub struct SshView {
     notice: Option<Notice>,
     view_mode: ViewMode,
     workspaces: Vec<SshWorkspace>,
+    path_favorites: HashMap<SshProfileId, Vec<String>>,
     active_workspace_id: Option<SshProfileId>,
     next_terminal_id: u64,
     load_generation: u64,
@@ -119,6 +122,7 @@ impl SshView {
             notice: None,
             view_mode: ViewMode::Manager,
             workspaces: Vec::new(),
+            path_favorites: HashMap::new(),
             active_workspace_id: None,
             next_terminal_id: 1,
             load_generation: 0,

@@ -5,21 +5,18 @@ use gpui::{
     hsla, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, Selectable as _, Sizable as _, h_flex, scroll::ScrollableElement as _,
-    v_flex,
+    ActiveTheme, Icon, Sizable as _, h_flex, scroll::ScrollableElement as _, v_flex,
 };
 
 use super::{SettingsPage, SettingsView};
-use crate::theme::{Mode, apply_theme, current_mode};
 
 impl SettingsPage {
     fn icon(self) -> Icon {
         match self {
-            Self::Global => crate::icons::settings(),
             Self::Database => crate::icons::database(),
             Self::VersionControl => crate::icons::git_branch(),
-            Self::Clipboard => crate::icons::clipboard(),
             Self::Ssh => crate::activity_bar::ActivityBar::icon_for_tool("ssh"),
+            Self::Clipboard => crate::icons::clipboard(),
         }
     }
 }
@@ -66,8 +63,6 @@ impl SettingsView {
     pub(super) fn render_selected_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let page = self.selected_page;
         let content = match page {
-            SettingsPage::Global => self.render_global_page(cx),
-            SettingsPage::Clipboard => self.render_clipboard_page(cx),
             SettingsPage::Database => self.render_database_page(cx),
             SettingsPage::VersionControl => managed_in_module_card(
                 "Git 配置",
@@ -79,6 +74,7 @@ impl SettingsView {
                 "主机、认证方式、密钥与传输配置跟随 SSH 连接保存，请在 SSH 的连接管理中维护。",
                 cx,
             ),
+            SettingsPage::Clipboard => self.render_clipboard_page(cx),
         };
 
         v_flex()
@@ -108,35 +104,6 @@ impl SettingsView {
                             ),
                     )
                     .child(content),
-            )
-            .into_any_element()
-    }
-
-    fn render_global_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mode = current_mode(cx);
-        let muted = cx.theme().muted_foreground;
-        settings_card("外观", cx.theme().border)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child("主题修改会立即应用到所有窗口。"),
-            )
-            .child(
-                h_flex()
-                    .gap(px(8.0))
-                    .child(theme_button(
-                        "settings-theme-light",
-                        "浅色",
-                        mode == Mode::Light,
-                        Mode::Light,
-                    ))
-                    .child(theme_button(
-                        "settings-theme-dark",
-                        "深色",
-                        mode == Mode::Dark,
-                        Mode::Dark,
-                    )),
             )
             .into_any_element()
     }
@@ -192,34 +159,6 @@ pub(super) fn settings_card(title: &'static str, border: gpui::Hsla) -> gpui::Di
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(title),
         )
-}
-
-fn theme_button(
-    id: &'static str,
-    label: &'static str,
-    selected: bool,
-    mode: Mode,
-) -> impl IntoElement {
-    crate::clickable_button(id)
-        .small()
-        .label(label)
-        .selected(selected)
-        .on_click(move |_: &ClickEvent, _, cx| {
-            if current_mode(cx) == mode {
-                return;
-            }
-            apply_theme(mode, cx);
-            cx.refresh_windows();
-            crate::preferences::persist_preference_latest(
-                "theme_mode",
-                match mode {
-                    Mode::Dark => "dark",
-                    Mode::Light => "light",
-                }
-                .to_string(),
-                cx,
-            );
-        })
 }
 
 fn managed_in_module_card(

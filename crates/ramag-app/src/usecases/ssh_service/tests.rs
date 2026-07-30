@@ -1,6 +1,7 @@
 use super::*;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, SshProgressFn, SshWorkspaceState,
+    ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, SshPathFavorites, SshProgressFn,
+    SshWorkspaceState,
 };
 use ramag_domain::error::READ_ONLY_MESSAGE;
 
@@ -199,12 +200,34 @@ fn workspace_preference_deduplicates_and_repairs_active_profile() {
             },
         ],
         active_profile_id: Some(missing),
+        path_favorites: vec![SshPathFavorites {
+            profile_id: first.clone(),
+            paths: vec!["/home".into(), "/home".into(), "/var/log".into()],
+        }],
     })
     .unwrap();
 
     let parsed = parse_workspace_preference(&json).unwrap();
     assert_eq!(parsed.workspaces.len(), 1);
     assert!(parsed.active_profile_id.is_none());
+    assert_eq!(parsed.path_favorites[0].paths, ["/home", "/var/log"]);
+}
+
+#[test]
+fn workspace_preference_accepts_legacy_data_and_rejects_relative_favorites() {
+    let legacy = r#"{"workspaces":[],"active_profile_id":null}"#;
+    let parsed = parse_workspace_preference(legacy).unwrap();
+    assert!(parsed.path_favorites.is_empty());
+
+    let invalid = serde_json::to_string(&SshWorkspacePreference {
+        path_favorites: vec![SshPathFavorites {
+            profile_id: SshProfileId::new(),
+            paths: vec!["var/log".into()],
+        }],
+        ..SshWorkspacePreference::default()
+    })
+    .unwrap();
+    assert!(parse_workspace_preference(&invalid).is_err());
 }
 
 #[test]

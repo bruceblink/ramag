@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use gpui::{AppContext as _, Context, Entity, Focusable as _, Window};
 use ramag_domain::entities::{
-    MAX_SSH_TERMINALS_PER_WORKSPACE, MAX_SSH_WORKSPACES, SshProfileId, SshWorkspacePreference,
-    SshWorkspaceState,
+    MAX_SSH_TERMINALS_PER_WORKSPACE, MAX_SSH_WORKSPACES, SshPathFavorites, SshProfileId,
+    SshWorkspacePreference, SshWorkspaceState,
 };
 use ramag_terminal::{TerminalCommand, TerminalCore, TerminalView};
 
@@ -61,8 +61,13 @@ impl SshView {
     }
 
     fn restore_workspaces(&mut self, preference: SshWorkspacePreference) {
+        let SshWorkspacePreference {
+            workspaces,
+            active_profile_id,
+            path_favorites,
+        } = preference;
         self.workspaces.clear();
-        for saved in preference.workspaces {
+        for saved in workspaces {
             let Some(profile) = self
                 .profiles
                 .iter()
@@ -74,7 +79,16 @@ impl SshView {
             self.workspaces
                 .push(SshWorkspace::placeholder(profile, saved.last_remote_path));
         }
-        self.active_workspace_id = preference.active_profile_id.filter(|id| {
+        self.path_favorites = path_favorites
+            .into_iter()
+            .filter(|favorite| {
+                self.profiles
+                    .iter()
+                    .any(|profile| profile.id == favorite.profile_id)
+            })
+            .map(|favorite| (favorite.profile_id, favorite.paths))
+            .collect();
+        self.active_workspace_id = active_profile_id.filter(|id| {
             self.workspaces
                 .iter()
                 .any(|workspace| workspace.profile_id() == id)
@@ -272,7 +286,7 @@ impl SshView {
         };
         if workspace.terminals.len() >= MAX_SSH_TERMINALS_PER_WORKSPACE {
             self.notice = Some(Notice::error(format!(
-                "终端已达上限（{MAX_SSH_TERMINALS_PER_WORKSPACE}）"
+                "终端已满（最多同时 {MAX_SSH_TERMINALS_PER_WORKSPACE} 个）"
             )));
             cx.notify();
             return;
@@ -401,9 +415,6 @@ impl SshView {
         else {
             return;
         };
-        if index == 0 {
-            return;
-        }
         workspace.terminals.remove(index);
         tracing::info!(
             profile_id = %workspace_id,
@@ -479,6 +490,20 @@ impl SshView {
     pub(super) fn persist_workspaces(&mut self, cx: &mut Context<Self>) {
         self.persist_generation = self.persist_generation.wrapping_add(1);
         let generation = self.persist_generation;
+        let mut path_favorites = self
+            .path_favorites
+            .iter()
+            .filter(|(_, paths)| !paths.is_empty())
+            .map(|(profile_id, paths)| SshPathFavorites {
+                profile_id: profile_id.clone(),
+                paths: paths.clone(),
+            })
+            .collect::<Vec<_>>();
+        path_favorites.sort_by(|left, right| {
+            left.profile_id
+                .to_string()
+                .cmp(&right.profile_id.to_string())
+        });
         let preference = SshWorkspacePreference {
             workspaces: self
                 .workspaces
@@ -489,6 +514,7 @@ impl SshView {
                 })
                 .collect(),
             active_profile_id: self.active_workspace_id.clone(),
+            path_favorites,
         };
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {

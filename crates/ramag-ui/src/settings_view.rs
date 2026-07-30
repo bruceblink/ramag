@@ -1,4 +1,4 @@
-//! 设置中心：默认展示全局配置，各大模块使用独立页面。
+//! 设置中心：各大模块使用独立页面。
 
 mod clipboard;
 mod database;
@@ -23,49 +23,44 @@ use crate::database_search::MAX_ID_CONVERTER_PROGRAM_BYTES;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum SettingsPage {
     #[default]
-    Global,
     Database,
     VersionControl,
-    Clipboard,
     Ssh,
+    Clipboard,
 }
 
 impl SettingsPage {
-    const ALL: [Self; 5] = [
-        Self::Global,
+    const ALL: [Self; 4] = [
         Self::Database,
         Self::VersionControl,
-        Self::Clipboard,
         Self::Ssh,
+        Self::Clipboard,
     ];
 
     fn id(self) -> &'static str {
         match self {
-            Self::Global => "global",
             Self::Database => "database",
             Self::VersionControl => "version-control",
-            Self::Clipboard => "clipboard",
             Self::Ssh => "ssh",
+            Self::Clipboard => "clipboard",
         }
     }
 
     fn title(self) -> &'static str {
         match self {
-            Self::Global => "全局配置",
             Self::Database => "数据库客户端",
             Self::VersionControl => "版本管理",
-            Self::Clipboard => "剪贴板",
             Self::Ssh => "SSH",
+            Self::Clipboard => "剪贴板",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
-            Self::Global => "管理对整个应用生效的设置。",
             Self::Database => "管理数据库客户端的模块级配置。",
             Self::VersionControl => "管理 Git 版本控制的模块级配置。",
-            Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与排除应用。",
             Self::Ssh => "管理 SSH 与 SFTP 的模块级配置。",
+            Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与排除应用。",
         }
     }
 }
@@ -223,9 +218,9 @@ mod tests {
     use super::SettingsPage;
 
     #[test]
-    fn global_configuration_is_the_default_page() {
-        assert_eq!(SettingsPage::default(), SettingsPage::Global);
-        assert_eq!(SettingsPage::ALL.first(), Some(&SettingsPage::Global));
+    fn database_is_the_default_page() {
+        assert_eq!(SettingsPage::default(), SettingsPage::Database);
+        assert_eq!(SettingsPage::ALL.first(), Some(&SettingsPage::Database));
     }
 
     #[test]
@@ -240,5 +235,10 @@ mod tests {
         assert!(ids.contains("version-control"));
         assert!(ids.contains("clipboard"));
         assert!(ids.contains("ssh"));
+    }
+
+    #[test]
+    fn clipboard_page_is_always_last() {
+        assert_eq!(SettingsPage::ALL.last(), Some(&SettingsPage::Clipboard));
     }
 }
