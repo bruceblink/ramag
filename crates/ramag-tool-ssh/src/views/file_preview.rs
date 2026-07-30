@@ -1,27 +1,32 @@
 //! 远程文本文件的有界查看、搜索与编辑。
 
-use std::sync::Arc;
+mod follow;
+mod render;
+
+use std::{sync::Arc, time::Duration};
 
 use gpui::{
-    ClickEvent, Context, Entity, Focusable as _, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div, prelude::*, px,
+    ClickEvent, Context, Entity, Focusable as _, ParentElement, SharedString, Styled, Subscription,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
+    Sizable as _, WindowExt as _,
     button::ButtonVariants as _,
     h_flex,
-    input::{Input, InputEvent, InputState, Search},
+    input::{InputEvent, InputState, Position, Search},
     notification::Notification,
-    v_flex,
 };
 use ramag_app::SshService;
 use ramag_domain::entities::{
     MAX_REMOTE_FILE_PREVIEW_BYTES, RemoteEntry, RemoteEntryKind, RemoteFileChunkPosition,
-    SshProfile, SshProfileId, format_bytes,
+    SshProfile, SshProfileId,
 };
 
 use super::SshView;
-use super::file_chunk::{RemoteFileText, decode_remote_file_chunk, text_line_count};
+use super::file_chunk::{
+    RemoteFileText, decode_remote_file_chunk, merge_remote_file_tail, text_line_count,
+};
+use super::file_preview_layout::remote_file_dialog_layout;
 use super::model::{Notice, ViewMode};
 
 impl SshView {
@@ -119,6 +124,11 @@ struct RemoteFileEditor {
     language: &'static str,
     chunk_loading: bool,
     chunk_generation: u64,
+    auto_refresh_available: bool,
+    auto_refresh: bool,
+    auto_refresh_loading: bool,
+    auto_refresh_failed: bool,
+    auto_refresh_generation: u64,
     saving: bool,
     save_generation: u64,
     _subscription: Subscription,
@@ -139,6 +149,8 @@ impl RemoteFileEditor {
         let original_text = preview.text;
         let current_bytes = original_text.len();
         let current_lines = text_line_count(&original_text);
+        let auto_refresh_available = follow::supports_auto_refresh(&entry.path, windowed);
+        let auto_refresh = follow::enables_auto_refresh(&entry.path);
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .code_editor(language)
@@ -182,6 +194,11 @@ impl RemoteFileEditor {
             language,
             chunk_loading: false,
             chunk_generation: 0,
+            auto_refresh_available,
+            auto_refresh,
+            auto_refresh_loading: false,
+            auto_refresh_failed: false,
+            auto_refresh_generation: 0,
             saving: false,
             save_generation: 0,
             _subscription: subscription,
@@ -189,16 +206,139 @@ impl RemoteFileEditor {
     }
 
     fn is_read_only(&self) -> bool {
-        self.profile.production || self.windowed
+        self.profile.production || self.windowed || self.auto_refresh
     }
 
     fn is_dirty(&self) -> bool {
         !self.is_read_only() && self.dirty
     }
 
-    fn search(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.disable_auto_refresh();
         self.input.read(cx).focus_handle(cx).focus(window, cx);
         window.dispatch_action(Box::new(Search), cx);
+        cx.notify();
+    }
+
+    fn set_auto_refresh(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if enabled == self.auto_refresh
+            || (enabled && (!self.auto_refresh_available || self.is_dirty() || self.saving))
+        {
+            return;
+        }
+        if !enabled {
+            self.disable_auto_refresh();
+            cx.notify();
+            return;
+        }
+
+        self.auto_refresh = true;
+        self.auto_refresh_failed = false;
+        self.auto_refresh_generation = self.auto_refresh_generation.wrapping_add(1);
+        self.refresh_tail(window, cx);
+        self.spawn_auto_refresh(window, cx);
+        cx.notify();
+    }
+
+    fn disable_auto_refresh(&mut self) {
+        if !self.auto_refresh && !self.auto_refresh_loading {
+            return;
+        }
+        self.auto_refresh = false;
+        self.auto_refresh_loading = false;
+        self.auto_refresh_generation = self.auto_refresh_generation.wrapping_add(1);
+        self.auto_refresh_available =
+            follow::supports_auto_refresh(&self.entry.path, self.windowed);
+    }
+
+    fn spawn_auto_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let generation = self.auto_refresh_generation;
+        cx.spawn_in(window, async move |this, async_cx| {
+            loop {
+                async_cx
+                    .background_executor()
+                    .timer(Duration::from_secs(2))
+                    .await;
+                let refresh = this.update_in(async_cx, |this, window, cx| {
+                    if !this.auto_refresh || this.auto_refresh_generation != generation {
+                        return false;
+                    }
+                    this.refresh_tail(window, cx);
+                    true
+                });
+                if !matches!(refresh, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn refresh_tail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.auto_refresh
+            || self.auto_refresh_loading
+            || self.chunk_loading
+            || self.saving
+            || self.is_dirty()
+        {
+            return;
+        }
+        self.auto_refresh_loading = true;
+        let generation = self.auto_refresh_generation;
+        let service = self.service.clone();
+        let profile = self.profile.clone();
+        let path = self.entry.path.clone();
+        let known_end = self.chunk_end;
+        let known_total = self.total_bytes;
+        cx.spawn_in(window, async move |this, async_cx| {
+            let result =
+                follow::read_tail_update(&service, &profile, &path, known_end, known_total).await;
+            let _ = this.update_in(async_cx, |this, window, cx| {
+                if !this.auto_refresh || this.auto_refresh_generation != generation {
+                    return;
+                }
+                this.auto_refresh_loading = false;
+                match result {
+                    Ok(follow::TailUpdate::Unchanged) => {
+                        this.auto_refresh_failed = false;
+                    }
+                    Ok(follow::TailUpdate::Append(appended)) => {
+                        let current = RemoteFileText {
+                            text: this.original_text.clone(),
+                            total_bytes: this.total_bytes,
+                            offset: this.chunk_offset,
+                            end_offset: this.chunk_end,
+                        };
+                        match merge_remote_file_tail(&current, appended) {
+                            Ok(preview) => {
+                                this.auto_refresh_failed = false;
+                                this.replace_chunk(preview, true, window, cx);
+                            }
+                            Err(error) => this.report_auto_refresh_error(error, window, cx),
+                        }
+                    }
+                    Ok(follow::TailUpdate::Replace(preview)) => {
+                        this.auto_refresh_failed = false;
+                        this.replace_chunk(preview, true, window, cx);
+                    }
+                    Err(error) => this.report_auto_refresh_error(error, window, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn report_auto_refresh_error(
+        &mut self,
+        error: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.auto_refresh_failed {
+            window.push_notification(Notification::error(format!("刷新失败：{error}")), cx);
+        }
+        self.auto_refresh_failed = true;
     }
 
     fn load_chunk(
@@ -210,6 +350,7 @@ impl RemoteFileEditor {
         if self.chunk_loading || self.saving || self.is_dirty() {
             return;
         }
+        self.disable_auto_refresh();
         self.chunk_loading = true;
         self.chunk_generation = self.chunk_generation.wrapping_add(1);
         let generation = self.chunk_generation;
@@ -226,7 +367,7 @@ impl RemoteFileEditor {
                 this.chunk_loading = false;
                 match result {
                     Ok(chunk) => match decode_remote_file_chunk(chunk, position) {
-                        Ok(preview) => this.replace_chunk(preview, window, cx),
+                        Ok(preview) => this.replace_chunk(preview, false, window, cx),
                         Err(error) => window.push_notification(Notification::error(error), cx),
                     },
                     Err(error) => window
@@ -241,6 +382,7 @@ impl RemoteFileEditor {
     fn replace_chunk(
         &mut self,
         preview: RemoteFileText,
+        scroll_to_end: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -253,9 +395,14 @@ impl RemoteFileEditor {
         self.chunk_offset = preview.offset;
         self.chunk_end = preview.end_offset;
         self.windowed = windowed;
+        self.auto_refresh_available =
+            self.auto_refresh || follow::supports_auto_refresh(&self.entry.path, windowed);
         self.dirty = false;
         self.input.update(cx, |input, cx| {
             input.set_value(text, window, cx);
+            if scroll_to_end {
+                input.set_cursor_position(Position::new(u32::MAX, u32::MAX), window, cx);
+            }
         });
     }
 
@@ -325,191 +472,6 @@ impl RemoteFileEditor {
     }
 }
 
-impl Render for RemoteFileEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let line_count = self.current_lines;
-        let visible_rows = line_count.max(1).saturating_add(3).min(32);
-        let editor_height = px(visible_rows as f32 * 22.0 + 12.0);
-        let read_only = self.is_read_only();
-        let dirty = self.is_dirty();
-        let windowed = self.windowed;
-        let chunk_loading = self.chunk_loading;
-        let has_previous = self.chunk_offset > 0;
-        let has_next = self.chunk_end < self.total_bytes;
-        let metadata = if windowed {
-            format!(
-                "{} · {}–{} · {} 行 · {} · 只读",
-                format_bytes(self.total_bytes),
-                format_bytes(self.chunk_offset),
-                format_bytes(self.chunk_end),
-                line_count,
-                self.language,
-            )
-        } else {
-            format!(
-                "{} · {} 行 · {}{}",
-                format_bytes(self.current_bytes as u64),
-                line_count,
-                self.language,
-                if read_only { " · 只读" } else { "" }
-            )
-        };
-        let editor_background = cx
-            .theme()
-            .highlight_theme
-            .style
-            .editor_background
-            .unwrap_or_else(|| cx.theme().input_background());
-        v_flex()
-            .id("ssh-file-editor")
-            .debug_selector(|| "ssh-file-editor".into())
-            .w_full()
-            .gap(px(8.0))
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(metadata),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .when(windowed, |actions| {
-                                actions
-                                    .child(
-                                        ramag_ui::clickable_button("ssh-file-previous")
-                                            .outline()
-                                            .small()
-                                            .label("上段")
-                                            .disabled(!has_previous || chunk_loading)
-                                            .on_click(cx.listener(
-                                                |this, _: &ClickEvent, window, cx| {
-                                                    this.load_chunk(
-                                                        RemoteFileChunkPosition::Before(
-                                                            this.chunk_offset,
-                                                        ),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            )),
-                                    )
-                                    .child(
-                                        ramag_ui::clickable_button("ssh-file-next")
-                                            .outline()
-                                            .small()
-                                            .label("下段")
-                                            .disabled(!has_next || chunk_loading)
-                                            .on_click(cx.listener(
-                                                |this, _: &ClickEvent, window, cx| {
-                                                    this.load_chunk(
-                                                        RemoteFileChunkPosition::From(
-                                                            this.chunk_end,
-                                                        ),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            )),
-                                    )
-                                    .child(
-                                        ramag_ui::clickable_button("ssh-file-tail")
-                                            .outline()
-                                            .small()
-                                            .label("末尾")
-                                            .loading(chunk_loading)
-                                            .disabled(chunk_loading)
-                                            .on_click(cx.listener(
-                                                |this, _: &ClickEvent, window, cx| {
-                                                    this.load_chunk(
-                                                        RemoteFileChunkPosition::Tail,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            )),
-                                    )
-                            })
-                            .child(
-                                ramag_ui::clickable_button("ssh-file-search")
-                                    .outline()
-                                    .small()
-                                    .label("搜索")
-                                    .disabled(chunk_loading)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        this.search(window, cx);
-                                    })),
-                            )
-                            .when(dirty, |actions| {
-                                actions.child(
-                                    ramag_ui::clickable_button("ssh-file-discard")
-                                        .ghost()
-                                        .small()
-                                        .label("放弃")
-                                        .disabled(self.saving)
-                                        .on_click(|_: &ClickEvent, window, cx| {
-                                            window.close_dialog(cx);
-                                        }),
-                                )
-                            })
-                            .when(!read_only, |actions| {
-                                actions.child(
-                                    ramag_ui::clickable_button("ssh-file-save")
-                                        .primary()
-                                        .small()
-                                        .label("保存")
-                                        .loading(self.saving)
-                                        .disabled(!dirty || self.saving)
-                                        .on_click(cx.listener(
-                                            |this, _: &ClickEvent, window, cx| {
-                                                this.save(window, cx);
-                                            },
-                                        )),
-                                )
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(editor_height)
-                    .overflow_hidden()
-                    .child(
-                        Input::new(&self.input)
-                            .h_full()
-                            .opacity(1.0)
-                            .disabled(self.saving || chunk_loading),
-                    )
-                    // 编辑器仍可用鼠标滚轮滚动，只隐藏持续占位的滚动条。
-                    .child(
-                        div()
-                            .absolute()
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
-                            .w(px(10.0))
-                            .bg(editor_background),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .h(px(10.0))
-                            .bg(editor_background),
-                    ),
-            )
-    }
-}
-
 fn open_remote_file_editor(
     service: Arc<SshService>,
     owner: Entity<SshView>,
@@ -522,8 +484,16 @@ fn open_remote_file_editor(
     let title = bounded_preview_title(&entry.path);
     let editor =
         cx.new(|cx| RemoteFileEditor::new(service, owner, profile, entry, preview, window, cx));
-    let dialog_width = px((f32::from(window.viewport_size().width) - 64.0).clamp(320.0, 1600.0));
-    window.open_dialog(cx, move |dialog, _, _| {
+    if editor.read(cx).auto_refresh {
+        editor.update(cx, |this, cx| this.spawn_auto_refresh(window, cx));
+    }
+    window.open_dialog(cx, move |dialog, window, app| {
+        let viewport = window.viewport_size();
+        let layout = remote_file_dialog_layout(
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+            editor.read(app).current_lines,
+        );
         let title_editor = editor.clone();
         let content_editor = editor.clone();
         dialog
@@ -531,25 +501,36 @@ fn open_remote_file_editor(
                 h_flex()
                     .w_full()
                     .items_center()
-                    .justify_between()
-                    .child(title.clone())
+                    .gap(px(8.0))
                     .child(
-                        ramag_ui::clickable_button("ssh-file-editor-close")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_component::IconName::Close)
-                            .on_click(move |_: &ClickEvent, window, app| {
-                                title_editor.update(app, |this, cx| {
-                                    this.request_close(window, cx);
-                                });
-                            }),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(title.clone()),
+                    )
+                    .child(
+                        div().flex_none().child(
+                            ramag_ui::clickable_button("ssh-file-editor-close")
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_component::IconName::Close)
+                                .tooltip("关闭")
+                                .on_click(move |_: &ClickEvent, window, app| {
+                                    title_editor.update(app, |this, cx| {
+                                        this.request_close(window, cx);
+                                    });
+                                }),
+                        ),
                     ),
             )
             .close_button(false)
             .overlay_closable(false)
             .keyboard(false)
-            .margin_top(px(36.0))
-            .w(dialog_width)
+            .margin_top(px(layout.margin_top))
+            .w(px(layout.width))
             .p(px(14.0))
             .content(move |content, _, _| content.child(content_editor.clone()))
     });

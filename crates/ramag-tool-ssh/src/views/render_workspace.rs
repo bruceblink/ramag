@@ -200,7 +200,8 @@ impl SshView {
                             ramag_ui::clickable_button("ssh-directory-transfers-button")
                                 .ghost()
                                 .xsmall()
-                                .label("传输")
+                                .icon(ramag_ui::icons::arrow_up_down())
+                                .tooltip("传输")
                                 .selected(transfers_visible)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.toggle_transfer_panel(cx);

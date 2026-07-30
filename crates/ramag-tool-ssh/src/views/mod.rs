@@ -2,6 +2,7 @@
 
 mod file_chunk;
 mod file_preview;
+mod file_preview_layout;
 mod file_syntax;
 mod model;
 mod ops;

@@ -43,6 +43,11 @@ pub fn upload() -> Icon {
 }
 
 #[inline]
+pub fn arrow_up_down() -> Icon {
+    Icon::default().path("icons/arrow-up-down.svg")
+}
+
+#[inline]
 pub fn pencil() -> Icon {
     Icon::default().path("icons/pencil.svg")
 }

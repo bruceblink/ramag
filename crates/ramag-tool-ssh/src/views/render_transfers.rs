@@ -89,8 +89,8 @@ impl SshView {
                                 ramag_ui::clickable_button("hide-ssh-transfers")
                                     .ghost()
                                     .xsmall()
-                                    .icon(gpui_component::IconName::ChevronDown)
-                                    .tooltip("收起")
+                                    .icon(gpui_component::IconName::Close)
+                                    .tooltip("关闭")
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.hide_transfer_panel(cx);
                                     })),

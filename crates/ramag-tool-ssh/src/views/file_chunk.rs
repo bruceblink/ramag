@@ -92,6 +92,53 @@ pub(super) fn text_line_count(text: &str) -> usize {
     text.bytes().filter(|byte| *byte == b'\n').count() + usize::from(!text.ends_with('\n'))
 }
 
+pub(super) fn merge_remote_file_tail(
+    current: &RemoteFileText,
+    appended: RemoteFileText,
+) -> Result<RemoteFileText, String> {
+    let current_end = current
+        .offset
+        .checked_add(current.text.len() as u64)
+        .ok_or_else(invalid_chunk)?;
+    let appended_end = appended
+        .offset
+        .checked_add(appended.text.len() as u64)
+        .ok_or_else(invalid_chunk)?;
+    if current.end_offset != current.total_bytes
+        || current_end != current.end_offset
+        || appended.offset != current.end_offset
+        || appended_end != appended.end_offset
+        || appended.end_offset != appended.total_bytes
+    {
+        return Err(invalid_chunk());
+    }
+
+    let mut text = String::with_capacity(current.text.len().saturating_add(appended.text.len()));
+    text.push_str(&current.text);
+    text.push_str(&appended.text);
+    let mut offset = current.offset;
+
+    if text.len() > MAX_REMOTE_FILE_PREVIEW_BYTES {
+        let mut start = text.len() - MAX_REMOTE_FILE_PREVIEW_BYTES;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text.drain(..start);
+        offset = offset.checked_add(start as u64).ok_or_else(invalid_chunk)?;
+    }
+    if let Some(start) = suffix_line_start(&text) {
+        text.drain(..start);
+        offset = offset.checked_add(start as u64).ok_or_else(invalid_chunk)?;
+    }
+
+    Ok(RemoteFileText {
+        text,
+        total_bytes: appended.total_bytes,
+        offset,
+        end_offset: appended.end_offset,
+    })
+}
+
 fn chunk_range(position: RemoteFileChunkPosition, total: u64) -> (u64, u64) {
     let limit = MAX_REMOTE_FILE_PREVIEW_BYTES as u64;
     match position {
@@ -266,5 +313,72 @@ mod tests {
         assert_eq!(text_line_count(&tail.text), MAX_REMOTE_FILE_PREVIEW_LINES);
         assert_eq!(tail.offset, 5);
         assert_eq!(tail.end_offset, total);
+    }
+
+    #[test]
+    fn incremental_tail_merge_keeps_latest_bounded_text() {
+        let current_text = "旧\n".repeat(MAX_REMOTE_FILE_PREVIEW_LINES);
+        let current = RemoteFileText {
+            total_bytes: current_text.len() as u64,
+            offset: 0,
+            end_offset: current_text.len() as u64,
+            text: current_text,
+        };
+        let append_offset = current.end_offset;
+        let appended = RemoteFileText {
+            text: "新\n".into(),
+            total_bytes: append_offset + 4,
+            offset: append_offset,
+            end_offset: append_offset + 4,
+        };
+
+        let merged = merge_remote_file_tail(&current, appended).expect("tail should merge");
+
+        assert_eq!(text_line_count(&merged.text), MAX_REMOTE_FILE_PREVIEW_LINES);
+        assert!(merged.text.ends_with("新\n"));
+        assert_eq!(merged.end_offset, merged.total_bytes);
+        assert_eq!(merged.offset, 4);
+    }
+
+    #[test]
+    fn incremental_tail_merge_rejects_non_contiguous_data() {
+        let current = RemoteFileText {
+            text: "a".into(),
+            total_bytes: 1,
+            offset: 0,
+            end_offset: 1,
+        };
+        let appended = RemoteFileText {
+            text: "b".into(),
+            total_bytes: 3,
+            offset: 2,
+            end_offset: 3,
+        };
+
+        assert!(merge_remote_file_tail(&current, appended).is_err());
+    }
+
+    #[test]
+    fn incremental_tail_merge_trims_on_utf8_boundary() {
+        let mut current_text = "é".to_string();
+        current_text.push_str(&"a".repeat(MAX_REMOTE_FILE_PREVIEW_BYTES - 2));
+        let current = RemoteFileText {
+            total_bytes: current_text.len() as u64,
+            offset: 0,
+            end_offset: current_text.len() as u64,
+            text: current_text,
+        };
+        let appended = RemoteFileText {
+            text: "b".into(),
+            total_bytes: current.end_offset + 1,
+            offset: current.end_offset,
+            end_offset: current.end_offset + 1,
+        };
+
+        let merged = merge_remote_file_tail(&current, appended).expect("tail should stay UTF-8");
+
+        assert!(merged.text.len() <= MAX_REMOTE_FILE_PREVIEW_BYTES);
+        assert_eq!(merged.offset, 2);
+        assert!(merged.text.ends_with('b'));
     }
 }
