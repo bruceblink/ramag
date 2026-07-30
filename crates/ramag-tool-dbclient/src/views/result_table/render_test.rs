@@ -40,7 +40,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         result_revision: 0,
         sort_by: None,
         column_filter: String::new(),
-        row_filter_lower: String::new(),
+        row_filter: super::RowFilter::Text(String::new()),
     };
     let (panel, cx) = cx.add_window_view(|window, cx| {
         let mut panel = ResultPanel::new(window, cx);

@@ -19,7 +19,10 @@ use gpui_component::{
 use ramag_domain::entities::{QueryResult, contains_case_insensitive};
 use ramag_ui::RestrictScrollToAxisExt as _;
 
-use super::result_panel::{MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, SortDir, TotalRows};
+use super::result_panel::{
+    MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, RowFilter, RowSearchBlocker, SortDir,
+    TotalRows,
+};
 
 /// 连续输入筛选词时先等待短暂停顿，避免每个按键都占用共享 CPU 工作池。
 const DISPLAY_VIEW_DEBOUNCE: Duration = Duration::from_millis(160);
@@ -70,7 +73,7 @@ pub(crate) struct DisplayViewCacheKey {
     result_revision: u64,
     sort_by: Option<(usize, SortDir)>,
     column_filter: String,
-    row_filter_lower: String,
+    row_filter: RowFilter,
 }
 
 /// SQL 结果表派生视图缓存。内容不持有 QueryResult，避免延长旧结果的生命周期。
@@ -91,7 +94,7 @@ impl DisplayViewCacheKey {
             && self.result_revision == previous.result_revision
             && self.sort_by == previous.sort_by
             && (self.column_filter != previous.column_filter
-                || self.row_filter_lower != previous.row_filter_lower)
+                || self.row_filter != previous.row_filter)
     }
 }
 
@@ -101,13 +104,13 @@ fn display_view_key(
     cx: &gpui::App,
 ) -> DisplayViewCacheKey {
     let column_filter = panel.column_filter_text(cx);
-    let row_filter_lower = panel.row_filter_text(cx).to_lowercase();
+    let row_filter = panel.effective_row_filter(cx);
     DisplayViewCacheKey {
         result_identity: result as *const QueryResult as usize,
         result_revision: panel.result_revision,
         sort_by: panel.sort_by(),
         column_filter,
-        row_filter_lower,
+        row_filter,
     }
 }
 
@@ -184,7 +187,7 @@ fn ensure_display_view(
                 &result,
                 worker_key.sort_by,
                 &worker_key.column_filter,
-                &worker_key.row_filter_lower,
+                &worker_key.row_filter,
                 &worker_cancelled,
             ))
         })
@@ -231,11 +234,12 @@ fn build_display_view(
     column_filter: &str,
     row_filter_lower: &str,
 ) -> DisplayView {
+    let row_filter = RowFilter::Text(row_filter_lower.to_string());
     build_display_view_cancellable(
         result,
         sort_by,
         column_filter,
-        row_filter_lower,
+        &row_filter,
         &AtomicBool::new(false),
     )
     .expect("non-cancelled display view build should finish")
@@ -245,7 +249,7 @@ fn build_display_view_cancellable(
     result: &QueryResult,
     sort_by: Option<(usize, SortDir)>,
     column_filter: &str,
-    row_filter_lower: &str,
+    row_filter: &RowFilter,
     cancelled: &AtomicBool,
 ) -> Option<DisplayView> {
     if cancelled.load(Ordering::Relaxed) {
@@ -299,7 +303,7 @@ fn build_display_view_cancellable(
         (0..result.columns.len()).collect()
     };
     let pre_filter_count = display_indices.len();
-    let row_filtering = !row_filter_lower.is_empty();
+    let row_filtering = row_filter.is_active();
     if row_filtering {
         let mut filtered = Vec::with_capacity(display_indices.len());
         for (position, source_idx) in display_indices.into_iter().enumerate() {
@@ -310,7 +314,7 @@ fn build_display_view_cancellable(
             if matching_col_indices.iter().any(|&ci| {
                 row.values
                     .get(ci)
-                    .map(|value| value.contains_query_lower(row_filter_lower))
+                    .map(|value| row_filter.matches(value))
                     .unwrap_or(false)
             }) {
                 filtered.push(source_idx);
@@ -395,6 +399,28 @@ pub(super) fn render_table(
                     .text_xs()
                     .text_color(muted_fg)
                     .child(format!("{elapsed} ms")),
+            )
+            .into_any_element();
+    }
+
+    if let Some(blocker) = panel.row_search_blocker(cx) {
+        let (message, color) = match blocker {
+            RowSearchBlocker::Converting => ("正在通过外部程序转换 ID…".to_string(), muted_fg),
+            RowSearchBlocker::Error(error) => (format!("ID 转换失败：{error}"), cx.theme().danger),
+        };
+        return v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .px_4()
+            .text_xs()
+            .text_color(color)
+            .child(message)
+            .child(
+                div()
+                    .text_color(muted_fg)
+                    .child("请修改搜索词，或检查设置中的转换程序。"),
             )
             .into_any_element();
     }
@@ -610,7 +636,10 @@ pub(super) fn render_table(
         }
     });
 
-    let mut status_parts = Vec::with_capacity(2);
+    let mut status_parts = Vec::with_capacity(3);
+    if let Some(id) = panel.converted_row_search_id(cx) {
+        status_parts.push(format!("@ID → {id}"));
+    }
     if cols_filtered {
         if columns_truncated {
             status_parts.push(format!(
@@ -835,14 +864,27 @@ mod tests {
     }
 
     #[test]
+    fn id_filter_matches_exact_integer_in_the_display_pipeline() {
+        let result = sample_result();
+        let filter = RowFilter::Id(2);
+        let view =
+            build_display_view_cancellable(&result, None, "", &filter, &AtomicBool::new(false))
+                .unwrap();
+
+        assert_eq!(view.display_indices.as_slice(), &[0]);
+        assert!(view.row_filtering);
+    }
+
+    #[test]
     fn cancelled_display_view_stops_before_scanning_rows() {
         let cancelled = AtomicBool::new(true);
+        let row_filter = RowFilter::Text("alpha".into());
         assert!(
             build_display_view_cancellable(
                 &sample_result(),
                 Some((0, SortDir::Asc)),
                 "name",
-                "alpha",
+                &row_filter,
                 &cancelled,
             )
             .is_none()
@@ -857,7 +899,7 @@ mod tests {
             result_revision: 3,
             sort_by: None,
             column_filter: String::new(),
-            row_filter_lower: String::new(),
+            row_filter: RowFilter::Text(String::new()),
         };
         let cache = DisplayViewCache {
             key: key.clone(),

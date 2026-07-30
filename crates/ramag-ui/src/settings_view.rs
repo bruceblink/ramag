@@ -1,15 +1,20 @@
 //! 设置中心：默认展示全局配置，各大模块使用独立页面。
 
 mod clipboard;
+mod database;
 mod pages;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
-use gpui_component::{WindowExt as _, h_flex, notification::Notification};
+use gpui::{
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
+};
+use gpui_component::{WindowExt as _, h_flex, input::InputState, notification::Notification};
 use ramag_app::ClipboardService;
 use ramag_domain::entities::ClipboardSettings;
+
+use crate::database_search::MAX_ID_CONVERTER_PROGRAM_BYTES;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum SettingsPage {
@@ -67,12 +72,29 @@ pub struct SettingsView {
     clipboard: ClipboardSettings,
     loaded_revision: u64,
     saving_clipboard: bool,
+    database_enabled_draft: bool,
+    database_converter_program: Entity<InputState>,
+    saving_database: bool,
+    picking_id_converter: bool,
     pending_notification: Option<Notification>,
 }
 
 impl SettingsView {
-    pub fn new(clipboard_service: Arc<ClipboardService>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        clipboard_service: Arc<ClipboardService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (clipboard, loaded_revision) = clipboard_service.settings_snapshot_with_revision();
+        let database = crate::database_search_settings(cx);
+        let database_enabled_draft = database.id_conversion_enabled;
+        let converter_program = database.id_converter_program.clone();
+        let database_converter_program = cx.new(|cx| {
+            InputState::new(window, cx)
+                .validate(|value, _| value.len() <= MAX_ID_CONVERTER_PROGRAM_BYTES)
+                .placeholder("请选择转换程序的绝对路径")
+                .default_value(converter_program)
+        });
 
         let service = clipboard_service.clone();
         cx.spawn(async move |this, cx| {
@@ -118,6 +140,10 @@ impl SettingsView {
             clipboard,
             loaded_revision,
             saving_clipboard: false,
+            database_enabled_draft,
+            database_converter_program,
+            saving_database: false,
+            picking_id_converter: false,
             pending_notification: None,
         }
     }

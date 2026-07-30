@@ -13,13 +13,14 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
+use ramag_ui::PointerDropdownMenu as _;
 
 use super::QueryTab;
 use super::sql_utils::format_elapsed;
 
 /// 千分位格式化（10_000 → "10,000"），自动限制档位展示用
 use crate::actions::{ExplainQuery, FormatSql, RunQuery, RunStatementAtCursor};
-use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultState};
+use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultPanel, ResultState, RowSearchMode};
 
 impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -107,6 +108,9 @@ impl Render for QueryTab {
                     .child({
                         let col_input = self.result.read(cx).column_filter_entity().clone();
                         let row_input = self.result.read(cx).row_filter_entity().clone();
+                        let row_search_mode = self.result.read(cx).row_search_mode();
+                        let id_conversion_ready = ramag_ui::database_search_settings(cx).is_ready();
+                        let result_for_row_mode = self.result.clone();
                         let col_for_up = col_input.clone();
                         let col_for_down = col_input.clone();
                         h_flex()
@@ -156,17 +160,28 @@ impl Render for QueryTab {
                                     ),
                             )
                             .child(
-                                div().flex_1().min_w_0().child(
-                                    ramag_ui::cleanable_input(
-                                        &row_input,
-                                        "sql-row-filter-clear",
-                                        false,
-                                        cx,
-                                    )
-                                        .small()
-                                        .bordered(false)
-                                        .focus_bordered(false),
-                                ),
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .child(row_search_mode_button(
+                                        row_search_mode,
+                                        id_conversion_ready,
+                                        result_for_row_mode,
+                                    ))
+                                    .child(
+                                        div().flex_1().min_w_0().child(
+                                            ramag_ui::cleanable_input(
+                                                &row_input,
+                                                "sql-row-filter-clear",
+                                                false,
+                                                cx,
+                                            )
+                                                .small()
+                                                .bordered(false)
+                                                .focus_bordered(false),
+                                        ),
+                                    ),
                             )
                     })
                     // 生产只读徽标：常驻工具条，与连接 Tab 徽标、写入口禁用同一语义
@@ -434,4 +449,42 @@ impl Render for QueryTab {
                     .child(self.result.clone()),
             )
     }
+}
+
+fn row_search_mode_button(
+    current: RowSearchMode,
+    id_conversion_ready: bool,
+    result: Entity<ResultPanel>,
+) -> impl IntoElement {
+    ramag_ui::clickable_button("sql-row-search-mode")
+        .ghost()
+        .small()
+        .w(px(68.0))
+        .label(current.label())
+        .dropdown_caret(true)
+        .tooltip(match current {
+            RowSearchMode::Normal => "@TEXT：按单元格展示文本包含搜索",
+            RowSearchMode::Id => "@ID：外部转换后精确匹配整数单元格",
+        })
+        .pointer_dropdown_menu(move |mut menu, _, _| {
+            for mode in [RowSearchMode::Normal, RowSearchMode::Id] {
+                let disabled = matches!(mode, RowSearchMode::Id) && !id_conversion_ready;
+                let label = if disabled {
+                    "@ID（请先在设置中启用）".to_string()
+                } else if mode == current {
+                    format!("✓ {}", mode.label())
+                } else {
+                    format!("  {}", mode.label())
+                };
+                let result = result.clone();
+                menu = menu.item(ramag_ui::menu_item_with_disabled(label, disabled).on_click(
+                    move |_: &ClickEvent, _, app| {
+                        result.update(app, |panel, cx| {
+                            panel.set_row_search_mode(mode, cx);
+                        });
+                    },
+                ));
+            }
+            menu
+        })
 }

@@ -44,9 +44,9 @@ use ramag_tool_vcs::{
     ToggleHistoryPane, VcsTool, create_vcs_view,
 };
 use ramag_ui::{
-    CloseTab, CycleSection, CycleSectionReverse, HomeEvent, HomeView, NavTarget, RamagAssets,
-    SelectTool1, SelectTool2, SelectTool3, SelectTool4, SettingsView, Shell, StorageGlobal,
-    init_theme,
+    CloseTab, CycleSection, CycleSectionReverse, DATABASE_SEARCH_SETTINGS_PREF_KEY, HomeEvent,
+    HomeView, NavTarget, RamagAssets, SelectTool1, SelectTool2, SelectTool3, SelectTool4,
+    SettingsView, Shell, StorageGlobal, init_database_search_settings, init_theme,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -185,8 +185,12 @@ fn main() {
     let ssh_service: Arc<SshService> = build_ssh_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
-    let startup_preferences = read_preferences(&storage, &["theme_mode"]);
+    let startup_preferences =
+        read_preferences(&storage, &["theme_mode", DATABASE_SEARCH_SETTINGS_PREF_KEY]);
     let initial_pref = startup_preferences.get("theme_mode").cloned();
+    let initial_database_search_pref = startup_preferences
+        .get(DATABASE_SEARCH_SETTINGS_PREF_KEY)
+        .cloned();
 
     // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
     let clipboard_enabled = match tokio::runtime::Builder::new_current_thread()
@@ -228,6 +232,11 @@ fn main() {
         gpui_component::init(cx);
         ramag_tool_ssh::init(cx);
         init_theme(initial_pref.as_deref(), cx);
+        if let Err(error) =
+            init_database_search_settings(initial_database_search_pref.as_deref(), cx)
+        {
+            warn!(error, "ignore invalid database search settings");
+        }
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
 
@@ -710,7 +719,8 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
 
                 let clipboard_view = create_clipboard_view(clipboard_service.clone(), window, cx);
                 let ssh_view = create_ssh_view(ssh_service.clone(), window, cx);
-                let settings_view = cx.new(|cx| SettingsView::new(clipboard_service.clone(), cx));
+                let settings_view =
+                    cx.new(|cx| SettingsView::new(clipboard_service.clone(), window, cx));
 
                 let shell = cx.new(|cx| {
                     let mut shell = Shell::new(registry.clone(), window, cx);

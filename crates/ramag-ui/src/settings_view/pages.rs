@@ -68,11 +68,7 @@ impl SettingsView {
         let content = match page {
             SettingsPage::Global => self.render_global_page(cx),
             SettingsPage::Clipboard => self.render_clipboard_page(cx),
-            SettingsPage::Database => managed_in_module_card(
-                "连接配置",
-                "数据库地址、认证、TLS 与 SSH 隧道等配置跟随连接保存，请在数据库客户端的连接管理中维护。",
-                cx,
-            ),
+            SettingsPage::Database => self.render_database_page(cx),
             SettingsPage::VersionControl => managed_in_module_card(
                 "Git 配置",
                 "Ramag 复用系统 Git、SSH Agent 与已有凭据；仓库和远程地址请在版本管理页面中维护。",

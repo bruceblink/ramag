@@ -2,6 +2,7 @@ mod export;
 mod helpers;
 mod ops;
 mod render;
+mod row_search;
 mod scroll;
 
 use std::collections::BTreeSet;
@@ -28,6 +29,8 @@ use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
+use row_search::RowSearchState;
+pub(crate) use row_search::{RowFilter, RowSearchBlocker, RowSearchMode};
 
 /// 服务端分页的可见页大小，也是未分页结果的 UI 渲染上限。
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
@@ -117,6 +120,7 @@ pub struct ResultPanel {
     pub(super) display_view_error: Option<String>,
     pub(super) column_filter_input: Entity<InputState>,
     pub(super) row_filter_input: Entity<InputState>,
+    row_search: RowSearchState,
     pub(super) cell_edit_input: Option<Entity<InputState>>,
     pub(super) service: Option<Arc<ConnectionService>>,
     pub(super) connection: Option<ConnectionConfig>,
@@ -149,8 +153,14 @@ impl ResultPanel {
         });
         cx.observe(&column_filter_input, |_, _, cx| cx.notify())
             .detach();
-        cx.observe(&row_filter_input, |_, _, cx| cx.notify())
-            .detach();
+        cx.observe(&row_filter_input, |this, _, cx| {
+            this.on_row_filter_input_updated(cx);
+        })
+        .detach();
+        cx.observe_global::<ramag_ui::DatabaseSearchSettingsGlobal>(|this, cx| {
+            this.on_database_search_settings_changed(cx);
+        })
+        .detach();
 
         Self {
             state: ResultState::Empty,
@@ -171,6 +181,7 @@ impl ResultPanel {
             display_view_error: None,
             column_filter_input,
             row_filter_input,
+            row_search: RowSearchState::default(),
             cell_edit_input: None,
             service: None,
             connection: None,
@@ -757,6 +768,7 @@ fn global_memory_warning(outcome: ResultMemoryUpdate) -> Warning {
 
 impl Drop for ResultPanel {
     fn drop(&mut self) {
+        self.cancel_id_conversion();
         self.cancel_display_view_build();
     }
 }

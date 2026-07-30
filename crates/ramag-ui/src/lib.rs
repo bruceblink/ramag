@@ -5,6 +5,7 @@ pub mod activity_bar;
 pub mod assets;
 pub mod axis_scroll;
 pub mod confirm_dialog;
+pub mod database_search;
 pub mod editor_workspace;
 pub mod home_view;
 pub mod icons;
@@ -25,6 +26,11 @@ pub use actions::{
 };
 pub use assets::RamagAssets;
 pub use confirm_dialog::open_confirm;
+pub use database_search::{
+    DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, DatabaseSearchSettingsGlobal,
+    database_search_settings, init_database_search_settings, set_database_search_settings,
+    validate_id_converter_program,
+};
 pub use prompt_dialog::{
     open_bounded_masked_prompt, open_bounded_prompt, open_masked_prompt,
     open_optional_bounded_prompt, open_optional_prompt, open_prompt, open_reveal_masked_prompt,
