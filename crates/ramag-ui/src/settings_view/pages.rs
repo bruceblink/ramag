@@ -48,8 +48,14 @@ impl SettingsView {
             navigation = navigation.child(settings_navigation_item(
                 page,
                 selected,
-                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
                     if this.selected_page != page {
+                        if this
+                            .selected_page
+                            .clears_database_test_when_switching_to(page)
+                        {
+                            this.clear_database_converter_test(window, cx);
+                        }
                         this.selected_page = page;
                         cx.notify();
                     }

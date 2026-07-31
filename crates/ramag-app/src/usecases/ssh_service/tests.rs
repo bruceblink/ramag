@@ -1,9 +1,12 @@
 use super::*;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, SshPathFavorites, SshProgressFn,
-    SshWorkspaceState,
+    ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
+    JumpServerCredential, JumpServerOrganization, JumpServerSession, QueryRecord, QueryRecordId,
+    SshAuthMode, SshPathFavorites, SshProgressFn, SshWorkspaceState,
 };
 use ramag_domain::error::READ_ONLY_MESSAGE;
+use ramag_domain::traits::JumpServerDriver;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct NoopStorage;
 
@@ -22,6 +25,10 @@ impl Storage for NoopStorage {
     }
 
     async fn delete_connection(&self, _id: &ConnectionId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn save_ssh_profile(&self, _profile: &SshProfile) -> Result<()> {
         Ok(())
     }
 
@@ -55,6 +62,76 @@ impl Storage for NoopStorage {
 }
 
 struct TerminalDriver;
+
+struct CountingJumpServerDriver {
+    detail_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl JumpServerDriver for CountingJumpServerDriver {
+    async fn authenticate(&self, credential: &JumpServerCredential) -> Result<JumpServerSession> {
+        Ok(JumpServerSession {
+            base_url: credential.base_url.clone(),
+            ssh_host: "jump.example.com".into(),
+            ssh_port: credential.ssh_port,
+            username: credential.username.clone(),
+            password: credential.password.clone(),
+            token_keyword: "Bearer".into(),
+            token: "token".into(),
+            organizations: vec![JumpServerOrganization {
+                id: "org-1".into(),
+                name: "DEFAULT".into(),
+            }],
+        })
+    }
+
+    async fn list_assets(&self, _session: &JumpServerSession) -> Result<Vec<JumpServerAsset>> {
+        Ok(vec![jumpserver_asset()])
+    }
+
+    async fn asset_detail(
+        &self,
+        _session: &JumpServerSession,
+        asset: &JumpServerAsset,
+    ) -> Result<JumpServerAssetDetail> {
+        self.detail_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(JumpServerAssetDetail {
+            asset: asset.clone(),
+            accounts: vec![JumpServerAccount {
+                id: "account-1".into(),
+                name: "root".into(),
+                username: "root".into(),
+                has_secret: true,
+                can_connect: true,
+            }],
+            ssh_enabled: true,
+        })
+    }
+}
+
+fn jumpserver_asset() -> JumpServerAsset {
+    JumpServerAsset {
+        id: "00000000-0000-0000-0000-000000000001".into(),
+        org_id: "org-1".into(),
+        name: "taiyuan-login".into(),
+        address: "tycs.example.com".into(),
+        platform: "Linux".into(),
+        active: true,
+    }
+}
+
+fn jumpserver_session() -> JumpServerSession {
+    JumpServerSession {
+        base_url: "https://jump.example.com/".into(),
+        ssh_host: "jump.example.com".into(),
+        ssh_port: 2222,
+        username: "alice".into(),
+        password: "login-password".into(),
+        token_keyword: "Bearer".into(),
+        token: "token".into(),
+        organizations: Vec::new(),
+    }
+}
 
 #[async_trait::async_trait]
 impl SshDriver for TerminalDriver {
@@ -438,4 +515,60 @@ fn directory_download_is_queued_as_archive() {
         .find(|task| task.id == id)
         .unwrap();
     assert_eq!(task.direction, TransferDirection::DownloadArchive);
+}
+
+#[test]
+fn jumpserver_test_and_save_refresh_asset_detail() {
+    let detail_calls = Arc::new(AtomicUsize::new(0));
+    let jumpserver: Arc<dyn JumpServerDriver> = Arc::new(CountingJumpServerDriver {
+        detail_calls: detail_calls.clone(),
+    });
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage))
+        .with_jumpserver_driver(jumpserver);
+    let session = jumpserver_session();
+    let asset = jumpserver_asset();
+
+    let tested =
+        futures::executor::block_on(service.test_jumpserver_asset(&session, &asset, "account-1"))
+            .unwrap();
+    let saved =
+        futures::executor::block_on(service.save_jumpserver_asset(&session, &asset, "account-1"))
+            .unwrap();
+
+    assert_eq!(detail_calls.load(Ordering::SeqCst), 2);
+    for profile in [tested, saved] {
+        assert_eq!(profile.host, "jump.example.com");
+        assert_eq!(profile.port, Some(2222));
+        assert_eq!(
+            profile.username,
+            "alice#root#00000000-0000-0000-0000-000000000001"
+        );
+        assert_eq!(profile.auth_mode, SshAuthMode::Password);
+        assert_eq!(profile.password, "login-password");
+    }
+}
+
+#[test]
+fn jumpserver_profile_rejects_account_without_managed_secret() {
+    let mut detail = JumpServerAssetDetail {
+        asset: jumpserver_asset(),
+        accounts: vec![JumpServerAccount {
+            id: "account-1".into(),
+            name: "root".into(),
+            username: "root".into(),
+            has_secret: false,
+            can_connect: true,
+        }],
+        ssh_enabled: true,
+    };
+
+    assert!(
+        super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
+            .is_err()
+    );
+    detail.accounts[0].has_secret = true;
+    assert!(
+        super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
+            .is_ok()
+    );
 }

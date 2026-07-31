@@ -6,10 +6,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{Context, ScrollStrategy, Window};
 use gpui_component::{Disableable as _, notification::Notification};
-use ramag_domain::entities::{
-    ClipId, ClipItem, ClipboardSettings, MAX_CLIPBOARD_BLACKLIST_ENTRIES, blacklist_matches,
-    normalize_blacklist_source,
-};
+use ramag_domain::entities::{ClipId, ClipItem};
 use ramag_ui::open_confirm;
 use tracing::error;
 
@@ -41,99 +38,16 @@ impl ClipboardView {
 
     pub(super) fn load_settings(&mut self, cx: &mut Context<Self>) {
         let svc = self.service.clone();
-        let generation = self.settings_save_generation;
         cx.spawn(async move |this, cx| {
             svc.load_settings().await;
             let (settings, revision) = svc.settings_snapshot_with_revision();
             let _ = this.update(cx, |this, cx| {
-                if this.settings_save_generation != generation {
-                    return;
-                }
                 this.settings = settings;
                 this.loaded_settings_revision = revision;
                 cx.notify();
             });
         })
         .detach();
-    }
-
-    pub(super) fn save_settings(
-        &mut self,
-        settings: ClipboardSettings,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.settings_saving {
-            self.pending_notification = Some(Notification::info("设置正在保存，请稍后重试"));
-            cx.notify();
-            return false;
-        }
-        if self.settings == settings {
-            return false;
-        }
-        // 乐观更新 + 失败回滚：持久化失败时 UI 若停在新值，会与磁盘/内存镜像不一致
-        let prev = self.settings.clone();
-        self.settings = settings.clone();
-        self.settings_saving = true;
-        self.settings_save_generation = self.settings_save_generation.wrapping_add(1);
-        let generation = self.settings_save_generation;
-        let svc = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            if let Err(e) = svc.save_settings(&settings).await {
-                error!(error = %e, "save clipboard settings failed");
-                let _ = this.update(cx, |this, cx| {
-                    if this.settings_save_generation == generation {
-                        this.settings_saving = false;
-                        this.settings = prev;
-                        this.pending_notification =
-                            Some(Notification::error(format!("设置保存失败（已还原）：{e}")));
-                        cx.notify();
-                    }
-                });
-            } else {
-                let _ = this.update(cx, |this, cx| {
-                    let (settings, revision) = svc.settings_snapshot_with_revision();
-                    if this.settings_save_generation == generation {
-                        this.settings_saving = false;
-                        this.settings = settings;
-                        this.loaded_settings_revision = revision;
-                        cx.notify();
-                    }
-                });
-            }
-        })
-        .detach();
-        cx.notify();
-        true
-    }
-
-    /// 将来源加入黑名单，只影响后续采集；当前历史仍由用户自行决定是否删除。
-    /// 条目按平台归一化存储（Windows 存文件名，升级换目录不失效）
-    pub(super) fn blacklist_source(&mut self, source_id: String, cx: &mut Context<Self>) {
-        let entry = normalize_blacklist_source(&source_id);
-        if self
-            .settings
-            .blacklist
-            .iter()
-            .any(|id| blacklist_matches(id, &entry))
-        {
-            return;
-        }
-        if self.settings.blacklist.len() >= MAX_CLIPBOARD_BLACKLIST_ENTRIES {
-            self.pending_notification = Some(
-                Notification::warning(format!(
-                    "不记录的应用已达上限（{MAX_CLIPBOARD_BLACKLIST_ENTRIES} 个）"
-                ))
-                .autohide(true),
-            );
-            cx.notify();
-            return;
-        }
-        let mut settings = self.settings.clone();
-        settings.blacklist.push(entry);
-        if self.save_settings(settings, cx) {
-            self.pending_notification = Some(Notification::info("已停止记录该应用的新内容"));
-            cx.notify();
-        }
     }
 
     /// 当前过滤+排序后的可见条目（仅 clone Arc，正文由缓存共享）。

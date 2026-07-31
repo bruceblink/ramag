@@ -26,7 +26,7 @@ pub(super) fn id_converter_kind_label(kind: IdConverterKind) -> &'static str {
         IdConverterKind::Base16 => "Base16（十六进制）",
         IdConverterKind::Base36 => "Base36",
         IdConverterKind::Base58Bitcoin => "Base58 Bitcoin",
-        IdConverterKind::Base58Flickr => "Base58 Flickr（gewu）",
+        IdConverterKind::Base58Flickr => "Base58 Flickr",
         IdConverterKind::CustomAlphabet => "自定义字符表（Base-N）",
         IdConverterKind::ExternalProgram => "自定义算法（外部程序）",
     }
@@ -66,14 +66,36 @@ impl SettingsView {
         }
     }
 
-    fn select_database_converter_kind(&mut self, kind: IdConverterKind, cx: &mut Context<Self>) {
+    pub(super) fn clear_database_converter_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.invalidate_database_converter_test();
+        if !self
+            .database_converter_test_input
+            .read(cx)
+            .value()
+            .is_empty()
+        {
+            self.database_converter_test_input
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    fn select_database_converter_kind(
+        &mut self,
+        kind: IdConverterKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.database_converter_kind == kind {
             return;
         }
         self.database_converter_kind = kind;
-        self.invalidate_database_converter_test();
+        self.clear_database_converter_test(window, cx);
         self.schedule_database_search_save(Duration::ZERO, cx);
-        cx.notify();
     }
 
     fn pick_id_converter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -292,8 +314,6 @@ impl SettingsView {
 
     fn handle_database_search_save_error(&mut self, error: String, cx: &gpui::App) {
         self.database_enabled_draft = crate::database_search_settings(cx).id_conversion_enabled;
-        self.pending_notification = Some(Notification::error(format!(
-            "数据库搜索设置自动保存失败：{error}"
-        )));
+        self.pending_notification = Some(Notification::error(format!("保存失败：{error}")));
     }
 }

@@ -19,7 +19,7 @@ use ramag_app::{
     ClipboardService, ConnectionService, MongoService, RedisService, SshService, ToolRegistry,
 };
 use ramag_domain::traits::{
-    ClipboardDriver, DocDriver, Driver, GitDriver, KvDriver, SshDriver, Storage,
+    ClipboardDriver, DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
 };
 use ramag_infra_clipboard::{HotkeyListener, PlatformClipboardDriver, foreground_display_index};
 use ramag_infra_git::GitDriverImpl;
@@ -27,7 +27,7 @@ use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
 use ramag_infra_postgres::PostgresDriver;
 use ramag_infra_redis::RedisDriver;
-use ramag_infra_ssh::OpenSshDriver;
+use ramag_infra_ssh::{JumpServerHttpDriver, OpenSshDriver};
 use ramag_infra_storage::RedbStorage;
 use ramag_tool_clipboard::{
     ClipboardTool, CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip,
@@ -61,6 +61,12 @@ struct Quit;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct OpenLogDir;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag)]
+struct OpenFeedbackIssue;
+
+const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
 
 fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
@@ -390,6 +396,10 @@ fn main() {
             .detach();
         });
 
+        cx.on_action(|_: &OpenFeedbackIssue, cx: &mut App| {
+            cx.open_url(FEEDBACK_ISSUE_URL);
+        });
+
         cx.set_menus(vec![
             Menu {
                 name: "Ramag".into(),
@@ -398,7 +408,10 @@ fn main() {
             },
             Menu {
                 name: "帮助".into(),
-                items: vec![MenuItem::action("查看日志", OpenLogDir)],
+                items: vec![
+                    MenuItem::action("查看日志", OpenLogDir),
+                    MenuItem::action("反馈问题", OpenFeedbackIssue),
+                ],
                 disabled: false,
             },
         ]);
@@ -885,7 +898,17 @@ fn build_clipboard_service(storage: Arc<dyn Storage>) -> Arc<ClipboardService> {
 
 fn build_ssh_service(storage: Arc<dyn Storage>) -> Arc<SshService> {
     let driver: Arc<dyn SshDriver> = Arc::new(OpenSshDriver::new());
-    Arc::new(SshService::new(driver, storage))
+    let service = SshService::new(driver, storage);
+    match JumpServerHttpDriver::new() {
+        Ok(driver) => {
+            let driver: Arc<dyn JumpServerDriver> = Arc::new(driver);
+            Arc::new(service.with_jumpserver_driver(driver))
+        }
+        Err(error) => {
+            warn!(error = %error, "initialize JumpServer client failed");
+            Arc::new(service)
+        }
+    }
 }
 
 #[cfg(test)]

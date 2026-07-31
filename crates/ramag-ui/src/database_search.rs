@@ -146,7 +146,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_fields_keep_conversion_disabled_with_gewu_base58() -> Result<(), String> {
+    fn missing_fields_keep_conversion_disabled_with_flickr_base58() -> Result<(), String> {
         let settings = DatabaseSearchSettings::parse("{}")?;
 
         assert_eq!(settings, DatabaseSearchSettings::default());

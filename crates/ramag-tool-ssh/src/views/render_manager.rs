@@ -70,6 +70,21 @@ impl SshView {
                     ),
             )
             .child(
+                div()
+                    .id("import-jumpserver-profile")
+                    .debug_selector(|| "import-jumpserver-profile".into())
+                    .child(
+                        ramag_ui::clickable_button("import-jumpserver-profile-button")
+                            .outline()
+                            .small()
+                            .icon(ramag_ui::icons::download())
+                            .tooltip("从 JumpServer 获取资源")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.open_jumpserver_assets(window, cx);
+                            })),
+                    ),
+            )
+            .child(
                 ramag_ui::clickable_button("new-ssh-profile")
                     .outline()
                     .small()
@@ -120,13 +135,36 @@ impl SshView {
                 .items_center()
                 .justify_center()
                 .child(
-                    ramag_ui::clickable_button("empty-add-ssh-profile")
-                        .primary()
-                        .icon(IconName::Plus)
-                        .label("新建")
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_profile_create(window, cx);
-                        })),
+                    h_flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .id("empty-import-jumpserver-profile")
+                                .debug_selector(|| "empty-import-jumpserver-profile".into())
+                                .child(
+                                    ramag_ui::clickable_button(
+                                        "empty-import-jumpserver-profile-button",
+                                    )
+                                    .outline()
+                                    .icon(ramag_ui::icons::download())
+                                    .tooltip("从 JumpServer 获取资源")
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, window, cx| {
+                                            this.open_jumpserver_assets(window, cx);
+                                        },
+                                    )),
+                                ),
+                        )
+                        .child(
+                            ramag_ui::clickable_button("empty-add-ssh-profile")
+                                .primary()
+                                .icon(IconName::Plus)
+                                .label("新建")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.open_profile_create(window, cx);
+                                })),
+                        ),
                 )
                 .into_any_element()
         } else if visible_count == 0 {

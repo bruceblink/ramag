@@ -6,6 +6,7 @@ pub mod ddl;
 pub mod git;
 pub mod history;
 pub mod id_conversion;
+pub mod jumpserver;
 pub mod mongo;
 pub mod query;
 pub mod redis_keyspace;
@@ -17,9 +18,8 @@ pub mod transfer;
 
 pub use clipboard::{
     CapturedClip, ClipId, ClipItem, ClipKind, ClipSearchResult, ClipSource, ClipboardSettings,
-    MAX_CLIPBOARD_BLACKLIST_ENTRIES, MAX_CLIPBOARD_ITEM_BYTES, MAX_CLIPBOARD_SEARCH_BYTES,
-    blacklist_matches, classify_text, fnv1a_hash, is_safe_http_url, make_preview,
-    normalize_blacklist_source, parse_hex_color,
+    MAX_CLIPBOARD_ITEM_BYTES, MAX_CLIPBOARD_SEARCH_BYTES, classify_text, fnv1a_hash,
+    is_safe_http_url, make_preview, parse_hex_color,
 };
 pub use connection::{
     ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_CONFIGS,
@@ -45,6 +45,11 @@ pub use id_conversion::{
     BASE10_ALPHABET, BASE16_ALPHABET, BASE36_ALPHABET, BASE58_BITCOIN_ALPHABET,
     BASE58_FLICKR_ALPHABET, IdConverterConfig, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
     MAX_ID_CONVERTER_PROGRAM_BYTES, parse_nonnegative_id_integer, validate_custom_alphabet,
+};
+pub use jumpserver::{
+    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCredential,
+    JumpServerOrganization, JumpServerSession, MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_TOKEN_BYTES,
+    MAX_JUMPSERVER_URL_BYTES,
 };
 pub use mongo::{
     InsertManyOutcome, MAX_MONGO_COLLECTION_NAME_BYTES, MAX_MONGO_DATABASE_NAME_BYTES,

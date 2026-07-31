@@ -20,6 +20,9 @@ impl SettingsView {
         &self,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let converter_test = self
+            .database_enabled_draft
+            .then(|| self.render_database_converter_test(cx));
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let current_kind = self.database_converter_kind;
@@ -38,9 +41,9 @@ impl SettingsView {
                     menu = menu.item(
                         crate::menu_item(id_converter_kind_label(kind))
                             .checked(kind == current_kind)
-                            .on_click(move |_: &ClickEvent, _, app| {
+                            .on_click(move |_: &ClickEvent, window, app| {
                                 view.update(app, |this, cx| {
-                                    this.select_database_converter_kind(kind, cx);
+                                    this.select_database_converter_kind(kind, window, cx);
                                 });
                             }),
                     );
@@ -48,12 +51,25 @@ impl SettingsView {
                 menu
             });
 
-        let configuration = super::super::pages::settings_card("ID 转换配置", theme.border)
+        let configuration = v_flex()
+            .w_full()
+            .gap(px(12.0))
             .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child("两个 @ID 模式共用一套转换配置；内置与字符表模式按相同字符顺序双向换算。"),
+                v_flex()
+                    .w_full()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("转换配置"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("两个 @ID 模式共用一套转换配置；内置与字符表模式按相同字符顺序双向换算。"),
+                    ),
             )
             .child(
                 v_flex()
@@ -144,7 +160,8 @@ impl SettingsView {
                 )
             })
             .child(
-                super::super::pages::settings_card("搜索模式", theme.border).child(
+                super::super::pages::settings_card("搜索配置", theme.border)
+                    .child(
                     h_flex()
                         .w_full()
                         .items_center()
@@ -155,12 +172,12 @@ impl SettingsView {
                                 .flex_1()
                                 .min_w_0()
                                 .gap(px(2.0))
-                                .child(div().text_sm().child("启用 ID 转换搜索"))
+                                .child(div().text_sm().child("雪花 ID 转换"))
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(muted)
-                                        .child("在数据库结果行搜索中启用 @ID -> I（字符串转整数）和 @ID -> S（整数转字符串）。"),
+                                        .child("在数据库结果行搜索中使用 @ID -> I（字符串转整数）和 @ID -> S（整数转字符串）。"),
                                 ),
                         )
                         .child(
@@ -168,9 +185,12 @@ impl SettingsView {
                                 .flex_none()
                                 .checked(self.database_enabled_draft)
                                 .disabled(picking)
-                                .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                .on_click(cx.listener(|this, _: &bool, window, cx| {
                                     this.database_enabled_draft =
                                         !this.database_enabled_draft;
+                                    if !this.database_enabled_draft {
+                                        this.clear_database_converter_test(window, cx);
+                                    }
                                     this.schedule_database_search_save(
                                         std::time::Duration::ZERO,
                                         cx,
@@ -178,10 +198,20 @@ impl SettingsView {
                                     cx.notify();
                                 })),
                         ),
-                ),
+                    )
+                    .when_some(converter_test, |card, converter_test| {
+                        card.child(
+                            v_flex()
+                                .w_full()
+                                .pt(px(12.0))
+                                .gap(px(16.0))
+                                .border_t_1()
+                                .border_color(theme.border)
+                                .child(configuration)
+                                .child(converter_test),
+                        )
+                    }),
             )
-            .child(configuration)
-            .child(self.render_database_converter_test(cx))
             .into_any_element()
     }
 
@@ -211,7 +241,18 @@ impl SettingsView {
                 .child(format!("{}失败：{message}", direction.action_label())),
         };
 
-        super::super::pages::settings_card("转换测试", theme.border)
+        v_flex()
+            .w_full()
+            .pt(px(16.0))
+            .gap(px(12.0))
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("转换测试"),
+            )
             .child(
                 div()
                     .text_xs()
@@ -219,9 +260,14 @@ impl SettingsView {
                     .child("直接使用上方当前配置。输入一项值，再明确选择转换方向。"),
             )
             .child(
-                Input::new(&self.database_converter_test_input)
-                    .w_full()
-                    .small(),
+                crate::cleanable_input(
+                    &self.database_converter_test_input,
+                    "settings-db-id-converter-test-clear",
+                    false,
+                    cx,
+                )
+                .w_full()
+                .small(),
             )
             .child(
                 h_flex()

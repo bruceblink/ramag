@@ -186,7 +186,7 @@ impl ResultPanel {
         if mode.uses_id_conversion() && !ramag_ui::database_search_settings(cx).is_ready() {
             self.pending_notification = Some(
                 gpui_component::notification::Notification::warning(
-                    "请先在设置 → 数据库客户端 → 搜索设置中启用并配置 ID 转换",
+                    "请先在设置 → 数据库客户端 → 搜索配置中启用并配置雪花 ID 转换",
                 )
                 .autohide(true),
             );
@@ -306,7 +306,7 @@ impl ResultPanel {
             self.row_search.conversion = IdConversionState::Error {
                 mode,
                 input,
-                message: "ID 转换未启用或配置无效".to_string(),
+                message: "雪花 ID 转换未启用或配置无效".to_string(),
             };
             self.invalidate_row_view();
             cx.notify();

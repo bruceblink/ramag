@@ -175,8 +175,8 @@ impl Render for SshView {
                 this.start_active_terminal(window, cx);
                 cx.stop_propagation();
             }))
-            .on_action(cx.listener(|this, _: &CloseSshTerminal, _window, cx| {
-                this.close_active_terminal(cx);
+            .on_action(cx.listener(|this, _: &CloseSshTerminal, window, cx| {
+                this.close_active_terminal_or_workspace(window, cx);
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &RefreshSftp, _window, cx| {

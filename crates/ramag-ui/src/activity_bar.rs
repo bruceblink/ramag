@@ -25,8 +25,6 @@ pub enum NavEvent {
 
 const BAR_WIDTH: f32 = 48.0;
 const ITEM_HEIGHT: f32 = 40.0;
-const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
-
 pub struct ActivityBar {
     registry: Arc<ToolRegistry>,
     selected: NavTarget,
@@ -128,17 +126,6 @@ impl Render for ActivityBar {
         }
 
         container = container.child(div().flex_1());
-        container = container.child(activity_item(
-            "feedback",
-            Icon::new(IconName::Github),
-            false,
-            accent,
-            transparent,
-            Some(SharedString::from("反馈问题")),
-            |_: &ClickEvent, _, app| {
-                open_feedback_issue(app);
-            },
-        ));
         let (theme_icon, theme_tip) =
             if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
                 (IconName::Sun, "切换外观")
@@ -175,10 +162,6 @@ impl Render for ActivityBar {
 
         container
     }
-}
-
-fn open_feedback_issue(app: &gpui::App) {
-    app.open_url(FEEDBACK_ISSUE_URL);
 }
 
 fn set_theme(mode: crate::theme::Mode, app: &mut gpui::App) {
@@ -228,16 +211,4 @@ fn activity_item(
                 .bg(if is_selected { accent } else { transparent }),
         )
         .child(button.on_click(on_click))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[gpui::test]
-    fn feedback_opens_github_new_issue_page(cx: &mut gpui::TestAppContext) {
-        cx.update(|app| open_feedback_issue(app));
-
-        assert_eq!(cx.opened_url().as_deref(), Some(FEEDBACK_ISSUE_URL));
-    }
 }

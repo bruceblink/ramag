@@ -15,9 +15,10 @@ use ramag_domain::entities::{
     validate_local_transfer_path, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
-use ramag_domain::traits::{SshDriver, Storage};
+use ramag_domain::traits::{JumpServerDriver, SshDriver, Storage};
 
 mod helpers;
+mod jumpserver;
 
 use helpers::{
     bounded_error, cancel_tasks, ensure_sftp_writable, normalized_workspace_preference,
@@ -155,6 +156,7 @@ impl TransferStore {
 
 pub struct SshService {
     driver: Arc<dyn SshDriver>,
+    jumpserver_driver: Option<Arc<dyn JumpServerDriver>>,
     storage: Arc<dyn Storage>,
     transfers: Arc<TransferStore>,
 }
@@ -163,6 +165,7 @@ impl SshService {
     pub fn new(driver: Arc<dyn SshDriver>, storage: Arc<dyn Storage>) -> Self {
         Self {
             driver,
+            jumpserver_driver: None,
             storage,
             transfers: Arc::new(TransferStore::new()),
         }

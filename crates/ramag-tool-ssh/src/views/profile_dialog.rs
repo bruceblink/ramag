@@ -74,7 +74,6 @@ impl SshProfileFormPanel {
             .as_ref()
             .map_or(SshAuthMode::Password, |profile| profile.auth_mode);
         let production = profile.as_ref().is_some_and(|profile| profile.production);
-
         let mut subscriptions = Vec::new();
         for input in form.inputs() {
             subscriptions.push(cx.subscribe_in(
@@ -87,7 +86,6 @@ impl SshProfileFormPanel {
                 },
             ));
         }
-
         let initial = FormSnapshot {
             values: form.values(cx),
             auth_mode,

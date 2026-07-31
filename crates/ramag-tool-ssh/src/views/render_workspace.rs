@@ -15,6 +15,7 @@ use ramag_domain::entities::{MAX_SSH_TERMINALS_PER_WORKSPACE, SshProfileId};
 use std::ops::Range;
 
 use super::SshView;
+use super::model::can_close_terminal;
 use super::render_directory_helpers::{
     RemoteEntryMenuState, centered_message, directory_counts, directory_counts_at,
     filtered_entry_indices, remote_breadcrumbs, remote_entry_row,
@@ -434,6 +435,7 @@ impl SshView {
             .iter()
             .map(|terminal| (terminal.id, terminal.label.clone(), terminal.view.clone()))
             .collect::<Vec<_>>();
+        let terminals_can_close = can_close_terminal(terminal_views.len());
         let terminal_limit_reached = terminal_views.len() >= MAX_SSH_TERMINALS_PER_WORKSPACE;
         let border = cx.theme().border;
         let secondary = cx.theme().secondary;
@@ -516,19 +518,21 @@ impl SshView {
                             })),
                     )
                 })
-                .child(
-                    ramag_ui::clickable_button(("close-ssh-terminal", id_for_close))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener({
-                            let workspace_id = workspace_id.clone();
-                            move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.close_terminal(workspace_id.clone(), id_for_close, cx);
-                            }
-                        })),
-                );
+                .when(terminals_can_close, |tab| {
+                    tab.child(
+                        ramag_ui::clickable_button(("close-ssh-terminal", id_for_close))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener({
+                                let workspace_id = workspace_id.clone();
+                                move |this, _: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close_terminal(workspace_id.clone(), id_for_close, cx);
+                                }
+                            })),
+                    )
+                });
             if selected {
                 let mut active_bg = accent;
                 active_bg.a = 0.15;
@@ -557,6 +561,7 @@ impl SshView {
             .bg(secondary)
             .child(tabs_strip);
 
+        let empty_workspace_id = workspace_id.clone();
         let body = terminal_views
             .iter()
             .find(|(id, _, _)| Some(*id) == active_terminal_id)
@@ -578,14 +583,40 @@ impl SshView {
                             }),
                     )
                     .child(
-                        ramag_ui::clickable_button("connect-restored-ssh")
-                            .primary()
-                            .icon(IconName::SquareTerminal)
-                            .label("连接")
-                            .disabled(terminal_loading || !connection_available)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.connect_active_workspace(window, cx);
-                            })),
+                        h_flex()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .id("close-empty-ssh-workspace")
+                                    .debug_selector(|| "close-empty-ssh-workspace".into())
+                                    .child(
+                                        ramag_ui::clickable_button(
+                                            "close-empty-ssh-workspace-button",
+                                        )
+                                        .outline()
+                                        .icon(IconName::Close)
+                                        .label("关闭连接")
+                                        .on_click(
+                                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                this.request_close_workspace(
+                                                    empty_workspace_id.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    ),
+                            )
+                            .child(
+                                ramag_ui::clickable_button("connect-restored-ssh")
+                                    .primary()
+                                    .icon(IconName::SquareTerminal)
+                                    .label("连接")
+                                    .disabled(terminal_loading || !connection_available)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.connect_active_workspace(window, cx);
+                                    })),
+                            ),
                     )
                     .into_any_element()
             });

@@ -10,7 +10,7 @@ use ramag_domain::entities::{
 use ramag_terminal::{TerminalCommand, TerminalCore, TerminalView};
 
 use super::SshView;
-use super::model::{Notice, SshWorkspace, TerminalTab, ViewMode};
+use super::model::{Notice, SshWorkspace, TerminalTab, ViewMode, can_close_terminal};
 
 impl SshView {
     pub(super) fn load_initial_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -383,20 +383,25 @@ impl SshView {
         }
     }
 
-    pub(super) fn close_active_terminal(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_active_terminal_or_workspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.view_mode != ViewMode::Workspace {
             return;
         }
         let Some(workspace_id) = self.active_workspace_id.clone() else {
             return;
         };
-        let Some(terminal_id) = self
+        let terminal_id = self
             .workspace_mut(&workspace_id)
-            .and_then(|workspace| workspace.active_terminal_id)
-        else {
-            return;
-        };
-        self.close_terminal(workspace_id, terminal_id, cx);
+            .and_then(|workspace| workspace.active_terminal_id);
+        if let Some(terminal_id) = terminal_id {
+            self.close_terminal(workspace_id, terminal_id, cx);
+        } else {
+            self.request_close_workspace(workspace_id, window, cx);
+        }
     }
 
     pub(super) fn close_terminal(
@@ -408,6 +413,9 @@ impl SshView {
         let Some(workspace) = self.workspace_mut(&workspace_id) else {
             return;
         };
+        if !can_close_terminal(workspace.terminals.len()) {
+            return;
+        }
         let Some(index) = workspace
             .terminals
             .iter()

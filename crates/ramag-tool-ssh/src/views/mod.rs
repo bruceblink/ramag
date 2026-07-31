@@ -4,6 +4,7 @@ mod file_chunk;
 mod file_preview;
 mod file_preview_layout;
 mod file_syntax;
+mod jumpserver_dialog;
 mod model;
 mod ops;
 mod ops_files;
@@ -14,6 +15,7 @@ mod profile_dialog;
 mod profile_form;
 mod render;
 mod render_directory_helpers;
+mod render_jumpserver_dialog;
 mod render_manager;
 mod render_profile_form;
 mod render_transfers;
@@ -49,6 +51,7 @@ pub struct SshView {
     focused_search_once: bool,
     deleting_profile: bool,
     profile_form_subscription: Option<Subscription>,
+    jumpserver_subscription: Option<Subscription>,
     notice: Option<Notice>,
     view_mode: ViewMode,
     workspaces: Vec<SshWorkspace>,
@@ -119,6 +122,7 @@ impl SshView {
             focused_search_once: false,
             deleting_profile: false,
             profile_form_subscription: None,
+            jumpserver_subscription: None,
             notice: None,
             view_mode: ViewMode::Manager,
             workspaces: Vec::new(),

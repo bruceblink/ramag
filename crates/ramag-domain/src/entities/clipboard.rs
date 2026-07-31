@@ -132,10 +132,6 @@ pub struct ClipSearchResult {
 pub const MAX_CLIPBOARD_ITEM_BYTES: u64 = 64 * 1024 * 1024;
 /// 全量历史搜索会逐条解密与匹配，异常长查询词只会放大比较成本。
 pub const MAX_CLIPBOARD_SEARCH_BYTES: usize = 4 * 1024;
-/// 来源黑名单条目上限；正常应用数量远低于此值，边界用于约束匹配与设置渲染成本。
-pub const MAX_CLIPBOARD_BLACKLIST_ENTRIES: usize = 256;
-const MAX_CLIPBOARD_BLACKLIST_ENTRY_BYTES: usize = 1024;
-const MAX_CLIPBOARD_BLACKLIST_TOTAL_BYTES: usize = 64 * 1024;
 
 /// 采集与展示设置（prefs KV 以 JSON 持久化）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,8 +141,6 @@ pub struct ClipboardSettings {
     pub capture_images: bool,
     /// 单条内容字节上限，超出跳过不记录
     pub max_item_bytes: u64,
-    /// 来源应用黑名单（macOS bundle id / Windows exe 路径）
-    pub blacklist: Vec<String>,
     /// 抽屉选中后自动粘贴（平台可能需要系统权限；false 仅复制）
     pub auto_paste: bool,
     /// 全局热键改用主修饰键+Alt+V（默认 Shift 组合与部分应用「粘贴为纯文本」冲突时切换）。
@@ -164,29 +158,6 @@ impl ClipboardSettings {
                 self.max_item_bytes
             ));
         }
-        if self.blacklist.len() > MAX_CLIPBOARD_BLACKLIST_ENTRIES {
-            return Err(format!(
-                "来源黑名单条目过多：{} > {MAX_CLIPBOARD_BLACKLIST_ENTRIES}",
-                self.blacklist.len()
-            ));
-        }
-
-        let mut total_bytes = 0usize;
-        for entry in &self.blacklist {
-            if entry.trim().is_empty() {
-                return Err("来源黑名单包含空条目".to_string());
-            }
-            if entry.len() > MAX_CLIPBOARD_BLACKLIST_ENTRY_BYTES {
-                return Err(format!("来源黑名单单条过长：{} bytes", entry.len()));
-            }
-            if entry.chars().any(char::is_control) {
-                return Err("来源黑名单包含控制字符".to_string());
-            }
-            total_bytes = total_bytes.saturating_add(entry.len());
-        }
-        if total_bytes > MAX_CLIPBOARD_BLACKLIST_TOTAL_BYTES {
-            return Err(format!("来源黑名单总量过大：{total_bytes} bytes"));
-        }
         Ok(())
     }
 }
@@ -197,7 +168,6 @@ impl Default for ClipboardSettings {
             enabled: false,
             capture_images: true,
             max_item_bytes: 10 * 1024 * 1024,
-            blacklist: Vec::new(),
             auto_paste: true,
             alternate_hotkey: false,
         }
@@ -214,32 +184,6 @@ pub struct CapturedClip {
     pub files: Vec<String>,
     /// 带平台敏感/临时内容标记（密码管理器等），不应记录
     pub concealed: bool,
-}
-
-/// 来源标识的可执行文件名部分（按 / 与 \ 取末段；无分隔符则原样返回）
-fn source_basename(id: &str) -> &str {
-    id.rsplit(['/', '\\']).next().unwrap_or(id)
-}
-
-/// 黑名单条目与来源应用标识是否匹配。
-/// Windows 按可执行文件名大小写不敏感比较——安装目录常含版本号（如 Discord 的
-/// app-1.0.x），升级后全路径变化不应使黑名单失效；macOS bundle id 稳定，精确比较
-pub fn blacklist_matches(entry: &str, source_id: &str) -> bool {
-    if cfg!(target_os = "windows") {
-        source_basename(entry).eq_ignore_ascii_case(source_basename(source_id))
-    } else {
-        entry == source_id
-    }
-}
-
-/// 新增黑名单条目的存储形态：Windows 只存文件名（同一应用不同版本路径不重复入表），
-/// macOS 存 bundle id 原样
-pub fn normalize_blacklist_source(source_id: &str) -> String {
-    if cfg!(target_os = "windows") {
-        source_basename(source_id).to_string()
-    } else {
-        source_id.to_string()
-    }
 }
 
 /// fnv1a-64 内容指纹。std Hasher 不保证跨编译器版本稳定，落盘指纹必须自实现
@@ -367,54 +311,17 @@ mod tests {
     }
 
     #[test]
-    fn blacklist_matching_survives_versioned_install_dirs() {
-        assert_eq!(
-            source_basename(r"C:\Users\a\app-1.0.9016\Discord.exe"),
-            "Discord.exe"
-        );
-        assert_eq!(source_basename("com.apple.dt.Xcode"), "com.apple.dt.Xcode");
-        if cfg!(target_os = "windows") {
-            // 升级换目录 / 大小写差异均应命中；仅存文件名的新条目同样命中
-            assert!(blacklist_matches(
-                r"C:\Users\a\app-1.0.9016\Discord.exe",
-                r"c:\users\a\app-1.0.9017\discord.exe"
-            ));
-            assert!(blacklist_matches(
-                "Discord.exe",
-                r"C:\x\app-2.0\discord.exe"
-            ));
-            assert!(!blacklist_matches("Discord.exe", r"C:\x\Slack.exe"));
-            assert_eq!(
-                normalize_blacklist_source(r"C:\x\app-2.0\Discord.exe"),
-                "Discord.exe"
-            );
-        } else {
-            // macOS bundle id 精确匹配，路径式标识不做归一化
-            assert!(blacklist_matches(
-                "com.tencent.xinWeChat",
-                "com.tencent.xinWeChat"
-            ));
-            assert!(!blacklist_matches(
-                "Discord.exe",
-                r"C:\x\app-2.0\Discord.exe"
-            ));
-            assert_eq!(
-                normalize_blacklist_source("com.apple.dt.Xcode"),
-                "com.apple.dt.Xcode"
-            );
-        }
-    }
-
-    #[test]
     fn settings_json_without_new_fields_still_deserializes() {
-        // 旧版持久化 JSON（无 alternate_hotkey）必须能解析，否则用户设置会被整体重置
+        // 旧版持久化 JSON 中已移除的 blacklist 与缺失的新字段均不得导致设置整体重置。
         let old = r#"{"enabled":false,"capture_images":true,"max_item_bytes":1024,
             "blacklist":["com.example.app"],"auto_paste":false}"#;
         #[allow(clippy::unwrap_used)]
         let parsed: ClipboardSettings = serde_json::from_str::<ClipboardSettings>(old).unwrap();
         assert!(!parsed.enabled);
-        assert_eq!(parsed.blacklist, vec!["com.example.app".to_string()]);
         assert!(!parsed.alternate_hotkey);
+        #[allow(clippy::unwrap_used)]
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert!(!serialized.contains("blacklist"));
     }
 
     #[test]
@@ -426,24 +333,6 @@ mod tests {
             ..ClipboardSettings::default()
         };
         assert!(oversized_item.validate().is_err());
-
-        let too_many_sources = ClipboardSettings {
-            blacklist: vec!["app".to_string(); MAX_CLIPBOARD_BLACKLIST_ENTRIES + 1],
-            ..ClipboardSettings::default()
-        };
-        assert!(too_many_sources.validate().is_err());
-
-        let oversized_source_total = ClipboardSettings {
-            blacklist: vec!["x".repeat(300); MAX_CLIPBOARD_BLACKLIST_ENTRIES],
-            ..ClipboardSettings::default()
-        };
-        assert!(oversized_source_total.validate().is_err());
-
-        let invalid_source = ClipboardSettings {
-            blacklist: vec!["bad\nsource".to_string()],
-            ..ClipboardSettings::default()
-        };
-        assert!(invalid_source.validate().is_err());
     }
 
     #[test]

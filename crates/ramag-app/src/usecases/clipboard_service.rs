@@ -10,8 +10,7 @@ use chrono::Utc;
 use parking_lot::RwLock;
 use ramag_domain::entities::{
     CapturedClip, ClipId, ClipItem, ClipKind, ClipSearchResult, ClipSource, ClipboardSettings,
-    MAX_CLIPBOARD_SEARCH_BYTES, blacklist_matches, classify_text, fnv1a_hash, is_safe_http_url,
-    make_preview,
+    MAX_CLIPBOARD_SEARCH_BYTES, classify_text, fnv1a_hash, is_safe_http_url, make_preview,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{ClipboardDriver, Storage};
@@ -323,7 +322,7 @@ impl ClipboardService {
         };
         let source = self.driver.frontmost_app();
 
-        match decide_capture(&captured, settings, source.as_ref()) {
+        match decide_capture(&captured, settings) {
             CaptureDecision::Skip(reason) => {
                 debug!(reason, "clipboard capture skipped");
                 Ok(false)
@@ -638,21 +637,9 @@ fn serialize_clipboard_settings(settings: &ClipboardSettings) -> Result<String> 
 }
 
 /// 纯判定：是否记录该次采集（无 IO，便于测试）
-pub fn decide_capture(
-    captured: &CapturedClip,
-    settings: &ClipboardSettings,
-    source: Option<&ClipSource>,
-) -> CaptureDecision {
+pub fn decide_capture(captured: &CapturedClip, settings: &ClipboardSettings) -> CaptureDecision {
     if captured.concealed {
         return CaptureDecision::Skip("concealed");
-    }
-    if let Some(src) = source
-        && settings
-            .blacklist
-            .iter()
-            .any(|blocked| blacklist_matches(blocked, &src.bundle_id))
-    {
-        return CaptureDecision::Skip("blacklisted");
     }
 
     // 文件优先，其次图片，最后文本（与驱动读取优先级一致）

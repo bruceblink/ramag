@@ -145,6 +145,8 @@ async-compression = { version = "0.4", features = ["futures-io", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+# JumpServer REST API；使用 rustls，并读取系统证书库以兼容企业与内网证书链。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 
 # GPUI Action 派生
 schemars = "1"

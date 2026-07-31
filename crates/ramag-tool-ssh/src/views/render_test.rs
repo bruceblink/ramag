@@ -11,14 +11,16 @@ use gpui::{
 };
 use ramag_app::SshService;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId, RemoteDirectory, RemoteEntry,
-    RemoteEntryKind, SshAuthMode, SshCapability, SshLaunchCommand, SshPathFavorites, SshProfile,
-    SshProfileId, SshProgressFn, SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
+    ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
+    JumpServerSession, QueryRecord, QueryRecordId, RemoteDirectory, RemoteEntry, RemoteEntryKind,
+    SshAuthMode, SshCapability, SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId,
+    SshProgressFn, SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{SshDriver, Storage};
 
 use super::SshView;
+use super::jumpserver_dialog::JumpServerPanel;
 use super::model::{Notice, ViewMode};
 use super::profile_dialog::SshProfileFormPanel;
 
@@ -248,6 +250,14 @@ fn add_ssh_form_window(
     cx: &mut TestAppContext,
     service: Arc<SshService>,
 ) -> (Entity<SshProfileFormPanel>, &mut VisualTestContext) {
+    add_ssh_form_window_with_profile(cx, service, None)
+}
+
+fn add_ssh_form_window_with_profile(
+    cx: &mut TestAppContext,
+    service: Arc<SshService>,
+    profile: Option<SshProfile>,
+) -> (Entity<SshProfileFormPanel>, &mut VisualTestContext) {
     cx.update(gpui_component::init);
     let mut form = None;
     let (_, visual_cx) = cx.add_window_view(|window, cx| {
@@ -255,12 +265,30 @@ fn add_ssh_form_window(
             executable: "/mock/ssh".into(),
             version: "OpenSSH_mock".into(),
         }));
-        let entity = cx.new(|cx| SshProfileFormPanel::new(service, None, capability, window, cx));
+        let entity =
+            cx.new(|cx| SshProfileFormPanel::new(service, profile, capability, window, cx));
         form = Some(entity.clone());
         gpui_component::Root::new(entity, window, cx)
     });
     (
         form.expect("SshProfileFormPanel should be initialized"),
+        visual_cx,
+    )
+}
+
+fn add_jumpserver_panel_window(
+    cx: &mut TestAppContext,
+    service: Arc<SshService>,
+) -> (Entity<JumpServerPanel>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+    let mut panel = None;
+    let (_, visual_cx) = cx.add_window_view(|window, cx| {
+        let entity = cx.new(|cx| JumpServerPanel::new(service, window, cx));
+        panel = Some(entity.clone());
+        gpui_component::Root::new(entity, window, cx)
+    });
+    (
+        panel.expect("JumpServer panel should be initialized"),
         visual_cx,
     )
 }
@@ -285,6 +313,10 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
         .debug_bounds("ssh-profile-row-0")
         .expect("SSH 连接行应参与布局");
     assert!(
+        cx.debug_bounds("import-jumpserver-profile").is_some(),
+        "SSH 管理页应提供 JumpServer 导入入口"
+    );
+    assert!(
         search.size.width > px(300.0),
         "搜索区宽度异常：{:?}",
         search.size
@@ -299,6 +331,63 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
         "连接行不应变成卡片：{:?}",
         row.size
     );
+}
+
+#[gpui::test]
+fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
+    let (panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
+    let asset = JumpServerAsset {
+        id: "00000000-0000-0000-0000-000000000001".into(),
+        org_id: "org-1".into(),
+        name: "taiyuan-login".into(),
+        address: "tycs.example.com".into(),
+        platform: "Linux".into(),
+        active: true,
+    };
+    let account = JumpServerAccount {
+        id: "account-1".into(),
+        name: "root".into(),
+        username: "root".into(),
+        has_secret: true,
+        can_connect: true,
+    };
+    panel.update(cx, |panel, cx| {
+        panel.session = Some(JumpServerSession {
+            base_url: "https://jump.example.com/".into(),
+            ssh_host: "jump.example.com".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+            token_keyword: "Bearer".into(),
+            token: "token".into(),
+            organizations: Vec::new(),
+        });
+        panel.assets = Arc::new(vec![asset.clone()]);
+        panel.selected_asset_id = Some(asset.id.clone());
+        panel.selected_account_id = Some(account.id.clone());
+        panel.detail = Some(JumpServerAssetDetail {
+            asset,
+            accounts: vec![account],
+            ssh_enabled: true,
+        });
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(920.0), px(820.0)));
+    cx.run_until_parked();
+
+    for selector in [
+        "jumpserver-login-section",
+        "jumpserver-url-field-input",
+        "load-jumpserver-assets",
+        "jumpserver-assets-section",
+        "jumpserver-asset-row-0",
+        "jumpserver-account-section",
+        "test-jumpserver-asset",
+        "save-jumpserver-asset",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "{selector} 应参与布局");
+    }
+    assert!(cx.debug_bounds("jumpserver-command-input").is_none());
 }
 
 #[gpui::test]
@@ -379,6 +468,24 @@ fn profile_form_inputs_keep_dialog_width_instead_of_collapsing(cx: &mut TestAppC
     form.update(cx, |form, cx| form.set_auth_mode(SshAuthMode::System, cx));
     cx.run_until_parked();
     form.read_with(cx, |form, cx| assert!(form.is_dirty(cx)));
+}
+
+#[gpui::test]
+fn edit_profile_form_keeps_standard_fields_without_legacy_parser(cx: &mut TestAppContext) {
+    let (form, cx) =
+        add_ssh_form_window_with_profile(cx, service(Vec::new(), None), Some(profile()));
+    cx.simulate_resize(size(px(720.0), px(800.0)));
+    cx.run_until_parked();
+
+    form.read_with(cx, |form, _| assert_eq!(form.title(), "编辑"));
+    assert!(
+        cx.debug_bounds("ssh-profile-host-field-input").is_some(),
+        "编辑连接应保留标准 SSH 字段"
+    );
+    assert!(
+        cx.debug_bounds("jumpserver-command-input").is_none(),
+        "旧的 JumpServer 命令解析框不应再混入普通编辑页"
+    );
 }
 
 #[gpui::test]
@@ -648,6 +755,70 @@ fn directory_search_state_is_isolated_by_workspace(cx: &mut TestAppContext) {
     cx.run_until_parked();
     view.read_with(cx, |view, cx| {
         assert_eq!(view.directory_search.read(cx).value(), "logs");
+    });
+}
+
+#[gpui::test]
+fn close_shortcut_closes_first_workspace_when_no_terminal_exists(cx: &mut TestAppContext) {
+    let profile = profile();
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile.id.clone(),
+            last_remote_path: "/home/alice".into(),
+        }],
+        active_profile_id: Some(profile.id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(cx, service(vec![profile], Some(preference)));
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.workspaces.len(), 1);
+        assert!(view.workspaces[0].terminals.is_empty());
+    });
+    cx.update(|window, app| {
+        let focus = view.read(app).focus_handle.clone();
+        window.focus(&focus, app);
+        window.dispatch_action(Box::new(crate::CloseSshTerminal), app);
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert!(view.workspaces.is_empty());
+        assert_eq!(view.active_workspace_id, None);
+        assert_eq!(view.view_mode, ViewMode::Manager);
+    });
+}
+
+#[gpui::test]
+fn empty_state_close_button_closes_first_workspace(cx: &mut TestAppContext) {
+    let profile = profile();
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile.id.clone(),
+            last_remote_path: "/home/alice".into(),
+        }],
+        active_profile_id: Some(profile.id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(cx, service(vec![profile], Some(preference)));
+    cx.run_until_parked();
+
+    let close = cx
+        .debug_bounds("close-empty-ssh-workspace")
+        .expect("空终端工作区应提供关闭连接按钮");
+    let close_point = point(
+        close.origin.x + close.size.width / 2.0,
+        close.origin.y + close.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(close_point, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(close_point, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        assert!(view.workspaces.is_empty());
+        assert_eq!(view.active_workspace_id, None);
+        assert_eq!(view.view_mode, ViewMode::Manager);
     });
 }
 

@@ -6,8 +6,8 @@ use chrono::Utc;
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
-use gpui_component::{ActiveTheme, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
-use ramag_domain::entities::{ClipItem, ClipKind, blacklist_matches};
+use gpui_component::{ActiveTheme, Sizable as _, h_flex, v_flex};
+use ramag_domain::entities::{ClipItem, ClipKind};
 use ramag_ui::platform::file_manager_reveal_label;
 
 use super::ClipboardView;
@@ -126,26 +126,6 @@ impl ClipboardView {
         };
         if let Some(button) = contextual {
             buttons.push(button);
-        }
-
-        if let Some(source) = &item.source
-            && !self
-                .settings
-                .blacklist
-                .iter()
-                .any(|id| blacklist_matches(id, &source.bundle_id))
-        {
-            let source_id = source.bundle_id.clone();
-            buttons.push(
-                ramag_ui::clickable_button("detail-blacklist-source")
-                    .danger()
-                    .small()
-                    .label("排除")
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.blacklist_source(source_id.clone(), cx);
-                    }))
-                    .into_any_element(),
-            );
         }
 
         if buttons.is_empty() {

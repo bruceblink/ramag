@@ -4,6 +4,7 @@
 
 mod askpass;
 mod command;
+mod jumpserver;
 mod runtime;
 mod session;
 mod transfer;
@@ -25,6 +26,8 @@ use crate::command::{OpenSshLocator, sftp_args};
 use crate::runtime::{run_in_tokio, tokio_runtime};
 use crate::session::SessionCache;
 use crate::transfer::TransferEngine;
+
+pub use jumpserver::JumpServerHttpDriver;
 
 pub struct OpenSshDriver {
     locator: OpenSshLocator,

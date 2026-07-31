@@ -25,8 +25,6 @@ pub struct ClipboardView {
     pub(super) items: Vec<Arc<ClipItem>>,
     pub(super) settings: ClipboardSettings,
     pub(super) loaded_settings_revision: u64,
-    pub(super) settings_save_generation: u64,
-    pub(super) settings_saving: bool,
     pub(super) search: Entity<InputState>,
     pub(super) filter: Option<ClipKind>,
     pub(super) selected: Option<ClipId>,
@@ -86,8 +84,6 @@ impl ClipboardView {
             items: Vec::new(),
             settings,
             loaded_settings_revision,
-            settings_save_generation: 0,
-            settings_saving: false,
             search,
             filter: None,
             selected: None,
@@ -121,9 +117,7 @@ impl ClipboardView {
                             this.reload(cx);
                         }
                         let settings_revision = this.service.settings_revision();
-                        if !this.settings_saving
-                            && settings_revision != this.loaded_settings_revision
-                        {
+                        if settings_revision != this.loaded_settings_revision {
                             let (settings, revision) =
                                 this.service.settings_snapshot_with_revision();
                             this.settings = settings;

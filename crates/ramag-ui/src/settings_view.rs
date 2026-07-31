@@ -60,11 +60,15 @@ impl SettingsPage {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Database => "管理数据库客户端的模块级配置。",
+            Self::Database => "管理数据库客户端的搜索配置。",
             Self::VersionControl => "管理 Git 版本控制的模块级配置。",
             Self::Ssh => "管理 SSH 与 SFTP 的模块级配置。",
-            Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与排除应用。",
+            Self::Clipboard => "管理剪贴板的启用状态、采集行为与全局热键。",
         }
+    }
+
+    fn clears_database_test_when_switching_to(self, next: Self) -> bool {
+        self == Self::Database && next != self
     }
 }
 
@@ -305,5 +309,14 @@ mod tests {
     #[test]
     fn clipboard_page_is_always_last() {
         assert_eq!(SettingsPage::ALL.last(), Some(&SettingsPage::Clipboard));
+    }
+
+    #[test]
+    fn leaving_database_page_clears_temporary_converter_test() {
+        assert!(SettingsPage::Database.clears_database_test_when_switching_to(SettingsPage::Ssh));
+        assert!(
+            !SettingsPage::Database.clears_database_test_when_switching_to(SettingsPage::Database)
+        );
+        assert!(!SettingsPage::Clipboard.clears_database_test_when_switching_to(SettingsPage::Ssh));
     }
 }

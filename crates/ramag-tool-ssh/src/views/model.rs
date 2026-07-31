@@ -6,6 +6,10 @@ use gpui::{Entity, SharedString};
 use ramag_domain::entities::{RemoteEntry, SshProfile, SshProfileId};
 use ramag_terminal::TerminalView;
 
+pub(super) fn can_close_terminal(terminal_count: usize) -> bool {
+    terminal_count > 1
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ViewMode {
     Manager,
@@ -100,6 +104,13 @@ impl SshWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_close_keeps_at_least_one_tab() {
+        assert!(!can_close_terminal(0));
+        assert!(!can_close_terminal(1));
+        assert!(can_close_terminal(2));
+    }
 
     #[test]
     fn terminal_labels_remain_unique_when_tabs_are_removed() {

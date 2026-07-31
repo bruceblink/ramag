@@ -7,12 +7,51 @@ use gpui_component::WindowExt as _;
 use ramag_domain::entities::{SshProfile, SshProfileId};
 
 use super::SshView;
+use super::jumpserver_dialog::{JumpServerEvent, JumpServerPanel};
 use super::model::Notice;
 use super::profile_dialog::{ProfileFormEvent, SshProfileFormPanel};
 
 impl SshView {
     pub(super) fn open_profile_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_profile_form(None, window, cx);
+    }
+
+    pub(super) fn open_jumpserver_assets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        let panel = cx.new(|cx| JumpServerPanel::new(service, window, cx));
+        self.jumpserver_subscription =
+            Some(cx.subscribe_in(&panel, window, Self::on_jumpserver_event));
+
+        let panel_for_dialog = panel.clone();
+        let panel_for_cancel = panel.clone();
+        let view_for_close = cx.entity().clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let panel = panel_for_dialog.clone();
+            let panel_for_cancel = panel_for_cancel.clone();
+            let view_for_close = view_for_close.clone();
+            dialog
+                .title("JumpServer 资源")
+                .close_button(false)
+                .on_cancel(move |_, _, app| {
+                    if panel_for_cancel.read(app).is_busy() {
+                        return false;
+                    }
+                    panel_for_cancel.update(app, |_this, cx| {
+                        cx.emit(JumpServerEvent::Cancelled);
+                    });
+                    false
+                })
+                .on_close(move |_, _, app| {
+                    view_for_close.update(app, |this, _| {
+                        this.jumpserver_subscription = None;
+                    });
+                })
+                .w(px(920.0))
+                .pt(px(24.0))
+                .px(px(24.0))
+                .pb(px(14.0))
+                .content(move |content, _, _| content.child(panel.clone()))
+        });
     }
 
     pub(super) fn open_profile_edit(
@@ -91,6 +130,30 @@ impl SshView {
                 .pb(px(14.0))
                 .content(move |content, _, _| content.child(form.clone()))
         });
+    }
+
+    fn on_jumpserver_event(
+        &mut self,
+        _panel: &Entity<JumpServerPanel>,
+        event: &JumpServerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            JumpServerEvent::Saved(profile) => {
+                let profile = profile.as_ref().clone();
+                self.upsert_profile(profile.clone());
+                if let Some(workspace) = self.workspace_mut(&profile.id) {
+                    workspace.profile = profile;
+                }
+                self.notice = Some(Notice::info("已保存 JumpServer 资源"));
+                cx.notify();
+            }
+            JumpServerEvent::Cancelled => {
+                self.jumpserver_subscription = None;
+                window.close_dialog(cx);
+            }
+        }
     }
 
     fn on_profile_form_event(
