@@ -472,7 +472,7 @@ impl JumpServerPanel {
         .tooltip(if usable {
             "选择资产账号"
         } else {
-            "缺少连接权限或托管凭据"
+            "缺少连接权限"
         })
         .when(selected, |button| button.primary())
         .when(!selected, |button| button.outline())

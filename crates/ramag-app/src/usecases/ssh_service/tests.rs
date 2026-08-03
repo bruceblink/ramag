@@ -549,7 +549,7 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
 }
 
 #[test]
-fn jumpserver_profile_rejects_account_without_managed_secret() {
+fn jumpserver_profile_uses_connect_permission_not_managed_secret_flag() {
     let mut detail = JumpServerAssetDetail {
         asset: jumpserver_asset(),
         accounts: vec![JumpServerAccount {
@@ -564,11 +564,11 @@ fn jumpserver_profile_rejects_account_without_managed_secret() {
 
     assert!(
         super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
-            .is_err()
+            .is_ok()
     );
-    detail.accounts[0].has_secret = true;
+    detail.accounts[0].can_connect = false;
     assert!(
         super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
-            .is_ok()
+            .is_err()
     );
 }

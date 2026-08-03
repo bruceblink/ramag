@@ -306,7 +306,7 @@ impl JumpServerPanel {
                             })
                         } else if !has_usable_account {
                             Some(JumpServerFeedback {
-                                message: "该资产没有可直登的托管账号".into(),
+                                message: "该资产没有可连接的授权账号".into(),
                                 kind: JumpServerFeedbackKind::Error,
                             })
                         } else {

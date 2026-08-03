@@ -37,6 +37,8 @@ impl JumpServerHttpDriver {
             .connect_timeout(Duration::from_secs(10))
             .timeout(REQUEST_TIMEOUT)
             .redirect(redirect::Policy::none())
+            // JumpServer 多为内网服务；固定直连可避免工作区其它依赖意外启用系统代理。
+            .no_proxy()
             .user_agent(concat!("Ramag/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| {
@@ -404,17 +406,19 @@ async fn response_body(mut response: Response, operation: &str) -> Result<Vec<u8
 }
 
 fn request_error(operation: &str, error: reqwest::Error) -> DomainError {
+    let details = request_error_details(&error);
+    tracing::warn!(operation, error = %details, "JumpServer request failed");
     let reason = if error.is_timeout() {
         "请求超时".to_string()
     } else if error.is_connect() {
-        connection_error_reason(&error).to_string()
+        classify_connection_error(&details).to_string()
     } else {
         error.to_string()
     };
     DomainError::ConnectionFailed(format!("{operation}失败：{reason}"))
 }
 
-fn connection_error_reason(error: &reqwest::Error) -> &'static str {
+fn request_error_details(error: &reqwest::Error) -> String {
     let mut details = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {
@@ -422,7 +426,7 @@ fn connection_error_reason(error: &reqwest::Error) -> &'static str {
         details.push_str(&cause.to_string());
         source = cause.source();
     }
-    classify_connection_error(&details)
+    details
 }
 
 fn classify_connection_error(details: &str) -> &'static str {
@@ -441,6 +445,18 @@ fn classify_connection_error(details: &str) -> &'static str {
         "服务器拒绝连接"
     } else if details.contains("network is unreachable") || details.contains("no route to host") {
         "网络不可达"
+    } else if details.contains("operation not permitted") || details.contains("permission denied") {
+        "系统阻止网络连接"
+    } else if details.contains("connection reset")
+        || details.contains("connection closed")
+        || details.contains("broken pipe")
+        || details.contains("unexpected eof")
+    {
+        "连接被网络或服务器中断"
+    } else if details.contains("proxy") {
+        "代理服务器连接失败"
+    } else if details.contains("tls handshake") || details.contains("handshake failure") {
+        "TLS 握手失败"
     } else {
         "无法连接服务器"
     }
@@ -737,6 +753,18 @@ mod tests {
         assert_eq!(
             classify_connection_error("tcp connect error: Connection refused"),
             "服务器拒绝连接"
+        );
+        assert_eq!(
+            classify_connection_error("tcp connect error: Operation not permitted"),
+            "系统阻止网络连接"
+        );
+        assert_eq!(
+            classify_connection_error("connection reset by peer"),
+            "连接被网络或服务器中断"
+        );
+        assert_eq!(
+            classify_connection_error("failed to connect to proxy"),
+            "代理服务器连接失败"
         );
         assert_eq!(
             classify_connection_error("client error with private internal details"),

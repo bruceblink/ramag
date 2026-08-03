@@ -137,8 +137,8 @@ pub struct JumpServerAccount {
 
 impl JumpServerAccount {
     pub fn validate_for_direct_login(&self) -> Result<(), String> {
-        if !self.can_connect || !self.has_secret {
-            return Err("该账号缺少连接权限或托管凭据".into());
+        if !self.can_connect {
+            return Err("该账号缺少连接权限".into());
         }
         let name = self.name.trim();
         if name.is_empty() {
@@ -225,6 +225,21 @@ mod tests {
         };
 
         assert!(asset.validate_id().is_err());
+        assert!(!account.usable_for_direct_login());
+    }
+
+    #[test]
+    fn direct_login_requires_connect_permission_not_managed_secret_flag() {
+        let mut account = JumpServerAccount {
+            id: "account-1".into(),
+            name: "root".into(),
+            username: "root".into(),
+            has_secret: false,
+            can_connect: true,
+        };
+
+        assert!(account.usable_for_direct_login());
+        account.can_connect = false;
         assert!(!account.usable_for_direct_login());
     }
 }
