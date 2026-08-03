@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    JumpServerAsset, JumpServerAssetDetail, JumpServerCredential, JumpServerSession,
+    JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog, JumpServerCredential,
+    JumpServerSession,
 };
 use crate::error::Result;
 
@@ -11,7 +12,7 @@ use crate::error::Result;
 pub trait JumpServerDriver: Send + Sync {
     async fn authenticate(&self, credential: &JumpServerCredential) -> Result<JumpServerSession>;
 
-    async fn list_assets(&self, session: &JumpServerSession) -> Result<Vec<JumpServerAsset>>;
+    async fn load_catalog(&self, session: &JumpServerSession) -> Result<JumpServerCatalog>;
 
     async fn asset_detail(
         &self,

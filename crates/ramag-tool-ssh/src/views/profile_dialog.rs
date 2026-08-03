@@ -2,12 +2,15 @@
 
 use std::sync::Arc;
 
-use gpui::{Context, EventEmitter, Subscription, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
 use ramag_app::SshService;
-use ramag_domain::entities::{SshAuthMode, SshCapability, SshProfile, SshProfileId};
+use ramag_domain::entities::{
+    SshAuthMode, SshCapability, SshProfile, SshProfileId, SshProfileOrigin,
+};
 
 use super::profile_form::ProfileForm;
+use super::ssh_command::{MAX_SSH_COMMAND_BYTES, parse_ssh_command};
 
 #[derive(Debug, Clone)]
 pub(super) enum ProfileFormEvent {
@@ -46,7 +49,9 @@ struct FormSnapshot {
 pub(super) struct SshProfileFormPanel {
     pub(super) service: Arc<SshService>,
     pub(super) form: ProfileForm,
+    pub(super) command: Entity<InputState>,
     pub(super) editing_id: Option<SshProfileId>,
+    origin: SshProfileOrigin,
     pub(super) auth_mode: SshAuthMode,
     pub(super) production: bool,
     pub(super) password_masked: bool,
@@ -68,8 +73,16 @@ impl SshProfileFormPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let form = ProfileForm::new(window, cx);
+        let command = cx.new(|cx| {
+            InputState::new(window, cx)
+                .validate(|value, _| value.len() <= MAX_SSH_COMMAND_BYTES)
+                .placeholder("ssh user@host -p 22 -i /path/to/key")
+        });
         form.set_profile(profile.as_ref(), window, cx);
         let editing_id = profile.as_ref().map(|profile| profile.id.clone());
+        let origin = profile
+            .as_ref()
+            .map_or(SshProfileOrigin::Manual, |profile| profile.origin);
         let auth_mode = profile
             .as_ref()
             .map_or(SshAuthMode::Password, |profile| profile.auth_mode);
@@ -94,7 +107,9 @@ impl SshProfileFormPanel {
         let mut this = Self {
             service,
             form,
+            command,
             editing_id,
+            origin,
             auth_mode,
             production,
             password_masked: true,
@@ -152,6 +167,58 @@ impl SshProfileFormPanel {
         self.invalidate_test(cx);
     }
 
+    pub(super) fn parse_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        let command = self.command.read(cx).value().to_string();
+        let user_home = current_user_home();
+        let parsed = match parse_ssh_command(&command, user_home.as_deref()) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                self.feedback = Some(FormFeedback {
+                    message,
+                    kind: FeedbackKind::Error,
+                });
+                cx.notify();
+                return;
+            }
+        };
+
+        if self.form.name.read(cx).value().trim().is_empty() {
+            self.form
+                .name
+                .update(cx, |state, cx| state.set_value(&parsed.host, window, cx));
+        }
+        for (input, value) in [
+            (&self.form.host, parsed.host),
+            (
+                &self.form.port,
+                parsed.port.map(|port| port.to_string()).unwrap_or_default(),
+            ),
+            (&self.form.username, parsed.username),
+            (
+                &self.form.key_path,
+                parsed.key_path.clone().unwrap_or_default(),
+            ),
+        ] {
+            input.update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+        self.form
+            .password
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.auth_mode = if parsed.key_path.is_some() {
+            SshAuthMode::KeyFile
+        } else {
+            SshAuthMode::System
+        };
+        self.feedback = Some(FormFeedback {
+            message: "已解析 SSH 命令".into(),
+            kind: FeedbackKind::Success,
+        });
+        cx.notify();
+    }
+
     fn invalidate_test(&mut self, cx: &mut Context<Self>) {
         self.test_epoch = self.test_epoch.wrapping_add(1);
         if self.operation != Some(FormOperation::Saving) {
@@ -161,8 +228,13 @@ impl SshProfileFormPanel {
     }
 
     fn profile_from_form(&self, cx: &gpui::App) -> Result<SshProfile, String> {
-        self.form
-            .to_profile(self.editing_id.clone(), self.auth_mode, self.production, cx)
+        self.form.to_profile(
+            self.editing_id.clone(),
+            self.origin,
+            self.auth_mode,
+            self.production,
+            cx,
+        )
     }
 
     pub(super) fn save(&mut self, cx: &mut Context<Self>) {
@@ -333,4 +405,12 @@ impl SshProfileFormPanel {
         })
         .detach();
     }
+}
+
+fn current_user_home() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    let value = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let value = std::env::var_os("HOME");
+    value.map(std::path::PathBuf::from)
 }

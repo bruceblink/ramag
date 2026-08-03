@@ -12,8 +12,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use ramag_domain::entities::{
-    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCredential,
-    JumpServerOrganization, JumpServerSession, MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_TOKEN_BYTES,
+    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog,
+    JumpServerCredential, JumpServerLabel, JumpServerNode, JumpServerOrganization,
+    JumpServerSession, MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_NODES, MAX_JUMPSERVER_TOKEN_BYTES,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::JumpServerDriver;
@@ -24,6 +25,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const ASSET_PAGE_SIZE: usize = 100;
 const MAX_ASSET_PAGES: usize = 1000;
+const NODE_PAGE_SIZE: usize = 200;
+const MAX_NODE_PAGES: usize = 1000;
 const MAX_API_FIELD_BYTES: usize = 4096;
 
 #[derive(Clone)]
@@ -57,10 +60,10 @@ impl JumpServerDriver for JumpServerHttpDriver {
         run_in_tokio(async move { authenticate(&client, credential).await }).await
     }
 
-    async fn list_assets(&self, session: &JumpServerSession) -> Result<Vec<JumpServerAsset>> {
+    async fn load_catalog(&self, session: &JumpServerSession) -> Result<JumpServerCatalog> {
         let client = self.client.clone();
         let session = session.clone();
-        run_in_tokio(async move { list_assets(&client, &session).await }).await
+        run_in_tokio(async move { load_catalog(&client, &session).await }).await
     }
 
     async fn asset_detail(
@@ -253,6 +256,162 @@ fn validate_organizations(
     Ok(validated)
 }
 
+async fn load_catalog(client: &Client, session: &JumpServerSession) -> Result<JumpServerCatalog> {
+    let nodes = list_nodes(client, session).await?;
+    let mut assets = list_assets(client, session).await?;
+    if !nodes.is_empty() {
+        mark_special_assets(client, session, &nodes, &mut assets, "favorite").await?;
+        mark_special_assets(client, session, &nodes, &mut assets, "ungrouped").await?;
+    }
+    Ok(JumpServerCatalog { assets, nodes })
+}
+
+async fn list_nodes(client: &Client, session: &JumpServerSession) -> Result<Vec<JumpServerNode>> {
+    let organizations: Vec<Option<JumpServerOrganization>> = if session.organizations.is_empty() {
+        vec![None]
+    } else {
+        session.organizations.iter().cloned().map(Some).collect()
+    };
+    let mut nodes = Vec::new();
+    let mut seen = HashSet::new();
+    for organization in organizations {
+        let org_id = organization.as_ref().map(|org| org.id.as_str());
+        if !list_organization_nodes(client, session, org_id, &mut nodes, &mut seen).await? {
+            tracing::info!("JumpServer node API is unavailable; using flat asset list");
+            return Ok(Vec::new());
+        }
+    }
+    nodes.sort_by(|left, right| {
+        left.org_id
+            .cmp(&right.org_id)
+            .then_with(|| special_node_order(left).cmp(&special_node_order(right)))
+            .then_with(|| left.key.cmp(&right.key))
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    Ok(nodes)
+}
+
+async fn list_organization_nodes(
+    client: &Client,
+    session: &JumpServerSession,
+    org_id: Option<&str>,
+    nodes: &mut Vec<JumpServerNode>,
+    seen: &mut HashSet<(String, String)>,
+) -> Result<bool> {
+    let mut offset = 0usize;
+    let mut pages = 0usize;
+    loop {
+        let mut url = api_url(&session.base_url, "api/v1/perms/users/self/nodes/")?;
+        url.query_pairs_mut()
+            .append_pair("limit", &NODE_PAGE_SIZE.to_string())
+            .append_pair("offset", &offset.to_string());
+        let response = authorized_request(client.get(url), session, org_id)?
+            .send()
+            .await
+            .map_err(|error| request_error("获取 JumpServer 资产树", error))?;
+        if matches!(
+            response.status(),
+            StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+        ) {
+            return Ok(false);
+        }
+        let body = response_body(response, "获取 JumpServer 资产树").await?;
+        let (wire_nodes, count, paged) = parse_node_page(&body)?;
+        if count.is_some_and(|total| total > MAX_JUMPSERVER_NODES) {
+            return Err(DomainError::Other(format!(
+                "JumpServer 资产节点超过 {MAX_JUMPSERVER_NODES} 条上限，请缩小授权范围"
+            )));
+        }
+        let page_len = wire_nodes.len();
+        let seen_before = seen.len();
+        for wire in wire_nodes {
+            let node = wire.into_node(org_id.unwrap_or_default())?;
+            let identity = (node.org_id.clone(), node.id.clone());
+            if seen.insert(identity) {
+                if nodes.len() >= MAX_JUMPSERVER_NODES {
+                    return Err(DomainError::Other(format!(
+                        "JumpServer 资产节点超过 {MAX_JUMPSERVER_NODES} 条上限，请缩小授权范围"
+                    )));
+                }
+                nodes.push(node);
+            }
+        }
+        offset = offset.saturating_add(page_len);
+        pages = pages.saturating_add(1);
+        if page_len == 0 || !paged || count.is_some_and(|total| offset >= total) {
+            break;
+        }
+        if seen.len() == seen_before || pages >= MAX_NODE_PAGES {
+            return Err(DomainError::ConnectionFailed(
+                "JumpServer 资产树分页异常，请稍后重试".into(),
+            ));
+        }
+    }
+    Ok(true)
+}
+
+async fn mark_special_assets(
+    client: &Client,
+    session: &JumpServerSession,
+    nodes: &[JumpServerNode],
+    assets: &mut [JumpServerAsset],
+    special_key: &str,
+) -> Result<()> {
+    let organizations: Vec<Option<String>> = if session.organizations.is_empty() {
+        vec![None]
+    } else {
+        session
+            .organizations
+            .iter()
+            .map(|organization| Some(organization.id.clone()))
+            .collect()
+    };
+    for organization in organizations {
+        let org_id = organization.as_deref();
+        let has_special_assets = nodes.iter().any(|node| {
+            node.org_id == org_id.unwrap_or_default()
+                && node.key == special_key
+                && node.assets_amount > 0
+        });
+        if !has_special_assets {
+            continue;
+        }
+        let path = format!("api/v1/perms/users/self/nodes/{special_key}/assets/");
+        let mut special_assets = Vec::new();
+        let mut seen = HashSet::new();
+        list_organization_assets(
+            client,
+            session,
+            org_id,
+            &path,
+            &mut special_assets,
+            &mut seen,
+        )
+        .await?;
+        for asset in assets
+            .iter_mut()
+            .filter(|asset| asset.org_id == org_id.unwrap_or_default() && seen.contains(&asset.id))
+        {
+            if special_key == "favorite" {
+                asset.favorite = true;
+            } else {
+                asset.ungrouped = true;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn special_node_order(node: &JumpServerNode) -> u8 {
+    if node.is_favorite() {
+        0
+    } else if node.is_ungrouped() {
+        1
+    } else {
+        2
+    }
+}
+
 async fn list_assets(client: &Client, session: &JumpServerSession) -> Result<Vec<JumpServerAsset>> {
     let organizations: Vec<Option<JumpServerOrganization>> = if session.organizations.is_empty() {
         vec![None]
@@ -263,7 +422,15 @@ async fn list_assets(client: &Client, session: &JumpServerSession) -> Result<Vec
     let mut seen = HashSet::new();
     for organization in organizations {
         let org_id = organization.as_ref().map(|org| org.id.as_str());
-        list_organization_assets(client, session, org_id, &mut assets, &mut seen).await?;
+        list_organization_assets(
+            client,
+            session,
+            org_id,
+            "api/v1/perms/users/self/assets/",
+            &mut assets,
+            &mut seen,
+        )
+        .await?;
     }
     assets.sort_by(|left, right| {
         left.name
@@ -278,13 +445,14 @@ async fn list_organization_assets(
     client: &Client,
     session: &JumpServerSession,
     org_id: Option<&str>,
+    path: &str,
     assets: &mut Vec<JumpServerAsset>,
     seen: &mut HashSet<String>,
 ) -> Result<()> {
     let mut offset = 0usize;
     let mut pages = 0usize;
     loop {
-        let mut url = api_url(&session.base_url, "api/v1/perms/users/self/assets/")?;
+        let mut url = api_url(&session.base_url, path)?;
         url.query_pairs_mut()
             .append_pair("limit", &ASSET_PAGE_SIZE.to_string())
             .append_pair("offset", &offset.to_string());
@@ -497,12 +665,57 @@ struct WireAsset {
     address: String,
     #[serde(default)]
     platform: Value,
+    #[serde(default)]
+    labels: Option<Vec<WireLabel>>,
+    #[serde(default)]
+    nodes: Option<Vec<WireReference>>,
     #[serde(default = "default_true")]
     is_active: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireReference {
+    Id(String),
+    Object { id: String },
+}
+
+impl WireReference {
+    fn into_id(self) -> String {
+        match self {
+            Self::Id(id) | Self::Object { id } => id,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WireLabel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    value: String,
+}
+
+impl WireLabel {
+    fn into_label(self) -> Result<JumpServerLabel> {
+        Ok(JumpServerLabel {
+            name: checked_optional_field(self.name)?,
+            value: checked_optional_field(self.value)?,
+        })
+    }
+}
+
 impl WireAsset {
     fn into_asset(self, fallback_org_id: &str) -> Result<JumpServerAsset> {
+        let mut node_ids = self
+            .nodes
+            .unwrap_or_default()
+            .into_iter()
+            .map(WireReference::into_id)
+            .map(|id| checked_field("资产节点 ID", id))
+            .collect::<Result<Vec<_>>>()?;
+        node_ids.sort();
+        node_ids.dedup();
         let asset = JumpServerAsset {
             id: checked_field("资产 ID", self.id)?,
             org_id: checked_optional_field(if self.org_id.is_empty() {
@@ -513,12 +726,64 @@ impl WireAsset {
             name: checked_field("资产名称", self.name)?,
             address: checked_optional_field(self.address)?,
             platform: checked_optional_field(value_label(&self.platform))?,
+            labels: self
+                .labels
+                .unwrap_or_default()
+                .into_iter()
+                .map(WireLabel::into_label)
+                .collect::<Result<Vec<_>>>()?,
+            node_ids,
+            favorite: false,
+            ungrouped: false,
             active: self.is_active,
         };
         asset
             .validate_id()
             .map_err(|_| DomainError::ConnectionFailed("JumpServer 返回的资产 ID 无效".into()))?;
         Ok(asset)
+    }
+}
+
+#[derive(Deserialize)]
+struct WireNode {
+    id: String,
+    #[serde(default)]
+    org_id: String,
+    key: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    full_value: String,
+    #[serde(default)]
+    assets_amount: usize,
+}
+
+impl WireNode {
+    fn into_node(self, fallback_org_id: &str) -> Result<JumpServerNode> {
+        let name = if self.name.trim().is_empty() {
+            self.value
+        } else {
+            self.name
+        };
+        let full_name = if self.full_value.trim().is_empty() {
+            name.clone()
+        } else {
+            self.full_value
+        };
+        Ok(JumpServerNode {
+            id: checked_field("资产节点 ID", self.id)?,
+            org_id: checked_optional_field(if self.org_id.is_empty() {
+                fallback_org_id.to_string()
+            } else {
+                self.org_id
+            })?,
+            key: checked_field("资产节点 key", self.key)?,
+            name: checked_field("资产节点名称", name)?,
+            full_name: checked_field("资产节点完整名称", full_name)?,
+            assets_amount: self.assets_amount,
+        })
     }
 }
 
@@ -571,6 +836,7 @@ impl WireAccount {
                 actions.iter().any(|action| {
                     action
                         .as_str()
+                        .or_else(|| action.get("value").and_then(Value::as_str))
                         .is_some_and(|name| name.eq_ignore_ascii_case("connect"))
                 })
             });
@@ -614,6 +880,39 @@ fn parse_asset_items(items: Vec<Value>) -> Result<Vec<WireAsset>> {
         .map(|item| {
             serde_json::from_value(item).map_err(|error| {
                 DomainError::ConnectionFailed(format!("JumpServer 资源字段无效：{error}"))
+            })
+        })
+        .collect()
+}
+
+fn parse_node_page(bytes: &[u8]) -> Result<(Vec<WireNode>, Option<usize>, bool)> {
+    let value: Value = parse_json(bytes, "获取 JumpServer 资产树")?;
+    match value {
+        Value::Array(items) => Ok((parse_node_items(items)?, None, false)),
+        Value::Object(mut object) => {
+            let count = object
+                .get("count")
+                .and_then(Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok());
+            let items = object
+                .remove("results")
+                .or_else(|| object.remove("data"))
+                .and_then(|items| items.as_array().cloned())
+                .ok_or_else(|| DomainError::ConnectionFailed("JumpServer 资产树格式无效".into()))?;
+            Ok((parse_node_items(items)?, count, true))
+        }
+        _ => Err(DomainError::ConnectionFailed(
+            "JumpServer 资产树格式无效".into(),
+        )),
+    }
+}
+
+fn parse_node_items(items: Vec<Value>) -> Result<Vec<WireNode>> {
+    items
+        .into_iter()
+        .map(|item| {
+            serde_json::from_value(item).map_err(|error| {
+                DomainError::ConnectionFailed(format!("JumpServer 资产节点字段无效：{error}"))
             })
         })
         .collect()
@@ -675,9 +974,14 @@ mod tests {
 
     #[test]
     fn parses_paginated_and_legacy_asset_lists() {
-        let page = br#"{"count":1,"results":[{"id":"asset-1","name":"login","address":"10.0.0.1","platform":{"name":"Linux"}}]}"#;
+        let page = br##"{"count":1,"results":[{"id":"asset-1","name":"login","address":"10.0.0.1","platform":{"name":"Linux"},"nodes":["node-1",{"id":"node-2"}],"labels":[{"id":"label-1","name":"env","value":"prod","color":"#ff0000"}]}]}"##;
         let (items, count, paged) = parse_asset_page(page).unwrap();
         assert_eq!(items.len(), 1);
+        let labels = items[0].labels.as_ref().unwrap();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].name, "env");
+        assert_eq!(labels[0].value, "prod");
+        assert_eq!(items[0].nodes.as_ref().unwrap().len(), 2);
         assert_eq!(count, Some(1));
         assert!(paged);
 
@@ -689,18 +993,58 @@ mod tests {
     }
 
     #[test]
+    fn parses_asset_tree_nodes_and_special_parent_keys() {
+        let page = br#"{"count":2,"results":[
+            {"id":"favorite","key":"favorite","value":"Favorite","assets_amount":3},
+            {"id":"node-1","org_id":"org-1","key":"1:2","name":"Industrial","full_value":"DEFAULT / Industrial","assets_amount":4}
+        ]}"#;
+        let (items, count, paged) = parse_node_page(page).unwrap();
+        assert_eq!(count, Some(2));
+        assert!(paged);
+
+        let favorite = items
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_node("org-1")
+            .unwrap();
+        assert!(favorite.is_favorite());
+        assert_eq!(favorite.org_id, "org-1");
+        assert_eq!(favorite.parent_key(), "");
+
+        let child: WireNode = serde_json::from_str(
+            r#"{"id":"node-1","key":"1:2","name":"Industrial","assets_amount":4}"#,
+        )
+        .unwrap();
+        assert_eq!(child.into_node("org-1").unwrap().parent_key(), "1");
+    }
+
+    #[test]
     fn detail_maps_ssh_protocol_and_connectable_account() {
         let wire: WireAssetDetail = serde_json::from_str(
-            r#"{
+            r##"{
                 "id":"00000000-0000-0000-0000-000000000001","org_id":"org-1","name":"login","address":"10.0.0.1",
+                "labels":[{"id":"label-1","name":"env","value":"prod","color":"#ff0000"}],
                 "permed_protocols":[{"name":"ssh","port":22}],
-                "permed_accounts":[{"id":"account-1","name":"root","username":"root","has_secret":true,"actions":["connect"]}]
-            }"#,
+                "permed_accounts":[{"id":"account-1","name":"root","username":"root","has_secret":true,"actions":[{"value":"connect","label":"Connect"}]}]
+            }"##,
         )
         .unwrap();
         let detail = wire.into_detail("org-1").unwrap();
         assert!(detail.ssh_enabled);
         assert!(detail.accounts[0].usable_for_direct_login());
+        assert_eq!(detail.asset.labels[0].display_name(), "env:prod");
+
+        let legacy_account = WireAccount {
+            id: "account-2".into(),
+            name: "admin".into(),
+            username: "admin".into(),
+            has_secret: Some(true),
+            actions: serde_json::json!(["connect"]),
+        }
+        .into_account()
+        .unwrap();
+        assert!(legacy_account.can_connect);
     }
 
     #[test]
@@ -711,6 +1055,8 @@ mod tests {
             name: "login".into(),
             address: "10.0.0.1".into(),
             platform: Value::String("Linux".into()),
+            labels: None,
+            nodes: None,
             is_active: true,
         };
 

@@ -12,9 +12,10 @@ use gpui::{
 use ramag_app::SshService;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
-    JumpServerSession, QueryRecord, QueryRecordId, RemoteDirectory, RemoteEntry, RemoteEntryKind,
-    SshAuthMode, SshCapability, SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId,
-    SshProgressFn, SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
+    JumpServerCatalog, JumpServerConnection, JumpServerCredential, JumpServerSession, QueryRecord,
+    QueryRecordId, RemoteDirectory, RemoteEntry, RemoteEntryKind, SshAuthMode, SshCapability,
+    SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn,
+    SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{SshDriver, Storage};
@@ -91,7 +92,11 @@ impl SshDriver for MockSshDriver {
         })
     }
 
-    async fn terminal_command(&self, profile: &SshProfile) -> Result<SshLaunchCommand> {
+    async fn terminal_command(
+        &self,
+        profile: &SshProfile,
+        _initial_directory: Option<&str>,
+    ) -> Result<SshLaunchCommand> {
         Ok(SshLaunchCommand {
             profile_id: profile.id.clone(),
             program: "/mock/ssh".into(),
@@ -295,7 +300,9 @@ fn add_jumpserver_panel_window(
 
 #[gpui::test]
 fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppContext) {
-    let (view, cx) = add_ssh_window(cx, service(vec![profile()], None));
+    let mut imported = profile();
+    imported.origin = SshProfileOrigin::JumpServer;
+    let (view, cx) = add_ssh_window(cx, service(vec![imported], None));
     cx.run_until_parked();
     view.update(cx, |_, cx| cx.notify());
     cx.simulate_resize(size(px(1200.0), px(800.0)));
@@ -317,6 +324,10 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
         "SSH 管理页应提供 JumpServer 导入入口"
     );
     assert!(
+        cx.debug_bounds("ssh-profile-jumpserver-icon-0").is_some(),
+        "JumpServer 导入连接应显示官方图标"
+    );
+    assert!(
         search.size.width > px(300.0),
         "搜索区宽度异常：{:?}",
         search.size
@@ -336,12 +347,20 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
 #[gpui::test]
 fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
     let (panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
+    cx.run_until_parked();
     let asset = JumpServerAsset {
         id: "00000000-0000-0000-0000-000000000001".into(),
         org_id: "org-1".into(),
         name: "taiyuan-login".into(),
         address: "tycs.example.com".into(),
         platform: "Linux".into(),
+        labels: vec![ramag_domain::entities::JumpServerLabel {
+            name: "env".into(),
+            value: "prod".into(),
+        }],
+        node_ids: vec!["node-industrial".into()],
+        favorite: false,
+        ungrouped: false,
         active: true,
     };
     let account = JumpServerAccount {
@@ -352,6 +371,14 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
         can_connect: true,
     };
     panel.update(cx, |panel, cx| {
+        let connection = JumpServerConnection::new(JumpServerCredential {
+            base_url: "https://jump.example.com".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+        });
+        panel.selected_connection_id = Some(connection.id.clone());
+        panel.connections = Arc::new(vec![connection]);
         panel.session = Some(JumpServerSession {
             base_url: "https://jump.example.com/".into(),
             ssh_host: "jump.example.com".into(),
@@ -363,6 +390,42 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
             organizations: Vec::new(),
         });
         panel.assets = Arc::new(vec![asset.clone()]);
+        panel.nodes = Arc::new(vec![
+            ramag_domain::entities::JumpServerNode {
+                id: "favorite".into(),
+                org_id: "org-1".into(),
+                key: "favorite".into(),
+                name: "收藏夹".into(),
+                full_name: "收藏夹".into(),
+                assets_amount: 0,
+            },
+            ramag_domain::entities::JumpServerNode {
+                id: "node-root".into(),
+                org_id: "org-1".into(),
+                key: "1".into(),
+                name: "DEFAULT".into(),
+                full_name: "DEFAULT".into(),
+                assets_amount: 1,
+            },
+            ramag_domain::entities::JumpServerNode {
+                id: "node-industrial".into(),
+                org_id: "org-1".into(),
+                key: "1:2".into(),
+                name: "工业仿真".into(),
+                full_name: "DEFAULT / 工业仿真".into(),
+                assets_amount: 1,
+            },
+        ]);
+        panel
+            .expanded_tree_items
+            .insert(super::jumpserver_dialog::tree_node_identity(
+                "org-1",
+                "node-root",
+            ));
+        panel.selected_tree_item = super::jumpserver_dialog::JumpServerTreeSelection::Node {
+            org_id: "org-1".into(),
+            node_id: "node-root".into(),
+        };
         panel.selected_asset_id = Some(asset.id.clone());
         panel.selected_account_id = Some(account.id.clone());
         panel.detail = Some(JumpServerAssetDetail {
@@ -377,17 +440,178 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
 
     for selector in [
         "jumpserver-login-section",
-        "jumpserver-url-field-input",
-        "load-jumpserver-assets",
+        "jumpserver-source-section",
+        "jumpserver-source-selector",
+        "jumpserver-saved-connections",
+        "new-jumpserver-connection",
         "jumpserver-assets-section",
+        "jumpserver-asset-tree",
+        "jumpserver-asset-table",
+        "jumpserver-tree-node-0",
+        "jumpserver-tree-node-1",
+        "jumpserver-tree-node-2",
         "jumpserver-asset-row-0",
-        "jumpserver-account-section",
-        "test-jumpserver-asset",
-        "save-jumpserver-asset",
+        "jumpserver-asset-action-0",
+        "jumpserver-selected-detail",
+        "jumpserver-inline-test-0",
+        "jumpserver-inline-save-0",
     ] {
         assert!(cx.debug_bounds(selector).is_some(), "{selector} 应参与布局");
     }
+    assert!(cx.debug_bounds("jumpserver-new-connection-form").is_none());
+    assert!(cx.debug_bounds("jumpserver-url-field-input").is_none());
+    let tree = cx
+        .debug_bounds("jumpserver-asset-tree")
+        .expect("asset tree should be rendered");
+    let table = cx
+        .debug_bounds("jumpserver-asset-table")
+        .expect("asset table should be rendered");
+    let bottom_delta =
+        (tree.origin.y + tree.size.height - table.origin.y - table.size.height).abs();
+    assert!(
+        bottom_delta <= px(1.0),
+        "资源树与资源表底边应对齐：{bottom_delta:?}"
+    );
+    let row = cx
+        .debug_bounds("jumpserver-asset-row-0")
+        .expect("resource row should be rendered");
+    let action = cx
+        .debug_bounds("jumpserver-asset-action-0")
+        .expect("row action should be rendered");
+    assert!(
+        action.origin.y >= row.origin.y
+            && action.origin.y + action.size.height <= row.origin.y + row.size.height,
+        "操作应位于对应资源行内"
+    );
     assert!(cx.debug_bounds("jumpserver-command-input").is_none());
+}
+
+#[gpui::test]
+fn jumpserver_new_connection_shows_form_test_and_save_actions(cx: &mut TestAppContext) {
+    let (_panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
+    cx.run_until_parked();
+    cx.simulate_resize(size(px(920.0), px(720.0)));
+    cx.run_until_parked();
+
+    for selector in [
+        "jumpserver-new-connection-form",
+        "jumpserver-url-field-input",
+        "jumpserver-password-field-input",
+        "test-jumpserver-connection",
+        "save-jumpserver-connection",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "{selector} 应参与布局");
+    }
+    assert!(cx.debug_bounds("load-jumpserver-assets").is_none());
+}
+
+#[gpui::test]
+fn jumpserver_saved_connection_edit_reuses_connection_form(cx: &mut TestAppContext) {
+    let (panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
+    cx.run_until_parked();
+    panel.update(cx, |panel, cx| {
+        let connection = JumpServerConnection::new(JumpServerCredential {
+            base_url: "https://jump.example.com".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+        });
+        panel.selected_connection_id = Some(connection.id.clone());
+        panel.connections = Arc::new(vec![connection]);
+        panel.editing_connection = true;
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(920.0), px(720.0)));
+    cx.run_until_parked();
+
+    for selector in [
+        "jumpserver-new-connection-form",
+        "test-jumpserver-connection",
+        "save-jumpserver-connection",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "{selector} 应参与布局");
+    }
+}
+
+#[gpui::test]
+fn jumpserver_catalog_defaults_to_organization_with_assets(cx: &mut TestAppContext) {
+    let (panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
+    cx.run_until_parked();
+    panel.update(cx, |panel, _| {
+        panel.apply_catalog(JumpServerCatalog {
+            assets: vec![JumpServerAsset {
+                id: "00000000-0000-0000-0000-000000000001".into(),
+                org_id: "org-default".into(),
+                name: "server".into(),
+                address: "10.0.0.1".into(),
+                platform: "Linux".into(),
+                labels: Vec::new(),
+                node_ids: vec!["node-default".into()],
+                favorite: false,
+                ungrouped: false,
+                active: true,
+            }],
+            nodes: vec![
+                ramag_domain::entities::JumpServerNode {
+                    id: "node-empty".into(),
+                    org_id: "org-all".into(),
+                    key: "1".into(),
+                    name: "All Organizations".into(),
+                    full_name: "All Organizations".into(),
+                    assets_amount: 0,
+                },
+                ramag_domain::entities::JumpServerNode {
+                    id: "node-default".into(),
+                    org_id: "org-default".into(),
+                    key: "1".into(),
+                    name: "DEFAULT".into(),
+                    full_name: "DEFAULT".into(),
+                    assets_amount: 1,
+                },
+            ],
+        });
+    });
+
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(panel.filtered_assets().len(), 1);
+        assert_eq!(
+            panel.selected_tree_item,
+            super::jumpserver_dialog::JumpServerTreeSelection::Node {
+                org_id: "org-default".into(),
+                node_id: "node-default".into(),
+            }
+        );
+    });
+}
+
+#[test]
+fn jumpserver_unavailable_account_message_explains_connect_permission() {
+    let detail = JumpServerAssetDetail {
+        asset: JumpServerAsset {
+            id: "00000000-0000-0000-0000-000000000001".into(),
+            org_id: "org-1".into(),
+            name: "server".into(),
+            address: "10.0.0.1".into(),
+            platform: "Linux".into(),
+            labels: Vec::new(),
+            node_ids: Vec::new(),
+            favorite: false,
+            ungrouped: false,
+            active: true,
+        },
+        accounts: vec![JumpServerAccount {
+            id: "account-1".into(),
+            name: "root".into(),
+            username: "root".into(),
+            has_secret: true,
+            can_connect: false,
+        }],
+        ssh_enabled: true,
+    };
+
+    let message = super::jumpserver_dialog::detail_unavailable_message(&detail)
+        .expect("unavailable detail should explain the reason");
+    assert!(message.contains("connect 权限"));
 }
 
 #[gpui::test]
@@ -405,6 +629,10 @@ fn profile_form_inputs_keep_dialog_width_instead_of_collapsing(cx: &mut TestAppC
     let port = cx
         .debug_bounds("ssh-profile-port-field-input")
         .expect("port input container should be rendered");
+    assert!(
+        cx.debug_bounds("ssh-command-input").is_some(),
+        "新增连接应提供 SSH 命令解析入口"
+    );
     assert!(
         name.size.width > px(300.0),
         "名称输入框宽度异常：{:?}",
@@ -471,7 +699,7 @@ fn profile_form_inputs_keep_dialog_width_instead_of_collapsing(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn edit_profile_form_keeps_standard_fields_without_legacy_parser(cx: &mut TestAppContext) {
+fn edit_profile_form_keeps_fields_and_ssh_command_parser(cx: &mut TestAppContext) {
     let (form, cx) =
         add_ssh_form_window_with_profile(cx, service(Vec::new(), None), Some(profile()));
     cx.simulate_resize(size(px(720.0), px(800.0)));
@@ -483,8 +711,8 @@ fn edit_profile_form_keeps_standard_fields_without_legacy_parser(cx: &mut TestAp
         "编辑连接应保留标准 SSH 字段"
     );
     assert!(
-        cx.debug_bounds("jumpserver-command-input").is_none(),
-        "旧的 JumpServer 命令解析框不应再混入普通编辑页"
+        cx.debug_bounds("ssh-command-input").is_some(),
+        "编辑连接也应提供 SSH 命令解析入口"
     );
 }
 
@@ -585,6 +813,88 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
         cx.debug_bounds("ssh-directory-search").is_some(),
         "目录操作栏应以搜索框开头"
     );
+    assert!(
+        cx.debug_bounds("ssh-terminal-drop-target").is_some(),
+        "终端区域应接收远程目录拖放"
+    );
+    let directory = cx
+        .debug_bounds("sftp-entry-1")
+        .expect("directory entry should be rendered");
+    let terminal_target = cx
+        .debug_bounds("ssh-terminal-drop-target")
+        .expect("terminal drop target should be rendered");
+    let generation_before = view.read_with(cx, |view, _| view.workspaces[0].terminal_generation);
+    let drag_start = point(
+        directory.origin.x + px(12.0),
+        directory.origin.y + directory.size.height / 2.0,
+    );
+    let drop_point = point(
+        terminal_target.origin.x + terminal_target.size.width / 2.0,
+        terminal_target.origin.y + terminal_target.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(drag_start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(drag_start.x + px(12.0), drag_start.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(drop_point, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(drop_point, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.workspaces[0].terminal_generation > generation_before,
+            "拖入目录后应启动一个新终端，不能复用当前终端"
+        );
+    });
+    let file = cx
+        .debug_bounds("sftp-entry-0")
+        .expect("file entry should be rendered");
+    let file_generation_before =
+        view.read_with(cx, |view, _| view.workspaces[0].terminal_generation);
+    let file_drag_start = point(
+        file.origin.x + px(12.0),
+        file.origin.y + file.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(file_drag_start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(file_drag_start.x + px(12.0), file_drag_start.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(drop_point, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(drop_point, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.workspaces[0].terminal_generation, file_generation_before,
+            "文件行不应伪装成目录拖动入口"
+        );
+    });
+    let path_label = cx
+        .debug_bounds("ssh-directory-path-label")
+        .expect("directory path label should be rendered");
+    let path_generation_before =
+        view.read_with(cx, |view, _| view.workspaces[0].terminal_generation);
+    let path_drag_start = point(
+        path_label.origin.x + path_label.size.width / 2.0,
+        path_label.origin.y + path_label.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(path_drag_start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(path_drag_start.x - px(12.0), path_drag_start.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(drop_point, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(drop_point, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.workspaces[0].terminal_generation > path_generation_before,
+            "拖入当前路径后应在该目录启动一个新终端"
+        );
+    });
     let entry = cx
         .debug_bounds("sftp-entry-0")
         .expect("remote entry should be rendered");

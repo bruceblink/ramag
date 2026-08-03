@@ -157,7 +157,44 @@ impl Render for RemotePathDialog {
             .w_full()
             .gap(px(10.0))
             .child(div().text_sm().text_color(muted).child("路径"))
-            .child(Input::new(&self.input).small());
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.input).small()),
+                    )
+                    .child(
+                        ramag_ui::clickable_button("ssh-path-dialog-open")
+                            .primary()
+                            .small()
+                            .label("打开")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                if this.open_current(cx) {
+                                    window.close_dialog(cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("ssh-path-dialog-favorite-debug")
+                            .debug_selector(|| "ssh-path-dialog-favorite".into())
+                            .child(
+                                ramag_ui::clickable_button("ssh-path-dialog-favorite")
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::Star)
+                                    .tooltip("收藏当前路径")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.favorite_current(cx);
+                                    })),
+                            ),
+                    ),
+            );
 
         if !self.favorites.is_empty() {
             let mut list = v_flex()
@@ -234,32 +271,6 @@ impl Render for RemotePathDialog {
                             .small()
                             .label("取消")
                             .on_click(|_: &ClickEvent, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(
-                        div()
-                            .id("ssh-path-dialog-favorite-debug")
-                            .debug_selector(|| "ssh-path-dialog-favorite".into())
-                            .child(
-                                ramag_ui::clickable_button("ssh-path-dialog-favorite")
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::Star)
-                                    .label("收藏")
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.favorite_current(cx);
-                                    })),
-                            ),
-                    )
-                    .child(
-                        ramag_ui::clickable_button("ssh-path-dialog-open")
-                            .primary()
-                            .small()
-                            .label("打开")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                if this.open_current(cx) {
-                                    window.close_dialog(cx);
-                                }
-                            })),
                     ),
             )
     }

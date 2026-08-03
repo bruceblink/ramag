@@ -1,13 +1,20 @@
 //! JumpServer 资源到本地 SSH 配置的用例编排。
 
 use ramag_domain::entities::{
-    JumpServerAsset, JumpServerAssetDetail, JumpServerCredential, JumpServerSession, SshAuthMode,
-    SshProfile,
+    JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog, JumpServerConnection,
+    JumpServerCredential, JumpServerSession, SshAuthMode, SshProfile, SshProfileOrigin,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::JumpServerDriver;
 
 use super::SshService;
+
+const JUMPSERVER_CONNECTIONS_PREFERENCE_KEY: &str = "ssh_jumpserver_connections_v2";
+const LEGACY_CREDENTIAL_PREFERENCE_KEY: &str = "ssh_jumpserver_credential_v1";
+const ENCRYPTED_CREDENTIAL_PREFIX: &str = "enc-v1:";
+const MAX_JUMPSERVER_CONNECTIONS: usize = 50;
+const MAX_CONNECTIONS_BYTES: usize = 64 * 1024;
+const MAX_ENCRYPTED_CONNECTIONS_BYTES: usize = MAX_CONNECTIONS_BYTES * 2 + 1024;
 
 impl SshService {
     pub fn with_jumpserver_driver(mut self, driver: std::sync::Arc<dyn JumpServerDriver>) -> Self {
@@ -23,11 +30,104 @@ impl SshService {
         self.jumpserver_driver()?.authenticate(credential).await
     }
 
-    pub async fn list_jumpserver_assets(
+    /// 读取本机加密保存的 JumpServer 连接，并自动迁移旧版单连接数据。
+    pub async fn load_jumpserver_connections(&self) -> Result<Vec<JumpServerConnection>> {
+        if let Some(stored) = self
+            .storage
+            .get_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY)
+            .await?
+        {
+            let connections: Vec<JumpServerConnection> =
+                self.decrypt_jumpserver_value(&stored).await?;
+            let original_len = connections.len();
+            let connections = deduplicate_connections(connections);
+            validate_connections(&connections)?;
+            if connections.len() != original_len {
+                self.store_jumpserver_connections(&connections).await?;
+            }
+            return Ok(connections);
+        }
+
+        let Some(stored) = self
+            .storage
+            .get_preference(LEGACY_CREDENTIAL_PREFERENCE_KEY)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        let credential: JumpServerCredential = self.decrypt_jumpserver_value(&stored).await?;
+        credential.validate().map_err(|error| {
+            DomainError::Storage(format!("已保存的 JumpServer 登录信息无效：{error}"))
+        })?;
+        let connections = vec![JumpServerConnection::new(credential)];
+        self.store_jumpserver_connections(&connections).await?;
+        self.storage
+            .delete_preference(LEGACY_CREDENTIAL_PREFERENCE_KEY)
+            .await?;
+        Ok(connections)
+    }
+
+    /// 新建或更新连接；整份连接列表使用本机主密钥加密后保存。
+    pub async fn save_jumpserver_connection(
+        &self,
+        connection_id: Option<&str>,
+        credential: &JumpServerCredential,
+    ) -> Result<JumpServerConnection> {
+        credential.validate().map_err(DomainError::InvalidConfig)?;
+        let mut connections = self.load_jumpserver_connections().await?;
+        let connection = if let Some(connection_id) = connection_id {
+            let index = connections
+                .iter()
+                .position(|connection| connection.id == connection_id)
+                .ok_or_else(|| DomainError::NotFound("选中的 JumpServer 连接已不存在".into()))?;
+            let mut connection = connections.remove(index);
+            connection.credential = credential.clone();
+            connection
+        } else if let Some(index) = connections
+            .iter()
+            .position(|connection| same_connection_identity(&connection.credential, credential))
+        {
+            let mut connection = connections.remove(index);
+            connection.credential = credential.clone();
+            connection
+        } else {
+            if connections.len() >= MAX_JUMPSERVER_CONNECTIONS {
+                return Err(DomainError::InvalidConfig(format!(
+                    "JumpServer 连接最多保存 {MAX_JUMPSERVER_CONNECTIONS} 个"
+                )));
+            }
+            JumpServerConnection::new(credential.clone())
+        };
+        connections
+            .retain(|item| !same_connection_identity(&item.credential, &connection.credential));
+        connections.insert(0, connection.clone());
+        self.store_jumpserver_connections(&connections).await?;
+        Ok(connection)
+    }
+
+    pub async fn delete_jumpserver_connection(&self, connection_id: &str) -> Result<()> {
+        let mut connections = self.load_jumpserver_connections().await?;
+        let previous_len = connections.len();
+        connections.retain(|connection| connection.id != connection_id);
+        if connections.len() == previous_len {
+            return Err(DomainError::NotFound(
+                "选中的 JumpServer 连接已不存在".into(),
+            ));
+        }
+        if connections.is_empty() {
+            self.storage
+                .delete_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY)
+                .await
+        } else {
+            self.store_jumpserver_connections(&connections).await
+        }
+    }
+
+    pub async fn load_jumpserver_catalog(
         &self,
         session: &JumpServerSession,
-    ) -> Result<Vec<JumpServerAsset>> {
-        self.jumpserver_driver()?.list_assets(session).await
+    ) -> Result<JumpServerCatalog> {
+        self.jumpserver_driver()?.load_catalog(session).await
     }
 
     pub async fn jumpserver_asset_detail(
@@ -72,6 +172,53 @@ impl SshService {
         })
     }
 
+    async fn decrypt_jumpserver_value<T: serde::de::DeserializeOwned>(
+        &self,
+        stored: &str,
+    ) -> Result<T> {
+        if stored.len() > MAX_ENCRYPTED_CONNECTIONS_BYTES {
+            return Err(DomainError::Storage(
+                "已保存的 JumpServer 连接数据过大".into(),
+            ));
+        }
+        let encoded = stored
+            .strip_prefix(ENCRYPTED_CREDENTIAL_PREFIX)
+            .ok_or_else(|| DomainError::Storage("JumpServer 连接未加密，已拒绝读取".into()))?;
+        let encrypted = hex::decode(encoded)
+            .map_err(|error| DomainError::Storage(format!("JumpServer 连接编码无效：{error}")))?;
+        let plain = self.storage.unseal(&encrypted).await?;
+        if plain.len() > MAX_CONNECTIONS_BYTES {
+            return Err(DomainError::Storage(
+                "解密后的 JumpServer 连接数据过大".into(),
+            ));
+        }
+        serde_json::from_slice(&plain)
+            .map_err(|error| DomainError::Storage(format!("解析 JumpServer 连接失败：{error}")))
+    }
+
+    async fn store_jumpserver_connections(
+        &self,
+        connections: &[JumpServerConnection],
+    ) -> Result<()> {
+        validate_connections(connections)?;
+        let json = serde_json::to_vec(connections).map_err(|error| {
+            DomainError::Storage(format!("序列化 JumpServer 连接失败：{error}"))
+        })?;
+        if json.len() > MAX_CONNECTIONS_BYTES {
+            return Err(DomainError::InvalidConfig("JumpServer 连接数据过大".into()));
+        }
+        let encrypted = self.storage.seal(&json).await?;
+        let stored = format!("{ENCRYPTED_CREDENTIAL_PREFIX}{}", hex::encode(encrypted));
+        if stored.len() > MAX_ENCRYPTED_CONNECTIONS_BYTES {
+            return Err(DomainError::InvalidConfig(
+                "加密后的 JumpServer 连接数据过大".into(),
+            ));
+        }
+        self.storage
+            .set_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY, &stored)
+            .await
+    }
+
     async fn fresh_jumpserver_profile(
         &self,
         session: &JumpServerSession,
@@ -84,6 +231,49 @@ impl SshService {
             .await?;
         build_jumpserver_profile(session, &detail, account_id)
     }
+}
+
+fn validate_connections(connections: &[JumpServerConnection]) -> Result<()> {
+    if connections.len() > MAX_JUMPSERVER_CONNECTIONS {
+        return Err(DomainError::Storage(format!(
+            "已保存的 JumpServer 连接超过 {MAX_JUMPSERVER_CONNECTIONS} 个上限"
+        )));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for connection in connections {
+        connection.validate().map_err(|error| {
+            DomainError::Storage(format!("已保存的 JumpServer 连接无效：{error}"))
+        })?;
+        if !ids.insert(connection.id.as_str()) {
+            return Err(DomainError::Storage(
+                "已保存的 JumpServer 连接 ID 重复".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn deduplicate_connections(connections: Vec<JumpServerConnection>) -> Vec<JumpServerConnection> {
+    let mut unique = Vec::with_capacity(connections.len());
+    for connection in connections {
+        if unique.iter().any(|saved: &JumpServerConnection| {
+            same_connection_identity(&saved.credential, &connection.credential)
+        }) {
+            continue;
+        }
+        unique.push(connection);
+    }
+    unique
+}
+
+fn same_connection_identity(left: &JumpServerCredential, right: &JumpServerCredential) -> bool {
+    normalize_endpoint(&left.base_url) == normalize_endpoint(&right.base_url)
+        && left.ssh_port == right.ssh_port
+        && left.username == right.username
+}
+
+fn normalize_endpoint(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
 pub(super) fn build_jumpserver_profile(
@@ -111,6 +301,7 @@ pub(super) fn build_jumpserver_profile(
         .map_err(DomainError::InvalidConfig)?;
 
     let mut profile = SshProfile::new(detail.asset.name.clone(), session.ssh_host.clone());
+    profile.origin = SshProfileOrigin::JumpServer;
     profile.port = Some(session.ssh_port);
     profile.username = format!("{}#{}#{}", session.username, account.name, detail.asset.id);
     profile.auth_mode = SshAuthMode::Password;

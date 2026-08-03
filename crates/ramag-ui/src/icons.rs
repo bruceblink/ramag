@@ -37,6 +37,12 @@ pub fn download() -> Icon {
     Icon::default().path("icons/download.svg")
 }
 
+/// JumpServer 官方品牌图形标识。
+#[inline]
+pub fn jumpserver_brand_icon() -> &'static str {
+    "icons/jumpserver.svg"
+}
+
 #[inline]
 pub fn upload() -> Icon {
     Icon::default().path("icons/upload.svg")

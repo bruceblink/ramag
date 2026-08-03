@@ -41,6 +41,39 @@ impl Render for SshProfileFormPanel {
                             .child(
                                 v_flex()
                                     .gap(px(12.0))
+                                    .child(
+                                        v_flex().gap(px(6.0)).child(field_label("SSH 命令")).child(
+                                            h_flex()
+                                                .w_full()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .child(
+                                                    div()
+                                                        .id("ssh-command-input")
+                                                        .debug_selector(|| {
+                                                            "ssh-command-input".into()
+                                                        })
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .child(
+                                                            Input::new(&self.command)
+                                                                .disabled(busy),
+                                                        ),
+                                                )
+                                                .child(
+                                                    ramag_ui::clickable_button("parse-ssh-command")
+                                                        .outline()
+                                                        .small()
+                                                        .label("解析")
+                                                        .disabled(busy)
+                                                        .on_click(cx.listener(
+                                                            |this, _: &ClickEvent, window, cx| {
+                                                                this.parse_command(window, cx);
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
+                                    )
                                     .child(field(
                                         "ssh-profile-name-field",
                                         "名称",

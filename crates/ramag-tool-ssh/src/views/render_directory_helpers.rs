@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, MouseButton, ParentElement, SharedString, Styled,
-    div, prelude::*, px,
+    AnyElement, ClickEvent, Context, IntoElement, MouseButton, ParentElement, Pixels, Point,
+    Render, SharedString, Styled, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _, h_flex,
@@ -14,7 +14,7 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::{
-    RemoteEntry, RemoteEntryKind, SshProfileId, contains_case_insensitive,
+    RemoteEntry, RemoteEntryKind, SshProfileId, contains_case_insensitive, validate_remote_path,
 };
 
 use super::SshView;
@@ -33,6 +33,79 @@ pub(super) enum RemoteEntryActivation {
     OpenDirectory,
     PreviewFile,
     Unsupported,
+}
+
+#[derive(Clone)]
+pub(super) struct RemoteDirectoryDrag {
+    pub workspace_id: SshProfileId,
+    pub path: String,
+    name: String,
+    position: Point<Pixels>,
+}
+
+impl RemoteDirectoryDrag {
+    fn from_entry(workspace_id: SshProfileId, entry: &RemoteEntry) -> Option<Self> {
+        if entry.kind != RemoteEntryKind::Directory {
+            return None;
+        }
+        Self::new(workspace_id, entry.path.clone(), entry.name.clone())
+    }
+
+    pub(super) fn from_current_path(workspace_id: SshProfileId, path: &str) -> Option<Self> {
+        Self::new(workspace_id, path.to_string(), path.to_string())
+    }
+
+    fn new(workspace_id: SshProfileId, path: String, name: String) -> Option<Self> {
+        validate_remote_path(&path).ok()?;
+        if !path.starts_with('/') {
+            return None;
+        }
+        Some(Self {
+            workspace_id,
+            path,
+            name,
+            position: Point::default(),
+        })
+    }
+
+    pub(super) fn position(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for RemoteDirectoryDrag {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .pl(self.position.x + px(12.0))
+            .pt(self.position.y + px(12.0))
+            .child(
+                h_flex()
+                    .max_w(px(280.0))
+                    .items_center()
+                    .gap(px(7.0))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .shadow_md()
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_sm()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.name.clone()),
+                    ),
+            )
+    }
 }
 
 pub(super) fn sort_remote_entries(entries: &mut [RemoteEntry]) {
@@ -138,6 +211,10 @@ pub(super) fn remote_entry_row(
         RemoteEntryKind::File | RemoteEntryKind::Other => IconName::File,
     };
     let entry_for_click = entry.clone();
+    let entry_drag = menu_state
+        .connection_available
+        .then(|| RemoteDirectoryDrag::from_entry(workspace_id.clone(), &entry))
+        .flatten();
     let workspace_for_right_click = workspace_id.clone();
     let path_for_right_click = entry.path.clone();
     let actions = remote_entry_actions(entry.kind, menu_state.allow_write);
@@ -205,7 +282,12 @@ pub(super) fn remote_entry_row(
                 .overflow_hidden()
                 .text_ellipsis()
                 .child(entry.name),
-        );
+        )
+        .when_some(entry_drag, |row, drag| {
+            row.cursor_pointer().on_drag(drag, |drag, position, _, cx| {
+                cx.new(|_| drag.clone().position(position))
+            })
+        });
     if has_context_menu {
         row.context_menu(move |menu, _, _| {
             remote_entry_context_menu(
@@ -420,6 +502,37 @@ mod tests {
                 .as_slice(),
             &[1]
         );
+    }
+
+    #[test]
+    fn terminal_drag_accepts_only_absolute_directories() {
+        let entry = |path: &str, kind| RemoteEntry {
+            name: path.rsplit('/').next().unwrap_or_default().into(),
+            path: path.into(),
+            kind,
+            size: 0,
+            permissions: None,
+            modified_at: None,
+        };
+
+        let profile_id = SshProfileId::new();
+        let directory = entry("/srv/app", RemoteEntryKind::Directory);
+
+        assert_eq!(
+            RemoteDirectoryDrag::from_entry(profile_id.clone(), &directory).map(|drag| drag.path),
+            Some("/srv/app".into())
+        );
+        assert!(
+            RemoteDirectoryDrag::from_entry(
+                profile_id.clone(),
+                &entry("/srv/app/main.rs", RemoteEntryKind::File)
+            )
+            .is_none()
+        );
+        assert!(
+            RemoteDirectoryDrag::from_current_path(profile_id.clone(), "relative/path").is_none()
+        );
+        assert!(RemoteDirectoryDrag::from_current_path(profile_id, "/tmp/line\nbreak").is_none());
     }
 
     #[test]

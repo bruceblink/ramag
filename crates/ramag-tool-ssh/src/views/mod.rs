@@ -4,6 +4,8 @@ mod file_chunk;
 mod file_preview;
 mod file_preview_layout;
 mod file_syntax;
+mod jumpserver_asset_ops;
+mod jumpserver_connection_ops;
 mod jumpserver_dialog;
 mod model;
 mod ops;
@@ -15,11 +17,16 @@ mod profile_dialog;
 mod profile_form;
 mod render;
 mod render_directory_helpers;
+mod render_jumpserver_connections;
 mod render_jumpserver_dialog;
+mod render_jumpserver_rows;
+mod render_jumpserver_tree;
 mod render_manager;
 mod render_profile_form;
 mod render_transfers;
 mod render_workspace;
+mod ssh_command;
+mod terminal_startup;
 
 #[cfg(test)]
 mod render_test;

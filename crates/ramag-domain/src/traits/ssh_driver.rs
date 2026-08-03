@@ -15,7 +15,11 @@ use crate::error::Result;
 pub trait SshDriver: Send + Sync {
     async fn probe(&self, custom_path: Option<&str>) -> Result<SshCapability>;
 
-    async fn terminal_command(&self, profile: &SshProfile) -> Result<SshLaunchCommand>;
+    async fn terminal_command(
+        &self,
+        profile: &SshProfile,
+        initial_directory: Option<&str>,
+    ) -> Result<SshLaunchCommand>;
 
     /// PTY 启动可执行文件失败后清除能力缓存，使下次连接重新发现 OpenSSH。
     async fn report_terminal_launch_failure(&self, executable: &str);

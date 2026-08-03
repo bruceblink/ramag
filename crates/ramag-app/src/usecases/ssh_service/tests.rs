@@ -1,14 +1,18 @@
 use super::*;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
-    JumpServerCredential, JumpServerOrganization, JumpServerSession, QueryRecord, QueryRecordId,
-    SshAuthMode, SshPathFavorites, SshProgressFn, SshWorkspaceState,
+    JumpServerCatalog, JumpServerConnection, JumpServerCredential, JumpServerOrganization,
+    JumpServerSession, QueryRecord, QueryRecordId, SshAuthMode, SshPathFavorites, SshProfileOrigin,
+    SshProgressFn, SshWorkspaceState,
 };
 use ramag_domain::error::READ_ONLY_MESSAGE;
 use ramag_domain::traits::JumpServerDriver;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct NoopStorage;
+#[derive(Default)]
+struct NoopStorage {
+    preferences: Mutex<HashMap<String, String>>,
+}
 
 #[async_trait::async_trait]
 impl Storage for NoopStorage {
@@ -52,12 +56,28 @@ impl Storage for NoopStorage {
         Ok(())
     }
 
-    async fn get_preference(&self, _key: &str) -> Result<Option<String>> {
-        Ok(None)
+    async fn get_preference(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.preferences.lock().get(key).cloned())
     }
 
-    async fn set_preference(&self, _key: &str, _value: &str) -> Result<()> {
+    async fn set_preference(&self, key: &str, value: &str) -> Result<()> {
+        self.preferences
+            .lock()
+            .insert(key.to_string(), value.to_string());
         Ok(())
+    }
+
+    async fn delete_preference(&self, key: &str) -> Result<()> {
+        self.preferences.lock().remove(key);
+        Ok(())
+    }
+
+    async fn seal(&self, plain: &[u8]) -> Result<Vec<u8>> {
+        Ok(plain.to_vec())
+    }
+
+    async fn unseal(&self, cipher: &[u8]) -> Result<Vec<u8>> {
+        Ok(cipher.to_vec())
     }
 }
 
@@ -85,8 +105,11 @@ impl JumpServerDriver for CountingJumpServerDriver {
         })
     }
 
-    async fn list_assets(&self, _session: &JumpServerSession) -> Result<Vec<JumpServerAsset>> {
-        Ok(vec![jumpserver_asset()])
+    async fn load_catalog(&self, _session: &JumpServerSession) -> Result<JumpServerCatalog> {
+        Ok(JumpServerCatalog {
+            assets: vec![jumpserver_asset()],
+            nodes: Vec::new(),
+        })
     }
 
     async fn asset_detail(
@@ -116,6 +139,10 @@ fn jumpserver_asset() -> JumpServerAsset {
         name: "taiyuan-login".into(),
         address: "tycs.example.com".into(),
         platform: "Linux".into(),
+        labels: Vec::new(),
+        node_ids: Vec::new(),
+        favorite: false,
+        ungrouped: false,
         active: true,
     }
 }
@@ -142,7 +169,11 @@ impl SshDriver for TerminalDriver {
         })
     }
 
-    async fn terminal_command(&self, profile: &SshProfile) -> Result<SshLaunchCommand> {
+    async fn terminal_command(
+        &self,
+        profile: &SshProfile,
+        _initial_directory: Option<&str>,
+    ) -> Result<SshLaunchCommand> {
         Ok(SshLaunchCommand {
             profile_id: profile.id.clone(),
             program: "/mock/ssh".into(),
@@ -406,10 +437,14 @@ fn queued_transfer_is_cancelled_without_waiting_for_executor() {
 fn production_profile_allows_terminal_but_blocks_sftp_writes() {
     let mut profile = SshProfile::new("production", "server.example");
     profile.production = true;
-    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage));
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
 
-    let command = futures::executor::block_on(service.terminal_command(&profile)).unwrap();
+    let command = futures::executor::block_on(service.terminal_command(&profile, None)).unwrap();
     assert_eq!(command.program, "/mock/ssh");
+    assert!(
+        futures::executor::block_on(service.terminal_command(&profile, Some("relative/path")))
+            .is_err()
+    );
 
     let preview =
         futures::executor::block_on(service.read_file_preview(&profile, "/readme.txt")).unwrap();
@@ -486,7 +521,7 @@ fn production_profile_allows_terminal_but_blocks_sftp_writes() {
 #[test]
 fn remote_editor_rejects_content_above_preview_bound() {
     let profile = SshProfile::new("server", "server.example");
-    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage));
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
     let oversized = vec![b'a'; MAX_REMOTE_FILE_PREVIEW_BYTES + 1];
 
     assert!(matches!(
@@ -503,7 +538,7 @@ fn remote_editor_rejects_content_above_preview_bound() {
 #[test]
 fn directory_download_is_queued_as_archive() {
     let profile = SshProfile::new("server", "server.example");
-    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage));
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
     let local = std::env::temp_dir().join("ramag-directory-download-test.tar.gz");
 
     let id = service
@@ -523,7 +558,7 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
     let jumpserver: Arc<dyn JumpServerDriver> = Arc::new(CountingJumpServerDriver {
         detail_calls: detail_calls.clone(),
     });
-    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage))
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()))
         .with_jumpserver_driver(jumpserver);
     let session = jumpserver_session();
     let asset = jumpserver_asset();
@@ -544,6 +579,7 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
             "alice#root#00000000-0000-0000-0000-000000000001"
         );
         assert_eq!(profile.auth_mode, SshAuthMode::Password);
+        assert_eq!(profile.origin, SshProfileOrigin::JumpServer);
         assert_eq!(profile.password, "login-password");
     }
 }
@@ -571,4 +607,126 @@ fn jumpserver_profile_uses_connect_permission_not_managed_secret_flag() {
         super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
             .is_err()
     );
+}
+
+#[test]
+fn jumpserver_connections_are_encrypted_updated_and_deleted() {
+    let storage = Arc::new(NoopStorage::default());
+    let service = SshService::new(Arc::new(TerminalDriver), storage.clone());
+    let credential = JumpServerCredential {
+        base_url: "https://jump.example.com".into(),
+        ssh_port: 2222,
+        username: "alice".into(),
+        password: "secret-password".into(),
+    };
+
+    let first =
+        futures::executor::block_on(service.save_jumpserver_connection(None, &credential)).unwrap();
+    let stored = storage
+        .preferences
+        .lock()
+        .get("ssh_jumpserver_connections_v2")
+        .cloned()
+        .unwrap();
+    assert!(stored.starts_with("enc-v1:"));
+    assert!(!stored.contains("secret-password"));
+    let loaded = futures::executor::block_on(service.load_jumpserver_connections()).unwrap();
+    assert_eq!(loaded, vec![first.clone()]);
+
+    let mut updated_credential = credential;
+    updated_credential.ssh_port = 2200;
+    let updated = futures::executor::block_on(
+        service.save_jumpserver_connection(Some(&first.id), &updated_credential),
+    )
+    .unwrap();
+    assert_eq!(updated.id, first.id);
+    assert_eq!(updated.credential.ssh_port, 2200);
+
+    futures::executor::block_on(service.delete_jumpserver_connection(&first.id)).unwrap();
+    assert!(
+        futures::executor::block_on(service.load_jumpserver_connections())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn jumpserver_connections_deduplicate_same_login_and_keep_latest_password() {
+    let storage = Arc::new(NoopStorage::default());
+    let service = SshService::new(Arc::new(TerminalDriver), storage.clone());
+    let mut credential = JumpServerCredential {
+        base_url: "https://jump.example.com/".into(),
+        ssh_port: 2222,
+        username: "alice".into(),
+        password: "old-password".into(),
+    };
+
+    let first =
+        futures::executor::block_on(service.save_jumpserver_connection(None, &credential)).unwrap();
+    credential.base_url = "HTTPS://JUMP.EXAMPLE.COM".into();
+    credential.password = "new-password".into();
+    let updated =
+        futures::executor::block_on(service.save_jumpserver_connection(None, &credential)).unwrap();
+
+    let loaded = futures::executor::block_on(service.load_jumpserver_connections()).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(updated.id, first.id);
+    assert_eq!(loaded[0].credential.password, "new-password");
+}
+
+#[test]
+fn jumpserver_connections_remove_existing_duplicate_records_when_loading() {
+    let storage = Arc::new(NoopStorage::default());
+    let service = SshService::new(Arc::new(TerminalDriver), storage.clone());
+    let credential = JumpServerCredential {
+        base_url: "https://jump.example.com".into(),
+        ssh_port: 2222,
+        username: "alice".into(),
+        password: "new-password".into(),
+    };
+    let newest = JumpServerConnection::new(credential.clone());
+    let mut older_credential = credential;
+    older_credential.password = "old-password".into();
+    let older = JumpServerConnection::new(older_credential);
+    let encoded = format!(
+        "enc-v1:{}",
+        hex::encode(serde_json::to_vec(&vec![newest.clone(), older]).unwrap())
+    );
+    storage
+        .preferences
+        .lock()
+        .insert("ssh_jumpserver_connections_v2".into(), encoded);
+
+    let loaded = futures::executor::block_on(service.load_jumpserver_connections()).unwrap();
+    assert_eq!(loaded, vec![newest]);
+    let reloaded = futures::executor::block_on(service.load_jumpserver_connections()).unwrap();
+    assert_eq!(reloaded.len(), 1);
+}
+
+#[test]
+fn jumpserver_legacy_credential_is_migrated_to_connection_list() {
+    let storage = Arc::new(NoopStorage::default());
+    let service = SshService::new(Arc::new(TerminalDriver), storage.clone());
+    let credential = JumpServerCredential {
+        base_url: "https://legacy.example.com".into(),
+        ssh_port: 2222,
+        username: "legacy".into(),
+        password: "secret-password".into(),
+    };
+    let encoded = format!(
+        "enc-v1:{}",
+        hex::encode(serde_json::to_vec(&credential).unwrap())
+    );
+    storage
+        .preferences
+        .lock()
+        .insert("ssh_jumpserver_credential_v1".into(), encoded);
+
+    let migrated = futures::executor::block_on(service.load_jumpserver_connections()).unwrap();
+    assert_eq!(migrated.len(), 1);
+    assert_eq!(migrated[0].credential, credential);
+    assert!(JumpServerConnection::validate(&migrated[0]).is_ok());
+    let preferences = storage.preferences.lock();
+    assert!(!preferences.contains_key("ssh_jumpserver_credential_v1"));
+    assert!(preferences.contains_key("ssh_jumpserver_connections_v2"));
 }

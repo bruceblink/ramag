@@ -63,10 +63,21 @@ pub enum SshAuthMode {
     KeyFile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SshProfileOrigin {
+    #[default]
+    Manual,
+    JumpServer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshProfile {
     pub id: SshProfileId,
     pub name: String,
+    /// 连接来源仅用于保留导入语义和品牌展示，不改变 SSH 行为。
+    #[serde(default)]
+    pub origin: SshProfileOrigin,
     /// 环境仅用于列表徽章展示，不影响连接行为。
     #[serde(default)]
     pub environment: Option<String>,
@@ -97,6 +108,7 @@ impl SshProfile {
         Self {
             id: SshProfileId::new(),
             name: name.into(),
+            origin: SshProfileOrigin::Manual,
             environment: None,
             production: false,
             host: host.into(),
@@ -585,6 +597,22 @@ mod tests {
         profile.port = None;
 
         assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn legacy_profile_without_origin_defaults_to_manual()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let profile = SshProfile::new("legacy", "server.example");
+        let mut value = serde_json::to_value(&profile)?;
+        let Some(object) = value.as_object_mut() else {
+            return Err("SSH 配置应序列化为 JSON 对象".into());
+        };
+        object.remove("origin");
+
+        let decoded: SshProfile = serde_json::from_value(value)?;
+
+        assert_eq!(decoded.origin, SshProfileOrigin::Manual);
+        Ok(())
     }
 
     #[test]

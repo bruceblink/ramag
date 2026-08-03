@@ -47,9 +47,10 @@ pub use id_conversion::{
     MAX_ID_CONVERTER_PROGRAM_BYTES, parse_nonnegative_id_integer, validate_custom_alphabet,
 };
 pub use jumpserver::{
-    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCredential,
-    JumpServerOrganization, JumpServerSession, MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_TOKEN_BYTES,
-    MAX_JUMPSERVER_URL_BYTES,
+    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog,
+    JumpServerConnection, JumpServerCredential, JumpServerLabel, JumpServerNode,
+    JumpServerOrganization, JumpServerSession, MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_NODES,
+    MAX_JUMPSERVER_TOKEN_BYTES, MAX_JUMPSERVER_URL_BYTES,
 };
 pub use mongo::{
     InsertManyOutcome, MAX_MONGO_COLLECTION_NAME_BYTES, MAX_MONGO_DATABASE_NAME_BYTES,
@@ -87,7 +88,7 @@ pub use ssh::{
     MAX_SSH_TERMINALS_PER_WORKSPACE, MAX_SSH_USERNAME_BYTES, MAX_SSH_WORKSPACES,
     MAX_TRANSFER_HISTORY, OverwritePolicy, RemoteDirectory, RemoteEntry, RemoteEntryKind,
     RemoteFileChunk, RemoteFileChunkPosition, RemoteFilePreview, SshAuthMode, SshCapability,
-    SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId, SshProgressFn,
+    SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn,
     SshWorkspacePreference, SshWorkspaceState, TRANSFER_BUFFER_BYTES, TransferCancellation,
     TransferDirection, TransferId, TransferStatus, TransferTask, join_remote_path,
     parent_remote_path, validate_local_transfer_path, validate_remote_name, validate_remote_path,

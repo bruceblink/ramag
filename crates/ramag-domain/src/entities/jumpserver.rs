@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::ssh::{MAX_SSH_PASSWORD_BYTES, MAX_SSH_USERNAME_BYTES};
@@ -9,8 +10,9 @@ use super::ssh::{MAX_SSH_PASSWORD_BYTES, MAX_SSH_USERNAME_BYTES};
 pub const MAX_JUMPSERVER_URL_BYTES: usize = 2048;
 pub const MAX_JUMPSERVER_TOKEN_BYTES: usize = 64 * 1024;
 pub const MAX_JUMPSERVER_ASSETS: usize = 10_000;
+pub const MAX_JUMPSERVER_NODES: usize = 10_000;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JumpServerCredential {
     pub base_url: String,
     pub ssh_port: u16,
@@ -74,6 +76,36 @@ impl fmt::Debug for JumpServerCredential {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JumpServerConnection {
+    pub id: String,
+    pub credential: JumpServerCredential,
+}
+
+impl JumpServerConnection {
+    pub fn new(credential: JumpServerCredential) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            credential,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        Uuid::parse_str(&self.id).map_err(|_| "JumpServer 连接 ID 不是有效的 UUID")?;
+        self.credential.validate()
+    }
+}
+
+impl fmt::Debug for JumpServerConnection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JumpServerConnection")
+            .field("id", &self.id)
+            .field("credential", &self.credential)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpServerOrganization {
     pub id: String,
@@ -109,12 +141,32 @@ impl fmt::Debug for JumpServerSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpServerLabel {
+    pub name: String,
+    pub value: String,
+}
+
+impl JumpServerLabel {
+    pub fn display_name(&self) -> String {
+        match (self.name.trim(), self.value.trim()) {
+            ("", value) => value.to_string(),
+            (name, "") => name.to_string(),
+            (name, value) => format!("{name}:{value}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpServerAsset {
     pub id: String,
     pub org_id: String,
     pub name: String,
     pub address: String,
     pub platform: String,
+    pub labels: Vec<JumpServerLabel>,
+    pub node_ids: Vec<String>,
+    pub favorite: bool,
+    pub ungrouped: bool,
     pub active: bool,
 }
 
@@ -124,6 +176,43 @@ impl JumpServerAsset {
             .map(|_| ())
             .map_err(|_| "资产 ID 不是有效的 UUID".into())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpServerNode {
+    pub id: String,
+    pub org_id: String,
+    pub key: String,
+    pub name: String,
+    pub full_name: String,
+    pub assets_amount: usize,
+}
+
+impl JumpServerNode {
+    pub fn is_favorite(&self) -> bool {
+        self.key == "favorite"
+    }
+
+    pub fn is_ungrouped(&self) -> bool {
+        self.key == "ungrouped"
+    }
+
+    pub fn is_special(&self) -> bool {
+        self.is_favorite() || self.is_ungrouped()
+    }
+
+    pub fn parent_key(&self) -> &str {
+        if self.is_special() {
+            return "";
+        }
+        self.key.rsplit_once(':').map_or("", |(parent, _)| parent)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpServerCatalog {
+    pub assets: Vec<JumpServerAsset>,
+    pub nodes: Vec<JumpServerNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +278,8 @@ mod tests {
         };
 
         assert!(!format!("{credential:?}").contains("secret-password"));
+        let connection = JumpServerConnection::new(credential.clone());
+        assert!(!format!("{connection:?}").contains("secret-password"));
         let rendered = format!("{session:?}");
         assert!(!rendered.contains("secret-password"));
         assert!(!rendered.contains("secret-token"));
@@ -214,6 +305,10 @@ mod tests {
             name: "login".into(),
             address: "10.0.0.1".into(),
             platform: "Linux".into(),
+            labels: Vec::new(),
+            node_ids: Vec::new(),
+            favorite: false,
+            ungrouped: false,
             active: true,
         };
         let account = JumpServerAccount {

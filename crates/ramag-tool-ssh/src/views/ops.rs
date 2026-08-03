@@ -232,7 +232,7 @@ impl SshView {
             .workspace_mut(&id)
             .is_some_and(|workspace| workspace.terminals.is_empty());
         if should_start_terminal {
-            self.start_terminal(id.clone(), window, cx);
+            self.start_terminal(id.clone(), None, window, cx);
         }
         self.refresh_directory(id, None, cx);
     }
@@ -242,8 +242,18 @@ impl SshView {
             return;
         }
         if let Some(id) = self.active_workspace_id.clone() {
-            self.start_terminal(id, window, cx);
+            self.start_terminal(id, None, window, cx);
         }
+    }
+
+    pub(super) fn start_terminal_in_directory(
+        &mut self,
+        id: SshProfileId,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_terminal(id, Some(path), window, cx);
     }
 
     pub(super) fn reconnect_terminal(
@@ -266,11 +276,17 @@ impl SshView {
             .is_some_and(|terminal| terminal.view.read(cx).core().exit_status().is_some());
         if self.view_mode == ViewMode::Workspace && exited {
             // 保留已退出终端的输出，新建连接避免重连失败时丢失现场。
-            self.start_terminal(workspace_id, window, cx);
+            self.start_terminal(workspace_id, None, window, cx);
         }
     }
 
-    fn start_terminal(&mut self, id: SshProfileId, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_terminal(
+        &mut self,
+        id: SshProfileId,
+        initial_directory: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let connection_available = self
             .workspaces
             .iter()
@@ -300,17 +316,21 @@ impl SshView {
         let profile = workspace.profile.clone();
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, async_cx| {
-            let command = service.terminal_command(&profile).await;
+            let command = service
+                .terminal_command(&profile, initial_directory.as_deref())
+                .await;
             let result = match command {
                 Ok(command) => {
                     let executable = command.program.clone();
                     let mut terminal_command = TerminalCommand::new(command.program, command.args);
                     terminal_command.env = command.env;
-                    let result = TerminalCore::start(terminal_command);
-                    if result.is_err() {
-                        service.report_terminal_launch_failure(&executable).await;
+                    match TerminalCore::start(terminal_command) {
+                        Ok(core) => Ok(core),
+                        Err(error) => {
+                            service.report_terminal_launch_failure(&executable).await;
+                            Err(error)
+                        }
                     }
-                    result
                 }
                 Err(error) => Err(ramag_terminal::TerminalError(error.to_string())),
             };
@@ -349,6 +369,15 @@ impl SshView {
                                 .read(cx)
                                 .focus_handle(cx)
                                 .focus(window, cx);
+                        }
+                        if let Some(path) = initial_directory.clone() {
+                            this.enter_terminal_directory_when_ready(
+                                id.clone(),
+                                next_terminal_id,
+                                path,
+                                window,
+                                cx,
+                            );
                         }
                     }
                     Err(error) => {

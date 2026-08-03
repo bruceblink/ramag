@@ -12,7 +12,9 @@ use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use ramag_domain::entities::{SshAuthMode, SshCapability, SshLaunchCommand, SshProfile};
+use ramag_domain::entities::{
+    SshAuthMode, SshCapability, SshLaunchCommand, SshProfile, validate_remote_path,
+};
 use ramag_domain::error::{DomainError, Result};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -76,12 +78,21 @@ impl OpenSshLocator {
 pub fn terminal_command(
     profile: &SshProfile,
     capability: &SshCapability,
+    initial_directory: Option<&str>,
 ) -> Result<SshLaunchCommand> {
     profile.validate().map_err(DomainError::InvalidConfig)?;
     let mut args = vec!["-tt".to_string()];
     args.extend(common_profile_args(profile));
     args.push("--".into());
     args.push(profile.host.clone());
+    if let Some(path) = initial_directory {
+        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+        if !path.starts_with('/') {
+            return Err(DomainError::InvalidConfig(
+                "新终端的远程目录必须是绝对路径".into(),
+            ));
+        }
+    }
     Ok(SshLaunchCommand {
         profile_id: profile.id.clone(),
         program: capability.executable.clone(),
@@ -398,7 +409,8 @@ mod tests {
                 &SshCapability {
                     executable: "/usr/bin/ssh".into(),
                     version: "OpenSSH_test".into(),
-                }
+                },
+                None,
             )
             .is_err()
         );
@@ -410,6 +422,7 @@ mod tests {
                 executable: "/usr/bin/ssh".into(),
                 version: "OpenSSH_test".into(),
             },
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -421,6 +434,24 @@ mod tests {
         assert_eq!(&sftp[sftp.len() - 3..], ["--", "server.example", "sftp"]);
         assert!(sftp.windows(2).any(|args| args == ["-o", "BatchMode=yes"]));
         assert!(!sftp.iter().any(|arg| arg == "StrictHostKeyChecking=no"));
+    }
+
+    #[test]
+    fn terminal_directory_keeps_the_interactive_login_command() {
+        let profile = profile();
+        let capability = SshCapability {
+            executable: "/usr/bin/ssh".into(),
+            version: "OpenSSH_test".into(),
+        };
+
+        let terminal =
+            terminal_command(&profile, &capability, Some("/srv/team's data/$(whoami)")).unwrap();
+
+        assert_eq!(
+            &terminal.args[terminal.args.len() - 2..],
+            ["--", "example.com"]
+        );
+        assert!(terminal_command(&profile, &capability, Some("relative/path")).is_err());
     }
 
     #[test]

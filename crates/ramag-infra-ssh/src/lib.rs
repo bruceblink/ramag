@@ -73,14 +73,20 @@ impl SshDriver for OpenSshDriver {
         run_in_tokio(async move { locator.probe(custom_path).await }).await
     }
 
-    async fn terminal_command(&self, profile: &SshProfile) -> Result<SshLaunchCommand> {
+    async fn terminal_command(
+        &self,
+        profile: &SshProfile,
+        initial_directory: Option<&str>,
+    ) -> Result<SshLaunchCommand> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
         let locator = self.locator.clone();
         let askpass = self.askpass.clone();
         let profile = profile.clone();
+        let initial_directory = initial_directory.map(str::to_owned);
         run_in_tokio(async move {
             let capability = locator.probe(profile.ssh_path.clone()).await?;
-            let mut command = command::terminal_command(&profile, &capability)?;
+            let mut command =
+                command::terminal_command(&profile, &capability, initial_directory.as_deref())?;
             command.env = askpass.environment(&profile)?;
             Ok(command)
         })

@@ -232,9 +232,23 @@ impl SshService {
         self.driver.test_connection(profile).await
     }
 
-    pub async fn terminal_command(&self, profile: &SshProfile) -> Result<SshLaunchCommand> {
+    pub async fn terminal_command(
+        &self,
+        profile: &SshProfile,
+        initial_directory: Option<&str>,
+    ) -> Result<SshLaunchCommand> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
-        self.driver.terminal_command(profile).await
+        if let Some(path) = initial_directory {
+            validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+            if !path.starts_with('/') {
+                return Err(DomainError::InvalidConfig(
+                    "新终端的远程目录必须是绝对路径".into(),
+                ));
+            }
+        }
+        self.driver
+            .terminal_command(profile, initial_directory)
+            .await
     }
 
     pub async fn report_terminal_launch_failure(&self, executable: &str) {

@@ -5,6 +5,7 @@ use gpui_component::input::InputState;
 use ramag_domain::entities::{
     MAX_SSH_ENVIRONMENT_BYTES, MAX_SSH_HOST_BYTES, MAX_SSH_PASSWORD_BYTES, MAX_SSH_PATH_BYTES,
     MAX_SSH_PROFILE_NAME_BYTES, MAX_SSH_USERNAME_BYTES, SshAuthMode, SshProfile, SshProfileId,
+    SshProfileOrigin,
 };
 
 const MAX_PORT_TEXT_BYTES: usize = 5;
@@ -117,6 +118,7 @@ impl ProfileForm {
     pub fn to_profile(
         &self,
         id: Option<SshProfileId>,
+        origin: SshProfileOrigin,
         auth_mode: SshAuthMode,
         production: bool,
         cx: &gpui::App,
@@ -134,6 +136,7 @@ impl ProfileForm {
         let profile = SshProfile {
             id: id.unwrap_or_default(),
             name: value(&self.name),
+            origin,
             environment: optional(value(&self.environment)),
             production,
             host: value(&self.host),

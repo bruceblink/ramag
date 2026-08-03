@@ -23,30 +23,18 @@ impl SshView {
             Some(cx.subscribe_in(&panel, window, Self::on_jumpserver_event));
 
         let panel_for_dialog = panel.clone();
-        let panel_for_cancel = panel.clone();
         let view_for_close = cx.entity().clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let panel = panel_for_dialog.clone();
-            let panel_for_cancel = panel_for_cancel.clone();
             let view_for_close = view_for_close.clone();
             dialog
-                .title("JumpServer 资源")
-                .close_button(false)
-                .on_cancel(move |_, _, app| {
-                    if panel_for_cancel.read(app).is_busy() {
-                        return false;
-                    }
-                    panel_for_cancel.update(app, |_this, cx| {
-                        cx.emit(JumpServerEvent::Cancelled);
-                    });
-                    false
-                })
+                .title("导入连接")
                 .on_close(move |_, _, app| {
                     view_for_close.update(app, |this, _| {
                         this.jumpserver_subscription = None;
                     });
                 })
-                .w(px(920.0))
+                .w(px(1040.0))
                 .pt(px(24.0))
                 .px(px(24.0))
                 .pb(px(14.0))
@@ -136,7 +124,7 @@ impl SshView {
         &mut self,
         _panel: &Entity<JumpServerPanel>,
         event: &JumpServerEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -146,12 +134,7 @@ impl SshView {
                 if let Some(workspace) = self.workspace_mut(&profile.id) {
                     workspace.profile = profile;
                 }
-                self.notice = Some(Notice::info("已保存 JumpServer 资源"));
                 cx.notify();
-            }
-            JumpServerEvent::Cancelled => {
-                self.jumpserver_subscription = None;
-                window.close_dialog(cx);
             }
         }
     }

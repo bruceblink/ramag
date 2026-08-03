@@ -17,8 +17,8 @@ use std::ops::Range;
 use super::SshView;
 use super::model::can_close_terminal;
 use super::render_directory_helpers::{
-    RemoteEntryMenuState, centered_message, directory_counts, directory_counts_at,
-    filtered_entry_indices, remote_breadcrumbs, remote_entry_row,
+    RemoteDirectoryDrag, RemoteEntryMenuState, centered_message, directory_counts,
+    directory_counts_at, filtered_entry_indices, remote_breadcrumbs, remote_entry_row,
 };
 
 const FILE_BROWSER_WIDTH_INITIAL: f32 = 280.0;
@@ -348,6 +348,8 @@ impl SshView {
         let link = cx.theme().link;
         let link_hover = cx.theme().link_hover;
         let muted = cx.theme().muted_foreground;
+        let path_drag = RemoteDirectoryDrag::from_current_path(workspace_id.clone(), path);
+        let workspace_for_prompt = workspace_id.clone();
         let mut path_parts = h_flex()
             .id("ssh-directory-path-scroll")
             .flex_1()
@@ -408,10 +410,17 @@ impl SshView {
                     .hover(move |label| label.text_color(link_hover))
                     .child("路径")
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.prompt_remote_path(workspace_id.clone(), window, cx);
+                        this.prompt_remote_path(workspace_for_prompt.clone(), window, cx);
                     })),
             )
             .child(path_parts)
+            .when_some(path_drag, |breadcrumb, drag| {
+                breadcrumb
+                    .cursor_pointer()
+                    .on_drag(drag, |drag, position, _, cx| {
+                        cx.new(|_| drag.clone().position(position))
+                    })
+            })
     }
 
     fn render_terminal_pane(
@@ -443,6 +452,8 @@ impl SshView {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let accent = cx.theme().accent;
+        let mut drop_background = accent;
+        drop_background.a = 0.08;
 
         let mut tabs_strip = h_flex()
             .id(SharedString::from(format!(
@@ -620,10 +631,39 @@ impl SshView {
                     )
                     .into_any_element()
             });
+        let can_drop_workspace = workspace_id.clone();
+        let style_workspace = workspace_id.clone();
+        let dropped_workspace = workspace_id.clone();
         v_flex()
+            .id("ssh-terminal-drop-target")
+            .debug_selector(|| "ssh-terminal-drop-target".into())
             .flex_1()
             .min_w_0()
             .h_full()
+            .can_drop(move |value, _, _| {
+                value
+                    .downcast_ref::<RemoteDirectoryDrag>()
+                    .is_some_and(|drag| drag.workspace_id == can_drop_workspace)
+            })
+            .drag_over(move |style, drag: &RemoteDirectoryDrag, _, _| {
+                if drag.workspace_id == style_workspace {
+                    style.border_2().border_color(accent).bg(drop_background)
+                } else {
+                    style
+                }
+            })
+            .on_drop(
+                cx.listener(move |this, drag: &RemoteDirectoryDrag, window, cx| {
+                    if drag.workspace_id == dropped_workspace {
+                        this.start_terminal_in_directory(
+                            dropped_workspace.clone(),
+                            drag.path.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                }),
+            )
             .child(tabs)
             .child(
                 div()

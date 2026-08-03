@@ -1,14 +1,16 @@
 //! SSH 连接管理页；复用数据库连接页的限宽工具栏与紧凑行布局。
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
-    px,
+    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, img,
+    prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
     h_flex, v_flex,
 };
-use ramag_domain::entities::{SshAuthMode, SshProfile, contains_case_insensitive};
+use ramag_domain::entities::{
+    SshAuthMode, SshProfile, SshProfileOrigin, contains_case_insensitive,
+};
 
 use super::SshView;
 
@@ -78,7 +80,7 @@ impl SshView {
                             .outline()
                             .small()
                             .icon(ramag_ui::icons::download())
-                            .tooltip("从 JumpServer 获取资源")
+                            .tooltip("导入连接")
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.open_jumpserver_assets(window, cx);
                             })),
@@ -135,36 +137,13 @@ impl SshView {
                 .items_center()
                 .justify_center()
                 .child(
-                    h_flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .id("empty-import-jumpserver-profile")
-                                .debug_selector(|| "empty-import-jumpserver-profile".into())
-                                .child(
-                                    ramag_ui::clickable_button(
-                                        "empty-import-jumpserver-profile-button",
-                                    )
-                                    .outline()
-                                    .icon(ramag_ui::icons::download())
-                                    .tooltip("从 JumpServer 获取资源")
-                                    .on_click(cx.listener(
-                                        |this, _: &ClickEvent, window, cx| {
-                                            this.open_jumpserver_assets(window, cx);
-                                        },
-                                    )),
-                                ),
-                        )
-                        .child(
-                            ramag_ui::clickable_button("empty-add-ssh-profile")
-                                .primary()
-                                .icon(IconName::Plus)
-                                .label("新建")
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.open_profile_create(window, cx);
-                                })),
-                        ),
+                    ramag_ui::clickable_button("empty-add-ssh-profile")
+                        .primary()
+                        .icon(IconName::Plus)
+                        .label("新建")
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.open_profile_create(window, cx);
+                        })),
                 )
                 .into_any_element()
         } else if visible_count == 0 {
@@ -232,6 +211,7 @@ impl SshView {
         let environment = profile.environment.clone().unwrap_or_default();
         let production = profile.production;
         let name = profile.name.clone();
+        let jumpserver = is_jumpserver_profile(&profile);
         let selected = self.active_workspace_id.as_ref() == Some(&id);
         let connection_available = self.profile_connection_available(&profile);
         let border = cx.theme().border;
@@ -270,7 +250,22 @@ impl SshView {
                     .w(px(24.0))
                     .flex()
                     .justify_center()
-                    .child(Icon::new(IconName::Network).small().text_color(muted)),
+                    .child(if jumpserver {
+                        div()
+                            .id(("ssh-profile-jumpserver-icon", index))
+                            .debug_selector(move || format!("ssh-profile-jumpserver-icon-{index}"))
+                            .child(
+                                img(ramag_ui::icons::jumpserver_brand_icon())
+                                    .size(px(18.0))
+                                    .flex_none(),
+                            )
+                            .into_any_element()
+                    } else {
+                        Icon::new(IconName::Network)
+                            .small()
+                            .text_color(muted)
+                            .into_any_element()
+                    }),
             )
             .child(
                 div()
@@ -383,6 +378,32 @@ fn profile_matches_query(profile: &SshProfile, query: &str) -> bool {
             .is_some_and(|environment| contains_case_insensitive(environment, query))
 }
 
+fn is_jumpserver_profile(profile: &SshProfile) -> bool {
+    profile.origin == SshProfileOrigin::JumpServer
+        || (profile.auth_mode == SshAuthMode::Password
+            && is_legacy_jumpserver_username(&profile.username))
+}
+
+fn is_legacy_jumpserver_username(username: &str) -> bool {
+    let mut parts = username.split('#');
+    let (Some(login), Some(account), Some(asset_id)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    !login.is_empty() && !account.is_empty() && parts.next().is_none() && looks_like_uuid(asset_id)
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
 fn secondary_column(width: f32, text: String, color: gpui::Hsla) -> impl IntoElement {
     div()
         .flex_none()
@@ -433,9 +454,9 @@ pub(super) fn environment_badge_colors(
 
 #[cfg(test)]
 mod tests {
-    use ramag_domain::entities::SshProfile;
+    use ramag_domain::entities::{SshAuthMode, SshProfile, SshProfileOrigin};
 
-    use super::{environment_badge_colors, profile_matches_query};
+    use super::{environment_badge_colors, is_jumpserver_profile, profile_matches_query};
 
     #[test]
     fn environment_presets_have_distinct_badge_colors() {
@@ -457,5 +478,20 @@ mod tests {
         assert!(profile_matches_query(&profile, "alice"));
         assert!(profile_matches_query(&profile, "staging"));
         assert!(!profile_matches_query(&profile, "missing"));
+    }
+
+    #[test]
+    fn jumpserver_icon_supports_explicit_and_legacy_profiles() {
+        let mut explicit = SshProfile::new("asset", "jump.example");
+        explicit.origin = SshProfileOrigin::JumpServer;
+        assert!(is_jumpserver_profile(&explicit));
+
+        let mut legacy = SshProfile::new("asset", "jump.example");
+        legacy.auth_mode = SshAuthMode::Password;
+        legacy.username = "login#root#00000000-0000-0000-0000-000000000000".into();
+        assert!(is_jumpserver_profile(&legacy));
+
+        legacy.username = "ordinary-user".into();
+        assert!(!is_jumpserver_profile(&legacy));
     }
 }
