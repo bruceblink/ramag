@@ -8,8 +8,8 @@ use gpui::{
     div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
-    h_flex, input::Input, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    button::ButtonVariants as _, h_flex, input::Input, v_flex,
 };
 
 impl VcsView {
@@ -133,15 +133,25 @@ impl VcsView {
                 ),
             )
             .child(
+                ramag_ui::clickable_button("vcs-repo-add")
+                    .ghost()
+                    .small()
+                    .icon(IconName::FolderOpen)
+                    .tooltip("打开")
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.pick_directory(cx);
+                    })),
+            )
+            .child(
                 ramag_ui::clickable_button("vcs-repo-clone")
                     .ghost()
                     .small()
-                    .icon(ramag_ui::icons::download())
-                    .tooltip("克隆")
+                    .icon(ramag_ui::icons::git_clone())
+                    .tooltip("克隆远程仓库")
                     .disabled(busy)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.show_clone_panel = !this.show_clone_panel;
-                        cx.notify();
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_clone_dialog(window, cx);
                     })),
             )
             .child(
@@ -153,17 +163,6 @@ impl VcsView {
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.pick_init_directory(cx);
-                    })),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-repo-add")
-                    .ghost()
-                    .small()
-                    .icon(IconName::FolderOpen)
-                    .tooltip("打开")
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.pick_directory(cx);
                     })),
             );
 
@@ -242,12 +241,7 @@ impl VcsView {
         if let Some(banner) = self.render_error_banner(cx) {
             root = root.child(banner);
         }
-        root.child(header)
-            .when(self.show_clone_panel, |c| {
-                c.child(self.render_clone_panel(cx))
-            })
-            .child(body)
-            .into_any_element()
+        root.child(header).child(body).into_any_element()
     }
 
     fn filtered_repo_indices(
@@ -268,14 +262,13 @@ impl VcsView {
         let mut indices: Vec<usize> = (0..repos.len())
             .filter(|&index| repo_matches_query(&repos[index], query_lower))
             .collect();
-        // 收藏优先，其余按最近打开时间倒序（未打开过的按名字排在最后）。
+        // 最近打开优先；未打开过的按名字排在最后。
         indices.sort_by(|&left, &right| {
             let left = &repos[left];
             let right = &repos[right];
             right
-                .favorite
-                .cmp(&left.favorite)
-                .then_with(|| right.last_opened_at.cmp(&left.last_opened_at))
+                .last_opened_at
+                .cmp(&left.last_opened_at)
                 .then_with(|| left.name.cmp(&right.name))
         });
         let indices = Rc::new(indices);
@@ -288,82 +281,110 @@ impl VcsView {
         indices
     }
 
-    /// Clone 面板（`show_clone_panel = true` 时在 header 下方内联展示）
-    fn render_clone_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let border = theme.border;
-        let bg = theme.background;
-        let busy = self.loading || self.busy || self.directory_picker_busy;
-        let dest_label = self
-            .clone_dest_path
-            .as_ref()
-            .and_then(|p| p.to_str().map(str::to_string))
-            .unwrap_or_else(|| "点击选择目标目录".into());
-
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap(px(8.0))
-            .px(px(24.0))
-            .py(px(10.0))
-            .border_b_1()
-            .border_color(border)
-            .bg(bg)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.clone_url_input).small()),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-clone-pick-dest")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Folder)
-                    .label(dest_label)
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.pick_clone_destination(cx);
-                    })),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-clone-execute")
-                    .primary()
-                    .small()
-                    .icon(ramag_ui::icons::download())
-                    .label("克隆")
-                    .disabled(busy || self.clone_dest_path.is_none())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        let url = this.clone_url_input.read(cx).value().trim().to_string();
-                        if url.is_empty() {
-                            this.error = Some("请输入仓库 URL".into());
-                            cx.notify();
-                            return;
-                        }
-                        let Some(dest) = this.clone_dest_path.clone() else {
-                            return;
-                        };
-                        // 目标路径 = 所选父目录 / 从 URL 推导的仓库名
-                        let Some(repo_name) = clone_repo_name(&url) else {
-                            this.error = Some("无法从 Clone 地址推导仓库名".into());
-                            cx.notify();
-                            return;
-                        };
-                        let dest_full = dest.join(repo_name);
-                        this.clone_repo_async(url, dest_full, cx);
-                    })),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-clone-cancel")
-                    .ghost()
-                    .small()
-                    .label("取消")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.show_clone_panel = false;
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
+    /// Clone 使用独立对话框，避免临时表单挤压仓库列表布局。
+    fn open_clone_dialog(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.clone_dest_path = None;
+        self.clone_url_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let content_view = view.clone();
+            dialog
+                .title(ramag_ui::closable_dialog_title(
+                    "vcs-clone-close",
+                    "克隆仓库",
+                    |_, _| {},
+                ))
+                .close_button(false)
+                .width(px(600.0))
+                .margin_top(px(150.0))
+                .content(move |content, _, app| {
+                    let input = content_view.read(app).clone_url_input.clone();
+                    let destination = content_view
+                        .read(app)
+                        .clone_dest_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "选择目标父目录".into());
+                    let busy = content_view.read(app).directory_picker_busy;
+                    let pick_view = content_view.clone();
+                    let clone_view = content_view.clone();
+                    content.child(
+                        v_flex()
+                            .w_full()
+                            .gap(px(12.0))
+                            .child(Input::new(&input).small())
+                            .child(
+                                ramag_ui::clickable_button("vcs-clone-pick-dest")
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::Folder)
+                                    .label(destination)
+                                    .disabled(busy)
+                                    .on_click(move |_: &ClickEvent, _, app| {
+                                        pick_view.update(app, |this, cx| {
+                                            this.pick_clone_destination(cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        ramag_ui::clickable_button("vcs-clone-cancel")
+                                            .ghost()
+                                            .small()
+                                            .label("取消")
+                                            .on_click(|_: &ClickEvent, window, app| {
+                                                window.close_dialog(app);
+                                            }),
+                                    )
+                                    .child(
+                                        ramag_ui::clickable_button("vcs-clone-execute")
+                                            .primary()
+                                            .small()
+                                            .label("克隆")
+                                            .disabled(
+                                                content_view.read(app).clone_dest_path.is_none(),
+                                            )
+                                            .on_click(move |_: &ClickEvent, window, app| {
+                                                let started = clone_view.update(app, |this, cx| {
+                                                    let url = this
+                                                        .clone_url_input
+                                                        .read(cx)
+                                                        .value()
+                                                        .trim()
+                                                        .to_string();
+                                                    let Some(parent) = this.clone_dest_path.clone()
+                                                    else {
+                                                        return false;
+                                                    };
+                                                    let Some(name) = clone_repo_name(&url) else {
+                                                        this.error = Some(
+                                                            "请输入可识别仓库名的 Clone 地址"
+                                                                .into(),
+                                                        );
+                                                        cx.notify();
+                                                        return false;
+                                                    };
+                                                    this.clone_repo_async(
+                                                        url,
+                                                        parent.join(name),
+                                                        cx,
+                                                    );
+                                                    true
+                                                });
+                                                if started {
+                                                    window.close_dialog(app);
+                                                }
+                                            }),
+                                    ),
+                            ),
+                    )
+                })
+        });
     }
 }
 
@@ -407,11 +428,8 @@ fn repo_row(
 
     let path_for_open = r.path.clone();
     let path_for_remove = r.path.clone();
-    let path_for_favorite = r.path.clone();
     let row_id = SharedString::from(format!("vcs-repo-row-{idx}-{}", r.id));
     let del_id = SharedString::from(format!("vcs-repo-del-{idx}-{}", r.id));
-    let favorite_id = SharedString::from(format!("vcs-repo-fav-{idx}-{}", r.id));
-    let is_favorite = r.favorite;
 
     let mono = cx.theme().mono_font_family.clone();
 
@@ -466,33 +484,14 @@ fn repo_row(
                 .text_ellipsis()
                 .child(super::inline_text_preview(&r.path, 240)),
         )
-        // 操作按钮组（收藏 + 移除；mouse_down 拦冒泡避免触发整行打开）
+        // 操作按钮组；mouse_down 拦冒泡避免触发整行打开。
         .child(
             h_flex()
                 .flex_none()
                 .gap(px(4.0))
-                .w(px(80.0))
+                .w(px(36.0))
                 .justify_end()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    ramag_ui::clickable_button(favorite_id)
-                        .ghost()
-                        .small()
-                        .icon(if is_favorite {
-                            IconName::StarFill
-                        } else {
-                            IconName::Star
-                        })
-                        .tooltip(if is_favorite {
-                            "取消收藏"
-                        } else {
-                            "收藏"
-                        })
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.toggle_repo_favorite(path_for_favorite.clone(), cx);
-                        })),
-                )
                 .child(
                     ramag_ui::clickable_button(del_id)
                         .ghost()

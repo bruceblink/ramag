@@ -308,7 +308,7 @@ impl SshView {
                                 .text_xs()
                                 .text_color(danger)
                                 .bg(production_bg)
-                                .child("生产"),
+                                .child("只读"),
                         )
                     }),
             )

@@ -54,7 +54,7 @@ pub struct SshView {
     search: Entity<InputState>,
     query: String,
     directory_search: Entity<InputState>,
-    workspace_resize: Entity<ResizableState>,
+    workspace_resizes: HashMap<SshProfileId, Entity<ResizableState>>,
     focused_search_once: bool,
     deleting_profile: bool,
     profile_form_subscription: Option<Subscription>,
@@ -75,14 +75,15 @@ pub struct SshView {
 
 impl SshView {
     pub fn new(service: Arc<SshService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search =
-            cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索连接"));
+        let search = cx.new(|cx| {
+            ramag_ui::bounded_search_input(window, cx)
+                .placeholder("搜索连接（名称 / 地址 / 用户 / 环境）")
+        });
         let directory_search = cx.new(|cx| {
             ramag_ui::bounded_search_input(window, cx)
                 .placeholder("搜索名称")
                 .clean_on_escape()
         });
-        let workspace_resize = cx.new(|_| ResizableState::default());
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
             &search,
@@ -110,12 +111,6 @@ impl SshView {
                 }
             },
         ));
-        subscriptions.push(ramag_ui::persist_resizable_sizes(
-            &workspace_resize,
-            "split_ssh_workspace",
-            window,
-            cx,
-        ));
         let mut this = Self {
             service,
             profiles: Arc::new(Vec::new()),
@@ -125,7 +120,7 @@ impl SshView {
             search,
             query: String::new(),
             directory_search,
-            workspace_resize,
+            workspace_resizes: HashMap::new(),
             focused_search_once: false,
             deleting_profile: false,
             profile_form_subscription: None,

@@ -5,8 +5,8 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _,
-    button::ButtonVariants as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    v_flex,
 };
 
 use super::helpers::{FileTabSource, GroupKind};
@@ -59,11 +59,6 @@ impl VcsView {
             &tab.source,
             FileTabSource::Changes(GroupKind::Staged | GroupKind::Unstaged)
         );
-        let diff_options_supported = matches!(
-            &tab.source,
-            FileTabSource::Changes(GroupKind::Staged | GroupKind::Unstaged)
-                | FileTabSource::Commit { .. }
-        );
         let (path, kind, kind_tag): (String, GroupKind, String) = match &tab.source {
             FileTabSource::Changes(k) => {
                 let tag = match k {
@@ -93,7 +88,6 @@ impl VcsView {
             &path,
             kind_copy,
             blame_supported,
-            diff_options_supported,
             fg,
             accent,
             mono.clone(),
@@ -237,7 +231,6 @@ impl VcsView {
         path: &str,
         _kind: GroupKind,
         blame_supported: bool,
-        diff_options_supported: bool,
         fg: gpui::Hsla,
         accent: gpui::Hsla,
         mono: SharedString,
@@ -272,20 +265,6 @@ impl VcsView {
             .tooltip(if is_full { "标准" } else { "全文" })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.set_diff_view_mode(this.diff_view_mode.toggled(), cx);
-            }));
-        let ignore_whitespace_btn = ramag_ui::clickable_button("vcs-diff-ignore-whitespace")
-            .ghost()
-            .xsmall()
-            .label("−ws")
-            .selected(self.diff_ignore_whitespace)
-            .tooltip(if self.diff_ignore_whitespace {
-                "计入空白"
-            } else {
-                "忽略空白"
-            })
-            .disabled(!diff_options_supported)
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.toggle_diff_ignore_whitespace(cx);
             }));
         let fullscreen_btn = ramag_ui::clickable_button("vcs-diff-fullscreen")
             .ghost()
@@ -335,7 +314,6 @@ impl VcsView {
                 row.child(div().text_xs().text_color(accent).child("blame 加载中…"))
             })
             .child(blame_btn)
-            .child(ignore_whitespace_btn)
             .child(view_mode_btn)
             .child(fullscreen_btn)
             .into_any_element()

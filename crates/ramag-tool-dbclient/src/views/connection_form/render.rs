@@ -166,7 +166,7 @@ impl Render for ConnectionFormPanel {
                     .items_end()
                     .gap(px(8.0))
                     .child(div().flex_1().min_w_0().child(field_row(
-                        "从 URI 填充（可选）",
+                        "连接 URI（编辑回填不含密码）",
                         Input::new(&self.uri).disabled(self.saving),
                     )))
                     .child(

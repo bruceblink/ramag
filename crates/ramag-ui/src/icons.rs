@@ -17,6 +17,12 @@ pub fn git_branch() -> Icon {
     Icon::default().path("icons/git-branch.svg")
 }
 
+/// Git 仓库从远程克隆到本地。
+#[inline]
+pub fn git_clone() -> Icon {
+    Icon::default().path("icons/git-clone.svg")
+}
+
 #[inline]
 pub fn refresh_cw() -> Icon {
     Icon::default().path("icons/refresh-cw.svg")

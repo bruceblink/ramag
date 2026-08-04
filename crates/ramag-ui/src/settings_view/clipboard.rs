@@ -3,11 +3,15 @@
 use super::{SettingsView, pages::settings_card};
 use crate::platform::{auto_paste_description, clipboard_hotkey};
 use gpui::{
-    AnyElement, Context, IntoElement, ParentElement, Styled, Window, div,
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div,
     prelude::FluentBuilder as _, px,
 };
-use gpui_component::{ActiveTheme, Disableable as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex,
+    notification::Notification, v_flex,
+};
 use ramag_app::HotkeyState;
+use tracing::error;
 
 impl SettingsView {
     pub(super) fn render_clipboard_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -42,22 +46,62 @@ impl SettingsView {
                 },
             )
             .child(
-                settings_card("功能开关", border).child(clipboard_toggle_row(
-                    "settings-clip-enabled",
-                    "启用剪贴板",
-                    format!(
-                        "显示工具入口、后台记录剪贴历史并注册全局热键 {}",
-                        clipboard_hotkey(settings.alternate_hotkey)
-                    ),
-                    settings.enabled,
-                    disabled,
-                    cx.listener(|this, _: &bool, _, cx| {
-                        let mut next = this.clipboard.clone();
-                        next.enabled = !next.enabled;
-                        this.save_clipboard(next, cx);
+                settings_card("功能开关", border)
+                    .child(clipboard_toggle_row(
+                        "settings-clip-enabled",
+                        "启用剪贴板",
+                        format!(
+                            "显示工具入口、后台记录剪贴历史并注册全局热键 {}",
+                            clipboard_hotkey(settings.alternate_hotkey)
+                        ),
+                        settings.enabled,
+                        disabled,
+                        cx.listener(|this, _: &bool, _, cx| {
+                            let mut next = this.clipboard.clone();
+                            next.enabled = !next.enabled;
+                            this.save_clipboard(next, cx);
+                        }),
+                        muted,
+                    ))
+                    .when(settings.enabled, |card| {
+                        card.child(div().w_full().border_t_1().border_color(border))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(16.0))
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap(px(2.0))
+                                            .child(div().text_sm().child("历史数据"))
+                                            .child(div().text_xs().text_color(muted).child(
+                                                "删除本机保存的全部剪贴记录及关联媒体文件。",
+                                            )),
+                                    )
+                                    .child(
+                                        crate::clickable_button("settings-clip-clear-history")
+                                            .small()
+                                            .danger()
+                                            .icon(crate::icons::trash())
+                                            .label(if self.clearing_clipboard_history {
+                                                "正在清空…"
+                                            } else {
+                                                "清空全部历史"
+                                            })
+                                            .disabled(self.clearing_clipboard_history)
+                                            .on_click(cx.listener(
+                                                |this, _: &ClickEvent, window, cx| {
+                                                    this.confirm_clear_clipboard_history(
+                                                        window, cx,
+                                                    );
+                                                },
+                                            )),
+                                    ),
+                            )
                     }),
-                    muted,
-                )),
             )
             .when(settings.enabled, |page| {
                 page.child(
@@ -108,6 +152,49 @@ impl SettingsView {
                 )
             })
             .into_any_element()
+    }
+
+    fn confirm_clear_clipboard_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.clearing_clipboard_history {
+            return;
+        }
+        let entity = cx.entity().clone();
+        crate::open_confirm(
+            "清空剪贴历史",
+            "将永久删除全部历史条目及关联媒体文件。此操作不可撤销。",
+            "清空",
+            true,
+            move |_window, cx| {
+                entity.update(cx, |this, cx| this.clear_clipboard_history(cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn clear_clipboard_history(&mut self, cx: &mut Context<Self>) {
+        if self.clearing_clipboard_history {
+            return;
+        }
+        self.clearing_clipboard_history = true;
+        cx.notify();
+
+        let service = self.clipboard_service.clone();
+        cx.spawn(async move |this, cx| {
+            let result = service.clear().await;
+            let _ = this.update(cx, |this, cx| {
+                this.clearing_clipboard_history = false;
+                this.pending_notification = Some(match result {
+                    Ok(()) => Notification::success("剪贴历史已清空"),
+                    Err(error) => {
+                        error!(error = %error, "clear clipboard history from settings failed");
+                        Notification::error(format!("清空未完全完成：{error}"))
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 

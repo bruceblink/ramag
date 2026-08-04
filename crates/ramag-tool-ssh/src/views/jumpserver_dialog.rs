@@ -84,8 +84,9 @@ impl JumpServerPanel {
                 .masked(true)
                 .placeholder("JumpServer 登录密码")
         });
-        let search =
-            cx.new(|cx| ramag_ui::bounded_search_input(window, cx).placeholder("搜索资源"));
+        let search = cx.new(|cx| {
+            ramag_ui::bounded_search_input(window, cx).placeholder("搜索资源（名称 / 地址 / 平台）")
+        });
 
         let mut subscriptions = Vec::new();
         for input in [&base_url, &ssh_port, &username, &password] {
@@ -403,7 +404,9 @@ pub(super) fn node_is_root(nodes: &[JumpServerNode], node: &JumpServerNode) -> b
 
 pub(super) fn detail_unavailable_message(detail: &JumpServerAssetDetail) -> Option<String> {
     if !detail.ssh_enabled {
-        return Some("该资源未开放 SSH 协议，不能导入为 SSH 连接。".into());
+        return Some(
+            "该资源未开放 SSH 协议（可能仅支持 RDP 等其他协议），无法导入为 SSH 连接。".into(),
+        );
     }
     if detail
         .accounts

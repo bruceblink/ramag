@@ -67,6 +67,7 @@ impl SshView {
             path_favorites,
         } = preference;
         self.workspaces.clear();
+        self.workspace_resizes.clear();
         for saved in workspaces {
             let Some(profile) = self
                 .profiles
@@ -499,6 +500,7 @@ impl SshView {
     fn close_workspace(&mut self, id: SshProfileId, window: &mut Window, cx: &mut Context<Self>) {
         self.workspaces
             .retain(|workspace| workspace.profile_id() != &id);
+        self.workspace_resizes.remove(&id);
         if self.active_workspace_id.as_ref() == Some(&id) {
             self.active_workspace_id = self
                 .workspaces

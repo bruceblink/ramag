@@ -35,7 +35,7 @@ impl VcsView {
                 .pl(px(4.0))
                 .text_xs()
                 .text_color(muted_fg)
-                .child("暂无 stash（点击「储藏」创建）")
+                .child("暂无 stash；请在「变更」中创建")
                 .into_any_element();
         }
         // Files panel 搜索框在 Stash 模式按描述过滤（与 Changes/Project 的路径过滤语义对齐）

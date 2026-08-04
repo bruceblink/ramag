@@ -44,7 +44,7 @@ impl SshView {
                 div()
                     .text_xs()
                     .text_color(if manager_selected { fg } else { muted })
-                    .child("连接"),
+                    .child(crate::TOOL_NAME),
             );
         if manager_selected {
             let mut active_bg = accent;
@@ -108,7 +108,7 @@ impl SshView {
                             muted
                         })
                         .child(if workspace.profile.production {
-                            "生产"
+                            "只读"
                         } else {
                             "SSH"
                         }),

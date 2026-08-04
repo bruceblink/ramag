@@ -1,15 +1,13 @@
-//! 侧栏：分支行（名字 + 上游同步，操作走右键菜单）+ 本地段底部「新建分支」输入行。
+//! 侧栏分支行：名字、上游同步与操作菜单。
 //! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Styled, div, prelude::FluentBuilder as _, px,
+    Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme, Icon, Sizable as _,
     button::ButtonVariants as _,
     h_flex,
-    input::Input,
     menu::{ContextMenuExt as _, PopupMenu},
 };
 use ramag_domain::entities::Branch;
@@ -19,42 +17,6 @@ use super::confirm_dialogs::open_confirm_dialog;
 use super::helpers::{BranchOp, checkout_remote_branch_op};
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
-
-impl VcsView {
-    /// 本地段底部「新建分支」输入行（name 输入 + 创建按钮，固定 28px 高）
-    pub(super) fn render_create_branch_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.busy;
-        let has_head = self
-            .status
-            .as_ref()
-            .and_then(|status| status.head_commit.as_ref())
-            .is_some();
-        h_flex()
-            .h(px(LEFT_ROW_H))
-            .flex_none()
-            .gap(px(4.0))
-            .items_center()
-            .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&self.create_branch_input)
-                        .xsmall()
-                        .into_any_element(),
-                ),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-branch-create")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .when(!has_head, |button| button.tooltip("请先提交"))
-                    .disabled(busy || !has_head)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.handle_create_branch(cx);
-                    })),
-            )
-            .into_any_element()
-    }
-}
 
 /// 单条分支行：图标 + 名字 + 上游同步；操作通过右键菜单触发（固定 28px 高）
 pub(super) fn branch_row(

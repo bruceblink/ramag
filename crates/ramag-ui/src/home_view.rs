@@ -24,8 +24,9 @@ const RAMAG_LOGO: &[&str] = &[
     "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ",
 ];
 const TOOL_CARD_WIDTH: f32 = 280.0;
+const TOOL_CARD_HEIGHT: f32 = 112.0;
 const TOOL_CARD_GAP: f32 = 16.0;
-const TOOL_GRID_WIDTH: f32 = TOOL_CARD_WIDTH * 2.0 + TOOL_CARD_GAP;
+const TOOL_GRID_WIDTH: f32 = TOOL_CARD_WIDTH * 3.0 + TOOL_CARD_GAP * 2.0;
 
 pub struct HomeView {
     registry: Arc<ToolRegistry>,
@@ -63,6 +64,7 @@ impl Render for HomeView {
             v_flex()
                 .id(card_id)
                 .w(px(TOOL_CARD_WIDTH))
+                .h(px(TOOL_CARD_HEIGHT))
                 .p(px(20.0))
                 .gap(px(10.0))
                 .bg(card_bg)
@@ -102,7 +104,7 @@ impl Render for HomeView {
                     .p(px(32.0))
                     .gap(px(36.0))
                     .items_center()
-                    .child(render_logo(mono, accent, muted_fg))
+                    .child(render_logo(mono, accent))
                     .child(
                         div()
                             .w_full()
@@ -118,7 +120,7 @@ impl Render for HomeView {
     }
 }
 
-fn render_logo(mono: SharedString, accent: gpui::Hsla, muted_fg: gpui::Hsla) -> impl IntoElement {
+fn render_logo(mono: SharedString, accent: gpui::Hsla) -> impl IntoElement {
     let mut lines = Vec::with_capacity(RAMAG_LOGO.len());
     for (i, line) in RAMAG_LOGO.iter().enumerate() {
         let alpha = 1.0 - (i as f32) * 0.06;
@@ -133,21 +135,8 @@ fn render_logo(mono: SharedString, accent: gpui::Hsla, muted_fg: gpui::Hsla) -> 
 
     v_flex()
         .items_center()
-        .gap(px(18.0))
-        .child(
-            v_flex()
-                .font_family(mono.clone())
-                .text_size(px(14.0))
-                .font_weight(gpui::FontWeight::BOLD)
-                .children(lines),
-        )
-        .child(
-            div()
-                .font_family(mono)
-                .text_size(px(12.0))
-                .text_color(muted_fg)
-                .child(SharedString::from(
-                    "$ minimal by design · local by default_",
-                )),
-        )
+        .font_family(mono)
+        .text_size(px(14.0))
+        .font_weight(gpui::FontWeight::BOLD)
+        .children(lines)
 }

@@ -10,7 +10,7 @@ use ramag_domain::entities::{
 };
 
 use super::profile_form::ProfileForm;
-use super::ssh_command::{MAX_SSH_COMMAND_BYTES, parse_ssh_command};
+use super::ssh_command::{MAX_SSH_COMMAND_BYTES, parse_ssh_command, profile_ssh_command};
 
 #[derive(Debug, Clone)]
 pub(super) enum ProfileFormEvent {
@@ -73,10 +73,15 @@ impl SshProfileFormPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let form = ProfileForm::new(window, cx);
+        let command_value = profile
+            .as_ref()
+            .map(profile_ssh_command)
+            .unwrap_or_default();
         let command = cx.new(|cx| {
             InputState::new(window, cx)
                 .validate(|value, _| value.len() <= MAX_SSH_COMMAND_BYTES)
                 .placeholder("ssh user@host -p 22 -i /path/to/key")
+                .default_value(command_value)
         });
         form.set_profile(profile.as_ref(), window, cx);
         let editing_id = profile.as_ref().map(|profile| profile.id.clone());

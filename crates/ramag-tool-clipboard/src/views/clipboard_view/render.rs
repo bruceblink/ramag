@@ -9,7 +9,6 @@ use gpui_component::{
     h_flex, input::Input, v_flex,
 };
 use ramag_domain::entities::ClipKind;
-use ramag_ui::icons;
 
 use super::ClipboardView;
 use crate::actions::{
@@ -113,16 +112,6 @@ impl ClipboardView {
                             .flex_1()
                             .min_w_0()
                             .child(Input::new(&self.search).small()),
-                    )
-                    .child(
-                        ramag_ui::clickable_button("clip-clear-history")
-                            .danger()
-                            .small()
-                            .icon(icons::trash())
-                            .tooltip("清空历史")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.confirm_clear(window, cx);
-                            })),
                     ),
             )
             .child(

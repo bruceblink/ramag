@@ -9,7 +9,6 @@ use gpui_component::{
     h_flex,
     menu::{PopupMenu, PopupMenuItem},
     resizable::{h_resizable, resizable_panel, v_resizable},
-    scroll::ScrollableElement as _,
     v_flex,
 };
 
@@ -78,6 +77,8 @@ impl VcsView {
                     .size_range(px(LEFT_WIDTH_MIN)..px(LEFT_WIDTH_MAX))
                     .child(
                         div()
+                            .id("vcs-files-column")
+                            .debug_selector(|| "vcs-files-column".into())
                             .size_full()
                             .border_r_1()
                             .border_color(border)
@@ -102,7 +103,6 @@ impl VcsView {
                         .size_full()
                         .px(px(10.0))
                         .py(px(6.0))
-                        .overflow_y_scrollbar()
                         .child(self.render_files_content(cx)),
                 ),
             )
@@ -214,6 +214,9 @@ impl VcsView {
                         }
                     })),
             );
+        }
+        if matches!(active, FilesViewMode::Changes) {
+            search_row = search_row.child(self.render_stash_save_button(cx));
         }
         if self.repo.is_some() {
             let history_visible = self.history_pane_visible;
@@ -394,17 +397,17 @@ impl VcsView {
         .into_any_element()
     }
 
-    fn render_stash_view(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_stash_save_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_changes = self
             .status
             .as_ref()
             .map(|s| s.files.iter().any(|f| !f.is_conflicted()))
             .unwrap_or(false);
-        let save_btn = ramag_ui::clickable_button("vcs-stash-save")
+        ramag_ui::clickable_button("vcs-stash-save")
             .outline()
             .xsmall()
             .icon(IconName::Inbox)
-            .label("储藏")
+            .tooltip("储藏当前变更")
             .disabled(
                 self.busy
                     || !has_changes
@@ -428,13 +431,12 @@ impl VcsView {
                     window,
                     cx,
                 );
-            }));
-        v_flex()
-            .size_full()
-            .gap(px(8.0))
-            .child(h_flex().child(save_btn))
-            .child(self.render_stash_list_body(cx))
+            }))
             .into_any_element()
+    }
+
+    fn render_stash_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_stash_list_body(cx)
     }
 
     fn render_history_pane(&self, cx: &mut Context<Self>) -> AnyElement {

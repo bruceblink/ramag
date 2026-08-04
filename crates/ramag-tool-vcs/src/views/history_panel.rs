@@ -110,11 +110,10 @@ impl VcsView {
 
         v_flex()
             .size_full()
-            .px(px(12.0))
             .pt(px(6.0))
             .pb(px(8.0))
             .gap(px(0.0))
-            .child(path_banner)
+            .child(div().px(px(12.0)).child(path_banner))
             .child(body)
             .into_any_element()
     }
@@ -174,7 +173,7 @@ impl VcsView {
     }
 
     /// 双栏：左分支 / 右半（含 commit graph + 内部 detail resizable）。
-    /// 外层永远 2 children 与上半共用 `ide_left_resize` 同步对齐；reflog 模式右栏 detail 隐藏
+    /// 左栏与上方文件区共享分栏状态；reflog 模式右栏 detail 隐藏。
     #[allow(clippy::too_many_arguments)]
     fn render_history_three_panel(
         &self,
@@ -215,8 +214,7 @@ impl VcsView {
             div().size_full().min_w_0().child(middle).into_any_element()
         };
 
-        // 外层与上半共用 `ide_left_resize`：两边都是 2 子项（左 / 右半），共享 state
-        // → 上下左栏宽度 100% 同步对齐（拖一边另一边跟随，IDEA / VSCode 标准做法）
+        // 上下区域直接绑定同一分栏状态，首次布局、窗口缩放和拖动都只使用一个宽度来源。
         gpui_component::resizable::h_resizable("vcs-history-bottom")
             .with_state(&self.ide_left_resize)
             .child(
@@ -225,6 +223,8 @@ impl VcsView {
                     .size_range(px(220.0)..px(600.0))
                     .child(
                         div()
+                            .id("vcs-history-left-column")
+                            .debug_selector(|| "vcs-history-left-column".into())
                             .size_full()
                             .border_r_1()
                             .border_color(border)
@@ -233,7 +233,7 @@ impl VcsView {
             )
             .child(
                 gpui_component::resizable::resizable_panel()
-                    .child(div().size_full().child(right_part)),
+                    .child(div().size_full().min_w_0().child(right_part)),
             )
             .into_any_element()
     }
@@ -309,7 +309,7 @@ impl VcsView {
 
         let mut rows: Vec<LeftRow> = Vec::new();
 
-        // 本地分支段：表头 + 行 + 底部新建
+        // 本地分支段：创建入口位于表头。
         rows.push(LeftRow::Header {
             title: "本地分支",
             count: self.local_branches.len(),
@@ -323,7 +323,6 @@ impl VcsView {
                     is_remote: false,
                 });
             }
-            rows.push(LeftRow::CreateBranch);
         }
 
         // 远程分支段：表头 + 行（空则占位）
@@ -346,7 +345,7 @@ impl VcsView {
             }
         }
 
-        // 远程仓库段：表头 + 行（空则占位）+ 底部新建（管 remote 配置，区别于「远程分支」）
+        // 远程仓库段：创建入口位于表头（管 remote 配置，区别于「远程分支」）。
         rows.push(LeftRow::Header {
             title: "远程仓库",
             count: self.remotes.len(),
@@ -355,16 +354,15 @@ impl VcsView {
         });
         if !self.collapsed_remote_repos {
             if self.remotes.is_empty() {
-                rows.push(LeftRow::Empty("暂无远程仓库（下方输入框添加）"));
+                rows.push(LeftRow::Empty("暂无远程仓库"));
             } else {
                 for idx in 0..self.remotes.len() {
                     rows.push(LeftRow::Remote { idx });
                 }
             }
-            rows.push(LeftRow::CreateRemote);
         }
 
-        // Tag 段：表头 + 行（空则占位）+ 底部新建
+        // Tag 段：创建入口位于表头。
         rows.push(LeftRow::Header {
             title: "Tag",
             count: self.tags.len(),
@@ -373,13 +371,12 @@ impl VcsView {
         });
         if !self.collapsed_tag {
             if self.tags.is_empty() {
-                rows.push(LeftRow::Empty("暂无 tag（下方输入框创建）"));
+                rows.push(LeftRow::Empty("暂无 tag"));
             } else {
                 for idx in 0..self.tags.len() {
                     rows.push(LeftRow::Tag { idx });
                 }
             }
-            rows.push(LeftRow::CreateTag);
         }
 
         let rows = Rc::new(rows);
@@ -507,16 +504,6 @@ impl VcsView {
                 .text_xs()
                 .text_color(muted_fg)
                 .child("— 已达到历史显示上限，请使用搜索或文件过滤缩小范围 —")
-                .into_any_element()
-        } else if !has_more {
-            div()
-                .flex_none()
-                .py(px(8.0))
-                .flex()
-                .justify_center()
-                .text_xs()
-                .text_color(muted_fg)
-                .child("— 已到底 —")
                 .into_any_element()
         } else {
             div().flex_none().into_any_element()

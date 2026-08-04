@@ -783,7 +783,12 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
     );
     cx.update(|window, app| {
         view.update(app, |view, cx| {
-            view.workspace_resize.update(cx, |state, cx| {
+            let resize = view
+                .workspace_resizes
+                .get(&profile.id)
+                .cloned()
+                .expect("活动工作区应有独立分栏状态");
+            resize.update(cx, |state, cx| {
                 state.resize_panel(0, px(360.0), window, cx);
             });
         });
@@ -1066,6 +1071,83 @@ fn directory_search_state_is_isolated_by_workspace(cx: &mut TestAppContext) {
     view.read_with(cx, |view, cx| {
         assert_eq!(view.directory_search.read(cx).value(), "logs");
     });
+}
+
+#[gpui::test]
+fn workspace_resize_is_isolated_by_connection(cx: &mut TestAppContext) {
+    let first = profile();
+    let second = SshProfile::new("staging", "staging.example");
+    let preference = SshWorkspacePreference {
+        workspaces: vec![
+            SshWorkspaceState {
+                profile_id: first.id.clone(),
+                last_remote_path: "/home/alice".into(),
+            },
+            SshWorkspaceState {
+                profile_id: second.id.clone(),
+                last_remote_path: "/srv/app".into(),
+            },
+        ],
+        active_profile_id: Some(first.id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(
+        cx,
+        service(vec![first.clone(), second.clone()], Some(preference)),
+    );
+    cx.simulate_resize(size(px(1200.0), px(800.0)));
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            let resize = view
+                .workspace_resizes
+                .get(&first.id)
+                .cloned()
+                .expect("首个连接应有独立分栏状态");
+            resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(360.0), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("ssh-file-browser")
+            .expect("首个连接应显示文件栏")
+            .size
+            .width,
+        px(360.0)
+    );
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.select_workspace(second.id.clone(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("ssh-file-browser")
+            .expect("第二个连接应显示文件栏")
+            .size
+            .width,
+        px(280.0),
+        "第二个连接不应继承首个连接拖动后的宽度"
+    );
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.select_workspace(first.id.clone(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("ssh-file-browser")
+            .expect("切回首个连接应显示文件栏")
+            .size
+            .width,
+        px(360.0),
+        "切回首个连接应保留当前会话内自己的宽度"
+    );
 }
 
 #[gpui::test]

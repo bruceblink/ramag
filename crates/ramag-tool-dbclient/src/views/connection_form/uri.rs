@@ -1,6 +1,8 @@
 //! 连接 URI 解析：`mysql:// / postgres:// / redis:// / mongodb://` → 表单字段，scheme 决定 driver。
 //! 纯函数便于测试；`mongodb+srv` 需 DNS SRV 查询，明确报不支持而非静默错连
 
+use ramag_domain::entities::{ConnectionConfig, DriverKind};
+
 /// URI 可能包含百分号编码后的凭证，预留密码上限约四倍空间并阻断异常粘贴。
 pub(super) const MAX_URI_BYTES: usize = 256 * 1024;
 
@@ -17,6 +19,65 @@ pub(super) struct UriParts {
     /// 仅 MongoDB：authSource
     pub auth_source: Option<String>,
     pub tls: bool,
+}
+
+/// 将现有配置回填为 URI。明文密码只保留在掩码密码框，不复制到可见 URI。
+pub(super) fn connection_uri_without_password(config: &ConnectionConfig) -> String {
+    let scheme = match (config.driver, config.tls) {
+        (DriverKind::Redis, true) => "rediss",
+        (DriverKind::Mysql, _) => "mysql",
+        (DriverKind::Postgres, _) => "postgres",
+        (DriverKind::Redis, false) => "redis",
+        (DriverKind::Mongodb, _) => "mongodb",
+    };
+    let mut uri = format!("{scheme}://");
+    if !config.username.is_empty() {
+        uri.push_str(&percent_encode(&config.username));
+        uri.push('@');
+    }
+    if config.host.contains(':') && !config.host.starts_with('[') {
+        uri.push('[');
+        uri.push_str(&config.host);
+        uri.push(']');
+    } else {
+        uri.push_str(&config.host);
+    }
+    uri.push(':');
+    uri.push_str(&config.port.to_string());
+    if let Some(database) = config.database.as_deref()
+        && !database.is_empty()
+    {
+        uri.push('/');
+        uri.push_str(&percent_encode(database));
+    }
+    let mut query = Vec::new();
+    if config.tls && config.driver != DriverKind::Redis {
+        query.push("tls=true".to_string());
+    }
+    if config.driver == DriverKind::Mongodb
+        && let Some(auth_source) = config.auth_source.as_deref()
+        && !auth_source.is_empty()
+    {
+        query.push(format!("authSource={}", percent_encode(auth_source)));
+    }
+    if !query.is_empty() {
+        uri.push('?');
+        uri.push_str(&query.join("&"));
+    }
+    uri
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 /// 解析单主机连接 URI；多主机（副本集）与拓扑类参数显式报错，不静默降级
@@ -355,5 +416,25 @@ mod tests {
     fn oversized_uri_is_rejected_before_parsing() {
         let raw = "x".repeat(MAX_URI_BYTES + 1);
         assert!(parse_connection_uri(&raw).is_err());
+    }
+
+    #[test]
+    fn edit_uri_roundtrips_fields_without_exposing_password() {
+        let mut config = ConnectionConfig::new_mongodb("mongo", "::1", 27018);
+        config.username = "user@example".into();
+        config.password = "visible-secret".into();
+        config.database = Some("team data".into());
+        config.auth_source = Some("admin/root".into());
+        config.tls = true;
+
+        let uri = connection_uri_without_password(&config);
+        assert!(!uri.contains("visible-secret"));
+        assert!(uri.contains("[::1]"));
+        let parsed = parse_connection_uri(&uri).unwrap();
+        assert_eq!(parsed.username, config.username);
+        assert!(parsed.password.is_empty());
+        assert_eq!(parsed.database, config.database);
+        assert_eq!(parsed.auth_source, config.auth_source);
+        assert!(parsed.tls);
     }
 }

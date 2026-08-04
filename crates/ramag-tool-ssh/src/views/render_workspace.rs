@@ -49,13 +49,18 @@ impl SshView {
                 .into_any_element();
         };
         let workspace_id = workspace.profile.id.clone();
+        let workspace_resize = self
+            .workspace_resizes
+            .entry(workspace_id.clone())
+            .or_insert_with(|| cx.new(|_| gpui_component::resizable::ResizableState::default()))
+            .clone();
         let main = div()
             .id("ssh-workspace-main")
             .debug_selector(|| "ssh-workspace-main".into())
             .size_full()
             .child(
                 h_resizable("ssh-workspace-resize")
-                    .with_state(&self.workspace_resize)
+                    .with_state(&workspace_resize)
                     .child(
                         resizable_panel()
                             .flex_none()

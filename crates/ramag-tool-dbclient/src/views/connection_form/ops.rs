@@ -51,8 +51,11 @@ impl ConnectionFormPanel {
         });
         self.username
             .update(cx, |s, cx| s.set_value(parts.username, window, cx));
-        self.password
-            .update(cx, |s, cx| s.set_value(parts.password, window, cx));
+        // 编辑回填的 URI 刻意不含明文密码；重新套用时保留原密码。
+        if !parts.password.is_empty() || matches!(self.mode, FormMode::Create) {
+            self.password
+                .update(cx, |s, cx| s.set_value(parts.password, window, cx));
+        }
         self.database.update(cx, |s, cx| {
             s.set_value(parts.database.unwrap_or_default(), window, cx)
         });

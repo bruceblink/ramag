@@ -329,7 +329,7 @@ impl DbClientView {
             ListEvent::RequestDelete(id) => {
                 self.confirm_delete(id.clone(), window, cx);
             }
-            ListEvent::ConnectionsImported(configs) => {
+            ListEvent::ConnectionsChanged(configs) => {
                 let mut any_stale = false;
                 for config in configs {
                     evict_connection_resources(
@@ -343,7 +343,7 @@ impl DbClientView {
                 if any_stale {
                     self.pending_notification = Some(
                         gpui_component::notification::Notification::info(
-                            "导入已更新打开中的连接配置，相关标签已暂停，请重新连接后继续操作",
+                            "连接配置已更新，相关标签已暂停，请重新连接后继续操作",
                         )
                         .autohide(true),
                     );

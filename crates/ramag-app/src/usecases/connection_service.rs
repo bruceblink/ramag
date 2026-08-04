@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ramag_domain::entities::{
     Column, ConnectionConfig, ConnectionId, DriverKind, ForeignKey, Index, Query, QueryHistoryPage,
@@ -14,13 +15,18 @@ use ramag_domain::traits::{CancelHandle, Driver, Storage};
 pub struct ConnectionService {
     drivers: HashMap<DriverKind, Arc<dyn Driver>>,
     storage: Arc<dyn Storage>,
+    revision: AtomicU64,
 }
 
 const HISTORY_INLINE_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
 
 impl ConnectionService {
     pub fn new(drivers: HashMap<DriverKind, Arc<dyn Driver>>, storage: Arc<dyn Storage>) -> Self {
-        Self { drivers, storage }
+        Self {
+            drivers,
+            storage,
+            revision: AtomicU64::new(0),
+        }
     }
 
     /// 按 config.driver 取 driver；缺失返回 InvalidConfig
@@ -40,7 +46,9 @@ impl ConnectionService {
 
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
         config.validate().map_err(DomainError::InvalidConfig)?;
-        self.storage.save_connection(config).await
+        self.storage.save_connection(config).await?;
+        self.bump_revision();
+        Ok(())
     }
 
     /// 原子保存一批连接；用于配置导入，避免中途失败留下半份结果。
@@ -51,7 +59,9 @@ impl ConnectionService {
         for config in configs {
             config.validate().map_err(DomainError::InvalidConfig)?;
         }
-        self.storage.save_connections(configs).await
+        self.storage.save_connections(configs).await?;
+        self.bump_revision();
+        Ok(())
     }
 
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
@@ -68,7 +78,17 @@ impl ConnectionService {
                 tracing::warn!(error = %e, connection_id = %id, "cleanup deleted connection drafts failed");
             }
         }
+        self.bump_revision();
         Ok(())
+    }
+
+    /// 连接配置变更修订号，供长期存活的页面发现其它入口完成的导入或编辑。
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    fn bump_revision(&self) {
+        self.revision.fetch_add(1, Ordering::Release);
     }
 
     // 连接动作（走 driver）

@@ -14,7 +14,6 @@ pub mod platform;
 pub mod pointer_menu;
 pub mod preferences;
 pub mod prompt_dialog;
-pub mod resizable_persist;
 pub mod result_memory;
 pub mod settings_view;
 pub mod shell;
@@ -45,7 +44,6 @@ pub use editor_workspace::{
 pub use home_view::{HomeEvent, HomeView};
 pub use mutation_gate::{AsyncMutationGate, MutationToken};
 pub use pointer_menu::PointerDropdownMenu;
-pub use resizable_persist::persist_resizable_sizes;
 pub use result_memory::{
     GLOBAL_RESULT_WARNING_BYTES, MAX_GLOBAL_RESULT_BYTES, ResultMemoryBudget, ResultMemoryLease,
     ResultMemoryUpdate,

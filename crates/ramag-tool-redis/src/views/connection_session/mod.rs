@@ -280,13 +280,6 @@ impl RedisSessionPanel {
             cx.new(|cx| CliConsole::new(service.clone(), config.clone(), initial_db, window, cx));
 
         let resize_state = cx.new(|_| ResizableState::default());
-        // key 树 / 详情分隔宽度跨重启
-        subs.push(ramag_ui::persist_resizable_sizes(
-            &resize_state,
-            "split_redis_session",
-            window,
-            cx,
-        ));
 
         Self {
             service,

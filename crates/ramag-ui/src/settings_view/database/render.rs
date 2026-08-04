@@ -149,6 +149,72 @@ impl SettingsView {
         v_flex()
             .w_full()
             .gap(px(16.0))
+            .child(
+                super::super::pages::settings_card("连接配置", theme.border)
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.0))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(3.0))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .child("MySQL / PostgreSQL / Redis / MongoDB"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child("通过口令加密文件迁移全部连接与凭据。"),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .gap(px(8.0))
+                                    .child(
+                                        crate::clickable_button("settings-db-connections-import")
+                                            .outline()
+                                            .small()
+                                            .icon(crate::icons::download())
+                                            .label("导入")
+                                            .disabled(self.database_transferring)
+                                            .on_click(cx.listener(
+                                                |this, _: &ClickEvent, window, cx| {
+                                                    this.import_connections(window, cx);
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        crate::clickable_button("settings-db-connections-export")
+                                            .outline()
+                                            .small()
+                                            .icon(crate::icons::upload())
+                                            .label("导出")
+                                            .disabled(self.database_transferring)
+                                            .on_click(cx.listener(
+                                                |this, _: &ClickEvent, window, cx| {
+                                                    this.prompt_connection_export(window, cx);
+                                                },
+                                            )),
+                                    ),
+                            ),
+                    )
+                    .when(self.database_transferring, |card| {
+                        card.child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("正在处理连接配置…"),
+                        )
+                    }),
+            )
             .when(self.saving_database, |page| {
                 page.child(
                     h_flex().w_full().justify_end().child(

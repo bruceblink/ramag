@@ -15,7 +15,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
     notification::Notification,
 };
-use ramag_app::ClipboardService;
+use ramag_app::{ClipboardService, ConnectionService};
 use ramag_domain::entities::{
     ClipboardSettings, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
     MAX_ID_CONVERTER_PROGRAM_BYTES,
@@ -53,17 +53,17 @@ impl SettingsPage {
         match self {
             Self::Database => "数据库客户端",
             Self::VersionControl => "版本管理",
-            Self::Ssh => "SSH",
+            Self::Ssh => "SSH 管理",
             Self::Clipboard => "剪贴板",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
-            Self::Database => "管理数据库客户端的搜索配置。",
+            Self::Database => "管理数据库连接配置与搜索行为。",
             Self::VersionControl => "管理 Git 版本控制的模块级配置。",
             Self::Ssh => "管理 SSH 与 SFTP 的模块级配置。",
-            Self::Clipboard => "管理剪贴板的启用状态、采集行为与全局热键。",
+            Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与历史数据。",
         }
     }
 
@@ -96,9 +96,11 @@ enum DatabaseConverterTestDirection {
 pub struct SettingsView {
     selected_page: SettingsPage,
     clipboard_service: Arc<ClipboardService>,
+    connection_service: Arc<ConnectionService>,
     clipboard: ClipboardSettings,
     loaded_revision: u64,
     saving_clipboard: bool,
+    clearing_clipboard_history: bool,
     database_enabled_draft: bool,
     database_converter_kind: IdConverterKind,
     database_custom_alphabet: Entity<InputState>,
@@ -111,12 +113,14 @@ pub struct SettingsView {
     database_save_pending: bool,
     database_save_debounce: Option<Task<()>>,
     picking_id_converter: bool,
+    database_transferring: bool,
     pending_notification: Option<Notification>,
 }
 
 impl SettingsView {
     pub fn new(
         clipboard_service: Arc<ClipboardService>,
+        connection_service: Arc<ConnectionService>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -209,9 +213,11 @@ impl SettingsView {
         Self {
             selected_page: SettingsPage::default(),
             clipboard_service,
+            connection_service,
             clipboard,
             loaded_revision,
             saving_clipboard: false,
+            clearing_clipboard_history: false,
             database_enabled_draft,
             database_converter_kind,
             database_custom_alphabet,
@@ -224,6 +230,7 @@ impl SettingsView {
             database_save_pending: false,
             database_save_debounce: None,
             picking_id_converter: false,
+            database_transferring: false,
             pending_notification: None,
         }
     }

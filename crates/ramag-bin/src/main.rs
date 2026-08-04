@@ -351,6 +351,7 @@ fn main() {
             KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
             KeyBinding::new("secondary-t", NewSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("SshWorkspace")),
+            KeyBinding::new("secondary-w", CloseSshTerminal, Some("Terminal")),
             KeyBinding::new("secondary-r", RefreshSftp, Some("SshWorkspace")),
         ]);
 
@@ -732,8 +733,9 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
 
                 let clipboard_view = create_clipboard_view(clipboard_service.clone(), window, cx);
                 let ssh_view = create_ssh_view(ssh_service.clone(), window, cx);
-                let settings_view =
-                    cx.new(|cx| SettingsView::new(clipboard_service.clone(), window, cx));
+                let settings_view = cx.new(|cx| {
+                    SettingsView::new(clipboard_service.clone(), conn_service.clone(), window, cx)
+                });
 
                 let shell = cx.new(|cx| {
                     let mut shell = Shell::new(registry.clone(), window, cx);

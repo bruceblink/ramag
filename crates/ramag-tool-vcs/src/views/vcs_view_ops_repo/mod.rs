@@ -3,7 +3,8 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use gpui::Context;
+use gpui::{AppContext as _, Context};
+use gpui_component::resizable::ResizableState;
 use ramag_domain::entities::MAX_COMMIT_MESSAGE_BYTES;
 use tracing::{error, info};
 
@@ -325,6 +326,9 @@ impl VcsView {
             return;
         }
         self.capture_active_project_draft(cx);
+        if self.selected_pf_path.as_deref() != Some(path.as_str()) {
+            self.pf_show_source = false;
+        }
         self.diff_fullscreen = false;
         if self.viewing_commit.is_some() {
             self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
@@ -764,6 +768,9 @@ impl VcsView {
                 commit_text,
                 commit_amend: self.commit_amend,
                 commit_sign: self.commit_sign,
+                ide_left_resize: Some(self.ide_left_resize.clone()),
+                ide_files_resize: Some(self.ide_files_resize.clone()),
+                detail_resize: Some(self.detail_resize.clone()),
             },
         );
     }
@@ -827,7 +834,11 @@ impl VcsView {
     }
 
     /// 返回是否命中缓存。
-    pub(super) fn restore_session_from_cache(&mut self, path: &str) -> bool {
+    pub(super) fn restore_session_from_cache(
+        &mut self,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let cached = self.repo_session_cache.get(path).cloned();
         if cached.is_some() {
             touch_repo_session(&mut self.repo_session_order, path);
@@ -844,6 +855,15 @@ impl VcsView {
                 self.active_file_tab_idx = state.active_file_tab_idx;
                 self.commit_amend = state.commit_amend;
                 self.commit_sign = state.commit_sign;
+                self.ide_left_resize = state
+                    .ide_left_resize
+                    .unwrap_or_else(|| cx.new(|_| ResizableState::default()));
+                self.ide_files_resize = state
+                    .ide_files_resize
+                    .unwrap_or_else(|| cx.new(|_| ResizableState::default()));
+                self.detail_resize = state
+                    .detail_resize
+                    .unwrap_or_else(|| cx.new(|_| ResizableState::default()));
                 // 强制覆盖前一个仓库的输入残留。
                 self.pending_commit_text = Some(state.commit_text);
                 if let Some(idx) = self.active_file_tab_idx
@@ -856,6 +876,9 @@ impl VcsView {
             None => {
                 self.commit_amend = false;
                 self.commit_sign = false;
+                self.ide_left_resize = cx.new(|_| ResizableState::default());
+                self.ide_files_resize = cx.new(|_| ResizableState::default());
+                self.detail_resize = cx.new(|_| ResizableState::default());
                 self.pending_commit_text = Some(gpui::SharedString::default());
                 false
             }
@@ -936,14 +959,13 @@ pub(super) async fn open_repo_async(
         this.loading = false;
         this.loading_label = None;
         let mut repo_config = repo_config;
-        // 运行时配置不得覆盖用户名称与收藏。
+        // 运行时配置不得覆盖用户名称。
         if let Some(existing) = this
             .recent_repos
             .iter()
             .find(|existing| existing.path == repo_config.path)
         {
             repo_config.name = existing.name.clone();
-            repo_config.favorite = existing.favorite;
         }
         repo_config.last_opened_at = Some(chrono::Utc::now());
         let is_new = !this.open_repos.iter().any(|r| r.path == repo_config.path);
@@ -998,7 +1020,7 @@ pub(super) async fn open_repo_async(
         }
         this.active_view = ActiveView::Session;
 
-        let session_hit = this.restore_session_from_cache(&repo_config.path);
+        let session_hit = this.restore_session_from_cache(&repo_config.path, cx);
         // 缓存未命中时恢复持久化草稿，但不覆盖新输入。
         if !session_hit {
             let storage = this.storage.clone();

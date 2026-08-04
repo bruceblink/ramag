@@ -291,6 +291,7 @@ impl Render for ImportOptionsForm {
                 let entity = entity.clone();
                 let mut button = crate::clickable_button(id)
                     .small()
+                    .flex_1()
                     .label(label)
                     .tooltip(hint);
                 button = match (selected, danger) {
@@ -306,16 +307,41 @@ impl Render for ImportOptionsForm {
                 })
             }
         };
-        let merge_button = self.offer_merge.then(|| {
-            policy_button(
+        let mut policy_row = h_flex().w_full().gap(px(8.0)).child(policy_button(
+            "ramag-import-skip",
+            "跳过",
+            "跳过同名对象（推荐）",
+            ConflictPolicy::Skip,
+            false,
+            self.policy == ConflictPolicy::Skip,
+        ));
+        if self.offer_merge {
+            policy_row = policy_row.child(policy_button(
                 "ramag-import-merge",
                 "合并",
                 "保留对象，补齐缺失条目",
                 ConflictPolicy::Merge,
                 false,
                 self.policy == ConflictPolicy::Merge,
-            )
-        });
+            ));
+        }
+        policy_row = policy_row
+            .child(policy_button(
+                "ramag-import-overwrite",
+                "覆盖",
+                "删除同名对象后导入，不可恢复",
+                ConflictPolicy::Overwrite,
+                true,
+                self.policy == ConflictPolicy::Overwrite,
+            ))
+            .child(policy_button(
+                "ramag-import-fail",
+                "停止",
+                "遇到同名对象即停止",
+                ConflictPolicy::Fail,
+                false,
+                self.policy == ConflictPolicy::Fail,
+            ));
 
         let pick_button = {
             let entity = entity.clone();
@@ -362,6 +388,7 @@ impl Render for ImportOptionsForm {
             .on_click(|_: &ClickEvent, window, app| window.close_dialog(app));
 
         v_flex()
+            .w(px(560.0))
             .gap(px(10.0))
             .child(
                 div()
@@ -370,31 +397,12 @@ impl Render for ImportOptionsForm {
                     .text_color(muted_fg)
                     .child(self.description.clone()),
             )
-            .child(policy_button(
-                "ramag-import-skip",
-                "跳过",
-                "跳过同名对象（推荐）",
-                ConflictPolicy::Skip,
-                false,
-                self.policy == ConflictPolicy::Skip,
-            ))
-            .children(merge_button)
-            .child(policy_button(
-                "ramag-import-overwrite",
-                "覆盖",
-                "删除同名对象后导入，不可恢复",
-                ConflictPolicy::Overwrite,
-                true,
-                self.policy == ConflictPolicy::Overwrite,
-            ))
-            .child(policy_button(
-                "ramag-import-fail",
-                "停止",
-                "遇到同名对象即停止",
-                ConflictPolicy::Fail,
-                false,
-                self.policy == ConflictPolicy::Fail,
-            ))
+            .child(
+                v_flex()
+                    .gap(px(6.0))
+                    .child(div().text_xs().text_color(muted_fg).child("同名对象"))
+                    .child(policy_row),
+            )
             .child(
                 h_flex()
                     .items_center()

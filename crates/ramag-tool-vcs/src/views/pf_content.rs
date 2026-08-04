@@ -1,7 +1,12 @@
 //! Project Files 主区：原生 Code Editor，支持自动保存、增量语法解析和完整长行显示。
 
-use gpui::{AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, px};
-use gpui_component::{ActiveTheme, h_flex, input::Input, v_flex};
+use gpui::{
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
+    prelude::*, px,
+};
+use gpui_component::{
+    ActiveTheme, Sizable as _, button::ButtonVariants as _, h_flex, input::Input, text, v_flex,
+};
 
 use super::vcs_view::VcsView;
 
@@ -27,17 +32,43 @@ impl VcsView {
 
         let editor_ready = self.pf_editor_loaded_path.as_deref() == Some(snapshot.path.as_str());
         let editable = !snapshot.truncated;
+        let markdown = is_markdown_path(&snapshot.path);
+        let show_source = !markdown || self.pf_show_source;
+        let source_toggle = markdown.then(|| {
+            ramag_ui::clickable_button("vcs-pf-markdown-source")
+                .ghost()
+                .xsmall()
+                .label(if show_source { "预览" } else { "原文" })
+                .tooltip(if show_source {
+                    "渲染 Markdown"
+                } else {
+                    "查看并编辑原文"
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.set_markdown_source_visible(!show_source, cx);
+                }))
+                .into_any_element()
+        });
         let mut body = v_flex().size_full().min_h_0().child(header_bar(
             &snapshot.path,
             self.pf_editor_line_count,
             muted_fg,
             fg,
+            source_toggle,
         ));
         if snapshot.truncated {
             body = body.child(truncated_banner(muted_fg));
         }
 
-        body.child(div().flex_1().min_h_0().min_w_0().child(if editor_ready {
+        let content = if markdown && !show_source {
+            div()
+                .id("vcs-markdown-preview")
+                .size_full()
+                .overflow_y_scroll()
+                .p(px(20.0))
+                .child(text::markdown(snapshot.text.as_str().to_string()).selectable(true))
+                .into_any_element()
+        } else if editor_ready {
             Input::new(&self.pf_editor)
                 .h_full()
                 .bordered(false)
@@ -46,12 +77,30 @@ impl VcsView {
                 .into_any_element()
         } else {
             placeholder("准备编辑器…", muted_fg)
-        }))
-        .into_any_element()
+        };
+        body.child(div().flex_1().min_h_0().min_w_0().child(content))
+            .into_any_element()
+    }
+
+    fn set_markdown_source_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.pf_show_source == visible {
+            return;
+        }
+        if !visible {
+            self.capture_active_project_draft(cx);
+        }
+        self.pf_show_source = visible;
+        cx.notify();
     }
 }
 
-fn header_bar(path: &str, line_count: usize, muted_fg: gpui::Hsla, fg: gpui::Hsla) -> AnyElement {
+fn header_bar(
+    path: &str,
+    line_count: usize,
+    muted_fg: gpui::Hsla,
+    fg: gpui::Hsla,
+    action: Option<AnyElement>,
+) -> AnyElement {
     h_flex()
         .w_full()
         .flex_none()
@@ -76,7 +125,17 @@ fn header_bar(path: &str, line_count: usize, muted_fg: gpui::Hsla, fg: gpui::Hsl
                 .text_color(muted_fg)
                 .child(format!("{line_count} 行")),
         )
+        .children(action)
         .into_any_element()
+}
+
+fn is_markdown_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
+        })
 }
 
 fn truncated_banner(muted_fg: gpui::Hsla) -> AnyElement {
@@ -100,4 +159,16 @@ fn placeholder(text: impl Into<SharedString>, color: gpui::Hsla) -> AnyElement {
         .justify_center()
         .child(div().text_sm().text_color(color).child(text.into()))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_markdown_path;
+
+    #[test]
+    fn markdown_extensions_are_case_insensitive() {
+        assert!(is_markdown_path("README.md"));
+        assert!(is_markdown_path("docs/guide.MARKDOWN"));
+        assert!(!is_markdown_path("notes.txt"));
+    }
 }

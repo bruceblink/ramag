@@ -1,63 +1,21 @@
-//! 侧栏 Tag：单行 tag 行（名字 + 详情内联 + Push/Delete）+ 底部新建 tag 输入行。
+//! 侧栏 Tag：名字、详情与操作菜单。
 //! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
 
 use gpui::{
-    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, div, prelude::FluentBuilder as _, px,
+    Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
-    h_flex, input::Input,
+    ActiveTheme, Icon, Sizable as _,
+    button::ButtonVariants as _,
+    h_flex,
+    menu::{ContextMenuExt as _, PopupMenu},
 };
 use ramag_domain::entities::Tag;
+use ramag_ui::PointerDropdownMenu as _;
 
-use super::helpers::{TagOp, side_op_button};
+use super::helpers::TagOp;
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
-
-impl VcsView {
-    /// 底部「新建 tag」输入行：name 一格 + message 一格 + 创建按钮（固定 28px 高，单行）
-    /// message 非空 → annotated tag；空 → lightweight tag
-    pub(super) fn render_create_tag_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.busy;
-        let has_head = self
-            .status
-            .as_ref()
-            .and_then(|status| status.head_commit.as_ref())
-            .is_some();
-        h_flex()
-            .h(px(LEFT_ROW_H))
-            .flex_none()
-            .gap(px(4.0))
-            .items_center()
-            .child(
-                div().flex_none().w(px(90.0)).child(
-                    Input::new(&self.create_tag_input)
-                        .xsmall()
-                        .into_any_element(),
-                ),
-            )
-            .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&self.create_tag_message_input)
-                        .xsmall()
-                        .into_any_element(),
-                ),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-tag-create")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .when(!has_head, |button| button.tooltip("请先提交"))
-                    .disabled(busy || !has_head)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.handle_create_tag(cx);
-                    })),
-            )
-            .into_any_element()
-    }
-}
 
 /// 单条 tag 行：[tag-icon] name + 详情（message / 短 hash）内联 + 行尾 [Push][Delete]（固定 28px 高）
 pub(super) fn tag_row(
@@ -83,7 +41,8 @@ pub(super) fn tag_row(
     let name = t.name.clone();
     let row_id = SharedString::from(format!("vcs-side-tag-{idx}-{name}"));
 
-    h_flex()
+    let entity = cx.entity();
+    let mut row = h_flex()
         .id(row_id)
         .h(px(LEFT_ROW_H))
         .flex_none()
@@ -127,35 +86,43 @@ pub(super) fn tag_row(
                         .child(super::inline_text_preview(&detail, 240)),
                 ),
         )
-        .child(
-            h_flex()
-                .gap(px(6.0))
-                .flex_none()
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation();
-                })
-                .child({
-                    let name = name.clone();
-                    side_op_button(
-                        format!("vcs-side-tag-push-{idx}"),
-                        "推送",
-                        IconName::ArrowUp,
-                        busy,
-                        move |this, window, cx| {
-                            this.confirm_tag_op(TagOp::Push(name.clone()), window, cx)
-                        },
-                        cx,
-                    )
-                })
-                .child(side_op_button(
-                    format!("vcs-side-tag-delete-{idx}"),
-                    "删除",
-                    ramag_ui::icons::trash(),
-                    busy,
-                    move |this, window, cx| {
-                        this.confirm_tag_op(TagOp::Delete(name.clone()), window, cx)
-                    },
-                    cx,
-                )),
-        )
+        .cursor_pointer();
+    let menu_entity = entity.clone();
+    let menu_name = name.clone();
+    row = row.child(
+        ramag_ui::clickable_button(SharedString::from(format!("vcs-side-tag-more-{idx}")))
+            .ghost()
+            .xsmall()
+            .icon(ramag_ui::icons::ellipsis())
+            .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
+                tag_actions_menu(menu, menu_entity.clone(), menu_name.clone(), busy)
+            }),
+    );
+    row.context_menu(move |menu: PopupMenu, _, _| {
+        tag_actions_menu(menu, entity.clone(), name.clone(), busy)
+    })
+}
+
+fn tag_actions_menu(
+    mut menu: PopupMenu,
+    entity: Entity<VcsView>,
+    name: String,
+    busy: bool,
+) -> PopupMenu {
+    let push_entity = entity.clone();
+    let push_name = name.clone();
+    menu = menu.item(ramag_ui::menu_item_with_disabled("推送", busy).on_click(
+        move |_, window, app| {
+            push_entity.update(app, |this, cx| {
+                this.confirm_tag_op(TagOp::Push(push_name.clone()), window, cx);
+            });
+        },
+    ));
+    menu.item(
+        ramag_ui::menu_item_with_disabled("删除", busy).on_click(move |_, window, app| {
+            entity.update(app, |this, cx| {
+                this.confirm_tag_op(TagOp::Delete(name.clone()), window, cx);
+            });
+        }),
+    )
 }

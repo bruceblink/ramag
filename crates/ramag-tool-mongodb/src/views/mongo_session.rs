@@ -117,13 +117,6 @@ impl MongoSessionPanel {
         ));
 
         let resize_state = cx.new(|_| ResizableState::default());
-        // collection 树 / 查询区分隔宽度跨重启
-        subs.push(ramag_ui::persist_resizable_sizes(
-            &resize_state,
-            "split_mongo_session",
-            window,
-            cx,
-        ));
         Self {
             config,
             tree,

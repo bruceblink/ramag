@@ -200,7 +200,6 @@ impl VcsView {
         cx.notify();
 
         let driver = self.driver.clone();
-        let ignore_ws = self.diff_ignore_whitespace;
         let context_lines = self.diff_view_mode.context_lines();
         let path_for_diff = path.clone();
         let commit_for_diff = commit_id.clone();
@@ -211,7 +210,7 @@ impl VcsView {
                     &repo,
                     &path_for_diff,
                     DiffKind::CommitVsParent(ramag_domain::entities::CommitId(commit_for_diff)),
-                    ignore_ws,
+                    false,
                     context_lines,
                 )
                 .await;

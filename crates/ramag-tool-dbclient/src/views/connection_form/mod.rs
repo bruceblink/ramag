@@ -170,6 +170,11 @@ impl ConnectionFormPanel {
             ssh_port: None,
         });
         let driver_id = driver_kind_to_id(p.driver);
+        let uri_text = if is_create {
+            String::new()
+        } else {
+            uri::connection_uri_without_password(&p)
+        };
         let remark = p.remark.clone();
         let port_text = if is_create {
             String::new()
@@ -231,6 +236,7 @@ impl ConnectionFormPanel {
         let uri = cx.new(|cx| {
             bounded_input(uri::MAX_URI_BYTES, window, cx)
                 .placeholder(defaults::uri_placeholder(driver_id))
+                .default_value(uri_text)
         });
         let ssh_target = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_SSH_TARGET_BYTES, window, cx)

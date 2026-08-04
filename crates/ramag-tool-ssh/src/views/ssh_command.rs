@@ -2,9 +2,44 @@
 
 use std::path::{Path, PathBuf};
 
-use ramag_domain::entities::{MAX_SSH_HOST_BYTES, MAX_SSH_PATH_BYTES, MAX_SSH_USERNAME_BYTES};
+use ramag_domain::entities::{
+    MAX_SSH_HOST_BYTES, MAX_SSH_PATH_BYTES, MAX_SSH_USERNAME_BYTES, SshAuthMode, SshProfile,
+};
 
 pub(super) const MAX_SSH_COMMAND_BYTES: usize = 4096;
+
+/// 生成可再次解析的 SSH 命令。密码不会写入命令文本，避免在明文输入框泄露。
+pub(super) fn profile_ssh_command(profile: &SshProfile) -> String {
+    let executable = profile.ssh_path.as_deref().unwrap_or("ssh");
+    let mut arguments = vec![shell_argument(executable)];
+    if !profile.username.is_empty() {
+        arguments.push("-l".into());
+        arguments.push(shell_argument(&profile.username));
+    }
+    if let Some(port) = profile.port {
+        arguments.push("-p".into());
+        arguments.push(port.to_string());
+    }
+    if profile.auth_mode == SshAuthMode::KeyFile
+        && let Some(key_path) = profile.key_path.as_deref()
+    {
+        arguments.push("-i".into());
+        arguments.push(shell_argument(key_path));
+    }
+    arguments.push(shell_argument(&profile.host));
+    arguments.join(" ")
+}
+
+fn shell_argument(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ParsedSshCommand {
@@ -362,5 +397,31 @@ mod tests {
         assert!(parse_ssh_command("ssh -p 22", None).is_err());
         assert!(parse_ssh_command("ssh -p invalid host", None).is_err());
         assert!(parse_ssh_command("ssh 'unterminated", None).is_err());
+    }
+
+    #[test]
+    fn edit_command_roundtrips_profile_without_exposing_password() {
+        let mut profile = SshProfile::new("prod", "jump.example.com");
+        profile.username = "deploy".into();
+        profile.port = Some(2222);
+        profile.auth_mode = SshAuthMode::Password;
+        profile.password = "visible-secret".into();
+
+        let command = profile_ssh_command(&profile);
+        assert!(!command.contains("visible-secret"));
+        let parsed = parse_ssh_command(&command, None).unwrap();
+        assert_eq!(parsed.host, profile.host);
+        assert_eq!(parsed.username, profile.username);
+        assert_eq!(parsed.port, profile.port);
+    }
+
+    #[test]
+    fn edit_command_quotes_key_paths_with_spaces() {
+        let mut profile = SshProfile::new("key", "server");
+        profile.auth_mode = SshAuthMode::KeyFile;
+        profile.key_path = Some("/keys/team key".into());
+
+        let parsed = parse_ssh_command(&profile_ssh_command(&profile), None).unwrap();
+        assert_eq!(parsed.key_path, profile.key_path);
     }
 }

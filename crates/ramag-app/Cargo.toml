@@ -22,6 +22,9 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
+aes-gcm = { workspace = true }
+pbkdf2 = { workspace = true }
+sha2 = { workspace = true }
 
 # 剪贴条目时间戳（workspace 既有依赖）
 chrono = { workspace = true }

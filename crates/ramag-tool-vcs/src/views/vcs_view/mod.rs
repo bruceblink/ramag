@@ -37,6 +37,9 @@ pub(super) struct RepoSessionState {
     pub commit_text: SharedString,
     pub commit_amend: bool,
     pub commit_sign: bool,
+    pub ide_left_resize: Option<Entity<ResizableState>>,
+    pub ide_files_resize: Option<Entity<ResizableState>>,
+    pub detail_resize: Option<Entity<ResizableState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +165,6 @@ pub struct VcsView {
     pub(super) showing_blame: bool,
     /// 行号 inline blame：Some = 顶部 banner 显示该行作者；点行号触发，× 关闭
     pub(super) inline_blame_text: Option<SharedString>,
-    pub(super) diff_ignore_whitespace: bool,
     pub(super) diff_view_mode: DiffViewMode,
     pub(super) reflog_entries: std::rc::Rc<Vec<ramag_domain::entities::ReflogEntry>>,
     /// Reflog 搜索结果索引缓存，避免普通重渲染重复小写、过滤并克隆全部条目。
@@ -203,6 +205,8 @@ pub struct VcsView {
     /// 编辑器当前实际承载的路径；与 selected_pf_path 不同表示 defer 尚未完成。
     pub(super) pf_editor_loaded_path: Option<String>,
     pub(super) pf_editor_dirty: bool,
+    /// Markdown 默认渲染预览；用户可临时切换到原文编辑器。
+    pub(super) pf_show_source: bool,
     /// 用户编辑代际，用于避免异步保存把后续修改误标成已保存。
     pub(super) pf_editor_revision: u64,
     pub(super) pf_editor_line_count: usize,
@@ -242,7 +246,6 @@ pub struct VcsView {
 
     pub(super) clone_url_input: Entity<InputState>,
     pub(super) clone_dest_path: Option<PathBuf>,
-    pub(super) show_clone_panel: bool,
     /// 系统目录选择器单实例闸门；异步选择期间禁用所有仓库目录入口。
     pub(super) directory_picker_busy: bool,
 
@@ -535,12 +538,6 @@ impl VcsView {
         } else {
             cx.notify();
         }
-    }
-
-    /// 切换 `git diff -w`；后端结果不同，当前 diff 必须失效并重拉。
-    pub(super) fn toggle_diff_ignore_whitespace(&mut self, cx: &mut Context<Self>) {
-        self.diff_ignore_whitespace = !self.diff_ignore_whitespace;
-        self.invalidate_active_diff_and_refetch(cx);
     }
 
     fn invalidate_active_diff_and_refetch(&mut self, cx: &mut Context<Self>) {

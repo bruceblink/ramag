@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gpui::{
     AppContext, Entity, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
-    VisualTestContext, point, px,
+    VisualTestContext, point, px, size,
 };
 use ramag_domain::entities::{
     Branch, BranchKind, Commit, ConnectionConfig, ConnectionId, DiffKind, DiffLine, DiffLineKind,
@@ -93,7 +93,6 @@ fn mock_repo() -> RepoConfig {
         name: "test-repo".into(),
         path: "/tmp/test-repo".into(),
         last_opened_at: None,
-        favorite: false,
     }
 }
 
@@ -279,6 +278,129 @@ fn vcs_view_renders_diff_split_without_panic(cx: &mut TestAppContext) {
 
     // 再渲染一帧（状态不变），验证幂等不崩
     view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+}
+
+/// 分栏状态在 VcsView 更新期间发出通知时，不得反向重入更新同一个 VcsView。
+#[gpui::test]
+fn history_split_state_notification_does_not_reenter_vcs_view(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        view.ide_left_resize.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+/// 上下区域共享同一左栏宽度时，分隔线必须落在同一横坐标。
+#[gpui::test]
+fn history_left_column_aligns_with_files_column(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    view.update(cx, |view, cx| {
+        inject_diff_session(view);
+        view.history_pane_visible = true;
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(1200.0), px(800.0)));
+    cx.run_until_parked();
+
+    let files = cx
+        .debug_bounds("vcs-files-column")
+        .expect("files column should be rendered");
+    let history = cx
+        .debug_bounds("vcs-history-left-column")
+        .expect("history left column should be rendered");
+
+    assert_eq!(files.right(), history.right());
+}
+
+#[gpui::test]
+fn repository_resize_is_isolated_by_tab(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    let first = mock_repo();
+    let mut second = mock_repo();
+    second.id = RepoId::new();
+    second.name = "second-repo".into();
+    second.path = "/tmp/second-repo".into();
+
+    view.update(cx, |view, cx| {
+        inject_diff_session(view);
+        view.repo = Some(first.clone());
+        view.open_repos = vec![first.clone(), second.clone()];
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(1200.0), px(800.0)));
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.ide_left_resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(360.0), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("vcs-files-column")
+            .expect("首个仓库应显示文件栏")
+            .size
+            .width,
+        px(360.0)
+    );
+
+    view.update(cx, |view, cx| {
+        view.save_current_session_to_cache(cx);
+        view.repo = Some(second.clone());
+        assert!(!view.restore_session_from_cache(&second.path, cx));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("vcs-files-column")
+            .expect("第二个仓库应显示文件栏")
+            .size
+            .width,
+        px(280.0),
+        "第二个仓库不应继承首个仓库拖动后的宽度"
+    );
+
+    view.update(cx, |view, cx| {
+        view.save_current_session_to_cache(cx);
+        view.repo = Some(first.clone());
+        assert!(view.restore_session_from_cache(&first.path, cx));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("vcs-files-column")
+            .expect("切回首个仓库应显示文件栏")
+            .size
+            .width,
+        px(360.0),
+        "切回首个仓库应保留当前会话内自己的宽度"
+    );
+}
+
+/// 侧栏右键新建分支在 VcsView 更新结束后打开，不得再次借用同一个实体。
+#[gpui::test]
+fn sidebar_create_branch_dialog_opens_without_reentrant_update(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    view.update(cx, |view, cx| {
+        inject_diff_session(view);
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        super::super::sidebar::open_sidebar_create_dialog(
+            view.clone(),
+            super::super::sidebar::SidebarSection::Local,
+            window,
+            app,
+        );
+    });
     cx.run_until_parked();
 }
 

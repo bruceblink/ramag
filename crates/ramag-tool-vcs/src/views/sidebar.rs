@@ -2,9 +2,17 @@
 //! 左栏（本地/远程分支 + Tag）合并为单个 uniform_list，所有行统一 28px 等高
 
 use gpui::{
-    AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
+    AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement, SharedString, Styled, Window, div, prelude::*, px,
 };
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
+    button::ButtonVariants as _,
+    h_flex,
+    input::Input,
+    menu::{ContextMenuExt as _, PopupMenu},
+    v_flex,
+};
 
 use super::vcs_view::VcsView;
 
@@ -21,7 +29,7 @@ pub(super) enum SidebarSection {
     RemoteRepo,
 }
 
-/// 左栏扁平行：段表头 / 分支 / Tag / 新建输入 / 空占位
+/// 左栏扁平行：段表头 / 分支 / Tag / 空占位。
 pub(super) enum LeftRow {
     Header {
         title: &'static str,
@@ -39,9 +47,6 @@ pub(super) enum LeftRow {
     Remote {
         idx: usize,
     },
-    CreateBranch,
-    CreateTag,
-    CreateRemote,
     Empty(&'static str),
 }
 
@@ -54,7 +59,7 @@ impl VcsView {
                 count,
                 collapsed,
                 section,
-            } => section_header(title, *count, *collapsed, *section, cx),
+            } => section_header(title, *count, *collapsed, *section, self.busy, cx),
             LeftRow::Branch { idx, is_remote } => {
                 let branch = if *is_remote {
                     self.remote_branches.get(*idx)
@@ -80,9 +85,6 @@ impl VcsView {
                         .into_any_element()
                 },
             ),
-            LeftRow::CreateBranch => self.render_create_branch_row(cx),
-            LeftRow::CreateTag => self.render_create_tag_row(cx),
-            LeftRow::CreateRemote => self.render_create_remote_row(cx),
             LeftRow::Empty(msg) => {
                 let muted_fg = cx.theme().muted_foreground;
                 h_flex()
@@ -105,6 +107,7 @@ pub(super) fn section_header(
     count: usize,
     collapsed: bool,
     sec: SidebarSection,
+    busy: bool,
     cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let theme = cx.theme();
@@ -125,7 +128,10 @@ pub(super) fn section_header(
     ));
     let hover_bg = theme.muted;
 
-    h_flex()
+    let can_create = !matches!(sec, SidebarSection::Remote);
+    let entity = cx.entity();
+
+    let row = h_flex()
         .id(id)
         .h(px(LEFT_ROW_H))
         .flex_none()
@@ -154,6 +160,192 @@ pub(super) fn section_header(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(muted_fg)
                 .child(format!("{title} ({count})")),
-        )
+        );
+    if can_create {
+        row.context_menu(move |menu: PopupMenu, _, _| {
+            let entity = entity.clone();
+            menu.item(
+                ramag_ui::menu_item_with_disabled(section_create_label(sec), busy).on_click(
+                    move |_: &ClickEvent, window, app| {
+                        open_sidebar_create_dialog(entity.clone(), sec, window, app);
+                    },
+                ),
+            )
+        })
         .into_any_element()
+    } else {
+        row.into_any_element()
+    }
+}
+
+fn section_create_label(section: SidebarSection) -> &'static str {
+    match section {
+        SidebarSection::Local => "新建分支",
+        SidebarSection::Tag => "新建 Tag",
+        SidebarSection::RemoteRepo => "添加远程仓库",
+        SidebarSection::Remote => "",
+    }
+}
+
+pub(super) fn open_sidebar_create_dialog(
+    view: Entity<VcsView>,
+    section: SidebarSection,
+    window: &mut Window,
+    app: &mut App,
+) {
+    if view.read(app).busy {
+        return;
+    }
+    match section {
+        SidebarSection::Local => open_create_branch_dialog(view, window, app),
+        SidebarSection::Tag => open_create_tag_dialog(view, window, app),
+        SidebarSection::RemoteRepo => open_create_remote_dialog(view, window, app),
+        SidebarSection::Remote => {}
+    }
+}
+
+fn open_create_branch_dialog(view: Entity<VcsView>, window: &mut Window, app: &mut App) {
+    let dialog_data = {
+        let this = view.read(app);
+        this.status
+            .as_ref()
+            .and_then(|status| status.head_commit.as_ref())
+            .map(|_| {
+                let head = this
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.head_branch.clone())
+                    .unwrap_or_else(|| "(HEAD)".into());
+                let local = this
+                    .local_branches
+                    .iter()
+                    .map(|branch| (branch.name.clone(), branch.is_head))
+                    .collect();
+                let remote = this
+                    .remote_branches
+                    .iter()
+                    .map(|branch| branch.name.clone())
+                    .collect();
+                (head, local, remote)
+            })
+    };
+    let Some((head, local, remote)) = dialog_data else {
+        view.update(app, |this, cx| {
+            this.error = Some("请先创建首个提交，再新建分支".into());
+            cx.notify();
+        });
+        return;
+    };
+    super::branch_picker::open_new_branch_dialog(view, head, local, remote, window, app);
+}
+
+fn open_create_tag_dialog(view: Entity<VcsView>, window: &mut Window, app: &mut App) {
+    let (name, message) = {
+        let this = view.read(app);
+        (
+            this.create_tag_input.clone(),
+            this.create_tag_message_input.clone(),
+        )
+    };
+    for input in [&name, &message] {
+        input.update(app, |state, cx| state.set_value("", window, cx));
+    }
+    window.open_dialog(app, move |dialog, _, _| {
+        let content_name = name.clone();
+        let content_message = message.clone();
+        dialog
+            .title(ramag_ui::closable_dialog_title(
+                "vcs-create-tag-close",
+                "新建 Tag",
+                |_, _| {},
+            ))
+            .close_button(false)
+            .width(px(520.0))
+            .margin_top(px(160.0))
+            .content(move |content, _, _| {
+                content.child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(8.0))
+                        .child(Input::new(&content_name).small())
+                        .child(Input::new(&content_message).small()),
+                )
+            })
+            .footer(create_dialog_footer(
+                "vcs-create-tag",
+                "创建",
+                view.clone(),
+                |this, cx| this.handle_create_tag(cx),
+            ))
+    });
+}
+
+fn open_create_remote_dialog(view: Entity<VcsView>, window: &mut Window, app: &mut App) {
+    let (name, url) = {
+        let this = view.read(app);
+        (
+            this.create_remote_name_input.clone(),
+            this.create_remote_url_input.clone(),
+        )
+    };
+    for input in [&name, &url] {
+        input.update(app, |state, cx| state.set_value("", window, cx));
+    }
+    window.open_dialog(app, move |dialog, _, _| {
+        let content_name = name.clone();
+        let content_url = url.clone();
+        dialog
+            .title(ramag_ui::closable_dialog_title(
+                "vcs-create-remote-close",
+                "添加远程仓库",
+                |_, _| {},
+            ))
+            .close_button(false)
+            .width(px(560.0))
+            .margin_top(px(160.0))
+            .content(move |content, _, _| {
+                content.child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(8.0))
+                        .child(Input::new(&content_name).small())
+                        .child(Input::new(&content_url).small()),
+                )
+            })
+            .footer(create_dialog_footer(
+                "vcs-create-remote",
+                "添加",
+                view.clone(),
+                |this, cx| this.handle_create_remote(cx),
+            ))
+    });
+}
+
+fn create_dialog_footer(
+    id: &'static str,
+    label: &'static str,
+    view: gpui::Entity<VcsView>,
+    submit: impl Fn(&mut VcsView, &mut Context<VcsView>) + 'static,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .justify_end()
+        .gap(px(8.0))
+        .child(
+            ramag_ui::clickable_button(format!("{id}-cancel"))
+                .ghost()
+                .small()
+                .label("取消")
+                .on_click(|_: &ClickEvent, window, app| window.close_dialog(app)),
+        )
+        .child(
+            ramag_ui::clickable_button(id)
+                .primary()
+                .small()
+                .label(label)
+                .on_click(move |_: &ClickEvent, window, app| {
+                    view.update(app, |this, cx| submit(this, cx));
+                    window.close_dialog(app);
+                }),
+        )
 }

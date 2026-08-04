@@ -68,10 +68,6 @@ impl VcsView {
         let ide_left_resize = cx.new(|_| ResizableState::default());
         let ide_files_resize = cx.new(|_| ResizableState::default());
         let detail_resize = cx.new(|_| ResizableState::default());
-        // 主分隔宽高跨重启（左栏宽 / 上下分栏高）
-        ramag_ui::persist_resizable_sizes(&ide_left_resize, "split_vcs_left", window, cx).detach();
-        ramag_ui::persist_resizable_sizes(&ide_files_resize, "split_vcs_main", window, cx).detach();
-        ramag_ui::persist_resizable_sizes(&detail_resize, "split_vcs_detail", window, cx).detach();
         let repo_search_input = cx.new(|cx_inner| {
             ramag_ui::bounded_search_input(window, cx_inner).placeholder("搜索仓库（名称 / 路径）")
         });
@@ -289,7 +285,6 @@ impl VcsView {
             inline_blame_request_seq: 0,
             showing_blame: false,
             inline_blame_text: None,
-            diff_ignore_whitespace: false,
             diff_view_mode: DiffViewMode::Standard,
             reflog_entries: std::rc::Rc::new(Vec::new()),
             reflog_rows_cache: RefCell::new(None),
@@ -322,6 +317,7 @@ impl VcsView {
             pending_pf_editor_load: None,
             pf_editor_loaded_path: None,
             pf_editor_dirty: false,
+            pf_show_source: false,
             pf_editor_revision: 0,
             pf_editor_line_count: 0,
             loading_file_content: false,
@@ -352,7 +348,6 @@ impl VcsView {
             repo_session_order: std::collections::VecDeque::new(),
             clone_url_input,
             clone_dest_path: None,
-            show_clone_panel: false,
             directory_picker_busy: false,
             show_rebase_plan: false,
             rebase_plan_onto: String::new(),

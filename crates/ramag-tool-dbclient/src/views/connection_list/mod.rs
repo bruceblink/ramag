@@ -3,22 +3,19 @@
 
 mod render;
 mod row;
-mod transfer;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::io::Read as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Window};
 use gpui_component::input::InputState;
-use gpui_component::notification::Notification;
 use ramag_app::{ConnectionService, MongoService, RedisService};
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, DriverKind, contains_case_insensitive,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error};
 
 pub struct ConnectionListPanel {
     pub(super) service: Arc<ConnectionService>,
@@ -41,12 +38,9 @@ pub struct ConnectionListPanel {
     /// 请求结束后会再次清池，确保旧任务不能把资源建回来。
     version_requests: HashMap<ConnectionId, VersionRequest>,
     refresh_generation: u64,
+    loaded_revision: u64,
     /// 首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
     pub(super) focused_search_once: bool,
-    /// 导入 / 导出进行中：按钮禁用防重入
-    pub(super) transferring: bool,
-    /// 待展示的导入导出结果通知（render 时取出弹出）
-    pub(super) pending_notification: Option<Notification>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -87,8 +81,8 @@ pub enum ListEvent {
     RequestNew,
     RequestEdit(ConnectionConfig),
     RequestDelete(ConnectionId),
-    /// 原子导入成功后通知根视图清理连接池，并暂停仍持旧配置的打开标签。
-    ConnectionsImported(Vec<ConnectionConfig>),
+    /// 其它入口修改连接后，通知根视图清理连接池并暂停仍持旧配置的标签。
+    ConnectionsChanged(Vec<ConnectionConfig>),
 }
 
 impl EventEmitter<ListEvent> for ConnectionListPanel {}
@@ -116,6 +110,7 @@ impl ConnectionListPanel {
             cx.notify();
         }));
 
+        let loaded_revision = service.revision();
         let mut this = Self {
             service,
             redis_service,
@@ -130,9 +125,8 @@ impl ConnectionListPanel {
             versions: HashMap::new(),
             version_requests: HashMap::new(),
             refresh_generation: 0,
+            loaded_revision,
             focused_search_once: false,
-            transferring: false,
-            pending_notification: None,
             _subscriptions: subs,
         };
         this.refresh(cx);
@@ -146,14 +140,17 @@ impl ConnectionListPanel {
         cx.notify();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
+            let revision = svc.revision();
             let result = svc.list().await;
             let _ = this.update(cx, |this, cx| {
                 if this.refresh_generation != generation {
                     return;
                 }
                 this.loading = false;
+                this.loaded_revision = revision;
                 match result {
                     Ok(list) => {
+                        let changed = changed_connections(&this.connections, &list);
                         let current_ids: HashSet<ConnectionId> = list
                             .iter()
                             .map(|connection| connection.id.clone())
@@ -162,6 +159,9 @@ impl ConnectionListPanel {
                         this.connections = Arc::new(list);
                         this.filtered_indices_cache.get_mut().take();
                         this.load_error = None;
+                        if !changed.is_empty() {
+                            cx.emit(ListEvent::ConnectionsChanged(changed));
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "load connections failed");
@@ -278,412 +278,6 @@ impl ConnectionListPanel {
         cx.notify();
     }
 
-    /// 导出：单框自定义口令（≥8 字符，校验失败内联提示），
-    /// 明文显隐切换供自查，免二次输入确认
-    pub(super) fn prompt_export_passphrase(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.transferring {
-            return;
-        }
-        let entity = cx.entity().clone();
-        ramag_ui::open_reveal_masked_prompt(
-            "导出连接配置",
-            "设置至少 8 个字符的自定义口令。文件包含数据库密码，遗失口令将无法恢复。",
-            "导出",
-            |passphrase| transfer::validate_export_passphrase(passphrase).err(),
-            move |passphrase, _, app| {
-                entity.update(app, |this, cx| this.export_connections(passphrase, cx));
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// 加密导出全部连接（PBKDF2 口令派生 + AES-256-GCM）；文件名带时间戳避免互相覆盖
-    fn export_connections(&mut self, passphrase: String, cx: &mut Context<Self>) {
-        if self.transferring {
-            return;
-        }
-        self.transferring = true;
-        cx.notify();
-        let svc = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            let outcome: Result<Option<String>, String> = async {
-                let connections = svc
-                    .list()
-                    .await
-                    .map_err(|error| format!("读取连接列表失败：{error}"))?;
-                let file_name = format!(
-                    "ramag-connections-{}.json",
-                    chrono::Local::now().format("%Y%m%d-%H%M%S")
-                );
-                let Some(handle) = rfd::AsyncFileDialog::new()
-                    .set_file_name(&file_name)
-                    .add_filter("Ramag JSON", &["json"])
-                    .save_file()
-                    .await
-                else {
-                    return Ok(None);
-                };
-                let path = handle.path().to_path_buf();
-                let write_path = path.clone();
-                // 密钥派生与加密为 CPU 密集，连同写盘一起放阻塞线程
-                ramag_app::run_blocking(move || {
-                    let content = transfer::encrypt_connections(&connections, &passphrase)
-                        .map_err(ramag_domain::error::DomainError::Other)?;
-                    ramag_app::usecases::export::write_atomic(&write_path, &content)
-                })
-                .await
-                .map_err(|error| format!("写入导出文件失败：{error}"))?;
-                Ok(Some(path.display().to_string()))
-            }
-            .await;
-            let _ = this.update(cx, |this, cx| {
-                this.transferring = false;
-                match outcome {
-                    // 用户取消保存框：静默返回
-                    Ok(None) => {}
-                    Ok(Some(path)) => {
-                        info!(path = %path, "connection export completed");
-                        this.pending_notification =
-                            Some(Notification::success(format!("已加密导出到 {path}")));
-                    }
-                    Err(error) => {
-                        error!(error = %error, "connection export failed");
-                        this.pending_notification = Some(Notification::error(error));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// 导入：文件读取、格式识别和解析均在阻塞线程；覆盖前确认，保存时单事务提交。
-    pub(super) fn import_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.transferring {
-            return;
-        }
-        self.transferring = true;
-        cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let picked: Result<Option<transfer::PreparedImport>, String> = async {
-                let Some(handle) = rfd::AsyncFileDialog::new()
-                    .add_filter("Ramag JSON（兼容旧 .yaml）", &["json", "yaml", "yml"])
-                    .pick_file()
-                    .await
-                else {
-                    return Ok(None);
-                };
-                let read_path = handle.path().to_path_buf();
-                let prepared = ramag_app::run_blocking(move || {
-                    let file = std::fs::File::open(&read_path).map_err(|error| {
-                        ramag_domain::error::DomainError::Storage(format!(
-                            "打开导入文件失败：{error}"
-                        ))
-                    })?;
-                    let meta = file.metadata().map_err(|error| {
-                        ramag_domain::error::DomainError::Storage(format!(
-                            "读取文件信息失败：{error}"
-                        ))
-                    })?;
-                    if !meta.is_file() {
-                        return Err(ramag_domain::error::DomainError::InvalidConfig(
-                            "导入目标必须是普通文件".into(),
-                        ));
-                    }
-                    if meta.len() > transfer::MAX_IMPORT_FILE_BYTES {
-                        return Err(ramag_domain::error::DomainError::Storage(format!(
-                            "文件过大：{} bytes，最多 {} bytes",
-                            meta.len(),
-                            transfer::MAX_IMPORT_FILE_BYTES
-                        )));
-                    }
-                    let mut raw = String::new();
-                    let mut limited = file.take(transfer::MAX_IMPORT_FILE_BYTES + 1);
-                    limited.read_to_string(&mut raw).map_err(|error| {
-                        ramag_domain::error::DomainError::Storage(format!(
-                            "读取导入文件失败：{error}"
-                        ))
-                    })?;
-                    if raw.len() as u64 > transfer::MAX_IMPORT_FILE_BYTES {
-                        return Err(ramag_domain::error::DomainError::Storage(format!(
-                            "文件读取过程中超过 {} bytes 上限",
-                            transfer::MAX_IMPORT_FILE_BYTES
-                        )));
-                    }
-                    transfer::prepare_import(raw).map_err(ramag_domain::error::DomainError::Other)
-                })
-                .await
-                .map_err(|error| format!("读取导入文件失败：{error}"))?;
-                Ok(Some(prepared))
-            }
-            .await;
-
-            match picked {
-                Ok(None) => {
-                    let _ = this.update(cx, |this, cx| {
-                        this.transferring = false;
-                        cx.notify();
-                    });
-                }
-                Err(error) => {
-                    let _ = this.update(cx, |this, cx| {
-                        this.transferring = false;
-                        error!(error = %error, "connection import failed");
-                        this.pending_notification = Some(Notification::error(error));
-                        cx.notify();
-                    });
-                }
-                Ok(Some(transfer::PreparedImport::Plain { valid, skipped })) => {
-                    // transferring 保持 true，待覆盖数量算出后在合并确认框前复位
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.confirm_plain_import(valid, skipped, window, cx);
-                    });
-                }
-                Ok(Some(transfer::PreparedImport::Encrypted(raw))) => {
-                    // 口令框可被取消且无取消回调，打开前先复位，避免状态永久卡住。
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        this.transferring = false;
-                        cx.notify();
-                        let entity = cx.entity().clone();
-                        ramag_ui::open_bounded_masked_prompt(
-                            "输入导入口令",
-                            "请输入导出时设置的口令。旧版默认口令文件仍可手动输入原口令解密。",
-                            "",
-                            "解密导入",
-                            transfer::MAX_TRANSFER_PASSPHRASE_BYTES,
-                            move |passphrase, window, app| {
-                                entity.update(app, |this, cx| {
-                                    this.decrypt_and_import(raw, passphrase, window, cx)
-                                });
-                            },
-                            window,
-                            cx,
-                        );
-                    });
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// 明文 V1 导入：一次确认同时给出明文风险与新增 / 覆盖数量，
-    /// 替代「明文警告 → 覆盖确认」两个背靠背弹框；进入时 transferring 仍为 true
-    fn confirm_plain_import(
-        &mut self,
-        valid: Vec<ConnectionConfig>,
-        skipped: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let svc = self.service.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let existing = svc.list().await;
-            let _ = this.update_in(cx, move |this, window, cx| {
-                this.transferring = false;
-                cx.notify();
-                match existing {
-                    Ok(existing) => {
-                        let (added, overwritten) = import_change_counts(&valid, &existing);
-                        let mut description = format!(
-                            "这是旧版 V1 明文文件，可能直接包含数据库密码。请仅导入可信文件，\
-                             并在完成后安全删除原文件。\n\n将新增 {added} 个连接"
-                        );
-                        if overwritten > 0 {
-                            description.push_str(&format!(
-                                "、覆盖 {overwritten} 个同 ID 连接\
-                                 （相关连接池会清理，已打开标签需重新连接）"
-                            ));
-                        }
-                        if !skipped.is_empty() {
-                            description
-                                .push_str(&format!("，另跳过 {} 个无效或重复条目", skipped.len()));
-                        }
-                        description.push('。');
-                        let entity = cx.entity().clone();
-                        ramag_ui::open_confirm(
-                            "导入未加密配置？",
-                            description,
-                            "继续导入",
-                            true,
-                            move |_, app| {
-                                entity
-                                    .update(app, |this, cx| this.save_imported(valid, skipped, cx));
-                            },
-                            window,
-                            cx,
-                        );
-                    }
-                    Err(error) => {
-                        error!(error = %error, "load existing connections failed");
-                        this.pending_notification = Some(Notification::error(format!(
-                            "导入前读取现有连接失败：{error}"
-                        )));
-                        cx.notify();
-                    }
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// 解密加密导出文件并导入（KDF 为 CPU 密集，放阻塞线程）
-    fn decrypt_and_import(
-        &mut self,
-        raw: String,
-        passphrase: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.transferring {
-            return;
-        }
-        self.transferring = true;
-        cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = ramag_app::run_blocking(move || {
-                transfer::decrypt_connections(&raw, &passphrase)
-                    .map_err(ramag_domain::error::DomainError::Other)
-            })
-            .await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok((valid, skipped)) => this.prepare_import_save(valid, skipped, window, cx),
-                Err(error) => {
-                    this.transferring = false;
-                    error!(error = %error, "decrypt connection import failed");
-                    this.pending_notification =
-                        Some(Notification::error(format!("解密失败：{error}")));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// 读取当前连接并计算新增 / 覆盖数量；存在覆盖时必须由用户确认。
-    fn prepare_import_save(
-        &mut self,
-        valid: Vec<ConnectionConfig>,
-        skipped: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.transferring = true;
-        cx.notify();
-        let svc = self.service.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let existing = svc.list().await;
-            let _ = this.update_in(cx, move |this, window, cx| match existing {
-                Ok(existing) => {
-                    let (added, overwritten) = import_change_counts(&valid, &existing);
-                    if overwritten == 0 {
-                        this.save_imported(valid, skipped, cx);
-                        return;
-                    }
-
-                    this.transferring = false;
-                    cx.notify();
-                    let skipped_count = skipped.len();
-                    let entity = cx.entity().clone();
-                    ramag_ui::open_confirm(
-                        "覆盖现有连接？",
-                        format!(
-                            "将新增 {added} 个连接、覆盖 {overwritten} 个同 ID 连接{}。覆盖成功后，相关连接池会清理，已打开标签需重新连接。",
-                            if skipped_count == 0 {
-                                String::new()
-                            } else {
-                                format!("，另跳过 {skipped_count} 个无效或重复条目")
-                            }
-                        ),
-                        "继续导入",
-                        true,
-                        move |_, app| {
-                            entity.update(app, |this, cx| {
-                                this.save_imported(valid, skipped, cx)
-                            });
-                        },
-                        window,
-                        cx,
-                    );
-                }
-                Err(error) => {
-                    this.transferring = false;
-                    error!(error = %error, "load existing connections failed");
-                    this.pending_notification = Some(Notification::error(format!(
-                        "导入前读取现有连接失败：{error}"
-                    )));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// 原子保存导入连接；成功后通知根视图清理缓存并暂停仍持旧配置的标签。
-    fn save_imported(
-        &mut self,
-        valid: Vec<ConnectionConfig>,
-        skipped: Vec<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.transferring = true;
-        cx.notify();
-        let svc = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            let result = svc.save_many(&valid).await;
-            let _ = this.update(cx, move |this, cx| {
-                this.transferring = false;
-                for entry in &skipped {
-                    warn!(entry = %entry, "import entry skipped");
-                }
-                match result {
-                    Ok(()) => {
-                        let imported = valid.len();
-                        info!(
-                            imported,
-                            skipped = skipped.len(),
-                            "connections imported atomically"
-                        );
-                        for config in &valid {
-                            this.invalidate_version(&config.id);
-                        }
-                        let message = if imported == 0 {
-                            if skipped.is_empty() {
-                                "导入文件中没有连接".to_string()
-                            } else {
-                                format!("没有可导入的连接，已跳过 {} 个条目", skipped.len())
-                            }
-                        } else if skipped.is_empty() {
-                            format!("已导入 {imported} 个连接")
-                        } else {
-                            format!(
-                                "已导入 {imported} 个连接，跳过 {} 个（原因见日志）",
-                                skipped.len()
-                            )
-                        };
-                        this.pending_notification = Some(if imported > 0 && skipped.is_empty() {
-                            Notification::success(message)
-                        } else {
-                            Notification::warning(message)
-                        });
-                        if !valid.is_empty() {
-                            cx.emit(ListEvent::ConnectionsImported(valid));
-                            this.refresh(cx);
-                        }
-                    }
-                    Err(error) => {
-                        error!(error = %error, "atomic connection import failed");
-                        this.pending_notification = Some(Notification::error(format!(
-                            "导入失败，未写入任何连接：{error}"
-                        )));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     pub(super) fn filtered_indices(&self) -> Arc<Vec<usize>> {
         {
             let cache = self.filtered_indices_cache.borrow();
@@ -720,21 +314,24 @@ impl ConnectionListPanel {
     }
 }
 
-fn import_change_counts(
-    incoming: &[ConnectionConfig],
-    existing: &[ConnectionConfig],
-) -> (usize, usize) {
-    let existing_ids: HashSet<ConnectionId> =
-        existing.iter().map(|config| config.id.clone()).collect();
-    incoming
+fn changed_connections(
+    previous: &[ConnectionConfig],
+    current: &[ConnectionConfig],
+) -> Vec<ConnectionConfig> {
+    let previous_by_id: HashMap<&ConnectionId, &ConnectionConfig> =
+        previous.iter().map(|config| (&config.id, config)).collect();
+    let current_ids: HashSet<&ConnectionId> = current.iter().map(|config| &config.id).collect();
+    current
         .iter()
-        .fold((0, 0), |(added, overwritten), config| {
-            if existing_ids.contains(&config.id) {
-                (added, overwritten + 1)
-            } else {
-                (added + 1, overwritten)
-            }
-        })
+        .filter(|config| previous_by_id.get(&config.id).copied() != Some(*config))
+        .cloned()
+        .chain(
+            previous
+                .iter()
+                .filter(|config| !current_ids.contains(&config.id))
+                .cloned(),
+        )
+        .collect()
 }
 
 /// 搜索用类型名（与列表类型徽章文案一致，支持按 "mysql" / "redis" 等过滤）
@@ -797,20 +394,17 @@ mod tests {
     }
 
     #[test]
-    fn import_change_counts_separates_new_and_overwritten_ids() {
-        let existing = vec![ConnectionConfig::new_mysql(
-            "existing",
-            "127.0.0.1",
-            3306,
-            "root",
-        )];
-        let mut overwritten = existing[0].clone();
-        overwritten.name = "updated".into();
-        let added = ConnectionConfig::new_redis("new", "127.0.0.1", 6379);
+    fn changed_connections_includes_updates_additions_and_deletions() {
+        let deleted = ConnectionConfig::new_mysql("deleted", "127.0.0.1", 3306, "root");
+        let unchanged = ConnectionConfig::new_redis("same", "127.0.0.1", 6379);
+        let mut updated = unchanged.clone();
+        updated.name = "updated".into();
+        let added = ConnectionConfig::new_redis("added", "127.0.0.1", 6380);
 
-        assert_eq!(
-            import_change_counts(&[overwritten, added], &existing),
-            (1, 1)
+        let changed = changed_connections(
+            &[deleted.clone(), unchanged],
+            &[updated.clone(), added.clone()],
         );
+        assert_eq!(changed, vec![updated, added, deleted]);
     }
 }

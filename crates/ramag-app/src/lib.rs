@@ -4,6 +4,7 @@
 //! 应用层：Use Cases + ToolRegistry。依赖 domain trait，不持具体实现
 
 mod blocking;
+pub mod connection_transfer;
 pub mod tool_registry;
 pub mod usecases;
 

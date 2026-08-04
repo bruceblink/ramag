@@ -6240,12 +6240,14 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "ramag-app"
 version = "0.0.1"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "chrono",
  "futures",
  "hex",
  "image",
  "parking_lot",
+ "pbkdf2",
  "ramag-domain",
  "ramag-infra-mongodb",
  "ramag-infra-mysql",
@@ -6253,6 +6255,7 @@ dependencies = [
  "ramag-infra-redis",
  "serde",
  "serde_json",
+ "sha2",
  "smol",
  "tokio",
  "tracing",
@@ -6505,16 +6508,13 @@ dependencies = [
 name = "ramag-tool-dbclient"
 version = "0.0.1"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "chrono",
  "futures",
  "gpui",
  "gpui-component",
- "hex",
  "lsp-types",
  "parking_lot",
- "pbkdf2",
  "ramag-app",
  "ramag-domain",
  "ramag-infra-sql-shared",
@@ -6526,7 +6526,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2",
  "smol",
  "sqlformat",
  "tracing",

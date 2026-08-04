@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use gpui::{Context, ScrollStrategy, Window};
 use gpui_component::{Disableable as _, notification::Notification};
 use ramag_domain::entities::{ClipId, ClipItem};
-use ramag_ui::open_confirm;
 use tracing::error;
 
 use super::ClipboardView;
@@ -264,36 +263,6 @@ impl ClipboardView {
                     error!(error = %e, "cleanup deleted clipboard media failed");
                 }
             }
-        })
-        .detach();
-    }
-
-    pub(super) fn confirm_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entity = cx.entity().clone();
-        open_confirm(
-            "清空剪贴历史",
-            "将删除全部历史条目。此操作不可撤销。",
-            "清空",
-            true,
-            move |_window, cx| {
-                entity.update(cx, |this, cx| this.clear_all(cx));
-            },
-            window,
-            cx,
-        );
-    }
-
-    fn clear_all(&mut self, cx: &mut Context<Self>) {
-        let svc = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            let result = svc.clear().await;
-            let _ = this.update(cx, |this, cx| {
-                if let Err(e) = result {
-                    error!(error = %e, "clear clipboard history failed");
-                    this.pending_notification = Some(Notification::error(format!("清空失败：{e}")));
-                }
-                this.reload(cx);
-            });
         })
         .detach();
     }

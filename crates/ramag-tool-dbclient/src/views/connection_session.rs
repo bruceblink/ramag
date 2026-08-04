@@ -144,12 +144,6 @@ impl ConnectionSession {
             },
         ));
 
-        subs.push(ramag_ui::persist_resizable_sizes(
-            &resize_state,
-            "split_dbclient_session",
-            window,
-            cx,
-        ));
         let focus_handle = cx.focus_handle();
 
         Self {

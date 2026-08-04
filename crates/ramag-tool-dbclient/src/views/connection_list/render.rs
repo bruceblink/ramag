@@ -7,8 +7,7 @@ use gpui::{
     uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::row::connection_row;
@@ -16,8 +15,8 @@ use super::{ConnectionListPanel, ListEvent};
 
 impl Render for ConnectionListPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(notification) = self.pending_notification.take() {
-            window.push_notification(notification, cx);
+        if !self.loading && self.loaded_revision != self.service.revision() {
+            self.refresh(cx);
         }
         // 首次显示即聚焦搜索框，进入页面直接可打字过滤
         if !self.focused_search_once {
@@ -69,26 +68,6 @@ impl Render for ConnectionListPanel {
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                     ),
                 ),
-            )
-            .child(
-                ramag_ui::clickable_button("import-connections")
-                    .ghost()
-                    .small()
-                    .icon(ramag_ui::icons::download())
-                    .disabled(self.transferring)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.import_connections(window, cx);
-                    })),
-            )
-            .child(
-                ramag_ui::clickable_button("export-connections")
-                    .ghost()
-                    .small()
-                    .icon(ramag_ui::icons::upload())
-                    .disabled(self.transferring)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.prompt_export_passphrase(window, cx);
-                    })),
             )
             .child(
                 ramag_ui::clickable_button("add-connection")

@@ -2,6 +2,7 @@
 
 mod algorithm;
 mod render;
+mod transfer;
 
 use std::time::Duration;
 

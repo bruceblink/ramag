@@ -46,7 +46,7 @@ impl std::fmt::Display for RepoId {
     }
 }
 
-/// 仓库配置：本地路径 + 别名 + UI 偏好
+/// 仓库配置：本地路径 + 别名。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     pub id: RepoId,
@@ -55,9 +55,6 @@ pub struct RepoConfig {
     pub path: String,
     /// 上次打开时间，用于「最近」排序
     pub last_opened_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// 置顶展示
-    #[serde(default)]
-    pub favorite: bool,
 }
 
 impl RepoConfig {
@@ -73,7 +70,6 @@ impl RepoConfig {
             name,
             path,
             last_opened_at: None,
-            favorite: false,
         }
     }
 }

@@ -16,23 +16,7 @@ const MAX_OPEN_REPOS_PREF_BYTES: usize = 256 * 1024;
 const MAX_OPEN_REPO_PATH_BYTES: usize = 32 * 1024;
 
 impl VcsView {
-    /// 收藏 / 取消收藏最近仓库，并立即持久化。
-    pub(crate) fn toggle_repo_favorite(&mut self, path: String, cx: &mut Context<Self>) {
-        self.startup_repo_restore_allowed = false;
-        let repo = std::rc::Rc::make_mut(&mut self.recent_repos)
-            .iter_mut()
-            .find(|repo| repo.path == path)
-            .map(|repo| {
-                repo.favorite = !repo.favorite;
-                repo.clone()
-            });
-        if let Some(repo) = repo {
-            self.save_repo_async(repo, cx);
-            cx.notify();
-        }
-    }
-
-    /// 保存单条 RepoConfig 到 storage；失败要可见，否则收藏 / 最近时间会在重启后悄悄丢失。
+    /// 保存单条 RepoConfig 到 storage；失败要可见，否则最近时间会在重启后悄悄丢失。
     pub(crate) fn save_repo_async(&self, repo: RepoConfig, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
         let coordinator = self.repo_write_coordinator.clone();
@@ -132,7 +116,6 @@ impl VcsView {
             .trim_end_matches(".git");
         self.loading_label = Some(format!("正在 Clone {repo_hint} 到 {}…", dest.display()));
         self.error = None;
-        self.show_clone_panel = false;
         // 进度槽 + 取消位：infra 持续写进度，loading 屏每帧读；取消钮置位后 kill 子进程
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let progress = std::sync::Arc::new(std::sync::Mutex::new(String::new()));

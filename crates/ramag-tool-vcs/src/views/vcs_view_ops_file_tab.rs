@@ -102,12 +102,11 @@ impl VcsView {
         };
         let driver = self.driver.clone();
         let path_for_diff = path.clone();
-        let ignore_ws = self.diff_ignore_whitespace;
         let context_lines = self.diff_view_mode.context_lines();
         let source_for_diff = FileTabSource::Changes(kind);
         cx.spawn(async move |this, cx| {
             let result = driver
-                .diff_file_full_opts(&repo, &path_for_diff, diff_kind, ignore_ws, context_lines)
+                .diff_file_full_opts(&repo, &path_for_diff, diff_kind, false, context_lines)
                 .await;
             let result = match result {
                 Ok(diff) => {
