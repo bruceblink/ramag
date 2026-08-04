@@ -2,7 +2,7 @@
 
 > 状态：已实施 Windows x64 安装包、macOS ARM64/Intel 独立安装包和统一 GitHub Actions 发布工作流；首次真实 Runner 打包需在提交后通过手动工作流确认。
 >
-> 更新日期：2026-07-23。
+> 更新日期：2026-08-04。
 >
 > 原则：本地负责开发与复现，对外桌面 Release 统一由 GitHub Actions 汇总并发布。
 
@@ -40,13 +40,13 @@ SHA256SUMS.txt
 
 ```toml
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 ```
 
 发布标签必须完全一致：
 
 ```text
-Cargo version 0.0.1  →  tag v0.0.1
+Cargo version 0.0.2  →  tag v0.0.2
 ```
 
 两平台脚本都通过 `cargo metadata --locked --no-deps` 读取唯一的 `ramag-bin` 版本。标签、应用版本或产物版本不一致时，发布会在上传前失败。
@@ -134,7 +134,7 @@ Actions → Desktop Release → Run workflow
 
 1. 修改根 `Cargo.toml` 的 workspace 版本，并通过项目检查同步 `Cargo.lock`。
 2. 完成本地质量门禁、手动 Action 和真实桌面验收。
-3. 创建与 Cargo 版本一致的标签，例如 `v0.0.1`。
+3. 创建与 Cargo 版本一致的带注释标签，例如 `v0.0.2`；标签注释会作为 GitHub Release 说明。
 4. 推送标签，等待两个平台均通过后自动发布。
 
 正式使用前必须在 GitHub 设置中完成：
