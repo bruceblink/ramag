@@ -17,7 +17,7 @@
 | `scripts/package-windows.ps1` | Windows 本机复现完整 Release 打包 | 否 |
 | `make dmg-*` | macOS 本机生成指定架构的开发 DMG | 否 |
 | `make mac-package` | macOS 本机复现 ARM64 与 Intel Release 打包 | 否 |
-| `Desktop Release` Action | 并行构建两平台；`v*` 标签统一创建 GitHub Release | 是 |
+| `Desktop Release` Action | 并行构建两平台；`v*` 标签自动发布，也可指定已有标签手动重试 | 是 |
 
 `make release` 不创建安装包，也不代表对外发布。
 
@@ -94,6 +94,8 @@ scripts/macos/package-tests.sh
 ```text
 workflow_dispatch 或 v* 标签
               ↓
+手动指定标签时检出该标签；留空则检出当前分支
+              ↓
        两个平台并行构建
        ↙               ↘
 windows-2025          macos-15 ARM64
@@ -102,14 +104,14 @@ Windows x64 安装包     macOS ARM64 + Intel DMG
        ↘               ↙
          上传独立 Artifact
                  ↓
-仅 v* 标签：进入 desktop-release Environment
+v* 推送或手动指定 release_tag：进入 desktop-release Environment
                  ↓
 复验两平台 SHA-256 → 生成合并校验文件
                  ↓
 创建草稿 Release → 上传 3 个安装产物 → 正式发布
 ```
 
-发布任务不 checkout 源码、不执行 Cargo，只下载已验证的 Artifact，并单独获得 `contents: write`。任一平台失败都不会发布不完整版本。
+发布任务不 checkout 源码、不执行 Cargo，只下载已验证的 Artifact，并通过 GitHub API 读取远端注释标签的说明；它单独获得 `contents: write`。任一平台失败都不会发布不完整版本。
 
 已正式发布的同名 Release 不会被覆盖；失败后遗留的草稿可以由同一标签工作流重试。所有 GitHub 官方 Action 都固定到完整 commit SHA。
 
@@ -123,7 +125,7 @@ Windows x64 安装包     macOS ARM64 + Intel DMG
 Actions → Desktop Release → Run workflow
 ```
 
-结果会生成两份保留 14 天的 Artifact，不创建 GitHub Release：
+`release_tag` 留空时，结果会生成两份保留 14 天的 Artifact，不创建 GitHub Release：
 
 - Windows Artifact：安装器、平台 SHA-256。
 - macOS Artifact：ARM64 DMG、Intel DMG、平台 SHA-256。
@@ -136,6 +138,8 @@ Actions → Desktop Release → Run workflow
 2. 完成本地质量门禁、手动 Action 和真实桌面验收。
 3. 创建与 Cargo 版本一致的带注释标签，例如 `v0.0.2`；标签注释会作为 GitHub Release 说明。
 4. 推送标签，等待两个平台均通过后自动发布。
+
+如果标签已经存在，但发布任务因工作流自身问题失败，不要强制移动标签。在包含修复后的默认分支上手动运行 `Desktop Release`，将 `release_tag` 填为原标签（例如 `v0.0.2`）。工作流会检出并重新构建该标签，核对产物版本，从 GitHub API 读取标签注释后继续发布。
 
 正式使用前必须在 GitHub 设置中完成：
 

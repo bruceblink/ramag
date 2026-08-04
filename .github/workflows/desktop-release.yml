@@ -2,6 +2,11 @@ name: Desktop Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "已有的 v* 注释标签；留空时只构建 Artifact，不发布"
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -26,6 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install pinned Rust toolchain
         shell: pwsh
@@ -88,6 +94,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -141,7 +148,9 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    if: >-
+      (github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs:
       - windows-package
       - macos-package
@@ -200,6 +209,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          MANUAL_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           cd release-assets
@@ -210,7 +220,37 @@ jobs:
             Ramag-*-macos-x86_64.dmg
             SHA256SUMS.txt
           )
-          tag="$GITHUB_REF_NAME"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$MANUAL_RELEASE_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ "$tag" != v* || "$tag" == "v" ]]; then
+            echo "Release tag must start with v and contain a version: $tag" >&2
+            exit 1
+          fi
+
+          installers=(Ramag-*-windows-x64-setup.exe)
+          [[ ${#installers[@]} -eq 1 ]]
+          version="${installers[0]#Ramag-}"
+          version="${version%-windows-x64-setup.exe}"
+          if [[ "$tag" != "v$version" ]]; then
+            echo "Release tag $tag does not match packaged version $version." >&2
+            exit 1
+          fi
+
+          tag_ref=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha')
+          read -r tag_object_type tag_object_sha <<<"$tag_ref"
+          if [[ "$tag_object_type" != "tag" || -z "$tag_object_sha" ]]; then
+            echo "Release tag $tag must be an annotated tag with release notes." >&2
+            exit 1
+          fi
+          notes=$(gh api "repos/$GH_REPO/git/tags/$tag_object_sha" --jq '.message')
+          if [[ -z "${notes//[[:space:]]/}" ]]; then
+            echo "Release tag $tag has no annotation message." >&2
+            exit 1
+          fi
+
           title="Ramag ${tag#v}"
 
           if is_draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
@@ -219,8 +259,9 @@ jobs:
               exit 1
             fi
             gh release upload "$tag" "${assets[@]}" --clobber
+            gh release edit "$tag" --title "$title" --notes "$notes"
           else
-            release_flags=(--draft --verify-tag --notes-from-tag --title "$title")
+            release_flags=(--draft --verify-tag --notes "$notes" --title "$title")
             if [[ "$tag" == *-* ]]; then
               release_flags+=(--prerelease)
             fi
