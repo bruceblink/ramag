@@ -25,10 +25,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark-clipboard-enabled.png">
-    <img src="docs/screenshots/home-light.png" alt="Ramag 首页：数据库、Git 与 SSH 统一工作台">
-  </picture>
+  <img src="docs/screenshots/v0.0.2/home-light.png" alt="Ramag v0.0.2 首页：数据库、Git 与 SSH 统一工作台">
 </p>
 
 ---
@@ -91,7 +88,7 @@ Ramag 把开发中频繁切换的四类上下文收进一个原生窗口：查�
 
 从连接、结构浏览、查询，到结果编辑和完整迁移，四类数据库共用一套清晰的工作流。
 
-![MySQL、PostgreSQL、Redis 与 MongoDB 统一连接管理](docs/screenshots/database-connections-light.png)
+![MySQL、PostgreSQL、Redis 与 MongoDB 统一连接管理](docs/screenshots/v0.0.1/database-connections-light.png)
 
 ### MySQL 与 PostgreSQL
 
@@ -102,8 +99,8 @@ Ramag 把开发中频繁切换的四类上下文收进一个原生窗口：查�
 - 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/database-mysql-query-dark.png">
-  <img src="docs/screenshots/database-mysql-query-light.png" alt="Ramag MySQL 查询编辑器与十万行结果分页">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/v0.0.1/database-mysql-query-dark.png">
+  <img src="docs/screenshots/v0.0.1/database-mysql-query-light.png" alt="Ramag MySQL 查询编辑器与十万行结果分页">
 </picture>
 
 ### Redis
@@ -152,8 +149,8 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 写操作与网络认证直接复用系统 Git、SSH Agent 和用户已有配置，不在应用中再造一套不兼容的凭据体系。
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/git-workspace-dark.png">
-  <img src="docs/screenshots/git-workspace-light.png" alt="Ramag Git 工作区、文件编辑与提交历史">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/v0.0.1/git-workspace-dark.png">
+  <img src="docs/screenshots/v0.0.1/git-workspace-light.png" alt="Ramag Git 工作区、文件编辑与提交历史">
 </picture>
 
 ## SSH 管理
@@ -170,6 +167,11 @@ SSH 管理把连接配置、内嵌终端和远程文件浏览放在同一个工�
 - 可将当前路径、目录或文件拖到终端区域，按对应目录创建一个新终端，不影响已有终端。
 - JumpServer 导入支持保存多个加密登录、读取组织与资产树、选择授权账号，并生成可继续编辑和测试的 SSH 连接。
 - 生产连接会禁止 SFTP 上传、编辑、重命名和删除；内嵌终端仍可使用，命令权限由远端账号和服务器策略负责。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/v0.0.2/ssh-workspace-dark.png">
+  <img src="docs/screenshots/v0.0.2/ssh-workspace-light.png" alt="Ramag v0.0.2 SSH 内嵌终端与 SFTP 文件工作区">
+</picture>
 
 ## 剪贴板工作台
 
@@ -188,7 +190,7 @@ SSH 管理把连接配置、内嵌终端和远程文件浏览放在同一个工�
 
 | 剪贴历史与类型筛选 | 采集、自动粘贴与应用黑名单设置 |
 |---|---|
-| ![剪贴历史、搜索与类型筛选](docs/screenshots/clipboard-history-light.png) | ![剪贴板隐私与采集设置](docs/screenshots/clipboard-settings-light.png) |
+| ![剪贴历史、搜索与类型筛选](docs/screenshots/v0.0.1/clipboard-history-light.png) | ![剪贴板隐私与采集设置](docs/screenshots/v0.0.1/clipboard-settings-light.png) |
 
 剪贴板采集默认关闭，需要在设置中主动启用。常用快捷键：
 
