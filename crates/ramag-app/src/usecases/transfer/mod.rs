@@ -10,7 +10,7 @@ pub mod mongo;
 pub mod redis;
 mod redis_selection_export;
 mod redis_selection_import;
-mod sql_catalog;
+pub(crate) mod sql_catalog;
 pub mod sql_export;
 pub mod sql_import;
 

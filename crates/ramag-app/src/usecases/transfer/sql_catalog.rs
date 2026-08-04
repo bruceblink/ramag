@@ -180,13 +180,20 @@ pub(crate) fn pg_sequences_query(schema: &str, table: &str) -> String {
     let s = pg_lit(schema);
     let t = pg_lit(table);
     format!(
-        "SELECT 'CREATE SEQUENCE IF NOT EXISTS ' || pg_get_serial_sequence('\"{s}\".\"{t}\"', a.attname) || ';' AS create_stmt, \
-                'ALTER SEQUENCE ' || pg_get_serial_sequence('\"{s}\".\"{t}\"', a.attname) || ' OWNED BY \"{s}\".\"{t}\".' || quote_ident(a.attname) || ';' AS owned_stmt, \
-                'SELECT setval(' || quote_literal(pg_get_serial_sequence('\"{s}\".\"{t}\"', a.attname)) || \
-                ', (SELECT COALESCE(MAX(' || quote_ident(a.attname) || '), 0) + 1 FROM \"{s}\".\"{t}\"), false);' AS setval_stmt, \
+        "SELECT 'CREATE SEQUENCE IF NOT EXISTS ' || format('%I.%I', sn.nspname, seq.relname) || ';' AS create_stmt, \
+                'ALTER SEQUENCE ' || format('%I.%I', sn.nspname, seq.relname) || ' OWNED BY \"{s}\".\"{t}\".' || quote_ident(a.attname) || ';' AS owned_stmt, \
+                'SELECT CASE WHEN ' || ps.seqincrement || ' > 0 THEN CASE WHEN (SELECT MAX(' || quote_ident(a.attname) || ') FROM \"{s}\".\"{t}\") >= state.next_value THEN setval(' || \
+                quote_literal(format('\"%s\".\"%s\"', replace(sn.nspname, '\"', '\"\"'), replace(seq.relname, '\"', '\"\"'))) || \
+                ', (SELECT MAX(' || quote_ident(a.attname) || ') FROM \"{s}\".\"{t}\"), true) ELSE state.last_value END ELSE CASE WHEN (SELECT MIN(' || quote_ident(a.attname) || ') FROM \"{s}\".\"{t}\") <= state.next_value THEN setval(' || \
+                quote_literal(format('\"%s\".\"%s\"', replace(sn.nspname, '\"', '\"\"'), replace(seq.relname, '\"', '\"\"'))) || \
+                ', (SELECT MIN(' || quote_ident(a.attname) || ') FROM \"{s}\".\"{t}\"), true) ELSE state.last_value END END FROM (SELECT last_value, last_value + CASE WHEN is_called THEN (' || ps.seqincrement || ') ELSE 0 END AS next_value FROM ' || \
+                format('%I.%I', sn.nspname, seq.relname) || ') AS state;' AS setval_stmt, \
                 a.attidentity <> '' AS is_identity, \
                 a.attidentity = 'a' AS identity_always \
            FROM pg_attribute a \
+           JOIN pg_class seq ON seq.oid = pg_get_serial_sequence('\"{s}\".\"{t}\"', a.attname)::regclass \
+           JOIN pg_namespace sn ON sn.oid = seq.relnamespace \
+           JOIN pg_sequence ps ON ps.seqrelid = seq.oid \
           WHERE a.attrelid = '\"{s}\".\"{t}\"'::regclass \
             AND a.attnum > 0 AND NOT a.attisdropped \
             AND pg_get_serial_sequence('\"{s}\".\"{t}\"', a.attname) IS NOT NULL;"

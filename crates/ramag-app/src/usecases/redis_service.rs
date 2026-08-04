@@ -138,6 +138,32 @@ impl RedisService {
         )
     }
 
+    pub async fn key_type_and_ttl(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+    ) -> Result<(RedisType, i64)> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.key_type_and_ttl(config, db, key).await
+        )
+    }
+
+    pub async fn keys_exist(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+    ) -> Result<Vec<bool>> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.keys_exist(config, db, keys).await
+        )
+    }
+
     pub async fn get_value(
         &self,
         config: &ConnectionConfig,
@@ -236,6 +262,30 @@ impl RedisService {
         ttl_secs: Option<i64>,
     ) -> Result<bool> {
         self.driver.set_ttl(config, db, key, ttl_secs).await
+    }
+
+    pub async fn set_ttl_ms(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        self.driver.set_ttl_ms(config, db, key, ttl_ms).await
+    }
+
+    pub async fn persist_key(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<bool> {
+        self.driver.persist_key(config, db, key).await
+    }
+
+    pub async fn rename_key_if_absent(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        from: &str,
+        to: &str,
+    ) -> Result<bool> {
+        self.driver.rename_key_if_absent(config, db, from, to).await
     }
 
     pub async fn execute_command(

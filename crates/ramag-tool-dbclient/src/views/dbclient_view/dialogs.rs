@@ -6,10 +6,46 @@ use ramag_domain::entities::{ConnectionConfig, ConnectionId};
 use tracing::error;
 
 use crate::views::connection_form::{self, ConnectionFormPanel, FormEvent};
+use crate::views::data_sync_dialog::DataSyncDialog;
 
 use super::{DbClientView, evict_connection_resources};
 
 impl DbClientView {
+    pub(super) fn open_data_sync(
+        &mut self,
+        target: ConnectionConfig,
+        connections: &[ConnectionConfig],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.data_sync_service.gate().is_blocking() {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(
+                    "已有数据同步任务正在进行或等待确认",
+                )
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
+        let service = self.data_sync_service.clone();
+        let connections = connections.to_vec();
+        let panel = cx.new(|cx| DataSyncDialog::new(service, target, &connections, window, cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title("同步数据到当前连接")
+                .close_button(false)
+                .w(px(760.0))
+                .pt(px(18.0))
+                .px(px(20.0))
+                .pb(px(16.0))
+                .content({
+                    let panel = panel.clone();
+                    move |content, _, _| content.child(panel.clone())
+                })
+        });
+    }
+
     pub(super) fn open_form_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let svc = self.service.clone();
         let redis_svc = self.redis_service.clone();

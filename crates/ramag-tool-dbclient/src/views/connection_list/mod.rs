@@ -79,6 +79,7 @@ impl FilteredIndicesCacheEntry {
 pub enum ListEvent {
     Selected(ConnectionConfig),
     RequestNew,
+    RequestSync(ConnectionConfig),
     RequestEdit(ConnectionConfig),
     RequestDelete(ConnectionId),
     /// 其它入口修改连接后，通知根视图清理连接池并暂停仍持旧配置的标签。

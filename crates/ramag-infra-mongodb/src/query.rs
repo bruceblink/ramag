@@ -232,13 +232,18 @@ fn duplicates_only(error: &mongodb::error::Error) -> Option<u64> {
     }
     let write_errors = bulk.write_errors.as_ref()?;
     if write_errors.is_empty()
-        || write_errors
-            .iter()
-            .any(|error| error.code != DUPLICATE_KEY_CODE)
+        || write_errors.iter().any(|error| {
+            error.code != DUPLICATE_KEY_CODE || !duplicate_message_is_id_index(&error.message)
+        })
     {
         return None;
     }
     Some(write_errors.len() as u64)
+}
+
+/// 只把 `_id_` 索引冲突当作同步竞态跳过；其它唯一索引冲突必须显式失败。
+fn duplicate_message_is_id_index(message: &str) -> bool {
+    message.contains("index: _id_") || message.contains(".$_id_ dup key")
 }
 
 pub async fn update_one(
@@ -306,7 +311,7 @@ pub async fn run_command(
     db: &str,
     command: MongoDocument,
 ) -> Result<MongoDocument> {
-    let cmd_doc = json_to_document(command)?;
+    let cmd_doc = promote_known_command(json_to_document(command)?);
     ensure_command_document_budget([&cmd_doc], "MongoDB command")?;
     if is_cursor_command(&cmd_doc) {
         return collect_cursor_command(client, db, cmd_doc).await;
@@ -317,6 +322,45 @@ pub async fn run_command(
         .await
         .map_err(map_mongo_error)?;
     Ok(document_to_json(raw))
+}
+
+/// serde_json 未启用 preserve_order，转 BSON 后字段按字典序；MongoDB 协议却要求命令名为
+/// 第一字段。把本项目支持的命令名提升到首位，避免带 `filter` / `indexes` 时被误识别。
+fn promote_known_command(mut command: Document) -> Document {
+    const COMMAND_NAMES: &[&str] = &[
+        "aggregate",
+        "buildInfo",
+        "collStats",
+        "count",
+        "create",
+        "createIndexes",
+        "dbStats",
+        "delete",
+        "distinct",
+        "drop",
+        "dropDatabase",
+        "find",
+        "findAndModify",
+        "insert",
+        "listCollections",
+        "listIndexes",
+        "ping",
+        "serverStatus",
+        "update",
+    ];
+    let Some(name) = COMMAND_NAMES
+        .iter()
+        .find(|name| command.contains_key(**name))
+    else {
+        return command;
+    };
+    let Some(value) = command.remove(*name) else {
+        return command;
+    };
+    let mut ordered = Document::new();
+    ordered.insert(*name, value);
+    ordered.extend(command);
+    ordered
 }
 
 /// 命令是否返回游标（含这些命令名时需用游标抽取完整结果）
@@ -549,5 +593,32 @@ mod tests {
     fn format_string_id_passthrough() {
         let v = Bson::String("custom-id".into());
         assert_eq!(format_bson_id(&v), "custom-id");
+    }
+
+    #[test]
+    fn known_command_name_is_promoted_to_first_bson_field() {
+        let command = bson::doc! {
+            "filter": {"name": "users"},
+            "listCollections": 1,
+            "nameOnly": false,
+        };
+        let ordered = promote_known_command(command);
+        assert_eq!(
+            ordered.keys().next().map(String::as_str),
+            Some("listCollections")
+        );
+    }
+
+    #[test]
+    fn only_id_index_duplicate_is_safe_to_skip() {
+        assert!(duplicate_message_is_id_index(
+            "E11000 duplicate key error collection: app.users index: _id_ dup key"
+        ));
+        assert!(duplicate_message_is_id_index(
+            "E11000 duplicate key error index: app.users.$_id_ dup key"
+        ));
+        assert!(!duplicate_message_is_id_index(
+            "E11000 duplicate key error collection: app.users index: email_1 dup key"
+        ));
     }
 }

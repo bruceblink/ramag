@@ -11,6 +11,8 @@ pub mod usecases;
 pub use blocking::run_blocking;
 pub use tool_registry::ToolRegistry;
 pub use usecases::{
-    ClipboardService, ConnectionService, HotkeyState, MongoService, RedisService, SshService,
-    convert_id_to_integer, convert_id_to_string,
+    ClipboardService, ConnectionService, DataSyncConfirmation, DataSyncExecutionContext,
+    DataSyncGate, DataSyncGatePhase, DataSyncGateSnapshot, DataSyncPermit, DataSyncPreflightReport,
+    DataSyncService, HotkeyState, MongoService, PreparedDataSync, RedisService, SshService,
+    StartedDataSync, convert_id_to_integer, convert_id_to_string,
 };

@@ -16,7 +16,8 @@ use gpui::{
 };
 use gpui_component::Root;
 use ramag_app::{
-    ClipboardService, ConnectionService, MongoService, RedisService, SshService, ToolRegistry,
+    ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService, RedisService,
+    SshService, ToolRegistry,
 };
 use ramag_domain::traits::{
     ClipboardDriver, DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
@@ -93,6 +94,8 @@ struct AppDeps {
     conn_service: Arc<ConnectionService>,
     redis_service: Arc<RedisService>,
     mongo_service: Arc<MongoService>,
+    data_sync_service: Arc<DataSyncService>,
+    data_sync_gate: Arc<DataSyncGate>,
     clipboard_service: Arc<ClipboardService>,
     ssh_service: Arc<SshService>,
     storage: Arc<dyn Storage>,
@@ -187,6 +190,13 @@ fn main() {
 
     let redis_service: Arc<RedisService> = build_redis_service(storage.clone());
     let mongo_service: Arc<MongoService> = build_mongo_service(storage.clone());
+    let data_sync_gate = Arc::new(DataSyncGate::default());
+    let data_sync_service = Arc::new(DataSyncService::new(
+        conn_service.clone(),
+        redis_service.clone(),
+        mongo_service.clone(),
+        data_sync_gate.clone(),
+    ));
     let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
     let ssh_service: Arc<SshService> = build_ssh_service(storage.clone());
 
@@ -219,6 +229,8 @@ fn main() {
         conn_service,
         redis_service,
         mongo_service,
+        data_sync_service,
+        data_sync_gate,
         clipboard_service,
         ssh_service,
         storage,
@@ -246,7 +258,12 @@ fn main() {
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
 
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        let data_sync_gate_for_quit = deps.data_sync_gate.clone();
+        cx.on_action(move |_: &Quit, cx| {
+            if !data_sync_gate_for_quit.is_blocking() {
+                cx.quit();
+            }
+        });
 
         // 退出时关闭全部 SSH 隧道子进程，避免残留孤儿 ssh 占用端口
         let ssh_service_for_quit = deps.ssh_service.clone();
@@ -672,6 +689,8 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
         conn_service,
         redis_service,
         mongo_service,
+        data_sync_service,
+        data_sync_gate,
         clipboard_service,
         ssh_service,
         storage,
@@ -718,12 +737,15 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
                 ..Default::default()
             },
             move |window, cx| {
+                let gate_for_close = data_sync_gate.clone();
+                window.on_window_should_close(cx, move |_, _| !gate_for_close.is_blocking());
                 let home_view = cx.new(|_| HomeView::new(registry.clone()));
 
                 let dbclient_view = create_dbclient_view(
                     conn_service.clone(),
                     redis_service.clone(),
                     mongo_service.clone(),
+                    data_sync_service.clone(),
                     window,
                     cx,
                 );
@@ -738,7 +760,8 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
                 });
 
                 let shell = cx.new(|cx| {
-                    let mut shell = Shell::new(registry.clone(), window, cx);
+                    let mut shell =
+                        Shell::new(registry.clone(), data_sync_gate.clone(), window, cx);
                     shell.set_home_view(home_view.clone().into());
                     shell.set_settings_view(settings_view.clone().into());
                     shell.register_tool_view(DbClientTool::ID, dbclient_view.clone().into());
@@ -802,6 +825,9 @@ fn spawn_tray_loop(
                     cx.update(|cx| reveal_main_window(&deps, cx));
                 }
                 Some(tray::TrayEvent::Quit) => {
+                    if deps.data_sync_gate.is_blocking() {
+                        continue;
+                    }
                     drop(tray.borrow_mut().take());
                     cx.update(|cx| cx.quit());
                     break;

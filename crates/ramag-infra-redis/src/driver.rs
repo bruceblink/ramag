@@ -185,6 +185,76 @@ impl KvDriver for RedisDriver {
         .await
     }
 
+    async fn key_type_and_ttl(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+    ) -> Result<(RedisType, i64)> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let key = key.to_owned();
+        run_in_tokio(async move {
+            let mut manager = pools.get_or_create(&config, db).await?;
+            let (type_text, ttl_ms): (String, i64) = redis::pipe()
+                .cmd("TYPE")
+                .arg(&key)
+                .cmd("PTTL")
+                .arg(&key)
+                .query_async(&mut manager)
+                .await
+                .map_err(map_redis_error)?;
+            Ok((RedisType::parse(&type_text), ttl_ms))
+        })
+        .await
+    }
+
+    async fn keys_exist(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+    ) -> Result<Vec<bool>> {
+        ensure_redis_config(config)?;
+        if keys.len() > ramag_domain::entities::TRANSFER_BATCH_ITEMS {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis EXISTS 批次超过 {} 个上限",
+                ramag_domain::entities::TRANSFER_BATCH_ITEMS
+            )));
+        }
+        for key in keys {
+            validate_redis_key(key)?;
+        }
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let keys = keys.to_vec();
+        run_in_tokio(async move {
+            let mut manager = pools.get_or_create(&config, db).await?;
+            let mut pipeline = redis::pipe();
+            for key in &keys {
+                pipeline.cmd("EXISTS").arg(key);
+            }
+            let values: Vec<i64> = pipeline
+                .query_async(&mut manager)
+                .await
+                .map_err(map_redis_error)?;
+            if values.len() != keys.len() {
+                return Err(DomainError::QueryFailed(format!(
+                    "Redis EXISTS 应答数量异常：预期 {}，实际 {}",
+                    keys.len(),
+                    values.len()
+                )));
+            }
+            Ok(values.into_iter().map(|value| value > 0).collect())
+        })
+        .await
+    }
+
     async fn get_value(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<RedisValue> {
         Ok(self
             .get_value_limited(config, db, key, DEFAULT_COLLECTION_LIMIT)
@@ -372,6 +442,89 @@ impl KvDriver for RedisDriver {
                     .map_err(map_redis_error)?,
             };
             Ok(ok == 1)
+        })
+        .await
+    }
+
+    async fn set_ttl_ms(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        key: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
+        if ttl_ms <= 0 {
+            return Err(DomainError::InvalidConfig(
+                "Redis PEXPIRE 毫秒数必须大于 0".into(),
+            ));
+        }
+        ensure_writable(config, "PEXPIRE")?;
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let key = key.to_owned();
+        run_in_tokio(async move {
+            let mut manager = pools.get_or_create(&config, db).await?;
+            let changed: i64 = redis::cmd("PEXPIRE")
+                .arg(&key)
+                .arg(ttl_ms)
+                .query_async(&mut manager)
+                .await
+                .map_err(map_redis_error)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn persist_key(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<bool> {
+        ensure_redis_config(config)?;
+        validate_redis_key(key)?;
+        ensure_writable(config, "PERSIST")?;
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let key = key.to_owned();
+        run_in_tokio(async move {
+            let mut manager = pools.get_or_create(&config, db).await?;
+            let changed: i64 = redis::cmd("PERSIST")
+                .arg(&key)
+                .query_async(&mut manager)
+                .await
+                .map_err(map_redis_error)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn rename_key_if_absent(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        from: &str,
+        to: &str,
+    ) -> Result<bool> {
+        ensure_redis_config(config)?;
+        validate_redis_key(from)?;
+        validate_redis_key(to)?;
+        if from == to {
+            return Err(DomainError::InvalidConfig(
+                "Redis 临时 Key 与目标 Key 不能相同".into(),
+            ));
+        }
+        ensure_writable(config, "RENAMENX")?;
+        let config = config.clone();
+        let pools = self.pools.clone_handle();
+        let from = from.to_owned();
+        let to = to.to_owned();
+        run_in_tokio(async move {
+            let mut manager = pools.get_or_create(&config, db).await?;
+            let renamed: i64 = redis::cmd("RENAMENX")
+                .arg(&from)
+                .arg(&to)
+                .query_async(&mut manager)
+                .await
+                .map_err(map_redis_error)?;
+            Ok(renamed == 1)
         })
         .await
     }

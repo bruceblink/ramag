@@ -8,12 +8,14 @@ use gpui::{
     div, prelude::*,
 };
 use gpui_component::{ActiveTheme, Root, h_flex, v_flex};
-use ramag_app::ToolRegistry;
+use ramag_app::{DataSyncGate, ToolRegistry};
 
 use crate::activity_bar::{ActivityBar, NavEvent, NavTarget};
 
 pub struct Shell {
     activity_bar: Entity<ActivityBar>,
+    data_sync_gate: Arc<DataSyncGate>,
+    data_sync_overlay: Entity<crate::DataSyncOverlay>,
     /// 保留注册表以按 tool_id 解析工具名（窗口标题用）
     registry: Arc<ToolRegistry>,
     tool_views: HashMap<String, AnyView>,
@@ -65,8 +67,15 @@ impl WindowBoundsPref {
 }
 
 impl Shell {
-    pub fn new(registry: Arc<ToolRegistry>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        registry: Arc<ToolRegistry>,
+        data_sync_gate: Arc<DataSyncGate>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let activity_bar = cx.new(|_| ActivityBar::new(registry.clone()));
+        let data_sync_overlay =
+            cx.new(|cx| crate::DataSyncOverlay::new(data_sync_gate.clone(), cx));
         let registry_for_title = registry.clone();
 
         let mut subs = Vec::new();
@@ -86,6 +95,8 @@ impl Shell {
 
         Self {
             activity_bar,
+            data_sync_gate,
+            data_sync_overlay,
             registry: registry_for_title,
             tool_views: HashMap::new(),
             home_view: None,
@@ -211,12 +222,18 @@ impl Shell {
 
     /// 程序内导航
     pub fn navigate_to(&mut self, target: NavTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if self.data_sync_gate.is_blocking() {
+            return;
+        }
         self.activity_bar
             .update(cx, |bar, cx| bar.set_selected(target.clone(), cx));
         self.handle_navigate(target, window, cx);
     }
 
     fn handle_navigate(&mut self, target: NavTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if self.data_sync_gate.is_blocking() {
+            return;
+        }
         let (new_selected, settings_selected) = match target {
             NavTarget::Home => (None, false),
             NavTarget::Tool(id) => (Some(id), false),
@@ -359,6 +376,7 @@ impl Render for Shell {
             )
             .children(dialog_layer)
             .children(notification_layer)
+            .child(self.data_sync_overlay.clone())
     }
 }
 

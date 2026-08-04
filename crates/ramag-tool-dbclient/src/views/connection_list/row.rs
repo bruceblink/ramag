@@ -5,7 +5,7 @@
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
-use gpui_component::{Sizable as _, button::ButtonVariants as _, h_flex};
+use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::{ConnectionListPanel, ListEvent};
@@ -67,10 +67,12 @@ pub(super) fn connection_row(
 
     let row_id = SharedString::from(format!("conn-row-{}-{}", idx, conn.id));
     let edit_id = SharedString::from(format!("conn-edit-{}-{}", idx, conn.id));
+    let sync_id = SharedString::from(format!("conn-sync-{}-{}", idx, conn.id));
     let del_id = SharedString::from(format!("conn-del-{}-{}", idx, conn.id));
 
     let conn_for_open = conn.clone();
     let conn_for_edit = conn.clone();
+    let conn_for_sync = conn.clone();
     let conn_id_for_del = conn.id.clone();
     let is_production = conn.production;
     let environment = conn.environment.clone().unwrap_or_default();
@@ -224,9 +226,20 @@ pub(super) fn connection_row(
             h_flex()
                 .flex_none()
                 .gap(px(4.0))
-                .w(px(72.0))
+                .w(px(108.0))
                 .justify_end()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    ramag_ui::clickable_button(sync_id)
+                        .ghost()
+                        .small()
+                        .icon(ramag_ui::icons::arrow_up_down())
+                        .tooltip("从其他连接同步数据到此连接")
+                        .disabled(is_production)
+                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                            cx.emit(ListEvent::RequestSync(conn_for_sync.clone()));
+                        })),
+                )
                 .child(
                     ramag_ui::clickable_button(edit_id)
                         .ghost()

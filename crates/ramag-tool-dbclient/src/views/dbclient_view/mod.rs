@@ -7,7 +7,7 @@ use std::sync::Arc;
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, Point, ScrollHandle, Subscription, Window, px,
 };
-use ramag_app::{ConnectionService, MongoService, RedisService};
+use ramag_app::{ConnectionService, DataSyncService, MongoService, RedisService};
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
 
 use ramag_tool_mongodb::MongoSessionPanel;
@@ -106,6 +106,7 @@ pub struct DbClientView {
     pub(super) service: Arc<ConnectionService>,
     pub(super) redis_service: Arc<RedisService>,
     pub(super) mongo_service: Arc<MongoService>,
+    pub(super) data_sync_service: Arc<DataSyncService>,
     pub(super) result_memory: ramag_ui::ResultMemoryBudget,
     pub(super) sessions: Vec<SessionSlot>,
     pub(super) active_session: Option<usize>,
@@ -179,6 +180,7 @@ impl DbClientView {
         service: Arc<ConnectionService>,
         redis_service: Arc<RedisService>,
         mongo_service: Arc<MongoService>,
+        data_sync_service: Arc<DataSyncService>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -275,6 +277,7 @@ impl DbClientView {
             service,
             redis_service,
             mongo_service,
+            data_sync_service,
             result_memory: ramag_ui::ResultMemoryBudget::default(),
             sessions: Vec::new(),
             active_session: None,
@@ -315,6 +318,18 @@ impl DbClientView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.data_sync_service.gate().is_blocking()
+            && !matches!(event, ListEvent::ConnectionsChanged(_))
+        {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(
+                    "数据同步占用应用中，请等待完成并确认结果",
+                )
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
         match event {
             ListEvent::Selected(conn) => {
                 // 选中已保存连接 → 打开为新 Session
@@ -322,6 +337,10 @@ impl DbClientView {
             }
             ListEvent::RequestNew => {
                 self.open_form_create(window, cx);
+            }
+            ListEvent::RequestSync(target) => {
+                let connections = _list.read(cx).connections.clone();
+                self.open_data_sync(target.clone(), &connections, window, cx);
             }
             ListEvent::RequestEdit(conn) => {
                 self.open_form_edit(conn.clone(), window, cx);

@@ -44,6 +44,10 @@ impl ConnectionService {
         self.storage.list_connections().await
     }
 
+    pub async fn get(&self, id: &ConnectionId) -> Result<Option<ConnectionConfig>> {
+        self.storage.get_connection(id).await
+    }
+
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
         config.validate().map_err(DomainError::InvalidConfig)?;
         self.storage.save_connection(config).await?;

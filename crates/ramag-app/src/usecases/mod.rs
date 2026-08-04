@@ -29,6 +29,7 @@ macro_rules! retry_idempotent_read {
 pub mod clip_thumb;
 pub mod clipboard_service;
 pub mod connection_service;
+pub mod data_sync;
 pub mod export;
 pub mod id_conversion;
 pub mod mongo_service;
@@ -38,6 +39,11 @@ pub mod transfer;
 
 pub use clipboard_service::{CaptureDecision, ClipboardService, HotkeyState, decide_capture};
 pub use connection_service::ConnectionService;
+pub use data_sync::{
+    DataSyncConfirmation, DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase,
+    DataSyncGateSnapshot, DataSyncPermit, DataSyncPreflightReport, DataSyncService,
+    PreparedDataSync, StartedDataSync,
+};
 pub use id_conversion::{convert_id_to_integer, convert_id_to_string};
 pub use mongo_service::MongoService;
 pub use redis_service::RedisService;

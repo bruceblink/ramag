@@ -58,7 +58,7 @@ pub(crate) async fn read_page(
                 .query_async(&mut *mgr)
                 .await
                 .map_err(map_redis_error)?;
-            (RedisType::parse(&type_text), Some(ttl))
+            (supported_key_type(&type_text, key)?, Some(ttl))
         }
     };
     let mut page = match kind {
@@ -78,6 +78,16 @@ pub(crate) async fn read_page(
     };
     page.ttl_ms = ttl_ms;
     Ok(page)
+}
+
+fn supported_key_type(type_text: &str, key: &str) -> Result<RedisType> {
+    let parsed = RedisType::parse(type_text);
+    if parsed == RedisType::None && type_text != "none" {
+        return Err(DomainError::InvalidConfig(format!(
+            "Redis Key {key} 的类型 {type_text} 不受当前同步版本支持"
+        )));
+    }
+    Ok(parsed)
 }
 
 pub(crate) async fn write_items(
@@ -728,5 +738,16 @@ mod tests {
         assert_eq!(raw_count, 2);
         assert_eq!(last_id.as_deref(), Some("1-2"));
         assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn module_type_is_rejected_instead_of_being_treated_as_missing() {
+        assert_eq!(
+            supported_key_type("none", "missing").expect("none 表示不存在"),
+            RedisType::None
+        );
+        let error =
+            supported_key_type("ReJSON-RL", "document").expect_err("模块自定义类型必须明确拒绝");
+        assert!(error.message().contains("ReJSON-RL"));
     }
 }

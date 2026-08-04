@@ -152,7 +152,7 @@ pub enum RedisType {
 }
 
 impl RedisType {
-    /// `TYPE` 应答 → 枚举。未知（模块自定义）映射为 None
+    /// `TYPE` 应答 → 枚举。调用完整值读取接口时还会区分不存在与模块自定义类型。
     pub fn parse(s: &str) -> Self {
         match s {
             "string" => RedisType::String,

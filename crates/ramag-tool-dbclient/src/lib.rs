@@ -17,17 +17,27 @@ pub use ramag_tool_redis::ToggleRedisConsole;
 use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Entity, Window};
-use ramag_app::{ConnectionService, MongoService, RedisService};
+use ramag_app::{ConnectionService, DataSyncService, MongoService, RedisService};
 use ramag_domain::traits::{Tool, ToolMeta};
 
 pub fn create_dbclient_view(
     service: Arc<ConnectionService>,
     redis_service: Arc<RedisService>,
     mongo_service: Arc<MongoService>,
+    data_sync_service: Arc<DataSyncService>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<DbClientView> {
-    cx.new(|cx| DbClientView::new(service, redis_service, mongo_service, window, cx))
+    cx.new(|cx| {
+        DbClientView::new(
+            service,
+            redis_service,
+            mongo_service,
+            data_sync_service,
+            window,
+            cx,
+        )
+    })
 }
 
 pub struct DbClientTool {

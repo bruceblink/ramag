@@ -4,6 +4,7 @@ pub mod cell_edit_dialog;
 pub mod connection_form;
 pub mod connection_list;
 pub mod connection_session;
+pub mod data_sync_dialog;
 pub mod dbclient_view;
 pub mod history_dialog;
 pub mod query_panel;

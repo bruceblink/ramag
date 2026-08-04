@@ -102,6 +102,87 @@ async fn db_size_and_dbsize_command_match() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn sync_primitives_are_batched_precise_and_non_overwriting() {
+    let config = require_env!();
+    let driver = RedisDriver::new();
+    cleanup(&driver, &config).await;
+
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec!["SET".into(), "existing".into(), "keep".into()],
+        )
+        .await
+        .expect("准备已有 Key 失败");
+    let exists = driver
+        .keys_exist(&config, TEST_DB, &["missing".into(), "existing".into()])
+        .await
+        .expect("批量 EXISTS 失败");
+    assert_eq!(exists, vec![false, true]);
+
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec!["SET".into(), "temporary".into(), "new".into()],
+        )
+        .await
+        .expect("准备临时 Key 失败");
+    assert!(
+        driver
+            .set_ttl_ms(&config, TEST_DB, "temporary", 30_000)
+            .await
+            .expect("设置毫秒 TTL 失败")
+    );
+    let ttl = driver
+        .key_ttl(&config, TEST_DB, "temporary")
+        .await
+        .expect("读取 TTL 失败");
+    assert!((1..=30_000).contains(&ttl));
+    assert!(
+        driver
+            .persist_key(&config, TEST_DB, "temporary")
+            .await
+            .expect("PERSIST 失败")
+    );
+    assert_eq!(
+        driver
+            .key_ttl(&config, TEST_DB, "temporary")
+            .await
+            .expect("读取永久 TTL 失败"),
+        -1
+    );
+
+    assert!(
+        !driver
+            .rename_key_if_absent(&config, TEST_DB, "temporary", "existing")
+            .await
+            .expect("RENAMENX 冲突应返回 false")
+    );
+    let existing = driver
+        .get_value(&config, TEST_DB, "existing")
+        .await
+        .expect("读取已有值失败");
+    assert!(matches!(existing, RedisValue::Text(value) if value == "keep"));
+    assert!(
+        driver
+            .rename_key_if_absent(&config, TEST_DB, "temporary", "published")
+            .await
+            .expect("RENAMENX 发布失败")
+    );
+    assert_eq!(
+        driver
+            .key_type(&config, TEST_DB, "temporary")
+            .await
+            .expect("检查临时 Key 失败"),
+        RedisType::None
+    );
+
+    cleanup(&driver, &config).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn string_get_set_roundtrip() {
     let config = require_env!();
     let driver = RedisDriver::new();

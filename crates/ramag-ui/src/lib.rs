@@ -5,6 +5,7 @@ pub mod activity_bar;
 pub mod assets;
 pub mod axis_scroll;
 pub mod confirm_dialog;
+pub mod data_sync_overlay;
 pub mod database_search;
 pub mod editor_workspace;
 pub mod home_view;
@@ -25,6 +26,7 @@ pub use actions::{
 };
 pub use assets::RamagAssets;
 pub use confirm_dialog::open_confirm;
+pub use data_sync_overlay::DataSyncOverlay;
 pub use database_search::{
     DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, DatabaseSearchSettingsGlobal,
     database_search_settings, init_database_search_settings, set_database_search_settings,

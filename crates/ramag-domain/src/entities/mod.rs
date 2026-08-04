@@ -2,6 +2,7 @@
 
 pub mod clipboard;
 pub mod connection;
+pub mod data_sync;
 pub mod ddl;
 pub mod git;
 pub mod history;
@@ -26,6 +27,13 @@ pub use connection::{
     MAX_CONNECTION_ENVIRONMENT_BYTES, MAX_CONNECTION_HOST_BYTES, MAX_CONNECTION_IDENTIFIER_BYTES,
     MAX_CONNECTION_NAME_BYTES, MAX_CONNECTION_PASSWORD_BYTES, MAX_CONNECTION_PATH_BYTES,
     MAX_CONNECTION_REMARK_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES, TlsVerify,
+};
+pub use data_sync::{
+    DataSyncProgress, DataSyncRequest, DataSyncScope, DataSyncStage, DataSyncSummary,
+    DataSyncTaskId, MAX_MYSQL_SYNC_IDENTIFIER_CHARS, MAX_POSTGRES_SYNC_IDENTIFIER_BYTES,
+    MongoSyncScope, RedisKeyMapping, RedisSyncScope, SqlIdentityKind, SqlRecordIdentity,
+    SqlSyncScope, SyncObjectMapping, SyncObjectSelection, SyncObjectState, SyncPlannedObject,
+    SyncTargetFingerprint, select_sql_record_identity,
 };
 pub use ddl::build_ddl_query;
 pub use git::{

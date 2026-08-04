@@ -102,6 +102,7 @@ type PgColumnRow = (
     Option<String>,
     Option<i32>,
     bool,
+    String,
 );
 
 /// 列注释走 pg_catalog.col_description，其他走 information_schema.columns
@@ -117,10 +118,12 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             LEFT(c.column_default, 4096),
             LEFT(col_description(pgc.oid, c.ordinal_position::int), 4096) AS column_comment,
             c.character_maximum_length::int,
-            (c.is_nullable = 'YES') AS nullable
+            (c.is_nullable = 'YES') AS nullable,
+            pg_catalog.format_type(a.atttypid, a.atttypmod)::text AS exact_type
         FROM information_schema.columns c
         LEFT JOIN pg_namespace n ON n.nspname = c.table_schema
         LEFT JOIN pg_class pgc ON pgc.relnamespace = n.oid AND pgc.relname = c.table_name
+        JOIN pg_attribute a ON a.attrelid = pgc.oid AND a.attname = c.column_name
         WHERE c.table_schema = $1 AND c.table_name = $2
         ORDER BY c.ordinal_position
         LIMIT $3
@@ -159,9 +162,22 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
     let columns = rows
         .into_iter()
         .map(
-            |(name, data_type, udt_name, default_value, comment, char_max_len, nullable)| {
-                // PG information_schema 没现成完整类型列，手动拼 varchar(255) / numeric(10,2)
-                let full_type = compose_full_type(&data_type, &udt_name, char_max_len);
+            |(
+                name,
+                data_type,
+                udt_name,
+                default_value,
+                comment,
+                char_max_len,
+                nullable,
+                exact_type,
+            )| {
+                // format_type 保留 numeric 精度、timestamp 精度、数组和自定义类型限定。
+                let full_type = if exact_type.is_empty() {
+                    compose_full_type(&data_type, &udt_name, char_max_len)
+                } else {
+                    exact_type
+                };
                 Column {
                     name: name.clone(),
                     data_type: map_column_kind(&data_type, &full_type),
@@ -197,12 +213,14 @@ pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             i.relname::text AS index_name,
             ix.indisunique AS is_unique,
             ix.indisprimary AS is_primary,
-            array_agg(a.attname::text ORDER BY array_position(ix.indkey, a.attnum)) AS columns
+            array_agg(a.attname::text ORDER BY key.ordinality) AS columns
         FROM pg_index ix
         JOIN pg_class i ON i.oid = ix.indexrelid
         JOIN pg_class t ON t.oid = ix.indrelid
         JOIN pg_namespace n ON n.oid = t.relnamespace
-        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+        JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+          ON key.ordinality <= ix.indnkeyatts
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key.attnum
         WHERE n.nspname = $1 AND t.relname = $2
         GROUP BY i.relname, ix.indisunique, ix.indisprimary
         ORDER BY ix.indisprimary DESC, i.relname
