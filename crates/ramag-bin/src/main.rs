@@ -193,7 +193,6 @@ fn main() {
     let data_sync_gate = Arc::new(DataSyncGate::default());
     let data_sync_service = Arc::new(DataSyncService::new(
         conn_service.clone(),
-        redis_service.clone(),
         mongo_service.clone(),
         data_sync_gate.clone(),
     ));

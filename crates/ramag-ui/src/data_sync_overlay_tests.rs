@@ -10,7 +10,7 @@ use gpui::{
 use ramag_app::{DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase};
 use ramag_domain::entities::{DataSyncSummary, DataSyncTaskId};
 
-use super::DataSyncOverlay;
+use super::{DataSyncOverlay, format_count, format_elapsed_ms};
 
 struct OverlayTestHost {
     overlay: Entity<DataSyncOverlay>,
@@ -165,6 +165,8 @@ fn cancel_and_terminal_result_keep_overlay_until_acknowledged(cx: &mut TestAppCo
     overlay_entity.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
     assert!(cx.debug_bounds("data-sync-overlay").is_some());
+    assert!(cx.debug_bounds("sync-result-summary").is_some());
+    assert!(cx.debug_bounds("sync-running-progress").is_none());
     let acknowledge = cx
         .debug_bounds("sync-result-ack")
         .expect("终态确认按钮应渲染");
@@ -199,4 +201,18 @@ fn failed_result_remains_readable_inside_small_window(cx: &mut TestAppContext) {
     assert!(card.size.width <= overlay.size.width);
     assert!(card.size.height <= overlay.size.height);
     assert!(cx.debug_bounds("sync-result-ack").is_some());
+}
+
+#[test]
+fn result_numbers_and_elapsed_time_are_human_readable_at_boundaries() {
+    assert_eq!(format_count(0), "0");
+    assert_eq!(format_count(999), "999");
+    assert_eq!(format_count(1_000), "1,000");
+    assert_eq!(format_count(u64::MAX), "18,446,744,073,709,551,615");
+
+    assert_eq!(format_elapsed_ms(0), "0.00 秒");
+    assert_eq!(format_elapsed_ms(59_999), "59.99 秒");
+    assert_eq!(format_elapsed_ms(60_000), "1 分 00.00 秒");
+    assert_eq!(format_elapsed_ms(94_120), "1 分 34.12 秒");
+    assert_eq!(format_elapsed_ms(3_661_230), "1 小时 1 分 01.23 秒");
 }

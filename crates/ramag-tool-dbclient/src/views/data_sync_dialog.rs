@@ -1,6 +1,7 @@
 //! 连接同步配置与元数据选择面板。目标固定为列表中点击的当前连接。
 
 mod catalog;
+mod layout_sections;
 mod object_sections;
 mod render;
 
@@ -11,18 +12,17 @@ use gpui_component::input::{InputEvent, InputState};
 use ramag_app::{DataSyncConfirmation, DataSyncObjectCatalog, DataSyncService, PreparedDataSync};
 use ramag_domain::entities::{
     ConnectionConfig, DataSyncRequest, DataSyncScope, DataSyncTaskId, DriverKind, MongoSyncScope,
-    RedisKeyMapping, RedisSyncScope, SqlSyncScope, SyncObjectMapping, SyncObjectSelection,
+    SqlSyncScope, SyncObjectMapping, SyncObjectSelection,
 };
 use ramag_domain::error::{DomainError, Result};
 
-use self::catalog::{preferred_scope, prefix_suggestions, selected_source, visible_catalog_items};
+use self::catalog::{preferred_scope, selected_source, visible_catalog_items};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RedisMode {
-    Database,
-    Prefix,
-    Keys,
-}
+const DROPDOWN_MENU_ITEM_HEIGHT: f32 = 32.0;
+const MAX_VISIBLE_DROPDOWN_ITEMS: usize = 5;
+/// 数据同步中的下拉列表最多直接展示五项，更多内容在菜单内部滚动。
+pub(super) const DROPDOWN_MENU_MAX_HEIGHT: f32 =
+    DROPDOWN_MENU_ITEM_HEIGHT * MAX_VISIBLE_DROPDOWN_ITEMS as f32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PanelState {
@@ -53,7 +53,6 @@ pub struct DataSyncDialog {
     sources: Vec<ConnectionConfig>,
     source_index: Option<usize>,
     selected_objects: bool,
-    redis_mode: RedisMode,
     source_scopes: Vec<String>,
     target_scopes: Vec<String>,
     source_scope: Option<String>,
@@ -66,8 +65,6 @@ pub struct DataSyncDialog {
     mapping_editors: Vec<MappingEditor>,
     target_scope: Entity<InputState>,
     object_query: Entity<InputState>,
-    source_prefix: Entity<InputState>,
-    target_prefix: Entity<InputState>,
     state: PanelState,
     prepared: Option<PreparedDataSync>,
     _subscriptions: Vec<Subscription>,
@@ -90,10 +87,8 @@ impl DataSyncDialog {
             catalog::connection_label(left).cmp(&catalog::connection_label(right))
         });
         let target_default = target.database.clone().unwrap_or_default();
-        let target_scope = input(window, cx, &target_default, "选择已有或输入新目标名称");
-        let object_query = input(window, cx, "", "搜索源表 / Collection / Key");
-        let source_prefix = input(window, cx, "", "选择或输入源 Key 前缀");
-        let target_prefix = input(window, cx, "", "选择或输入目标 Key 前缀（可空）");
+        let target_scope = input(window, cx, &target_default, "输入新名称");
+        let object_query = input(window, cx, "", "搜索对象");
         let mut subscriptions = Vec::new();
         subscriptions.push(
             cx.subscribe(&target_scope, |this, _, event: &InputEvent, cx| {
@@ -109,20 +104,12 @@ impl DataSyncDialog {
                 cx.notify();
             }
         }));
-        for field in [&source_prefix, &target_prefix] {
-            subscriptions.push(cx.subscribe(field, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.invalidate(cx);
-                }
-            }));
-        }
         Self {
             service,
             target,
             sources,
             source_index: None,
             selected_objects: false,
-            redis_mode: RedisMode::Database,
             source_scopes: Vec::new(),
             target_scopes: Vec::new(),
             source_scope: None,
@@ -135,8 +122,6 @@ impl DataSyncDialog {
             mapping_editors: Vec::new(),
             target_scope,
             object_query,
-            source_prefix,
-            target_prefix,
             state: PanelState::Editing,
             prepared: None,
             _subscriptions: subscriptions,
@@ -251,12 +236,6 @@ impl DataSyncDialog {
         self.catalog_truncated = false;
         self.invalidate(cx);
 
-        if source.driver == DriverKind::Redis && self.redis_mode == RedisMode::Database {
-            self.catalog_state = CatalogState::Ready;
-            cx.notify();
-            return;
-        }
-
         self.catalog_state = CatalogState::LoadingObjects;
         let target = self.target.clone();
         let target_scope = value(&self.target_scope, cx);
@@ -339,14 +318,6 @@ impl DataSyncDialog {
         self.reload_catalog_objects(cx);
     }
 
-    fn set_redis_mode(&mut self, mode: RedisMode, cx: &mut Context<Self>) {
-        if self.redis_mode == mode {
-            return;
-        }
-        self.redis_mode = mode;
-        self.reload_catalog_objects(cx);
-    }
-
     fn add_mapping(&mut self, source: String, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .mapping_editors
@@ -384,30 +355,27 @@ impl DataSyncDialog {
         }
     }
 
-    fn select_visible_mappings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_visible_mappings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (visible, _) = self.visible_source_objects(cx);
+        let all_visible_selected = !visible.is_empty()
+            && visible.iter().all(|source| {
+                self.mapping_editors
+                    .iter()
+                    .any(|mapping| mapping.source == *source)
+            });
+        if all_visible_selected {
+            self.mapping_editors
+                .retain(|mapping| !visible.contains(&mapping.source));
+            self.invalidate(cx);
+            return;
+        }
         for source in visible {
             self.add_mapping(source, window, cx);
         }
     }
 
-    fn clear_mappings(&mut self, cx: &mut Context<Self>) {
-        if !self.mapping_editors.is_empty() {
-            self.mapping_editors.clear();
-            self.invalidate(cx);
-        }
-    }
-
     fn visible_source_objects(&self, cx: &Context<Self>) -> (Vec<String>, usize) {
         visible_catalog_items(&self.source_objects, &value(&self.object_query, cx))
-    }
-
-    fn source_prefix_suggestions(&self) -> Vec<String> {
-        prefix_suggestions(&self.source_objects)
-    }
-
-    fn target_prefix_suggestions(&self) -> Vec<String> {
-        prefix_suggestions(&self.target_objects)
     }
 
     fn mapping_values(&self, cx: &Context<Self>) -> Result<Vec<SyncObjectMapping>> {
@@ -462,33 +430,7 @@ impl DataSyncDialog {
                 collections: self.object_selection(cx)?,
             }),
             DriverKind::Redis => {
-                let source_db = parse_redis_db(&source_scope, "源 DB")?;
-                let target_db = parse_redis_db(&target_scope, "目标 DB")?;
-                DataSyncScope::Redis(match self.redis_mode {
-                    RedisMode::Database => RedisSyncScope::Database {
-                        source_db,
-                        target_db,
-                        target_prefix: value(&self.target_prefix, cx),
-                    },
-                    RedisMode::Prefix => RedisSyncScope::Prefix {
-                        source_db,
-                        target_db,
-                        source_prefix: value(&self.source_prefix, cx),
-                        target_prefix: value(&self.target_prefix, cx),
-                    },
-                    RedisMode::Keys => RedisSyncScope::Keys {
-                        source_db,
-                        target_db,
-                        mappings: self
-                            .mapping_values(cx)?
-                            .into_iter()
-                            .map(|mapping| RedisKeyMapping {
-                                source: mapping.source,
-                                target: mapping.target,
-                            })
-                            .collect(),
-                    },
-                })
+                return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
             }
         };
         Ok(DataSyncRequest {
@@ -576,10 +518,4 @@ fn input(
 
 fn value(input: &Entity<InputState>, cx: &Context<DataSyncDialog>) -> String {
     input.read(cx).value().trim().to_string()
-}
-
-fn parse_redis_db(value: &str, label: &str) -> Result<u8> {
-    value
-        .parse::<u8>()
-        .map_err(|_| DomainError::InvalidConfig(format!("{label} 必须是 0-255 的整数")))
 }

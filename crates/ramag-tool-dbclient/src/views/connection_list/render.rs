@@ -11,7 +11,7 @@ use gpui_component::{
 };
 
 use super::row::connection_row;
-use super::{ConnectionListPanel, ListEvent};
+use super::{ConnectionListPanel, ListEvent, syncable_target_ids};
 
 impl Render for ConnectionListPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -47,6 +47,7 @@ impl Render for ConnectionListPanel {
         let visible = self.filtered_indices();
         let visible_count = visible.len();
         let connections = self.connections.clone();
+        let syncable_targets = syncable_target_ids(&connections);
 
         // 大屏限宽 1080px 居中，header 和列表共用同宽容器
         const CONTENT_MAX_W: f32 = 1080.0;
@@ -143,12 +144,14 @@ impl Render for ConnectionListPanel {
                 cx.processor({
                     let connections = connections.clone();
                     let visible = visible.clone();
+                    let syncable_targets = syncable_targets.clone();
                     move |this, range: Range<usize>, _window, cx| {
                         range
                             .map(|row_index| {
                                 let connection_index = visible[row_index];
                                 let conn = connections[connection_index].clone();
                                 let is_selected = this.selected.as_ref() == Some(&conn.id);
+                                let show_sync = syncable_targets.contains(&conn.id);
                                 let version = this.versions.get(&conn.id).cloned();
                                 h_flex()
                                     .w_full()
@@ -159,6 +162,7 @@ impl Render for ConnectionListPanel {
                                             row_index,
                                             conn,
                                             is_selected,
+                                            show_sync,
                                             version,
                                             density,
                                             border,

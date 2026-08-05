@@ -1,11 +1,8 @@
-use std::collections::BTreeSet;
-
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::super::inline_text_preview;
 
 pub(super) const MAX_VISIBLE_CATALOG_ITEMS: usize = 200;
-const MAX_PREFIX_SUGGESTIONS: usize = 200;
 
 pub(super) fn selected_source(
     sources: &[ConnectionConfig],
@@ -15,6 +12,17 @@ pub(super) fn selected_source(
 }
 
 pub(super) fn connection_label(connection: &ConnectionConfig) -> String {
+    let environment = connection
+        .environment
+        .as_deref()
+        .filter(|environment| !environment.trim().is_empty())
+        .map(|environment| format!(" · {}", inline_text_preview(environment.trim(), 24)))
+        .unwrap_or_default();
+    let read_only = if connection.production {
+        " · 只读"
+    } else {
+        ""
+    };
     let scope = connection
         .database
         .as_deref()
@@ -22,8 +30,10 @@ pub(super) fn connection_label(connection: &ConnectionConfig) -> String {
         .map(|scope| format!(" · {}", inline_text_preview(scope, 40)))
         .unwrap_or_default();
     format!(
-        "{} · {}:{}{}",
+        "{}{}{} · {}:{}{}",
         inline_text_preview(&connection.name, 40),
+        environment,
+        read_only,
         inline_text_preview(&connection.host, 64),
         connection.port,
         scope
@@ -60,21 +70,6 @@ pub(super) fn visible_catalog_items(items: &[String], query: &str) -> (Vec<Strin
     (visible, matched)
 }
 
-pub(super) fn prefix_suggestions(keys: &[String]) -> Vec<String> {
-    let mut suggestions = BTreeSet::new();
-    for key in keys {
-        for (index, character) in key.char_indices() {
-            if matches!(character, ':' | '/' | '.' | '-') {
-                suggestions.insert(key[..index + character.len_utf8()].to_string());
-                if suggestions.len() >= MAX_PREFIX_SUGGESTIONS {
-                    return suggestions.into_iter().collect();
-                }
-            }
-        }
-    }
-    suggestions.into_iter().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +83,18 @@ mod tests {
         assert_ne!(connection_label(&first), connection_label(&second));
         assert!(connection_label(&first).contains("mongo-a.internal:27017"));
         assert!(connection_label(&second).contains("archive"));
+    }
+
+    #[test]
+    fn connection_label_includes_environment_and_read_only_tags() {
+        let mut connection = ConnectionConfig::new_mysql("业务库", "db.internal", 3306, "user");
+        connection.environment = Some("prod".into());
+        connection.production = true;
+
+        assert_eq!(
+            connection_label(&connection),
+            "业务库 · prod · 只读 · db.internal:3306"
+        );
     }
 
     #[test]
@@ -131,14 +138,5 @@ mod tests {
         let (visible, matched) = visible_catalog_items(&items, "order_42");
         assert_eq!(matched, 11);
         assert_eq!(visible.len(), 11);
-    }
-
-    #[test]
-    fn redis_prefixes_are_derived_from_real_keys() {
-        let suggestions =
-            prefix_suggestions(&["app:users:1".into(), "app:orders:2".into(), "plain".into()]);
-        assert!(suggestions.contains(&"app:".to_string()));
-        assert!(suggestions.contains(&"app:users:".to_string()));
-        assert!(!suggestions.contains(&"plain".to_string()));
     }
 }

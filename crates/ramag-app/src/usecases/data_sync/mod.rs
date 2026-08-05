@@ -3,7 +3,6 @@
 mod gate;
 mod mongo_preflight;
 mod mongo_sync;
-mod redis_sync;
 mod service;
 mod sql_ddl;
 mod sql_preflight;

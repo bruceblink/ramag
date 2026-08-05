@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::entities::{
     ConnectionConfig, ConnectionId, MAX_REDIS_VALUE_PAGE_BATCH, RedisType, RedisValue,
-    RedisValueLoad, RedisValuePage, ScanResult, TRANSFER_BATCH_ITEMS, ValuePageCursor,
+    RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor,
 };
 use crate::error::{DomainError, Result};
 
@@ -38,37 +38,6 @@ pub trait KvDriver: Send + Sync {
 
     /// PTTL：-1=永久，-2=key 不存在，>=0=剩余毫秒
     async fn key_ttl(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<i64>;
-
-    /// 同一批次读取 TYPE + PTTL，减少大 Key 复制完成后的竞态窗口。
-    async fn key_type_and_ttl(
-        &self,
-        config: &ConnectionConfig,
-        db: u8,
-        key: &str,
-    ) -> Result<(RedisType, i64)> {
-        let key_type = self.key_type(config, db, key).await?;
-        let ttl_ms = self.key_ttl(config, db, key).await?;
-        Ok((key_type, ttl_ms))
-    }
-
-    /// 批量检查完整 Key 是否存在；同步预检与执行路径用，避免逐 Key 网络往返。
-    async fn keys_exist(
-        &self,
-        config: &ConnectionConfig,
-        db: u8,
-        keys: &[String],
-    ) -> Result<Vec<bool>> {
-        if keys.len() > TRANSFER_BATCH_ITEMS {
-            return Err(DomainError::InvalidConfig(format!(
-                "Redis EXISTS 批次超过 {TRANSFER_BATCH_ITEMS} 个上限"
-            )));
-        }
-        let mut exists = Vec::with_capacity(keys.len());
-        for key in keys {
-            exists.push(self.key_type(config, db, key).await? != RedisType::None);
-        }
-        Ok(exists)
-    }
 
     /// 按 TYPE dispatch 取完整 value（GET / LRANGE / HGETALL / SMEMBERS / ZRANGE WITHSCORES / XRANGE）
     /// key 不存在返回 [`RedisValue::Nil`]
@@ -155,39 +124,6 @@ pub trait KvDriver: Send + Sync {
         key: &str,
         ttl_secs: Option<i64>,
     ) -> Result<bool>;
-
-    /// 毫秒精度设置 TTL（PEXPIRE）。同步复制短 TTL 时不能退化为秒。
-    async fn set_ttl_ms(
-        &self,
-        _config: &ConnectionConfig,
-        _db: u8,
-        _key: &str,
-        _ttl_ms: i64,
-    ) -> Result<bool> {
-        Err(crate::error::DomainError::NotImplemented(
-            "set_ttl_ms".into(),
-        ))
-    }
-
-    /// 移除 TTL（PERSIST）。
-    async fn persist_key(&self, _config: &ConnectionConfig, _db: u8, _key: &str) -> Result<bool> {
-        Err(crate::error::DomainError::NotImplemented(
-            "persist_key".into(),
-        ))
-    }
-
-    /// 仅目标 Key 不存在时原子改名（RENAMENX）。false 表示目标已并发出现。
-    async fn rename_key_if_absent(
-        &self,
-        _config: &ConnectionConfig,
-        _db: u8,
-        _from: &str,
-        _to: &str,
-    ) -> Result<bool> {
-        Err(crate::error::DomainError::NotImplemented(
-            "rename_key_if_absent".into(),
-        ))
-    }
 
     /// 通用命令执行。argv 拆分后的命令数组，应答按 RESP 类型映射 [`RedisValue`]
     async fn execute_command(

@@ -335,6 +335,28 @@ fn changed_connections(
         .collect()
 }
 
+/// 只有可写目标且存在另一个同引擎连接时才提供同步入口。
+fn syncable_target_ids(connections: &[ConnectionConfig]) -> HashSet<ConnectionId> {
+    let mut driver_connections: HashMap<DriverKind, HashSet<ConnectionId>> = HashMap::new();
+    for connection in connections {
+        driver_connections
+            .entry(connection.driver)
+            .or_default()
+            .insert(connection.id.clone());
+    }
+    connections
+        .iter()
+        .filter(|connection| {
+            connection.driver != DriverKind::Redis
+                && !connection.production
+                && driver_connections
+                    .get(&connection.driver)
+                    .is_some_and(|ids| ids.len() > 1)
+        })
+        .map(|connection| connection.id.clone())
+        .collect()
+}
+
 /// 搜索用类型名（与列表类型徽章文案一致，支持按 "mysql" / "redis" 等过滤）
 fn driver_search_label(driver: DriverKind) -> &'static str {
     match driver {
@@ -407,5 +429,49 @@ mod tests {
             &[updated.clone(), added.clone()],
         );
         assert_eq!(changed, vec![updated, added, deleted]);
+    }
+
+    #[test]
+    fn sync_entry_requires_writable_target_and_another_same_engine_connection() {
+        let mysql_source = ConnectionConfig::new_mysql("source", "mysql-a", 3306, "root");
+        let mysql_target = ConnectionConfig::new_mysql("target", "mysql-b", 3306, "root");
+        let mut postgres_source =
+            ConnectionConfig::new_mysql("pg-source", "postgres-a", 5432, "postgres");
+        postgres_source.driver = DriverKind::Postgres;
+        let mut postgres_target =
+            ConnectionConfig::new_mysql("pg-target", "postgres-b", 5432, "postgres");
+        postgres_target.driver = DriverKind::Postgres;
+        let mongo_source = ConnectionConfig::new_mongodb("mongo-source", "mongo-a", 27017);
+        let mongo_target = ConnectionConfig::new_mongodb("mongo-target", "mongo-b", 27017);
+        let redis_source = ConnectionConfig::new_redis("redis-source", "redis-a", 6379);
+        let redis_target = ConnectionConfig::new_redis("redis-target", "redis-b", 6379);
+        let mut production_mysql =
+            ConnectionConfig::new_mysql("production", "mysql-c", 3306, "root");
+        production_mysql.production = true;
+
+        let lone_postgres = syncable_target_ids(std::slice::from_ref(&postgres_source));
+        assert!(!lone_postgres.contains(&postgres_source.id));
+
+        let syncable = syncable_target_ids(&[
+            mysql_source.clone(),
+            mysql_target.clone(),
+            postgres_source.clone(),
+            postgres_target.clone(),
+            mongo_source.clone(),
+            mongo_target.clone(),
+            redis_source.clone(),
+            redis_target.clone(),
+            production_mysql.clone(),
+        ]);
+
+        assert!(syncable.contains(&mysql_source.id));
+        assert!(syncable.contains(&mysql_target.id));
+        assert!(syncable.contains(&postgres_source.id));
+        assert!(syncable.contains(&postgres_target.id));
+        assert!(syncable.contains(&mongo_source.id));
+        assert!(syncable.contains(&mongo_target.id));
+        assert!(!syncable.contains(&redis_source.id));
+        assert!(!syncable.contains(&redis_target.id));
+        assert!(!syncable.contains(&production_mysql.id));
     }
 }

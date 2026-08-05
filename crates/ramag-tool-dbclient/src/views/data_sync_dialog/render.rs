@@ -3,46 +3,15 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    h_flex, input::Input, scroll::ScrollableElement as _, spinner::Spinner, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, input::Input,
+    scroll::ScrollableElement as _, spinner::Spinner, v_flex,
 };
 use ramag_domain::entities::{DriverKind, SyncObjectState};
 use ramag_ui::PointerDropdownMenu as _;
 
-use super::catalog::connection_label;
-use super::{CatalogState, DataSyncDialog, PanelState, RedisMode, value};
+use super::{CatalogState, DROPDOWN_MENU_MAX_HEIGHT, DataSyncDialog, PanelState, value};
 
 impl DataSyncDialog {
-    fn render_source_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let sources = self.sources.clone();
-        let current = self
-            .source()
-            .map(connection_label)
-            .unwrap_or_else(|_| "请选择源连接".into());
-        let current_index = self.source_index;
-        ramag_ui::clickable_button("sync-source-selector")
-            .outline()
-            .small()
-            .w_full()
-            .label(current)
-            .dropdown_caret(true)
-            .disabled(self.sources.is_empty() || self.state == PanelState::Preflighting)
-            .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
-                for (index, source) in sources.iter().enumerate() {
-                    let entity = entity.clone();
-                    menu = menu.item(
-                        ramag_ui::menu_item(connection_label(source))
-                            .checked(Some(index) == current_index)
-                            .on_click(move |_: &ClickEvent, _, app| {
-                                entity.update(app, |this, cx| this.select_source(index, cx));
-                            }),
-                    );
-                }
-                menu
-            })
-    }
-
     fn render_scope_selectors(&self, busy: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let source_scopes = self.source_scopes.clone();
@@ -62,6 +31,7 @@ impl DataSyncDialog {
             .dropdown_caret(true)
             .disabled(busy || source_scopes.is_empty())
             .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
+                menu = menu.scrollable(true).max_h(px(DROPDOWN_MENU_MAX_HEIGHT));
                 for scope in &source_scopes {
                     let scope_for_action = scope.clone();
                     let entity = entity.clone();
@@ -85,13 +55,14 @@ impl DataSyncDialog {
             .outline()
             .small()
             .label(if target_scopes.is_empty() {
-                "暂无已有范围"
+                "无已有"
             } else {
                 "选择已有"
             })
             .dropdown_caret(true)
             .disabled(busy || target_scopes.is_empty())
             .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
+                menu = menu.scrollable(true).max_h(px(DROPDOWN_MENU_MAX_HEIGHT));
                 for scope in &target_scopes {
                     let scope_for_action = scope.clone();
                     let entity = entity.clone();
@@ -109,13 +80,14 @@ impl DataSyncDialog {
             });
 
         let scope_label = scope_label(self.target.driver);
+        let target_label = format!("目标 {scope_label}");
         h_flex()
             .w_full()
             .gap(px(10.0))
-            .child(field_label(&format!("源 {scope_label}"), source_button).flex_1())
+            .child(field_label(&format!("来源 {scope_label}"), source_button).flex_1())
             .child(
                 field_label(
-                    &format!("目标 {scope_label}（可选择已有或输入新名称）"),
+                    &target_label,
                     h_flex()
                         .w_full()
                         .gap(px(6.0))
@@ -124,50 +96,6 @@ impl DataSyncDialog {
                 )
                 .flex_1(),
             )
-    }
-
-    fn render_prefix_field(
-        &self,
-        label: &str,
-        id: &'static str,
-        input: &gpui::Entity<gpui_component::input::InputState>,
-        suggestions: Vec<String>,
-        busy: bool,
-        _cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let input_for_menu = input.clone();
-        let picker = ramag_ui::clickable_button(id)
-            .outline()
-            .small()
-            .label(if suggestions.is_empty() {
-                "无可发现前缀"
-            } else {
-                "选择已发现"
-            })
-            .dropdown_caret(true)
-            .disabled(busy || suggestions.is_empty())
-            .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
-                for suggestion in &suggestions {
-                    let suggestion_for_action = suggestion.clone();
-                    let input = input_for_menu.clone();
-                    menu = menu.item(ramag_ui::menu_item(suggestion.clone()).on_click(
-                        move |_: &ClickEvent, window, app| {
-                            input.update(app, |input, cx| {
-                                input.set_value(&suggestion_for_action, window, cx);
-                            });
-                        },
-                    ));
-                }
-                menu
-            });
-        field_label(
-            label,
-            h_flex()
-                .w_full()
-                .gap(px(6.0))
-                .child(Input::new(input).disabled(busy).flex_1())
-                .child(picker),
-        )
     }
 
     fn render_report(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
@@ -186,13 +114,26 @@ impl DataSyncDialog {
             .iter()
             .filter(|object| matches!(object.state, SyncObjectState::Missing))
             .count();
-        let mappings = report
+        let renamed = report
             .objects
             .iter()
-            .take(12)
+            .filter(|object| object.mapping.source != object.mapping.target)
+            .take(3)
             .map(|object| format!("{} → {}", object.mapping.source, object.mapping.target))
             .collect::<Vec<_>>()
-            .join("，");
+            .join("、");
+        let renamed_count = report
+            .objects
+            .iter()
+            .filter(|object| object.mapping.source != object.mapping.target)
+            .count();
+        let total = report.objects_total.unwrap_or(report.objects.len() as u64);
+        let summary = [
+            target_scope_summary(report.engine, report.target_scope_exists),
+            object_change_summary(total, missing, existing),
+            format!("版本 {} → {}", report.source_version, report.target_version),
+        ]
+        .join(" · ");
         Some(
             v_flex()
                 .w_full()
@@ -209,20 +150,23 @@ impl DataSyncDialog {
                     div()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(if report.requires_second_confirmation {
-                            "目标已存在：需要二次确认"
-                        } else {
-                            "目标不存在：将创建后同步"
-                        }),
+                        .child("预检通过"),
                 )
-                .child(div().text_xs().child(format!(
-                    "源版本 {}；目标版本 {}；新建 {missing}，兼容既有 {existing}",
-                    report.source_version, report.target_version
-                )))
-                .when(!mappings.is_empty(), |panel| {
-                    panel.child(div().text_xs().text_color(muted_foreground).child(mappings))
+                .child(div().text_xs().child(summary))
+                .when(!renamed.is_empty(), |panel| {
+                    let suffix = if renamed_count > 3 {
+                        format!(" 等 {renamed_count} 项")
+                    } else {
+                        String::new()
+                    };
+                    panel.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted_foreground)
+                            .child(format!("重命名：{renamed}{suffix}")),
+                    )
                 })
-                .children(report.warnings.iter().take(8).map(|warning| {
+                .children(report.warnings.iter().take(3).map(|warning| {
                     div()
                         .text_xs()
                         .text_color(warning_color)
@@ -237,7 +181,6 @@ impl Render for DataSyncDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let danger = cx.theme().danger;
         let warning = cx.theme().warning;
-        let muted_foreground = cx.theme().muted_foreground;
         let preflighting = self.state == PanelState::Preflighting;
         let catalog_busy = matches!(
             self.catalog_state,
@@ -246,12 +189,6 @@ impl Render for DataSyncDialog {
         let busy = preflighting || catalog_busy;
         let controls_disabled = busy || self.source_index.is_none();
         let ready = self.state == PanelState::Ready;
-        let is_redis = self.target.driver == DriverKind::Redis;
-        let target_text = format!(
-            "{}（{}）",
-            connection_label(&self.target),
-            driver_label(self.target.driver)
-        );
         let report = self.render_report(cx);
         let error = match &self.state {
             PanelState::Error(error) => Some(error.clone()),
@@ -262,141 +199,57 @@ impl Render for DataSyncDialog {
             _ => None,
         };
         let target_scope_empty = value(&self.target_scope, cx).is_empty();
-        let selection_required = (!is_redis && self.selected_objects)
-            || (is_redis && self.redis_mode == RedisMode::Keys);
+        let selection_required = self.selected_objects;
         let can_preflight = self.catalog_state == CatalogState::Ready
             && !self.sources.is_empty()
             && !target_scope_empty
             && (!selection_required || !self.mapping_editors.is_empty());
+        let footer = self.render_footer(preflighting, busy, can_preflight, ready, cx);
+        let content_max_height = if window.viewport_size().height < px(760.0) {
+            px(440.0)
+        } else if window.viewport_size().height < px(1000.0) {
+            px(620.0)
+        } else {
+            px(700.0)
+        };
 
-        v_flex()
-            .id("data-sync-dialog-body")
+        let content = v_flex()
+            .id("data-sync-dialog-scroll")
             .w_full()
-            .max_h(px(690.0))
+            .max_h(content_max_height)
             .overflow_y_scrollbar()
-            .gap(px(12.0))
-            .child(field_label(
-                "目标连接（固定）",
-                div().text_sm().child(target_text),
-            ))
-            .child(field_label(
-                "源连接（仅同引擎，按地址和库区分）",
-                if self.sources.is_empty() {
-                    div()
-                        .text_sm()
-                        .text_color(danger)
-                        .child("没有可选源连接")
-                        .into_any_element()
-                } else {
-                    self.render_source_selector(cx).into_any_element()
-                },
-            ))
+            .gap(px(10.0))
+            .child(self.render_safety_warning(cx))
+            .child(self.render_connection_section(busy, cx))
             .child(self.render_scope_selectors(controls_disabled, cx))
-            .when(!is_redis, |panel| {
-                panel.child(field_label(
-                    "同步范围",
-                    h_flex()
-                        .gap(px(6.0))
-                        .child(mode_button(
-                            "sync-all-objects",
-                            &format!("全部（已发现 {} 个）", self.source_objects.len()),
-                            !self.selected_objects,
-                            controls_disabled,
-                            cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.selected_objects = false;
-                                this.invalidate(cx);
-                            }),
-                        ))
-                        .child(mode_button(
-                            "sync-selected-objects",
-                            "选择表 / Collection",
-                            self.selected_objects,
-                            controls_disabled,
-                            cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.selected_objects = true;
-                                this.invalidate(cx);
-                            }),
-                        )),
-                ))
-            })
-            .when(is_redis, |panel| {
-                panel.child(field_label(
-                    "Redis 范围",
-                    h_flex()
-                        .gap(px(6.0))
-                        .child(redis_mode_button(
-                            "sync-redis-db",
-                            "整个 DB",
-                            RedisMode::Database,
-                            self.redis_mode,
-                            controls_disabled,
-                            cx,
-                        ))
-                        .child(redis_mode_button(
-                            "sync-redis-prefix",
-                            "选择 Key 前缀",
-                            RedisMode::Prefix,
-                            self.redis_mode,
-                            controls_disabled,
-                            cx,
-                        ))
-                        .child(redis_mode_button(
-                            "sync-redis-keys",
-                            "选择 Key",
-                            RedisMode::Keys,
-                            self.redis_mode,
-                            controls_disabled,
-                            cx,
-                        )),
-                ))
-            })
-            .when(
-                (!is_redis && self.selected_objects)
-                    || (is_redis && self.redis_mode == RedisMode::Keys),
-                |panel| {
-                    panel
-                        .child(self.render_object_selector(controls_disabled, cx))
-                        .child(self.render_mapping_editors(controls_disabled, cx))
-                },
-            )
-            .when(is_redis && self.redis_mode == RedisMode::Prefix, |panel| {
-                panel.child(
-                    h_flex()
-                        .w_full()
-                        .gap(px(10.0))
-                        .child(
-                            self.render_prefix_field(
-                                "源前缀（从真实 Key 发现或自定义）",
-                                "sync-source-prefix-picker",
-                                &self.source_prefix,
-                                self.source_prefix_suggestions(),
-                                controls_disabled,
-                                cx,
-                            )
-                            .flex_1(),
-                        )
-                        .child(
-                            self.render_prefix_field(
-                                "目标前缀（选择已有或输入新前缀）",
-                                "sync-target-prefix-picker",
-                                &self.target_prefix,
-                                self.target_prefix_suggestions(),
-                                controls_disabled,
-                                cx,
-                            )
-                            .flex_1(),
-                        ),
-                )
-            })
-            .when(
-                is_redis && self.redis_mode == RedisMode::Database,
-                |panel| {
-                    panel.child(field_label(
-                        "目标 Key 统一前缀（新前缀，可空）",
-                        Input::new(&self.target_prefix).disabled(controls_disabled),
+            .child(field_label(
+                "数据范围",
+                h_flex()
+                    .gap(px(6.0))
+                    .child(mode_button(
+                        "sync-all-objects",
+                        &format!("全部 {} 个", self.source_objects.len()),
+                        !self.selected_objects,
+                        controls_disabled,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.selected_objects = false;
+                            this.invalidate(cx);
+                        }),
                     ))
-                },
-            )
+                    .child(mode_button(
+                        "sync-selected-objects",
+                        "选择部分",
+                        self.selected_objects,
+                        controls_disabled,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.selected_objects = true;
+                            this.invalidate(cx);
+                        }),
+                    )),
+            ))
+            .when(self.selected_objects, |panel| {
+                panel.child(self.render_object_selector(controls_disabled, cx))
+            })
             .when(self.catalog_truncated, |panel| {
                 panel.child(
                     div().text_xs().text_color(warning).child(
@@ -432,90 +285,19 @@ impl Render for DataSyncDialog {
                         .text_sm()
                         .child(Spinner::new().xsmall())
                         .child(match self.catalog_state {
-                            CatalogState::LoadingScopes => "正在读取两端可选库 / Schema / DB…",
+                            CatalogState::LoadingScopes => "正在读取两端可选 Database / Schema…",
                             _ => "正在读取源对象和目标候选…",
                         }),
                 )
-            })
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .child(
-                        ramag_ui::clickable_button("sync-dialog-cancel")
-                            .ghost()
-                            .small()
-                            .label("关闭")
-                            .disabled(preflighting)
-                            .on_click(|_: &ClickEvent, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(
-                        ramag_ui::clickable_button("sync-dialog-preflight")
-                            .outline()
-                            .small()
-                            .label(if preflighting {
-                                "预检中…"
-                            } else {
-                                "预检"
-                            })
-                            .disabled(busy || !can_preflight)
-                            .when(preflighting, |button| button.icon(Spinner::new().xsmall()))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.preflight(cx);
-                            })),
-                    )
-                    .child(
-                        ramag_ui::clickable_button("sync-dialog-start")
-                            .primary()
-                            .small()
-                            .label(
-                                if self.prepared.as_ref().is_some_and(|prepared| {
-                                    prepared.report().requires_second_confirmation
-                                }) {
-                                    "二次确认并开始"
-                                } else {
-                                    "确认并开始"
-                                },
-                            )
-                            .disabled(!ready)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.start(window, cx);
-                            })),
-                    ),
-            )
-            .when(!busy && self.state == PanelState::Editing, |panel| {
-                panel.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted_foreground)
-                        .child("先从真实元数据选择源范围，再预检。同步不更新、不覆盖、不删除。"),
-                )
-            })
-            .on_key_down(cx.listener(|_this, _, _window, _cx| {}))
-            .when(window.viewport_size().height < px(760.0), |panel| {
-                panel.max_h(px(560.0))
-            })
-    }
-}
+            });
 
-fn redis_mode_button(
-    id: &'static str,
-    label: &'static str,
-    mode: RedisMode,
-    current: RedisMode,
-    busy: bool,
-    cx: &mut Context<DataSyncDialog>,
-) -> impl IntoElement {
-    mode_button(
-        id,
-        label,
-        current == mode,
-        busy,
-        cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.set_redis_mode(mode, cx);
-        }),
-    )
+        v_flex()
+            .id("data-sync-dialog-body")
+            .w_full()
+            .gap(px(10.0))
+            .child(content)
+            .child(footer)
+    }
 }
 
 fn mode_button(
@@ -539,16 +321,30 @@ fn scope_label(driver: DriverKind) -> &'static str {
         DriverKind::Mysql => "Database",
         DriverKind::Postgres => "Schema",
         DriverKind::Mongodb => "Database",
-        DriverKind::Redis => "DB 编号",
+        DriverKind::Redis => "不支持",
     }
 }
 
-fn driver_label(driver: DriverKind) -> &'static str {
-    match driver {
-        DriverKind::Mysql => "MySQL",
-        DriverKind::Postgres => "PostgreSQL",
-        DriverKind::Redis => "Redis",
-        DriverKind::Mongodb => "MongoDB",
+fn target_scope_summary(driver: DriverKind, exists: bool) -> String {
+    format!(
+        "目标 {}：{}",
+        scope_label(driver),
+        if exists { "已存在" } else { "将新建" }
+    )
+}
+
+fn object_change_summary(total: u64, missing: usize, existing: usize) -> String {
+    let mut changes = Vec::with_capacity(2);
+    if missing > 0 {
+        changes.push(format!("新建 {missing}"));
+    }
+    if existing > 0 {
+        changes.push(format!("复用已有 {existing}"));
+    }
+    if changes.is_empty() {
+        format!("对象 {total} 个")
+    } else {
+        format!("对象 {total} 个（{}）", changes.join("，"))
     }
 }
 
@@ -563,4 +359,26 @@ fn field_label(label: &str, child: impl IntoElement) -> gpui::Div {
                 .child(label.to_string()),
         )
         .child(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preflight_summary_distinguishes_scope_and_objects() {
+        assert_eq!(
+            target_scope_summary(DriverKind::Mysql, true),
+            "目标 Database：已存在"
+        );
+        assert_eq!(object_change_summary(1, 1, 0), "对象 1 个（新建 1）");
+        assert_eq!(
+            object_change_summary(3, 1, 2),
+            "对象 3 个（新建 1，复用已有 2）"
+        );
+        assert_eq!(
+            target_scope_summary(DriverKind::Postgres, false),
+            "目标 Schema：将新建"
+        );
+    }
 }

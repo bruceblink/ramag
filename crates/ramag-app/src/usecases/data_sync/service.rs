@@ -1,12 +1,11 @@
 //! 同步预检、确认门禁和执行生命周期入口。
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use ramag_domain::entities::{
-    ConnectionConfig, DataSyncRequest, DataSyncSummary, DataSyncTaskId, DriverKind, RedisSyncScope,
-    SyncObjectMapping, SyncObjectState, SyncPlannedObject, SyncTargetFingerprint,
+    ConnectionConfig, DataSyncRequest, DataSyncSummary, DataSyncTaskId, DriverKind,
+    SyncObjectMapping, SyncPlannedObject, SyncTargetFingerprint,
 };
 use ramag_domain::error::{DomainError, Result};
 use serde::Serialize;
@@ -15,10 +14,9 @@ use sha2::{Digest as _, Sha256};
 use super::gate::{DataSyncExecutionContext, DataSyncGate, DataSyncPermit};
 use super::mongo_preflight::preflight_mongo;
 use super::mongo_sync::run_mongo_sync;
-use super::redis_sync::{redis_literal_prefix_pattern, run_redis_sync};
 use super::sql_preflight::preflight_sql;
 use super::sql_sync::run_sql_sync;
-use crate::usecases::{ConnectionService, MongoService, RedisService};
+use crate::usecases::{ConnectionService, MongoService};
 
 /// 目录选择器最多保留的对象数。完整范围仍可用“全部对象”同步，避免大库选择器无界占用内存。
 pub const MAX_DATA_SYNC_CATALOG_OBJECTS: usize = 10_000;
@@ -47,6 +45,7 @@ pub struct DataSyncPreflightReport {
     pub target_version: String,
     pub objects: Vec<SyncPlannedObject>,
     pub objects_total: Option<u64>,
+    pub target_scope_exists: bool,
     pub requires_second_confirmation: bool,
     pub target_fingerprint: SyncTargetFingerprint,
     pub warnings: Vec<String>,
@@ -90,7 +89,6 @@ impl StartedDataSync {
 }
 
 pub(super) enum PreparedEnginePlan {
-    Redis(RedisPreparedPlan),
     Mongo(MongoPreparedPlan),
     Sql(SqlPreparedPlan),
 }
@@ -147,11 +145,6 @@ pub(super) struct SqlIndexSnapshot {
     pub columns: Vec<String>,
 }
 
-pub(super) struct RedisPreparedPlan {
-    pub scope: RedisSyncScope,
-    pub target_snapshot: RedisTargetSnapshot,
-}
-
 pub(super) struct MongoPreparedPlan {
     pub scope: ramag_domain::entities::MongoSyncScope,
     pub objects: Vec<MongoPreparedObject>,
@@ -177,26 +170,8 @@ pub(super) struct MongoTargetSnapshot {
     pub collections: Vec<(String, Option<MongoCollectionBlueprint>)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) enum RedisTargetSnapshot {
-    Database {
-        db: u8,
-        size: u64,
-    },
-    Prefix {
-        db: u8,
-        prefix: String,
-        has_any: bool,
-    },
-    Keys {
-        db: u8,
-        states: Vec<(String, bool)>,
-    },
-}
-
 pub struct DataSyncService {
     connection_service: Arc<ConnectionService>,
-    redis_service: Arc<RedisService>,
     mongo_service: Arc<MongoService>,
     gate: Arc<DataSyncGate>,
 }
@@ -204,13 +179,11 @@ pub struct DataSyncService {
 impl DataSyncService {
     pub fn new(
         connection_service: Arc<ConnectionService>,
-        redis_service: Arc<RedisService>,
         mongo_service: Arc<MongoService>,
         gate: Arc<DataSyncGate>,
     ) -> Self {
         Self {
             connection_service,
-            redis_service,
             mongo_service,
             gate,
         }
@@ -220,10 +193,10 @@ impl DataSyncService {
         &self.gate
     }
 
-    /// 列出同步范围。SQL 返回 Database / Schema，MongoDB 返回 Database，Redis 返回可选 DB。
+    /// 列出同步范围。SQL 返回 Database / Schema，MongoDB 返回 Database。
     pub async fn list_catalog_scopes(&self, config: &ConnectionConfig) -> Result<Vec<String>> {
         config.validate().map_err(DomainError::InvalidConfig)?;
-        let mut scopes = match config.driver {
+        let mut scopes: Vec<String> = match config.driver {
             DriverKind::Mysql | DriverKind::Postgres => self
                 .connection_service
                 .list_schemas(config)
@@ -240,13 +213,11 @@ impl DataSyncService {
                 .map(|database| database.name)
                 .filter(|name| !protected_catalog_scope(config.driver, name))
                 .collect(),
-            DriverKind::Redis => redis_catalog_databases(),
+            DriverKind::Redis => {
+                return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
+            }
         };
-        if config.driver == DriverKind::Redis {
-            scopes.sort_by_key(|scope| scope.parse::<u8>().unwrap_or(u8::MAX));
-        } else {
-            scopes.sort();
-        }
+        scopes.sort();
         scopes.dedup();
         Ok(scopes)
     }
@@ -276,51 +247,12 @@ impl DataSyncService {
                 .map(|collection| collection.name)
                 .collect::<Vec<_>>(),
             DriverKind::Redis => {
-                let db = scope.parse::<u8>().map_err(|_| {
-                    DomainError::InvalidConfig("Redis DB 必须是 0-255 的整数".into())
-                })?;
-                return self.list_redis_catalog_keys(config, db).await;
+                return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
             }
         };
         names.sort();
         names.dedup();
         let truncated = names.len() > MAX_DATA_SYNC_CATALOG_OBJECTS;
-        names.truncate(MAX_DATA_SYNC_CATALOG_OBJECTS);
-        Ok(DataSyncObjectCatalog { names, truncated })
-    }
-
-    async fn list_redis_catalog_keys(
-        &self,
-        config: &ConnectionConfig,
-        db: u8,
-    ) -> Result<DataSyncObjectCatalog> {
-        let mut cursor = 0u64;
-        let mut keys = HashSet::new();
-        let mut truncated = false;
-        loop {
-            let page = self
-                .redis_service
-                .scan_batch(config, db, cursor, None, None, 1_000)
-                .await?;
-            for key in page.keys {
-                keys.insert(key.key);
-                if keys.len() > MAX_DATA_SYNC_CATALOG_OBJECTS {
-                    truncated = true;
-                    break;
-                }
-            }
-            if truncated || page.cursor == 0 {
-                break;
-            }
-            if page.cursor == cursor {
-                return Err(DomainError::QueryFailed(
-                    "Redis SCAN 游标未推进，无法加载 Key 目录".into(),
-                ));
-            }
-            cursor = page.cursor;
-        }
-        let mut names: Vec<String> = keys.into_iter().collect();
-        names.sort();
         names.truncate(MAX_DATA_SYNC_CATALOG_OBJECTS);
         Ok(DataSyncObjectCatalog { names, truncated })
     }
@@ -340,10 +272,6 @@ impl DataSyncService {
         reject_obvious_self_sync(&request, &source, &target)?;
 
         match &request.scope {
-            ramag_domain::entities::DataSyncScope::Redis(scope) => {
-                self.preflight_redis(request.clone(), source, target, scope.clone())
-                    .await
-            }
             ramag_domain::entities::DataSyncScope::Mongo(scope) => {
                 preflight_mongo(self, request.clone(), source, target, scope.clone()).await
             }
@@ -366,7 +294,7 @@ impl DataSyncService {
         if confirmation != expected {
             return Err(DomainError::InvalidConfig(
                 if prepared.report.requires_second_confirmation {
-                    "目标已有数据，必须完成二次确认后才能同步".into()
+                    "目标范围或对象已存在，必须完成二次确认后才能同步".into()
                 } else {
                     "同步确认状态与最新预检结果不一致，请重新预检".into()
                 },
@@ -392,9 +320,6 @@ impl DataSyncService {
         let mut summary = DataSyncSummary::default();
         let result = match self.verify_connection_snapshots(&prepared).await {
             Ok(()) => match &prepared.engine_plan {
-                PreparedEnginePlan::Redis(plan) => {
-                    run_redis_sync(self, &prepared, plan, &permit, &mut summary).await
-                }
                 PreparedEnginePlan::Mongo(plan) => {
                     run_mongo_sync(self, &prepared, plan, &permit, &mut summary).await
                 }
@@ -457,285 +382,6 @@ impl DataSyncService {
         prepared.request.validate_connections(&source, &target)
     }
 
-    async fn preflight_redis(
-        &self,
-        request: DataSyncRequest,
-        source: ConnectionConfig,
-        target: ConnectionConfig,
-        scope: RedisSyncScope,
-    ) -> Result<PreparedDataSync> {
-        let (source_version, target_version) = futures::join!(
-            self.redis_service.server_version(&source),
-            self.redis_service.server_version(&target)
-        );
-        let source_version = source_version.map_err(|error| {
-            DomainError::ConnectionFailed(format!("源 Redis 连接预检失败：{}", error.message()))
-        })?;
-        let target_version = target_version.map_err(|error| {
-            DomainError::ConnectionFailed(format!("目标 Redis 连接预检失败：{}", error.message()))
-        })?;
-
-        let (target_snapshot, objects, objects_total, mut warnings) =
-            self.inspect_redis_ranges(&source, &target, &scope).await?;
-        let requires_second_confirmation = match &target_snapshot {
-            RedisTargetSnapshot::Database { size, .. } => *size > 0,
-            RedisTargetSnapshot::Prefix { has_any, .. } => *has_any,
-            RedisTargetSnapshot::Keys { states, .. } => states.iter().any(|(_, exists)| *exists),
-        };
-        let fingerprint = fingerprint(&target_snapshot)?;
-        let mut report = DataSyncPreflightReport {
-            task_id: request.task_id.clone(),
-            engine: DriverKind::Redis,
-            source_connection: source.name.clone(),
-            source_scope: redis_source_scope_label(&scope),
-            source_version,
-            target_connection: target.name.clone(),
-            target_scope: redis_target_scope_label(&scope),
-            target_version,
-            objects,
-            objects_total,
-            requires_second_confirmation,
-            target_fingerprint: fingerprint,
-            warnings: Vec::new(),
-            warnings_overflow: 0,
-        };
-        for warning in warnings.drain(..) {
-            report.push_warning(warning);
-        }
-        Ok(PreparedDataSync {
-            request,
-            source,
-            target,
-            report,
-            engine_plan: PreparedEnginePlan::Redis(RedisPreparedPlan {
-                scope,
-                target_snapshot,
-            }),
-        })
-    }
-
-    async fn inspect_redis_ranges(
-        &self,
-        source: &ConnectionConfig,
-        target: &ConnectionConfig,
-        scope: &RedisSyncScope,
-    ) -> Result<(
-        RedisTargetSnapshot,
-        Vec<SyncPlannedObject>,
-        Option<u64>,
-        Vec<String>,
-    )> {
-        match scope {
-            RedisSyncScope::Database {
-                source_db,
-                target_db,
-                target_prefix,
-            } => {
-                let (source_size, target_size) = futures::join!(
-                    self.redis_service.db_size(source, *source_db),
-                    self.redis_service.db_size(target, *target_db)
-                );
-                let source_size = source_size?;
-                let target_size = target_size?;
-                let warnings = (source_size == 0)
-                    .then(|| "源 Redis DB 当前为空".to_string())
-                    .into_iter()
-                    .collect();
-                Ok((
-                    RedisTargetSnapshot::Database {
-                        db: *target_db,
-                        size: target_size,
-                    },
-                    vec![SyncPlannedObject {
-                        mapping: SyncObjectMapping {
-                            source: format!("DB {source_db}"),
-                            target: if target_prefix.is_empty() {
-                                format!("DB {target_db}")
-                            } else {
-                                format!("DB {target_db} / 前缀 {target_prefix}")
-                            },
-                        },
-                        state: if target_size == 0 {
-                            SyncObjectState::Missing
-                        } else {
-                            SyncObjectState::ExistingCompatible
-                        },
-                    }],
-                    Some(source_size),
-                    warnings,
-                ))
-            }
-            RedisSyncScope::Prefix {
-                source_db,
-                target_db,
-                source_prefix,
-                target_prefix,
-            } => {
-                let source_pattern = redis_literal_prefix_pattern(source_prefix);
-                let target_pattern = redis_literal_prefix_pattern(target_prefix);
-                let (source_has_any, target_has_any) = futures::join!(
-                    self.redis_range_has_any(source, *source_db, &source_pattern),
-                    self.redis_range_has_any(target, *target_db, &target_pattern)
-                );
-                let source_has_any = source_has_any?;
-                let target_has_any = target_has_any?;
-                let warnings = (!source_has_any)
-                    .then(|| "源 Redis 前缀当前没有 Key".to_string())
-                    .into_iter()
-                    .collect();
-                Ok((
-                    RedisTargetSnapshot::Prefix {
-                        db: *target_db,
-                        prefix: target_prefix.clone(),
-                        has_any: target_has_any,
-                    },
-                    vec![SyncPlannedObject {
-                        mapping: SyncObjectMapping {
-                            source: format!("DB {source_db} / {source_prefix}*"),
-                            target: format!("DB {target_db} / {target_prefix}*"),
-                        },
-                        state: if target_has_any {
-                            SyncObjectState::ExistingCompatible
-                        } else {
-                            SyncObjectState::Missing
-                        },
-                    }],
-                    None,
-                    warnings,
-                ))
-            }
-            RedisSyncScope::Keys {
-                source_db,
-                target_db,
-                mappings,
-            } => {
-                let source_keys: Vec<String> = mappings
-                    .iter()
-                    .map(|mapping| mapping.source.clone())
-                    .collect();
-                let target_keys: Vec<String> = mappings
-                    .iter()
-                    .map(|mapping| mapping.target.clone())
-                    .collect();
-                let (source_states, target_states) = futures::join!(
-                    self.redis_service
-                        .keys_exist(source, *source_db, &source_keys),
-                    self.redis_service
-                        .keys_exist(target, *target_db, &target_keys)
-                );
-                let source_states = source_states?;
-                let target_states = target_states?;
-                let mut warnings = Vec::new();
-                for (mapping, exists) in mappings.iter().zip(&source_states) {
-                    if !exists {
-                        warnings.push(format!("源 Key 不存在，将跳过：{}", mapping.source));
-                    }
-                }
-                let objects = mappings
-                    .iter()
-                    .zip(&target_states)
-                    .map(|(mapping, exists)| SyncPlannedObject {
-                        mapping: SyncObjectMapping {
-                            source: mapping.source.clone(),
-                            target: mapping.target.clone(),
-                        },
-                        state: if *exists {
-                            SyncObjectState::ExistingCompatible
-                        } else {
-                            SyncObjectState::Missing
-                        },
-                    })
-                    .collect();
-                Ok((
-                    RedisTargetSnapshot::Keys {
-                        db: *target_db,
-                        states: target_keys.into_iter().zip(target_states).collect(),
-                    },
-                    objects,
-                    Some(mappings.len() as u64),
-                    warnings,
-                ))
-            }
-        }
-    }
-
-    pub(super) async fn current_redis_target_snapshot(
-        &self,
-        target: &ConnectionConfig,
-        scope: &RedisSyncScope,
-    ) -> Result<RedisTargetSnapshot> {
-        match scope {
-            RedisSyncScope::Database { target_db, .. } => Ok(RedisTargetSnapshot::Database {
-                db: *target_db,
-                size: self.redis_service.db_size(target, *target_db).await?,
-            }),
-            RedisSyncScope::Prefix {
-                target_db,
-                target_prefix,
-                ..
-            } => Ok(RedisTargetSnapshot::Prefix {
-                db: *target_db,
-                prefix: target_prefix.clone(),
-                has_any: self
-                    .redis_range_has_any(
-                        target,
-                        *target_db,
-                        &redis_literal_prefix_pattern(target_prefix),
-                    )
-                    .await?,
-            }),
-            RedisSyncScope::Keys {
-                target_db,
-                mappings,
-                ..
-            } => {
-                let keys: Vec<String> = mappings
-                    .iter()
-                    .map(|mapping| mapping.target.clone())
-                    .collect();
-                let states = self
-                    .redis_service
-                    .keys_exist(target, *target_db, &keys)
-                    .await?;
-                Ok(RedisTargetSnapshot::Keys {
-                    db: *target_db,
-                    states: keys.into_iter().zip(states).collect(),
-                })
-            }
-        }
-    }
-
-    async fn redis_range_has_any(
-        &self,
-        config: &ConnectionConfig,
-        db: u8,
-        pattern: &str,
-    ) -> Result<bool> {
-        let mut cursor = 0u64;
-        loop {
-            let page = self
-                .redis_service
-                .scan_batch(config, db, cursor, Some(pattern), None, 5_000)
-                .await?;
-            if !page.keys.is_empty() {
-                return Ok(true);
-            }
-            if page.cursor == 0 {
-                return Ok(false);
-            }
-            if page.cursor == cursor {
-                return Err(DomainError::QueryFailed(
-                    "Redis SCAN 游标未推进，无法完成范围预检".into(),
-                ));
-            }
-            cursor = page.cursor;
-        }
-    }
-
-    pub(super) fn redis_service(&self) -> &RedisService {
-        &self.redis_service
-    }
-
     pub(super) fn mongo_service(&self) -> &MongoService {
         &self.mongo_service
     }
@@ -743,10 +389,6 @@ impl DataSyncService {
     pub(super) fn connection_service(&self) -> &ConnectionService {
         &self.connection_service
     }
-}
-
-fn redis_catalog_databases() -> Vec<String> {
-    (0u8..=u8::MAX).map(|db| db.to_string()).collect()
 }
 
 fn protected_catalog_scope(driver: DriverKind, name: &str) -> bool {
@@ -774,47 +416,6 @@ pub(super) fn fingerprint(value: &impl Serialize) -> Result<SyncTargetFingerprin
     Ok(SyncTargetFingerprint(digest))
 }
 
-fn redis_source_scope_label(scope: &RedisSyncScope) -> String {
-    match scope {
-        RedisSyncScope::Database { source_db, .. } => format!("DB {source_db}"),
-        RedisSyncScope::Prefix {
-            source_db,
-            source_prefix,
-            ..
-        } => format!("DB {source_db} / {source_prefix}*"),
-        RedisSyncScope::Keys {
-            source_db,
-            mappings,
-            ..
-        } => format!("DB {source_db} / {} 个 Key", mappings.len()),
-    }
-}
-
-fn redis_target_scope_label(scope: &RedisSyncScope) -> String {
-    match scope {
-        RedisSyncScope::Database {
-            target_db,
-            target_prefix,
-            ..
-        } if target_prefix.is_empty() => format!("DB {target_db}"),
-        RedisSyncScope::Database {
-            target_db,
-            target_prefix,
-            ..
-        } => format!("DB {target_db} / 前缀 {target_prefix}"),
-        RedisSyncScope::Prefix {
-            target_db,
-            target_prefix,
-            ..
-        } => format!("DB {target_db} / {target_prefix}*"),
-        RedisSyncScope::Keys {
-            target_db,
-            mappings,
-            ..
-        } => format!("DB {target_db} / {} 个 Key", mappings.len()),
-    }
-}
-
 fn reject_obvious_self_sync(
     request: &DataSyncRequest,
     source: &ConnectionConfig,
@@ -827,15 +428,6 @@ fn reject_obvious_self_sync(
         && (source.driver != DriverKind::Postgres || source.database == target.database);
     if !same_endpoint {
         return Ok(());
-    }
-    if let ramag_domain::entities::DataSyncScope::Redis(scope) = &request.scope
-        && scope.source_db() == scope.target_db()
-        && !matches!(scope, RedisSyncScope::Keys { .. })
-    {
-        return Err(DomainError::InvalidConfig(
-            "源和目标连接指向同一 Redis 实例与 DB；扫描范围同步可能读到任务临时 Key，请改用不同 DB 或指定 Key 范围"
-                .into(),
-        ));
     }
     let same_mapping = |selection: &ramag_domain::entities::SyncObjectSelection| match selection {
         ramag_domain::entities::SyncObjectSelection::All => true,
@@ -850,29 +442,6 @@ fn reject_obvious_self_sync(
         ramag_domain::entities::DataSyncScope::Mongo(scope) => {
             scope.source_database == scope.target_database && same_mapping(&scope.collections)
         }
-        ramag_domain::entities::DataSyncScope::Redis(scope) => match scope {
-            RedisSyncScope::Database {
-                source_db,
-                target_db,
-                target_prefix,
-            } => source_db == target_db && target_prefix.is_empty(),
-            RedisSyncScope::Prefix {
-                source_db,
-                target_db,
-                source_prefix,
-                target_prefix,
-            } => source_db == target_db && source_prefix == target_prefix,
-            RedisSyncScope::Keys {
-                source_db,
-                target_db,
-                mappings,
-            } => {
-                source_db == target_db
-                    && mappings
-                        .iter()
-                        .all(|mapping| mapping.source == mapping.target)
-            }
-        },
     };
     if same_scope {
         return Err(DomainError::InvalidConfig(
@@ -909,36 +478,6 @@ mod tests {
             scope.target_namespace = "archive".into();
         }
         assert!(reject_obvious_self_sync(&request, &source, &target).is_ok());
-    }
-
-    #[test]
-    fn redis_scanned_range_cannot_target_the_same_physical_database() {
-        let mut source = ConnectionConfig::new_redis("source", "127.0.0.1", 6379);
-        let mut target = source.clone();
-        source.id = ConnectionId::new();
-        target.id = ConnectionId::new();
-        let request = DataSyncRequest {
-            task_id: DataSyncTaskId::new(),
-            source_connection_id: source.id.clone(),
-            target_connection_id: target.id.clone(),
-            engine: DriverKind::Redis,
-            scope: DataSyncScope::Redis(RedisSyncScope::Database {
-                source_db: 0,
-                target_db: 0,
-                target_prefix: "backup:".into(),
-            }),
-        };
-        let error = reject_obvious_self_sync(&request, &source, &target)
-            .expect_err("同 DB 扫描会与同步临时 Key 相互污染");
-        assert!(error.message().contains("临时 Key"));
-    }
-
-    #[test]
-    fn redis_catalog_lists_the_complete_supported_db_range() {
-        let databases = redis_catalog_databases();
-        assert_eq!(databases.len(), 256);
-        assert_eq!(databases.first().map(String::as_str), Some("0"));
-        assert_eq!(databases.last().map(String::as_str), Some("255"));
     }
 
     #[test]

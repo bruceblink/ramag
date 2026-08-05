@@ -209,8 +209,9 @@ pub fn is_write_statement(stmt: &str) -> bool {
         "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "CREATE", "DROP", "ALTER", "TRUNCATE",
         "GRANT", "REVOKE", "OUTFILE", "DUMPFILE",
     ];
-    let upper = stmt.to_ascii_uppercase();
-    let Some(kw) = first_keyword(stmt) else {
+    let code = sql_code_for_write_check(stmt);
+    let upper = code.to_ascii_uppercase();
+    let Some(kw) = first_keyword(&upper) else {
         // 无法提取首关键字（纯空白 / 纯注释 / `/*! ... */` 可执行注释 / 括号开头）：
         // 空白与纯注释不含写动词→放行；`/*! DELETE */` 含写动词→拦截
         return WRITE_INNER.iter().any(|w| contains_word(&upper, w));
@@ -219,13 +220,91 @@ pub fn is_write_statement(stmt: &str) -> bool {
         // 首词不在安全白名单（所有写动词、CALL、DO、COPY、LOCK、VACUUM、LOAD 等）：当写
         return true;
     }
+    // SHOW CREATE TABLE 只读取元数据，其中的 CREATE 是结果类型而非执行动作；
+    // 其余写关键字仍继续拦截，避免可执行注释等内容绕过保护。
+    let show_create = kw == "SHOW"
+        && upper
+            .trim_start()
+            .get(kw.len()..)
+            .and_then(first_keyword)
+            .is_some_and(|second| second == "CREATE");
     // 首词安全，再扫语句体：含写动词则升级为写（INTO 单列判定，避免误伤 SELECT INTO @var）
-    if WRITE_INNER.iter().any(|w| contains_word(&upper, w)) {
+    if WRITE_INNER
+        .iter()
+        .any(|word| !(show_create && *word == "CREATE") && contains_word(&upper, word))
+    {
         return true;
     }
     // `... INTO tbl`（建表）/ `... INTO OUTFILE` 已由 OUTFILE 覆盖；
     // 裸 SELECT INTO 建表（PG）：INTO 后跟标识符而非 @var / : 变量时视为写
     contains_word(&upper, "INTO") && !upper.contains("INTO @") && !upper.contains("INTO :")
+}
+
+/// 屏蔽字符串、引用标识符与普通注释，只保留数据库会执行的 SQL 代码。
+/// MySQL `/*! ... */` 是可执行注释，保留其正文参与写操作检测。
+fn sql_code_for_write_check(stmt: &str) -> String {
+    let bytes = stmt.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'\'' | b'"' | b'`') => {
+                code[i] = b' ';
+                i += 1;
+                while i < bytes.len() {
+                    code[i] = b' ';
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        code[i + 1] = b' ';
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                            code[i + 1] = b' ';
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'$' => {
+                if let Some(end) = scan_dollar_quoted(bytes, i) {
+                    code[i..end].fill(b' ');
+                    i = end;
+                } else {
+                    i += 1;
+                }
+            }
+            b'-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    code[i] = b' ';
+                    i += 1;
+                }
+            }
+            b'/' if i + 2 < bytes.len() && bytes[i + 1] == b'*' && bytes[i + 2] == b'!' => {
+                // 仅移除注释标记；正文由后续循环继续扫描，字符串仍会被屏蔽。
+                code[i..i + 3].fill(b' ');
+                i += 3;
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                let start = i;
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                code[start..i].fill(b' ');
+            }
+            _ => i += 1,
+        }
+    }
+
+    // 被屏蔽的片段会逐字节替换为空格，未屏蔽片段保持原始 UTF-8。
+    String::from_utf8_lossy(&code).into_owned()
 }
 
 /// 仅对未带 LIMIT 的 SELECT/WITH 注入 ` LIMIT n`；其他语句返回 None
@@ -430,6 +509,24 @@ mod tests {
         assert!(!is_write_statement("SELECT 1"));
         assert!(!is_write_statement("select * from t"));
         assert!(!is_write_statement("SHOW TABLES"));
+        assert!(!is_write_statement("SHOW CREATE TABLE `app`.`users`"));
+        assert!(is_write_statement(
+            "SHOW CREATE TABLE users /*! DELETE FROM audit_log */"
+        ));
+    }
+
+    #[test]
+    fn write_statement_ignores_keywords_in_literals_and_comments() {
+        assert!(!is_write_statement(
+            "SELECT 'CREATE TABLE t(id int)' AS ddl"
+        ));
+        assert!(!is_write_statement("SELECT \"DELETE\" FROM t"));
+        assert!(!is_write_statement("SELECT $$DROP TABLE t$$ AS ddl"));
+        assert!(!is_write_statement(
+            "WITH x AS (SELECT 'UPDATE t') SELECT * FROM x"
+        ));
+        assert!(!is_write_statement("SELECT 1 /* DROP TABLE t */"));
+        assert!(!is_write_statement("/*! SELECT 'DROP TABLE t' */"));
     }
 
     #[test]

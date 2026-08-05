@@ -83,6 +83,19 @@ fn request_rejects_cross_engine_same_connection_and_read_only_target() {
 #[test]
 fn scope_must_match_engine() {
     let request = request(
+        DriverKind::Mysql,
+        DataSyncScope::Mongo(MongoSyncScope {
+            source_database: "source".into(),
+            target_database: "target".into(),
+            collections: SyncObjectSelection::All,
+        }),
+    );
+    assert!(request.validate_scope().is_err());
+}
+
+#[test]
+fn redis_engine_is_not_supported_for_data_sync() {
+    let request = request(
         DriverKind::Redis,
         DataSyncScope::Mongo(MongoSyncScope {
             source_database: "source".into(),
@@ -161,56 +174,7 @@ fn sql_identifier_boundaries_follow_each_engine() {
 }
 
 #[test]
-fn redis_ranges_map_keys_without_collisions() {
-    let database = RedisSyncScope::Database {
-        source_db: 0,
-        target_db: 1,
-        target_prefix: "copy:".into(),
-    };
-    assert_eq!(database.map_key("user:1").as_deref(), Some("copy:user:1"));
-
-    let prefix = RedisSyncScope::Prefix {
-        source_db: 0,
-        target_db: 2,
-        source_prefix: "old:".into(),
-        target_prefix: "new:".into(),
-    };
-    assert_eq!(prefix.map_key("old:1").as_deref(), Some("new:1"));
-    assert!(prefix.map_key("other:1").is_none());
-
-    let invalid = request(
-        DriverKind::Redis,
-        DataSyncScope::Redis(RedisSyncScope::Keys {
-            source_db: 0,
-            target_db: 1,
-            mappings: vec![
-                RedisKeyMapping {
-                    source: "a".into(),
-                    target: "same".into(),
-                },
-                RedisKeyMapping {
-                    source: "b".into(),
-                    target: "same".into(),
-                },
-            ],
-        }),
-    );
-    assert!(invalid.validate_scope().is_err());
-}
-
-#[test]
-fn redis_prefix_and_mongo_name_boundaries_are_checked() {
-    let empty_prefix = request(
-        DriverKind::Redis,
-        DataSyncScope::Redis(RedisSyncScope::Prefix {
-            source_db: 0,
-            target_db: 1,
-            source_prefix: String::new(),
-            target_prefix: String::new(),
-        }),
-    );
-    assert!(empty_prefix.validate_scope().is_err());
-
+fn mongo_name_boundaries_are_checked() {
     let mongo = request(
         DriverKind::Mongodb,
         DataSyncScope::Mongo(MongoSyncScope {

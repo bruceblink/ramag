@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use ramag_app::{
     ConnectionService, DataSyncConfirmation, DataSyncGate, DataSyncGatePhase, DataSyncService,
-    MongoService, RedisService,
+    MongoService,
 };
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, DataSyncRequest, DataSyncScope, DataSyncSummary,
@@ -156,21 +156,13 @@ fn services(
         Arc::new(ramag_infra_postgres::PostgresDriver::new()),
     );
     let connection_service = Arc::new(ConnectionService::new(drivers, storage.clone()));
-    let redis_service = Arc::new(RedisService::new(
-        Arc::new(ramag_infra_redis::RedisDriver::new()),
-        storage.clone(),
-    ));
     let mongo_service = Arc::new(MongoService::new(
         Arc::new(ramag_infra_mongodb::MongoDriver::new()),
         storage,
     ));
     let gate = Arc::new(DataSyncGate::default());
-    let sync_service = DataSyncService::new(
-        connection_service.clone(),
-        redis_service,
-        mongo_service,
-        gate.clone(),
-    );
+    let sync_service =
+        DataSyncService::new(connection_service.clone(), mongo_service, gate.clone());
     (sync_service, connection_service, gate)
 }
 

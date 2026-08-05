@@ -238,6 +238,7 @@ pub(super) async fn preflight_sql(
         target_version,
         objects: report_objects,
         objects_total: Some(mappings.len() as u64),
+        target_scope_exists: namespace_exists,
         requires_second_confirmation: namespace_exists
             || objects.iter().any(|object| object.target_exists),
         target_fingerprint: fingerprint(&target_snapshot)?,

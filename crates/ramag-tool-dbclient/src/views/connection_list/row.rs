@@ -5,7 +5,7 @@
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
-use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
+use gpui_component::{Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::{ConnectionListPanel, ListEvent};
@@ -26,6 +26,7 @@ pub(super) fn connection_row(
     idx: usize,
     conn: ConnectionConfig,
     is_selected: bool,
+    show_sync: bool,
     // 服务端版本（None = 还没拉到 / 拉失败）
     version: Option<String>,
     density: RowDensity,
@@ -229,17 +230,18 @@ pub(super) fn connection_row(
                 .w(px(108.0))
                 .justify_end()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    ramag_ui::clickable_button(sync_id)
-                        .ghost()
-                        .small()
-                        .icon(ramag_ui::icons::arrow_up_down())
-                        .tooltip("从其他连接同步数据到此连接")
-                        .disabled(is_production)
-                        .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
-                            cx.emit(ListEvent::RequestSync(conn_for_sync.clone()));
-                        })),
-                )
+                .when(show_sync, |actions| {
+                    actions.child(
+                        ramag_ui::clickable_button(sync_id)
+                            .ghost()
+                            .small()
+                            .icon(ramag_ui::icons::database_sync())
+                            .tooltip("从其他同引擎连接同步数据到此连接")
+                            .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
+                                cx.emit(ListEvent::RequestSync(conn_for_sync.clone()));
+                            })),
+                    )
+                })
                 .child(
                     ramag_ui::clickable_button(edit_id)
                         .ghost()

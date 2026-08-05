@@ -111,6 +111,7 @@ pub(super) async fn preflight_mongo(
         target_version,
         objects_total: Some(prepared_objects.len() as u64),
         objects: report_objects,
+        target_scope_exists: database_exists,
         requires_second_confirmation: database_exists,
         target_fingerprint: fingerprint(&target_snapshot)?,
         warnings: Vec::new(),

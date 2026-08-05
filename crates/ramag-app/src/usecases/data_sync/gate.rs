@@ -127,14 +127,16 @@ impl DataSyncGate {
     pub fn snapshot(&self) -> Option<DataSyncGateSnapshot> {
         self.inner.lock().active.as_ref().map(|active| {
             let mut progress = active.progress.clone();
-            progress.elapsed_ms = progress.elapsed_ms.max(
-                active
-                    .started_at
-                    .elapsed()
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX),
-            );
+            if !active.phase.terminal() {
+                progress.elapsed_ms = progress.elapsed_ms.max(
+                    active
+                        .started_at
+                        .elapsed()
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                );
+            }
             DataSyncGateSnapshot {
                 task_id: active.task_id.clone(),
                 phase: active.phase,
@@ -300,6 +302,9 @@ fn compact_text(mut text: String, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+    use std::time::Duration;
+
     use super::*;
 
     fn context(name: &str) -> DataSyncExecutionContext {
@@ -433,8 +438,41 @@ mod tests {
         let snapshot = gate.snapshot().expect("失败结果应存在");
         assert_eq!(snapshot.progress.inserted, 0);
         assert_eq!(snapshot.progress.warnings, 1);
-        assert!(snapshot.progress.elapsed_ms >= 123);
+        assert_eq!(snapshot.progress.elapsed_ms, 123);
         assert_eq!(snapshot.error.as_deref(), Some("write failed"));
+    }
+
+    #[test]
+    fn terminal_elapsed_time_stops_after_finish() {
+        for expected_phase in [
+            DataSyncGatePhase::Completed,
+            DataSyncGatePhase::Failed,
+            DataSyncGatePhase::Cancelled,
+        ] {
+            let gate = DataSyncGate::default();
+            let permit = gate
+                .begin(DataSyncTaskId::new(), context("elapsed"))
+                .expect("开始应成功");
+            let finished = match expected_phase {
+                DataSyncGatePhase::Completed => {
+                    gate.finish_completed(&permit, DataSyncSummary::default())
+                }
+                DataSyncGatePhase::Failed => {
+                    gate.finish_failed(&permit, DataSyncSummary::default(), "failed")
+                }
+                DataSyncGatePhase::Cancelled => {
+                    gate.finish_cancelled(&permit, DataSyncSummary::default())
+                }
+                DataSyncGatePhase::Running | DataSyncGatePhase::Cancelling => false,
+            };
+            assert!(finished);
+
+            thread::sleep(Duration::from_millis(15));
+
+            let snapshot = gate.snapshot().expect("终态结果应保持占屏");
+            assert_eq!(snapshot.phase, expected_phase);
+            assert_eq!(snapshot.progress.elapsed_ms, 0);
+        }
     }
 
     #[test]

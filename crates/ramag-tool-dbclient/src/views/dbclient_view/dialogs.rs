@@ -2,7 +2,7 @@
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};
 use gpui_component::WindowExt as _;
-use ramag_domain::entities::{ConnectionConfig, ConnectionId};
+use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
 use tracing::error;
 
 use crate::views::connection_form::{self, ConnectionFormPanel, FormEvent};
@@ -18,6 +18,16 @@ impl DbClientView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if target.driver == DriverKind::Redis {
+            self.pending_notification = Some(
+                gpui_component::notification::Notification::warning(
+                    "Redis 是缓存数据库，不提供数据同步",
+                )
+                .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
         if self.data_sync_service.gate().is_blocking() {
             self.pending_notification = Some(
                 gpui_component::notification::Notification::warning(
@@ -33,9 +43,9 @@ impl DbClientView {
         let panel = cx.new(|cx| DataSyncDialog::new(service, target, &connections, window, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("同步数据到当前连接")
+                .title("数据同步")
                 .close_button(false)
-                .w(px(940.0))
+                .w(px(860.0))
                 .pt(px(18.0))
                 .px(px(20.0))
                 .pb(px(16.0))

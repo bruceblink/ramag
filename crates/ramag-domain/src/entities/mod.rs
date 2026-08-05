@@ -31,9 +31,9 @@ pub use connection::{
 pub use data_sync::{
     DataSyncProgress, DataSyncRequest, DataSyncScope, DataSyncStage, DataSyncSummary,
     DataSyncTaskId, MAX_MYSQL_SYNC_IDENTIFIER_CHARS, MAX_POSTGRES_SYNC_IDENTIFIER_BYTES,
-    MongoSyncScope, RedisKeyMapping, RedisSyncScope, SqlIdentityKind, SqlRecordIdentity,
-    SqlSyncScope, SyncObjectMapping, SyncObjectSelection, SyncObjectState, SyncPlannedObject,
-    SyncTargetFingerprint, select_sql_record_identity,
+    MongoSyncScope, SqlIdentityKind, SqlRecordIdentity, SqlSyncScope, SyncObjectMapping,
+    SyncObjectSelection, SyncObjectState, SyncPlannedObject, SyncTargetFingerprint,
+    select_sql_record_identity,
 };
 pub use ddl::build_ddl_query;
 pub use git::{

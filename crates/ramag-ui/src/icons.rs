@@ -12,6 +12,12 @@ pub fn database() -> Icon {
     Icon::default().path("icons/database.svg")
 }
 
+/// 数据库之间同步数据，区别于通用文件传输图标。
+#[inline]
+pub fn database_sync() -> Icon {
+    Icon::default().path("icons/database-sync.svg")
+}
+
 #[inline]
 pub fn git_branch() -> Icon {
     Icon::default().path("icons/git-branch.svg")
