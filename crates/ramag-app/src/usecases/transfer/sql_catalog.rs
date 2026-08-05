@@ -53,7 +53,9 @@ pub(crate) fn pg_table_create_query(schema: &str, table: &str) -> String {
     let s = pg_lit(schema);
     let t = pg_lit(table);
     format!(
-        "WITH lines AS ( \
+        "WITH sync_settings AS ( \
+            SELECT set_config('search_path', 'pg_catalog', true) AS configured \
+        ), lines AS ( \
             SELECT a.attnum AS sort_key, \
                    '    ' || quote_ident(a.attname) || ' ' || pg_catalog.format_type(a.atttypid, a.atttypmod) || \
                    CASE WHEN a.attidentity = 'a' THEN ' GENERATED ALWAYS AS IDENTITY' \
@@ -61,9 +63,11 @@ pub(crate) fn pg_table_create_query(schema: &str, table: &str) -> String {
                         WHEN a.attgenerated = 's' THEN ' GENERATED ALWAYS AS (' || pg_get_expr(d.adbin, d.adrelid) || ') STORED' \
                         WHEN d.adbin IS NOT NULL THEN ' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid) \
                         ELSE '' END || \
-                   CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END AS line \
+                   CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END || \
+                   substr(sync_settings.configured, 1, 0) AS line \
               FROM pg_attribute a \
               LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+              CROSS JOIN sync_settings \
              WHERE a.attrelid = '\"{s}\".\"{t}\"'::regclass \
                AND a.attnum > 0 AND NOT a.attisdropped \
             UNION ALL \

@@ -21,6 +21,7 @@ pub fn map_mysql_database_error(err: &sqlx::Error) -> Option<DomainError> {
 /// MySQL 错误码 → 中文友好提示
 fn mysql_error_friendly(code: &str, raw: &str) -> String {
     match code {
+        "1044" => format!("目标账号没有创建或访问该数据库的权限（{raw}）"),
         "1045" => format!("用户名或密码错误（{raw}）"),
         "1049" => format!("数据库不存在（{raw}）"),
         "1054" => format!("字段不存在（{raw}）"),
@@ -56,6 +57,7 @@ mod tests {
 
     #[test]
     fn friendly_known_codes() {
+        assert!(mysql_error_friendly("1044", "Access denied").contains("创建或访问"));
         assert!(mysql_error_friendly("1045", "Access denied").contains("用户名或密码"));
         assert!(mysql_error_friendly("1146", "Table 'x' doesn't exist").contains("表不存在"));
         assert!(mysql_error_friendly("1062", "Duplicate entry").contains("唯一键冲突"));

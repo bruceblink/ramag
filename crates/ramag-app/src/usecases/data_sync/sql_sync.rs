@@ -186,7 +186,11 @@ async fn sync_new_table(
 ) -> Result<()> {
     let driver = prepared.request.engine;
     let source_table = qualified(driver, &plan.scope.source_namespace, &object.mapping.source);
-    let columns = quoted_columns(driver, &object.writable_columns);
+    let columns = source_select_columns(
+        driver,
+        &object.writable_columns,
+        &object.source_text_columns,
+    );
     let identity_positions = identity_positions(object)?;
     let mut last_key = None;
     loop {
@@ -251,7 +255,11 @@ async fn sync_existing_table(
     let driver = prepared.request.engine;
     let source_table = qualified(driver, &plan.scope.source_namespace, &object.mapping.source);
     let target_table = qualified(driver, &plan.scope.target_namespace, &object.mapping.target);
-    let identity_columns = quoted_columns(driver, &object.identity.columns);
+    let identity_columns = source_select_columns(
+        driver,
+        &object.identity.columns,
+        &object.source_text_columns,
+    );
     let mut last_key = None;
     loop {
         if honor_cancel && permit.cancellation_requested() {
@@ -295,6 +303,7 @@ async fn sync_existing_table(
             driver,
             &target_table,
             &object.identity.columns,
+            &object.source_text_columns,
             &ids.rows,
         )
         .await?;
@@ -347,6 +356,7 @@ async fn existing_identity_keys(
     driver: DriverKind,
     target_table: &str,
     identity_columns: &[String],
+    text_columns: &HashSet<String>,
     identities: &[Row],
 ) -> Result<HashSet<String>> {
     let mut found = HashSet::new();
@@ -354,7 +364,7 @@ async fn existing_identity_keys(
         let predicate = identity_predicate(driver, identity_columns, &identities[range])?;
         let query = format!(
             "SELECT {} FROM {target_table} WHERE {predicate};",
-            quoted_columns(driver, identity_columns)
+            source_select_columns(driver, identity_columns, text_columns)
         );
         let result = service
             .connection_service()
@@ -400,7 +410,7 @@ async fn fetch_source_rows(
         let predicate = identity_predicate(driver, identity_columns, &identity_rows[start..end])?;
         let query = format!(
             "SELECT {} FROM {source_table} WHERE {predicate} ORDER BY {};",
-            quoted_columns(driver, writable_columns),
+            source_select_columns(driver, writable_columns, &object.source_text_columns),
             quoted_columns(driver, identity_columns)
         );
         let result = service
@@ -601,6 +611,7 @@ async fn mysql_missing_identities_after_insert(
         DriverKind::Mysql,
         &target_table,
         &object.identity.columns,
+        &object.source_text_columns,
         &identities,
     )
     .await?;
@@ -818,6 +829,25 @@ fn quoted_columns(driver: DriverKind, columns: &[String]) -> String {
         .join(", ")
 }
 
+fn source_select_columns(
+    driver: DriverKind,
+    columns: &[String],
+    text_columns: &HashSet<String>,
+) -> String {
+    columns
+        .iter()
+        .map(|column| {
+            let quoted = driver.quote_identifier(column);
+            if driver == DriverKind::Postgres && text_columns.contains(column) {
+                format!("CAST({quoted} AS TEXT) AS {quoted}")
+            } else {
+                quoted
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn row_tuple(row: &Row, driver: DriverKind) -> String {
     format!(
         "({})",
@@ -894,5 +924,19 @@ mod tests {
             .collect();
         let ranges = identity_ranges(DriverKind::Postgres, &rows).unwrap();
         assert_eq!(ranges, [0..1_000, 1_000..2_000, 2_000..2_001]);
+    }
+
+    #[test]
+    fn postgres_custom_types_are_selected_as_text_without_changing_order_columns() {
+        let columns = vec!["id".into(), "states".into()];
+        let text_columns = HashSet::from(["states".into()]);
+        assert_eq!(
+            source_select_columns(DriverKind::Postgres, &columns, &text_columns),
+            "\"id\", CAST(\"states\" AS TEXT) AS \"states\""
+        );
+        assert_eq!(
+            source_select_columns(DriverKind::Mysql, &columns, &text_columns),
+            "`id`, `states`"
+        );
     }
 }

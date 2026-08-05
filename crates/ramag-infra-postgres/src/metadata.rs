@@ -111,6 +111,9 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
 
     let rows: Vec<PgColumnRow> = sqlx::query_as(
         r#"
+        WITH sync_settings AS (
+            SELECT set_config('search_path', 'pg_catalog', true) AS configured
+        )
         SELECT
             c.column_name::text,
             c.data_type::text,
@@ -119,11 +122,15 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             LEFT(col_description(pgc.oid, c.ordinal_position::int), 4096) AS column_comment,
             c.character_maximum_length::int,
             (c.is_nullable = 'YES') AS nullable,
-            pg_catalog.format_type(a.atttypid, a.atttypmod)::text AS exact_type
+            (
+                pg_catalog.format_type(a.atttypid, a.atttypmod)
+                || substr(sync_settings.configured, 1, 0)
+            )::text AS exact_type
         FROM information_schema.columns c
         LEFT JOIN pg_namespace n ON n.nspname = c.table_schema
         LEFT JOIN pg_class pgc ON pgc.relnamespace = n.oid AND pgc.relname = c.table_name
         JOIN pg_attribute a ON a.attrelid = pgc.oid AND a.attname = c.column_name
+        CROSS JOIN sync_settings
         WHERE c.table_schema = $1 AND c.table_name = $2
         ORDER BY c.ordinal_position
         LIMIT $3

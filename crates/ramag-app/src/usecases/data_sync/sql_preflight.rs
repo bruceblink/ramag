@@ -149,6 +149,17 @@ pub(super) async fn preflight_sql(
             .filter(|column| !generated.contains(&column.name))
             .map(|column| column.name.clone())
             .collect();
+        let source_text_columns = if source.driver == DriverKind::Postgres {
+            source_columns
+                .iter()
+                .filter(|column| {
+                    !generated.contains(&column.name) && column.data_type.kind == ColumnKind::Other
+                })
+                .map(|column| column.name.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
         if writable_columns.is_empty() {
             return Err(DomainError::InvalidConfig(format!(
                 "源表 {}.{} 全部为生成列，没有可同步数据",
@@ -184,6 +195,7 @@ pub(super) async fn preflight_sql(
             mapping: mapping.clone(),
             identity,
             writable_columns,
+            source_text_columns,
             target_exists,
             create_statement: None,
             post_create_statements: Vec::new(),

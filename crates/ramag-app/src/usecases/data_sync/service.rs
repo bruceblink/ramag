@@ -1,5 +1,6 @@
 //! 同步预检、确认门禁和执行生命周期入口。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -113,6 +114,7 @@ pub(super) struct SqlPreparedObject {
     pub mapping: SyncObjectMapping,
     pub identity: ramag_domain::entities::SqlRecordIdentity,
     pub writable_columns: Vec<String>,
+    pub source_text_columns: HashSet<String>,
     pub target_exists: bool,
     pub create_statement: Option<String>,
     pub post_create_statements: Vec<String>,
