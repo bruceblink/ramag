@@ -236,7 +236,7 @@ pub(super) fn connection_row(
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::database_sync())
-                            .tooltip("从其他同引擎连接同步数据到此连接")
+                            .tooltip("数据同步")
                             .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                                 cx.emit(ListEvent::RequestSync(conn_for_sync.clone()));
                             })),

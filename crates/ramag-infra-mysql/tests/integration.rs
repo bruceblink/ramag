@@ -187,8 +187,30 @@ async fn wrong_password_returns_friendly_error() {
     println!("got expected auth error: {}", err);
     let msg = format!("{err}");
     assert!(
-        msg.contains("用户名或密码") || msg.contains("Access denied") || msg.contains("1045"),
-        "错误消息应包含认证错误线索，实际：{msg}"
+        msg.contains("用户名或密码"),
+        "错误消息应明确说明认证失败，实际：{msg}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inaccessible_database_returns_friendly_error() {
+    let config = require_env!();
+    let driver = MysqlDriver::new();
+    let database = format!("ramag_sync_access_denied_probe_{}", std::process::id());
+    let err = driver
+        .execute(&config, &Query::new("SELECT 1").with_schema(database))
+        .await
+        .expect_err("不存在或无权访问的数据库应被拒绝");
+    let message = err.to_string();
+
+    // 管理员测试账号会得到 1049；受限账号会得到本测试重点覆盖的 1044。
+    if message.contains("数据库不存在") {
+        eprintln!("[SKIP] 当前 MySQL 测试账号可访问任意数据库，无法触发 1044");
+        return;
+    }
+    assert!(
+        message.contains("目标账号没有创建或访问该数据库的权限"),
+        "1044 应转换为可操作的中文权限提示，实际：{message}"
     );
 }
 

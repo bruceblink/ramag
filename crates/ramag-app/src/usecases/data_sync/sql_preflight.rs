@@ -434,10 +434,7 @@ async fn validate_existing_target(
         .collect();
     for source_column in source_columns {
         let target_column = by_name.get(source_column.name.as_str()).ok_or_else(|| {
-            DomainError::InvalidConfig(format!(
-                "目标表 {}.{} 缺少源列 {}",
-                target_namespace, mapping.target, source_column.name
-            ))
+            missing_source_column_error(target_namespace, &mapping.target, &source_column.name)
         })?;
         if normalize_source_type(
             &source_column.data_type.raw_type,
@@ -510,6 +507,12 @@ async fn validate_existing_target(
         )));
     }
     Ok(())
+}
+
+fn missing_source_column_error(namespace: &str, table: &str, column: &str) -> DomainError {
+    DomainError::InvalidConfig(format!(
+        "目标表 {namespace}.{table} 缺少源列 {column}。请改用新目标表名、取消选择该表，或先补齐目标表结构"
+    ))
 }
 
 async fn postgres_identity_modes(
@@ -1188,5 +1191,15 @@ mod tests {
         assert!(reject_protected_namespace(DriverKind::Mysql, "mysql").is_err());
         assert!(reject_protected_namespace(DriverKind::Postgres, "pg_catalog").is_err());
         assert!(reject_protected_namespace(DriverKind::Postgres, "public").is_ok());
+    }
+
+    #[test]
+    fn missing_source_column_error_explains_safe_options() {
+        let message = missing_source_column_error("app", "plan_usage", "project_id")
+            .message()
+            .to_string();
+        assert!(message.contains("改用新目标表名"));
+        assert!(message.contains("取消选择该表"));
+        assert!(message.contains("补齐目标表结构"));
     }
 }
