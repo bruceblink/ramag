@@ -930,3 +930,150 @@ async fn postgres_sync_maps_schema_enum_identity_sequence_and_foreign_key() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_sync_reuses_shared_enum_after_partial_creation_and_rejects_conflict() {
+    let Some((source, target)) = postgres_configs() else {
+        eprintln!("[SKIP] 设置 RAMAG_TEST_PG_* 后运行 SQL 同步测试");
+        return;
+    };
+    let suffix = std::process::id();
+    let source_schema = format!("ramag_sync_enum_src_{suffix}");
+    let fresh_schema = format!("ramag_sync_enum_fresh_{suffix}");
+    let partial_schema = format!("ramag_sync_enum_partial_{suffix}");
+    let conflict_schema = format!("ramag_sync_enum_conflict_{suffix}");
+    let stale_schema = format!("ramag_sync_enum_stale_{suffix}");
+    let (sync, sql, gate) = services(&source, &target);
+    exec(
+        &sql,
+        &source,
+        format!(
+            "DROP SCHEMA IF EXISTS \"{source_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{fresh_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{partial_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{conflict_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{stale_schema}\" CASCADE; \
+             CREATE SCHEMA \"{source_schema}\"; \
+             CREATE TYPE \"{source_schema}\".\"record_state\" AS ENUM ('new','active','archived'); \
+             CREATE TABLE \"{source_schema}\".\"first_records\" (\
+                 \"id\" BIGINT PRIMARY KEY, \
+                 \"state\" \"{source_schema}\".\"record_state\" NOT NULL, \
+                 \"previous_state\" \"{source_schema}\".\"record_state\" NOT NULL\
+             ); \
+             CREATE TABLE \"{source_schema}\".\"second_records\" (\
+                 \"id\" BIGINT PRIMARY KEY, \
+                 \"state\" \"{source_schema}\".\"record_state\" NOT NULL\
+             ); \
+             INSERT INTO \"{source_schema}\".\"first_records\" VALUES (1,'active','new'); \
+             INSERT INTO \"{source_schema}\".\"second_records\" VALUES (2,'archived'); \
+             CREATE SCHEMA \"{partial_schema}\"; \
+             CREATE TYPE \"{partial_schema}\".\"record_state\" AS ENUM ('new','active','archived'); \
+             CREATE SCHEMA \"{conflict_schema}\"; \
+             CREATE TYPE \"{conflict_schema}\".\"record_state\" AS ENUM ('new','disabled'); \
+             CREATE SCHEMA \"{stale_schema}\";"
+        ),
+    )
+    .await;
+
+    let mappings = &[
+        ("first_records", "first_records"),
+        ("second_records", "second_records"),
+    ];
+    let fresh = execute_sync(
+        &sync,
+        &gate,
+        sql_request(&source, &target, &source_schema, &fresh_schema, mappings),
+        DataSyncConfirmation::CreateMissingTargets,
+    )
+    .await;
+    assert_eq!(fresh.inserted, 2);
+    assert_eq!(
+        scalar_i64(
+            &sql,
+            &target,
+            format!(
+                "SELECT COUNT(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace \
+                 WHERE n.nspname='{fresh_schema}' AND t.typname='record_state';"
+            ),
+        )
+        .await,
+        1
+    );
+    let repeated = execute_sync(
+        &sync,
+        &gate,
+        sql_request(&source, &target, &source_schema, &fresh_schema, mappings),
+        DataSyncConfirmation::ContinueWithExistingTargets,
+    )
+    .await;
+    assert_eq!(repeated.inserted, 0);
+    assert_eq!(repeated.skipped, 2);
+
+    let resumed = execute_sync(
+        &sync,
+        &gate,
+        sql_request(&source, &target, &source_schema, &partial_schema, mappings),
+        DataSyncConfirmation::ContinueWithExistingTargets,
+    )
+    .await;
+    assert_eq!(resumed.inserted, 2);
+
+    let conflict = sync
+        .preflight(sql_request(
+            &source,
+            &target,
+            &source_schema,
+            &conflict_schema,
+            mappings,
+        ))
+        .await
+        .err()
+        .expect("目标枚举定义冲突必须在预检阶段拒绝");
+    assert!(conflict.message().contains("record_state"));
+    assert!(conflict.message().contains("选项定义与源不一致"));
+
+    let stale = sync
+        .preflight(sql_request(
+            &source,
+            &target,
+            &source_schema,
+            &stale_schema,
+            mappings,
+        ))
+        .await
+        .expect("枚举并发变化前预检应成功");
+    exec(
+        &sql,
+        &target,
+        format!(
+            "CREATE TYPE \"{stale_schema}\".\"record_state\" AS ENUM ('new','active','archived');"
+        ),
+    )
+    .await;
+    let started = sync
+        .start(stale, DataSyncConfirmation::ContinueWithExistingTargets)
+        .expect("枚举并发变化应在占屏执行期返回");
+    let permit = started.permit().clone();
+    sync.execute(started).await;
+    let snapshot = gate.snapshot().expect("枚举并发变化结果应保持占屏");
+    assert_eq!(snapshot.phase, DataSyncGatePhase::Failed);
+    assert!(
+        snapshot
+            .error
+            .is_some_and(|error| error.contains("结构已在预检后变化"))
+    );
+    assert!(sync.acknowledge_result(&permit));
+
+    exec(
+        &sql,
+        &source,
+        format!(
+            "DROP SCHEMA IF EXISTS \"{source_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{fresh_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{partial_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{conflict_schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{stale_schema}\" CASCADE;"
+        ),
+    )
+    .await;
+}

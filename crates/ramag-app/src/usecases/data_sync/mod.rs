@@ -3,6 +3,7 @@
 mod gate;
 mod mongo_preflight;
 mod mongo_sync;
+mod postgres_enum;
 mod service;
 mod sql_ddl;
 mod sql_preflight;

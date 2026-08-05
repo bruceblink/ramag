@@ -98,8 +98,15 @@ pub(super) struct SqlPreparedPlan {
     pub namespace_exists: bool,
     pub namespace_create: Option<String>,
     pub pre_create_statements: Vec<String>,
+    pub postgres_enums: Vec<SqlPreparedEnum>,
     pub objects: Vec<SqlPreparedObject>,
     pub target_snapshot: SqlTargetSnapshot,
+}
+
+pub(super) struct SqlPreparedEnum {
+    pub name: String,
+    pub signature: String,
+    pub create_statement: String,
 }
 
 pub(super) struct SqlPreparedObject {
@@ -116,7 +123,14 @@ pub(super) struct SqlPreparedObject {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct SqlTargetSnapshot {
     pub namespace_exists: bool,
+    pub enum_types: Vec<SqlEnumSnapshot>,
     pub tables: Vec<SqlTableSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct SqlEnumSnapshot {
+    pub name: String,
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

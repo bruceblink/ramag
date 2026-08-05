@@ -9,6 +9,7 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, Result};
 
 use super::gate::DataSyncPermit;
+use super::postgres_enum::{incompatible_postgres_enum_error, load_postgres_enum_definitions};
 use super::service::{DataSyncService, PreparedDataSync, SqlPreparedObject, SqlPreparedPlan};
 use super::sql_ddl::qualified;
 use super::sql_preflight::current_sql_target_snapshot;
@@ -29,8 +30,19 @@ pub(super) async fn run_sql_sync(
         .iter()
         .map(|object| object.mapping.clone())
         .collect();
-    let current =
-        current_sql_target_snapshot(service, &prepared.target, &plan.scope, &mappings).await?;
+    let postgres_enum_names: Vec<_> = plan
+        .postgres_enums
+        .iter()
+        .map(|item| item.name.clone())
+        .collect();
+    let current = current_sql_target_snapshot(
+        service,
+        &prepared.target,
+        &plan.scope,
+        &mappings,
+        &postgres_enum_names,
+    )
+    .await?;
     if current != plan.target_snapshot {
         return Err(DomainError::InvalidConfig(
             "目标 SQL 结构已在预检后变化，请重新预检并确认".into(),
@@ -54,6 +66,7 @@ pub(super) async fn run_sql_sync(
         service.gate().update_progress(permit, progress.clone());
         execute_statement(service, &prepared.target, statement).await?;
     }
+    ensure_postgres_enums(service, prepared, plan).await?;
     for statement in &plan.pre_create_statements {
         execute_statement(service, &prepared.target, statement).await?;
     }
@@ -609,6 +622,53 @@ async fn execute_statement(
         .connection_service()
         .execute(target, &Query::new(statement.to_string()))
         .await?;
+    Ok(())
+}
+
+async fn ensure_postgres_enums(
+    service: &DataSyncService,
+    prepared: &PreparedDataSync,
+    plan: &SqlPreparedPlan,
+) -> Result<()> {
+    if prepared.target.driver != DriverKind::Postgres || plan.postgres_enums.is_empty() {
+        return Ok(());
+    }
+    let mut target_enums =
+        load_postgres_enum_definitions(service, &prepared.target, &plan.scope.target_namespace)
+            .await?;
+    for expected in &plan.postgres_enums {
+        if let Some(existing) = target_enums.get(&expected.name) {
+            if existing == &expected.signature {
+                continue;
+            }
+            return Err(incompatible_postgres_enum_error(
+                &plan.scope.target_namespace,
+                &expected.name,
+            ));
+        }
+        if let Err(create_error) =
+            execute_statement(service, &prepared.target, &expected.create_statement).await
+        {
+            // 快照检查与 CREATE TYPE 之间仍可能有并发创建；重新读取后只复用完全相同的定义。
+            target_enums = load_postgres_enum_definitions(
+                service,
+                &prepared.target,
+                &plan.scope.target_namespace,
+            )
+            .await?;
+            match target_enums.get(&expected.name) {
+                Some(existing) if existing == &expected.signature => continue,
+                Some(_) => {
+                    return Err(incompatible_postgres_enum_error(
+                        &plan.scope.target_namespace,
+                        &expected.name,
+                    ));
+                }
+                None => return Err(create_error),
+            }
+        }
+        target_enums.insert(expected.name.clone(), expected.signature.clone());
+    }
     Ok(())
 }
 

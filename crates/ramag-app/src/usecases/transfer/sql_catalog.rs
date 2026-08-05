@@ -145,7 +145,8 @@ pub(crate) fn pg_enum_types_query(schema: &str) -> String {
     let s = pg_lit(schema);
     format!(
         "SELECT 'CREATE TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname) || \
-                ' AS ENUM (' || string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder) || ');' AS stmt \
+                ' AS ENUM (' || string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder) || ');' AS stmt, \
+                string_agg(encode(convert_to(e.enumlabel, 'UTF8'), 'hex'), ',' ORDER BY e.enumsortorder) AS signature \
            FROM pg_type t \
            JOIN pg_enum e ON e.enumtypid = t.oid \
            JOIN pg_namespace n ON n.oid = t.typnamespace \
@@ -161,14 +162,18 @@ pub(crate) fn pg_table_enum_types_query(schema: &str, table: &str) -> String {
     let t = pg_lit(table);
     format!(
         "SELECT 'CREATE TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(ty.typname) || \
-                ' AS ENUM (' || string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder) || ');' AS stmt \
+                ' AS ENUM (' || string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder) || ');' AS stmt, \
+                string_agg(encode(convert_to(e.enumlabel, 'UTF8'), 'hex'), ',' ORDER BY e.enumsortorder) AS signature \
            FROM pg_type ty \
            JOIN pg_enum e ON e.enumtypid = ty.oid \
            JOIN pg_namespace n ON n.oid = ty.typnamespace \
-           JOIN pg_attribute a ON a.atttypid IN (ty.oid, ty.typarray) \
           WHERE n.nspname = '{s}' \
-            AND a.attrelid = '\"{s}\".\"{t}\"'::regclass \
-            AND a.attnum > 0 AND NOT a.attisdropped \
+            AND EXISTS ( \
+              SELECT 1 FROM pg_attribute a \
+               WHERE a.atttypid IN (ty.oid, ty.typarray) \
+                 AND a.attrelid = '\"{s}\".\"{t}\"'::regclass \
+                 AND a.attnum > 0 AND NOT a.attisdropped \
+            ) \
           GROUP BY n.nspname, ty.typname \
           ORDER BY ty.typname;"
     )

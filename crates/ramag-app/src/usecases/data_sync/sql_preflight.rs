@@ -1,6 +1,6 @@
 //! MySQL / PostgreSQL 同步预检：展开范围、冻结结构、验证身份键与目标兼容性。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ramag_domain::entities::{
     Column, ColumnKind, ConnectionConfig, DataSyncRequest, DriverKind, Query, SqlSyncScope,
@@ -9,10 +9,14 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, Result};
 
+use super::postgres_enum::{
+    PostgresRawEnum, incompatible_postgres_enum_error, load_postgres_enum_definitions,
+    postgres_enum_rows, postgres_enum_statement,
+};
 use super::service::{
     DataSyncPreflightReport, DataSyncService, PreparedDataSync, PreparedEnginePlan,
-    SqlColumnSnapshot, SqlIndexSnapshot, SqlPreparedObject, SqlPreparedPlan, SqlTableSnapshot,
-    SqlTargetSnapshot, fingerprint,
+    SqlColumnSnapshot, SqlEnumSnapshot, SqlIndexSnapshot, SqlPreparedEnum, SqlPreparedObject,
+    SqlPreparedPlan, SqlTableSnapshot, SqlTargetSnapshot, fingerprint,
 };
 use super::sql_ddl::{rewrite_mysql_table_ddl, rewrite_postgres_statement};
 use crate::usecases::transfer::sql_catalog::{
@@ -208,7 +212,7 @@ pub(super) async fn preflight_sql(
     }
 
     let mut pre_create_statements = Vec::new();
-    if source.driver == DriverKind::Postgres {
+    let postgres_enums = if source.driver == DriverKind::Postgres {
         prepare_postgres_ddl(
             service,
             &target,
@@ -219,12 +223,20 @@ pub(super) async fn preflight_sql(
             &mut objects,
             &mut pre_create_statements,
         )
-        .await?;
-    }
+        .await?
+    } else {
+        Vec::new()
+    };
+    let postgres_enum_names: Vec<_> = postgres_enums
+        .iter()
+        .map(|item| item.name.clone())
+        .collect();
     if mappings.is_empty() {
         warnings.push("源命名空间当前没有普通表".to_string());
     }
-    let target_snapshot = current_sql_target_snapshot(service, &target, &scope, &mappings).await?;
+    let target_snapshot =
+        current_sql_target_snapshot(service, &target, &scope, &mappings, &postgres_enum_names)
+            .await?;
     let namespace_create = (!namespace_exists)
         .then(|| namespace_create_statement(source.driver, source_schema, &scope.target_namespace));
     let report = DataSyncPreflightReport {
@@ -255,6 +267,7 @@ pub(super) async fn preflight_sql(
             namespace_exists,
             namespace_create,
             pre_create_statements,
+            postgres_enums,
             objects,
             target_snapshot,
         }),
@@ -558,7 +571,7 @@ async fn prepare_mysql_ddl(
 struct PostgresRawDdl {
     table: String,
     create: String,
-    enums: Vec<String>,
+    enums: Vec<PostgresRawEnum>,
     sequences: crate::usecases::transfer::sql_catalog::PgSequenceInfo,
     comments: Vec<String>,
     indexes: Vec<String>,
@@ -602,7 +615,7 @@ async fn load_postgres_ddl(
     Ok(PostgresRawDdl {
         table: mapping.source.clone(),
         create,
-        enums: first_column_strings(&enums?),
+        enums: postgres_enum_rows(&enums?)?,
         sequences: parse_pg_sequences(&sequences?),
         comments: first_column_strings(&comments?),
         indexes: first_column_strings(&indexes?),
@@ -620,7 +633,7 @@ async fn prepare_postgres_ddl(
     raw: &[PostgresRawDdl],
     objects: &mut [SqlPreparedObject],
     pre_create: &mut Vec<String>,
-) -> Result<()> {
+) -> Result<Vec<SqlPreparedEnum>> {
     let mut ddl_mappings = mappings.clone();
     for table in raw {
         let target_table = mappings
@@ -641,49 +654,46 @@ async fn prepare_postgres_ddl(
         }
     }
     let target_enums = if namespace_exists {
-        let result = service
-            .connection_service()
-            .execute(
-                target,
-                &Query::new(crate::usecases::transfer::sql_catalog::pg_enum_types_query(
-                    &scope.target_namespace,
-                )),
-            )
-            .await?;
-        first_column_strings(&result)
+        load_postgres_enum_definitions(service, target, &scope.target_namespace).await?
     } else {
-        Vec::new()
+        BTreeMap::new()
     };
-    let mut planned_enum_names = HashSet::new();
+    let mut source_enums = BTreeMap::<String, SqlPreparedEnum>::new();
     for table in raw {
-        if objects
-            .iter()
-            .find(|object| object.mapping.source == table.table)
-            .is_some_and(|object| object.target_exists)
-        {
-            continue;
-        }
-        for statement in &table.enums {
+        for raw_enum in &table.enums {
             let mapped = rewrite_postgres_statement(
-                statement,
+                &raw_enum.create_statement,
                 &scope.source_namespace,
                 &scope.target_namespace,
                 &ddl_mappings,
             )?;
-            let name = enum_name(&mapped)
-                .ok_or_else(|| DomainError::QueryFailed("无法解析 PostgreSQL ENUM 名称".into()))?;
-            if let Some(existing) = target_enums
-                .iter()
-                .find(|existing| enum_name(existing).as_deref() == Some(name.as_str()))
-            {
-                if normalize_statement(existing) != normalize_statement(&mapped) {
+            let statement = postgres_enum_statement(&mapped)?
+                .ok_or_else(|| DomainError::QueryFailed("无法解析 PostgreSQL ENUM 定义".into()))?;
+            let definition = SqlPreparedEnum {
+                name: statement.name,
+                signature: raw_enum.signature.clone(),
+                create_statement: statement.create_statement,
+            };
+            if let Some(planned) = source_enums.get(&definition.name) {
+                if planned.signature != definition.signature {
                     return Err(DomainError::InvalidConfig(format!(
-                        "目标枚举类型 {name} 已存在但定义与源不一致"
+                        "源枚举类型 {}.{} 的元数据定义不一致，已停止同步",
+                        scope.source_namespace, definition.name
                     )));
                 }
-            } else if planned_enum_names.insert(name) {
-                pre_create.push(mapped);
+            } else {
+                source_enums.insert(definition.name.clone(), definition);
             }
+        }
+    }
+    for definition in source_enums.values() {
+        if let Some(existing) = target_enums.get(&definition.name)
+            && existing != &definition.signature
+        {
+            return Err(incompatible_postgres_enum_error(
+                &scope.target_namespace,
+                &definition.name,
+            ));
         }
     }
     let mut planned_sequences = HashSet::new();
@@ -763,7 +773,7 @@ async fn prepare_postgres_ddl(
             )?);
         }
     }
-    Ok(())
+    Ok(source_enums.into_values().collect())
 }
 
 async fn load_postgres_sequences(
@@ -784,6 +794,7 @@ pub(super) async fn current_sql_target_snapshot(
     target: &ConnectionConfig,
     scope: &SqlSyncScope,
     mappings: &[SyncObjectMapping],
+    postgres_enum_names: &[String],
 ) -> Result<SqlTargetSnapshot> {
     let sql = service.connection_service();
     let namespace_exists = sql
@@ -794,6 +805,13 @@ pub(super) async fn current_sql_target_snapshot(
     if !namespace_exists {
         return Ok(SqlTargetSnapshot {
             namespace_exists: false,
+            enum_types: postgres_enum_names
+                .iter()
+                .map(|name| SqlEnumSnapshot {
+                    name: name.clone(),
+                    signature: None,
+                })
+                .collect(),
             tables: mappings
                 .iter()
                 .map(|mapping| SqlTableSnapshot {
@@ -805,6 +823,19 @@ pub(super) async fn current_sql_target_snapshot(
                 .collect(),
         });
     }
+    let enum_types = if target.driver == DriverKind::Postgres {
+        let definitions =
+            load_postgres_enum_definitions(service, target, &scope.target_namespace).await?;
+        postgres_enum_names
+            .iter()
+            .map(|name| SqlEnumSnapshot {
+                name: name.clone(),
+                signature: definitions.get(name).cloned(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let tables = sql.list_tables(target, &scope.target_namespace).await?;
     let mut snapshots = Vec::with_capacity(mappings.len());
     for mapping in mappings {
@@ -866,6 +897,7 @@ pub(super) async fn current_sql_target_snapshot(
     snapshots.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(SqlTargetSnapshot {
         namespace_exists,
+        enum_types,
         tables: snapshots,
     })
 }
@@ -1070,14 +1102,6 @@ fn sequence_identifier(statement: &str, schema: &str) -> Option<String> {
         .and_then(|offset| statement.get(offset..))
         .unwrap_or(statement);
     second_quoted_identifier(sequence_statement, schema)
-}
-
-fn enum_name(statement: &str) -> Option<String> {
-    statement
-        .trim_start()
-        .strip_prefix("CREATE TYPE ")?
-        .split_once(" AS ENUM")
-        .map(|(name, _)| name.trim().to_string())
 }
 
 fn reject_protected_namespace(driver: DriverKind, namespace: &str) -> Result<()> {
