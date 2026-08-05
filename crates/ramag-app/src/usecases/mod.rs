@@ -41,8 +41,8 @@ pub use clipboard_service::{CaptureDecision, ClipboardService, HotkeyState, deci
 pub use connection_service::ConnectionService;
 pub use data_sync::{
     DataSyncConfirmation, DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase,
-    DataSyncGateSnapshot, DataSyncPermit, DataSyncPreflightReport, DataSyncService,
-    PreparedDataSync, StartedDataSync,
+    DataSyncGateSnapshot, DataSyncObjectCatalog, DataSyncPermit, DataSyncPreflightReport,
+    DataSyncService, MAX_DATA_SYNC_CATALOG_OBJECTS, PreparedDataSync, StartedDataSync,
 };
 pub use id_conversion::{convert_id_to_integer, convert_id_to_string};
 pub use mongo_service::MongoService;

@@ -1,5 +1,6 @@
 //! 同步预检、确认门禁和执行生命周期入口。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -18,6 +19,15 @@ use super::redis_sync::{redis_literal_prefix_pattern, run_redis_sync};
 use super::sql_preflight::preflight_sql;
 use super::sql_sync::run_sql_sync;
 use crate::usecases::{ConnectionService, MongoService, RedisService};
+
+/// 目录选择器最多保留的对象数。完整范围仍可用“全部对象”同步，避免大库选择器无界占用内存。
+pub const MAX_DATA_SYNC_CATALOG_OBJECTS: usize = 10_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataSyncObjectCatalog {
+    pub names: Vec<String>,
+    pub truncated: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataSyncConfirmation {
@@ -208,6 +218,111 @@ impl DataSyncService {
 
     pub fn gate(&self) -> &Arc<DataSyncGate> {
         &self.gate
+    }
+
+    /// 列出同步范围。SQL 返回 Database / Schema，MongoDB 返回 Database，Redis 返回可选 DB。
+    pub async fn list_catalog_scopes(&self, config: &ConnectionConfig) -> Result<Vec<String>> {
+        config.validate().map_err(DomainError::InvalidConfig)?;
+        let mut scopes = match config.driver {
+            DriverKind::Mysql | DriverKind::Postgres => self
+                .connection_service
+                .list_schemas(config)
+                .await?
+                .into_iter()
+                .map(|schema| schema.name)
+                .filter(|name| !protected_catalog_scope(config.driver, name))
+                .collect(),
+            DriverKind::Mongodb => self
+                .mongo_service
+                .list_databases(config)
+                .await?
+                .into_iter()
+                .map(|database| database.name)
+                .filter(|name| !protected_catalog_scope(config.driver, name))
+                .collect(),
+            DriverKind::Redis => redis_catalog_databases(),
+        };
+        if config.driver == DriverKind::Redis {
+            scopes.sort_by_key(|scope| scope.parse::<u8>().unwrap_or(u8::MAX));
+        } else {
+            scopes.sort();
+        }
+        scopes.dedup();
+        Ok(scopes)
+    }
+
+    /// 列出指定范围中的可同步对象。视图不属于当前同步范围，会在目录阶段过滤。
+    pub async fn list_catalog_objects(
+        &self,
+        config: &ConnectionConfig,
+        scope: &str,
+    ) -> Result<DataSyncObjectCatalog> {
+        config.validate().map_err(DomainError::InvalidConfig)?;
+        let mut names = match config.driver {
+            DriverKind::Mysql | DriverKind::Postgres => self
+                .connection_service
+                .list_tables(config, scope)
+                .await?
+                .into_iter()
+                .filter(|table| !table.is_view)
+                .map(|table| table.name)
+                .collect::<Vec<_>>(),
+            DriverKind::Mongodb => self
+                .mongo_service
+                .list_collections(config, scope)
+                .await?
+                .into_iter()
+                .filter(|collection| !collection.is_view)
+                .map(|collection| collection.name)
+                .collect::<Vec<_>>(),
+            DriverKind::Redis => {
+                let db = scope.parse::<u8>().map_err(|_| {
+                    DomainError::InvalidConfig("Redis DB 必须是 0-255 的整数".into())
+                })?;
+                return self.list_redis_catalog_keys(config, db).await;
+            }
+        };
+        names.sort();
+        names.dedup();
+        let truncated = names.len() > MAX_DATA_SYNC_CATALOG_OBJECTS;
+        names.truncate(MAX_DATA_SYNC_CATALOG_OBJECTS);
+        Ok(DataSyncObjectCatalog { names, truncated })
+    }
+
+    async fn list_redis_catalog_keys(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+    ) -> Result<DataSyncObjectCatalog> {
+        let mut cursor = 0u64;
+        let mut keys = HashSet::new();
+        let mut truncated = false;
+        loop {
+            let page = self
+                .redis_service
+                .scan_batch(config, db, cursor, None, None, 1_000)
+                .await?;
+            for key in page.keys {
+                keys.insert(key.key);
+                if keys.len() > MAX_DATA_SYNC_CATALOG_OBJECTS {
+                    truncated = true;
+                    break;
+                }
+            }
+            if truncated || page.cursor == 0 {
+                break;
+            }
+            if page.cursor == cursor {
+                return Err(DomainError::QueryFailed(
+                    "Redis SCAN 游标未推进，无法加载 Key 目录".into(),
+                ));
+            }
+            cursor = page.cursor;
+        }
+        let mut names: Vec<String> = keys.into_iter().collect();
+        names.sort();
+        names.truncate(MAX_DATA_SYNC_CATALOG_OBJECTS);
+        Ok(DataSyncObjectCatalog { names, truncated })
     }
 
     pub async fn preflight(&self, request: DataSyncRequest) -> Result<PreparedDataSync> {
@@ -630,6 +745,28 @@ impl DataSyncService {
     }
 }
 
+fn redis_catalog_databases() -> Vec<String> {
+    (0u8..=u8::MAX).map(|db| db.to_string()).collect()
+}
+
+fn protected_catalog_scope(driver: DriverKind, name: &str) -> bool {
+    match driver {
+        DriverKind::Mysql => matches!(
+            name.to_ascii_lowercase().as_str(),
+            "information_schema" | "mysql" | "performance_schema" | "sys"
+        ),
+        DriverKind::Postgres => {
+            let lower = name.to_ascii_lowercase();
+            lower == "information_schema"
+                || lower == "pg_catalog"
+                || lower.starts_with("pg_toast")
+                || lower.starts_with("pg_temp_")
+        }
+        DriverKind::Mongodb => matches!(name, "admin" | "config" | "local"),
+        DriverKind::Redis => false,
+    }
+}
+
 pub(super) fn fingerprint(value: &impl Serialize) -> Result<SyncTargetFingerprint> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| DomainError::Other(format!("生成目标状态指纹失败：{error}")))?;
@@ -794,5 +931,22 @@ mod tests {
         let error = reject_obvious_self_sync(&request, &source, &target)
             .expect_err("同 DB 扫描会与同步临时 Key 相互污染");
         assert!(error.message().contains("临时 Key"));
+    }
+
+    #[test]
+    fn redis_catalog_lists_the_complete_supported_db_range() {
+        let databases = redis_catalog_databases();
+        assert_eq!(databases.len(), 256);
+        assert_eq!(databases.first().map(String::as_str), Some("0"));
+        assert_eq!(databases.last().map(String::as_str), Some("255"));
+    }
+
+    #[test]
+    fn protected_system_scopes_are_not_offered_for_sync() {
+        assert!(protected_catalog_scope(DriverKind::Mysql, "mysql"));
+        assert!(protected_catalog_scope(DriverKind::Postgres, "pg_catalog"));
+        assert!(protected_catalog_scope(DriverKind::Mongodb, "admin"));
+        assert!(!protected_catalog_scope(DriverKind::Mysql, "orders"));
+        assert!(!protected_catalog_scope(DriverKind::Postgres, "public"));
     }
 }

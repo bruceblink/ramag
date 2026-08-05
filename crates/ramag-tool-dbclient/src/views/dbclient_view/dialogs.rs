@@ -35,7 +35,7 @@ impl DbClientView {
             dialog
                 .title("同步数据到当前连接")
                 .close_button(false)
-                .w(px(760.0))
+                .w(px(940.0))
                 .pt(px(18.0))
                 .px(px(20.0))
                 .pb(px(16.0))

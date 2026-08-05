@@ -12,7 +12,8 @@ pub use blocking::run_blocking;
 pub use tool_registry::ToolRegistry;
 pub use usecases::{
     ClipboardService, ConnectionService, DataSyncConfirmation, DataSyncExecutionContext,
-    DataSyncGate, DataSyncGatePhase, DataSyncGateSnapshot, DataSyncPermit, DataSyncPreflightReport,
-    DataSyncService, HotkeyState, MongoService, PreparedDataSync, RedisService, SshService,
-    StartedDataSync, convert_id_to_integer, convert_id_to_string,
+    DataSyncGate, DataSyncGatePhase, DataSyncGateSnapshot, DataSyncObjectCatalog, DataSyncPermit,
+    DataSyncPreflightReport, DataSyncService, HotkeyState, MAX_DATA_SYNC_CATALOG_OBJECTS,
+    MongoService, PreparedDataSync, RedisService, SshService, StartedDataSync,
+    convert_id_to_integer, convert_id_to_string,
 };

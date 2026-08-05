@@ -293,6 +293,20 @@ async fn mysql_sync_maps_database_and_tables_without_overwriting() {
     )
     .await;
 
+    let mysql_scopes = sync
+        .list_catalog_scopes(&source)
+        .await
+        .expect("读取 MySQL Database 目录");
+    assert!(mysql_scopes.contains(&source_db));
+    assert!(!mysql_scopes.contains(&"information_schema".to_string()));
+    let mysql_catalog = sync
+        .list_catalog_objects(&source, &source_db)
+        .await
+        .expect("读取 MySQL Table 目录");
+    assert!(!mysql_catalog.truncated);
+    assert!(mysql_catalog.names.contains(&"parent".to_string()));
+    assert!(mysql_catalog.names.contains(&"child".to_string()));
+
     let request = sql_request(
         &source,
         &target,
@@ -694,6 +708,20 @@ async fn postgres_sync_maps_schema_enum_identity_sequence_and_foreign_key() {
         ),
     )
     .await;
+
+    let postgres_scopes = sync
+        .list_catalog_scopes(&source)
+        .await
+        .expect("读取 PostgreSQL Schema 目录");
+    assert!(postgres_scopes.contains(&source_schema));
+    assert!(!postgres_scopes.contains(&"pg_catalog".to_string()));
+    let postgres_catalog = sync
+        .list_catalog_objects(&source, &source_schema)
+        .await
+        .expect("读取 PostgreSQL Table 目录");
+    assert!(!postgres_catalog.truncated);
+    assert!(postgres_catalog.names.contains(&"parent".to_string()));
+    assert!(postgres_catalog.names.contains(&"child".to_string()));
 
     let request = sql_request(
         &source,

@@ -306,6 +306,21 @@ async fn redis_sync_is_non_overwriting_repeatable_guarded_and_cancellable() {
         .await
         .expect("写目标无关 Key");
 
+    let redis_scopes = sync_service
+        .list_catalog_scopes(&source)
+        .await
+        .expect("读取 Redis DB 目录");
+    assert_eq!(redis_scopes.len(), 256);
+    assert_eq!(redis_scopes.first().map(String::as_str), Some("0"));
+    assert_eq!(redis_scopes.last().map(String::as_str), Some("255"));
+    let source_catalog = sync_service
+        .list_catalog_objects(&source, &SOURCE_DB.to_string())
+        .await
+        .expect("读取 Redis Key 目录");
+    assert!(!source_catalog.truncated);
+    assert!(source_catalog.names.contains(&"new".to_string()));
+    assert!(source_catalog.names.contains(&"large-list".to_string()));
+
     let prepared = sync_service
         .preflight(request(&source, &target, SOURCE_DB, TARGET_DB))
         .await
@@ -751,6 +766,20 @@ async fn mongo_sync_creates_and_fills_without_overwriting_then_repeats_safely() 
         )
         .await
         .expect("写入源 bulk 边界记录");
+
+    let mongo_scopes = sync_service
+        .list_catalog_scopes(&source)
+        .await
+        .expect("读取 MongoDB Database 目录");
+    assert!(mongo_scopes.contains(&source_db));
+    let mongo_catalog = sync_service
+        .list_catalog_objects(&source, &source_db)
+        .await
+        .expect("读取 MongoDB Collection 目录");
+    assert!(!mongo_catalog.truncated);
+    for collection in ["users", "logs", "mixed", "bulk"] {
+        assert!(mongo_catalog.names.contains(&collection.to_string()));
+    }
 
     // 目标 Database 和 users Collection 已存在；同 `_id` 内容故意不同，另有额外文档。
     mongo_service

@@ -13,6 +13,6 @@ pub use gate::{
     DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase, DataSyncGateSnapshot, DataSyncPermit,
 };
 pub use service::{
-    DataSyncConfirmation, DataSyncPreflightReport, DataSyncService, PreparedDataSync,
-    StartedDataSync,
+    DataSyncConfirmation, DataSyncObjectCatalog, DataSyncPreflightReport, DataSyncService,
+    MAX_DATA_SYNC_CATALOG_OBJECTS, PreparedDataSync, StartedDataSync,
 };
