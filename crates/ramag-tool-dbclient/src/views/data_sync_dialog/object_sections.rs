@@ -128,8 +128,7 @@ impl DataSyncDialog {
                             .when(!has_target_editor, |name| name.flex_1())
                             .min_w_0()
                             .text_sm()
-                            .overflow_hidden()
-                            .text_ellipsis()
+                            .truncate()
                             .child(inline_text_preview(&object, 96)),
                     )
                     .when_some(target_editor, |row, editor| row.child(editor)),

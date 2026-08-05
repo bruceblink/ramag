@@ -9,6 +9,7 @@ use gpui_component::{
 use ramag_domain::entities::{DriverKind, SyncObjectState};
 use ramag_ui::PointerDropdownMenu as _;
 
+use super::layout_sections::clipped_dropdown_button;
 use super::{CatalogState, DROPDOWN_MENU_MAX_HEIGHT, DataSyncDialog, PanelState, value};
 
 impl DataSyncDialog {
@@ -23,30 +24,29 @@ impl DataSyncDialog {
                 "加载可选范围…".into()
             }
         });
-        let source_button = ramag_ui::clickable_button("sync-source-scope-selector")
-            .outline()
-            .small()
-            .w_full()
-            .label(source_label)
-            .dropdown_caret(true)
-            .disabled(busy || source_scopes.is_empty())
-            .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
-                menu = menu.scrollable(true).max_h(px(DROPDOWN_MENU_MAX_HEIGHT));
-                for scope in &source_scopes {
-                    let scope_for_action = scope.clone();
-                    let entity = entity.clone();
-                    menu = menu.item(
-                        ramag_ui::menu_item(scope.clone())
-                            .checked(source_selected.as_deref() == Some(scope.as_str()))
-                            .on_click(move |_: &ClickEvent, _, app| {
-                                entity.update(app, |this, cx| {
-                                    this.select_source_scope(scope_for_action.clone(), cx);
-                                });
-                            }),
-                    );
-                }
-                menu
-            });
+        let source_button = clipped_dropdown_button(
+            "sync-source-scope-selector",
+            "sync-source-scope-text",
+            source_label,
+        )
+        .disabled(busy || source_scopes.is_empty())
+        .pointer_dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
+            menu = menu.scrollable(true).max_h(px(DROPDOWN_MENU_MAX_HEIGHT));
+            for scope in &source_scopes {
+                let scope_for_action = scope.clone();
+                let entity = entity.clone();
+                menu = menu.item(
+                    ramag_ui::menu_item(scope.clone())
+                        .checked(source_selected.as_deref() == Some(scope.as_str()))
+                        .on_click(move |_: &ClickEvent, _, app| {
+                            entity.update(app, |this, cx| {
+                                this.select_source_scope(scope_for_action.clone(), cx);
+                            });
+                        }),
+                );
+            }
+            menu
+        });
 
         let entity = cx.entity();
         let target_scopes = self.target_scopes.clone();
@@ -83,18 +83,31 @@ impl DataSyncDialog {
         let target_label = format!("目标 {scope_label}");
         h_flex()
             .w_full()
+            .min_w_0()
+            .items_end()
             .gap(px(10.0))
-            .child(field_label(&format!("来源 {scope_label}"), source_button).flex_1())
+            .child(
+                field_label(&format!("来源 {scope_label}"), source_button)
+                    .flex_1()
+                    .overflow_hidden(),
+            )
             .child(
                 field_label(
                     &target_label,
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .gap(px(6.0))
-                        .child(Input::new(&self.target_scope).disabled(busy).flex_1())
-                        .child(target_picker),
+                        .child(
+                            Input::new(&self.target_scope)
+                                .disabled(busy)
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .child(div().flex_none().child(target_picker)),
                 )
-                .flex_1(),
+                .flex_1()
+                .overflow_hidden(),
             )
     }
 
@@ -351,6 +364,7 @@ fn object_change_summary(total: u64, missing: usize, existing: usize) -> String 
 fn field_label(label: &str, child: impl IntoElement) -> gpui::Div {
     v_flex()
         .w_full()
+        .min_w_0()
         .gap(px(5.0))
         .child(
             div()
