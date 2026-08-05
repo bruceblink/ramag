@@ -230,8 +230,7 @@ hdiutil create \
     -volname "Ramag" \
     -srcfolder "$STAGING" \
     -fs HFS+ \
-    -format UDZO \
-    -imagekey zlib-level=9 \
+    -format ULMO \
     "$DMG" >/dev/null
 
 rm -rf "$STAGING"

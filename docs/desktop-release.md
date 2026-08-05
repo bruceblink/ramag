@@ -210,6 +210,7 @@ target/macos-dist/
 - 最低系统版本为 macOS 12.0；编译时同时设置 Mach-O deployment target。
 - 正式发布分别生成单架构 DMG：ARM64 包只能包含 `arm64`，Intel 包只能包含 `x86_64`。
 - DMG 内应用名固定为 `Ramag.app`，并提供指向 `/Applications` 的快捷方式。
+- DMG 使用 macOS 原生 ULMO（LZMA）压缩；该格式要求 macOS 10.15+，低于应用要求的 macOS 12.0。
 - APP 内包含 ICNS 图标和项目 `LICENSE`。
 - 所有内容完成后才签名；当前使用 adhoc 签名，并执行 `codesign --deep --strict` 校验。
 - DMG 创建后会校验文件系统、只读挂载并再次验证 APP、版本、架构和签名。
