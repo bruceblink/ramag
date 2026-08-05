@@ -64,6 +64,7 @@ pub struct DataSyncDialog {
     catalog_state: CatalogState,
     mapping_editors: Vec<MappingEditor>,
     target_scope: Entity<InputState>,
+    target_scope_suggestion: Option<String>,
     object_query: Entity<InputState>,
     state: PanelState,
     prepared: Option<PreparedDataSync>,
@@ -86,8 +87,7 @@ impl DataSyncDialog {
         sources.sort_by(|left, right| {
             catalog::connection_label(left).cmp(&catalog::connection_label(right))
         });
-        let target_default = target.database.clone().unwrap_or_default();
-        let target_scope = input(window, cx, &target_default, "输入新名称");
+        let target_scope = input(window, cx, "", "输入新名称");
         let object_query = input(window, cx, "", "搜索对象");
         let mut subscriptions = Vec::new();
         subscriptions.push(
@@ -121,6 +121,7 @@ impl DataSyncDialog {
             catalog_state: CatalogState::AwaitingSource,
             mapping_editors: Vec::new(),
             target_scope,
+            target_scope_suggestion: None,
             object_query,
             state: PanelState::Editing,
             prepared: None,
@@ -146,7 +147,7 @@ impl DataSyncDialog {
         })
     }
 
-    fn reload_catalog_scopes(&mut self, cx: &mut Context<Self>) {
+    fn reload_catalog_scopes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let source = match self.source() {
             Ok(source) => source.clone(),
             Err(error) => {
@@ -169,45 +170,49 @@ impl DataSyncDialog {
         self.invalidate(cx);
         let target = self.target.clone();
         let service = self.service.clone();
+        let window_handle = window.window_handle();
         cx.spawn(async move |this, async_cx| {
             let (source_result, target_result) = futures::join!(
                 service.list_catalog_scopes(&source),
                 service.list_catalog_scopes(&target)
             );
-            let _ = this.update(async_cx, move |this, cx| {
-                if this.catalog_generation != generation
-                    || this.source().ok().map(|current| &current.id) != Some(&source.id)
-                {
-                    return;
-                }
-                let (source_scopes, target_scopes) = match (source_result, target_result) {
-                    (Ok(source_scopes), Ok(target_scopes)) => (source_scopes, target_scopes),
-                    (Err(error), _) => {
-                        this.catalog_state = CatalogState::Error(format!(
-                            "读取源端可选范围失败：{}",
-                            error.message()
-                        ));
-                        cx.notify();
+            let _ = async_cx.update_window(window_handle, |_, window, app| {
+                let _ = this.update(app, move |this, cx| {
+                    if this.catalog_generation != generation
+                        || this.source().ok().map(|current| &current.id) != Some(&source.id)
+                    {
                         return;
                     }
-                    (_, Err(error)) => {
-                        this.catalog_state = CatalogState::Error(format!(
-                            "读取目标端可选范围失败：{}",
-                            error.message()
-                        ));
+                    let (source_scopes, target_scopes) = match (source_result, target_result) {
+                        (Ok(source_scopes), Ok(target_scopes)) => (source_scopes, target_scopes),
+                        (Err(error), _) => {
+                            this.catalog_state = CatalogState::Error(format!(
+                                "读取源端可选范围失败：{}",
+                                error.message()
+                            ));
+                            cx.notify();
+                            return;
+                        }
+                        (_, Err(error)) => {
+                            this.catalog_state = CatalogState::Error(format!(
+                                "读取目标端可选范围失败：{}",
+                                error.message()
+                            ));
+                            cx.notify();
+                            return;
+                        }
+                    };
+                    this.source_scopes = source_scopes;
+                    this.target_scopes = target_scopes;
+                    this.source_scope = preferred_scope(&source, &this.source_scopes);
+                    let Some(source_scope) = this.source_scope.clone() else {
+                        this.catalog_state = CatalogState::Error("源连接中没有可同步范围".into());
                         cx.notify();
                         return;
-                    }
-                };
-                this.source_scopes = source_scopes;
-                this.target_scopes = target_scopes;
-                this.source_scope = preferred_scope(&source, &this.source_scopes);
-                if this.source_scope.is_none() {
-                    this.catalog_state = CatalogState::Error("源连接中没有可同步范围".into());
-                    cx.notify();
-                    return;
-                }
-                this.reload_catalog_objects(cx);
+                    };
+                    this.suggest_target_scope(&source_scope, window, cx);
+                    this.reload_catalog_objects(cx);
+                });
             });
         })
         .detach();
@@ -290,15 +295,15 @@ impl DataSyncDialog {
         .detach();
     }
 
-    fn select_source(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn select_source(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index >= self.sources.len() || self.source_index == Some(index) {
             return;
         }
         self.source_index = Some(index);
-        self.reload_catalog_scopes(cx);
+        self.reload_catalog_scopes(window, cx);
     }
 
-    fn select_source_scope(&mut self, scope: String, cx: &mut Context<Self>) {
+    fn select_source_scope(&mut self, scope: String, window: &mut Window, cx: &mut Context<Self>) {
         if !self
             .source_scopes
             .iter()
@@ -307,15 +312,35 @@ impl DataSyncDialog {
         {
             return;
         }
-        self.source_scope = Some(scope);
+        self.source_scope = Some(scope.clone());
+        self.suggest_target_scope(&scope, window, cx);
         self.reload_catalog_objects(cx);
     }
 
     fn select_target_scope(&mut self, scope: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.target_scope_suggestion = None;
         self.target_scope.update(cx, |input, cx| {
             input.set_value(&scope, window, cx);
         });
         self.reload_catalog_objects(cx);
+    }
+
+    fn suggest_target_scope(
+        &mut self,
+        source_scope: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = value(&self.target_scope, cx);
+        if !can_replace_target_scope(&current, self.target_scope_suggestion.as_deref()) {
+            return;
+        }
+        self.target_scope_suggestion = Some(source_scope.to_string());
+        if current != source_scope {
+            self.target_scope.update(cx, |input, cx| {
+                input.set_value(source_scope, window, cx);
+            });
+        }
     }
 
     fn add_mapping(&mut self, source: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -518,4 +543,25 @@ fn input(
 
 fn value(input: &Entity<InputState>, cx: &Context<DataSyncDialog>) -> String {
     input.read(cx).value().trim().to_string()
+}
+
+fn can_replace_target_scope(current: &str, suggestion: Option<&str>) -> bool {
+    match suggestion {
+        Some(suggestion) => current == suggestion,
+        None => current.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_replace_target_scope;
+
+    #[test]
+    fn target_scope_suggestion_only_replaces_empty_or_previous_suggestion() {
+        assert!(can_replace_target_scope("", None));
+        assert!(can_replace_target_scope("source_db", Some("source_db")));
+        assert!(!can_replace_target_scope("custom_db", Some("source_db")));
+        assert!(!can_replace_target_scope("", Some("source_db")));
+        assert!(!can_replace_target_scope("custom_db", None));
+    }
 }

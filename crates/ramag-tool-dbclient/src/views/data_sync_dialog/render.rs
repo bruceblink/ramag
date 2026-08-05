@@ -38,9 +38,9 @@ impl DataSyncDialog {
                 menu = menu.item(
                     ramag_ui::menu_item(scope.clone())
                         .checked(source_selected.as_deref() == Some(scope.as_str()))
-                        .on_click(move |_: &ClickEvent, _, app| {
+                        .on_click(move |_: &ClickEvent, window, app| {
                             entity.update(app, |this, cx| {
-                                this.select_source_scope(scope_for_action.clone(), cx);
+                                this.select_source_scope(scope_for_action.clone(), window, cx);
                             });
                         }),
                 );
@@ -281,8 +281,8 @@ impl Render for DataSyncDialog {
                                 .outline()
                                 .small()
                                 .label("重新读取")
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.reload_catalog_scopes(cx);
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.reload_catalog_scopes(window, cx);
                                 })),
                         ),
                 )

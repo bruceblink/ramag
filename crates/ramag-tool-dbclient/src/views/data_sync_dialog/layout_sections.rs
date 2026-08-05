@@ -169,8 +169,10 @@ impl DataSyncDialog {
                 menu = menu.item(
                     ramag_ui::menu_item(connection_label(source))
                         .checked(Some(index) == current_index)
-                        .on_click(move |_: &ClickEvent, _, app| {
-                            entity.update(app, |this, cx| this.select_source(index, cx));
+                        .on_click(move |_: &ClickEvent, window, app| {
+                            entity.update(app, |this, cx| {
+                                this.select_source(index, window, cx);
+                            });
                         }),
                 );
             }
