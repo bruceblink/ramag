@@ -16,6 +16,7 @@ pub mod resource_limits;
 pub mod schema;
 pub mod ssh;
 pub mod transfer;
+pub mod update;
 
 pub use clipboard::{
     CapturedClip, ClipId, ClipItem, ClipKind, ClipSearchResult, ClipSource, ClipboardSettings,
@@ -105,6 +106,9 @@ pub use ssh::{
 pub use transfer::{
     ConflictPolicy, MAX_TRANSFER_WARNINGS, ProgressFn, TransferProgress, TransferSummary,
     format_bytes,
+};
+pub use update::{
+    DownloadProgress, ReleaseAsset, ReleaseInfo, UpdateCancellation, UpdateProgressFn,
 };
 
 /// 在已小写的查询词下做不区分大小写匹配；ASCII 常见路径不分配整段小写副本。

@@ -3,11 +3,13 @@
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, EventEmitter, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, hsla, px,
+    App, AppContext as _, BorrowAppContext as _, ClickEvent, Context, EventEmitter, Global,
+    IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window, div, hsla, px,
 };
-use gpui_component::{ActiveTheme, Icon, IconName, button::ButtonVariants as _, h_flex, v_flex};
-use ramag_app::ToolRegistry;
+use gpui_component::{
+    ActiveTheme, Icon, IconName, badge::Badge, button::ButtonVariants as _, h_flex, v_flex,
+};
+use ramag_app::{ToolRegistry, UpdateCheckResult};
 
 use crate::icons;
 
@@ -28,15 +30,63 @@ const ITEM_HEIGHT: f32 = 40.0;
 pub struct ActivityBar {
     registry: Arc<ToolRegistry>,
     selected: NavTarget,
+    _update_indicator_subscription: Subscription,
+}
+
+/// 应用内更新角标状态；新版本可用时显示 1，否则隐藏。
+#[derive(Clone, Copy, Default)]
+struct UpdateIndicatorGlobal {
+    available: bool,
+}
+
+impl Global for UpdateIndicatorGlobal {}
+
+struct ActivityItemDecoration {
+    tooltip: SharedString,
+    badge_count: usize,
+}
+
+impl ActivityItemDecoration {
+    fn new(tooltip: impl Into<SharedString>, badge_count: usize) -> Self {
+        Self {
+            tooltip: tooltip.into(),
+            badge_count,
+        }
+    }
+}
+
+/// 将更新检查结果同步到设置入口角标。
+pub fn sync_update_indicator(result: &UpdateCheckResult, cx: &mut App) {
+    let Some(available) = indicator_value(result) else {
+        return;
+    };
+    let current = cx
+        .try_global::<UpdateIndicatorGlobal>()
+        .is_some_and(|state| state.available);
+    if current != available {
+        cx.set_global(UpdateIndicatorGlobal { available });
+    }
+}
+
+fn indicator_value(result: &UpdateCheckResult) -> Option<bool> {
+    match result {
+        UpdateCheckResult::Skipped => None,
+        UpdateCheckResult::UpToDate { .. } => Some(false),
+        UpdateCheckResult::Available(_) | UpdateCheckResult::UnsupportedPlatform(_) => Some(true),
+    }
 }
 
 impl EventEmitter<NavEvent> for ActivityBar {}
 
 impl ActivityBar {
-    pub fn new(registry: Arc<ToolRegistry>) -> Self {
+    pub fn new(registry: Arc<ToolRegistry>, cx: &mut Context<Self>) -> Self {
+        cx.update_default_global::<UpdateIndicatorGlobal, _>(|_, _| {});
+        let update_indicator_subscription =
+            cx.observe_global::<UpdateIndicatorGlobal>(|_, cx| cx.notify());
         Self {
             registry,
             selected: NavTarget::Home,
+            _update_indicator_subscription: update_indicator_subscription,
         }
     }
 
@@ -75,6 +125,8 @@ impl Render for ActivityBar {
         let selected = self.selected.clone();
 
         let accent = theme.accent;
+        let update_available =
+            cx.read_global::<UpdateIndicatorGlobal, _>(|state, _| state.available);
         let sidebar_bg = theme.sidebar;
         let border = theme.border;
         let transparent = hsla(0.0, 0.0, 0.0, 0.0);
@@ -97,7 +149,7 @@ impl Render for ActivityBar {
             is_home_selected,
             accent,
             transparent,
-            Some(SharedString::from("首页")),
+            ActivityItemDecoration::new("首页", 0),
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.navigate(NavTarget::Home, cx);
             }),
@@ -118,7 +170,7 @@ impl Render for ActivityBar {
                 is_selected,
                 accent,
                 transparent,
-                Some(tip),
+                ActivityItemDecoration::new(tip, 0),
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.navigate(NavTarget::Tool(id_for_click.clone()), cx);
                 }),
@@ -138,7 +190,7 @@ impl Render for ActivityBar {
             false,
             accent,
             transparent,
-            Some(SharedString::from(theme_tip)),
+            ActivityItemDecoration::new(theme_tip, 0),
             |_: &ClickEvent, _, app| {
                 let next = match crate::theme::current_mode(app) {
                     crate::theme::Mode::Light => crate::theme::Mode::Dark,
@@ -154,7 +206,7 @@ impl Render for ActivityBar {
             settings_selected,
             accent,
             transparent,
-            Some(SharedString::from("设置")),
+            ActivityItemDecoration::new("设置", usize::from(update_available)),
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.navigate(NavTarget::Settings, cx);
             }),
@@ -190,15 +242,23 @@ fn activity_item(
     is_selected: bool,
     accent: gpui::Hsla,
     transparent: gpui::Hsla,
-    tooltip: Option<SharedString>,
+    decoration: ActivityItemDecoration,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    let mut button = crate::clickable_button(SharedString::from(id.to_string()))
-        .ghost()
-        .icon(icon);
-    if let Some(tip) = tooltip {
-        button = button.tooltip(tip);
-    }
+    let ActivityItemDecoration {
+        tooltip,
+        badge_count,
+    } = decoration;
+    let mut button = crate::clickable_button(SharedString::from(id.to_string())).ghost();
+    button = if badge_count == 0 {
+        button.icon(icon)
+    } else {
+        button
+            .size(px(32.0))
+            .p_0()
+            .child(Badge::new().count(badge_count).color(accent).child(icon))
+    };
+    button = button.tooltip(tooltip);
     h_flex()
         .w(px(BAR_WIDTH))
         .h(px(ITEM_HEIGHT))
@@ -211,4 +271,39 @@ fn activity_item(
                 .bg(if is_selected { accent } else { transparent }),
         )
         .child(button.on_click(on_click))
+}
+
+#[cfg(test)]
+mod tests {
+    use ramag_app::AvailableUpdate;
+    use ramag_domain::entities::ReleaseInfo;
+
+    use super::{UpdateCheckResult, indicator_value};
+
+    fn available_result() -> UpdateCheckResult {
+        UpdateCheckResult::Available(AvailableUpdate {
+            release: ReleaseInfo {
+                version: "0.0.3".into(),
+                tag_name: "v0.0.3".into(),
+                release_url: "https://github.com/tools-rs/ramag/releases/tag/v0.0.3".into(),
+                notes: String::new(),
+                published_at: None,
+                assets: Vec::new(),
+            },
+            asset: None,
+        })
+    }
+
+    #[test]
+    fn update_indicator_tracks_only_real_update_results() {
+        assert_eq!(indicator_value(&UpdateCheckResult::Skipped), None);
+        assert_eq!(
+            indicator_value(&UpdateCheckResult::UpToDate {
+                current_version: "0.0.2".into(),
+                latest_version: "0.0.2".into(),
+            }),
+            Some(false)
+        );
+        assert_eq!(indicator_value(&available_result()), Some(true));
+    }
 }

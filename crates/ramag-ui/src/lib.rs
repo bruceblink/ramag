@@ -37,7 +37,7 @@ pub use prompt_dialog::{
     open_optional_bounded_prompt, open_optional_prompt, open_prompt, open_reveal_masked_prompt,
 };
 
-pub use activity_bar::{ActivityBar, NavEvent, NavTarget};
+pub use activity_bar::{ActivityBar, NavEvent, NavTarget, sync_update_indicator};
 pub use axis_scroll::{AxisScrollGesture, RestrictScrollToAxisExt, handle_axis_scroll};
 pub use editor_workspace::{
     EditorDraftPref, EditorWorkspacePref, MAX_EDITOR_DRAFT_BYTES, MAX_EDITOR_TABS,

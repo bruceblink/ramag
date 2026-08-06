@@ -34,6 +34,7 @@ ramag-infra-git = { workspace = true }
 ramag-infra-clipboard = { workspace = true }
 ramag-infra-tunnel = { workspace = true }
 ramag-infra-ssh = { workspace = true }
+ramag-infra-update = { workspace = true }
 
 # GPUI
 gpui = { workspace = true }

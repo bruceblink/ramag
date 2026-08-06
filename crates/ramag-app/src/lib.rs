@@ -11,9 +11,11 @@ pub mod usecases;
 pub use blocking::run_blocking;
 pub use tool_registry::ToolRegistry;
 pub use usecases::{
-    ClipboardService, ConnectionService, DataSyncConfirmation, DataSyncExecutionContext,
-    DataSyncGate, DataSyncGatePhase, DataSyncGateSnapshot, DataSyncObjectCatalog, DataSyncPermit,
-    DataSyncPreflightReport, DataSyncService, HotkeyState, MAX_DATA_SYNC_CATALOG_OBJECTS,
-    MongoService, PreparedDataSync, RedisService, SshService, StartedDataSync,
-    convert_id_to_integer, convert_id_to_string,
+    AUTO_CHECK_INTERVAL, AvailableUpdate, ClipboardService, ConnectionService,
+    DataSyncConfirmation, DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase,
+    DataSyncGateSnapshot, DataSyncObjectCatalog, DataSyncPermit, DataSyncPreflightReport,
+    DataSyncService, HotkeyState, MAX_DATA_SYNC_CATALOG_OBJECTS, MongoService, PreparedDataSync,
+    RedisService, SshService, StartedDataSync, UPDATE_CHECK_PREF_KEY, UpdateCheckResult,
+    UpdatePlatform, UpdateService, asset_name_for, convert_id_to_integer, convert_id_to_string,
+    current_platform,
 };

@@ -1,0 +1,23 @@
+[package]
+name = "ramag-infra-update"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ramag GitHub Release 更新检查与安装包下载适配器"
+
+[lints]
+workspace = true
+
+[dependencies]
+ramag-domain = { workspace = true }
+async-trait = { workspace = true }
+directories = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

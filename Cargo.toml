@@ -13,6 +13,7 @@ members = [
     "crates/ramag-infra-clipboard",
     "crates/ramag-infra-tunnel",
     "crates/ramag-infra-ssh",
+    "crates/ramag-infra-update",
     "crates/ramag-terminal",
     "crates/ramag-tool-dbclient",
     "crates/ramag-tool-redis",
@@ -46,6 +47,7 @@ ramag-infra-git = { path = "crates/ramag-infra-git" }
 ramag-infra-clipboard = { path = "crates/ramag-infra-clipboard" }
 ramag-infra-tunnel = { path = "crates/ramag-infra-tunnel" }
 ramag-infra-ssh = { path = "crates/ramag-infra-ssh" }
+ramag-infra-update = { path = "crates/ramag-infra-update" }
 ramag-terminal = { path = "crates/ramag-terminal" }
 ramag-tool-dbclient = { path = "crates/ramag-tool-dbclient" }
 ramag-tool-redis = { path = "crates/ramag-tool-redis" }
@@ -194,6 +196,7 @@ pbkdf2 = "0.12"
 sha2 = "0.10"
 rand = "0.9"
 hex = "0.4"
+semver = "1"
 
 # 系统凭据库（具体原生后端由 infra-storage 按目标平台选择）
 keyring = { version = "3" }

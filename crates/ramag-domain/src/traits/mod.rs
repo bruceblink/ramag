@@ -9,6 +9,7 @@ pub mod kv_driver;
 pub mod ssh_driver;
 pub mod storage;
 pub mod tool;
+pub mod update_driver;
 
 pub use clipboard_driver::ClipboardDriver;
 pub use doc_driver::DocDriver;
@@ -19,3 +20,4 @@ pub use kv_driver::KvDriver;
 pub use ssh_driver::SshDriver;
 pub use storage::Storage;
 pub use tool::{Tool, ToolMeta};
+pub use update_driver::UpdateDriver;

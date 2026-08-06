@@ -219,6 +219,7 @@ jobs:
             Ramag-*-macos-arm64.dmg
             Ramag-*-macos-x86_64.dmg
             SHA256SUMS.txt
+            update-manifest.json
           )
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             tag="$MANUAL_RELEASE_TAG"
@@ -250,6 +251,39 @@ jobs:
             echo "Release tag $tag has no annotation message." >&2
             exit 1
           fi
+
+          manifest_assets='[]'
+          for asset in \
+            Ramag-*-windows-x64-setup.exe \
+            Ramag-*-macos-arm64.dmg \
+            Ramag-*-macos-x86_64.dmg; do
+            hash=$(awk -v asset="$asset" '$2 == asset { print $1 }' SHA256SUMS.txt)
+            [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+            size=$(stat --format='%s' "$asset")
+            manifest_assets=$(jq -c \
+              --arg name "$asset" \
+              --argjson size "$size" \
+              --arg sha256 "$hash" \
+              '. + [{name: $name, size: $size, sha256: $sha256}]' \
+              <<<"$manifest_assets")
+          done
+          jq -n \
+            --argjson schema_version 1 \
+            --arg version "$version" \
+            --arg tag_name "$tag" \
+            --arg notes "$notes" \
+            --arg published_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --argjson assets "$manifest_assets" \
+            '{
+              schema_version: $schema_version,
+              version: $version,
+              tag_name: $tag_name,
+              notes: $notes,
+              published_at: $published_at,
+              assets: $assets
+            }' >update-manifest.json
+          jq -e '.schema_version == 1 and (.assets | length) == 3' \
+            update-manifest.json >/dev/null
 
           title="Ramag ${tag#v}"
 

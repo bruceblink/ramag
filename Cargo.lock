@@ -6253,6 +6253,7 @@ dependencies = [
  "ramag-infra-mysql",
  "ramag-infra-postgres",
  "ramag-infra-redis",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -6281,6 +6282,7 @@ dependencies = [
  "ramag-infra-ssh",
  "ramag-infra-storage",
  "ramag-infra-tunnel",
+ "ramag-infra-update",
  "ramag-tool-clipboard",
  "ramag-tool-dbclient",
  "ramag-tool-mongodb",
@@ -6475,6 +6477,23 @@ name = "ramag-infra-tunnel"
 version = "0.0.2"
 dependencies = [
  "ramag-domain",
+ "tracing",
+]
+
+[[package]]
+name = "ramag-infra-update"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "directories",
+ "hex",
+ "ramag-domain",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
  "tracing",
 ]
 

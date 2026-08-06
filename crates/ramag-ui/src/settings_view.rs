@@ -3,7 +3,9 @@
 mod clipboard;
 mod database;
 mod pages;
+mod update;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,10 +17,10 @@ use gpui_component::{
     input::{InputEvent, InputState},
     notification::Notification,
 };
-use ramag_app::{ClipboardService, ConnectionService};
+use ramag_app::{AvailableUpdate, ClipboardService, ConnectionService, UpdateService};
 use ramag_domain::entities::{
-    ClipboardSettings, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
-    MAX_ID_CONVERTER_PROGRAM_BYTES,
+    ClipboardSettings, DownloadProgress, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
+    MAX_ID_CONVERTER_PROGRAM_BYTES, UpdateCancellation,
 };
 
 use crate::MAX_SEARCH_INPUT_BYTES;
@@ -30,14 +32,16 @@ enum SettingsPage {
     VersionControl,
     Ssh,
     Clipboard,
+    Update,
 }
 
 impl SettingsPage {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Database,
         Self::VersionControl,
         Self::Ssh,
         Self::Clipboard,
+        Self::Update,
     ];
 
     fn id(self) -> &'static str {
@@ -45,6 +49,7 @@ impl SettingsPage {
             Self::Database => "database",
             Self::VersionControl => "version-control",
             Self::Ssh => "ssh",
+            Self::Update => "update",
             Self::Clipboard => "clipboard",
         }
     }
@@ -54,6 +59,7 @@ impl SettingsPage {
             Self::Database => "数据库客户端",
             Self::VersionControl => "版本管理",
             Self::Ssh => "SSH 管理",
+            Self::Update => "关于与更新",
             Self::Clipboard => "剪贴板",
         }
     }
@@ -63,6 +69,7 @@ impl SettingsPage {
             Self::Database => "管理数据库连接配置与搜索行为。",
             Self::VersionControl => "管理 Git 版本控制的模块级配置。",
             Self::Ssh => "管理 SSH 与 SFTP 的模块级配置。",
+            Self::Update => "查看当前版本、检查更新并下载已校验的安装包。",
             Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与历史数据。",
         }
     }
@@ -70,6 +77,19 @@ impl SettingsPage {
     fn clears_database_test_when_switching_to(self, next: Self) -> bool {
         self == Self::Database && next != self
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum UpdateUiState {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate {
+        latest_version: String,
+    },
+    Available(AvailableUpdate),
+    UnsupportedPlatform(AvailableUpdate),
+    Error(String),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -97,6 +117,13 @@ pub struct SettingsView {
     selected_page: SettingsPage,
     clipboard_service: Arc<ClipboardService>,
     connection_service: Arc<ConnectionService>,
+    update_service: Option<Arc<UpdateService>>,
+    update_state: UpdateUiState,
+    update_downloading: bool,
+    update_cancellation: Option<UpdateCancellation>,
+    update_progress: Arc<parking_lot::Mutex<DownloadProgress>>,
+    update_downloaded_path: Option<PathBuf>,
+    update_download_error: Option<String>,
     clipboard: ClipboardSettings,
     loaded_revision: u64,
     saving_clipboard: bool,
@@ -121,6 +148,7 @@ impl SettingsView {
     pub fn new(
         clipboard_service: Arc<ClipboardService>,
         connection_service: Arc<ConnectionService>,
+        update_service: Option<Arc<UpdateService>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -214,6 +242,13 @@ impl SettingsView {
             selected_page: SettingsPage::default(),
             clipboard_service,
             connection_service,
+            update_service,
+            update_state: UpdateUiState::Idle,
+            update_downloading: false,
+            update_cancellation: None,
+            update_progress: Arc::new(parking_lot::Mutex::new(DownloadProgress::default())),
+            update_downloaded_path: None,
+            update_download_error: None,
             clipboard,
             loaded_revision,
             saving_clipboard: false,
@@ -270,6 +305,7 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_update_state();
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
@@ -311,11 +347,12 @@ mod tests {
         assert!(ids.contains("version-control"));
         assert!(ids.contains("clipboard"));
         assert!(ids.contains("ssh"));
+        assert!(ids.contains("update"));
     }
 
     #[test]
-    fn clipboard_page_is_always_last() {
-        assert_eq!(SettingsPage::ALL.last(), Some(&SettingsPage::Clipboard));
+    fn update_page_is_always_last() {
+        assert_eq!(SettingsPage::ALL.last(), Some(&SettingsPage::Update));
     }
 
     #[test]

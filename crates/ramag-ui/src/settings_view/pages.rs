@@ -5,7 +5,7 @@ use gpui::{
     hsla, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, Sizable as _, h_flex, scroll::ScrollableElement as _, v_flex,
+    ActiveTheme, Icon, IconName, Sizable as _, h_flex, scroll::ScrollableElement as _, v_flex,
 };
 
 use super::{SettingsPage, SettingsView};
@@ -16,6 +16,7 @@ impl SettingsPage {
             Self::Database => crate::icons::database(),
             Self::VersionControl => crate::icons::git_branch(),
             Self::Ssh => crate::activity_bar::ActivityBar::icon_for_tool("ssh"),
+            Self::Update => Icon::new(IconName::Info),
             Self::Clipboard => crate::icons::clipboard(),
         }
     }
@@ -80,6 +81,7 @@ impl SettingsView {
                 "主机、认证方式、密钥与传输配置跟随 SSH 连接保存，请在 SSH 的连接管理中维护。",
                 cx,
             ),
+            SettingsPage::Update => self.render_update_page(cx),
             SettingsPage::Clipboard => self.render_clipboard_page(cx),
         };
 

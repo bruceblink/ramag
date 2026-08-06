@@ -73,7 +73,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let activity_bar = cx.new(|_| ActivityBar::new(registry.clone()));
+        let activity_bar = cx.new(|cx| ActivityBar::new(registry.clone(), cx));
         let data_sync_overlay =
             cx.new(|cx| crate::DataSyncOverlay::new(data_sync_gate.clone(), cx));
         let registry_for_title = registry.clone();
