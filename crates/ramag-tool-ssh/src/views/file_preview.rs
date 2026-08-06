@@ -19,7 +19,7 @@ use gpui_component::{
 use ramag_app::SshService;
 use ramag_domain::entities::{
     MAX_REMOTE_FILE_PREVIEW_BYTES, RemoteEntry, RemoteEntryKind, RemoteFileChunkPosition,
-    SshProfile, SshProfileId,
+    RemoteOperatingSystem, SshProfile, SshProfileId,
 };
 
 use super::SshView;
@@ -60,6 +60,9 @@ impl SshView {
         workspace.file_preview_loading = true;
         workspace.file_preview_generation = workspace.file_preview_generation.wrapping_add(1);
         let generation = workspace.file_preview_generation;
+        let platform_read_only = workspace.capabilities.as_ref().is_some_and(|capabilities| {
+            capabilities.operating_system == RemoteOperatingSystem::Windows
+        });
         let profile = workspace.profile.clone();
         let path = entry.path.clone();
         let service = self.service.clone();
@@ -91,8 +94,11 @@ impl SshView {
                             this.service.clone(),
                             cx.entity(),
                             profile,
-                            entry,
-                            preview,
+                            RemoteFileEditorInput {
+                                entry,
+                                preview,
+                                platform_read_only,
+                            },
                             window,
                             cx,
                         ),
@@ -105,6 +111,12 @@ impl SshView {
         })
         .detach();
     }
+}
+
+struct RemoteFileEditorInput {
+    entry: RemoteEntry,
+    preview: RemoteFileText,
+    platform_read_only: bool,
 }
 
 struct RemoteFileEditor {
@@ -121,6 +133,7 @@ struct RemoteFileEditor {
     chunk_offset: u64,
     chunk_end: u64,
     windowed: bool,
+    platform_read_only: bool,
     language: &'static str,
     chunk_loading: bool,
     chunk_generation: u64,
@@ -139,11 +152,15 @@ impl RemoteFileEditor {
         service: Arc<SshService>,
         owner: Entity<SshView>,
         profile: SshProfile,
-        entry: RemoteEntry,
-        preview: RemoteFileText,
+        editor_input: RemoteFileEditorInput,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let RemoteFileEditorInput {
+            entry,
+            preview,
+            platform_read_only,
+        } = editor_input;
         let language = super::file_syntax::language_for_remote_file(&entry.path, &preview.text);
         let windowed = preview.is_windowed();
         let original_text = preview.text;
@@ -191,6 +208,7 @@ impl RemoteFileEditor {
             chunk_offset: preview.offset,
             chunk_end: preview.end_offset,
             windowed,
+            platform_read_only,
             language,
             chunk_loading: false,
             chunk_generation: 0,
@@ -206,7 +224,16 @@ impl RemoteFileEditor {
     }
 
     fn is_read_only(&self) -> bool {
-        self.profile.production || self.windowed || self.auto_refresh
+        self.read_only_reason().is_some()
+    }
+
+    fn read_only_reason(&self) -> Option<&'static str> {
+        remote_file_read_only_reason(
+            self.profile.production,
+            self.platform_read_only,
+            self.windowed,
+            self.auto_refresh,
+        )
     }
 
     fn is_dirty(&self) -> bool {
@@ -476,14 +503,13 @@ fn open_remote_file_editor(
     service: Arc<SshService>,
     owner: Entity<SshView>,
     profile: SshProfile,
-    entry: RemoteEntry,
-    preview: RemoteFileText,
+    editor_input: RemoteFileEditorInput,
     window: &mut Window,
     cx: &mut Context<SshView>,
 ) {
-    let title = bounded_preview_title(&entry.path);
+    let title = bounded_preview_title(&editor_input.entry.path);
     let editor =
-        cx.new(|cx| RemoteFileEditor::new(service, owner, profile, entry, preview, window, cx));
+        cx.new(|cx| RemoteFileEditor::new(service, owner, profile, editor_input, window, cx));
     if editor.read(cx).auto_refresh {
         editor.update(cx, |this, cx| this.spawn_auto_refresh(window, cx));
     }
@@ -544,4 +570,23 @@ fn bounded_preview_title(path: &str) -> SharedString {
         title.push('…');
     }
     title.into()
+}
+
+fn remote_file_read_only_reason(
+    production: bool,
+    platform_read_only: bool,
+    windowed: bool,
+    auto_refresh: bool,
+) -> Option<&'static str> {
+    if platform_read_only {
+        Some("Windows ACL 保护")
+    } else if production {
+        Some("生产模式")
+    } else if windowed {
+        Some("分段预览")
+    } else if auto_refresh {
+        Some("自动刷新")
+    } else {
+        None
+    }
 }

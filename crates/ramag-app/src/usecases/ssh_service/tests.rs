@@ -1,3 +1,4 @@
+use super::remote::{resolved_new_remote_path, resolved_remote_path};
 use super::*;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
@@ -12,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Default)]
 struct NoopStorage {
     preferences: Mutex<HashMap<String, String>>,
+    ssh_profiles: Mutex<HashMap<SshProfileId, SshProfile>>,
 }
 
 #[async_trait::async_trait]
@@ -32,7 +34,14 @@ impl Storage for NoopStorage {
         Ok(())
     }
 
-    async fn save_ssh_profile(&self, _profile: &SshProfile) -> Result<()> {
+    async fn get_ssh_profile(&self, id: &SshProfileId) -> Result<Option<SshProfile>> {
+        Ok(self.ssh_profiles.lock().get(id).cloned())
+    }
+
+    async fn save_ssh_profile(&self, profile: &SshProfile) -> Result<()> {
+        self.ssh_profiles
+            .lock()
+            .insert(profile.id.clone(), profile.clone());
         Ok(())
     }
 
@@ -189,6 +198,7 @@ impl SshDriver for TerminalDriver {
     ) -> Result<SshLaunchCommand> {
         Ok(SshLaunchCommand {
             profile_id: profile.id.clone(),
+            authorization_generation: 0,
             program: "/mock/ssh".into(),
             args: vec!["--".into(), profile.host.clone()],
             env: HashMap::new(),
@@ -199,6 +209,60 @@ impl SshDriver for TerminalDriver {
 
     async fn test_connection(&self, _profile: &SshProfile) -> Result<()> {
         Ok(())
+    }
+
+    async fn probe_remote_capabilities(
+        &self,
+        profile: &SshProfile,
+    ) -> Result<SshRemoteCapabilities> {
+        Ok(SshRemoteCapabilities {
+            openssh_client: RemoteCapabilityState::Available,
+            ssh_authentication: RemoteCapabilityState::Available,
+            operating_system: match profile.remote_platform {
+                RemotePlatformPreference::Windows => RemoteOperatingSystem::Windows,
+                RemotePlatformPreference::Auto | RemotePlatformPreference::Linux => {
+                    RemoteOperatingSystem::Linux
+                }
+            },
+            ssh_execution: RemoteCapabilityState::Available,
+            terminal: if profile.production {
+                RemoteCapabilityState::BlockedByPolicy
+            } else {
+                RemoteCapabilityState::Available
+            },
+            sftp: RemoteCapabilityState::Available,
+            sftp_namespace: ramag_domain::entities::SftpNamespaceKind::Posix,
+            sftp_canonical_path: Some(
+                ramag_domain::entities::RemotePath::parse_server_canonical("/").unwrap(),
+            ),
+            diagnostic: RemoteCapabilityState::Available,
+            diagnostic_provider: Some(
+                ramag_domain::entities::SshDiagnosticProviderKind::LinuxBuiltinV1,
+            ),
+            ..SshRemoteCapabilities::default()
+        })
+    }
+
+    async fn execute_diagnostic(
+        &self,
+        profile: &SshProfile,
+        capabilities: &SshRemoteCapabilities,
+        operation: &SshDiagnosticOperation,
+        _cancellation: DiagnosticCancellation,
+    ) -> Result<SshDiagnosticResult> {
+        Ok(SshDiagnosticResult {
+            profile_id: profile.id.clone(),
+            operation: operation.kind().into(),
+            operating_system: capabilities.operating_system,
+            provider: capabilities
+                .diagnostic_provider
+                .ok_or_else(|| DomainError::Other("missing provider".into()))?,
+            output: "ok".into(),
+            exit_code: Some(0),
+            termination: ramag_domain::entities::DiagnosticTermination::Completed,
+            truncated: false,
+            elapsed_millis: 1,
+        })
     }
 
     async fn list_directory(&self, _profile: &SshProfile, path: &str) -> Result<RemoteDirectory> {
@@ -306,6 +370,38 @@ impl SshDriver for TerminalDriver {
 }
 
 #[test]
+fn remote_paths_follow_probed_namespace_and_windows_name_rules() {
+    let windows_virtual = SshRemoteCapabilities {
+        operating_system: RemoteOperatingSystem::Windows,
+        sftp: RemoteCapabilityState::Available,
+        sftp_namespace: ramag_domain::entities::SftpNamespaceKind::Virtual,
+        sftp_canonical_path: Some(
+            ramag_domain::entities::RemotePath::parse_with_namespace(
+                "/Users/Admin",
+                ramag_domain::entities::SftpNamespaceKind::Virtual,
+            )
+            .unwrap(),
+        ),
+        ..SshRemoteCapabilities::default()
+    };
+    assert_eq!(
+        resolved_remote_path(&windows_virtual, ".").unwrap(),
+        "/Users/Admin"
+    );
+    assert!(resolved_new_remote_path(&windows_virtual, "/Users/Admin/CON.txt").is_err());
+    assert!(resolved_remote_path(&windows_virtual, "C:/Users/Admin").is_err());
+
+    let windows_drive = SshRemoteCapabilities {
+        operating_system: RemoteOperatingSystem::Windows,
+        sftp: RemoteCapabilityState::Available,
+        sftp_namespace: ramag_domain::entities::SftpNamespaceKind::WindowsDrive,
+        ..SshRemoteCapabilities::default()
+    };
+    assert!(resolved_remote_path(&windows_drive, "D:/Data/中文.txt").is_ok());
+    assert!(resolved_new_remote_path(&windows_drive, "D:/Data/file.txt:stream").is_err());
+}
+
+#[test]
 fn workspace_preference_deduplicates_and_repairs_active_profile() {
     let first = SshProfileId::new();
     let missing = SshProfileId::new();
@@ -349,6 +445,23 @@ fn workspace_preference_accepts_legacy_data_and_rejects_relative_favorites() {
     })
     .unwrap();
     assert!(parse_workspace_preference(&invalid).is_err());
+}
+
+#[test]
+fn workspace_preference_accepts_windows_drive_favorites() {
+    let preference = SshWorkspacePreference {
+        path_favorites: vec![SshPathFavorites {
+            profile_id: SshProfileId::new(),
+            paths: vec!["C:/Users/Administrator".into(), "D:/Data".into()],
+        }],
+        ..SshWorkspacePreference::default()
+    };
+
+    let normalized = normalized_workspace_preference(preference).unwrap();
+    assert_eq!(
+        normalized.path_favorites[0].paths,
+        ["C:/Users/Administrator", "D:/Data"]
+    );
 }
 
 #[test]
@@ -447,17 +560,16 @@ fn queued_transfer_is_cancelled_without_waiting_for_executor() {
 }
 
 #[test]
-fn production_profile_allows_terminal_but_blocks_sftp_writes() {
+fn production_profile_blocks_terminal_and_sftp_writes() {
     let mut profile = SshProfile::new("production", "server.example");
     profile.production = true;
     let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
 
-    let command = futures::executor::block_on(service.terminal_command(&profile, None)).unwrap();
-    assert_eq!(command.program, "/mock/ssh");
-    assert!(
-        futures::executor::block_on(service.terminal_command(&profile, Some("relative/path")))
-            .is_err()
-    );
+    futures::executor::block_on(service.save_profile(&profile)).unwrap();
+    assert!(matches!(
+        futures::executor::block_on(service.terminal_command(&profile.id, None)),
+        Err(DomainError::Forbidden(message)) if message.contains("生产模式")
+    ));
 
     let preview =
         futures::executor::block_on(service.read_file_preview(&profile, "/readme.txt")).unwrap();
@@ -522,19 +634,80 @@ fn production_profile_allows_terminal_but_blocks_sftp_writes() {
         )
         .unwrap();
     assert!(matches!(
-        futures::executor::block_on(service.execute_transfer(
-            &queued,
-            &profile,
-            OverwritePolicy::Refuse
-        )),
+        futures::executor::block_on(service.execute_transfer(&queued, OverwritePolicy::Refuse)),
         Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
     ));
+}
+
+#[test]
+fn terminal_generation_invalidates_command_before_pty_start() {
+    let profile = SshProfile::new("server", "server.example");
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
+    futures::executor::block_on(service.save_profile(&profile)).unwrap();
+
+    let command = futures::executor::block_on(service.terminal_command(&profile.id, None)).unwrap();
+    assert!(service.terminal_launch_is_current(&command));
+    service.block_terminal_launches(&profile.id);
+    assert!(!service.terminal_launch_is_current(&command));
+    assert!(matches!(
+        futures::executor::block_on(service.terminal_command(&profile.id, None)),
+        Err(DomainError::Forbidden(_))
+    ));
+}
+
+#[test]
+fn interactive_windows_terminal_evidence_promotes_auto_sftp_to_virtual_root() {
+    let mut profile = SshProfile::new("windows", "jump.example.com");
+    profile.origin = SshProfileOrigin::JumpServer;
+    profile.username = "gateway#Administrator#asset-1".into();
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
+
+    let capabilities = service
+        .remember_terminal_windows(&profile, RemoteShellKind::Cmd)
+        .unwrap();
+
+    assert_eq!(
+        capabilities.operating_system,
+        RemoteOperatingSystem::Windows
+    );
+    assert_eq!(capabilities.shell, RemoteShellKind::Cmd);
+    assert_eq!(capabilities.sftp_namespace, SftpNamespaceKind::Virtual);
+    assert_eq!(
+        capabilities
+            .sftp_canonical_path
+            .as_ref()
+            .unwrap()
+            .canonical(),
+        "/"
+    );
+    assert_eq!(
+        super::remote::profile_for_capabilities(&profile, &capabilities).remote_platform,
+        RemotePlatformPreference::Windows
+    );
+}
+
+#[test]
+fn production_diagnostic_uses_current_profile_and_fixed_operation() {
+    let mut profile = SshProfile::new("production", "server.example");
+    profile.production = true;
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
+    futures::executor::block_on(service.save_profile(&profile)).unwrap();
+
+    let result = futures::executor::block_on(service.execute_diagnostic(
+        &profile.id,
+        &SshDiagnosticOperation::SystemOverview,
+        DiagnosticCancellation::default(),
+    ))
+    .unwrap();
+    assert_eq!(result.operation, "system_overview");
+    assert_eq!(result.output, "ok");
 }
 
 #[test]
 fn remote_editor_rejects_content_above_preview_bound() {
     let profile = SshProfile::new("server", "server.example");
     let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
+    futures::executor::block_on(service.save_profile(&profile)).unwrap();
     let oversized = vec![b'a'; MAX_REMOTE_FILE_PREVIEW_BYTES + 1];
 
     assert!(matches!(
@@ -727,6 +900,30 @@ fn jumpserver_profile_uses_connect_permission_not_managed_secret_flag() {
         super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
             .is_err()
     );
+}
+
+#[test]
+fn jumpserver_windows_asset_preserves_remote_platform_preference() {
+    let mut detail = JumpServerAssetDetail {
+        asset: jumpserver_asset(),
+        accounts: vec![JumpServerAccount {
+            id: "account-1".into(),
+            alias: "account-1".into(),
+            name: "administrator".into(),
+            username: "Administrator".into(),
+            has_secret: true,
+            can_connect: true,
+        }],
+        ssh_enabled: true,
+        rdp_web_enabled: false,
+    };
+    detail.asset.platform = "Windows".into();
+
+    let profile =
+        super::jumpserver::build_jumpserver_profile(&jumpserver_session(), &detail, "account-1")
+            .unwrap();
+
+    assert_eq!(profile.remote_platform, RemotePlatformPreference::Windows);
 }
 
 #[test]

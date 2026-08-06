@@ -316,8 +316,8 @@ impl SshView {
 
 fn insert_path_favorite(paths: &mut Vec<String>, path: String) -> Result<bool, String> {
     validate_direct_remote_path(&path)?;
-    if !path.starts_with('/') {
-        return Err("收藏路径必须以 / 开头".into());
+    if path == "." {
+        return Err("收藏路径必须是远端绝对路径".into());
     }
     if paths.iter().any(|favorite| favorite == &path) {
         return Ok(false);
@@ -340,9 +340,10 @@ mod tests {
         let mut paths = Vec::new();
         assert!(insert_path_favorite(&mut paths, "/var/log".into()).unwrap());
         assert!(!insert_path_favorite(&mut paths, "/var/log".into()).unwrap());
+        assert!(insert_path_favorite(&mut paths, "C:/Users/Admin".into()).unwrap());
         assert!(insert_path_favorite(&mut paths, ".".into()).is_err());
 
-        for index in 1..MAX_SSH_FAVORITE_PATHS_PER_PROFILE {
+        for index in 2..MAX_SSH_FAVORITE_PATHS_PER_PROFILE {
             assert!(insert_path_favorite(&mut paths, format!("/tmp/{index}")).unwrap());
         }
         assert!(insert_path_favorite(&mut paths, "/overflow".into()).is_err());

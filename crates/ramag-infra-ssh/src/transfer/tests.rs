@@ -36,3 +36,20 @@ fn cancelled_transfer_is_explicit() {
             .contains("已取消")
     );
 }
+
+#[test]
+fn production_download_size_requires_known_bounded_size() {
+    assert!(ensure_production_download_size(None).is_err());
+    assert!(ensure_production_download_size(Some(MAX_PRODUCTION_DOWNLOAD_BYTES)).is_ok());
+    assert!(ensure_production_download_size(Some(MAX_PRODUCTION_DOWNLOAD_BYTES + 1)).is_err());
+}
+
+#[test]
+fn production_download_concurrency_is_rejected_without_waiting() {
+    let engine = TransferEngine::default();
+    let permit = engine.production_download_permit(true).unwrap();
+    assert!(permit.is_some());
+    assert!(engine.production_download_permit(true).is_err());
+    drop(permit);
+    assert!(engine.production_download_permit(true).is_ok());
+}

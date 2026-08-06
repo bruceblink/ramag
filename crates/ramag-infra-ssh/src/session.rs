@@ -6,23 +6,27 @@ mod file;
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
+use futures::{StreamExt as _, stream};
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::protocol::{FileAttributes, StatusCode};
 
 use ramag_domain::entities::{
     MAX_REMOTE_DELETE_DEPTH, MAX_REMOTE_DELETE_ENTRIES, MAX_REMOTE_DELETE_RETAINED_BYTES,
     MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_DIRECTORY_RETAINED_BYTES, RemoteDirectory,
-    RemoteEntry, RemoteEntryKind, contains_case_insensitive, join_remote_path,
-    validate_remote_name, validate_remote_path,
+    RemoteEntry, RemoteEntryKind, RemotePath, contains_case_insensitive, infer_sftp_namespace,
+    join_remote_path, validate_remote_name, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 
-pub use connection::{SessionCache, SftpConnection, StructuredSftpSession};
+pub use connection::{SessionCache, SftpConnection, SftpTransport, StructuredSftpSession};
 pub use file::{read_file_chunk, read_file_preview};
+
+const WINDOWS_DRIVE_PROBE_CONCURRENCY: usize = 4;
 
 pub async fn list_directory(
     session: &StructuredSftpSession,
     path: &str,
+    max_entries: usize,
 ) -> Result<RemoteDirectory> {
     validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
     let canonical = session
@@ -31,7 +35,19 @@ pub async fn list_directory(
         .map_err(|error| map_sftp_error("解析远程目录", error))?;
     validate_remote_path(&canonical)
         .map_err(|error| DomainError::Other(format!("远端返回了无效的规范路径：{error}")))?;
-    let directory = read_directory_files(session, &canonical, MAX_REMOTE_DIRECTORY_ENTRIES).await?;
+    let max_entries = max_entries.min(MAX_REMOTE_DIRECTORY_ENTRIES);
+    let (canonical, directory) = if should_preserve_windows_directory_request(path, &canonical) {
+        match read_windows_directory_request(session, path, max_entries).await {
+            Ok(directory) => (path.to_string(), directory),
+            Err(_) => {
+                let directory = read_directory_files(session, &canonical, max_entries).await?;
+                (canonical, directory)
+            }
+        }
+    } else {
+        let directory = read_directory_files(session, &canonical, max_entries).await?;
+        (canonical, directory)
+    };
     let mut entries = Vec::new();
     let mut retained_bytes = 0usize;
     for entry in directory {
@@ -70,6 +86,79 @@ pub async fn list_directory(
         path: canonical,
         entries,
     })
+}
+
+/// SFTP 没有统一的 Windows 盘符枚举命令；对空虚拟根目录做有界并发探测。
+pub async fn list_windows_drives(session: &StructuredSftpSession) -> Vec<RemoteEntry> {
+    let mut drives = stream::iter(b'A'..=b'Z')
+        .map(|letter| async move { accessible_windows_drive(session, letter).await })
+        .buffer_unordered(WINDOWS_DRIVE_PROBE_CONCURRENCY)
+        .filter_map(|drive| async move { drive })
+        .collect::<Vec<_>>()
+        .await;
+    drives.sort_unstable();
+    drives
+        .into_iter()
+        .map(|path| RemoteEntry {
+            name: path
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_string(),
+            path,
+            kind: RemoteEntryKind::Directory,
+            size: 0,
+            permissions: None,
+            modified_at: None,
+        })
+        .collect()
+}
+
+async fn accessible_windows_drive(session: &StructuredSftpSession, letter: u8) -> Option<String> {
+    let native = format!("{}:/", char::from(letter));
+    let virtual_path = format!("/{native}");
+    for path in [&virtual_path, &native] {
+        if session
+            .raw
+            .lstat(path.clone())
+            .await
+            .is_ok_and(|metadata| metadata.attrs.is_dir())
+        {
+            return Some(virtual_path.clone());
+        }
+        let Ok(handle) = session.raw.opendir(path.clone()).await else {
+            continue;
+        };
+        if session.raw.close(handle.handle).await.is_ok() {
+            return Some(virtual_path.clone());
+        }
+    }
+    None
+}
+
+async fn read_windows_directory_request(
+    session: &StructuredSftpSession,
+    requested: &str,
+    max_entries: usize,
+) -> Result<Vec<russh_sftp::protocol::File>> {
+    if let Ok(directory) = read_directory_files(session, requested, max_entries).await {
+        return Ok(directory);
+    }
+    let alternate = requested
+        .strip_prefix('/')
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("/{requested}"));
+    read_directory_files(session, &alternate, max_entries).await
+}
+
+/// 部分 Windows SFTP 代理会把有效盘符路径的 realpath 错误折叠为 `/`。
+/// 仅在显式盘符路径可直接打开时保留请求形式，避免把用户目录误显示为空根目录。
+fn should_preserve_windows_directory_request(requested: &str, canonical: &str) -> bool {
+    if canonical != "/" {
+        return false;
+    }
+    let path = requested.strip_prefix('/').unwrap_or(requested);
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
 pub async fn create_directory(session: &StructuredSftpSession, path: &str) -> Result<()> {
@@ -312,20 +401,10 @@ fn charge_retained_bytes(
 }
 
 fn validate_safe_delete_path(path: &str) -> Result<()> {
-    validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-    if !path.starts_with('/') {
-        return Err(DomainError::Forbidden(
-            "远程删除只允许规范化后的绝对路径".into(),
-        ));
-    }
-    let mut components = path.split('/').filter(|component| !component.is_empty());
-    let Some(first) = components.next() else {
+    let path = RemotePath::parse_with_namespace(path, infer_sftp_namespace(path))
+        .map_err(DomainError::InvalidConfig)?;
+    if path.is_root() {
         return Err(DomainError::Forbidden("禁止删除远程根目录".into()));
-    };
-    if matches!(first, "." | "..") || components.any(|part| matches!(part, "." | "..")) {
-        return Err(DomainError::Forbidden(
-            "远程删除路径不能包含 . 或 .. 组件".into(),
-        ));
     }
     Ok(())
 }
@@ -419,6 +498,25 @@ mod tests {
         let mut metadata = FileAttributes::empty();
         metadata.set_type(FileMode::LNK);
         assert_eq!(entry_kind(&metadata), RemoteEntryKind::Symlink);
+    }
+
+    #[test]
+    fn windows_drive_request_survives_a_broken_root_realpath() {
+        assert!(should_preserve_windows_directory_request(
+            "C:/Users/Administrator",
+            "/"
+        ));
+        assert!(should_preserve_windows_directory_request(
+            "/C:/Users/Administrator",
+            "/"
+        ));
+        assert!(!should_preserve_windows_directory_request(
+            "/home/alice",
+            "/"
+        ));
+        assert!(!should_preserve_windows_directory_request(
+            "C:/Users", "C:/Users"
+        ));
     }
 
     #[test]

@@ -6,7 +6,8 @@ use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window}
 use gpui_component::input::{InputEvent, InputState};
 use ramag_app::SshService;
 use ramag_domain::entities::{
-    SshAuthMode, SshCapability, SshProfile, SshProfileId, SshProfileOrigin,
+    RemotePlatformPreference, SshAuthMode, SshCapability, SshProfile, SshProfileId,
+    SshProfileOrigin,
 };
 
 use super::profile_form::ProfileForm;
@@ -14,7 +15,7 @@ use super::ssh_command::{MAX_SSH_COMMAND_BYTES, parse_ssh_command, profile_ssh_c
 
 #[derive(Debug, Clone)]
 pub(super) enum ProfileFormEvent {
-    Saved(Box<SshProfile>),
+    SaveRequested(Box<SshProfile>),
     Cancelled,
     CapabilityChanged(Result<SshCapability, String>),
 }
@@ -44,6 +45,7 @@ struct FormSnapshot {
     values: Vec<String>,
     auth_mode: SshAuthMode,
     production: bool,
+    remote_platform: RemotePlatformPreference,
 }
 
 pub(super) struct SshProfileFormPanel {
@@ -54,6 +56,7 @@ pub(super) struct SshProfileFormPanel {
     origin: SshProfileOrigin,
     pub(super) auth_mode: SshAuthMode,
     pub(super) production: bool,
+    pub(super) remote_platform: RemotePlatformPreference,
     pub(super) password_masked: bool,
     pub(super) operation: Option<FormOperation>,
     pub(super) feedback: Option<FormFeedback>,
@@ -92,6 +95,11 @@ impl SshProfileFormPanel {
             .as_ref()
             .map_or(SshAuthMode::Password, |profile| profile.auth_mode);
         let production = profile.as_ref().is_some_and(|profile| profile.production);
+        let remote_platform = profile
+            .as_ref()
+            .map_or(RemotePlatformPreference::Auto, |profile| {
+                profile.remote_platform
+            });
         let mut subscriptions = Vec::new();
         for input in form.inputs() {
             subscriptions.push(cx.subscribe_in(
@@ -108,6 +116,7 @@ impl SshProfileFormPanel {
             values: form.values(cx),
             auth_mode,
             production,
+            remote_platform,
         };
         let mut this = Self {
             service,
@@ -117,6 +126,7 @@ impl SshProfileFormPanel {
             origin,
             auth_mode,
             production,
+            remote_platform,
             password_masked: true,
             operation: None,
             feedback: None,
@@ -153,6 +163,7 @@ impl SshProfileFormPanel {
             values: self.form.values(cx),
             auth_mode: self.auth_mode,
             production: self.production,
+            remote_platform: self.remote_platform,
         }
     }
 
@@ -169,6 +180,18 @@ impl SshProfileFormPanel {
             return;
         }
         self.production = !self.production;
+        self.invalidate_test(cx);
+    }
+
+    pub(super) fn set_remote_platform(
+        &mut self,
+        platform: RemotePlatformPreference,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_busy() || self.remote_platform == platform {
+            return;
+        }
+        self.remote_platform = platform;
         self.invalidate_test(cx);
     }
 
@@ -238,6 +261,7 @@ impl SshProfileFormPanel {
             self.origin,
             self.auth_mode,
             self.production,
+            self.remote_platform,
             cx,
         )
     }
@@ -257,29 +281,24 @@ impl SshProfileFormPanel {
                 return;
             }
         };
+        cx.emit(ProfileFormEvent::SaveRequested(Box::new(profile)));
+    }
+
+    pub(super) fn begin_save(&mut self, cx: &mut Context<Self>) {
         self.operation = Some(FormOperation::Saving);
         self.feedback = Some(FormFeedback {
             message: "保存中…".into(),
             kind: FeedbackKind::Info,
         });
-        let service = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            let result = service.save_profile(&profile).await;
-            let _ = this.update(cx, |this, cx| {
-                this.operation = None;
-                match result {
-                    Ok(()) => cx.emit(ProfileFormEvent::Saved(Box::new(profile))),
-                    Err(error) => {
-                        this.feedback = Some(FormFeedback {
-                            message: format!("保存失败：{error}"),
-                            kind: FeedbackKind::Error,
-                        });
-                        cx.notify();
-                    }
-                }
-            });
-        })
-        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn save_failed(&mut self, error: impl Into<String>, cx: &mut Context<Self>) {
+        self.operation = None;
+        self.feedback = Some(FormFeedback {
+            message: format!("保存失败：{}", error.into()),
+            kind: FeedbackKind::Error,
+        });
         cx.notify();
     }
 
@@ -315,8 +334,19 @@ impl SshProfileFormPanel {
                 }
                 this.operation = None;
                 this.feedback = Some(match result {
-                    Ok(()) => FormFeedback {
-                        message: "已连接".into(),
+                    Ok(capabilities) => FormFeedback {
+                        message: format!(
+                            "测试完成 · OpenSSH {:?} · 认证 {:?} · 执行 {:?} · Terminal {:?} · SFTP {:?} · 诊断 {:?} · 远端 {:?} · Shell {:?} · 路径 {:?}",
+                            capabilities.openssh_client,
+                            capabilities.ssh_authentication,
+                            capabilities.ssh_execution,
+                            capabilities.terminal,
+                            capabilities.sftp,
+                            capabilities.diagnostic,
+                            capabilities.operating_system,
+                            capabilities.shell,
+                            capabilities.sftp_namespace,
+                        ),
                         kind: FeedbackKind::Success,
                     },
                     Err(error) => FormFeedback {

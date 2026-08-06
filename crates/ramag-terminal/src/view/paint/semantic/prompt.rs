@@ -51,6 +51,9 @@ fn has_shell_marker(row: &[TerminalCell], first: usize, host_end: usize) -> bool
             .and_then(|index| next_non_blank(row, index + 1))
             .is_some_and(|index| is_shell_marker(ascii_cell(row, index)));
     }
+    if has_windows_cmd_prompt(row, host_end) {
+        return true;
+    }
     for (index, _) in row.iter().enumerate().skip(host_end).take(256) {
         let character = ascii_cell(row, index);
         if character.is_some_and(|character| character.is_ascii_whitespace()) {
@@ -61,6 +64,24 @@ fn has_shell_marker(row: &[TerminalCell], first: usize, host_end: usize) -> bool
         }
     }
     false
+}
+
+fn has_windows_cmd_prompt(row: &[TerminalCell], host_end: usize) -> bool {
+    let Some(path_start) = next_non_blank(row, host_end) else {
+        return false;
+    };
+    if !ascii_cell(row, path_start).is_some_and(|character| character.is_ascii_alphabetic())
+        || ascii_cell(row, path_start + 1) != Some(b':')
+        || !matches!(ascii_cell(row, path_start + 2), Some(b'\\' | b'/'))
+    {
+        return false;
+    }
+    (path_start + 3..row.len())
+        .take(512)
+        .find(|index| ascii_cell(row, *index) == Some(b'>'))
+        // CMD 会把用户输入紧接在 `>` 后渲染；提示符本身仍然有效，不能
+        // 因为后面已经有命令文本就取消用户名/主机名高亮。
+        .is_some()
 }
 
 fn identifier_start(row: &[TerminalCell], end: usize) -> usize {
@@ -114,7 +135,12 @@ mod tests {
 
     #[test]
     fn colors_bracketed_and_plain_shell_prompts() {
-        for text in ["[yuansuan@login10 /]$ pwd", "root@server:/srv# tail"] {
+        for text in [
+            "[yuansuan@login10 /]$ pwd",
+            "root@server:/srv# tail",
+            r"administrator@CAE365BE C:\Users\Administrator>",
+            r"administrator@CAE365BE C:\Users\Administrator> dir",
+        ] {
             let rows = vec![row(text)];
             let mut colors = vec![vec![None; rows[0].len()]];
             color_shell_prompts(&rows, &mut colors, USER, HOST, PUNCTUATION);

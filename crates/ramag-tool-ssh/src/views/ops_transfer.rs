@@ -237,7 +237,7 @@ impl SshView {
         cx.notify();
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let result = service.execute_transfer(&id, &profile, overwrite).await;
+            let result = service.execute_transfer(&id, overwrite).await;
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {

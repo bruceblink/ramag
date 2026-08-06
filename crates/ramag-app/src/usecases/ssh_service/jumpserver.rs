@@ -3,7 +3,7 @@
 use ramag_domain::entities::{
     JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog, JumpServerConnection,
     JumpServerCredential, JumpServerRdpSession, JumpServerRdpSessionHistory, JumpServerSession,
-    SshAuthMode, SshProfile, SshProfileOrigin,
+    RemotePlatformPreference, SshAuthMode, SshProfile, SshProfileOrigin,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::JumpServerDriver;
@@ -431,10 +431,22 @@ pub(super) fn build_jumpserver_profile(
 
     let mut profile = SshProfile::new(detail.asset.name.clone(), session.ssh_host.clone());
     profile.origin = SshProfileOrigin::JumpServer;
+    profile.remote_platform = jumpserver_remote_platform(&detail.asset.platform);
     profile.port = Some(session.ssh_port);
     profile.username = format!("{}#{}#{}", session.username, account.name, detail.asset.id);
     profile.auth_mode = SshAuthMode::Password;
     profile.password = session.password.clone();
     profile.validate().map_err(DomainError::InvalidConfig)?;
     Ok(profile)
+}
+
+fn jumpserver_remote_platform(platform: &str) -> RemotePlatformPreference {
+    let platform = platform.trim().to_ascii_lowercase();
+    if platform.contains("windows") {
+        RemotePlatformPreference::Windows
+    } else if platform.contains("linux") {
+        RemotePlatformPreference::Linux
+    } else {
+        RemotePlatformPreference::Auto
+    }
 }

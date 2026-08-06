@@ -15,6 +15,8 @@ pub mod redis_value;
 pub mod resource_limits;
 pub mod schema;
 pub mod ssh;
+pub mod ssh_diagnostic;
+pub mod ssh_remote_path;
 pub mod transfer;
 pub mod update;
 
@@ -89,7 +91,9 @@ pub use resource_limits::{
 };
 pub use schema::{Column, ColumnKind, ColumnType, ForeignKey, Index, Schema, Table};
 pub use ssh::{
-    MAX_CONCURRENT_TRANSFERS, MAX_QUEUED_TRANSFERS, MAX_REMOTE_ARCHIVE_DEPTH,
+    MAX_CONCURRENT_PRODUCTION_DOWNLOADS, MAX_CONCURRENT_TRANSFERS,
+    MAX_PRODUCTION_DIRECTORY_ENTRIES, MAX_PRODUCTION_DOWNLOAD_BYTES,
+    MAX_PRODUCTION_DOWNLOAD_SECONDS, MAX_QUEUED_TRANSFERS, MAX_REMOTE_ARCHIVE_DEPTH,
     MAX_REMOTE_ARCHIVE_ENTRIES, MAX_REMOTE_ARCHIVE_RETAINED_BYTES, MAX_REMOTE_DELETE_DEPTH,
     MAX_REMOTE_DELETE_ENTRIES, MAX_REMOTE_DELETE_RETAINED_BYTES, MAX_REMOTE_DIRECTORY_ENTRIES,
     MAX_REMOTE_DIRECTORY_RETAINED_BYTES, MAX_REMOTE_FILE_PREVIEW_BYTES, MAX_SSH_ENVIRONMENT_BYTES,
@@ -102,6 +106,19 @@ pub use ssh::{
     SshWorkspacePreference, SshWorkspaceState, TRANSFER_BUFFER_BYTES, TransferCancellation,
     TransferDirection, TransferId, TransferStatus, TransferTask, join_remote_path,
     parent_remote_path, validate_local_transfer_path, validate_remote_name, validate_remote_path,
+};
+pub use ssh_diagnostic::{
+    DEFAULT_DIAGNOSTIC_TIMEOUT_SECONDS, DiagnosticCancellation, DiagnosticErrorCode,
+    DiagnosticOperationClass, DiagnosticTermination, DiagnosticTimeRange,
+    MAX_CONCURRENT_DIAGNOSTICS, MAX_CONCURRENT_DIAGNOSTICS_PER_PROFILE, MAX_DIAGNOSTIC_INPUT_BYTES,
+    MAX_DIAGNOSTIC_ITEMS, MAX_DIAGNOSTIC_OUTPUT_BYTES, MAX_DIAGNOSTIC_STDERR_BYTES,
+    MAX_DIAGNOSTIC_TIMEOUT_SECONDS, MIN_DIAGNOSTIC_REFRESH_SECONDS, RemoteCapabilityState,
+    RemoteOperatingSystem, RemotePlatformPreference, RemoteShellKind, SshDiagnosticOperation,
+    SshDiagnosticProviderKind, SshDiagnosticResult, SshLogSource, SshRemoteCapabilities,
+    SshServiceName,
+};
+pub use ssh_remote_path::{
+    RemotePath, SftpNamespaceKind, infer_sftp_namespace, validate_remote_name_for_namespace,
 };
 pub use transfer::{
     ConflictPolicy, MAX_TRANSFER_WARNINGS, ProgressFn, TransferProgress, TransferSummary,

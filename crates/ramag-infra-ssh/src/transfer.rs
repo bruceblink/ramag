@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
@@ -13,7 +13,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 
 use ramag_domain::entities::{
-    MAX_CONCURRENT_TRANSFERS, OverwritePolicy, SshProgressFn, TransferCancellation,
+    MAX_CONCURRENT_PRODUCTION_DOWNLOADS, MAX_CONCURRENT_TRANSFERS, MAX_PRODUCTION_DOWNLOAD_BYTES,
+    MAX_PRODUCTION_DOWNLOAD_SECONDS, OverwritePolicy, SshProgressFn, TransferCancellation,
 };
 use ramag_domain::error::{DomainError, Result};
 
@@ -31,12 +32,14 @@ use commit::{
 #[derive(Clone)]
 pub struct TransferEngine {
     semaphore: Arc<Semaphore>,
+    production_downloads: Arc<Semaphore>,
 }
 
 impl Default for TransferEngine {
     fn default() -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_TRANSFERS)),
+            production_downloads: Arc::new(Semaphore::new(MAX_CONCURRENT_PRODUCTION_DOWNLOADS)),
         }
     }
 }
@@ -51,8 +54,10 @@ impl TransferEngine {
         overwrite: OverwritePolicy,
         cancellation: TransferCancellation,
         progress: SshProgressFn,
+        production: bool,
     ) -> Result<()> {
         let _permit = acquire_permit(self.semaphore.clone(), &cancellation).await?;
+        let _production_permit = self.production_download_permit(production)?;
         archive::download_directory(
             session,
             remote_path,
@@ -60,6 +65,7 @@ impl TransferEngine {
             overwrite,
             cancellation,
             progress,
+            production,
         )
         .await
     }
@@ -282,8 +288,12 @@ impl TransferEngine {
         overwrite: OverwritePolicy,
         cancellation: TransferCancellation,
         progress: SshProgressFn,
+        production: bool,
     ) -> Result<()> {
         let _permit = acquire_permit(self.semaphore.clone(), &cancellation).await?;
+        let _production_permit = self.production_download_permit(production)?;
+        let deadline = production
+            .then(|| Instant::now() + Duration::from_secs(MAX_PRODUCTION_DOWNLOAD_SECONDS));
         ensure_not_cancelled(&cancellation)?;
         let metadata =
             await_cancellable_sftp(session.raw.lstat(remote_path.clone()), &cancellation)
@@ -294,6 +304,9 @@ impl TransferEngine {
             return Err(DomainError::InvalidConfig(
                 "下载源必须是普通文件；首个版本不下载目录或符号链接".into(),
             ));
+        }
+        if production {
+            ensure_production_download_size(metadata.size)?;
         }
         let target_exists = tokio::fs::try_exists(&local_path)
             .await
@@ -351,6 +364,12 @@ impl TransferEngine {
                 "远端未返回下载文件大小，无法执行有界传输".into(),
             ));
         };
+        if production && let Err(error) = ensure_production_download_size(Some(total)) {
+            let _ = session.raw.close(handle).await;
+            drop(destination);
+            cleanup_local(&temporary).await;
+            return Err(error);
+        }
         progress(0, total);
         let mut transfer_result = copy_download(
             &session,
@@ -359,6 +378,7 @@ impl TransferEngine {
             total,
             &cancellation,
             &progress,
+            deadline,
         )
         .await;
         let close_result = session
@@ -415,6 +435,21 @@ impl TransferEngine {
         }
         progress(total, total);
         Ok(())
+    }
+
+    fn production_download_permit(&self, production: bool) -> Result<Option<OwnedSemaphorePermit>> {
+        if !production {
+            return Ok(None);
+        }
+        self.production_downloads
+            .clone()
+            .try_acquire_owned()
+            .map(Some)
+            .map_err(|_| {
+                DomainError::Forbidden(format!(
+                    "生产下载并发已达 {MAX_CONCURRENT_PRODUCTION_DOWNLOADS} 个上限"
+                ))
+            })
     }
 }
 
@@ -476,10 +511,16 @@ async fn copy_download(
     total: u64,
     cancellation: &TransferCancellation,
     progress: &SshProgressFn,
+    deadline: Option<Instant>,
 ) -> Result<u64> {
     let mut transferred = 0u64;
     loop {
         ensure_not_cancelled(cancellation)?;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(DomainError::Forbidden(format!(
+                "生产下载超过 {MAX_PRODUCTION_DOWNLOAD_SECONDS} 秒安全上限"
+            )));
+        }
         let data = match await_cancellable_sftp(
             session
                 .raw
@@ -511,6 +552,18 @@ async fn copy_download(
         progress(transferred, total);
     }
     Ok(transferred)
+}
+
+fn ensure_production_download_size(size: Option<u64>) -> Result<()> {
+    let size =
+        size.ok_or_else(|| DomainError::Forbidden("生产下载必须先获得远程文件大小".into()))?;
+    if size > MAX_PRODUCTION_DOWNLOAD_BYTES {
+        return Err(DomainError::Forbidden(format!(
+            "生产下载文件超过 {} MiB 安全上限",
+            MAX_PRODUCTION_DOWNLOAD_BYTES / 1024 / 1024
+        )));
+    }
+    Ok(())
 }
 
 fn changed_upload_size(expected: u64, actual: u64) -> DomainError {

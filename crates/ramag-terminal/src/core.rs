@@ -263,6 +263,8 @@ pub struct TerminalCore {
     thread: Option<TerminalThread>,
     shared: Arc<SharedState>,
     closed: AtomicBool,
+    input_enabled: AtomicBool,
+    shutdown_complete: Arc<AtomicBool>,
 }
 
 impl TerminalCore {
@@ -311,6 +313,8 @@ impl TerminalCore {
             thread: Some(thread),
             shared,
             closed: AtomicBool::new(false),
+            input_enabled: AtomicBool::new(true),
+            shutdown_complete: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -330,9 +334,24 @@ impl TerminalCore {
         self.closed.load(Ordering::Acquire)
     }
 
+    pub fn set_input_enabled(&self, enabled: bool) {
+        self.input_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn input_enabled(&self) -> bool {
+        self.input_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn shutdown_complete(&self) -> bool {
+        self.shutdown_complete.load(Ordering::Acquire)
+    }
+
     pub fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) -> Result<()> {
         if self.is_closed() {
             return Err(TerminalError("终端已关闭".into()));
+        }
+        if !self.input_enabled() {
+            return Err(TerminalError("终端输入已冻结".into()));
         }
         let bytes = bytes.into();
         if bytes.is_empty() {
@@ -435,18 +454,24 @@ impl TerminalCore {
             return;
         }
         *self.shared.sender.lock() = None;
+        self.input_enabled.store(false, Ordering::Release);
         if let Err(error) = self.sender.send(Msg::Shutdown) {
             tracing::warn!(error = %error, "shutdown terminal event loop failed");
         }
         let Some(thread) = self.thread.take() else {
+            self.shutdown_complete.store(true, Ordering::Release);
             return;
         };
+        let shutdown_complete = self.shutdown_complete.clone();
         // PTY 的析构会终止并回收子进程；放到专用回收线程，避免阻塞 GPUI。
         if let Err(error) = std::thread::Builder::new()
             .name("ramag-terminal-reaper".into())
-            .spawn(move || match thread.join() {
-                Ok((event_loop, state)) => drop((event_loop, state)),
-                Err(_) => tracing::warn!("terminal event loop panicked during shutdown"),
+            .spawn(move || {
+                match thread.join() {
+                    Ok((event_loop, state)) => drop((event_loop, state)),
+                    Err(_) => tracing::warn!("terminal event loop panicked during shutdown"),
+                }
+                shutdown_complete.store(true, Ordering::Release);
             })
         {
             tracing::warn!(error = %error, "spawn terminal reaper failed");

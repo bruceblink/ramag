@@ -14,7 +14,8 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::{
-    RemoteEntry, RemoteEntryKind, SshProfileId, contains_case_insensitive, validate_remote_path,
+    RemoteEntry, RemoteEntryKind, RemotePath, SshProfileId, contains_case_insensitive,
+    infer_sftp_namespace,
 };
 
 use super::SshView;
@@ -56,10 +57,7 @@ impl RemoteDirectoryDrag {
     }
 
     fn new(workspace_id: SshProfileId, path: String, name: String) -> Option<Self> {
-        validate_remote_path(&path).ok()?;
-        if !path.starts_with('/') {
-            return None;
-        }
+        RemotePath::parse_with_namespace(&path, infer_sftp_namespace(&path)).ok()?;
         Some(Self {
             workspace_id,
             path,
@@ -320,7 +318,7 @@ fn remote_entry_actions(kind: RemoteEntryKind, allow_write: bool) -> Vec<RemoteE
         RemoteEntryKind::File => vec![RemoteEntryAction::Preview, RemoteEntryAction::Download],
         RemoteEntryKind::Symlink | RemoteEntryKind::Other => Vec::new(),
     };
-    if allow_write {
+    if allow_write && matches!(kind, RemoteEntryKind::Directory | RemoteEntryKind::File) {
         actions.extend([RemoteEntryAction::Rename, RemoteEntryAction::Delete]);
     }
     actions
@@ -452,17 +450,14 @@ pub(super) fn filtered_entry_indices(
 }
 
 pub(super) fn remote_breadcrumbs(path: &str) -> Vec<(SharedString, String)> {
-    if !path.starts_with('/') {
-        return vec![(SharedString::from(path.to_string()), path.to_string())];
-    }
-    let mut parts = vec![(SharedString::from("/"), "/".to_string())];
-    let mut target = String::new();
-    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
-        target.push('/');
-        target.push_str(segment);
-        parts.push((SharedString::from(segment.to_string()), target.clone()));
-    }
-    parts
+    RemotePath::parse_with_namespace(path, infer_sftp_namespace(path))
+        .map(|path| {
+            path.breadcrumbs()
+                .into_iter()
+                .map(|(label, target)| (SharedString::from(label), target.to_string()))
+                .collect()
+        })
+        .unwrap_or_else(|_| vec![(SharedString::from(path.to_string()), path.to_string())])
 }
 
 pub(super) fn centered_message(message: &'static str, cx: &gpui::App) -> impl IntoElement {
@@ -575,6 +570,26 @@ mod tests {
             targets,
             ["/", "/home", "/home/alice", "/home/alice/project"]
         );
+
+        let windows = remote_breadcrumbs("C:/Users/Admin")
+            .into_iter()
+            .map(|(_, target)| target)
+            .collect::<Vec<_>>();
+        assert_eq!(windows, ["C:/", "C:/Users", "C:/Users/Admin"]);
+
+        let virtual_windows = remote_breadcrumbs("/C:/Users/Admin")
+            .into_iter()
+            .map(|(label, target)| (label.to_string(), target))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            virtual_windows,
+            [
+                ("/".into(), "/".into()),
+                ("C:".into(), "/C:/".into()),
+                ("Users".into(), "/C:/Users".into()),
+                ("Admin".into(), "/C:/Users/Admin".into()),
+            ]
+        );
     }
 
     #[test]
@@ -605,10 +620,7 @@ mod tests {
             remote_entry_actions(RemoteEntryKind::Directory, false),
             [RemoteEntryAction::Open, RemoteEntryAction::Download]
         );
-        assert_eq!(
-            remote_entry_actions(RemoteEntryKind::Symlink, true),
-            [RemoteEntryAction::Rename, RemoteEntryAction::Delete]
-        );
+        assert!(remote_entry_actions(RemoteEntryKind::Symlink, true).is_empty());
         assert!(remote_entry_actions(RemoteEntryKind::Other, false).is_empty());
     }
 

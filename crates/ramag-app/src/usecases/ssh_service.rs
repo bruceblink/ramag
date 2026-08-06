@@ -1,6 +1,6 @@
 //! SSH 用例编排：配置、远程文件操作、传输状态与工作区恢复。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,17 +8,23 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use ramag_domain::entities::{
+    DiagnosticCancellation, MAX_CONCURRENT_DIAGNOSTICS, MAX_CONCURRENT_DIAGNOSTICS_PER_PROFILE,
     MAX_QUEUED_TRANSFERS, MAX_REMOTE_FILE_PREVIEW_BYTES, MAX_TRANSFER_HISTORY, OverwritePolicy,
-    RemoteDirectory, RemoteEntryKind, RemoteFileChunk, RemoteFileChunkPosition, RemoteFilePreview,
-    SshCapability, SshLaunchCommand, SshProfile, SshProfileId, SshWorkspacePreference,
-    TransferCancellation, TransferDirection, TransferId, TransferStatus, TransferTask,
-    validate_local_transfer_path, validate_remote_path,
+    RemoteCapabilityState, RemoteDirectory, RemoteEntryKind, RemoteFileChunk,
+    RemoteFileChunkPosition, RemoteFilePreview, RemoteOperatingSystem, RemotePath,
+    RemotePlatformPreference, RemoteShellKind, SftpNamespaceKind, SshCapability,
+    SshDiagnosticOperation, SshDiagnosticResult, SshLaunchCommand, SshProfile, SshProfileId,
+    SshRemoteCapabilities, SshWorkspacePreference, TransferCancellation, TransferDirection,
+    TransferId, TransferStatus, TransferTask, infer_sftp_namespace, validate_local_transfer_path,
+    validate_remote_name_for_namespace, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{JumpServerDriver, SshDriver, Storage};
 
 mod helpers;
 mod jumpserver;
+mod remote;
+mod transfer_ops;
 
 use helpers::{
     bounded_error, cancel_tasks, ensure_sftp_writable, normalized_workspace_preference,
@@ -159,6 +165,22 @@ pub struct SshService {
     jumpserver_driver: Option<Arc<dyn JumpServerDriver>>,
     storage: Arc<dyn Storage>,
     transfers: Arc<TransferStore>,
+    terminal_policy: Mutex<TerminalPolicyState>,
+    remote_capabilities: Mutex<HashMap<SshProfileId, CachedRemoteCapabilities>>,
+    diagnostic_global: Arc<tokio::sync::Semaphore>,
+    diagnostic_profiles: Mutex<HashMap<SshProfileId, Arc<tokio::sync::Semaphore>>>,
+}
+
+#[derive(Clone)]
+struct CachedRemoteCapabilities {
+    profile: SshProfile,
+    capabilities: SshRemoteCapabilities,
+}
+
+#[derive(Default)]
+struct TerminalPolicyState {
+    blocked: HashSet<SshProfileId>,
+    generations: HashMap<SshProfileId, u64>,
 }
 
 impl SshService {
@@ -168,6 +190,10 @@ impl SshService {
             jumpserver_driver: None,
             storage,
             transfers: Arc::new(TransferStore::new()),
+            terminal_policy: Mutex::new(TerminalPolicyState::default()),
+            remote_capabilities: Mutex::new(HashMap::new()),
+            diagnostic_global: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIAGNOSTICS)),
+            diagnostic_profiles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -182,6 +208,8 @@ impl SshService {
     pub async fn save_profile(&self, profile: &SshProfile) -> Result<()> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
         self.storage.save_ssh_profile(profile).await?;
+        self.advance_terminal_generation(&profile.id);
+        self.remote_capabilities.lock().remove(&profile.id);
         self.cancel_profile_transfers(&profile.id);
         self.wait_for_profile_transfers(&profile.id).await;
         if let Err(error) = self.driver.disconnect(&profile.id).await {
@@ -196,6 +224,9 @@ impl SshService {
 
     pub async fn delete_profile(&self, id: &SshProfileId) -> Result<()> {
         self.storage.delete_ssh_profile(id).await?;
+        self.block_terminal_launches(id);
+        self.remote_capabilities.lock().remove(id);
+        self.diagnostic_profiles.lock().remove(id);
         self.cancel_profile_transfers(id);
         self.wait_for_profile_transfers(id).await;
         if let Err(error) = self.driver.disconnect(id).await {
@@ -221,342 +252,6 @@ impl SshService {
             }
         }
         Ok(())
-    }
-
-    pub async fn probe(&self, custom_path: Option<&str>) -> Result<SshCapability> {
-        self.driver.probe(custom_path).await
-    }
-
-    pub async fn test_connection(&self, profile: &SshProfile) -> Result<()> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        self.driver.test_connection(profile).await
-    }
-
-    pub async fn terminal_command(
-        &self,
-        profile: &SshProfile,
-        initial_directory: Option<&str>,
-    ) -> Result<SshLaunchCommand> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        if let Some(path) = initial_directory {
-            validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-            if !path.starts_with('/') {
-                return Err(DomainError::InvalidConfig(
-                    "新终端的远程目录必须是绝对路径".into(),
-                ));
-            }
-        }
-        self.driver
-            .terminal_command(profile, initial_directory)
-            .await
-    }
-
-    pub async fn report_terminal_launch_failure(&self, executable: &str) {
-        self.driver.report_terminal_launch_failure(executable).await;
-    }
-
-    pub async fn list_directory(
-        &self,
-        profile: &SshProfile,
-        path: &str,
-    ) -> Result<RemoteDirectory> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        self.driver.list_directory(profile, path).await
-    }
-
-    pub async fn read_file_preview(
-        &self,
-        profile: &SshProfile,
-        path: &str,
-    ) -> Result<RemoteFilePreview> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        self.driver.read_file_preview(profile, path).await
-    }
-
-    pub async fn read_file_chunk(
-        &self,
-        profile: &SshProfile,
-        path: &str,
-        position: RemoteFileChunkPosition,
-    ) -> Result<RemoteFileChunk> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        self.driver.read_file_chunk(profile, path, position).await
-    }
-
-    pub async fn save_file(
-        &self,
-        profile: &SshProfile,
-        path: &str,
-        expected: &[u8],
-        contents: &[u8],
-    ) -> Result<()> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        ensure_sftp_writable(profile)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        if expected.len() > MAX_REMOTE_FILE_PREVIEW_BYTES
-            || contents.len() > MAX_REMOTE_FILE_PREVIEW_BYTES
-        {
-            return Err(DomainError::InvalidConfig(format!(
-                "编辑文件不能超过 {} MiB",
-                MAX_REMOTE_FILE_PREVIEW_BYTES / 1024 / 1024
-            )));
-        }
-        self.driver
-            .save_file(profile, path, expected, contents)
-            .await
-    }
-
-    pub async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        ensure_sftp_writable(profile)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        self.driver.create_directory(profile, path).await
-    }
-
-    pub async fn rename(&self, profile: &SshProfile, old_path: &str, new_path: &str) -> Result<()> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        ensure_sftp_writable(profile)?;
-        validate_remote_path(old_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(new_path).map_err(DomainError::InvalidConfig)?;
-        self.driver.rename(profile, old_path, new_path).await
-    }
-
-    pub async fn remove(
-        &self,
-        profile: &SshProfile,
-        path: &str,
-        kind: RemoteEntryKind,
-    ) -> Result<()> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        ensure_sftp_writable(profile)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        self.driver.remove(profile, path, kind).await
-    }
-
-    pub fn enqueue_upload(
-        &self,
-        profile: &SshProfile,
-        local_path: &Path,
-        remote_path: &str,
-    ) -> Result<TransferId> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        ensure_sftp_writable(profile)?;
-        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
-        let local_path = local_path
-            .to_str()
-            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
-        self.transfers.enqueue(TransferTask::new(
-            profile.id.clone(),
-            TransferDirection::Upload,
-            local_path,
-            remote_path,
-        ))
-    }
-
-    pub fn enqueue_download(
-        &self,
-        profile: &SshProfile,
-        remote_path: &str,
-        local_path: &Path,
-    ) -> Result<TransferId> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
-        let local_path = local_path
-            .to_str()
-            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
-        self.transfers.enqueue(TransferTask::new(
-            profile.id.clone(),
-            TransferDirection::Download,
-            local_path,
-            remote_path,
-        ))
-    }
-
-    pub fn enqueue_directory_download(
-        &self,
-        profile: &SshProfile,
-        remote_path: &str,
-        local_path: &Path,
-    ) -> Result<TransferId> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
-        let local_path = local_path
-            .to_str()
-            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
-        self.transfers.enqueue(TransferTask::new(
-            profile.id.clone(),
-            TransferDirection::DownloadArchive,
-            local_path,
-            remote_path,
-        ))
-    }
-
-    pub async fn execute_transfer(
-        &self,
-        id: &TransferId,
-        profile: &SshProfile,
-        overwrite: OverwritePolicy,
-    ) -> Result<()> {
-        let (task, cancellation) = self.transfers.begin(id)?;
-        tracing::info!(
-            task_id = %id,
-            profile_id = %profile.id,
-            direction = ?task.direction,
-            "ssh transfer started"
-        );
-        if task.profile_id != profile.id {
-            let error = DomainError::InvalidConfig("传输任务与 SSH 配置不匹配".into());
-            self.transfers.finish(
-                id,
-                &Err(DomainError::InvalidConfig(error.message().into())),
-                false,
-            );
-            return Err(error);
-        }
-        if task.direction == TransferDirection::Upload
-            && let Err(error) = ensure_sftp_writable(profile)
-        {
-            self.transfers.finish(
-                id,
-                &Err(DomainError::Forbidden(error.message().into())),
-                false,
-            );
-            return Err(error);
-        }
-        let transfer_store = self.transfers.clone();
-        let progress_id = id.clone();
-        let progress = Arc::new(move |transferred, total| {
-            transfer_store.progress(&progress_id, transferred, total);
-        });
-        let local_path = PathBuf::from(&task.local_path);
-        let result = match task.direction {
-            TransferDirection::Upload => {
-                self.driver
-                    .upload(
-                        profile,
-                        &local_path,
-                        &task.remote_path,
-                        overwrite,
-                        cancellation.clone(),
-                        progress,
-                    )
-                    .await
-            }
-            TransferDirection::Download => {
-                self.driver
-                    .download(
-                        profile,
-                        &task.remote_path,
-                        &local_path,
-                        overwrite,
-                        cancellation.clone(),
-                        progress,
-                    )
-                    .await
-            }
-            TransferDirection::DownloadArchive => {
-                self.driver
-                    .download_directory(
-                        profile,
-                        &task.remote_path,
-                        &local_path,
-                        overwrite,
-                        cancellation.clone(),
-                        progress,
-                    )
-                    .await
-            }
-        };
-        self.transfers
-            .finish(id, &result, cancellation.is_cancelled());
-        match &result {
-            Ok(()) => {
-                tracing::info!(task_id = %id, profile_id = %profile.id, "ssh transfer finished")
-            }
-            Err(error) => tracing::warn!(
-                error = %error,
-                task_id = %id,
-                profile_id = %profile.id,
-                "ssh transfer failed"
-            ),
-        }
-        result
-    }
-
-    pub fn cancel_transfer(&self, id: &TransferId) -> bool {
-        let mut state = self.transfers.state.lock();
-        let Some(cancellation) = state.cancellations.get(id).cloned() else {
-            return false;
-        };
-        let waiting = state
-            .tasks
-            .iter()
-            .any(|task| &task.id == id && task.status == TransferStatus::Waiting);
-        if waiting {
-            if let Some(task) = state.tasks.iter_mut().find(|task| &task.id == id) {
-                task.finish(Err("传输已取消".into()), true);
-            }
-            state.cancellations.remove(id);
-            state.prune_history();
-        } else {
-            cancellation.cancel();
-        }
-        drop(state);
-        self.transfers.changed();
-        true
-    }
-
-    pub fn retry_transfer(&self, id: &TransferId) -> Result<TransferId> {
-        let state = self.transfers.state.lock();
-        let task = state
-            .tasks
-            .iter()
-            .find(|task| &task.id == id)
-            .cloned()
-            .ok_or_else(|| DomainError::NotFound(format!("传输任务 {id}")))?;
-        if !task.status.is_terminal() {
-            return Err(DomainError::Other("只能重试已结束的传输任务".into()));
-        }
-        drop(state);
-        self.transfers.enqueue(TransferTask::new(
-            task.profile_id,
-            task.direction,
-            task.local_path,
-            task.remote_path,
-        ))
-    }
-
-    pub fn transfer_tasks(&self) -> Vec<TransferTask> {
-        self.transfers.state.lock().tasks.iter().cloned().collect()
-    }
-
-    pub fn transfer_revision(&self) -> u64 {
-        self.transfers.revision.load(Ordering::Acquire)
-    }
-
-    pub fn clear_finished_transfers(&self) {
-        let mut state = self.transfers.state.lock();
-        state.tasks.retain(|task| !task.status.is_terminal());
-        drop(state);
-        self.transfers.changed();
-    }
-
-    pub async fn disconnect(&self, profile_id: &SshProfileId) -> Result<()> {
-        self.cancel_profile_transfers(profile_id);
-        self.wait_for_profile_transfers(profile_id).await;
-        self.driver.disconnect(profile_id).await
-    }
-
-    pub async fn shutdown(&self) -> Result<()> {
-        self.cancel_all_transfers();
-        self.wait_for_all_transfers().await;
-        self.driver.shutdown().await
     }
 
     pub async fn load_workspace_preference(&self) -> Result<SshWorkspacePreference> {
@@ -674,6 +369,11 @@ impl SshService {
             smol::Timer::after(TRANSFER_STOP_POLL).await;
         }
     }
+}
+
+fn advance_generation(policy: &mut TerminalPolicyState, profile_id: &SshProfileId) {
+    let generation = policy.generations.entry(profile_id.clone()).or_default();
+    *generation = generation.wrapping_add(1);
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use ramag_domain::entities::{
-    MAX_SSH_FAVORITE_PATHS_PER_PROFILE, MAX_SSH_PROFILES, MAX_SSH_WORKSPACES, SshProfile,
-    SshWorkspacePreference, TransferId, TransferStatus, validate_remote_path,
+    MAX_SSH_FAVORITE_PATHS_PER_PROFILE, MAX_SSH_PROFILES, MAX_SSH_WORKSPACES, RemotePath,
+    SshProfile, SshWorkspacePreference, TransferId, TransferStatus, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 
@@ -51,11 +51,7 @@ pub(super) fn normalized_workspace_preference(
         });
         for path in &favorite.paths {
             validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-            if !path.starts_with('/') {
-                return Err(DomainError::InvalidConfig(
-                    "SSH 常用路径必须以 / 开头".into(),
-                ));
-            }
+            RemotePath::parse_server_canonical(path).map_err(DomainError::InvalidConfig)?;
         }
     }
     preference

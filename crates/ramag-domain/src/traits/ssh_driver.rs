@@ -5,9 +5,10 @@ use std::path::Path;
 use async_trait::async_trait;
 
 use crate::entities::{
-    OverwritePolicy, RemoteDirectory, RemoteEntryKind, RemoteFileChunk, RemoteFileChunkPosition,
-    RemoteFilePreview, SshCapability, SshLaunchCommand, SshProfile, SshProfileId, SshProgressFn,
-    TransferCancellation,
+    DiagnosticCancellation, OverwritePolicy, RemoteDirectory, RemoteEntryKind, RemoteFileChunk,
+    RemoteFileChunkPosition, RemoteFilePreview, SshCapability, SshDiagnosticOperation,
+    SshDiagnosticResult, SshLaunchCommand, SshProfile, SshProfileId, SshProgressFn,
+    SshRemoteCapabilities, TransferCancellation,
 };
 use crate::error::Result;
 
@@ -25,6 +26,19 @@ pub trait SshDriver: Send + Sync {
     async fn report_terminal_launch_failure(&self, executable: &str);
 
     async fn test_connection(&self, profile: &SshProfile) -> Result<()>;
+
+    async fn probe_remote_capabilities(
+        &self,
+        profile: &SshProfile,
+    ) -> Result<SshRemoteCapabilities>;
+
+    async fn execute_diagnostic(
+        &self,
+        profile: &SshProfile,
+        capabilities: &SshRemoteCapabilities,
+        operation: &SshDiagnosticOperation,
+        cancellation: DiagnosticCancellation,
+    ) -> Result<SshDiagnosticResult>;
 
     async fn list_directory(&self, profile: &SshProfile, path: &str) -> Result<RemoteDirectory>;
 

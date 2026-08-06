@@ -124,3 +124,23 @@ fn local_pty_resize_updates_grid_dimensions() {
     assert_eq!(snapshot.lines, 40);
     core.close();
 }
+
+#[cfg(unix)]
+#[test]
+fn terminal_input_can_be_frozen_and_shutdown_completion_is_observable() {
+    let mut core = TerminalCore::start(TerminalCommand::new("/bin/cat", Vec::new())).unwrap();
+    core.set_input_enabled(false);
+    assert!(!core.input_enabled());
+    assert!(
+        matches!(core.send(b"blocked\r".to_vec()), Err(TerminalError(message)) if message.contains("冻结"))
+    );
+
+    core.set_input_enabled(true);
+    core.send(b"allowed\r".to_vec()).unwrap();
+    core.close();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !core.shutdown_complete() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(core.shutdown_complete());
+}

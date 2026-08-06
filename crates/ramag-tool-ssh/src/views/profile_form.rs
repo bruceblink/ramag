@@ -4,8 +4,8 @@ use gpui::{AppContext as _, Context, Entity, Window};
 use gpui_component::input::InputState;
 use ramag_domain::entities::{
     MAX_SSH_ENVIRONMENT_BYTES, MAX_SSH_HOST_BYTES, MAX_SSH_PASSWORD_BYTES, MAX_SSH_PATH_BYTES,
-    MAX_SSH_PROFILE_NAME_BYTES, MAX_SSH_USERNAME_BYTES, SshAuthMode, SshProfile, SshProfileId,
-    SshProfileOrigin,
+    MAX_SSH_PROFILE_NAME_BYTES, MAX_SSH_USERNAME_BYTES, RemotePlatformPreference, SshAuthMode,
+    SshProfile, SshProfileId, SshProfileOrigin,
 };
 
 const MAX_PORT_TEXT_BYTES: usize = 5;
@@ -121,6 +121,7 @@ impl ProfileForm {
         origin: SshProfileOrigin,
         auth_mode: SshAuthMode,
         production: bool,
+        remote_platform: RemotePlatformPreference,
         cx: &gpui::App,
     ) -> Result<SshProfile, String> {
         let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
@@ -139,6 +140,7 @@ impl ProfileForm {
             origin,
             environment: optional(value(&self.environment)),
             production,
+            remote_platform,
             host: value(&self.host),
             port,
             username: value(&self.username),

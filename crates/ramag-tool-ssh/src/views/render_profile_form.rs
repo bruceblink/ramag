@@ -8,7 +8,7 @@ use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
     input::Input, v_flex,
 };
-use ramag_domain::entities::SshAuthMode;
+use ramag_domain::entities::{RemotePlatformPreference, SshAuthMode};
 
 use super::profile_dialog::{FeedbackKind, SshProfileFormPanel};
 
@@ -324,6 +324,39 @@ impl SshProfileFormPanel {
         let busy = self.is_busy();
         v_flex()
             .gap(px(12.0))
+            .child(
+                v_flex().gap(px(6.0)).child(field_label("远端平台")).child(
+                    h_flex()
+                        .gap(px(8.0))
+                        .child(platform_button(
+                            "ssh-platform-auto",
+                            "自动",
+                            self.remote_platform == RemotePlatformPreference::Auto,
+                            busy,
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.set_remote_platform(RemotePlatformPreference::Auto, cx);
+                            }),
+                        ))
+                        .child(platform_button(
+                            "ssh-platform-linux",
+                            "Linux",
+                            self.remote_platform == RemotePlatformPreference::Linux,
+                            busy,
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.set_remote_platform(RemotePlatformPreference::Linux, cx);
+                            }),
+                        ))
+                        .child(platform_button(
+                            "ssh-platform-windows",
+                            "Windows",
+                            self.remote_platform == RemotePlatformPreference::Windows,
+                            busy,
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.set_remote_platform(RemotePlatformPreference::Windows, cx);
+                            }),
+                        )),
+                ),
+            )
             .child(field(
                 "ssh-profile-directory-field",
                 "目录",
@@ -422,6 +455,22 @@ impl SshProfileFormPanel {
                     })),
             )
     }
+}
+
+fn platform_button(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    disabled: bool,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    ramag_ui::clickable_button(id)
+        .small()
+        .label(label)
+        .disabled(disabled)
+        .when(selected, |button| button.primary())
+        .when(!selected, |button| button.ghost())
+        .on_click(listener)
 }
 
 fn section_title(text: &str, muted: gpui::Hsla) -> impl IntoElement {

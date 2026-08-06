@@ -13,13 +13,17 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use ramag_domain::entities::{
-    SshAuthMode, SshCapability, SshLaunchCommand, SshProfile, validate_remote_path,
+    RemotePath, RemotePlatformPreference, SshAuthMode, SshCapability, SshLaunchCommand, SshProfile,
+    SshProfileOrigin, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_READER_TIMEOUT: Duration = Duration::from_secs(1);
 const PROBE_OUTPUT_LIMIT: usize = 16 * 1024;
+// cmd.exe 只负责扩展系统目录并直接继承二进制标准流，不对 SFTP 数据做文本转码。
+const WINDOWS_SFTP_SERVER_COMMAND: &str =
+    r#"cmd.exe /d /q /c call "%SystemRoot%\System32\OpenSSH\sftp-server.exe""#;
 
 #[derive(Clone, Default)]
 pub struct OpenSshLocator {
@@ -81,20 +85,22 @@ pub fn terminal_command(
     initial_directory: Option<&str>,
 ) -> Result<SshLaunchCommand> {
     profile.validate().map_err(DomainError::InvalidConfig)?;
+    if profile.production {
+        return Err(DomainError::Forbidden(
+            "生产模式禁止启动完整 SSH Terminal".into(),
+        ));
+    }
     let mut args = vec!["-tt".to_string()];
     args.extend(common_profile_args(profile));
     args.push("--".into());
     args.push(profile.host.clone());
     if let Some(path) = initial_directory {
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        if !path.starts_with('/') {
-            return Err(DomainError::InvalidConfig(
-                "新终端的远程目录必须是绝对路径".into(),
-            ));
-        }
+        RemotePath::parse_server_canonical(path).map_err(DomainError::InvalidConfig)?;
     }
     Ok(SshLaunchCommand {
         profile_id: profile.id.clone(),
+        authorization_generation: 0,
         program: capability.executable.clone(),
         args,
         env: HashMap::new(),
@@ -119,11 +125,163 @@ pub fn sftp_args(profile: &SshProfile) -> Result<Vec<String>> {
         "ConnectTimeout=10".into(),
     ];
     args.extend(common_profile_args(profile));
+    if profile.production {
+        args.extend(production_connection_args());
+    }
     args.push("-s".into());
     args.push("--".into());
     args.push(profile.host.clone());
     args.push("sftp".into());
     Ok(args)
+}
+
+/// 经 JumpServer 的普通 SSH 远程命令启动目标 Windows 自带的 SFTP 服务端。
+/// 固定脚本不包含用户输入，文件路径仍全部通过 SFTP 协议传输。
+pub(crate) fn windows_remote_sftp_args(profile: &SshProfile) -> Result<Vec<String>> {
+    profile.validate().map_err(DomainError::InvalidConfig)?;
+    if !uses_windows_remote_sftp(profile) {
+        return Err(DomainError::InvalidConfig(
+            "Windows 远程 SFTP 通道只适用于非生产 JumpServer Windows 连接".into(),
+        ));
+    }
+    let password_auth = profile.auth_mode == SshAuthMode::Password;
+    let mut args = vec![
+        "-T".into(),
+        "-o".into(),
+        format!("BatchMode={}", if password_auth { "no" } else { "yes" }),
+        "-o".into(),
+        "StrictHostKeyChecking=yes".into(),
+        "-o".into(),
+        format!(
+            "NumberOfPasswordPrompts={}",
+            if password_auth { 1 } else { 0 }
+        ),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    args.extend(common_profile_args(profile));
+    args.extend(production_connection_args());
+    args.push("--".into());
+    args.push(profile.host.clone());
+    args.push(WINDOWS_SFTP_SERVER_COMMAND.into());
+    Ok(args)
+}
+
+pub(crate) fn uses_windows_remote_sftp(profile: &SshProfile) -> bool {
+    !profile.production
+        && profile.origin == SshProfileOrigin::JumpServer
+        && profile.remote_platform == RemotePlatformPreference::Windows
+}
+
+pub(crate) fn powershell_encoded_command(script: &str) -> String {
+    let bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    format!(
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+        base64_encode(&bytes)
+    )
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        result.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        result.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        result.push(if chunk.len() > 1 {
+            ALPHABET[((value >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        result.push(if chunk.len() > 2 {
+            ALPHABET[(value & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    result
+}
+
+pub fn diagnostic_args(profile: &SshProfile, remote_command: &str) -> Result<Vec<String>> {
+    profile.validate().map_err(DomainError::InvalidConfig)?;
+    if remote_command.is_empty()
+        || remote_command.len() > 64 * 1024
+        || remote_command.chars().any(|character| character == '\0')
+    {
+        return Err(DomainError::InvalidConfig("内置诊断命令模板无效".into()));
+    }
+    let password_auth = profile.auth_mode == SshAuthMode::Password;
+    let mut args = vec![
+        "-T".into(),
+        "-o".into(),
+        format!("BatchMode={}", if password_auth { "no" } else { "yes" }),
+        "-o".into(),
+        "StrictHostKeyChecking=yes".into(),
+        "-o".into(),
+        format!(
+            "NumberOfPasswordPrompts={}",
+            if password_auth { 1 } else { 0 }
+        ),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    args.extend(common_profile_args(profile));
+    args.extend(production_connection_args());
+    args.push("--".into());
+    args.push(profile.host.clone());
+    args.push(remote_command.to_string());
+    Ok(args)
+}
+
+pub(crate) fn terminal_probe_args(profile: &SshProfile) -> Result<Vec<String>> {
+    profile.validate().map_err(DomainError::InvalidConfig)?;
+    if profile.production {
+        return Err(DomainError::Forbidden(
+            "生产模式禁止探测交互式 SSH Terminal".into(),
+        ));
+    }
+    let password_auth = profile.auth_mode == SshAuthMode::Password;
+    let mut args = vec![
+        "-tt".into(),
+        "-o".into(),
+        format!("BatchMode={}", if password_auth { "no" } else { "yes" }),
+        "-o".into(),
+        "StrictHostKeyChecking=yes".into(),
+        "-o".into(),
+        format!(
+            "NumberOfPasswordPrompts={}",
+            if password_auth { 1 } else { 0 }
+        ),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    args.extend(common_profile_args(profile));
+    args.push("--".into());
+    args.push(profile.host.clone());
+    args.push("exit".into());
+    Ok(args)
+}
+
+fn production_connection_args() -> Vec<String> {
+    [
+        "ClearAllForwardings=yes",
+        "ForwardAgent=no",
+        "ForwardX11=no",
+        "PermitLocalCommand=no",
+        "RemoteCommand=none",
+        "RequestTTY=no",
+        "ControlMaster=no",
+        "ControlPath=none",
+        "Tunnel=no",
+    ]
+    .into_iter()
+    .flat_map(|option| ["-o".to_string(), option.to_string()])
+    .collect()
 }
 
 fn common_profile_args(profile: &SshProfile) -> Vec<String> {
@@ -434,6 +592,59 @@ mod tests {
         assert_eq!(&sftp[sftp.len() - 3..], ["--", "server.example", "sftp"]);
         assert!(sftp.windows(2).any(|args| args == ["-o", "BatchMode=yes"]));
         assert!(!sftp.iter().any(|arg| arg == "StrictHostKeyChecking=no"));
+    }
+
+    #[test]
+    fn production_sftp_disables_forwarding_and_remote_command() {
+        let mut production = profile();
+        production.production = true;
+        let args = sftp_args(&production).unwrap();
+        for option in [
+            "ClearAllForwardings=yes",
+            "ForwardAgent=no",
+            "ForwardX11=no",
+            "PermitLocalCommand=no",
+            "RemoteCommand=none",
+            "RequestTTY=no",
+            "ControlMaster=no",
+            "ControlPath=none",
+            "Tunnel=no",
+        ] {
+            assert!(args.iter().any(|arg| arg == option), "missing {option}");
+        }
+
+        let normal = sftp_args(&profile()).unwrap();
+        assert!(!normal.iter().any(|arg| arg == "RemoteCommand=none"));
+    }
+
+    #[test]
+    fn windows_jumpserver_uses_a_fixed_remote_sftp_server_command() {
+        let mut profile = profile();
+        profile.origin = SshProfileOrigin::JumpServer;
+        profile.remote_platform = RemotePlatformPreference::Windows;
+        let args = windows_remote_sftp_args(&profile).unwrap();
+        let command = args.last().unwrap();
+
+        assert!(uses_windows_remote_sftp(&profile));
+        assert_eq!(command, WINDOWS_SFTP_SERVER_COMMAND);
+        assert!(!command.contains(&profile.username));
+        assert!(!command.contains("Invoke-Expression"));
+
+        profile.production = true;
+        assert!(!uses_windows_remote_sftp(&profile));
+        assert!(windows_remote_sftp_args(&profile).is_err());
+    }
+
+    #[test]
+    fn terminal_probe_is_fixed_and_production_is_rejected() {
+        let profile = profile();
+        let args = terminal_probe_args(&profile).unwrap();
+        assert_eq!(args.last().map(String::as_str), Some("exit"));
+        assert!(args.iter().any(|argument| argument == "-tt"));
+
+        let mut production = profile;
+        production.production = true;
+        assert!(terminal_probe_args(&production).is_err());
     }
 
     #[test]

@@ -2,12 +2,14 @@
 
 use gpui::{Context, Window};
 use ramag_domain::entities::{
-    MAX_SSH_PATH_BYTES, RemoteEntry, RemoteEntryKind, SshProfileId, join_remote_path,
-    parent_remote_path, validate_remote_name, validate_remote_path,
+    MAX_SSH_PATH_BYTES, RemoteEntry, RemoteEntryKind, RemoteOperatingSystem, RemotePath,
+    SftpNamespaceKind, SshProfileId, infer_sftp_namespace, validate_remote_name_for_namespace,
+    validate_remote_path,
 };
 
 use super::SshView;
 use super::model::Notice;
+use super::ops_connection::is_empty_windows_root;
 use super::render_directory_helpers::{
     RemoteEntryActivation, remote_entry_activation, sort_remote_entries,
 };
@@ -34,6 +36,29 @@ impl SshView {
         requested_path: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.load_directory(id, requested_path, false, cx);
+    }
+
+    pub(super) fn bootstrap_directory(&mut self, id: SshProfileId, cx: &mut Context<Self>) {
+        self.load_directory(id, None, true, cx);
+    }
+
+    pub(super) fn bootstrap_directory_at(
+        &mut self,
+        id: SshProfileId,
+        path: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.load_directory(id, Some(path), true, cx);
+    }
+
+    fn load_directory(
+        &mut self,
+        id: SshProfileId,
+        requested_path: Option<String>,
+        bootstrap: bool,
+        cx: &mut Context<Self>,
+    ) {
         let connection_available = self
             .workspaces
             .iter()
@@ -48,6 +73,15 @@ impl SshView {
             return;
         };
         let path = requested_path.unwrap_or_else(|| workspace.path.clone());
+        if !bootstrap
+            && path != "."
+            && let Some(capabilities) = workspace.capabilities.as_ref()
+            && let Err(error) = RemotePath::parse_with_namespace(&path, capabilities.sftp_namespace)
+        {
+            workspace.sftp_error = Some(format!("远端路径与当前命名空间不匹配：{error}"));
+            cx.notify();
+            return;
+        }
         if workspace.sftp_loading
             && workspace.directory_loading_path.as_deref() == Some(path.as_str())
         {
@@ -61,7 +95,11 @@ impl SshView {
         let profile = workspace.profile.clone();
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let result = service.list_directory(&profile, &path).await;
+            let result = if bootstrap {
+                service.bootstrap_directory(&profile.id, &path).await
+            } else {
+                service.list_directory(&profile, &path).await
+            };
             let _ = this.update(cx, |this, cx| {
                 let Some(workspace) = this.workspace_mut(&id) else {
                     return;
@@ -71,19 +109,30 @@ impl SshView {
                 }
                 workspace.sftp_loading = false;
                 workspace.directory_loading_path = None;
+                let mut retry_windows_root = false;
                 match result {
                     Ok(directory) => {
                         workspace.path = directory.path;
+                        workspace.directory_loaded = true;
                         let mut entries = directory.entries;
                         sort_remote_entries(&mut entries);
                         workspace.entries = std::sync::Arc::new(entries);
                         workspace.selected_path = None;
                         workspace.sftp_error = None;
+                        retry_windows_root = bootstrap
+                            && is_empty_windows_root(
+                                &workspace.path,
+                                workspace.entries.is_empty(),
+                                workspace.capabilities.as_ref(),
+                            );
                         this.persist_workspaces(cx);
                     }
                     Err(error) => {
                         workspace.sftp_error = Some(error.to_string());
                     }
+                }
+                if retry_windows_root {
+                    this.refresh_directory(id.clone(), Some("/".into()), cx);
                 }
                 cx.notify();
             });
@@ -184,18 +233,28 @@ impl SshView {
         name: String,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = validate_remote_name(name.trim()) {
-            self.notice = Some(Notice::error(error));
-            cx.notify();
-            return;
-        }
-        match join_remote_path(&parent_path, name.trim()) {
-            Ok(path) => self.run_remote_mutation(workspace_id, RemoteMutation::Create(path), cx),
+        let name = name.trim();
+        let path = self
+            .workspace_mut(&workspace_id)
+            .and_then(|workspace| workspace.capabilities.as_ref())
+            .ok_or_else(|| "远端能力尚未探测".to_string())
+            .and_then(|capabilities| {
+                new_remote_child(
+                    &parent_path,
+                    name,
+                    capabilities.sftp_namespace,
+                    capabilities.operating_system,
+                )
+            });
+        let path = match path {
+            Ok(path) => path,
             Err(error) => {
                 self.notice = Some(Notice::error(error));
                 cx.notify();
+                return;
             }
-        }
+        };
+        self.run_remote_mutation(workspace_id, RemoteMutation::Create(path), cx);
     }
 
     pub(super) fn prompt_rename_entry(
@@ -235,20 +294,20 @@ impl SshView {
         name: String,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = validate_remote_name(name.trim()) {
-            self.notice = Some(Notice::error(error));
-            cx.notify();
-            return;
-        }
-        let parent_path = match parent_remote_path(&old_path) {
-            Ok(path) => path,
-            Err(error) => {
-                self.notice = Some(Notice::error(error));
-                cx.notify();
-                return;
-            }
-        };
-        match join_remote_path(&parent_path, name.trim()) {
+        let path = self
+            .workspace_mut(&workspace_id)
+            .and_then(|workspace| workspace.capabilities.as_ref())
+            .ok_or_else(|| "远端能力尚未探测".to_string())
+            .and_then(|capabilities| {
+                let old = RemotePath::parse_with_namespace(&old_path, capabilities.sftp_namespace)?;
+                new_remote_child(
+                    old.parent().canonical(),
+                    name.trim(),
+                    capabilities.sftp_namespace,
+                    capabilities.operating_system,
+                )
+            });
+        match path {
             Ok(new_path) => self.run_remote_mutation(
                 workspace_id,
                 RemoteMutation::Rename {
@@ -359,25 +418,64 @@ impl SshView {
     }
 }
 
+fn new_remote_child(
+    parent: &str,
+    name: &str,
+    namespace: SftpNamespaceKind,
+    operating_system: RemoteOperatingSystem,
+) -> Result<String, String> {
+    let name_namespace = if operating_system == RemoteOperatingSystem::Windows {
+        SftpNamespaceKind::WindowsDrive
+    } else {
+        namespace
+    };
+    validate_remote_name_for_namespace(name, name_namespace)?;
+    RemotePath::parse_with_namespace(parent, namespace)?
+        .join_child(name)
+        .map(|path| path.to_string())
+}
+
 pub(super) fn validate_direct_remote_path(path: &str) -> Result<(), String> {
     validate_remote_path(path)?;
-    if path != "." && !path.starts_with('/') {
-        return Err("路径必须以 / 开头".into());
+    if path == "." {
+        return Ok(());
     }
-    Ok(())
+    RemotePath::parse_with_namespace(path, infer_sftp_namespace(path)).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_direct_remote_path;
+    use super::*;
 
     #[test]
     fn direct_remote_path_requires_an_absolute_path_or_default_directory() {
-        for path in ["/", "/es01/home/yuansuan", "."] {
+        for path in ["/", "/es01/home/yuansuan", "C:/Users/Admin", "."] {
             assert!(validate_direct_remote_path(path).is_ok(), "{path}");
         }
-        for path in ["", "es01/home/yuansuan", "/tmp\nroot"] {
+        for path in ["", "es01/home/yuansuan", "C:relative", "/tmp\nroot"] {
             assert!(validate_direct_remote_path(path).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn windows_virtual_root_still_uses_windows_new_name_rules() {
+        assert!(
+            new_remote_child(
+                "/Users/Admin",
+                "report.txt",
+                SftpNamespaceKind::Virtual,
+                RemoteOperatingSystem::Windows,
+            )
+            .is_ok()
+        );
+        assert!(
+            new_remote_child(
+                "/Users/Admin",
+                "CON.txt",
+                SftpNamespaceKind::Virtual,
+                RemoteOperatingSystem::Windows,
+            )
+            .is_err()
+        );
     }
 }

@@ -28,14 +28,18 @@ impl Render for RemoteFileEditor {
         let auto_refresh = self.auto_refresh;
         let has_previous = self.chunk_offset > 0;
         let has_next = self.chunk_end < self.total_bytes;
+        let read_only_metadata = self
+            .read_only_reason()
+            .map_or_else(String::new, |reason| format!(" · 只读（{reason}）"));
         let metadata = if windowed {
             format!(
-                "{} · {}–{} · {} 行 · {} · 只读",
+                "{} · {}–{} · {} 行 · {}{}",
                 format_bytes(self.total_bytes),
                 format_bytes(self.chunk_offset),
                 format_bytes(self.chunk_end),
                 line_count,
                 self.language,
+                read_only_metadata,
             )
         } else {
             format!(
@@ -43,7 +47,7 @@ impl Render for RemoteFileEditor {
                 format_bytes(self.current_bytes as u64),
                 line_count,
                 self.language,
-                if read_only { " · 只读" } else { "" }
+                read_only_metadata,
             )
         };
         let editor_background = cx
@@ -223,5 +227,22 @@ impl Render for RemoteFileEditor {
                             .bg(editor_background),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::remote_file_read_only_reason;
+
+    #[test]
+    fn windows_file_preview_explains_acl_read_only_policy() {
+        assert_eq!(
+            remote_file_read_only_reason(false, true, false, false),
+            Some("Windows ACL 保护")
+        );
+        assert_eq!(
+            remote_file_read_only_reason(false, false, false, false),
+            None
+        );
     }
 }

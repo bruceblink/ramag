@@ -25,7 +25,7 @@ pub use actions::{
     CloseTab, CycleSection, CycleSectionReverse, SelectTool1, SelectTool2, SelectTool3, SelectTool4,
 };
 pub use assets::RamagAssets;
-pub use confirm_dialog::open_confirm;
+pub use confirm_dialog::{open_confirm, open_confirm_with_cancel};
 pub use data_sync_overlay::DataSyncOverlay;
 pub use database_search::{
     DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, DatabaseSearchSettingsGlobal,
@@ -82,11 +82,11 @@ pub fn clickable_switch(id: impl Into<gpui::ElementId>) -> gpui_component::switc
 /// 创建带手型清除按钮的单行输入框。
 pub fn cleanable_input(
     state: &gpui::Entity<gpui_component::input::InputState>,
-    clear_id: impl Into<gpui::ElementId>,
+    clear_id: impl Into<gpui::SharedString>,
     disabled: bool,
     cx: &gpui::App,
 ) -> gpui_component::input::Input {
-    use gpui::Styled as _;
+    use gpui::{InteractiveElement as _, Styled as _};
     use gpui_component::{
         ActiveTheme as _, Icon, IconName, Sizable as _, button::ButtonVariants as _, input::Input,
     };
@@ -97,8 +97,11 @@ pub fn cleanable_input(
     }
 
     let state = state.clone();
+    let clear_id = clear_id.into();
+    let clear_selector = clear_id.to_string();
     input.suffix(
         clickable_button(clear_id)
+            .debug_selector(move || clear_selector.clone())
             .icon(Icon::new(IconName::CircleX))
             .ghost()
             .xsmall()
@@ -107,6 +110,8 @@ pub fn cleanable_input(
             .on_click(move |_, window, cx| {
                 state.update(cx, |state, cx| {
                     state.set_value("", window, cx);
+                    // InputState::set_value 会主动抑制 Change；显式补发以同步调用方筛选状态。
+                    cx.emit(gpui_component::input::InputEvent::Change);
                     state.focus(window, cx);
                 });
             }),

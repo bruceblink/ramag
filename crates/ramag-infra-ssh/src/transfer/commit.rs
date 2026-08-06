@@ -4,26 +4,18 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use ramag_domain::entities::{OverwritePolicy, parent_remote_path, validate_remote_path};
+use ramag_domain::entities::{OverwritePolicy, RemotePath, infer_sftp_namespace};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::session::{StructuredSftpSession, map_sftp_error};
 
 pub(super) fn remote_sibling(target: &str, marker: &str) -> Result<String> {
-    validate_remote_path(target).map_err(DomainError::InvalidConfig)?;
-    let parent = parent_remote_path(target).map_err(DomainError::InvalidConfig)?;
-    let file_name = target
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty() && *name != ".")
-        .ok_or_else(|| DomainError::InvalidConfig("远程传输目标缺少文件名".into()))?;
-    let temporary_name = format!(".{file_name}.{marker}-{}.tmp", Uuid::new_v4());
-    if parent == "/" {
-        Ok(format!("/{temporary_name}"))
-    } else {
-        Ok(format!("{}/{temporary_name}", parent.trim_end_matches('/')))
-    }
+    let target = RemotePath::parse_with_namespace(target, infer_sftp_namespace(target))
+        .map_err(DomainError::InvalidConfig)?;
+    target
+        .temporary_sibling(marker, &Uuid::new_v4().simple().to_string())
+        .map(|path| path.to_string())
+        .map_err(DomainError::InvalidConfig)
 }
 
 pub(super) fn local_sibling(target: &Path) -> Result<PathBuf> {

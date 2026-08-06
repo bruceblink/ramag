@@ -17,11 +17,36 @@ pub fn open_confirm(
     window: &mut Window,
     cx: &mut App,
 ) {
+    open_confirm_with_cancel(
+        title,
+        description,
+        confirm_label,
+        danger,
+        (on_confirm, |_, _| {}),
+        window,
+        cx,
+    );
+}
+
+pub fn open_confirm_with_cancel(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    confirm_label: impl Into<SharedString>,
+    danger: bool,
+    actions: (
+        impl FnOnce(&mut Window, &mut App) + 'static,
+        impl FnOnce(&mut Window, &mut App) + 'static,
+    ),
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (on_confirm, on_cancel) = actions;
     let title: SharedString = title.into();
     let description: SharedString = description.into();
     let confirm_label: SharedString = confirm_label.into();
     // FnOnce 包成可 Clone 的 Fn 句柄
     let on_confirm_cell = Rc::new(RefCell::new(Some(on_confirm)));
+    let on_cancel_cell = Rc::new(RefCell::new(Some(on_cancel)));
 
     window.open_dialog(cx, move |dialog, _, _| {
         let desc = description.clone();
@@ -31,8 +56,14 @@ pub fn open_confirm(
             .ghost()
             .small()
             .label("取消")
-            .on_click(|_: &ClickEvent, window, app| {
-                window.close_dialog(app);
+            .on_click({
+                let cell = on_cancel_cell.clone();
+                move |_: &ClickEvent, window, app| {
+                    if let Some(callback) = cell.borrow_mut().take() {
+                        callback(window, app);
+                    }
+                    window.close_dialog(app);
+                }
             });
 
         let mut ok_btn = crate::clickable_button("ramag-confirm-ok")
@@ -61,6 +92,15 @@ pub fn open_confirm(
                 |_, _| {},
             ))
             .close_button(false)
+            .on_cancel({
+                let cell = on_cancel_cell.clone();
+                move |_, window, app| {
+                    if let Some(callback) = cell.borrow_mut().take() {
+                        callback(window, app);
+                    }
+                    true
+                }
+            })
             .margin_top(px(180.0))
             // 键盘 Enter 走 ConfirmDialog action → button_props.on_ok；设了 footer 后
             // 库会忽略 button_props 的按钮渲染，但 on_ok 仍是 Enter 的回调，必须显式绑定，

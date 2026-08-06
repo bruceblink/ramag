@@ -10,7 +10,9 @@ use ramag_domain::entities::{
 use ramag_terminal::{TerminalCommand, TerminalCore, TerminalView};
 
 use super::SshView;
-use super::model::{Notice, SshWorkspace, TerminalTab, ViewMode, can_close_terminal};
+use super::model::{
+    Notice, SshWorkspace, TerminalTab, ViewMode, can_close_terminal, terminal_index_after_close,
+};
 
 impl SshView {
     pub(super) fn load_initial_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -47,6 +49,7 @@ impl SshView {
                         this.restore_workspaces(preference);
                         if let Some(id) = this.active_workspace_id.clone() {
                             this.sync_directory_filter(&id, window, cx);
+                            this.sync_diagnostic_filter(&id, window, cx);
                             this.connect_workspace(id, window, cx);
                         }
                     }
@@ -146,6 +149,7 @@ impl SshView {
                 });
             self.active_workspace_id = Some(id.clone());
             self.sync_directory_filter(&id, window, cx);
+            self.sync_diagnostic_filter(&id, window, cx);
             self.view_mode = ViewMode::Workspace;
             self.persist_workspaces(cx);
             if needs_connect {
@@ -193,6 +197,7 @@ impl SshView {
         }
         self.active_workspace_id = Some(id.clone());
         self.sync_directory_filter(&id, window, cx);
+        self.sync_diagnostic_filter(&id, window, cx);
         self.view_mode = ViewMode::Workspace;
         self.persist_workspaces(cx);
         self.connect_workspace(id, window, cx);
@@ -216,6 +221,23 @@ impl SshView {
         });
     }
 
+    fn sync_diagnostic_filter(
+        &mut self,
+        id: &SshProfileId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == id)
+            .map(|workspace| workspace.diagnostic_query.clone())
+            .unwrap_or_default();
+        self.diagnostic_search.update(cx, |state, cx| {
+            state.set_value(query, window, cx);
+        });
+    }
+
     pub(super) fn connect_active_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view_mode != ViewMode::Workspace {
             return;
@@ -223,19 +245,6 @@ impl SshView {
         if let Some(id) = self.active_workspace_id.clone() {
             self.connect_workspace(id, window, cx);
         }
-    }
-
-    fn connect_workspace(&mut self, id: SshProfileId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.workspace_mut(&id) {
-            workspace.connection_started = true;
-        }
-        let should_start_terminal = self
-            .workspace_mut(&id)
-            .is_some_and(|workspace| workspace.terminals.is_empty());
-        if should_start_terminal {
-            self.start_terminal(id.clone(), None, window, cx);
-        }
-        self.refresh_directory(id, None, cx);
     }
 
     pub(super) fn start_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -276,18 +285,39 @@ impl SshView {
             })
             .is_some_and(|terminal| terminal.view.read(cx).core().exit_status().is_some());
         if self.view_mode == ViewMode::Workspace && exited {
-            // 保留已退出终端的输出，新建连接避免重连失败时丢失现场。
-            self.start_terminal(workspace_id, None, window, cx);
+            // 重连必须复用当前标签；失败时保留旧视图，成功后只替换其 PTY。
+            self.start_terminal_request(workspace_id, None, Some(terminal_id), window, cx);
         }
     }
 
-    fn start_terminal(
+    pub(super) fn start_terminal(
         &mut self,
         id: SshProfileId,
         initial_directory: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_terminal_request(id, initial_directory, None, window, cx);
+    }
+
+    fn start_terminal_request(
+        &mut self,
+        id: SshProfileId,
+        initial_directory: Option<String>,
+        reconnect_terminal_id: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == &id)
+            .is_some_and(|workspace| workspace.profile.production)
+        {
+            self.notice = Some(Notice::error("生产模式禁止完整终端，请使用低影响只读诊断"));
+            cx.notify();
+            return;
+        }
         let connection_available = self
             .workspaces
             .iter()
@@ -301,7 +331,9 @@ impl SshView {
         let Some(workspace) = self.workspace_mut(&id) else {
             return;
         };
-        if workspace.terminals.len() >= MAX_SSH_TERMINALS_PER_WORKSPACE {
+        if reconnect_terminal_id.is_none()
+            && workspace.terminals.len() >= MAX_SSH_TERMINALS_PER_WORKSPACE
+        {
             self.notice = Some(Notice::error(format!(
                 "终端已满（最多同时 {MAX_SSH_TERMINALS_PER_WORKSPACE} 个）"
             )));
@@ -314,29 +346,14 @@ impl SshView {
         workspace.terminal_loading = true;
         workspace.terminal_generation = workspace.terminal_generation.wrapping_add(1);
         let generation = workspace.terminal_generation;
-        let profile = workspace.profile.clone();
+        let profile_id = workspace.profile.id.clone();
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, async_cx| {
             let command = service
-                .terminal_command(&profile, initial_directory.as_deref())
+                .terminal_command(&profile_id, initial_directory.as_deref())
                 .await;
-            let result = match command {
-                Ok(command) => {
-                    let executable = command.program.clone();
-                    let mut terminal_command = TerminalCommand::new(command.program, command.args);
-                    terminal_command.env = command.env;
-                    match TerminalCore::start(terminal_command) {
-                        Ok(core) => Ok(core),
-                        Err(error) => {
-                            service.report_terminal_launch_failure(&executable).await;
-                            Err(error)
-                        }
-                    }
-                }
-                Err(error) => Err(ramag_terminal::TerminalError(error.to_string())),
-            };
             let _ = this.update_in(async_cx, |this, window, cx| {
-                let next_terminal_id = this.next_terminal_id;
+                let new_terminal_id = this.next_terminal_id;
                 let Some(workspace) = this.workspace_mut(&id) else {
                     return;
                 };
@@ -344,24 +361,67 @@ impl SshView {
                     return;
                 }
                 workspace.terminal_loading = false;
+                let result = match command {
+                    Ok(command) if service.terminal_launch_is_current(&command) => {
+                        let executable = command.program.clone();
+                        let mut terminal_command =
+                            TerminalCommand::new(command.program, command.args);
+                        terminal_command.env = command.env;
+                        let result = TerminalCore::start(terminal_command);
+                        if result.is_err() {
+                            let service = service.clone();
+                            cx.spawn(async move |_, _| {
+                                service.report_terminal_launch_failure(&executable).await;
+                            })
+                            .detach();
+                        }
+                        result
+                    }
+                    Ok(_) => Err(ramag_terminal::TerminalError(
+                        "终端启动已因生产状态变化而取消".into(),
+                    )),
+                    Err(error) => Err(ramag_terminal::TerminalError(error.to_string())),
+                };
                 match result {
                     Ok(core) => {
+                        let shell =
+                            workspace.capabilities.as_ref().map_or(
+                                ramag_domain::entities::RemoteShellKind::Unknown,
+                                |value| value.shell,
+                            );
                         let terminal: Entity<TerminalView> =
                             cx.new(|cx| TerminalView::new(core, window, cx));
                         let terminal_for_focus = terminal.clone();
-                        let label = workspace.next_terminal_label();
-                        workspace.terminals.push(TerminalTab {
-                            id: next_terminal_id,
-                            label,
-                            view: terminal,
-                        });
-                        workspace.active_terminal_id = Some(next_terminal_id);
+                        let terminal_id = reconnect_terminal_id.unwrap_or(new_terminal_id);
+                        let replaced = if let Some(target_id) = reconnect_terminal_id {
+                            let Some(existing) = workspace
+                                .terminals
+                                .iter_mut()
+                                .find(|terminal| terminal.id == target_id)
+                            else {
+                                return;
+                            };
+                            existing.view = terminal;
+                            true
+                        } else {
+                            let label = workspace.next_terminal_label();
+                            workspace.terminals.push(TerminalTab {
+                                id: terminal_id,
+                                label,
+                                view: terminal,
+                            });
+                            false
+                        };
+                        workspace.active_terminal_id = Some(terminal_id);
                         tracing::info!(
                             profile_id = %id,
-                            terminal_id = next_terminal_id,
-                            "ssh terminal opened"
+                            terminal_id,
+                            reconnect = replaced,
+                            "ssh terminal session ready"
                         );
-                        this.next_terminal_id = this.next_terminal_id.wrapping_add(1).max(1);
+                        if !replaced {
+                            this.next_terminal_id = this.next_terminal_id.wrapping_add(1).max(1);
+                        }
                         this.notice = None;
                         if this.view_mode == ViewMode::Workspace
                             && this.active_workspace_id.as_ref() == Some(&id)
@@ -371,14 +431,21 @@ impl SshView {
                                 .focus_handle(cx)
                                 .focus(window, cx);
                         }
-                        if let Some(path) = initial_directory.clone() {
-                            this.enter_terminal_directory_when_ready(
+                        match initial_directory.clone() {
+                            Some(path) => this.enter_terminal_directory_when_ready(
                                 id.clone(),
-                                next_terminal_id,
+                                terminal_id,
                                 path,
+                                shell,
                                 window,
                                 cx,
-                            );
+                            ),
+                            None => this.load_windows_directory_from_terminal_when_ready(
+                                id.clone(),
+                                terminal_id,
+                                window,
+                                cx,
+                            ),
                         }
                     }
                     Err(error) => {
@@ -428,7 +495,7 @@ impl SshView {
             .workspace_mut(&workspace_id)
             .and_then(|workspace| workspace.active_terminal_id);
         if let Some(terminal_id) = terminal_id {
-            self.close_terminal(workspace_id, terminal_id, cx);
+            self.close_terminal(workspace_id, terminal_id, window, cx);
         } else {
             self.request_close_workspace(workspace_id, window, cx);
         }
@@ -438,32 +505,40 @@ impl SshView {
         &mut self,
         workspace_id: SshProfileId,
         terminal_id: u64,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(workspace) = self.workspace_mut(&workspace_id) else {
-            return;
+        let next_terminal = {
+            let Some(workspace) = self.workspace_mut(&workspace_id) else {
+                return;
+            };
+            if !can_close_terminal(workspace.terminals.len()) {
+                return;
+            }
+            let Some(index) = workspace
+                .terminals
+                .iter()
+                .position(|terminal| terminal.id == terminal_id)
+            else {
+                return;
+            };
+            workspace.terminals.remove(index);
+            if workspace.active_terminal_id == Some(terminal_id) {
+                let terminal = terminal_index_after_close(index, workspace.terminals.len())
+                    .and_then(|index| workspace.terminals.get(index));
+                workspace.active_terminal_id = terminal.map(|terminal| terminal.id);
+                terminal.map(|terminal| terminal.view.clone())
+            } else {
+                None
+            }
         };
-        if !can_close_terminal(workspace.terminals.len()) {
-            return;
-        }
-        let Some(index) = workspace
-            .terminals
-            .iter()
-            .position(|terminal| terminal.id == terminal_id)
-        else {
-            return;
-        };
-        workspace.terminals.remove(index);
         tracing::info!(
             profile_id = %workspace_id,
             terminal_id,
             "ssh terminal closed"
         );
-        if workspace.active_terminal_id == Some(terminal_id) {
-            workspace.active_terminal_id = workspace
-                .terminals
-                .get(index.min(workspace.terminals.len().saturating_sub(1)))
-                .map(|terminal| terminal.id);
+        if let Some(terminal) = next_terminal {
+            terminal.read(cx).focus_handle(cx).focus(window, cx);
         }
         cx.notify();
     }
@@ -512,8 +587,12 @@ impl SshView {
             self.directory_search.update(cx, |state, cx| {
                 state.set_value("", window, cx);
             });
+            self.diagnostic_search.update(cx, |state, cx| {
+                state.set_value("", window, cx);
+            });
         } else if let Some(active_id) = self.active_workspace_id.clone() {
             self.sync_directory_filter(&active_id, window, cx);
+            self.sync_diagnostic_filter(&active_id, window, cx);
         }
         self.persist_workspaces(cx);
         let service = self.service.clone();

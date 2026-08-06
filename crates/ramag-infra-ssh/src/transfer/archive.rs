@@ -13,8 +13,10 @@ use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 
 use ramag_domain::entities::{
-    MAX_REMOTE_ARCHIVE_DEPTH, MAX_REMOTE_ARCHIVE_ENTRIES, MAX_REMOTE_ARCHIVE_RETAINED_BYTES,
-    MAX_SSH_PATH_BYTES, OverwritePolicy, SshProgressFn, TransferCancellation, join_remote_path,
+    MAX_PRODUCTION_DIRECTORY_ENTRIES, MAX_PRODUCTION_DOWNLOAD_BYTES,
+    MAX_PRODUCTION_DOWNLOAD_SECONDS, MAX_REMOTE_ARCHIVE_DEPTH, MAX_REMOTE_ARCHIVE_ENTRIES,
+    MAX_REMOTE_ARCHIVE_RETAINED_BYTES, MAX_SSH_PATH_BYTES, OverwritePolicy, RemotePath,
+    SftpNamespaceKind, SshProgressFn, TransferCancellation, infer_sftp_namespace, join_remote_path,
     validate_remote_name, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
@@ -51,6 +53,7 @@ struct RemoteReadState {
     size: u64,
     completed_before: u64,
     archive_total: u64,
+    deadline: Option<std::time::Instant>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,6 +64,7 @@ pub(super) async fn download_directory(
     overwrite: OverwritePolicy,
     cancellation: TransferCancellation,
     progress: SshProgressFn,
+    production: bool,
 ) -> Result<()> {
     ensure_not_cancelled(&cancellation)?;
     let target_exists = tokio::fs::try_exists(&local_path)
@@ -71,7 +75,10 @@ pub(super) async fn download_directory(
             "本地目标已存在；请明确确认覆盖后重试".into(),
         ));
     }
-    let plan = scan_directory(&session, &remote_path, &cancellation).await?;
+    let deadline = production.then(|| {
+        std::time::Instant::now() + std::time::Duration::from_secs(MAX_PRODUCTION_DOWNLOAD_SECONDS)
+    });
+    let plan = scan_directory(&session, &remote_path, &cancellation, production, deadline).await?;
     progress(0, plan.total_bytes);
     let temporary = local_sibling(&local_path)?;
     let result = write_archive(
@@ -80,6 +87,7 @@ pub(super) async fn download_directory(
         plan,
         cancellation.clone(),
         progress.clone(),
+        deadline,
     )
     .await;
     if let Err(error) = result {
@@ -101,6 +109,8 @@ async fn scan_directory(
     session: &StructuredSftpSession,
     remote_path: &str,
     cancellation: &TransferCancellation,
+    production: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<ArchivePlan> {
     validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
     let canonical = session
@@ -118,21 +128,44 @@ async fn scan_directory(
     if !root_attributes.is_dir() {
         return Err(DomainError::InvalidConfig("下载源必须是目录".into()));
     }
-    let root_name = canonical
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or("root");
+    let canonical_path =
+        RemotePath::parse_with_namespace(&canonical, infer_sftp_namespace(&canonical))
+            .map_err(DomainError::InvalidConfig)?;
+    let root_name = if canonical_path.is_root() {
+        match canonical_path.namespace() {
+            SftpNamespaceKind::WindowsDrive => "drive-root",
+            SftpNamespaceKind::Posix | SftpNamespaceKind::Virtual | SftpNamespaceKind::Unknown => {
+                "root"
+            }
+        }
+    } else {
+        canonical
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("root")
+    };
     validate_remote_name(root_name).map_err(DomainError::InvalidConfig)?;
 
     let root_archive = async_std::path::PathBuf::from(root_name);
+    let max_entries = if production {
+        MAX_PRODUCTION_DIRECTORY_ENTRIES
+    } else {
+        MAX_REMOTE_ARCHIVE_ENTRIES
+    };
+    let max_bytes = if production {
+        MAX_PRODUCTION_DOWNLOAD_BYTES
+    } else {
+        u64::MAX
+    };
     let mut queue = VecDeque::from([(canonical.clone(), root_archive.clone(), 0usize)]);
     let mut seen = HashSet::from([canonical]);
     let mut entries = Vec::new();
     let mut retained_bytes = 0usize;
     let mut total_bytes = 0u64;
     while let Some((directory, archive_path, depth)) = queue.pop_front() {
+        ensure_archive_deadline(deadline)?;
         ensure_not_cancelled(cancellation)?;
         let current_attributes = session
             .raw
@@ -155,13 +188,14 @@ async fn scan_directory(
             attributes: archive_attributes(&current_attributes),
             kind: ArchiveKind::Directory,
         });
-        if entries.len() > MAX_REMOTE_ARCHIVE_ENTRIES {
-            return Err(archive_entry_limit());
+        if entries.len() > max_entries {
+            return Err(archive_entry_limit(max_entries));
         }
-        let remaining = MAX_REMOTE_ARCHIVE_ENTRIES.saturating_sub(entries.len());
+        let remaining = max_entries.saturating_sub(entries.len());
         let mut children = read_directory_files(session, &directory, remaining).await?;
         children.sort_by(|left, right| left.filename.cmp(&right.filename));
         for child in children {
+            ensure_archive_deadline(deadline)?;
             ensure_not_cancelled(cancellation)?;
             validate_remote_name(&child.filename)
                 .map_err(|error| DomainError::Other(format!("远端返回了无效文件名：{error}")))?;
@@ -192,6 +226,12 @@ async fn scan_directory(
                 total_bytes = total_bytes.checked_add(child.attrs.len()).ok_or_else(|| {
                     DomainError::Forbidden("目录文件总大小溢出，已停止下载".into())
                 })?;
+                if total_bytes > max_bytes {
+                    return Err(DomainError::Forbidden(format!(
+                        "远程目录文件总大小超过 {} MiB 生产下载上限",
+                        max_bytes / 1024 / 1024
+                    )));
+                }
                 ArchiveKind::File
             } else if child.attrs.is_symlink() {
                 let target = read_link(session, &child_remote).await?;
@@ -214,8 +254,8 @@ async fn scan_directory(
                 attributes: archive_attributes(&child.attrs),
                 kind,
             });
-            if entries.len() > MAX_REMOTE_ARCHIVE_ENTRIES {
-                return Err(archive_entry_limit());
+            if entries.len() > max_entries {
+                return Err(archive_entry_limit(max_entries));
             }
         }
     }
@@ -263,6 +303,7 @@ async fn write_archive(
     plan: ArchivePlan,
     cancellation: TransferCancellation,
     progress: SshProgressFn,
+    deadline: Option<std::time::Instant>,
 ) -> Result<()> {
     let destination = async_std::fs::OpenOptions::new()
         .write(true)
@@ -274,6 +315,7 @@ async fn write_archive(
     let mut archive = Builder::new(encoder);
     let mut completed = 0u64;
     for entry in plan.entries {
+        ensure_archive_deadline(deadline)?;
         ensure_not_cancelled(&cancellation)?;
         let mut header = archive_header(&entry);
         match &entry.kind {
@@ -302,6 +344,7 @@ async fn write_archive(
                     progress.clone(),
                     completed,
                     plan.total_bytes,
+                    deadline,
                 )
                 .await?;
                 completed = completed.saturating_add(entry.attributes.len());
@@ -335,6 +378,7 @@ async fn append_remote_file<W>(
     progress: SshProgressFn,
     completed_before: u64,
     archive_total: u64,
+    deadline: Option<std::time::Instant>,
 ) -> Result<()>
 where
     W: async_std::io::Write + Unpin + Send + Sync,
@@ -376,11 +420,13 @@ where
             size: opened.len(),
             completed_before,
             archive_total,
+            deadline,
         },
         |mut state| async move {
             if state.offset == state.size {
                 return Ok(None);
             }
+            ensure_archive_deadline(state.deadline).map_err(domain_to_io)?;
             ensure_not_cancelled(&state.cancellation).map_err(domain_to_io)?;
             let remaining = state.size - state.offset;
             let request = remaining.min(u64::from(state.session.read_chunk_bytes)) as u32;
@@ -432,6 +478,15 @@ where
         (Err(_), Err(error @ DomainError::ConnectionFailed(_))) => Err(error),
         (Err(error), _) => Err(error),
     }
+}
+
+fn ensure_archive_deadline(deadline: Option<std::time::Instant>) -> Result<()> {
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return Err(DomainError::Other(format!(
+            "生产目录下载超过 {MAX_PRODUCTION_DOWNLOAD_SECONDS} 秒硬超时"
+        )));
+    }
+    Ok(())
 }
 
 fn archive_header(entry: &ArchiveEntry) -> Header {
@@ -490,8 +545,8 @@ fn charge_retained_bytes(retained: &mut usize, additional: usize, limit: usize) 
     Ok(())
 }
 
-fn archive_entry_limit() -> DomainError {
-    DomainError::Forbidden(format!("目录项目超过 {MAX_REMOTE_ARCHIVE_ENTRIES} 个"))
+fn archive_entry_limit(max_entries: usize) -> DomainError {
+    DomainError::Forbidden(format!("目录项目超过 {max_entries} 个"))
 }
 
 fn domain_to_io(error: DomainError) -> io::Error {

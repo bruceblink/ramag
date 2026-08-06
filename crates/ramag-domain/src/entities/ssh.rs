@@ -9,6 +9,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::ssh_diagnostic::RemotePlatformPreference;
+use super::ssh_remote_path::{RemotePath, infer_sftp_namespace};
+
 pub const MAX_SSH_PROFILES: usize = 1024;
 pub const MAX_SSH_PROFILE_NAME_BYTES: usize = 256;
 pub const MAX_SSH_HOST_BYTES: usize = 1024;
@@ -29,6 +32,10 @@ pub const MAX_REMOTE_ARCHIVE_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFER_HISTORY: usize = 100;
 pub const MAX_QUEUED_TRANSFERS: usize = 64;
 pub const MAX_CONCURRENT_TRANSFERS: usize = 3;
+pub const MAX_PRODUCTION_DIRECTORY_ENTRIES: usize = 5_000;
+pub const MAX_PRODUCTION_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_CONCURRENT_PRODUCTION_DOWNLOADS: usize = 1;
+pub const MAX_PRODUCTION_DOWNLOAD_SECONDS: u64 = 300;
 pub const MAX_SSH_WORKSPACES: usize = 16;
 pub const MAX_SSH_TERMINALS_PER_WORKSPACE: usize = 8;
 pub const MAX_SSH_FAVORITE_PATHS_PER_PROFILE: usize = 16;
@@ -75,15 +82,18 @@ pub enum SshProfileOrigin {
 pub struct SshProfile {
     pub id: SshProfileId,
     pub name: String,
-    /// 连接来源仅用于保留导入语义和品牌展示，不改变 SSH 行为。
+    /// 连接来源用于保留导入语义，并选择 JumpServer 互操作通道。
     #[serde(default)]
     pub origin: SshProfileOrigin,
     /// 环境仅用于列表徽章展示，不影响连接行为。
     #[serde(default)]
     pub environment: Option<String>,
-    /// 生产模式保留 SSH Terminal，仅禁止 SFTP 远程写操作。
+    /// 生产模式禁止完整 SSH Terminal，并禁止 SFTP 远程写操作。
     #[serde(default)]
     pub production: bool,
+    /// 用户对远端平台的偏好；真实平台仍由当前会话探测确认。
+    #[serde(default)]
+    pub remote_platform: RemotePlatformPreference,
     /// 主机名、IP 或 `~/.ssh/config` 别名。
     pub host: String,
     /// 留空时由 `~/.ssh/config` 决定，未配置则由 OpenSSH 使用 22。
@@ -111,6 +121,7 @@ impl SshProfile {
             origin: SshProfileOrigin::Manual,
             environment: None,
             production: false,
+            remote_platform: RemotePlatformPreference::Auto,
             host: host.into(),
             port: None,
             username: String::new(),
@@ -198,6 +209,8 @@ pub struct SshCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshLaunchCommand {
     pub profile_id: SshProfileId,
+    /// 应用层终端策略代次；启动 PTY 前必须再次确认仍为当前代次。
+    pub authorization_generation: u64,
     pub program: String,
     pub args: Vec<String>,
     /// 不含明文密码；一次性 AskPass 令牌仍只应传给目标进程。
@@ -236,7 +249,7 @@ pub struct RemoteFilePreview {
 }
 
 /// 远程文件分段读取位置；每次返回的数据仍受预览字节上限约束。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteFileChunkPosition {
     From(u64),
     Before(u64),
@@ -430,31 +443,15 @@ pub fn validate_remote_name(name: &str) -> Result<(), String> {
 }
 
 pub fn join_remote_path(parent: &str, name: &str) -> Result<String, String> {
-    validate_remote_path(parent)?;
-    validate_remote_name(name)?;
-    let joined = if parent == "/" {
-        format!("/{name}")
-    } else {
-        format!("{}/{name}", parent.trim_end_matches('/'))
-    };
-    validate_remote_path(&joined)?;
-    Ok(joined)
+    let namespace = infer_sftp_namespace(parent);
+    let parent = RemotePath::parse_with_namespace(parent, namespace)?;
+    parent.join_child(name).map(|path| path.to_string())
 }
 
 pub fn parent_remote_path(path: &str) -> Result<String, String> {
-    validate_remote_path(path)?;
-    if path == "/" {
-        return Ok("/".into());
-    }
-    let trimmed = path.trim_end_matches('/');
-    let Some(index) = trimmed.rfind('/') else {
-        return Ok(".".into());
-    };
-    Ok(if index == 0 {
-        "/".into()
-    } else {
-        trimmed[..index].to_string()
-    })
+    let namespace = infer_sftp_namespace(path);
+    let path = RemotePath::parse_with_namespace(path, namespace)?;
+    Ok(path.parent().to_string())
 }
 
 pub fn validate_local_transfer_path(path: &Path) -> Result<(), String> {
@@ -466,10 +463,12 @@ pub fn validate_local_transfer_path(path: &Path) -> Result<(), String> {
 
 fn validate_initial_remote_path(path: &str) -> Result<(), String> {
     validate_remote_path(path)?;
-    if path != "." && !path.starts_with('/') {
-        return Err("初始远程目录必须是绝对路径，或使用 . 表示默认目录".into());
+    if path == "." {
+        return Ok(());
     }
-    Ok(())
+    RemotePath::parse_server_canonical(path)
+        .map(|_| ())
+        .map_err(|_| "初始远程目录必须是 /path、C:/path，或使用 . 表示默认目录".into())
 }
 
 fn validate_absolute_local_path(label: &str, value: &str) -> Result<(), String> {

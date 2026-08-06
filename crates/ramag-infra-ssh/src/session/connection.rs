@@ -26,8 +26,15 @@ use crate::command::configure_no_window;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 const STDERR_LIMIT: usize = 16 * 1024;
+const TEXT_PREAMBLE_LIMIT: usize = 16 * 1024;
 const MAX_SFTP_PACKET_BYTES: u32 = 256 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SftpTransport {
+    Subsystem,
+    WindowsRemoteServer,
+}
 
 #[derive(Clone)]
 pub struct SessionCache {
@@ -52,6 +59,7 @@ impl SessionCache {
         profile: &SshProfile,
         program: &str,
         args: &[String],
+        transport: SftpTransport,
     ) -> Result<Arc<SftpConnection>> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(DomainError::ConnectionFailed(
@@ -68,7 +76,7 @@ impl SessionCache {
         let stale = {
             let mut connections = self.connections.lock().await;
             match connections.get(&profile.id) {
-                Some(connection) if connection.matches(profile, program) => {
+                Some(connection) if connection.matches(profile, program, args, transport) => {
                     return Ok(connection.clone());
                 }
                 Some(_) => connections.remove(&profile.id),
@@ -80,8 +88,9 @@ impl SessionCache {
         }
 
         let environment = self.askpass.environment(profile)?;
-        let created =
-            Arc::new(SftpConnection::connect(profile, program, args, &environment).await?);
+        let created = Arc::new(
+            SftpConnection::connect(profile, program, args, transport, &environment).await?,
+        );
         let replaced = self
             .connections
             .lock()
@@ -141,6 +150,8 @@ pub struct SftpConnection {
     pub session: Arc<StructuredSftpSession>,
     profile: SshProfile,
     program: String,
+    args: Vec<String>,
+    transport: SftpTransport,
     child: Mutex<Option<Child>>,
     protocol_task: Mutex<Option<JoinHandle<()>>>,
     stderr_task: Mutex<Option<JoinHandle<()>>>,
@@ -175,6 +186,7 @@ impl SftpConnection {
         profile: &SshProfile,
         program: &str,
         args: &[String],
+        transport: SftpTransport,
         environment: &HashMap<String, String>,
     ) -> Result<Self> {
         let mut command = Command::new(program);
@@ -201,7 +213,11 @@ impl SftpConnection {
         let stderr_tail = Arc::new(ParkingMutex::new(VecDeque::with_capacity(STDERR_LIMIT)));
         let stderr_task = tokio::spawn(drain_stderr(stderr, stderr_tail.clone()));
         let (protocol_reader, protocol_writer) = tokio::io::duplex(MAX_SFTP_PACKET_BYTES as usize);
-        let protocol_task = tokio::spawn(relay_bounded_packets(stdout, protocol_writer));
+        let protocol_task = tokio::spawn(relay_bounded_packets(
+            stdout,
+            protocol_writer,
+            transport == SftpTransport::WindowsRemoteServer,
+        ));
         let stream = tokio::io::join(protocol_reader, stdin);
 
         let session = match timeout(CONNECT_TIMEOUT, initialize_session(stream)).await {
@@ -222,12 +238,18 @@ impl SftpConnection {
                 ));
             }
         };
-        tracing::info!(profile_id = %profile.id, "ssh sftp session connected");
+        tracing::info!(
+            profile_id = %profile.id,
+            transport = ?transport,
+            "ssh sftp session connected"
+        );
 
         Ok(Self {
             session: Arc::new(session),
             profile: profile.clone(),
             program: program.into(),
+            args: args.to_vec(),
+            transport,
             child: Mutex::new(Some(child)),
             protocol_task: Mutex::new(Some(protocol_task)),
             stderr_task: Mutex::new(Some(stderr_task)),
@@ -235,8 +257,17 @@ impl SftpConnection {
         })
     }
 
-    fn matches(&self, profile: &SshProfile, program: &str) -> bool {
-        self.profile == *profile && self.program == program
+    fn matches(
+        &self,
+        profile: &SshProfile,
+        program: &str,
+        args: &[String],
+        transport: SftpTransport,
+    ) -> bool {
+        self.profile == *profile
+            && self.program == program
+            && self.args == args
+            && self.transport == transport
     }
 
     pub async fn close(&self) {
@@ -327,14 +358,33 @@ fn bounded_chunk(server_limit: Option<u64>) -> u32 {
         .clamp(1, u64::from(u32::MAX)) as u32
 }
 
-async fn relay_bounded_packets<R, W>(mut stdout: R, mut destination: W)
+async fn relay_bounded_packets<R, W>(mut stdout: R, mut destination: W, allow_text_preamble: bool)
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let mut header = [0u8; 4];
+    let Some((header, first_body_byte)) =
+        read_first_packet_header(&mut stdout, allow_text_preamble).await
+    else {
+        let _ = destination.shutdown().await;
+        return;
+    };
     let mut buffer = [0u8; 32 * 1024];
+    if let Err(error) = relay_packet(
+        &mut stdout,
+        &mut destination,
+        header,
+        first_body_byte,
+        &mut buffer,
+    )
+    .await
+    {
+        tracing::warn!(error = %error, "relay ssh sftp first packet failed");
+        let _ = destination.shutdown().await;
+        return;
+    }
     loop {
+        let mut header = [0u8; 4];
         match stdout.read_exact(&mut header).await {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -343,38 +393,93 @@ where
                 break;
             }
         }
-        let packet_bytes = u32::from_be_bytes(header);
-        if packet_bytes == 0 || packet_bytes > MAX_SFTP_PACKET_BYTES {
-            tracing::warn!(packet_bytes, "ssh sftp packet exceeded safety limit");
-            break;
-        }
-        if let Err(error) = destination.write_all(&header).await {
-            tracing::warn!(error = %error, "relay ssh sftp packet header failed");
-            break;
-        }
-        let mut remaining = packet_bytes as usize;
-        let mut relay_failed = false;
-        while remaining > 0 {
-            let chunk = remaining.min(buffer.len());
-            if let Err(error) = stdout.read_exact(&mut buffer[..chunk]).await {
-                tracing::warn!(error = %error, "read ssh sftp packet body failed");
-                relay_failed = true;
-                break;
-            }
-            if let Err(error) = destination.write_all(&buffer[..chunk]).await {
-                tracing::warn!(error = %error, "relay ssh sftp packet body failed");
-                relay_failed = true;
-                break;
-            }
-            remaining -= chunk;
-        }
-        if relay_failed {
+        if let Err(error) =
+            relay_packet(&mut stdout, &mut destination, header, None, &mut buffer).await
+        {
+            tracing::warn!(error = %error, "relay ssh sftp packet failed");
             break;
         }
     }
     if let Err(error) = destination.shutdown().await {
         tracing::warn!(error = %error, "shutdown ssh sftp protocol relay failed");
     }
+}
+
+async fn read_first_packet_header<R>(
+    stdout: &mut R,
+    allow_text_preamble: bool,
+) -> Option<([u8; 4], Option<u8>)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    if !allow_text_preamble {
+        let mut header = [0u8; 4];
+        return stdout
+            .read_exact(&mut header)
+            .await
+            .ok()
+            .map(|_| (header, None));
+    }
+    let mut scanned = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+    while scanned.len() < TEXT_PREAMBLE_LIMIT {
+        if let Err(error) = stdout.read_exact(&mut byte).await {
+            if error.kind() != std::io::ErrorKind::UnexpectedEof {
+                tracing::warn!(error = %error, "read ssh sftp first packet failed");
+            }
+            return None;
+        }
+        scanned.push(byte[0]);
+        if scanned.len() < 5 {
+            continue;
+        }
+        let start = scanned.len() - 5;
+        let header: [u8; 4] = scanned[start..start + 4].try_into().ok()?;
+        let packet_bytes = u32::from_be_bytes(header);
+        // 首包必须是 SSH_FXP_VERSION（类型 2），且至少含类型和版本号。
+        if (5..=MAX_SFTP_PACKET_BYTES).contains(&packet_bytes) && scanned[start + 4] == 2 {
+            if start > 0 {
+                tracing::info!(bytes = start, "ignored jumpserver sftp text preamble");
+            }
+            return Some((header, Some(2)));
+        }
+    }
+    tracing::warn!("jumpserver sftp text preamble exceeded safety limit");
+    None
+}
+
+async fn relay_packet<R, W>(
+    stdout: &mut R,
+    destination: &mut W,
+    header: [u8; 4],
+    first_body_byte: Option<u8>,
+    buffer: &mut [u8],
+) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let packet_bytes = u32::from_be_bytes(header);
+    if packet_bytes == 0 || packet_bytes > MAX_SFTP_PACKET_BYTES {
+        tracing::warn!(packet_bytes, "ssh sftp packet exceeded safety limit");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid sftp packet size",
+        ));
+    }
+    destination.write_all(&header).await?;
+    let mut remaining = packet_bytes as usize;
+    if let Some(first) = first_body_byte {
+        destination.write_all(&[first]).await?;
+        remaining = remaining.saturating_sub(1);
+    }
+    while remaining > 0 {
+        let chunk = remaining.min(buffer.len());
+        stdout.read_exact(&mut buffer[..chunk]).await?;
+        destination.write_all(&buffer[..chunk]).await?;
+        remaining -= chunk;
+    }
+    Ok(())
 }
 
 async fn drain_stderr(
@@ -420,7 +525,8 @@ fn connection_error(protocol_error: String, stderr: &VecDeque<u8>) -> DomainErro
         || lower.contains("no host key is known")
         || lower.contains("remote host identification has changed")
     {
-        "主机指纹尚未受信任或已变化。请先在 Terminal 中核对并确认主机指纹，再重试文件连接。".into()
+        "主机指纹尚未受信任或已变化。请先通过受信任渠道核对指纹并写入 known_hosts，再重试连接。"
+            .into()
     } else if lower.contains("permission denied")
         || lower.contains("password")
         || lower.contains("passphrase")
@@ -461,7 +567,7 @@ mod tests {
         assert!(
             connection_error("bad".into(), &host_key)
                 .message()
-                .contains("Terminal")
+                .contains("known_hosts")
         );
         let auth = VecDeque::from(b"Permission denied (publickey,password)".to_vec());
         assert!(
@@ -483,7 +589,7 @@ mod tests {
     async fn packet_relay_forwards_valid_frame_and_rejects_oversized_frame() {
         let (mut input, input_reader) = tokio::io::duplex(64);
         let (mut output_reader, output) = tokio::io::duplex(64);
-        let relay = tokio::spawn(relay_bounded_packets(input_reader, output));
+        let relay = tokio::spawn(relay_bounded_packets(input_reader, output, false));
         input.write_all(&3u32.to_be_bytes()).await.unwrap();
         input.write_all(&[1, 2, 3]).await.unwrap();
         input.shutdown().await.unwrap();
@@ -494,7 +600,7 @@ mod tests {
 
         let (mut input, input_reader) = tokio::io::duplex(64);
         let (mut output_reader, output) = tokio::io::duplex(64);
-        let relay = tokio::spawn(relay_bounded_packets(input_reader, output));
+        let relay = tokio::spawn(relay_bounded_packets(input_reader, output, false));
         input
             .write_all(&(MAX_SFTP_PACKET_BYTES + 1).to_be_bytes())
             .await
@@ -504,5 +610,24 @@ mod tests {
         output_reader.read_to_end(&mut forwarded).await.unwrap();
         relay.await.unwrap();
         assert!(forwarded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn packet_relay_skips_a_bounded_jumpserver_banner_before_version() {
+        let (mut input, input_reader) = tokio::io::duplex(256);
+        let (mut output_reader, output) = tokio::io::duplex(256);
+        let relay = tokio::spawn(relay_bounded_packets(input_reader, output, true));
+        input
+            .write_all(b"Welcome to JumpServer SSH Server\r\n")
+            .await
+            .unwrap();
+        input.write_all(&5u32.to_be_bytes()).await.unwrap();
+        input.write_all(&[2, 0, 0, 0, 3]).await.unwrap();
+        input.shutdown().await.unwrap();
+        let mut forwarded = Vec::new();
+        output_reader.read_to_end(&mut forwarded).await.unwrap();
+        relay.await.unwrap();
+
+        assert_eq!(forwarded, [0, 0, 0, 5, 2, 0, 0, 0, 3]);
     }
 }

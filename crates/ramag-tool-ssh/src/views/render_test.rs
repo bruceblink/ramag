@@ -4,27 +4,34 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::time::Duration;
 
 use async_trait::async_trait;
 use gpui::{
-    AppContext as _, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
-    size,
+    AppContext as _, Entity, Focusable as _, Modifiers, MouseButton, TestAppContext,
+    VisualTestContext, point, px, size,
 };
 use ramag_app::SshService;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
-    JumpServerCatalog, JumpServerConnection, JumpServerCredential, JumpServerRdpSession,
-    JumpServerRdpSessionHistory, JumpServerSession, QueryRecord, QueryRecordId, RemoteDirectory,
-    RemoteEntry, RemoteEntryKind, SshAuthMode, SshCapability, SshLaunchCommand, SshPathFavorites,
-    SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn, SshWorkspacePreference,
+    ConnectionConfig, ConnectionId, DiagnosticCancellation, DiagnosticTermination,
+    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog,
+    JumpServerConnection, JumpServerCredential, JumpServerRdpSession, JumpServerRdpSessionHistory,
+    JumpServerSession, QueryRecord, QueryRecordId, RemoteCapabilityState, RemoteDirectory,
+    RemoteEntry, RemoteEntryKind, RemoteOperatingSystem, RemotePlatformPreference, RemoteShellKind,
+    SftpNamespaceKind, SshAuthMode, SshCapability, SshDiagnosticOperation,
+    SshDiagnosticProviderKind, SshDiagnosticResult, SshLaunchCommand, SshPathFavorites, SshProfile,
+    SshProfileId, SshProfileOrigin, SshProgressFn, SshRemoteCapabilities, SshWorkspacePreference,
     SshWorkspaceState, TransferCancellation,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{JumpServerDriver, SshDriver, Storage};
+#[cfg(unix)]
+use ramag_terminal::{TerminalCommand, TerminalCore, TerminalView};
 
 use super::SshView;
 use super::jumpserver_dialog::JumpServerPanel;
-use super::model::{Notice, ViewMode};
+use super::model::{Notice, TerminalTab, ViewMode};
 use super::profile_dialog::SshProfileFormPanel;
 use super::remote_session_dialog::RemoteSessionPanel;
 
@@ -54,6 +61,14 @@ impl Storage for MockStorage {
 
     async fn list_ssh_profiles(&self) -> Result<Vec<SshProfile>> {
         Ok(self.profiles.clone())
+    }
+
+    async fn get_ssh_profile(&self, id: &SshProfileId) -> Result<Option<SshProfile>> {
+        Ok(self
+            .profiles
+            .iter()
+            .find(|profile| &profile.id == id)
+            .cloned())
     }
 
     async fn append_history(&self, _record: &QueryRecord) -> Result<()> {
@@ -105,7 +120,10 @@ impl Storage for MockStorage {
     }
 }
 
-struct MockSshDriver;
+#[derive(Default)]
+struct MockSshDriver {
+    working_terminal: bool,
+}
 
 struct MockJumpServerDriver;
 
@@ -166,10 +184,16 @@ impl SshDriver for MockSshDriver {
         profile: &SshProfile,
         _initial_directory: Option<&str>,
     ) -> Result<SshLaunchCommand> {
+        let (program, args) = if self.working_terminal {
+            ("/bin/sh".into(), vec!["-c".into(), "exit 0".into()])
+        } else {
+            ("/mock/ssh".into(), vec!["--".into(), profile.host.clone()])
+        };
         Ok(SshLaunchCommand {
             profile_id: profile.id.clone(),
-            program: "/mock/ssh".into(),
-            args: vec!["--".into(), profile.host.clone()],
+            authorization_generation: 0,
+            program,
+            args,
             env: Default::default(),
         })
     }
@@ -180,7 +204,96 @@ impl SshDriver for MockSshDriver {
         Ok(())
     }
 
-    async fn list_directory(&self, _profile: &SshProfile, path: &str) -> Result<RemoteDirectory> {
+    async fn probe_remote_capabilities(
+        &self,
+        profile: &SshProfile,
+    ) -> Result<SshRemoteCapabilities> {
+        let windows = profile.remote_platform == RemotePlatformPreference::Windows;
+        let operating_system = if windows {
+            RemoteOperatingSystem::Windows
+        } else {
+            RemoteOperatingSystem::Linux
+        };
+        let namespace = if windows {
+            SftpNamespaceKind::WindowsDrive
+        } else {
+            SftpNamespaceKind::Posix
+        };
+        let canonical_path = if windows {
+            ramag_domain::entities::RemotePath::parse_server_canonical("C:/Users/Administrator")
+                .unwrap()
+        } else {
+            ramag_domain::entities::RemotePath::parse_server_canonical("/").unwrap()
+        };
+        Ok(SshRemoteCapabilities {
+            openssh_client: RemoteCapabilityState::Available,
+            ssh_authentication: RemoteCapabilityState::Available,
+            operating_system,
+            shell: if windows {
+                RemoteShellKind::Cmd
+            } else {
+                RemoteShellKind::Posix
+            },
+            ssh_execution: RemoteCapabilityState::Available,
+            terminal: if profile.production {
+                RemoteCapabilityState::BlockedByPolicy
+            } else {
+                RemoteCapabilityState::Available
+            },
+            sftp: RemoteCapabilityState::Available,
+            sftp_namespace: namespace,
+            sftp_canonical_path: Some(canonical_path),
+            diagnostic: RemoteCapabilityState::Available,
+            diagnostic_provider: Some(if windows {
+                SshDiagnosticProviderKind::WindowsPowerShellV1
+            } else {
+                SshDiagnosticProviderKind::LinuxBuiltinV1
+            }),
+            ..SshRemoteCapabilities::default()
+        })
+    }
+
+    async fn execute_diagnostic(
+        &self,
+        profile: &SshProfile,
+        capabilities: &SshRemoteCapabilities,
+        operation: &SshDiagnosticOperation,
+        _cancellation: DiagnosticCancellation,
+    ) -> Result<SshDiagnosticResult> {
+        Ok(SshDiagnosticResult {
+            profile_id: profile.id.clone(),
+            operation: operation.kind().into(),
+            operating_system: capabilities.operating_system,
+            provider: capabilities
+                .diagnostic_provider
+                .unwrap_or(SshDiagnosticProviderKind::LinuxBuiltinV1),
+            output: "ok".into(),
+            exit_code: Some(0),
+            termination: DiagnosticTermination::Completed,
+            truncated: false,
+            elapsed_millis: 1,
+        })
+    }
+
+    async fn list_directory(&self, profile: &SshProfile, path: &str) -> Result<RemoteDirectory> {
+        if profile.remote_platform == RemotePlatformPreference::Windows && matches!(path, "." | "/")
+        {
+            return Ok(RemoteDirectory {
+                path: "/".into(),
+                entries: ["C", "D"]
+                    .into_iter()
+                    .map(|drive| RemoteEntry {
+                        name: format!("{drive}:"),
+                        path: format!("/{drive}:/"),
+                        kind: RemoteEntryKind::Directory,
+                        size: 0,
+                        permissions: None,
+                        modified_at: None,
+                    })
+                    .collect(),
+            });
+        }
+        let path = if path == "." { "/" } else { path };
         Ok(RemoteDirectory {
             path: path.into(),
             entries: Vec::new(),
@@ -298,7 +411,7 @@ fn service(
     let workspace_preference = preference
         .map(|value| serde_json::to_string(&value).expect("workspace preference should serialize"));
     Arc::new(SshService::new(
-        Arc::new(MockSshDriver),
+        Arc::new(MockSshDriver::default()),
         Arc::new(MockStorage {
             profiles,
             workspace_preference,
@@ -307,10 +420,29 @@ fn service(
     ))
 }
 
+#[cfg(unix)]
+fn service_with_working_terminal(
+    profile: SshProfile,
+    preference: SshWorkspacePreference,
+) -> Arc<SshService> {
+    Arc::new(SshService::new(
+        Arc::new(MockSshDriver {
+            working_terminal: true,
+        }),
+        Arc::new(MockStorage {
+            profiles: vec![profile],
+            workspace_preference: Some(
+                serde_json::to_string(&preference).expect("workspace preference should serialize"),
+            ),
+            preferences: Mutex::new(HashMap::new()),
+        }),
+    ))
+}
+
 fn service_with_jumpserver() -> Arc<SshService> {
     Arc::new(
         SshService::new(
-            Arc::new(MockSshDriver),
+            Arc::new(MockSshDriver::default()),
             Arc::new(MockStorage {
                 profiles: Vec::new(),
                 workspace_preference: None,
@@ -332,7 +464,7 @@ fn service_with_rdp_history(history: &JumpServerRdpSessionHistory) -> Arc<SshSer
         format!("enc-v1:{encoded}"),
     )]);
     Arc::new(SshService::new(
-        Arc::new(MockSshDriver),
+        Arc::new(MockSshDriver::default()),
         Arc::new(MockStorage {
             profiles: Vec::new(),
             workspace_preference: None,
@@ -680,6 +812,74 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn jumpserver_search_clear_restores_the_asset_list(cx: &mut TestAppContext) {
+    let (panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
+    cx.run_until_parked();
+    panel.update(cx, |panel, cx| {
+        panel.session = Some(JumpServerSession {
+            base_url: "https://jump.example.com/".into(),
+            ssh_host: "jump.example.com".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+            token_keyword: "Bearer".into(),
+            token: "token".into(),
+            organizations: Vec::new(),
+        });
+        panel.assets = Arc::new(vec![
+            JumpServerAsset {
+                id: "00000000-0000-0000-0000-000000000001".into(),
+                org_id: "org-1".into(),
+                name: "linux-server".into(),
+                address: "10.0.0.1".into(),
+                platform: "Linux".into(),
+                labels: Vec::new(),
+                node_ids: Vec::new(),
+                favorite: false,
+                ungrouped: true,
+                active: true,
+            },
+            JumpServerAsset {
+                id: "00000000-0000-0000-0000-000000000002".into(),
+                org_id: "org-1".into(),
+                name: "windows-server".into(),
+                address: "10.0.0.2".into(),
+                platform: "Windows".into(),
+                labels: Vec::new(),
+                node_ids: Vec::new(),
+                favorite: false,
+                ungrouped: true,
+                active: true,
+            },
+        ]);
+        panel.operation = None;
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(920.0), px(820.0)));
+    cx.run_until_parked();
+
+    let search = cx
+        .debug_bounds("jumpserver-asset-search")
+        .expect("asset search should be rendered");
+    cx.simulate_click(search.center(), Modifiers::default());
+    cx.simulate_keystrokes("linux");
+    cx.run_until_parked();
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(panel.filtered_assets().len(), 1);
+    });
+
+    let clear = cx
+        .debug_bounds("clear-jumpserver-asset-search")
+        .expect("clear button should be rendered");
+    cx.simulate_click(clear.center(), Modifiers::default());
+    cx.run_until_parked();
+    panel.read_with(cx, |panel, _| {
+        assert!(panel.query.is_empty());
+        assert_eq!(panel.filtered_assets().len(), 2);
+    });
+}
+
+#[gpui::test]
 fn jumpserver_rdp_button_opens_created_web_session(cx: &mut TestAppContext) {
     let (panel, cx) = add_jumpserver_panel_window(cx, service_with_jumpserver());
     cx.run_until_parked();
@@ -983,6 +1183,77 @@ fn edit_profile_form_keeps_fields_and_ssh_command_parser(cx: &mut TestAppContext
 }
 
 #[gpui::test]
+fn windows_workspace_lists_accessible_drives_before_the_home_directory(cx: &mut TestAppContext) {
+    let mut profile = SshProfile::new("windows", "windows.example");
+    profile.username = "Administrator".into();
+    profile.remote_platform = RemotePlatformPreference::Windows;
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile.id.clone(),
+            last_remote_path: ".".into(),
+        }],
+        active_profile_id: Some(profile.id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(cx, service(vec![profile.clone()], Some(preference)));
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        let workspace = view
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == &profile.id)
+            .expect("Windows workspace should be restored");
+        assert_eq!(workspace.path, "/");
+        assert_eq!(
+            workspace
+                .entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.path.as_str()))
+                .collect::<Vec<_>>(),
+            [("C:", "/C:/"), ("D:", "/D:/")]
+        );
+        assert!(workspace.sftp_error.is_none());
+        assert_eq!(
+            workspace
+                .capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.sftp_namespace),
+            Some(SftpNamespaceKind::Virtual)
+        );
+        assert_eq!(
+            workspace
+                .capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.shell),
+            Some(RemoteShellKind::Cmd)
+        );
+    });
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            let drive = view
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.profile_id() == &profile.id)
+                .and_then(|workspace| workspace.entries.first())
+                .cloned()
+                .expect("Windows drive should be rendered");
+            view.activate_remote_entry(profile.id.clone(), drive, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        let workspace = view
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == &profile.id)
+            .expect("Windows workspace should remain open");
+        assert_eq!(workspace.path, "/C:/");
+        assert!(workspace.sftp_error.is_none());
+    });
+}
+
+#[gpui::test]
 fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut TestAppContext) {
     let profile = profile();
     let preference = SshWorkspacePreference {
@@ -1281,6 +1552,34 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
 }
 
 #[gpui::test]
+fn production_workspace_renders_safe_diagnostics_without_terminal(cx: &mut TestAppContext) {
+    let mut profile = profile();
+    profile.production = true;
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile.id.clone(),
+            last_remote_path: "/home/alice".into(),
+        }],
+        active_profile_id: Some(profile.id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(cx, service(vec![profile.clone()], Some(preference)));
+    cx.simulate_resize(size(px(1200.0), px(800.0)));
+    cx.run_until_parked();
+
+    assert!(cx.debug_bounds("ssh-safe-diagnostic-pane").is_some());
+    assert!(cx.debug_bounds("ssh-terminal-drop-target").is_none());
+    view.read_with(cx, |view, _| {
+        let workspace = view
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == &profile.id)
+            .expect("production workspace should exist");
+        assert!(workspace.terminals.is_empty());
+    });
+}
+
+#[gpui::test]
 fn directory_search_state_is_isolated_by_workspace(cx: &mut TestAppContext) {
     let first = profile();
     let mut second = SshProfile::new("staging", "staging.example");
@@ -1446,6 +1745,162 @@ fn close_shortcut_closes_first_workspace_when_no_terminal_exists(cx: &mut TestAp
         assert_eq!(view.active_workspace_id, None);
         assert_eq!(view.view_mode, ViewMode::Manager);
     });
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn close_shortcut_selects_and_focuses_previous_terminal(cx: &mut TestAppContext) {
+    let profile = profile();
+    let profile_id = profile.id.clone();
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile_id.clone(),
+            last_remote_path: "/home/alice".into(),
+        }],
+        active_profile_id: Some(profile_id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(cx, service(vec![profile], Some(preference)));
+    cx.run_until_parked();
+
+    let mut previous_terminal = None;
+    let mut active_terminal = None;
+    cx.update(|window, app| {
+        let terminals = (1..=3)
+            .map(|id| {
+                let core = TerminalCore::start(TerminalCommand::new("/bin/sh", Vec::new()))
+                    .expect("测试终端应启动");
+                let terminal = app.new(|cx| TerminalView::new(core, window, cx));
+                TerminalTab {
+                    id,
+                    label: format!("终端 {id}").into(),
+                    view: terminal,
+                }
+            })
+            .collect::<Vec<_>>();
+        previous_terminal = Some(terminals[1].view.clone());
+        active_terminal = Some(terminals[2].view.clone());
+        view.update(app, |view, cx| {
+            let workspace = view
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.profile_id() == &profile_id)
+                .expect("工作区应存在");
+            workspace.terminals = terminals;
+            workspace.active_terminal_id = Some(3);
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        active_terminal
+            .as_ref()
+            .expect("当前终端应存在")
+            .read(app)
+            .focus_handle(app)
+            .focus(window, app);
+        window.dispatch_action(Box::new(crate::CloseSshTerminal), app);
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        let workspace = view
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == &profile_id)
+            .expect("工作区应存在");
+        assert_eq!(workspace.active_terminal_id, Some(2));
+        assert_eq!(
+            workspace
+                .terminals
+                .iter()
+                .map(|terminal| terminal.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    });
+    assert!(cx.update(|window, app| {
+        previous_terminal
+            .as_ref()
+            .expect("上一个终端应存在")
+            .read(app)
+            .focus_handle(app)
+            .is_focused(window)
+    }));
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn reconnect_replaces_the_current_terminal_without_creating_a_tab(cx: &mut TestAppContext) {
+    let mut profile = profile();
+    profile.production = false;
+    let profile_id = profile.id.clone();
+    let preference = SshWorkspacePreference {
+        workspaces: vec![SshWorkspaceState {
+            profile_id: profile_id.clone(),
+            last_remote_path: "/home/alice".into(),
+        }],
+        active_profile_id: Some(profile_id.clone()),
+        path_favorites: Vec::new(),
+    };
+    let (view, cx) = add_ssh_window(cx, service_with_working_terminal(profile, preference));
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        let core = TerminalCore::start(TerminalCommand::new(
+            "/bin/sh",
+            vec!["-c".into(), "exit 7".into()],
+        ))
+        .expect("测试终端应启动");
+        let terminal = app.new(|cx| TerminalView::new(core, window, cx));
+        view.update(app, |view, cx| {
+            let workspace = view
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.profile_id() == &profile_id)
+                .expect("工作区应存在");
+            workspace.terminals = vec![TerminalTab {
+                id: 41,
+                label: "终端 9".into(),
+                view: terminal,
+            }];
+            workspace.active_terminal_id = Some(41);
+            workspace.next_terminal_ordinal = 10;
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(50));
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.reconnect_terminal(profile_id.clone(), 41, window, cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let reconnected_terminal = view.read_with(cx, |view, _| {
+        let workspace = view
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.profile_id() == &profile_id)
+            .expect("工作区应存在");
+        assert_eq!(workspace.terminals.len(), 1);
+        assert_eq!(workspace.terminals[0].id, 41);
+        assert_eq!(workspace.terminals[0].label.as_ref(), "终端 9");
+        assert_eq!(workspace.active_terminal_id, Some(41));
+        assert_eq!(workspace.next_terminal_ordinal, 10);
+        workspace.terminals[0].view.clone()
+    });
+    let exit_code = cx.update(|_, app| {
+        reconnected_terminal
+            .read(app)
+            .core()
+            .exit_status()
+            .and_then(|status| status.code)
+    });
+    assert_eq!(exit_code, Some(0));
 }
 
 #[gpui::test]

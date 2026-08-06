@@ -11,11 +11,14 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
-use ramag_domain::entities::{MAX_SSH_TERMINALS_PER_WORKSPACE, SshProfileId};
+use ramag_domain::entities::{
+    MAX_SSH_TERMINALS_PER_WORKSPACE, RemoteOperatingSystem, RemotePlatformPreference, SshProfileId,
+    SshProfileOrigin,
+};
 use std::ops::Range;
 
 use super::SshView;
-use super::model::can_close_terminal;
+use super::model::{SshWorkspace, can_close_terminal};
 use super::render_directory_helpers::{
     RemoteDirectoryDrag, RemoteEntryMenuState, centered_message, directory_counts,
     directory_counts_at, filtered_entry_indices, remote_breadcrumbs, remote_entry_row,
@@ -68,13 +71,15 @@ impl SshView {
                             .size_range(px(FILE_BROWSER_WIDTH_MIN)..px(FILE_BROWSER_WIDTH_MAX))
                             .child(self.render_file_browser(workspace_id.clone(), cx)),
                     )
-                    .child(resizable_panel().child(
-                        div().size_full().min_w_0().child(self.render_terminal_pane(
-                            workspace_id,
-                            window,
-                            cx,
-                        )),
-                    )),
+                    .child(resizable_panel().child(div().size_full().min_w_0().child(
+                        if workspace_is_production(self, &workspace_id) {
+                            self.render_diagnostic_pane(workspace_id, cx)
+                                .into_any_element()
+                        } else {
+                            self.render_terminal_pane(workspace_id, window, cx)
+                                .into_any_element()
+                        },
+                    ))),
             );
         div()
             .size_full()
@@ -106,6 +111,7 @@ impl SshView {
         let loading = workspace.sftp_loading;
         let loading_path = workspace.directory_loading_path.clone();
         let error = workspace.sftp_error.clone();
+        let empty_directory_message = empty_directory_message(workspace);
         let busy = workspace.operation_busy;
         let preview_loading = workspace.file_preview_loading;
         let sftp_locked = workspace.profile.production;
@@ -269,7 +275,7 @@ impl SshView {
                 )
                 .into_any_element()
         } else if entries.is_empty() {
-            centered_message("目录为空", cx).into_any_element()
+            centered_message(empty_directory_message, cx).into_any_element()
         } else if visible_len == 0 {
             centered_message("暂无匹配", cx).into_any_element()
         } else {
@@ -522,7 +528,7 @@ impl SshView {
                             .ghost()
                             .xsmall()
                             .label("重连")
-                            .disabled(!connection_available)
+                            .disabled(terminal_loading || !connection_available)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.reconnect_terminal(
@@ -542,9 +548,14 @@ impl SshView {
                             .icon(IconName::Close)
                             .on_click(cx.listener({
                                 let workspace_id = workspace_id.clone();
-                                move |this, _: &ClickEvent, _, cx| {
+                                move |this, _: &ClickEvent, window, cx| {
                                     cx.stop_propagation();
-                                    this.close_terminal(workspace_id.clone(), id_for_close, cx);
+                                    this.close_terminal(
+                                        workspace_id.clone(),
+                                        id_for_close,
+                                        window,
+                                        cx,
+                                    );
                                 }
                             })),
                     )
@@ -678,5 +689,51 @@ impl SshView {
                     .child(body),
             )
             .into_any_element()
+    }
+}
+
+fn workspace_is_production(view: &SshView, id: &SshProfileId) -> bool {
+    view.workspaces
+        .iter()
+        .find(|workspace| workspace.profile_id() == id)
+        .is_some_and(|workspace| workspace.profile.production)
+}
+
+fn empty_directory_message(workspace: &SshWorkspace) -> &'static str {
+    let windows = workspace.profile.remote_platform == RemotePlatformPreference::Windows
+        || workspace.capabilities.as_ref().is_some_and(|capabilities| {
+            capabilities.operating_system == RemoteOperatingSystem::Windows
+        });
+    if workspace.directory_loaded
+        && workspace.profile.origin == SshProfileOrigin::JumpServer
+        && windows
+        && workspace.path == "/"
+    {
+        "Windows 未返回可访问盘符"
+    } else {
+        "目录为空"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::{SshProfile, SshRemoteCapabilities};
+
+    #[test]
+    fn empty_jumpserver_windows_root_explains_that_no_drive_was_returned() {
+        let mut profile = SshProfile::new("windows", "jump.example.com");
+        profile.origin = SshProfileOrigin::JumpServer;
+        let mut workspace = SshWorkspace::placeholder(profile, "/".into());
+        workspace.directory_loaded = true;
+        workspace.capabilities = Some(SshRemoteCapabilities {
+            operating_system: RemoteOperatingSystem::Windows,
+            ..SshRemoteCapabilities::default()
+        });
+
+        assert_eq!(
+            empty_directory_message(&workspace),
+            "Windows 未返回可访问盘符"
+        );
     }
 }
