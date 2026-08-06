@@ -273,6 +273,21 @@ impl SshService {
         Ok(profile)
     }
 
+    /// 从已保存的 JumpServer 连接导入资产，并记录可直接打开的 RDP 目标。
+    pub async fn save_jumpserver_asset_for_connection(
+        &self,
+        connection_id: &str,
+        session: &JumpServerSession,
+        asset: &JumpServerAsset,
+        account_id: &str,
+    ) -> Result<SshProfile> {
+        let profile = self
+            .fresh_jumpserver_profile_with_rdp(session, asset, account_id, Some(connection_id))
+            .await?;
+        self.save_profile(&profile).await?;
+        Ok(profile)
+    }
+
     fn jumpserver_driver(&self) -> Result<&std::sync::Arc<dyn JumpServerDriver>> {
         self.jumpserver_driver.as_ref().ok_or_else(|| {
             DomainError::NotImplemented("当前构建未启用 JumpServer HTTP 客户端".into())
@@ -354,11 +369,32 @@ impl SshService {
         asset: &JumpServerAsset,
         account_id: &str,
     ) -> Result<SshProfile> {
+        self.fresh_jumpserver_profile_with_rdp(session, asset, account_id, None)
+            .await
+    }
+
+    async fn fresh_jumpserver_profile_with_rdp(
+        &self,
+        session: &JumpServerSession,
+        asset: &JumpServerAsset,
+        account_id: &str,
+        connection_id: Option<&str>,
+    ) -> Result<SshProfile> {
         let detail = self
             .jumpserver_driver()?
             .asset_detail(session, asset)
             .await?;
-        build_jumpserver_profile(session, &detail, account_id)
+        let mut profile = build_jumpserver_profile(session, &detail, account_id)?;
+        if let Some(connection_id) = connection_id {
+            attach_jumpserver_rdp_session(
+                &mut profile,
+                connection_id,
+                session,
+                &detail,
+                account_id,
+            )?;
+        }
+        Ok(profile)
     }
 }
 
@@ -405,6 +441,32 @@ fn normalize_endpoint(value: &str) -> String {
     value.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
+pub(super) fn attach_jumpserver_rdp_session(
+    profile: &mut SshProfile,
+    connection_id: &str,
+    session: &JumpServerSession,
+    detail: &JumpServerAssetDetail,
+    account_id: &str,
+) -> Result<()> {
+    let Some(account) = detail
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .filter(|account| detail.rdp_web_enabled && account.usable_for_web_session())
+    else {
+        return Ok(());
+    };
+    let rdp_session = JumpServerRdpSession::from_selection(
+        connection_id.to_string(),
+        session.base_url.clone(),
+        &detail.asset,
+        account,
+    )
+    .map_err(DomainError::InvalidConfig)?;
+    profile.jumpserver_rdp_session = Some(rdp_session);
+    profile.validate().map_err(DomainError::InvalidConfig)
+}
+
 pub(super) fn build_jumpserver_profile(
     session: &JumpServerSession,
     detail: &JumpServerAssetDetail,
@@ -432,6 +494,7 @@ pub(super) fn build_jumpserver_profile(
     let mut profile = SshProfile::new(detail.asset.name.clone(), session.ssh_host.clone());
     profile.origin = SshProfileOrigin::JumpServer;
     profile.remote_platform = jumpserver_remote_platform(&detail.asset.platform);
+    profile.rdp_web_enabled = Some(detail.rdp_web_enabled);
     profile.port = Some(session.ssh_port);
     profile.username = format!("{}#{}#{}", session.username, account.name, detail.asset.id);
     profile.auth_mode = SshAuthMode::Password;

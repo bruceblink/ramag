@@ -129,8 +129,17 @@ struct MockJumpServerDriver;
 
 #[async_trait]
 impl JumpServerDriver for MockJumpServerDriver {
-    async fn authenticate(&self, _credential: &JumpServerCredential) -> Result<JumpServerSession> {
-        Err(DomainError::NotImplemented("mock authenticate".into()))
+    async fn authenticate(&self, credential: &JumpServerCredential) -> Result<JumpServerSession> {
+        Ok(JumpServerSession {
+            base_url: credential.base_url.clone(),
+            ssh_host: "jump.example.com".into(),
+            ssh_port: credential.ssh_port,
+            username: credential.username.clone(),
+            password: credential.password.clone(),
+            token_keyword: "Bearer".into(),
+            token: "token".into(),
+            organizations: Vec::new(),
+        })
     }
 
     async fn load_catalog(&self, _session: &JumpServerSession) -> Result<JumpServerCatalog> {
@@ -453,6 +462,38 @@ fn service_with_jumpserver() -> Arc<SshService> {
     )
 }
 
+fn service_with_profile_rdp(profile: SshProfile) -> Arc<SshService> {
+    let connection = JumpServerConnection {
+        id: "00000000-0000-0000-0000-000000000001".into(),
+        credential: JumpServerCredential {
+            base_url: "https://jump.example.com/".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+        },
+    };
+    let json = serde_json::to_vec(&vec![connection]).expect("connection should serialize");
+    let encoded = json
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let preferences = HashMap::from([(
+        "ssh_jumpserver_connections_v2".into(),
+        format!("enc-v1:{encoded}"),
+    )]);
+    Arc::new(
+        SshService::new(
+            Arc::new(MockSshDriver::default()),
+            Arc::new(MockStorage {
+                profiles: vec![profile],
+                workspace_preference: None,
+                preferences: Mutex::new(preferences),
+            }),
+        )
+        .with_jumpserver_driver(Arc::new(MockJumpServerDriver)),
+    )
+}
+
 fn service_with_rdp_history(history: &JumpServerRdpSessionHistory) -> Arc<SshService> {
     let json = serde_json::to_vec(history).expect("RDP history should serialize");
     let encoded = json
@@ -570,7 +611,12 @@ fn add_remote_session_panel_window(
 fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppContext) {
     let mut imported = profile();
     imported.origin = SshProfileOrigin::JumpServer;
-    let (view, cx) = add_ssh_window(cx, service(vec![imported], None));
+    imported.remote_platform = RemotePlatformPreference::Windows;
+    imported.rdp_web_enabled = Some(true);
+    imported.jumpserver_rdp_session = Some(rdp_session(1, "production"));
+    let mut legacy = profile();
+    legacy.name = "legacy".into();
+    let (view, cx) = add_ssh_window(cx, service(vec![imported, legacy], None));
     cx.run_until_parked();
     view.update(cx, |_, cx| cx.notify());
     cx.simulate_resize(size(px(1200.0), px(800.0)));
@@ -600,6 +646,18 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
         "JumpServer 导入连接应显示官方图标"
     );
     assert!(
+        cx.debug_bounds("ssh-profile-platform-0").is_some(),
+        "SSH 连接行应显示系统类型"
+    );
+    assert!(
+        cx.debug_bounds("ssh-profile-rdp-0").is_some(),
+        "有可复用目标时应显示远程桌面图标"
+    );
+    assert!(
+        cx.debug_bounds("ssh-profile-rdp-1").is_none(),
+        "未记录远程桌面目标时不应显示入口"
+    );
+    assert!(
         search.size.width > px(300.0),
         "搜索区宽度异常：{:?}",
         search.size
@@ -613,6 +671,30 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
         row.size.height <= px(48.0),
         "连接行不应变成卡片：{:?}",
         row.size
+    );
+}
+
+#[gpui::test]
+fn connection_manager_opens_recorded_remote_desktop_from_icon(cx: &mut TestAppContext) {
+    let mut imported = profile();
+    imported.origin = SshProfileOrigin::JumpServer;
+    imported.remote_platform = RemotePlatformPreference::Windows;
+    imported.rdp_web_enabled = Some(true);
+    imported.jumpserver_rdp_session = Some(rdp_session(1, "production"));
+    let (view, cx) = add_ssh_window(cx, service_with_profile_rdp(imported));
+    cx.run_until_parked();
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    let button = cx
+        .debug_bounds("ssh-profile-rdp-0")
+        .expect("已记录的远程桌面图标应参与布局");
+    cx.simulate_click(button.center(), Modifiers::default());
+    cx.run_until_parked();
+
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://jump.example.com/lion/connect?token=00000000-0000-0000-0000-000000000002")
     );
 }
 

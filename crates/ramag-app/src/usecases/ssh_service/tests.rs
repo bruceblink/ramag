@@ -753,12 +753,16 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
     let tested =
         futures::executor::block_on(service.test_jumpserver_asset(&session, &asset, "account-1"))
             .unwrap();
-    let saved =
-        futures::executor::block_on(service.save_jumpserver_asset(&session, &asset, "account-1"))
-            .unwrap();
+    let saved = futures::executor::block_on(service.save_jumpserver_asset_for_connection(
+        "00000000-0000-0000-0000-000000000002",
+        &session,
+        &asset,
+        "account-1",
+    ))
+    .unwrap();
 
     assert_eq!(detail_calls.load(Ordering::SeqCst), 2);
-    for profile in [tested, saved] {
+    for profile in [&tested, &saved] {
         assert_eq!(profile.host, "jump.example.com");
         assert_eq!(profile.port, Some(2222));
         assert_eq!(
@@ -769,6 +773,16 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
         assert_eq!(profile.origin, SshProfileOrigin::JumpServer);
         assert_eq!(profile.password, "login-password");
     }
+    assert!(tested.jumpserver_rdp_session.is_none());
+    let rdp_session = saved
+        .jumpserver_rdp_session
+        .as_ref()
+        .expect("导入时应记录可复用的远程桌面目标");
+    assert_eq!(
+        rdp_session.connection_id,
+        "00000000-0000-0000-0000-000000000002"
+    );
+    assert_eq!(rdp_session.account_id, "account-1");
 }
 
 #[test]
@@ -915,7 +929,7 @@ fn jumpserver_windows_asset_preserves_remote_platform_preference() {
             can_connect: true,
         }],
         ssh_enabled: true,
-        rdp_web_enabled: false,
+        rdp_web_enabled: true,
     };
     detail.asset.platform = "Windows".into();
 
@@ -924,6 +938,49 @@ fn jumpserver_windows_asset_preserves_remote_platform_preference() {
             .unwrap();
 
     assert_eq!(profile.remote_platform, RemotePlatformPreference::Windows);
+    assert_eq!(profile.rdp_web_enabled, Some(true));
+}
+
+#[test]
+fn jumpserver_profile_omits_unavailable_remote_desktop_target() {
+    let mut detail = JumpServerAssetDetail {
+        asset: jumpserver_asset(),
+        accounts: vec![JumpServerAccount {
+            id: "account-1".into(),
+            alias: "account-1".into(),
+            name: "administrator".into(),
+            username: "Administrator".into(),
+            has_secret: true,
+            can_connect: true,
+        }],
+        ssh_enabled: true,
+        rdp_web_enabled: false,
+    };
+    let session = jumpserver_session();
+    let mut profile =
+        super::jumpserver::build_jumpserver_profile(&session, &detail, "account-1").unwrap();
+
+    super::jumpserver::attach_jumpserver_rdp_session(
+        &mut profile,
+        "00000000-0000-0000-0000-000000000002",
+        &session,
+        &detail,
+        "account-1",
+    )
+    .unwrap();
+    assert!(profile.jumpserver_rdp_session.is_none());
+
+    detail.rdp_web_enabled = true;
+    detail.accounts[0].has_secret = false;
+    super::jumpserver::attach_jumpserver_rdp_session(
+        &mut profile,
+        "00000000-0000-0000-0000-000000000002",
+        &session,
+        &detail,
+        "account-1",
+    )
+    .unwrap();
+    assert!(profile.jumpserver_rdp_session.is_none());
 }
 
 #[test]

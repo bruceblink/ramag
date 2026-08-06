@@ -9,7 +9,7 @@ use gpui_component::{
     h_flex, v_flex,
 };
 use ramag_domain::entities::{
-    SshAuthMode, SshProfile, SshProfileOrigin, contains_case_insensitive,
+    RemotePlatformPreference, SshAuthMode, SshProfile, SshProfileOrigin, contains_case_insensitive,
 };
 
 use super::SshView;
@@ -225,10 +225,14 @@ impl SshView {
         let username = profile.username.clone();
         let environment = profile.environment.clone().unwrap_or_default();
         let production = profile.production;
+        let remote_platform = profile.remote_platform;
+        let rdp_session = profile.jumpserver_rdp_session.clone();
         let name = profile.name.clone();
         let jumpserver = is_jumpserver_profile(&profile);
         let selected = self.active_workspace_id.as_ref() == Some(&id);
         let connection_available = self.profile_connection_available(&profile);
+        let rdp_busy = self.opening_rdp_profile.is_some();
+        let id_for_rdp = id.clone();
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let accent = cx.theme().accent;
@@ -293,6 +297,39 @@ impl SshView {
                     .child(name),
             )
             .child(environment_badge(environment, muted))
+            .child(platform_badge(index, remote_platform, accent))
+            .child({
+                let slot = div().flex_none().w(px(52.0)).flex().justify_center();
+                if let Some(session) = rdp_session {
+                    slot.child(
+                        div()
+                            .id(SharedString::from(format!("ssh-profile-rdp-{index}")))
+                            .debug_selector(move || format!("ssh-profile-rdp-{index}"))
+                            .child(
+                                ramag_ui::clickable_button(SharedString::from(format!(
+                                    "open-ssh-profile-rdp-{id_for_rdp}"
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(ramag_ui::icons::remote_desktop())
+                                .tooltip("打开远程桌面")
+                                .disabled(rdp_busy)
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.open_profile_rdp(
+                                            id_for_rdp.clone(),
+                                            session.clone(),
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            ),
+                    )
+                } else {
+                    slot
+                }
+            })
             .child(
                 div().flex_none().w(px(92.0)).flex().justify_center().child(
                     div()
@@ -452,6 +489,64 @@ fn environment_badge(environment: String, fallback: gpui::Hsla) -> impl IntoElem
     }
 }
 
+fn platform_badge(
+    index: usize,
+    platform: RemotePlatformPreference,
+    color: gpui::Hsla,
+) -> impl IntoElement {
+    let mut background = color;
+    background.a = 0.12;
+    status_badge(
+        format!("ssh-profile-platform-{index}"),
+        76.0,
+        platform_label(platform),
+        color,
+        Some(background),
+    )
+}
+
+fn platform_label(platform: RemotePlatformPreference) -> &'static str {
+    match platform {
+        RemotePlatformPreference::Auto => "自动",
+        RemotePlatformPreference::Linux => "Linux",
+        RemotePlatformPreference::Windows => "Windows",
+    }
+}
+
+fn status_badge(
+    id: String,
+    width: f32,
+    label: &'static str,
+    foreground: gpui::Hsla,
+    background: Option<gpui::Hsla>,
+) -> impl IntoElement {
+    let debug_selector = id.clone();
+    let mut slot = div()
+        .id(SharedString::from(id))
+        .debug_selector(move || debug_selector.clone())
+        .flex_none()
+        .w(px(width))
+        .flex()
+        .justify_center();
+    if let Some(background) = background {
+        slot = slot.child(
+            div()
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .text_xs()
+                .text_color(foreground)
+                .bg(background)
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(label),
+        );
+    } else {
+        slot = slot.child(div().text_xs().text_color(foreground).child(label));
+    }
+    slot
+}
+
 pub(super) fn environment_badge_colors(
     environment: &str,
     fallback: gpui::Hsla,
@@ -469,9 +564,13 @@ pub(super) fn environment_badge_colors(
 
 #[cfg(test)]
 mod tests {
-    use ramag_domain::entities::{SshAuthMode, SshProfile, SshProfileOrigin};
+    use ramag_domain::entities::{
+        RemotePlatformPreference, SshAuthMode, SshProfile, SshProfileOrigin,
+    };
 
-    use super::{environment_badge_colors, is_jumpserver_profile, profile_matches_query};
+    use super::{
+        environment_badge_colors, is_jumpserver_profile, platform_label, profile_matches_query,
+    };
 
     #[test]
     fn environment_presets_have_distinct_badge_colors() {
@@ -508,5 +607,12 @@ mod tests {
 
         legacy.username = "ordinary-user".into();
         assert!(!is_jumpserver_profile(&legacy));
+    }
+
+    #[test]
+    fn platform_labels_are_stable_for_manager_badges() {
+        assert_eq!(platform_label(RemotePlatformPreference::Windows), "Windows");
+        assert_eq!(platform_label(RemotePlatformPreference::Linux), "Linux");
+        assert_eq!(platform_label(RemotePlatformPreference::Auto), "自动");
     }
 }

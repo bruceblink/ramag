@@ -141,6 +141,8 @@ impl ProfileForm {
             environment: optional(value(&self.environment)),
             production,
             remote_platform,
+            rdp_web_enabled: None,
+            jumpserver_rdp_session: None,
             host: value(&self.host),
             port,
             username: value(&self.username),

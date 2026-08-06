@@ -193,8 +193,9 @@ impl JumpServerPanel {
         if self.is_busy() {
             return;
         }
-        let (Some(session), Some(asset_id), Some(account_id)) = (
+        let (Some(session), Some(connection_id), Some(asset_id), Some(account_id)) = (
             self.session.clone(),
+            self.selected_connection_id.clone(),
             self.selected_asset_id.clone(),
             self.selected_account_id.clone(),
         ) else {
@@ -221,7 +222,12 @@ impl JumpServerPanel {
                     .await
             } else {
                 service
-                    .save_jumpserver_asset(&session, &asset, &account_id)
+                    .save_jumpserver_asset_for_connection(
+                        &connection_id,
+                        &session,
+                        &asset,
+                        &account_id,
+                    )
                     .await
             };
             let _ = this.update(cx, |this, cx| {

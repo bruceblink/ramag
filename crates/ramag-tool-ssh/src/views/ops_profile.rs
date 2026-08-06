@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};
 use gpui_component::WindowExt as _;
-use ramag_domain::entities::{SshProfile, SshProfileId};
+use ramag_domain::entities::{JumpServerRdpSession, SshProfile, SshProfileId};
 
 use super::SshView;
 use super::jumpserver_dialog::{JumpServerEvent, JumpServerPanel};
@@ -13,6 +13,59 @@ use super::model::Notice;
 use super::profile_dialog::{ProfileFormEvent, SshProfileFormPanel};
 
 impl SshView {
+    pub(super) fn open_profile_rdp(
+        &mut self,
+        profile_id: SshProfileId,
+        session: JumpServerRdpSession,
+        cx: &mut Context<Self>,
+    ) {
+        if self.opening_rdp_profile.is_some() {
+            return;
+        }
+        self.opening_rdp_profile = Some(profile_id.clone());
+        let service = self.service.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match service
+                .create_saved_jumpserver_rdp_web_session(&session)
+                .await
+            {
+                Ok(url) => {
+                    let history_error = service.record_jumpserver_rdp_session(session).await.err();
+                    Ok((url, history_error))
+                }
+                Err(error) => Err(error),
+            };
+            let _ = this.update(cx, |this, cx| {
+                if this.opening_rdp_profile.as_ref() != Some(&profile_id) {
+                    return;
+                }
+                this.opening_rdp_profile = None;
+                match result {
+                    Ok((url, None)) => {
+                        cx.open_url(&url);
+                        this.notice = Some(Notice::info("已在浏览器中打开远程桌面"));
+                    }
+                    Ok((url, Some(error))) => {
+                        cx.open_url(&url);
+                        this.notice = Some(Notice::error(format!(
+                            "远程桌面已打开，但保存最近会话失败：{}",
+                            error.message()
+                        )));
+                    }
+                    Err(error) => {
+                        this.notice = Some(Notice::error(format!(
+                            "打开远程桌面失败：{}",
+                            error.message()
+                        )));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn open_profile_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_profile_form(None, window, cx);
     }

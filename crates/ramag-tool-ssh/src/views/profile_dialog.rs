@@ -6,8 +6,8 @@ use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window}
 use gpui_component::input::{InputEvent, InputState};
 use ramag_app::SshService;
 use ramag_domain::entities::{
-    RemotePlatformPreference, SshAuthMode, SshCapability, SshProfile, SshProfileId,
-    SshProfileOrigin,
+    JumpServerRdpSession, RemotePlatformPreference, SshAuthMode, SshCapability, SshProfile,
+    SshProfileId, SshProfileOrigin,
 };
 
 use super::profile_form::ProfileForm;
@@ -57,6 +57,8 @@ pub(super) struct SshProfileFormPanel {
     pub(super) auth_mode: SshAuthMode,
     pub(super) production: bool,
     pub(super) remote_platform: RemotePlatformPreference,
+    rdp_web_enabled: Option<bool>,
+    jumpserver_rdp_session: Option<JumpServerRdpSession>,
     pub(super) password_masked: bool,
     pub(super) operation: Option<FormOperation>,
     pub(super) feedback: Option<FormFeedback>,
@@ -100,6 +102,10 @@ impl SshProfileFormPanel {
             .map_or(RemotePlatformPreference::Auto, |profile| {
                 profile.remote_platform
             });
+        let rdp_web_enabled = profile.as_ref().and_then(|profile| profile.rdp_web_enabled);
+        let jumpserver_rdp_session = profile
+            .as_ref()
+            .and_then(|profile| profile.jumpserver_rdp_session.clone());
         let mut subscriptions = Vec::new();
         for input in form.inputs() {
             subscriptions.push(cx.subscribe_in(
@@ -127,6 +133,8 @@ impl SshProfileFormPanel {
             auth_mode,
             production,
             remote_platform,
+            rdp_web_enabled,
+            jumpserver_rdp_session,
             password_masked: true,
             operation: None,
             feedback: None,
@@ -256,14 +264,18 @@ impl SshProfileFormPanel {
     }
 
     fn profile_from_form(&self, cx: &gpui::App) -> Result<SshProfile, String> {
-        self.form.to_profile(
+        let mut profile = self.form.to_profile(
             self.editing_id.clone(),
             self.origin,
             self.auth_mode,
             self.production,
             self.remote_platform,
             cx,
-        )
+        )?;
+        profile.rdp_web_enabled = self.rdp_web_enabled;
+        profile.jumpserver_rdp_session = self.jumpserver_rdp_session.clone();
+        profile.validate()?;
+        Ok(profile)
     }
 
     pub(super) fn save(&mut self, cx: &mut Context<Self>) {

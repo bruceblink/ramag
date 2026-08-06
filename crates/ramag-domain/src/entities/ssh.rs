@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::jumpserver::JumpServerRdpSession;
 use super::ssh_diagnostic::RemotePlatformPreference;
 use super::ssh_remote_path::{RemotePath, infer_sftp_namespace};
 
@@ -94,6 +95,12 @@ pub struct SshProfile {
     /// 用户对远端平台的偏好；真实平台仍由当前会话探测确认。
     #[serde(default)]
     pub remote_platform: RemotePlatformPreference,
+    /// JumpServer 导入时的 RDP Web 协议能力快照；`None` 表示手动或旧记录未探测。
+    #[serde(default)]
+    pub rdp_web_enabled: Option<bool>,
+    /// 可直接复用的 JumpServer RDP 目标；不包含密码或 API Token。
+    #[serde(default)]
+    pub jumpserver_rdp_session: Option<JumpServerRdpSession>,
     /// 主机名、IP 或 `~/.ssh/config` 别名。
     pub host: String,
     /// 留空时由 `~/.ssh/config` 决定，未配置则由 OpenSSH 使用 22。
@@ -122,6 +129,8 @@ impl SshProfile {
             environment: None,
             production: false,
             remote_platform: RemotePlatformPreference::Auto,
+            rdp_web_enabled: None,
+            jumpserver_rdp_session: None,
             host: host.into(),
             port: None,
             username: String::new(),
@@ -191,6 +200,9 @@ impl SshProfile {
         }
         if let Some(path) = self.ssh_path.as_deref() {
             validate_absolute_local_path("OpenSSH 可执行文件路径", path)?;
+        }
+        if let Some(session) = self.jumpserver_rdp_session.as_ref() {
+            session.validate()?;
         }
         Ok(())
     }
@@ -607,10 +619,14 @@ mod tests {
             return Err("SSH 配置应序列化为 JSON 对象".into());
         };
         object.remove("origin");
+        object.remove("rdp_web_enabled");
+        object.remove("jumpserver_rdp_session");
 
         let decoded: SshProfile = serde_json::from_value(value)?;
 
         assert_eq!(decoded.origin, SshProfileOrigin::Manual);
+        assert_eq!(decoded.rdp_web_enabled, None);
+        assert_eq!(decoded.jumpserver_rdp_session, None);
         Ok(())
     }
 
