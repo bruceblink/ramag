@@ -76,6 +76,22 @@ impl JumpServerDriver for JumpServerHttpDriver {
         let asset = asset.clone();
         run_in_tokio(async move { asset_detail(&client, &session, &asset).await }).await
     }
+
+    async fn create_rdp_web_session(
+        &self,
+        session: &JumpServerSession,
+        asset: &JumpServerAsset,
+        account: &JumpServerAccount,
+    ) -> Result<String> {
+        let client = self.client.clone();
+        let session = session.clone();
+        let asset = asset.clone();
+        let account = account.clone();
+        run_in_tokio(
+            async move { create_rdp_web_session(&client, &session, &asset, &account).await },
+        )
+        .await
+    }
 }
 
 #[derive(Debug)]
@@ -517,6 +533,52 @@ async fn asset_detail(
     Ok(detail)
 }
 
+async fn create_rdp_web_session(
+    client: &Client,
+    session: &JumpServerSession,
+    asset: &JumpServerAsset,
+    account: &JumpServerAccount,
+) -> Result<String> {
+    asset.validate_id().map_err(DomainError::InvalidConfig)?;
+    account
+        .validate_for_web_session()
+        .map_err(DomainError::InvalidConfig)?;
+
+    let url = api_url(&session.base_url, "api/v1/authentication/connection-token/")?;
+    let response = authorized_request(client.post(url), session, Some(&asset.org_id))?
+        .json(&serde_json::json!({
+            "asset": asset.id,
+            "account": account.alias,
+            "protocol": "rdp",
+            "input_username": account.username,
+            "input_secret": "",
+            "input_secret_type": "password",
+            "connect_method": "web_gui",
+            "connect_options": {},
+        }))
+        .send()
+        .await
+        .map_err(|error| request_error("创建 RDP Web 会话", error))?;
+    let body = response_body(response, "创建 RDP Web 会话").await?;
+    let token: WireConnectionToken = parse_json(&body, "创建 RDP Web 会话")?;
+    uuid::Uuid::parse_str(&token.id)
+        .map_err(|_| DomainError::ConnectionFailed("JumpServer 返回的连接令牌无效".into()))?;
+
+    let mut endpoint_url = api_url(&session.base_url, "api/v1/terminal/endpoints/smart/")?;
+    let scheme = endpoint_url.scheme().to_string();
+    endpoint_url
+        .query_pairs_mut()
+        .append_pair("protocol", &scheme)
+        .append_pair("token", &token.id);
+    let response = authorized_request(client.get(endpoint_url), session, Some(&asset.org_id))?
+        .send()
+        .await
+        .map_err(|error| request_error("获取 RDP Web 会话端点", error))?;
+    let body = response_body(response, "获取 RDP Web 会话端点").await?;
+    let endpoint: WireWebEndpoint = parse_json(&body, "获取 RDP Web 会话端点")?;
+    build_rdp_web_session_url(&session.base_url, &endpoint, &token.id, &asset.name)
+}
+
 fn authorized_request(
     request: reqwest::RequestBuilder,
     session: &JumpServerSession,
@@ -799,11 +861,16 @@ struct WireAssetDetail {
 
 impl WireAssetDetail {
     fn into_detail(self, fallback_org_id: &str) -> Result<JumpServerAssetDetail> {
-        let ssh_enabled = self.permed_protocols.iter().any(|protocol| {
-            protocol
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| name.eq_ignore_ascii_case("ssh"))
+        let ssh_enabled = self
+            .permed_protocols
+            .iter()
+            .any(|protocol| protocol_is(protocol, "ssh"));
+        let rdp_web_enabled = self.permed_protocols.iter().any(|protocol| {
+            protocol_is(protocol, "rdp")
+                && protocol
+                    .get("public")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
         });
         let accounts = self
             .permed_accounts
@@ -814,13 +881,23 @@ impl WireAssetDetail {
             asset: self.asset.into_asset(fallback_org_id)?,
             accounts,
             ssh_enabled,
+            rdp_web_enabled,
         })
     }
+}
+
+fn protocol_is(protocol: &Value, expected: &str) -> bool {
+    protocol
+        .as_str()
+        .or_else(|| protocol.get("name").and_then(Value::as_str))
+        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
 }
 
 #[derive(Deserialize)]
 struct WireAccount {
     id: String,
+    #[serde(default)]
+    alias: String,
     name: String,
     #[serde(default)]
     username: String,
@@ -831,6 +908,8 @@ struct WireAccount {
 
 impl WireAccount {
     fn into_account(self) -> Result<JumpServerAccount> {
+        let id = checked_field("账号 ID", self.id)?;
+        let alias = checked_optional_field(self.alias)?;
         let can_connect = self.actions.is_null()
             || self.actions.as_array().is_some_and(|actions| {
                 actions.iter().any(|action| {
@@ -841,13 +920,80 @@ impl WireAccount {
                 })
             });
         Ok(JumpServerAccount {
-            id: checked_field("账号 ID", self.id)?,
+            alias: if alias.is_empty() { id.clone() } else { alias },
+            id,
             name: checked_field("账号名称", self.name)?,
             username: checked_optional_field(self.username)?,
             has_secret: self.has_secret.unwrap_or(true),
             can_connect,
         })
     }
+}
+
+#[derive(Deserialize)]
+struct WireConnectionToken {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct WireWebEndpoint {
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    https_port: u16,
+    #[serde(default)]
+    http_port: u16,
+}
+
+fn build_rdp_web_session_url(
+    base_url: &str,
+    endpoint: &WireWebEndpoint,
+    token_id: &str,
+    asset_name: &str,
+) -> Result<String> {
+    uuid::Uuid::parse_str(token_id)
+        .map_err(|_| DomainError::ConnectionFailed("JumpServer 返回的连接令牌无效".into()))?;
+    let base = Url::parse(base_url)
+        .map_err(|error| DomainError::InvalidConfig(format!("JumpServer 地址无效：{error}")))?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err(DomainError::InvalidConfig(
+            "JumpServer 地址只支持 http 或 https".into(),
+        ));
+    }
+
+    let host = checked_optional_field(endpoint.host.clone())?;
+    let mut url = base.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    if !host.is_empty() {
+        url.set_host(Some(&host)).map_err(|_| {
+            DomainError::ConnectionFailed("JumpServer 返回的 Web 会话主机无效".into())
+        })?;
+    }
+    let port = if url.scheme() == "https" {
+        endpoint.https_port
+    } else {
+        endpoint.http_port
+    };
+    if port != 0 {
+        url.set_port(Some(port)).map_err(|_| {
+            DomainError::ConnectionFailed("JumpServer 返回的 Web 会话端口无效".into())
+        })?;
+    }
+
+    let same_origin = url.scheme() == base.scheme()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default();
+    let path = if same_origin {
+        format!("{}/lion/connect", base.path().trim_end_matches('/'))
+    } else {
+        "/lion/connect".into()
+    };
+    url.set_path(&path);
+    url.query_pairs_mut()
+        .append_pair("ramag_asset", asset_name)
+        .append_pair("token", token_id);
+    Ok(url.to_string())
 }
 
 fn parse_asset_page(bytes: &[u8]) -> Result<(Vec<WireAsset>, Option<usize>, bool)> {
@@ -1020,23 +1166,26 @@ mod tests {
     }
 
     #[test]
-    fn detail_maps_ssh_protocol_and_connectable_account() {
+    fn detail_maps_ssh_and_public_rdp_protocols_with_account_alias() {
         let wire: WireAssetDetail = serde_json::from_str(
             r##"{
                 "id":"00000000-0000-0000-0000-000000000001","org_id":"org-1","name":"login","address":"10.0.0.1",
                 "labels":[{"id":"label-1","name":"env","value":"prod","color":"#ff0000"}],
-                "permed_protocols":[{"name":"ssh","port":22}],
-                "permed_accounts":[{"id":"account-1","name":"root","username":"root","has_secret":true,"actions":[{"value":"connect","label":"Connect"}]}]
+                "permed_protocols":[{"name":"ssh","port":22},{"name":"rdp","port":3389,"public":true}],
+                "permed_accounts":[{"id":"account-1","alias":"account-1","name":"root","username":"root","has_secret":true,"actions":[{"value":"connect","label":"Connect"}]}]
             }"##,
         )
         .unwrap();
         let detail = wire.into_detail("org-1").unwrap();
         assert!(detail.ssh_enabled);
+        assert!(detail.rdp_web_enabled);
         assert!(detail.accounts[0].usable_for_direct_login());
+        assert_eq!(detail.accounts[0].alias, "account-1");
         assert_eq!(detail.asset.labels[0].display_name(), "env:prod");
 
         let legacy_account = WireAccount {
             id: "account-2".into(),
+            alias: String::new(),
             name: "admin".into(),
             username: "admin".into(),
             has_secret: Some(true),
@@ -1045,6 +1194,65 @@ mod tests {
         .into_account()
         .unwrap();
         assert!(legacy_account.can_connect);
+        assert_eq!(legacy_account.alias, "account-2");
+    }
+
+    #[test]
+    fn detail_does_not_offer_private_rdp_as_a_web_session() {
+        let wire: WireAssetDetail = serde_json::from_str(
+            r#"{
+                "id":"00000000-0000-0000-0000-000000000001","name":"windows","address":"10.0.0.2",
+                "permed_protocols":[{"name":"rdp","port":3389,"public":false}]
+            }"#,
+        )
+        .unwrap();
+
+        let detail = wire.into_detail("org-1").unwrap();
+        assert!(!detail.rdp_web_enabled);
+    }
+
+    #[test]
+    fn rdp_web_session_url_uses_smart_endpoint_without_losing_site_prefix() {
+        let endpoint = WireWebEndpoint {
+            host: "jump.example.com".into(),
+            https_port: 0,
+            http_port: 0,
+        };
+
+        let url = build_rdp_web_session_url(
+            "https://jump.example.com/console/",
+            &endpoint,
+            "00000000-0000-0000-0000-000000000002",
+            "CAE365BE",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://jump.example.com/console/lion/connect?ramag_asset=CAE365BE&token=00000000-0000-0000-0000-000000000002"
+        );
+    }
+
+    #[test]
+    fn rdp_web_session_url_encodes_asset_name_as_a_visible_label() {
+        let endpoint = WireWebEndpoint {
+            host: String::new(),
+            https_port: 0,
+            http_port: 0,
+        };
+
+        let url = build_rdp_web_session_url(
+            "https://jump.example.com/",
+            &endpoint,
+            "00000000-0000-0000-0000-000000000002",
+            "CAE 365/北京",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://jump.example.com/lion/connect?ramag_asset=CAE+365%2F%E5%8C%97%E4%BA%AC&token=00000000-0000-0000-0000-000000000002"
+        );
     }
 
     #[test]

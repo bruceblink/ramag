@@ -2,7 +2,8 @@
 
 use ramag_domain::entities::{
     JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog, JumpServerConnection,
-    JumpServerCredential, JumpServerSession, SshAuthMode, SshProfile, SshProfileOrigin,
+    JumpServerCredential, JumpServerRdpSession, JumpServerRdpSessionHistory, JumpServerSession,
+    SshAuthMode, SshProfile, SshProfileOrigin,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::JumpServerDriver;
@@ -15,6 +16,9 @@ const ENCRYPTED_CREDENTIAL_PREFIX: &str = "enc-v1:";
 const MAX_JUMPSERVER_CONNECTIONS: usize = 50;
 const MAX_CONNECTIONS_BYTES: usize = 64 * 1024;
 const MAX_ENCRYPTED_CONNECTIONS_BYTES: usize = MAX_CONNECTIONS_BYTES * 2 + 1024;
+const JUMPSERVER_RDP_SESSIONS_PREFERENCE_KEY: &str = "ssh_jumpserver_rdp_sessions_v1";
+const MAX_RDP_SESSIONS_BYTES: usize = 512 * 1024;
+const MAX_ENCRYPTED_RDP_SESSIONS_BYTES: usize = MAX_RDP_SESSIONS_BYTES * 2 + 1024;
 
 impl SshService {
     pub fn with_jumpserver_driver(mut self, driver: std::sync::Arc<dyn JumpServerDriver>) -> Self {
@@ -138,6 +142,109 @@ impl SshService {
         self.jumpserver_driver()?.asset_detail(session, asset).await
     }
 
+    /// 重新校验授权后创建一次性 RDP Web 会话，地址只返回内存供浏览器立即打开。
+    pub async fn create_jumpserver_rdp_web_session(
+        &self,
+        session: &JumpServerSession,
+        asset: &JumpServerAsset,
+        account_id: &str,
+    ) -> Result<String> {
+        let driver = self.jumpserver_driver()?;
+        let detail = driver.asset_detail(session, asset).await?;
+        if !detail.asset.active {
+            return Err(DomainError::InvalidConfig("该资产已停用".into()));
+        }
+        if !detail.rdp_web_enabled {
+            return Err(DomainError::InvalidConfig(
+                "该资产未开放 RDP Web 协议".into(),
+            ));
+        }
+        let account = detail
+            .accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .ok_or_else(|| DomainError::NotFound("选中的授权账号已失效，请重新选择".into()))?;
+        account
+            .validate_for_web_session()
+            .map_err(DomainError::InvalidConfig)?;
+        driver
+            .create_rdp_web_session(session, &detail.asset, account)
+            .await
+    }
+
+    /// 快捷入口只保存目标 ID；每次打开仍重新登录并校验实时授权。
+    pub async fn create_saved_jumpserver_rdp_web_session(
+        &self,
+        saved: &JumpServerRdpSession,
+    ) -> Result<String> {
+        saved.validate().map_err(DomainError::InvalidConfig)?;
+        let connection = self
+            .load_jumpserver_connections()
+            .await?
+            .into_iter()
+            .find(|connection| connection.id == saved.connection_id)
+            .ok_or_else(|| {
+                DomainError::NotFound("对应的 JumpServer 登录连接已删除，请重新选择资源".into())
+            })?;
+        let session = self.authenticate_jumpserver(&connection.credential).await?;
+        self.create_jumpserver_rdp_web_session(&session, &saved.asset_snapshot(), &saved.account_id)
+            .await
+    }
+
+    pub async fn load_jumpserver_rdp_sessions(&self) -> Result<JumpServerRdpSessionHistory> {
+        let Some(stored) = self
+            .storage
+            .get_preference(JUMPSERVER_RDP_SESSIONS_PREFERENCE_KEY)
+            .await?
+        else {
+            return Ok(JumpServerRdpSessionHistory::default());
+        };
+        if stored.len() > MAX_ENCRYPTED_RDP_SESSIONS_BYTES {
+            return Err(DomainError::Storage("远程会话记录数据过大".into()));
+        }
+        let encoded = stored
+            .strip_prefix(ENCRYPTED_CREDENTIAL_PREFIX)
+            .ok_or_else(|| DomainError::Storage("远程会话记录未加密，已拒绝读取".into()))?;
+        let encrypted = hex::decode(encoded)
+            .map_err(|error| DomainError::Storage(format!("远程会话记录编码无效：{error}")))?;
+        let plain = self.storage.unseal(&encrypted).await?;
+        if plain.len() > MAX_RDP_SESSIONS_BYTES {
+            return Err(DomainError::Storage("解密后的远程会话记录数据过大".into()));
+        }
+        let mut history: JumpServerRdpSessionHistory = serde_json::from_slice(&plain)
+            .map_err(|error| DomainError::Storage(format!("解析远程会话记录失败：{error}")))?;
+        history
+            .validate()
+            .map_err(|error| DomainError::Storage(format!("已保存的远程会话记录无效：{error}")))?;
+        history.sort_favorites_by_name();
+        Ok(history)
+    }
+
+    pub async fn record_jumpserver_rdp_session(
+        &self,
+        session: JumpServerRdpSession,
+    ) -> Result<JumpServerRdpSessionHistory> {
+        let mut history = self.load_jumpserver_rdp_sessions().await?;
+        history
+            .record_open(session)
+            .map_err(DomainError::InvalidConfig)?;
+        self.store_jumpserver_rdp_sessions(&history).await?;
+        Ok(history)
+    }
+
+    pub async fn set_jumpserver_rdp_session_favorite(
+        &self,
+        session: &JumpServerRdpSession,
+        favorite: bool,
+    ) -> Result<JumpServerRdpSessionHistory> {
+        let mut history = self.load_jumpserver_rdp_sessions().await?;
+        history
+            .set_favorite(session, favorite)
+            .map_err(DomainError::InvalidConfig)?;
+        self.store_jumpserver_rdp_sessions(&history).await?;
+        Ok(history)
+    }
+
     /// 测试前重新读取资产详情，避免账号权限变化后仍使用旧连接信息。
     pub async fn test_jumpserver_asset(
         &self,
@@ -216,6 +323,28 @@ impl SshService {
         }
         self.storage
             .set_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY, &stored)
+            .await
+    }
+
+    async fn store_jumpserver_rdp_sessions(
+        &self,
+        history: &JumpServerRdpSessionHistory,
+    ) -> Result<()> {
+        history.validate().map_err(DomainError::InvalidConfig)?;
+        let json = serde_json::to_vec(history)
+            .map_err(|error| DomainError::Storage(format!("序列化远程会话记录失败：{error}")))?;
+        if json.len() > MAX_RDP_SESSIONS_BYTES {
+            return Err(DomainError::InvalidConfig("远程会话记录数据过大".into()));
+        }
+        let encrypted = self.storage.seal(&json).await?;
+        let stored = format!("{ENCRYPTED_CREDENTIAL_PREFIX}{}", hex::encode(encrypted));
+        if stored.len() > MAX_ENCRYPTED_RDP_SESSIONS_BYTES {
+            return Err(DomainError::InvalidConfig(
+                "加密后的远程会话记录数据过大".into(),
+            ));
+        }
+        self.storage
+            .set_preference(JUMPSERVER_RDP_SESSIONS_PREFERENCE_KEY, &stored)
             .await
     }
 

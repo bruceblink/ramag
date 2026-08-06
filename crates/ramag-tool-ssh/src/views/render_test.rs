@@ -1,8 +1,9 @@
 //! SSH 工具 headless 渲染回归测试。
 #![allow(clippy::expect_used)]
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use gpui::{
@@ -12,22 +13,25 @@ use gpui::{
 use ramag_app::SshService;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
-    JumpServerCatalog, JumpServerConnection, JumpServerCredential, JumpServerSession, QueryRecord,
-    QueryRecordId, RemoteDirectory, RemoteEntry, RemoteEntryKind, SshAuthMode, SshCapability,
-    SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn,
-    SshWorkspacePreference, SshWorkspaceState, TransferCancellation,
+    JumpServerCatalog, JumpServerConnection, JumpServerCredential, JumpServerRdpSession,
+    JumpServerRdpSessionHistory, JumpServerSession, QueryRecord, QueryRecordId, RemoteDirectory,
+    RemoteEntry, RemoteEntryKind, SshAuthMode, SshCapability, SshLaunchCommand, SshPathFavorites,
+    SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn, SshWorkspacePreference,
+    SshWorkspaceState, TransferCancellation,
 };
 use ramag_domain::error::{DomainError, Result};
-use ramag_domain::traits::{SshDriver, Storage};
+use ramag_domain::traits::{JumpServerDriver, SshDriver, Storage};
 
 use super::SshView;
 use super::jumpserver_dialog::JumpServerPanel;
 use super::model::{Notice, ViewMode};
 use super::profile_dialog::SshProfileFormPanel;
+use super::remote_session_dialog::RemoteSessionPanel;
 
 struct MockStorage {
     profiles: Vec<SshProfile>,
     workspace_preference: Option<String>,
+    preferences: Mutex<HashMap<String, String>>,
 }
 
 #[async_trait]
@@ -72,16 +76,81 @@ impl Storage for MockStorage {
         Ok(())
     }
 
-    async fn get_preference(&self, _key: &str) -> Result<Option<String>> {
-        Ok(self.workspace_preference.clone())
+    async fn get_preference(&self, key: &str) -> Result<Option<String>> {
+        if key == "ssh_workspaces_v1" {
+            return Ok(self.workspace_preference.clone());
+        }
+        Ok(self
+            .preferences
+            .lock()
+            .expect("mock preferences should not be poisoned")
+            .get(key)
+            .cloned())
     }
 
-    async fn set_preference(&self, _key: &str, _value: &str) -> Result<()> {
+    async fn set_preference(&self, key: &str, value: &str) -> Result<()> {
+        self.preferences
+            .lock()
+            .expect("mock preferences should not be poisoned")
+            .insert(key.into(), value.into());
         Ok(())
+    }
+
+    async fn seal(&self, plain: &[u8]) -> Result<Vec<u8>> {
+        Ok(plain.to_vec())
+    }
+
+    async fn unseal(&self, cipher: &[u8]) -> Result<Vec<u8>> {
+        Ok(cipher.to_vec())
     }
 }
 
 struct MockSshDriver;
+
+struct MockJumpServerDriver;
+
+#[async_trait]
+impl JumpServerDriver for MockJumpServerDriver {
+    async fn authenticate(&self, _credential: &JumpServerCredential) -> Result<JumpServerSession> {
+        Err(DomainError::NotImplemented("mock authenticate".into()))
+    }
+
+    async fn load_catalog(&self, _session: &JumpServerSession) -> Result<JumpServerCatalog> {
+        Err(DomainError::NotImplemented("mock catalog".into()))
+    }
+
+    async fn asset_detail(
+        &self,
+        _session: &JumpServerSession,
+        asset: &JumpServerAsset,
+    ) -> Result<JumpServerAssetDetail> {
+        Ok(JumpServerAssetDetail {
+            asset: asset.clone(),
+            accounts: vec![JumpServerAccount {
+                id: "account-1".into(),
+                alias: "account-1".into(),
+                name: "admin".into(),
+                username: "Administrator".into(),
+                has_secret: true,
+                can_connect: true,
+            }],
+            ssh_enabled: false,
+            rdp_web_enabled: true,
+        })
+    }
+
+    async fn create_rdp_web_session(
+        &self,
+        _session: &JumpServerSession,
+        _asset: &JumpServerAsset,
+        _account: &JumpServerAccount,
+    ) -> Result<String> {
+        Ok(
+            "https://jump.example.com/lion/connect?token=00000000-0000-0000-0000-000000000002"
+                .into(),
+        )
+    }
+}
 
 #[async_trait]
 impl SshDriver for MockSshDriver {
@@ -233,8 +302,58 @@ fn service(
         Arc::new(MockStorage {
             profiles,
             workspace_preference,
+            preferences: Mutex::new(HashMap::new()),
         }),
     ))
+}
+
+fn service_with_jumpserver() -> Arc<SshService> {
+    Arc::new(
+        SshService::new(
+            Arc::new(MockSshDriver),
+            Arc::new(MockStorage {
+                profiles: Vec::new(),
+                workspace_preference: None,
+                preferences: Mutex::new(HashMap::new()),
+            }),
+        )
+        .with_jumpserver_driver(Arc::new(MockJumpServerDriver)),
+    )
+}
+
+fn service_with_rdp_history(history: &JumpServerRdpSessionHistory) -> Arc<SshService> {
+    let json = serde_json::to_vec(history).expect("RDP history should serialize");
+    let encoded = json
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let preferences = HashMap::from([(
+        "ssh_jumpserver_rdp_sessions_v1".into(),
+        format!("enc-v1:{encoded}"),
+    )]);
+    Arc::new(SshService::new(
+        Arc::new(MockSshDriver),
+        Arc::new(MockStorage {
+            profiles: Vec::new(),
+            workspace_preference: None,
+            preferences: Mutex::new(preferences),
+        }),
+    ))
+}
+
+fn rdp_session(index: u32, asset_name: &str) -> JumpServerRdpSession {
+    JumpServerRdpSession {
+        connection_id: "00000000-0000-0000-0000-000000000001".into(),
+        jumpserver_url: "https://jump.example.com/".into(),
+        asset_id: format!("00000000-0000-0000-0000-{index:012}"),
+        org_id: "org-1".into(),
+        asset_name: asset_name.into(),
+        asset_address: format!("10.0.0.{index}"),
+        asset_platform: "Windows".into(),
+        account_id: format!("account-{index}"),
+        account_name: "admin".into(),
+        account_username: "Administrator".into(),
+    }
 }
 
 fn add_ssh_window(
@@ -298,6 +417,23 @@ fn add_jumpserver_panel_window(
     )
 }
 
+fn add_remote_session_panel_window(
+    cx: &mut TestAppContext,
+    service: Arc<SshService>,
+) -> (Entity<RemoteSessionPanel>, &mut VisualTestContext) {
+    cx.update(gpui_component::init);
+    let mut panel = None;
+    let (_, visual_cx) = cx.add_window_view(|window, cx| {
+        let entity = cx.new(|cx| RemoteSessionPanel::new(service, cx));
+        panel = Some(entity.clone());
+        gpui_component::Root::new(entity, window, cx)
+    });
+    (
+        panel.expect("Remote session panel should be initialized"),
+        visual_cx,
+    )
+}
+
 #[gpui::test]
 fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppContext) {
     let mut imported = profile();
@@ -319,6 +455,10 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
     let row = cx
         .debug_bounds("ssh-profile-row-0")
         .expect("SSH 连接行应参与布局");
+    assert!(
+        cx.debug_bounds("open-remote-sessions").is_some(),
+        "SSH 管理页应提供远程会话入口"
+    );
     assert!(
         cx.debug_bounds("import-jumpserver-profile").is_some(),
         "SSH 管理页应提供 JumpServer 导入入口"
@@ -345,6 +485,56 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn remote_session_panel_moves_entries_between_recent_and_favorites(cx: &mut TestAppContext) {
+    let favorite = rdp_session(1, "favorite-windows");
+    let recent = rdp_session(2, "recent-windows");
+    let history = JumpServerRdpSessionHistory {
+        favorites: vec![favorite.clone()],
+        recent: vec![recent.clone()],
+    };
+    let (panel, cx) = add_remote_session_panel_window(cx, service_with_rdp_history(&history));
+    cx.run_until_parked();
+    cx.simulate_resize(size(px(820.0), px(560.0)));
+    cx.run_until_parked();
+
+    let favorites = cx
+        .debug_bounds("remote-session-favorites")
+        .expect("收藏列表应参与布局");
+    let recent_list = cx
+        .debug_bounds("remote-session-recent")
+        .expect("最近会话列表应参与布局");
+    assert!(
+        favorites.origin.y < recent_list.origin.y,
+        "收藏列表应排在最近会话之前"
+    );
+    assert!(cx.debug_bounds("remote-session-row-favorite-0").is_some());
+    assert!(cx.debug_bounds("remote-session-row-recent-0").is_some());
+
+    let favorite_button = cx
+        .debug_bounds("remote-session-favorite-false-0")
+        .expect("最近会话应提供收藏按钮");
+    cx.simulate_click(favorite_button.center(), Modifiers::default());
+    cx.run_until_parked();
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(
+            panel.history.favorites,
+            vec![favorite.clone(), recent.clone()]
+        );
+        assert!(panel.history.recent.is_empty());
+    });
+
+    let unfavorite_button = cx
+        .debug_bounds("remote-session-favorite-true-1")
+        .expect("收藏会话应提供取消收藏按钮");
+    cx.simulate_click(unfavorite_button.center(), Modifiers::default());
+    cx.run_until_parked();
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(panel.history.favorites, vec![favorite]);
+        assert_eq!(panel.history.recent, vec![recent]);
+    });
+}
+
+#[gpui::test]
 fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
     let (panel, cx) = add_jumpserver_panel_window(cx, service(Vec::new(), None));
     cx.run_until_parked();
@@ -365,6 +555,7 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
     };
     let account = JumpServerAccount {
         id: "account-1".into(),
+        alias: "account-1".into(),
         name: "root".into(),
         username: "root".into(),
         has_secret: true,
@@ -432,6 +623,7 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
             asset,
             accounts: vec![account],
             ssh_enabled: true,
+            rdp_web_enabled: true,
         });
         cx.notify();
     });
@@ -453,6 +645,7 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
         "jumpserver-asset-row-0",
         "jumpserver-asset-action-0",
         "jumpserver-selected-detail",
+        "jumpserver-inline-rdp-0",
         "jumpserver-inline-test-0",
         "jumpserver-inline-save-0",
     ] {
@@ -484,6 +677,77 @@ fn jumpserver_panel_renders_login_assets_and_accounts(cx: &mut TestAppContext) {
         "操作应位于对应资源行内"
     );
     assert!(cx.debug_bounds("jumpserver-command-input").is_none());
+}
+
+#[gpui::test]
+fn jumpserver_rdp_button_opens_created_web_session(cx: &mut TestAppContext) {
+    let (panel, cx) = add_jumpserver_panel_window(cx, service_with_jumpserver());
+    cx.run_until_parked();
+    let asset = JumpServerAsset {
+        id: "00000000-0000-0000-0000-000000000001".into(),
+        org_id: "org-1".into(),
+        name: "windows".into(),
+        address: "10.0.0.2".into(),
+        platform: "Windows".into(),
+        labels: Vec::new(),
+        node_ids: Vec::new(),
+        favorite: false,
+        ungrouped: true,
+        active: true,
+    };
+    let account = JumpServerAccount {
+        id: "account-1".into(),
+        alias: "account-1".into(),
+        name: "admin".into(),
+        username: "Administrator".into(),
+        has_secret: true,
+        can_connect: true,
+    };
+    panel.update(cx, |panel, cx| {
+        let connection = JumpServerConnection::new(JumpServerCredential {
+            base_url: "https://jump.example.com".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+        });
+        panel.selected_connection_id = Some(connection.id.clone());
+        panel.connections = Arc::new(vec![connection]);
+        panel.session = Some(JumpServerSession {
+            base_url: "https://jump.example.com/".into(),
+            ssh_host: "jump.example.com".into(),
+            ssh_port: 2222,
+            username: "alice".into(),
+            password: "password".into(),
+            token_keyword: "Bearer".into(),
+            token: "api-token".into(),
+            organizations: Vec::new(),
+        });
+        panel.assets = Arc::new(vec![asset.clone()]);
+        panel.selected_asset_id = Some(asset.id.clone());
+        panel.selected_account_id = Some(account.id.clone());
+        panel.detail_error = Some("该资源未开放 SSH 协议，无法导入为 SSH 连接。".into());
+        panel.detail = Some(JumpServerAssetDetail {
+            asset,
+            accounts: vec![account],
+            ssh_enabled: false,
+            rdp_web_enabled: true,
+        });
+        panel.operation = None;
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(920.0), px(820.0)));
+    cx.run_until_parked();
+
+    let button = cx
+        .debug_bounds("jumpserver-inline-rdp-button-0")
+        .expect("RDP 资产应显示远程桌面按钮");
+    cx.simulate_click(button.center(), Modifiers::default());
+    cx.run_until_parked();
+
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://jump.example.com/lion/connect?token=00000000-0000-0000-0000-000000000002")
+    );
 }
 
 #[gpui::test]
@@ -601,12 +865,14 @@ fn jumpserver_unavailable_account_message_explains_connect_permission() {
         },
         accounts: vec![JumpServerAccount {
             id: "account-1".into(),
+            alias: "account-1".into(),
             name: "root".into(),
             username: "root".into(),
             has_secret: true,
             can_connect: false,
         }],
         ssh_enabled: true,
+        rdp_web_enabled: false,
     };
 
     let message = super::jumpserver_dialog::detail_unavailable_message(&detail)

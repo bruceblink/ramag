@@ -202,6 +202,13 @@ impl JumpServerPanel {
                     .iter()
                     .any(|account| &account.id == account_id && account.usable_for_direct_login())
             });
+        let can_open_rdp = detail.rdp_web_enabled
+            && self.selected_account_id.as_ref().is_some_and(|account_id| {
+                detail
+                    .accounts
+                    .iter()
+                    .any(|account| &account.id == account_id && account.usable_for_web_session())
+            });
         let mut operation_row = h_flex()
             .w_full()
             .items_center()
@@ -215,6 +222,33 @@ impl JumpServerPanel {
                     .child("授权账号"),
             )
             .child(self.render_account_choices(&detail.accounts, cx));
+
+        if can_open_rdp {
+            operation_row = operation_row.child(
+                div()
+                    .id(SharedString::from(format!("jumpserver-inline-rdp-{index}")))
+                    .debug_selector(move || format!("jumpserver-inline-rdp-{index}"))
+                    .child(
+                        ramag_ui::clickable_button(SharedString::from(format!(
+                            "jumpserver-inline-rdp-button-{index}"
+                        )))
+                        .debug_selector(move || format!("jumpserver-inline-rdp-button-{index}"))
+                        .primary()
+                        .xsmall()
+                        .label(if self.operation == Some(JumpServerOperation::OpeningRdp) {
+                            "打开中…"
+                        } else {
+                            "远程桌面"
+                        })
+                        .disabled(self.is_busy())
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                this.open_selected_rdp(cx);
+                            },
+                        )),
+                    ),
+            );
+        }
 
         if can_operate {
             let selected_is_saved = self.selected_is_saved();
@@ -306,7 +340,10 @@ impl JumpServerPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let selected = self.selected_account_id.as_deref() == Some(account.id.as_str());
-        let usable = account.usable_for_direct_login();
+        let usable = self.detail.as_ref().is_some_and(|detail| {
+            (detail.ssh_enabled && account.usable_for_direct_login())
+                || (detail.rdp_web_enabled && account.usable_for_web_session())
+        });
         let account_id = account.id.clone();
         let base_label = if account.username.is_empty() || account.username == account.name {
             account.name.clone()
@@ -327,9 +364,11 @@ impl JumpServerPanel {
         .label(label)
         .disabled(self.is_busy() || !usable)
         .tooltip(if usable {
-            "使用此账号导入"
+            "选择此账号"
         } else if !account.can_connect {
             "该账号缺少 connect 权限"
+        } else if !account.has_secret {
+            "该账号未托管密码，无法直接打开远程会话"
         } else {
             "账号名称不符合 SSH 直连要求"
         })

@@ -49,6 +49,12 @@ pub fn download() -> Icon {
     Icon::default().path("icons/download.svg")
 }
 
+/// 浏览器远程桌面或其它图形化远程会话。
+#[inline]
+pub fn remote_desktop() -> Icon {
+    Icon::default().path("icons/monitor.svg")
+}
+
 /// JumpServer 官方品牌图形标识。
 #[inline]
 pub fn jumpserver_brand_icon() -> &'static str {

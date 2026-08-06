@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog, JumpServerCredential,
-    JumpServerSession,
+    JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog,
+    JumpServerCredential, JumpServerSession,
 };
 use crate::error::Result;
 
@@ -19,4 +19,12 @@ pub trait JumpServerDriver: Send + Sync {
         session: &JumpServerSession,
         asset: &JumpServerAsset,
     ) -> Result<JumpServerAssetDetail>;
+
+    /// 创建一次性 RDP Web 连接令牌，并返回可交给系统浏览器的会话地址。
+    async fn create_rdp_web_session(
+        &self,
+        session: &JumpServerSession,
+        asset: &JumpServerAsset,
+        account: &JumpServerAccount,
+    ) -> Result<String>;
 }

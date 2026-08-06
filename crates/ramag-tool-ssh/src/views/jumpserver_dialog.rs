@@ -28,6 +28,7 @@ pub(super) enum JumpServerOperation {
     LoadingDetail,
     Testing,
     Saving,
+    OpeningRdp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

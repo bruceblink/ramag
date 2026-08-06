@@ -73,14 +73,29 @@ impl SshView {
             )
             .child(
                 div()
+                    .id("open-remote-sessions")
+                    .debug_selector(|| "open-remote-sessions".into())
+                    .child(
+                        ramag_ui::clickable_button("open-remote-sessions-button")
+                            .outline()
+                            .small()
+                            .icon(ramag_ui::icons::remote_desktop())
+                            .tooltip("远程会话")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.open_remote_sessions(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
                     .id("import-jumpserver-profile")
                     .debug_selector(|| "import-jumpserver-profile".into())
                     .child(
                         ramag_ui::clickable_button("import-jumpserver-profile-button")
                             .outline()
                             .small()
-                            .icon(ramag_ui::icons::download())
-                            .tooltip("导入连接")
+                            .icon(ramag_ui::icons::folder_plus())
+                            .tooltip("从 JumpServer 导入连接")
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.open_jumpserver_assets(window, cx);
                             })),

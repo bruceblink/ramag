@@ -15,6 +15,7 @@ mod ops_transfer;
 mod path_dialog;
 mod profile_dialog;
 mod profile_form;
+mod remote_session_dialog;
 mod render;
 mod render_directory_helpers;
 mod render_jumpserver_connections;

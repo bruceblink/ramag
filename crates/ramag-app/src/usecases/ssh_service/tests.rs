@@ -2,8 +2,8 @@ use super::*;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, JumpServerAccount, JumpServerAsset, JumpServerAssetDetail,
     JumpServerCatalog, JumpServerConnection, JumpServerCredential, JumpServerOrganization,
-    JumpServerSession, QueryRecord, QueryRecordId, SshAuthMode, SshPathFavorites, SshProfileOrigin,
-    SshProgressFn, SshWorkspaceState,
+    JumpServerRdpSession, JumpServerSession, QueryRecord, QueryRecordId, SshAuthMode,
+    SshPathFavorites, SshProfileOrigin, SshProgressFn, SshWorkspaceState,
 };
 use ramag_domain::error::READ_ONLY_MESSAGE;
 use ramag_domain::traits::JumpServerDriver;
@@ -85,6 +85,7 @@ struct TerminalDriver;
 
 struct CountingJumpServerDriver {
     detail_calls: Arc<AtomicUsize>,
+    web_session_calls: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -122,13 +123,25 @@ impl JumpServerDriver for CountingJumpServerDriver {
             asset: asset.clone(),
             accounts: vec![JumpServerAccount {
                 id: "account-1".into(),
+                alias: "account-1".into(),
                 name: "root".into(),
                 username: "root".into(),
                 has_secret: true,
                 can_connect: true,
             }],
             ssh_enabled: true,
+            rdp_web_enabled: true,
         })
+    }
+
+    async fn create_rdp_web_session(
+        &self,
+        _session: &JumpServerSession,
+        _asset: &JumpServerAsset,
+        _account: &JumpServerAccount,
+    ) -> Result<String> {
+        self.web_session_calls.fetch_add(1, Ordering::SeqCst);
+        Ok("https://jump.example.com/lion/connect?token=session-token".into())
     }
 }
 
@@ -557,6 +570,7 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
     let detail_calls = Arc::new(AtomicUsize::new(0));
     let jumpserver: Arc<dyn JumpServerDriver> = Arc::new(CountingJumpServerDriver {
         detail_calls: detail_calls.clone(),
+        web_session_calls: Arc::new(AtomicUsize::new(0)),
     });
     let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()))
         .with_jumpserver_driver(jumpserver);
@@ -585,17 +599,123 @@ fn jumpserver_test_and_save_refresh_asset_detail() {
 }
 
 #[test]
+fn jumpserver_rdp_web_session_refreshes_detail_and_uses_selected_account() {
+    let detail_calls = Arc::new(AtomicUsize::new(0));
+    let web_session_calls = Arc::new(AtomicUsize::new(0));
+    let jumpserver: Arc<dyn JumpServerDriver> = Arc::new(CountingJumpServerDriver {
+        detail_calls: detail_calls.clone(),
+        web_session_calls: web_session_calls.clone(),
+    });
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()))
+        .with_jumpserver_driver(jumpserver);
+
+    let url = futures::executor::block_on(service.create_jumpserver_rdp_web_session(
+        &jumpserver_session(),
+        &jumpserver_asset(),
+        "account-1",
+    ))
+    .unwrap();
+
+    assert_eq!(
+        url,
+        "https://jump.example.com/lion/connect?token=session-token"
+    );
+    assert_eq!(detail_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(web_session_calls.load(Ordering::SeqCst), 1);
+}
+
+fn jumpserver_rdp_record(connection_id: String) -> JumpServerRdpSession {
+    JumpServerRdpSession {
+        connection_id,
+        jumpserver_url: "https://jump.example.com".into(),
+        asset_id: "00000000-0000-0000-0000-000000000001".into(),
+        org_id: "org-1".into(),
+        asset_name: "windows-prod".into(),
+        asset_address: "10.0.0.2".into(),
+        asset_platform: "Windows".into(),
+        account_id: "account-1".into(),
+        account_name: "admin".into(),
+        account_username: "Administrator".into(),
+    }
+}
+
+#[test]
+fn jumpserver_rdp_history_is_encrypted_and_supports_favorites() {
+    let storage = Arc::new(NoopStorage::default());
+    let service = SshService::new(Arc::new(TerminalDriver), storage.clone());
+    let record = jumpserver_rdp_record("00000000-0000-0000-0000-000000000010".into());
+
+    let recent =
+        futures::executor::block_on(service.record_jumpserver_rdp_session(record.clone())).unwrap();
+    assert_eq!(recent.recent, vec![record.clone()]);
+    let stored = storage
+        .preferences
+        .lock()
+        .get("ssh_jumpserver_rdp_sessions_v1")
+        .cloned()
+        .unwrap();
+    assert!(stored.starts_with("enc-v1:"));
+    assert!(!stored.contains("windows-prod"));
+
+    let favorite =
+        futures::executor::block_on(service.set_jumpserver_rdp_session_favorite(&record, true))
+            .unwrap();
+    assert_eq!(favorite.favorites, vec![record.clone()]);
+    assert!(favorite.recent.is_empty());
+
+    let recent_again =
+        futures::executor::block_on(service.set_jumpserver_rdp_session_favorite(&record, false))
+            .unwrap();
+    assert!(recent_again.favorites.is_empty());
+    assert_eq!(recent_again.recent, vec![record]);
+}
+
+#[test]
+fn saved_jumpserver_rdp_session_reauthenticates_and_revalidates_target() {
+    let detail_calls = Arc::new(AtomicUsize::new(0));
+    let web_session_calls = Arc::new(AtomicUsize::new(0));
+    let storage = Arc::new(NoopStorage::default());
+    let jumpserver: Arc<dyn JumpServerDriver> = Arc::new(CountingJumpServerDriver {
+        detail_calls: detail_calls.clone(),
+        web_session_calls: web_session_calls.clone(),
+    });
+    let service =
+        SshService::new(Arc::new(TerminalDriver), storage).with_jumpserver_driver(jumpserver);
+    let credential = JumpServerCredential {
+        base_url: "https://jump.example.com".into(),
+        ssh_port: 2222,
+        username: "alice".into(),
+        password: "secret-password".into(),
+    };
+    let connection =
+        futures::executor::block_on(service.save_jumpserver_connection(None, &credential)).unwrap();
+    let record = jumpserver_rdp_record(connection.id);
+
+    let url = futures::executor::block_on(service.create_saved_jumpserver_rdp_web_session(&record))
+        .unwrap();
+
+    assert_eq!(
+        url,
+        "https://jump.example.com/lion/connect?token=session-token"
+    );
+    assert_eq!(detail_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(web_session_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn jumpserver_profile_uses_connect_permission_not_managed_secret_flag() {
     let mut detail = JumpServerAssetDetail {
         asset: jumpserver_asset(),
         accounts: vec![JumpServerAccount {
             id: "account-1".into(),
+            alias: "account-1".into(),
             name: "root".into(),
             username: "root".into(),
             has_secret: false,
             can_connect: true,
         }],
         ssh_enabled: true,
+        rdp_web_enabled: false,
     };
 
     assert!(

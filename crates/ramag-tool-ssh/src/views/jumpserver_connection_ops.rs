@@ -325,7 +325,7 @@ impl JumpServerPanel {
             return;
         };
         let description = format!(
-            "将删除 {} @ {} 的本机加密登录信息，不影响 JumpServer 服务端。",
+            "将删除 {} @ {} 的本机加密登录信息，不影响 JumpServer 服务端。依赖此登录信息的远程会话收藏和历史将无法再次打开，但记录仍会保留。",
             connection.credential.username, connection.credential.base_url
         );
         let panel = cx.entity().clone();

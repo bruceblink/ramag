@@ -57,8 +57,9 @@ pub use id_conversion::{
 pub use jumpserver::{
     JumpServerAccount, JumpServerAsset, JumpServerAssetDetail, JumpServerCatalog,
     JumpServerConnection, JumpServerCredential, JumpServerLabel, JumpServerNode,
-    JumpServerOrganization, JumpServerSession, MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_NODES,
-    MAX_JUMPSERVER_TOKEN_BYTES, MAX_JUMPSERVER_URL_BYTES,
+    JumpServerOrganization, JumpServerRdpSession, JumpServerRdpSessionHistory, JumpServerSession,
+    MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_NODES, MAX_JUMPSERVER_RDP_FAVORITE_SESSIONS,
+    MAX_JUMPSERVER_RDP_RECENT_SESSIONS, MAX_JUMPSERVER_TOKEN_BYTES, MAX_JUMPSERVER_URL_BYTES,
 };
 pub use mongo::{
     InsertManyOutcome, MAX_MONGO_COLLECTION_NAME_BYTES, MAX_MONGO_DATABASE_NAME_BYTES,
