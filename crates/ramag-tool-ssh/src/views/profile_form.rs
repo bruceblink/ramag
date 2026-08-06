@@ -141,6 +141,7 @@ impl ProfileForm {
             environment: optional(value(&self.environment)),
             production,
             remote_platform,
+            windows_sftp_compatibility: false,
             rdp_web_enabled: None,
             jumpserver_rdp_session: None,
             host: value(&self.host),

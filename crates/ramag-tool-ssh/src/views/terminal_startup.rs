@@ -11,6 +11,7 @@ use super::model::Notice;
 
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_WINDOWS_LOGIN_HISTORY_LINES: usize = 8;
 
 enum StartupProbe {
     Waiting,
@@ -156,9 +157,12 @@ impl SshView {
                         return WindowsDirectoryProbe::Finished;
                     };
                     if detected_directory.is_none() {
-                        detected_directory = windows_directory_from_snapshot(
-                            &terminal.view.read(cx).core().snapshot(),
-                        );
+                        let terminal_view = terminal.view.read(cx);
+                        let core = terminal_view.core();
+                        detected_directory = windows_directory_from_snapshot(&core.snapshot());
+                        if detected_directory.is_some() {
+                            core.reveal_short_initial_history(MAX_WINDOWS_LOGIN_HISTORY_LINES);
+                        }
                     }
                     if !workspace.entries.is_empty()
                         || !matches!(workspace.path.as_str(), "." | "/")

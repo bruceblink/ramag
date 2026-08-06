@@ -348,12 +348,13 @@ impl SshProfileFormPanel {
                 this.feedback = Some(match result {
                     Ok(capabilities) => FormFeedback {
                         message: format!(
-                            "测试完成 · OpenSSH {:?} · 认证 {:?} · 执行 {:?} · Terminal {:?} · SFTP {:?} · 诊断 {:?} · 远端 {:?} · Shell {:?} · 路径 {:?}",
+                            "测试完成 · OpenSSH {:?} · 认证 {:?} · 执行 {:?} · Terminal {:?} · SFTP {:?} · 通道 {:?} · 诊断 {:?} · 远端 {:?} · Shell {:?} · 路径 {:?}",
                             capabilities.openssh_client,
                             capabilities.ssh_authentication,
                             capabilities.ssh_execution,
                             capabilities.terminal,
                             capabilities.sftp,
+                            capabilities.sftp_transport,
                             capabilities.diagnostic,
                             capabilities.operating_system,
                             capabilities.shell,

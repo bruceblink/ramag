@@ -66,6 +66,13 @@ pub enum RemoteCapabilityState {
     NotProbed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SftpTransportKind {
+    StandardSubsystem,
+    WindowsCompatibility,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshRemoteCapabilities {
     pub openssh_client: RemoteCapabilityState,
@@ -77,6 +84,8 @@ pub struct SshRemoteCapabilities {
     pub sftp: RemoteCapabilityState,
     pub sftp_namespace: SftpNamespaceKind,
     pub sftp_canonical_path: Option<RemotePath>,
+    #[serde(default)]
+    pub sftp_transport: Option<SftpTransportKind>,
     pub diagnostic: RemoteCapabilityState,
     pub diagnostic_provider: Option<SshDiagnosticProviderKind>,
     pub diagnostic_message: Option<String>,
@@ -94,6 +103,7 @@ impl Default for SshRemoteCapabilities {
             sftp: RemoteCapabilityState::NotProbed,
             sftp_namespace: SftpNamespaceKind::Unknown,
             sftp_canonical_path: None,
+            sftp_transport: None,
             diagnostic: RemoteCapabilityState::NotProbed,
             diagnostic_provider: None,
             diagnostic_message: None,

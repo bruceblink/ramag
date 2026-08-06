@@ -1,7 +1,6 @@
 //! SSH 连接列表、配置弹窗与删除操作。
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};
 use gpui_component::WindowExt as _;
@@ -206,9 +205,6 @@ impl SshView {
                 self.request_profile_save(_form.clone(), profile, window, cx);
             }
             ProfileFormEvent::Cancelled => {
-                if let Some(profile_id) = _form.read(cx).editing_id.clone() {
-                    self.service.unblock_terminal_launches(&profile_id);
-                }
                 self.profile_form_subscription = None;
                 window.close_dialog(cx);
             }
@@ -227,181 +223,36 @@ impl SshView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let previous_production = self
-            .profiles
-            .iter()
-            .find(|current| current.id == profile.id)
-            .is_some_and(|current| current.production);
-        if previous_production && !profile.production {
-            let expected = profile.name.clone();
-            let entity = cx.entity();
-            let form_for_confirm = form.clone();
-            let profile_for_confirm = profile.clone();
-            ramag_ui::open_bounded_prompt(
-                "关闭生产保护？",
-                format!(
-                    "将允许完整 SSH Terminal。请输入连接名称「{}」确认。",
-                    profile.name
-                ),
-                "",
-                "关闭保护",
-                ramag_domain::entities::MAX_SSH_PROFILE_NAME_BYTES,
-                move |value, window, app| {
-                    if value != expected {
-                        form_for_confirm.update(app, |form, cx| {
-                            form.save_failed("连接名称不匹配", cx);
-                        });
-                        return;
-                    }
-                    entity.update(app, |this, cx| {
-                        this.persist_profile(
-                            form_for_confirm,
-                            profile_for_confirm,
-                            false,
-                            window,
-                            cx,
-                        );
-                    });
-                },
-                window,
-                cx,
-            );
-            return;
-        }
-
-        let has_live_terminal = self
-            .workspace_mut(&profile.id)
-            .is_some_and(|workspace| !workspace.terminals.is_empty() || workspace.terminal_loading);
-        if !previous_production && profile.production && has_live_terminal {
-            let terminal_count = self
-                .workspace_mut(&profile.id)
-                .map_or(0, |workspace| workspace.terminals.len());
-            self.service.block_terminal_launches(&profile.id);
-            if let Some(workspace) = self.workspace_mut(&profile.id) {
-                workspace.terminal_generation = workspace.terminal_generation.wrapping_add(1);
-                workspace.terminal_loading = false;
-                for terminal in &workspace.terminals {
-                    terminal.view.update(cx, |terminal, _| {
-                        terminal.core().set_input_enabled(false);
-                    });
-                }
-            }
-            let entity = cx.entity();
-            let profile_id = profile.id.clone();
-            let cancel_entity = entity.clone();
-            ramag_ui::open_confirm_with_cancel(
-                "开启生产保护？",
-                format!("将冻结并关闭 {terminal_count} 个完整终端。已执行的远端操作无法撤销。"),
-                "关闭终端并开启",
-                true,
-                (
-                    move |window, app| {
-                        entity.update(app, |this, cx| {
-                            this.persist_profile(form, profile, true, window, cx);
-                        });
-                    },
-                    move |_, app| {
-                        cancel_entity.update(app, |this, cx| {
-                            this.service.unblock_terminal_launches(&profile_id);
-                            if let Some(workspace) = this.workspace_mut(&profile_id) {
-                                for terminal in &workspace.terminals {
-                                    terminal.view.update(cx, |terminal, _| {
-                                        terminal.core().set_input_enabled(true);
-                                    });
-                                }
-                            }
-                            cx.notify();
-                        });
-                    },
-                ),
-                window,
-                cx,
-            );
-            return;
-        }
-
-        let close_terminals = !previous_production && profile.production;
-        self.persist_profile(form, profile, close_terminals, window, cx);
+        self.persist_profile(form, profile, window, cx);
     }
 
     fn persist_profile(
         &mut self,
         form: Entity<SshProfileFormPanel>,
         profile: SshProfile,
-        close_terminals: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         form.update(cx, |form, cx| form.begin_save(cx));
-        if close_terminals {
-            self.service.block_terminal_launches(&profile.id);
-            if let Some(workspace) = self.workspace_mut(&profile.id) {
-                workspace.terminal_generation = workspace.terminal_generation.wrapping_add(1);
-                workspace.terminal_loading = false;
-                for terminal in &workspace.terminals {
-                    terminal.view.update(cx, |terminal, _| {
-                        terminal.core().set_input_enabled(false);
-                        terminal.core_mut().close();
-                    });
-                }
-            }
-        }
-
         let service = self.service.clone();
-        let profile_id = profile.id.clone();
         cx.spawn_in(window, async move |this, async_cx| {
-            if close_terminals {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                loop {
-                    let completed = this
-                        .update_in(async_cx, |this, _window, cx| {
-                            this.workspace_mut(&profile_id).is_none_or(|workspace| {
-                                workspace.terminals.iter().all(|terminal| {
-                                    terminal.view.read(cx).core().shutdown_complete()
-                                })
-                            })
-                        })
-                        .unwrap_or(false);
-                    if completed {
-                        break;
-                    }
-                    if Instant::now() >= deadline {
-                        let _ = form.update_in(async_cx, |form, _, cx| {
-                            form.save_failed("完整终端未能在 5 秒内关闭，请重试", cx);
-                        });
-                        return;
-                    }
-                    async_cx
-                        .background_executor()
-                        .timer(Duration::from_millis(50))
-                        .await;
-                }
-            }
-
             let result = service.save_profile(&profile).await;
             let _ = this.update_in(async_cx, |this, window, cx| match result {
                 Ok(()) => {
-                    service.unblock_terminal_launches(&profile.id);
                     this.profile_form_subscription = None;
                     window.close_dialog(cx);
                     this.upsert_profile(profile.clone());
                     let profile_id = profile.id.clone();
-                    let production = profile.production;
                     if let Some(workspace) = this.workspace_mut(&profile_id) {
-                        if close_terminals {
-                            workspace.terminals.clear();
-                            workspace.active_terminal_id = None;
-                        }
                         workspace.profile = profile;
                     }
-                    if production {
+                    if this.workspace_mut(&profile_id).is_some() {
                         this.probe_workspace_capabilities(profile_id, cx);
                     }
                     this.notice = Some(Notice::info("已保存"));
                     cx.notify();
                 }
                 Err(error) => {
-                    service.unblock_terminal_launches(&profile.id);
                     form.update(cx, |form, cx| form.save_failed(error.to_string(), cx));
                 }
             });

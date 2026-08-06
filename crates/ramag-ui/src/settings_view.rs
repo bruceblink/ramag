@@ -3,6 +3,7 @@
 mod clipboard;
 mod database;
 mod pages;
+mod ssh;
 mod update;
 
 use std::path::PathBuf;
@@ -17,10 +18,10 @@ use gpui_component::{
     input::{InputEvent, InputState},
     notification::Notification,
 };
-use ramag_app::{AvailableUpdate, ClipboardService, ConnectionService, UpdateService};
+use ramag_app::{AvailableUpdate, ClipboardService, ConnectionService, SshService, UpdateService};
 use ramag_domain::entities::{
     ClipboardSettings, DownloadProgress, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
-    MAX_ID_CONVERTER_PROGRAM_BYTES, UpdateCancellation,
+    MAX_ID_CONVERTER_PROGRAM_BYTES, SshModuleSettings, UpdateCancellation,
 };
 
 use crate::MAX_SEARCH_INPUT_BYTES;
@@ -117,6 +118,7 @@ pub struct SettingsView {
     selected_page: SettingsPage,
     clipboard_service: Arc<ClipboardService>,
     connection_service: Arc<ConnectionService>,
+    ssh_service: Arc<SshService>,
     update_service: Option<Arc<UpdateService>>,
     update_state: UpdateUiState,
     update_downloading: bool,
@@ -128,6 +130,8 @@ pub struct SettingsView {
     loaded_revision: u64,
     saving_clipboard: bool,
     clearing_clipboard_history: bool,
+    ssh_module_settings: SshModuleSettings,
+    saving_ssh_module_settings: bool,
     database_enabled_draft: bool,
     database_converter_kind: IdConverterKind,
     database_custom_alphabet: Entity<InputState>,
@@ -148,11 +152,13 @@ impl SettingsView {
     pub fn new(
         clipboard_service: Arc<ClipboardService>,
         connection_service: Arc<ConnectionService>,
+        ssh_service: Arc<SshService>,
         update_service: Option<Arc<UpdateService>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (clipboard, loaded_revision) = clipboard_service.settings_snapshot_with_revision();
+        let ssh_module_settings = ssh_service.module_settings_snapshot();
         let database = crate::database_search_settings(cx);
         let database_enabled_draft = database.id_conversion_enabled;
         let database_converter_kind = database.converter.kind;
@@ -214,6 +220,25 @@ impl SettingsView {
         })
         .detach();
 
+        let ssh_settings_service = ssh_service.clone();
+        cx.spawn(async move |this, cx| {
+            let result = ssh_settings_service.load_module_settings().await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(settings) if !this.saving_ssh_module_settings => {
+                    this.ssh_module_settings = settings;
+                    cx.notify();
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    this.pending_notification = Some(Notification::error(format!(
+                        "SSH 模块设置读取失败：{error}"
+                    )));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -242,6 +267,7 @@ impl SettingsView {
             selected_page: SettingsPage::default(),
             clipboard_service,
             connection_service,
+            ssh_service,
             update_service,
             update_state: UpdateUiState::Idle,
             update_downloading: false,
@@ -253,6 +279,8 @@ impl SettingsView {
             loaded_revision,
             saving_clipboard: false,
             clearing_clipboard_history: false,
+            ssh_module_settings,
+            saving_ssh_module_settings: false,
             database_enabled_draft,
             database_converter_kind,
             database_custom_alphabet,

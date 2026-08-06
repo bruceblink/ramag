@@ -3,10 +3,7 @@
 use std::sync::Arc;
 
 use gpui::{Entity, SharedString};
-use ramag_domain::entities::{
-    DiagnosticCancellation, RemoteEntry, SshDiagnosticResult, SshProfile, SshProfileId,
-    SshRemoteCapabilities,
-};
+use ramag_domain::entities::{RemoteEntry, SshProfile, SshProfileId, SshRemoteCapabilities};
 use ramag_terminal::TerminalView;
 
 pub(super) fn can_close_terminal(terminal_count: usize) -> bool {
@@ -57,7 +54,6 @@ pub(super) struct SshWorkspace {
     pub profile: SshProfile,
     pub path: String,
     pub directory_query: String,
-    pub diagnostic_query: String,
     pub entries: Arc<Vec<RemoteEntry>>,
     pub selected_path: Option<String>,
     pub terminals: Vec<TerminalTab>,
@@ -79,11 +75,6 @@ pub(super) struct SshWorkspace {
     pub capability_error: Option<String>,
     pub capability_loading: bool,
     pub capability_generation: u64,
-    pub diagnostic_loading: bool,
-    pub diagnostic_error: Option<String>,
-    pub diagnostic_result: Option<SshDiagnosticResult>,
-    pub diagnostic_cancellation: Option<DiagnosticCancellation>,
-    pub diagnostic_generation: u64,
 }
 
 impl SshWorkspace {
@@ -92,7 +83,6 @@ impl SshWorkspace {
             profile,
             path,
             directory_query: String::new(),
-            diagnostic_query: String::new(),
             entries: Arc::new(Vec::new()),
             selected_path: None,
             terminals: Vec::new(),
@@ -114,11 +104,6 @@ impl SshWorkspace {
             capability_error: None,
             capability_loading: false,
             capability_generation: 0,
-            diagnostic_loading: false,
-            diagnostic_error: None,
-            diagnostic_result: None,
-            diagnostic_cancellation: None,
-            diagnostic_generation: 0,
         }
     }
 

@@ -14,7 +14,7 @@ use tokio::time::timeout;
 
 use ramag_domain::entities::{
     RemotePath, RemotePlatformPreference, SshAuthMode, SshCapability, SshLaunchCommand, SshProfile,
-    SshProfileOrigin, validate_remote_path,
+    validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 
@@ -85,11 +85,6 @@ pub fn terminal_command(
     initial_directory: Option<&str>,
 ) -> Result<SshLaunchCommand> {
     profile.validate().map_err(DomainError::InvalidConfig)?;
-    if profile.production {
-        return Err(DomainError::Forbidden(
-            "生产模式禁止启动完整 SSH Terminal".into(),
-        ));
-    }
     let mut args = vec!["-tt".to_string()];
     args.extend(common_profile_args(profile));
     args.push("--".into());
@@ -135,13 +130,13 @@ pub fn sftp_args(profile: &SshProfile) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// 经 JumpServer 的普通 SSH 远程命令启动目标 Windows 自带的 SFTP 服务端。
+/// 使用普通 SSH 远程命令启动目标 Windows 自带的 SFTP 服务端。
 /// 固定脚本不包含用户输入，文件路径仍全部通过 SFTP 协议传输。
 pub(crate) fn windows_remote_sftp_args(profile: &SshProfile) -> Result<Vec<String>> {
     profile.validate().map_err(DomainError::InvalidConfig)?;
     if !uses_windows_remote_sftp(profile) {
         return Err(DomainError::InvalidConfig(
-            "Windows 远程 SFTP 通道只适用于非生产 JumpServer Windows 连接".into(),
+            "Windows 远程 SFTP 通道需要在 Windows 配置中启用兼容模式".into(),
         ));
     }
     let password_auth = profile.auth_mode == SshAuthMode::Password;
@@ -168,8 +163,7 @@ pub(crate) fn windows_remote_sftp_args(profile: &SshProfile) -> Result<Vec<Strin
 }
 
 pub(crate) fn uses_windows_remote_sftp(profile: &SshProfile) -> bool {
-    !profile.production
-        && profile.origin == SshProfileOrigin::JumpServer
+    profile.windows_sftp_compatibility
         && profile.remote_platform == RemotePlatformPreference::Windows
 }
 
@@ -240,11 +234,6 @@ pub fn diagnostic_args(profile: &SshProfile, remote_command: &str) -> Result<Vec
 
 pub(crate) fn terminal_probe_args(profile: &SshProfile) -> Result<Vec<String>> {
     profile.validate().map_err(DomainError::InvalidConfig)?;
-    if profile.production {
-        return Err(DomainError::Forbidden(
-            "生产模式禁止探测交互式 SSH Terminal".into(),
-        ));
-    }
     let password_auth = profile.auth_mode == SshAuthMode::Password;
     let mut args = vec![
         "-tt".into(),
@@ -618,10 +607,13 @@ mod tests {
     }
 
     #[test]
-    fn windows_jumpserver_uses_a_fixed_remote_sftp_server_command() {
+    fn windows_compatibility_mode_uses_a_fixed_remote_sftp_server_command() {
         let mut profile = profile();
-        profile.origin = SshProfileOrigin::JumpServer;
         profile.remote_platform = RemotePlatformPreference::Windows;
+        assert!(!uses_windows_remote_sftp(&profile));
+        assert!(windows_remote_sftp_args(&profile).is_err());
+
+        profile.windows_sftp_compatibility = true;
         let args = windows_remote_sftp_args(&profile).unwrap();
         let command = args.last().unwrap();
 
@@ -631,12 +623,12 @@ mod tests {
         assert!(!command.contains("Invoke-Expression"));
 
         profile.production = true;
-        assert!(!uses_windows_remote_sftp(&profile));
-        assert!(windows_remote_sftp_args(&profile).is_err());
+        assert!(uses_windows_remote_sftp(&profile));
+        assert!(windows_remote_sftp_args(&profile).is_ok());
     }
 
     #[test]
-    fn terminal_probe_is_fixed_and_production_is_rejected() {
+    fn terminal_probe_is_fixed_and_available_in_production() {
         let profile = profile();
         let args = terminal_probe_args(&profile).unwrap();
         assert_eq!(args.last().map(String::as_str), Some("exit"));
@@ -644,7 +636,7 @@ mod tests {
 
         let mut production = profile;
         production.production = true;
-        assert!(terminal_probe_args(&production).is_err());
+        assert!(terminal_probe_args(&production).is_ok());
     }
 
     #[test]

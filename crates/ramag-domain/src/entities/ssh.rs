@@ -42,6 +42,16 @@ pub const MAX_SSH_TERMINALS_PER_WORKSPACE: usize = 8;
 pub const MAX_SSH_FAVORITE_PATHS_PER_PROFILE: usize = 16;
 pub const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 
+/// SSH 模块级通用配置。
+///
+/// 该配置不属于单个连接，修改后对所有 SSH/SFTP 连接生效。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SshModuleSettings {
+    /// Windows 标准 SFTP 无法列出目录或盘符时，改用远端 sftp-server.exe。
+    #[serde(default)]
+    pub windows_sftp_compatibility: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SshProfileId(pub Uuid);
 
@@ -83,18 +93,21 @@ pub enum SshProfileOrigin {
 pub struct SshProfile {
     pub id: SshProfileId,
     pub name: String,
-    /// 连接来源用于保留导入语义，并选择 JumpServer 互操作通道。
+    /// 连接来源用于保留导入语义；Windows SFTP 兼容通道由独立配置决定。
     #[serde(default)]
     pub origin: SshProfileOrigin,
     /// 环境仅用于列表徽章展示，不影响连接行为。
     #[serde(default)]
     pub environment: Option<String>,
-    /// 生产模式禁止完整 SSH Terminal，并禁止 SFTP 远程写操作。
+    /// 生产模式显示风险提示，并禁止 SFTP 远程写操作。
     #[serde(default)]
     pub production: bool,
     /// 用户对远端平台的偏好；真实平台仍由当前会话探测确认。
     #[serde(default)]
     pub remote_platform: RemotePlatformPreference,
+    /// 运行时 Windows SFTP 通道选择；真实配置来自模块设置，不写入单条连接。
+    #[serde(skip)]
+    pub windows_sftp_compatibility: bool,
     /// JumpServer 导入时的 RDP Web 协议能力快照；`None` 表示手动或旧记录未探测。
     #[serde(default)]
     pub rdp_web_enabled: Option<bool>,
@@ -129,6 +142,7 @@ impl SshProfile {
             environment: None,
             production: false,
             remote_platform: RemotePlatformPreference::Auto,
+            windows_sftp_compatibility: false,
             rdp_web_enabled: None,
             jumpserver_rdp_session: None,
             host: host.into(),
@@ -200,6 +214,11 @@ impl SshProfile {
         }
         if let Some(path) = self.ssh_path.as_deref() {
             validate_absolute_local_path("OpenSSH 可执行文件路径", path)?;
+        }
+        if self.windows_sftp_compatibility
+            && self.remote_platform == RemotePlatformPreference::Linux
+        {
+            return Err("Windows SFTP 兼容模式不能用于明确的 Linux 远端".into());
         }
         if let Some(session) = self.jumpserver_rdp_session.as_ref() {
             session.validate()?;
@@ -611,6 +630,22 @@ mod tests {
     }
 
     #[test]
+    fn windows_sftp_compatibility_rejects_explicit_linux_platform() {
+        let mut profile = SshProfile::new("windows", "server.example");
+        profile.windows_sftp_compatibility = true;
+        profile.remote_platform = RemotePlatformPreference::Linux;
+        assert!(matches!(
+            profile.validate(),
+            Err(error) if error.contains("不能用于明确的 Linux")
+        ));
+
+        profile.remote_platform = RemotePlatformPreference::Auto;
+        assert!(profile.validate().is_ok());
+        profile.remote_platform = RemotePlatformPreference::Windows;
+        assert!(profile.validate().is_ok());
+    }
+
+    #[test]
     fn legacy_profile_without_origin_defaults_to_manual()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let profile = SshProfile::new("legacy", "server.example");
@@ -619,12 +654,14 @@ mod tests {
             return Err("SSH 配置应序列化为 JSON 对象".into());
         };
         object.remove("origin");
+        object.remove("windows_sftp_compatibility");
         object.remove("rdp_web_enabled");
         object.remove("jumpserver_rdp_session");
 
         let decoded: SshProfile = serde_json::from_value(value)?;
 
         assert_eq!(decoded.origin, SshProfileOrigin::Manual);
+        assert!(!decoded.windows_sftp_compatibility);
         assert_eq!(decoded.rdp_web_enabled, None);
         assert_eq!(decoded.jumpserver_rdp_session, None);
         Ok(())

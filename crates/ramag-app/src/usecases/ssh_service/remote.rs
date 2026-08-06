@@ -9,7 +9,11 @@ impl SshService {
 
     pub async fn test_connection(&self, profile: &SshProfile) -> Result<SshRemoteCapabilities> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
-        self.driver.probe_remote_capabilities(profile).await
+        self.ensure_module_settings_loaded().await?;
+        let effective_profile = self.apply_module_settings(profile);
+        self.driver
+            .probe_remote_capabilities(&effective_profile)
+            .await
     }
 
     pub async fn probe_remote_capabilities(
@@ -133,9 +137,6 @@ impl SshService {
             .await?
             .ok_or_else(|| DomainError::NotFound("SSH 配置已删除".into()))?;
         profile.validate().map_err(DomainError::InvalidConfig)?;
-        if profile.production {
-            return Err(production_terminal_forbidden());
-        }
         if let Some(path) = initial_directory {
             validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
             RemotePath::parse_server_canonical(path).map_err(DomainError::InvalidConfig)?;
@@ -145,20 +146,20 @@ impl SshService {
             .terminal_command(&profile, initial_directory)
             .await?;
         if self.terminal_generation_if_allowed(profile_id)? != generation {
-            return Err(production_terminal_forbidden());
+            return Err(terminal_launch_cancelled());
         }
         command.authorization_generation = generation;
         Ok(command)
     }
 
-    /// 生产状态切换开始后，立即禁止该配置创建新的完整终端。
+    /// 配置删除等生命周期操作开始后，立即禁止该配置创建新的终端。
     pub fn block_terminal_launches(&self, profile_id: &SshProfileId) {
         let mut policy = self.terminal_policy.lock();
         policy.blocked.insert(profile_id.clone());
         advance_generation(&mut policy, profile_id);
     }
 
-    /// 取消切换时恢复非生产终端能力；持久化生产配置仍会被配置门禁拒绝。
+    /// 生命周期操作取消时恢复终端启动能力。
     pub fn unblock_terminal_launches(&self, profile_id: &SshProfileId) {
         let mut policy = self.terminal_policy.lock();
         policy.blocked.remove(profile_id);
@@ -180,7 +181,7 @@ impl SshService {
     fn terminal_generation_if_allowed(&self, profile_id: &SshProfileId) -> Result<u64> {
         let policy = self.terminal_policy.lock();
         if policy.blocked.contains(profile_id) {
-            return Err(production_terminal_forbidden());
+            return Err(terminal_launch_cancelled());
         }
         Ok(policy
             .generations
@@ -194,13 +195,14 @@ impl SshService {
     }
 
     pub(super) async fn current_profile(&self, profile_id: &SshProfileId) -> Result<SshProfile> {
+        self.ensure_module_settings_loaded().await?;
         let profile = self
             .storage
             .get_ssh_profile(profile_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("SSH 配置已删除".into()))?;
         profile.validate().map_err(DomainError::InvalidConfig)?;
-        Ok(profile)
+        Ok(self.apply_module_settings(&profile))
     }
 
     pub(super) async fn capabilities_for_profile(
@@ -506,12 +508,10 @@ fn bootstrap_directory_candidates(profile: &SshProfile, requested_path: &str) ->
     let is_windows = profile.remote_platform == RemotePlatformPreference::Windows;
     let is_jumpserver = profile.origin == ramag_domain::entities::SshProfileOrigin::JumpServer;
     candidates.push(requested_path.to_string());
+    if is_windows && profile.windows_sftp_compatibility {
+        return vec!["/".into()];
+    }
     if is_jumpserver {
-        // 非生产 Windows JumpServer 由基础设施在目标机启动系统 SFTP 服务端，
-        // 首次进入虚拟根目录以列出可访问盘符。
-        if is_windows && !profile.production {
-            return vec!["/".into()];
-        }
         if requested_path != "." {
             candidates.push(".".into());
         }
@@ -554,8 +554,8 @@ fn remote_account_hint(profile: &SshProfile) -> Option<&str> {
     .then_some(account)
 }
 
-fn production_terminal_forbidden() -> DomainError {
-    DomainError::Forbidden("生产模式禁止启动完整 SSH Terminal".into())
+fn terminal_launch_cancelled() -> DomainError {
+    DomainError::Forbidden("SSH 终端启动已取消".into())
 }
 
 fn validate_diagnostic_platform(
@@ -655,10 +655,11 @@ mod tests {
     use ramag_domain::entities::{RemotePath, SshProfileOrigin};
 
     #[test]
-    fn jumpserver_windows_bootstrap_lists_the_remote_drive_root_first() {
+    fn windows_compatibility_bootstrap_lists_the_remote_drive_root_first() {
         let mut profile = SshProfile::new("asset", "jump.example.com");
         profile.origin = SshProfileOrigin::JumpServer;
         profile.remote_platform = RemotePlatformPreference::Windows;
+        profile.windows_sftp_compatibility = true;
         profile.username = "axemc_li#Administrator#asset-1".into();
 
         let candidates = bootstrap_directory_candidates(&profile, ".");

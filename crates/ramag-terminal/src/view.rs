@@ -139,6 +139,7 @@ impl TerminalView {
             term_mode.insert(alacritty_terminal::term::TermMode::APP_CURSOR);
         }
         if let Some(bytes) = encode_key(&key, modifiers, term_mode) {
+            self.core.scroll_to_bottom();
             if let Err(error) = self.core.send(bytes) {
                 tracing::warn!(error = %error, "send terminal key failed");
             }

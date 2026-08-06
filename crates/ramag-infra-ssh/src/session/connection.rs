@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use ramag_domain::entities::{SshProfile, SshProfileId, TRANSFER_BUFFER_BYTES};
+use ramag_domain::entities::{SftpTransportKind, SshProfile, SshProfileId, TRANSFER_BUFFER_BYTES};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::askpass::AskPassBroker;
@@ -182,6 +182,13 @@ impl StructuredSftpSession {
 }
 
 impl SftpConnection {
+    pub fn transport_kind(&self) -> SftpTransportKind {
+        match self.transport {
+            SftpTransport::Subsystem => SftpTransportKind::StandardSubsystem,
+            SftpTransport::WindowsRemoteServer => SftpTransportKind::WindowsCompatibility,
+        }
+    }
+
     async fn connect(
         profile: &SshProfile,
         program: &str,

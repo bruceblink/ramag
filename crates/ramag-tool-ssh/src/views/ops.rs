@@ -49,7 +49,6 @@ impl SshView {
                         this.restore_workspaces(preference);
                         if let Some(id) = this.active_workspace_id.clone() {
                             this.sync_directory_filter(&id, window, cx);
-                            this.sync_diagnostic_filter(&id, window, cx);
                             this.connect_workspace(id, window, cx);
                         }
                     }
@@ -149,7 +148,6 @@ impl SshView {
                 });
             self.active_workspace_id = Some(id.clone());
             self.sync_directory_filter(&id, window, cx);
-            self.sync_diagnostic_filter(&id, window, cx);
             self.view_mode = ViewMode::Workspace;
             self.persist_workspaces(cx);
             if needs_connect {
@@ -197,7 +195,6 @@ impl SshView {
         }
         self.active_workspace_id = Some(id.clone());
         self.sync_directory_filter(&id, window, cx);
-        self.sync_diagnostic_filter(&id, window, cx);
         self.view_mode = ViewMode::Workspace;
         self.persist_workspaces(cx);
         self.connect_workspace(id, window, cx);
@@ -217,23 +214,6 @@ impl SshView {
             .map(|workspace| workspace.directory_query.clone())
             .unwrap_or_default();
         self.directory_search.update(cx, |state, cx| {
-            state.set_value(query, window, cx);
-        });
-    }
-
-    fn sync_diagnostic_filter(
-        &mut self,
-        id: &SshProfileId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let query = self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.profile_id() == id)
-            .map(|workspace| workspace.diagnostic_query.clone())
-            .unwrap_or_default();
-        self.diagnostic_search.update(cx, |state, cx| {
             state.set_value(query, window, cx);
         });
     }
@@ -308,16 +288,6 @@ impl SshView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.profile_id() == &id)
-            .is_some_and(|workspace| workspace.profile.production)
-        {
-            self.notice = Some(Notice::error("生产模式禁止完整终端，请使用低影响只读诊断"));
-            cx.notify();
-            return;
-        }
         let connection_available = self
             .workspaces
             .iter()
@@ -377,9 +347,7 @@ impl SshView {
                         }
                         result
                     }
-                    Ok(_) => Err(ramag_terminal::TerminalError(
-                        "终端启动已因生产状态变化而取消".into(),
-                    )),
+                    Ok(_) => Err(ramag_terminal::TerminalError("终端启动已取消".into())),
                     Err(error) => Err(ramag_terminal::TerminalError(error.to_string())),
                 };
                 match result {
@@ -587,12 +555,8 @@ impl SshView {
             self.directory_search.update(cx, |state, cx| {
                 state.set_value("", window, cx);
             });
-            self.diagnostic_search.update(cx, |state, cx| {
-                state.set_value("", window, cx);
-            });
         } else if let Some(active_id) = self.active_workspace_id.clone() {
             self.sync_directory_filter(&active_id, window, cx);
-            self.sync_diagnostic_filter(&active_id, window, cx);
         }
         self.persist_workspaces(cx);
         let service = self.service.clone();

@@ -12,8 +12,8 @@ use gpui_component::{
     v_flex,
 };
 use ramag_domain::entities::{
-    MAX_SSH_TERMINALS_PER_WORKSPACE, RemoteOperatingSystem, RemotePlatformPreference, SshProfileId,
-    SshProfileOrigin,
+    MAX_SSH_TERMINALS_PER_WORKSPACE, RemoteOperatingSystem, RemotePlatformPreference,
+    SftpTransportKind, SshProfileId, SshProfileOrigin,
 };
 use std::ops::Range;
 
@@ -71,15 +71,13 @@ impl SshView {
                             .size_range(px(FILE_BROWSER_WIDTH_MIN)..px(FILE_BROWSER_WIDTH_MAX))
                             .child(self.render_file_browser(workspace_id.clone(), cx)),
                     )
-                    .child(resizable_panel().child(div().size_full().min_w_0().child(
-                        if workspace_is_production(self, &workspace_id) {
-                            self.render_diagnostic_pane(workspace_id, cx)
-                                .into_any_element()
-                        } else {
-                            self.render_terminal_pane(workspace_id, window, cx)
-                                .into_any_element()
-                        },
-                    ))),
+                    .child(resizable_panel().child(
+                        div().size_full().min_w_0().child(self.render_terminal_pane(
+                            workspace_id,
+                            window,
+                            cx,
+                        )),
+                    )),
             );
         div()
             .size_full()
@@ -122,13 +120,26 @@ impl SshView {
             .map_or((total_directories, total_files), |indices| {
                 directory_counts_at(&entries, indices)
             });
-        let summary = if filtered_indices.is_some() {
+        let mut summary = if filtered_indices.is_some() {
             format!(
                 "目录 {visible_directories}/{total_directories} · 文件 {visible_files}/{total_files}"
             )
         } else {
             format!("目录 {total_directories} · 文件 {total_files}")
         };
+        if let Some(transport) = workspace
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.sftp_transport)
+        {
+            summary.push_str(match transport {
+                SftpTransportKind::StandardSubsystem => " · 标准 SFTP",
+                SftpTransportKind::WindowsCompatibility => " · Windows 兼容 SFTP",
+            });
+        }
+        if sftp_locked {
+            summary.push_str(" · 只读");
+        }
         let has_transfers = self
             .service
             .transfer_tasks()
@@ -137,7 +148,6 @@ impl SshView {
         let transfers_visible = workspace.transfers_visible;
         let border = cx.theme().border;
 
-        let can_create = !loading && !busy && !sftp_locked && connection_available;
         let show_transfers = has_transfers;
         let toolbar = h_flex()
             .w_full()
@@ -181,28 +191,31 @@ impl SshView {
                         this.refresh_active_directory(cx);
                     })),
             )
-            .child(
-                ramag_ui::clickable_button("sftp-upload")
-                    .ghost()
-                    .xsmall()
-                    .icon(ramag_ui::icons::upload())
-                    .tooltip("上传")
-                    .disabled(loading || busy || sftp_locked || !connection_available)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.pick_upload(window, cx);
-                    })),
-            )
-            .child(
-                ramag_ui::clickable_button("sftp-mkdir")
-                    .ghost()
-                    .xsmall()
-                    .icon(ramag_ui::icons::folder_plus())
-                    .tooltip("新建")
-                    .disabled(!can_create)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.prompt_create_directory(window, cx);
-                    })),
-            )
+            .when(!sftp_locked, |toolbar| {
+                toolbar
+                    .child(
+                        ramag_ui::clickable_button("sftp-upload")
+                            .ghost()
+                            .xsmall()
+                            .icon(ramag_ui::icons::upload())
+                            .tooltip("上传")
+                            .disabled(loading || busy || !connection_available)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.pick_upload(window, cx);
+                            })),
+                    )
+                    .child(
+                        ramag_ui::clickable_button("sftp-mkdir")
+                            .ghost()
+                            .xsmall()
+                            .icon(ramag_ui::icons::folder_plus())
+                            .tooltip("新建")
+                            .disabled(loading || busy || !connection_available)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.prompt_create_directory(window, cx);
+                            })),
+                    )
+            })
             .when(show_transfers, |toolbar| {
                 toolbar.child(
                     div()
@@ -448,6 +461,7 @@ impl SshView {
             return div().into_any_element();
         };
         let terminal_loading = workspace.terminal_loading;
+        let production = workspace.profile.production;
         let connection_available = self.profile_connection_available(&workspace.profile);
         let active_terminal_id = workspace.active_terminal_id;
         let terminal_views = workspace
@@ -465,6 +479,7 @@ impl SshView {
         let accent = cx.theme().accent;
         let mut drop_background = accent;
         drop_background.a = 0.08;
+        let warning = cx.theme().warning;
 
         let mut tabs_strip = h_flex()
             .id(SharedString::from(format!(
@@ -681,6 +696,19 @@ impl SshView {
                 }),
             )
             .child(tabs)
+            .when(production, |pane| {
+                pane.child(
+                    h_flex().w_full().flex_none().px(px(8.0)).py(px(3.0)).child(
+                        div()
+                            .id("ssh-production-terminal-warning")
+                            .debug_selector(|| "ssh-production-terminal-warning".into())
+                            .flex_none()
+                            .text_xs()
+                            .text_color(warning)
+                            .child("终端未限制生产只读，请谨慎操作！"),
+                    ),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -690,13 +718,6 @@ impl SshView {
             )
             .into_any_element()
     }
-}
-
-fn workspace_is_production(view: &SshView, id: &SshProfileId) -> bool {
-    view.workspaces
-        .iter()
-        .find(|workspace| workspace.profile_id() == id)
-        .is_some_and(|workspace| workspace.profile.production)
 }
 
 fn empty_directory_message(workspace: &SshWorkspace) -> &'static str {
@@ -709,7 +730,7 @@ fn empty_directory_message(workspace: &SshWorkspace) -> &'static str {
         && windows
         && workspace.path == "/"
     {
-        "Windows 未返回可访问盘符"
+        "未返回可访问盘符"
     } else {
         "目录为空"
     }
@@ -731,9 +752,6 @@ mod tests {
             ..SshRemoteCapabilities::default()
         });
 
-        assert_eq!(
-            empty_directory_message(&workspace),
-            "Windows 未返回可访问盘符"
-        );
+        assert_eq!(empty_directory_message(&workspace), "未返回可访问盘符");
     }
 }

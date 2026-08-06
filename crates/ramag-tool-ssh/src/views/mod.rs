@@ -10,7 +10,6 @@ mod jumpserver_dialog;
 mod model;
 mod ops;
 mod ops_connection;
-mod ops_diagnostic;
 mod ops_files;
 mod ops_profile;
 mod ops_transfer;
@@ -19,7 +18,6 @@ mod profile_dialog;
 mod profile_form;
 mod remote_session_dialog;
 mod render;
-mod render_diagnostic;
 mod render_directory_helpers;
 mod render_jumpserver_connections;
 mod render_jumpserver_dialog;
@@ -58,7 +56,6 @@ pub struct SshView {
     search: Entity<InputState>,
     query: String,
     directory_search: Entity<InputState>,
-    diagnostic_search: Entity<InputState>,
     workspace_resizes: HashMap<SshProfileId, Entity<ResizableState>>,
     focused_search_once: bool,
     deleting_profile: bool,
@@ -90,11 +87,6 @@ impl SshView {
                 .placeholder("搜索名称")
                 .clean_on_escape()
         });
-        let diagnostic_search = cx.new(|cx| {
-            ramag_ui::bounded_search_input(window, cx)
-                .placeholder("筛选诊断结果")
-                .clean_on_escape()
-        });
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
             &search,
@@ -122,21 +114,6 @@ impl SshView {
                 }
             },
         ));
-        subscriptions.push(cx.subscribe_in(
-            &diagnostic_search,
-            window,
-            |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let query = this.diagnostic_search.read(cx).value().trim().to_string();
-                    if let Some(workspace_id) = this.active_workspace_id.clone()
-                        && let Some(workspace) = this.workspace_mut(&workspace_id)
-                    {
-                        workspace.diagnostic_query = query;
-                    }
-                    cx.notify();
-                }
-            },
-        ));
         let mut this = Self {
             service,
             profiles: Arc::new(Vec::new()),
@@ -146,7 +123,6 @@ impl SshView {
             search,
             query: String::new(),
             directory_search,
-            diagnostic_search,
             workspace_resizes: HashMap::new(),
             focused_search_once: false,
             deleting_profile: false,

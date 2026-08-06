@@ -97,6 +97,54 @@ struct CountingJumpServerDriver {
     web_session_calls: Arc<AtomicUsize>,
 }
 
+#[tokio::test]
+async fn ssh_module_settings_are_persisted_and_restored() {
+    let storage = Arc::new(NoopStorage::default());
+    let service = SshService::new(Arc::new(TerminalDriver), storage.clone());
+    let settings = SshModuleSettings {
+        windows_sftp_compatibility: true,
+    };
+
+    service.save_module_settings(&settings).await.unwrap();
+
+    let restored = SshService::new(Arc::new(TerminalDriver), storage);
+    assert_eq!(restored.load_module_settings().await.unwrap(), settings);
+}
+
+#[tokio::test]
+async fn windows_compatibility_setting_only_changes_windows_or_auto_profiles() {
+    let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
+    service
+        .save_module_settings(&SshModuleSettings {
+            windows_sftp_compatibility: true,
+        })
+        .await
+        .unwrap();
+    let mut linux = SshProfile::new("linux", "linux.example");
+    linux.remote_platform = RemotePlatformPreference::Linux;
+    let windows = SshProfile {
+        remote_platform: RemotePlatformPreference::Windows,
+        ..SshProfile::new("windows", "windows.example")
+    };
+    let auto = SshProfile::new("auto", "auto.example");
+
+    assert!(
+        !service
+            .apply_module_settings(&linux)
+            .windows_sftp_compatibility
+    );
+    assert!(
+        service
+            .apply_module_settings(&windows)
+            .windows_sftp_compatibility
+    );
+    assert!(
+        service
+            .apply_module_settings(&auto)
+            .windows_sftp_compatibility
+    );
+}
+
 #[async_trait::async_trait]
 impl JumpServerDriver for CountingJumpServerDriver {
     async fn authenticate(&self, credential: &JumpServerCredential) -> Result<JumpServerSession> {
@@ -225,11 +273,7 @@ impl SshDriver for TerminalDriver {
                 }
             },
             ssh_execution: RemoteCapabilityState::Available,
-            terminal: if profile.production {
-                RemoteCapabilityState::BlockedByPolicy
-            } else {
-                RemoteCapabilityState::Available
-            },
+            terminal: RemoteCapabilityState::Available,
             sftp: RemoteCapabilityState::Available,
             sftp_namespace: ramag_domain::entities::SftpNamespaceKind::Posix,
             sftp_canonical_path: Some(
@@ -560,16 +604,14 @@ fn queued_transfer_is_cancelled_without_waiting_for_executor() {
 }
 
 #[test]
-fn production_profile_blocks_terminal_and_sftp_writes() {
+fn production_profile_allows_terminal_and_blocks_sftp_writes() {
     let mut profile = SshProfile::new("production", "server.example");
     profile.production = true;
     let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
 
     futures::executor::block_on(service.save_profile(&profile)).unwrap();
-    assert!(matches!(
-        futures::executor::block_on(service.terminal_command(&profile.id, None)),
-        Err(DomainError::Forbidden(message)) if message.contains("生产模式")
-    ));
+    let command = futures::executor::block_on(service.terminal_command(&profile.id, None)).unwrap();
+    assert!(service.terminal_launch_is_current(&command));
 
     let preview =
         futures::executor::block_on(service.read_file_preview(&profile, "/readme.txt")).unwrap();
@@ -938,6 +980,7 @@ fn jumpserver_windows_asset_preserves_remote_platform_preference() {
             .unwrap();
 
     assert_eq!(profile.remote_platform, RemotePlatformPreference::Windows);
+    assert!(!profile.windows_sftp_compatibility);
     assert_eq!(profile.rdp_web_enabled, Some(true));
 }
 

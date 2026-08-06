@@ -414,6 +414,30 @@ impl TerminalCore {
         self.shared.changed();
     }
 
+    /// 初始登录信息仅有少量行进入历史区时，将其恢复到首屏。
+    pub fn reveal_short_initial_history(&self, max_lines: usize) -> bool {
+        let mut terminal = self.terminal.lock();
+        let history_lines = terminal.history_size();
+        if history_lines == 0 || history_lines > max_lines {
+            return false;
+        }
+        terminal.scroll_display(Scroll::Top);
+        drop(terminal);
+        self.shared.changed();
+        true
+    }
+
+    /// 用户从历史区继续输入前，恢复到当前终端提示符。
+    pub fn scroll_to_bottom(&self) {
+        let mut terminal = self.terminal.lock();
+        if terminal.grid().display_offset() == 0 {
+            return;
+        }
+        terminal.scroll_display(Scroll::Bottom);
+        drop(terminal);
+        self.shared.changed();
+    }
+
     pub fn start_selection(&self, row: usize, column: usize, side: Side) {
         let mut terminal = self.terminal.lock();
         let point = viewport_point(&terminal, row, column);

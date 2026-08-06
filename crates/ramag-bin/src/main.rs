@@ -842,6 +842,7 @@ fn open_main_window(deps: AppDeps, cx: &mut App) {
                     SettingsView::new(
                         clipboard_service.clone(),
                         conn_service.clone(),
+                        ssh_service.clone(),
                         update_service.clone(),
                         window,
                         cx,

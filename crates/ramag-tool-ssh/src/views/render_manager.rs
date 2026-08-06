@@ -360,7 +360,7 @@ impl SshView {
                                 .text_xs()
                                 .text_color(danger)
                                 .bg(production_bg)
-                                .child("只读"),
+                                .child("生产"),
                         )
                     }),
             )

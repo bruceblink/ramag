@@ -97,11 +97,6 @@ impl SshDriver for OpenSshDriver {
         initial_directory: Option<&str>,
     ) -> Result<SshLaunchCommand> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
-        if profile.production {
-            return Err(DomainError::Forbidden(
-                "生产模式禁止启动完整 SSH Terminal".into(),
-            ));
-        }
         let locator = self.locator.clone();
         let askpass = self.askpass.clone();
         let profile = profile.clone();
@@ -157,11 +152,7 @@ impl SshDriver for OpenSshDriver {
                 capabilities.openssh_client = RemoteCapabilityState::Failed;
                 capabilities.ssh_authentication = RemoteCapabilityState::Failed;
                 capabilities.ssh_execution = RemoteCapabilityState::Failed;
-                capabilities.terminal = if profile.production {
-                    RemoteCapabilityState::BlockedByPolicy
-                } else {
-                    RemoteCapabilityState::Failed
-                };
+                capabilities.terminal = RemoteCapabilityState::Failed;
                 capabilities.sftp = RemoteCapabilityState::Failed;
                 capabilities.diagnostic = RemoteCapabilityState::Failed;
                 capabilities.diagnostic_message = Some(error.to_string());
@@ -186,9 +177,7 @@ impl SshDriver for OpenSshDriver {
                     capabilities.diagnostic_message = Some(error.to_string());
                 }
             }
-            capabilities.terminal = if profile.production {
-                RemoteCapabilityState::BlockedByPolicy
-            } else {
+            capabilities.terminal =
                 match diagnostic::probe_interactive_terminal(&locator, &askpass, &profile).await {
                     Ok(()) => RemoteCapabilityState::Available,
                     Err(error) => {
@@ -197,13 +186,13 @@ impl SshDriver for OpenSshDriver {
                             .get_or_insert(error.to_string());
                         RemoteCapabilityState::Failed
                     }
-                }
-            };
+                };
 
             let sftp_profile =
                 profile_with_detected_platform(&profile, capabilities.operating_system);
             match connect(&locator, &sessions, &sftp_profile).await {
                 Ok(connection) => {
+                    capabilities.sftp_transport = Some(connection.transport_kind());
                     let canonical = canonicalize_sftp_initial_directory(
                         &connection.session,
                         &sftp_profile,
@@ -366,6 +355,7 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let first = list_once(&locator, &sessions, &profile, &path).await;
+            // 兼容通道完全由配置决定；标准通道这里只重建同类连接，不自动切换实现。
             if uses_windows_remote_sftp(&profile)
                 || !matches!(first, Err(DomainError::ConnectionFailed(_)))
             {
@@ -989,9 +979,11 @@ mod tests {
         jumpserver.origin = SshProfileOrigin::JumpServer;
         assert!(!should_list_windows_drives(&jumpserver, "/"));
         jumpserver.remote_platform = RemotePlatformPreference::Windows;
+        assert!(!should_list_windows_drives(&jumpserver, "/"));
+        jumpserver.windows_sftp_compatibility = true;
         assert!(should_list_windows_drives(&jumpserver, "/"));
         jumpserver.production = true;
-        assert!(!should_list_windows_drives(&jumpserver, "/"));
+        assert!(should_list_windows_drives(&jumpserver, "/"));
     }
 
     #[test]

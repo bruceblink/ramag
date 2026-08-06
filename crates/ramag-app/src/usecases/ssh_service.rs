@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -13,10 +13,10 @@ use ramag_domain::entities::{
     RemoteCapabilityState, RemoteDirectory, RemoteEntryKind, RemoteFileChunk,
     RemoteFileChunkPosition, RemoteFilePreview, RemoteOperatingSystem, RemotePath,
     RemotePlatformPreference, RemoteShellKind, SftpNamespaceKind, SshCapability,
-    SshDiagnosticOperation, SshDiagnosticResult, SshLaunchCommand, SshProfile, SshProfileId,
-    SshRemoteCapabilities, SshWorkspacePreference, TransferCancellation, TransferDirection,
-    TransferId, TransferStatus, TransferTask, infer_sftp_namespace, validate_local_transfer_path,
-    validate_remote_name_for_namespace, validate_remote_path,
+    SshDiagnosticOperation, SshDiagnosticResult, SshLaunchCommand, SshModuleSettings, SshProfile,
+    SshProfileId, SshRemoteCapabilities, SshWorkspacePreference, TransferCancellation,
+    TransferDirection, TransferId, TransferStatus, TransferTask, infer_sftp_namespace,
+    validate_local_transfer_path, validate_remote_name_for_namespace, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{JumpServerDriver, SshDriver, Storage};
@@ -24,6 +24,7 @@ use ramag_domain::traits::{JumpServerDriver, SshDriver, Storage};
 mod helpers;
 mod jumpserver;
 mod remote;
+mod settings;
 mod transfer_ops;
 
 use helpers::{
@@ -169,6 +170,9 @@ pub struct SshService {
     remote_capabilities: Mutex<HashMap<SshProfileId, CachedRemoteCapabilities>>,
     diagnostic_global: Arc<tokio::sync::Semaphore>,
     diagnostic_profiles: Mutex<HashMap<SshProfileId, Arc<tokio::sync::Semaphore>>>,
+    module_settings: Mutex<SshModuleSettings>,
+    module_settings_loaded: AtomicBool,
+    module_settings_io: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -194,10 +198,14 @@ impl SshService {
             remote_capabilities: Mutex::new(HashMap::new()),
             diagnostic_global: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIAGNOSTICS)),
             diagnostic_profiles: Mutex::new(HashMap::new()),
+            module_settings: Mutex::new(SshModuleSettings::default()),
+            module_settings_loaded: AtomicBool::new(false),
+            module_settings_io: tokio::sync::Mutex::new(()),
         }
     }
 
     pub async fn list_profiles(&self) -> Result<Vec<SshProfile>> {
+        self.ensure_module_settings_loaded().await?;
         self.storage.list_ssh_profiles().await
     }
 
@@ -206,8 +214,13 @@ impl SshService {
     }
 
     pub async fn save_profile(&self, profile: &SshProfile) -> Result<()> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        self.storage.save_ssh_profile(profile).await?;
+        let mut stored_profile = profile.clone();
+        // 兼容通道是模块级配置，不写入单条连接。
+        stored_profile.windows_sftp_compatibility = false;
+        stored_profile
+            .validate()
+            .map_err(DomainError::InvalidConfig)?;
+        self.storage.save_ssh_profile(&stored_profile).await?;
         self.advance_terminal_generation(&profile.id);
         self.remote_capabilities.lock().remove(&profile.id);
         self.cancel_profile_transfers(&profile.id);

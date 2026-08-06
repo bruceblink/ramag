@@ -244,11 +244,7 @@ impl SshDriver for MockSshDriver {
                 RemoteShellKind::Posix
             },
             ssh_execution: RemoteCapabilityState::Available,
-            terminal: if profile.production {
-                RemoteCapabilityState::BlockedByPolicy
-            } else {
-                RemoteCapabilityState::Available
-            },
+            terminal: RemoteCapabilityState::Available,
             sftp: RemoteCapabilityState::Available,
             sftp_namespace: namespace,
             sftp_canonical_path: Some(canonical_path),
@@ -1634,7 +1630,7 @@ fn restored_workspace_renders_files_terminal_placeholder_and_transfer(cx: &mut T
 }
 
 #[gpui::test]
-fn production_workspace_renders_safe_diagnostics_without_terminal(cx: &mut TestAppContext) {
+fn production_workspace_renders_terminal_warning_and_hides_sftp_writes(cx: &mut TestAppContext) {
     let mut profile = profile();
     profile.production = true;
     let preference = SshWorkspacePreference {
@@ -1649,15 +1645,17 @@ fn production_workspace_renders_safe_diagnostics_without_terminal(cx: &mut TestA
     cx.simulate_resize(size(px(1200.0), px(800.0)));
     cx.run_until_parked();
 
-    assert!(cx.debug_bounds("ssh-safe-diagnostic-pane").is_some());
-    assert!(cx.debug_bounds("ssh-terminal-drop-target").is_none());
+    assert!(cx.debug_bounds("ssh-production-terminal-warning").is_some());
+    assert!(cx.debug_bounds("ssh-terminal-drop-target").is_some());
+    assert!(cx.debug_bounds("sftp-upload").is_none());
+    assert!(cx.debug_bounds("sftp-mkdir").is_none());
     view.read_with(cx, |view, _| {
         let workspace = view
             .workspaces
             .iter()
             .find(|workspace| workspace.profile_id() == &profile.id)
             .expect("production workspace should exist");
-        assert!(workspace.terminals.is_empty());
+        assert!(!workspace.terminal_loading);
     });
 }
 

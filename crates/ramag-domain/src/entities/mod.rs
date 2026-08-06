@@ -102,10 +102,11 @@ pub use ssh::{
     MAX_SSH_TERMINALS_PER_WORKSPACE, MAX_SSH_USERNAME_BYTES, MAX_SSH_WORKSPACES,
     MAX_TRANSFER_HISTORY, OverwritePolicy, RemoteDirectory, RemoteEntry, RemoteEntryKind,
     RemoteFileChunk, RemoteFileChunkPosition, RemoteFilePreview, SshAuthMode, SshCapability,
-    SshLaunchCommand, SshPathFavorites, SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn,
-    SshWorkspacePreference, SshWorkspaceState, TRANSFER_BUFFER_BYTES, TransferCancellation,
-    TransferDirection, TransferId, TransferStatus, TransferTask, join_remote_path,
-    parent_remote_path, validate_local_transfer_path, validate_remote_name, validate_remote_path,
+    SshLaunchCommand, SshModuleSettings, SshPathFavorites, SshProfile, SshProfileId,
+    SshProfileOrigin, SshProgressFn, SshWorkspacePreference, SshWorkspaceState,
+    TRANSFER_BUFFER_BYTES, TransferCancellation, TransferDirection, TransferId, TransferStatus,
+    TransferTask, join_remote_path, parent_remote_path, validate_local_transfer_path,
+    validate_remote_name, validate_remote_path,
 };
 pub use ssh_diagnostic::{
     DEFAULT_DIAGNOSTIC_TIMEOUT_SECONDS, DiagnosticCancellation, DiagnosticErrorCode,
@@ -113,9 +114,9 @@ pub use ssh_diagnostic::{
     MAX_CONCURRENT_DIAGNOSTICS, MAX_CONCURRENT_DIAGNOSTICS_PER_PROFILE, MAX_DIAGNOSTIC_INPUT_BYTES,
     MAX_DIAGNOSTIC_ITEMS, MAX_DIAGNOSTIC_OUTPUT_BYTES, MAX_DIAGNOSTIC_STDERR_BYTES,
     MAX_DIAGNOSTIC_TIMEOUT_SECONDS, MIN_DIAGNOSTIC_REFRESH_SECONDS, RemoteCapabilityState,
-    RemoteOperatingSystem, RemotePlatformPreference, RemoteShellKind, SshDiagnosticOperation,
-    SshDiagnosticProviderKind, SshDiagnosticResult, SshLogSource, SshRemoteCapabilities,
-    SshServiceName,
+    RemoteOperatingSystem, RemotePlatformPreference, RemoteShellKind, SftpTransportKind,
+    SshDiagnosticOperation, SshDiagnosticProviderKind, SshDiagnosticResult, SshLogSource,
+    SshRemoteCapabilities, SshServiceName,
 };
 pub use ssh_remote_path::{
     RemotePath, SftpNamespaceKind, infer_sftp_namespace, validate_remote_name_for_namespace,

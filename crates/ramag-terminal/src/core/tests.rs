@@ -127,6 +127,29 @@ fn local_pty_resize_updates_grid_dimensions() {
 
 #[cfg(unix)]
 #[test]
+fn short_initial_history_can_be_revealed_without_unbounded_scrolling() {
+    let script = "i=1; while [ \"$i\" -le 28 ]; do echo line-$i; i=$((i + 1)); done";
+    let mut core = TerminalCore::start(TerminalCommand::new(
+        "/bin/sh",
+        vec!["-c".into(), script.into()],
+    ))
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while core.exit_status().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(core.exit_status().is_some_and(|status| status.success));
+    assert_eq!(core.snapshot().display_offset, 0);
+    assert!(core.reveal_short_initial_history(8));
+    assert!(core.snapshot().display_offset > 0);
+    core.scroll_to_bottom();
+    assert_eq!(core.snapshot().display_offset, 0);
+    core.close();
+}
+
+#[cfg(unix)]
+#[test]
 fn terminal_input_can_be_frozen_and_shutdown_completion_is_observable() {
     let mut core = TerminalCore::start(TerminalCommand::new("/bin/cat", Vec::new())).unwrap();
     core.set_input_enabled(false);

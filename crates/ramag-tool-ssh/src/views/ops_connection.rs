@@ -17,9 +17,9 @@ impl SshView {
         if let Some(workspace) = self.workspace_mut(&id) {
             workspace.connection_started = true;
         }
-        let should_start_terminal = self.workspace_mut(&id).is_some_and(|workspace| {
-            !workspace.profile.production && workspace.terminals.is_empty()
-        });
+        let should_start_terminal = self
+            .workspace_mut(&id)
+            .is_some_and(|workspace| workspace.terminals.is_empty());
         if should_start_terminal {
             self.start_terminal(id.clone(), None, window, cx);
         }

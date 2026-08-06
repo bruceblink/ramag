@@ -76,11 +76,7 @@ impl SettingsView {
                 "Ramag 复用系统 Git、SSH Agent 与已有凭据；仓库和远程地址请在版本管理页面中维护。",
                 cx,
             ),
-            SettingsPage::Ssh => managed_in_module_card(
-                "连接配置",
-                "主机、认证方式、密钥与传输配置跟随 SSH 连接保存，请在 SSH 的连接管理中维护。",
-                cx,
-            ),
+            SettingsPage::Ssh => self.render_ssh_page(cx),
             SettingsPage::Update => self.render_update_page(cx),
             SettingsPage::Clipboard => self.render_clipboard_page(cx),
         };

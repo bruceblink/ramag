@@ -108,7 +108,7 @@ impl SshView {
                             muted
                         })
                         .child(if workspace.profile.production {
-                            "只读"
+                            "生产"
                         } else {
                             "SSH"
                         }),
