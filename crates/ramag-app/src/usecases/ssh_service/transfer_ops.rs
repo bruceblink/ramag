@@ -122,11 +122,7 @@ impl SshService {
             return Err(error);
         }
         if task.direction == TransferDirection::Upload
-            && let Err(error) = ensure_remote_write_platform(
-                &profile,
-                &capabilities,
-                overwrite == OverwritePolicy::Overwrite,
-            )
+            && let Err(error) = ensure_remote_write_platform(&profile, &capabilities)
         {
             self.transfers.finish(
                 id,

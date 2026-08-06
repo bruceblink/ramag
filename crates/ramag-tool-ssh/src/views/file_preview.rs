@@ -19,7 +19,7 @@ use gpui_component::{
 use ramag_app::SshService;
 use ramag_domain::entities::{
     MAX_REMOTE_FILE_PREVIEW_BYTES, RemoteEntry, RemoteEntryKind, RemoteFileChunkPosition,
-    RemoteOperatingSystem, SshProfile, SshProfileId,
+    SshProfile, SshProfileId,
 };
 
 use super::SshView;
@@ -60,9 +60,6 @@ impl SshView {
         workspace.file_preview_loading = true;
         workspace.file_preview_generation = workspace.file_preview_generation.wrapping_add(1);
         let generation = workspace.file_preview_generation;
-        let platform_read_only = workspace.capabilities.as_ref().is_some_and(|capabilities| {
-            capabilities.operating_system == RemoteOperatingSystem::Windows
-        });
         let profile = workspace.profile.clone();
         let path = entry.path.clone();
         let service = self.service.clone();
@@ -94,11 +91,7 @@ impl SshView {
                             this.service.clone(),
                             cx.entity(),
                             profile,
-                            RemoteFileEditorInput {
-                                entry,
-                                preview,
-                                platform_read_only,
-                            },
+                            RemoteFileEditorInput { entry, preview },
                             window,
                             cx,
                         ),
@@ -116,7 +109,6 @@ impl SshView {
 struct RemoteFileEditorInput {
     entry: RemoteEntry,
     preview: RemoteFileText,
-    platform_read_only: bool,
 }
 
 struct RemoteFileEditor {
@@ -133,7 +125,6 @@ struct RemoteFileEditor {
     chunk_offset: u64,
     chunk_end: u64,
     windowed: bool,
-    platform_read_only: bool,
     language: &'static str,
     chunk_loading: bool,
     chunk_generation: u64,
@@ -156,11 +147,7 @@ impl RemoteFileEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let RemoteFileEditorInput {
-            entry,
-            preview,
-            platform_read_only,
-        } = editor_input;
+        let RemoteFileEditorInput { entry, preview } = editor_input;
         let language = super::file_syntax::language_for_remote_file(&entry.path, &preview.text);
         let windowed = preview.is_windowed();
         let original_text = preview.text;
@@ -208,7 +195,6 @@ impl RemoteFileEditor {
             chunk_offset: preview.offset,
             chunk_end: preview.end_offset,
             windowed,
-            platform_read_only,
             language,
             chunk_loading: false,
             chunk_generation: 0,
@@ -228,12 +214,7 @@ impl RemoteFileEditor {
     }
 
     fn read_only_reason(&self) -> Option<&'static str> {
-        remote_file_read_only_reason(
-            self.profile.production,
-            self.platform_read_only,
-            self.windowed,
-            self.auto_refresh,
-        )
+        remote_file_read_only_reason(self.profile.production, self.windowed, self.auto_refresh)
     }
 
     fn is_dirty(&self) -> bool {
@@ -574,13 +555,10 @@ fn bounded_preview_title(path: &str) -> SharedString {
 
 fn remote_file_read_only_reason(
     production: bool,
-    platform_read_only: bool,
     windowed: bool,
     auto_refresh: bool,
 ) -> Option<&'static str> {
-    if platform_read_only {
-        Some("Windows ACL 保护")
-    } else if production {
+    if production {
         Some("生产模式")
     } else if windowed {
         Some("分段预览")

@@ -427,7 +427,6 @@ impl SshDriver for OpenSshDriver {
         contents: &[u8],
     ) -> Result<()> {
         validate_writable_profile_and_path(profile, path)?;
-        ensure_windows_acl_safe_write(profile, path, true)?;
         let profile = profile.clone();
         let path = path.to_string();
         let expected = expected.to_vec();
@@ -474,21 +473,6 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
-            if profile.remote_platform == RemotePlatformPreference::Windows {
-                let metadata = connection
-                    .session
-                    .raw
-                    .lstat(old_path.clone())
-                    .await
-                    .map_err(|error| {
-                        session::map_sftp_error("确认 Windows 重命名项目类型", error)
-                    })?;
-                if !metadata.attrs.is_regular() && !metadata.attrs.is_dir() {
-                    return Err(DomainError::Forbidden(
-                        "Windows 首版拒绝重命名符号链接或未知 reparse point".into(),
-                    ));
-                }
-            }
             let result = connection
                 .contextualize(session::rename(&connection.session, &old_path, &new_path).await);
             invalidate_broken(&sessions, &profile.id, &result).await;
@@ -523,11 +507,6 @@ impl SshDriver for OpenSshDriver {
         progress: SshProgressFn,
     ) -> Result<()> {
         validate_writable_profile_and_path(profile, remote_path)?;
-        ensure_windows_acl_safe_write(
-            profile,
-            remote_path,
-            overwrite == OverwritePolicy::Overwrite,
-        )?;
         let profile = profile.clone();
         let local_path = local_path.to_path_buf();
         let remote_path = remote_path.to_string();
@@ -946,26 +925,6 @@ fn validate_writable_profile_and_path(profile: &SshProfile, path: &str) -> Resul
     validate_profile_and_path(profile, path)?;
     if profile.production {
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
-    }
-    Ok(())
-}
-
-fn ensure_windows_acl_safe_write(
-    profile: &SshProfile,
-    path: &str,
-    replaces_existing_file: bool,
-) -> Result<()> {
-    if !replaces_existing_file {
-        return Ok(());
-    }
-    if profile.remote_platform == RemotePlatformPreference::Windows
-        || path.len() >= 3
-            && path.as_bytes()[0].is_ascii_alphabetic()
-            && path.as_bytes()[1..].starts_with(b":/")
-    {
-        return Err(DomainError::Forbidden(
-            "Windows SFTP 尚不能保证保留 NTFS ACL，已禁用编辑和覆盖现有文件".into(),
-        ));
     }
     Ok(())
 }

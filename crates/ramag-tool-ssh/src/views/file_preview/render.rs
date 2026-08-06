@@ -235,14 +235,11 @@ mod tests {
     use super::super::remote_file_read_only_reason;
 
     #[test]
-    fn windows_file_preview_explains_acl_read_only_policy() {
+    fn file_preview_is_editable_without_an_independent_read_only_reason() {
+        assert_eq!(remote_file_read_only_reason(false, false, false), None);
         assert_eq!(
-            remote_file_read_only_reason(false, true, false, false),
-            Some("Windows ACL 保护")
-        );
-        assert_eq!(
-            remote_file_read_only_reason(false, false, false, false),
-            None
+            remote_file_read_only_reason(true, false, false),
+            Some("生产模式")
         );
     }
 }

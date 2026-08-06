@@ -399,7 +399,7 @@ impl SshService {
         let profile = self.current_profile(&profile.id).await?;
         ensure_sftp_writable(&profile)?;
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities, true)?;
+        ensure_remote_write_platform(&profile, &capabilities)?;
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         let path = resolved_remote_path(&capabilities, path)?;
         if expected.len() > MAX_REMOTE_FILE_PREVIEW_BYTES
@@ -420,7 +420,7 @@ impl SshService {
         let profile = self.current_profile(&profile.id).await?;
         ensure_sftp_writable(&profile)?;
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities, false)?;
+        ensure_remote_write_platform(&profile, &capabilities)?;
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         let path = resolved_new_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
@@ -433,7 +433,7 @@ impl SshService {
         let profile = self.current_profile(&profile.id).await?;
         ensure_sftp_writable(&profile)?;
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities, false)?;
+        ensure_remote_write_platform(&profile, &capabilities)?;
         validate_remote_path(old_path).map_err(DomainError::InvalidConfig)?;
         validate_remote_path(new_path).map_err(DomainError::InvalidConfig)?;
         let old_path = resolved_remote_path(&capabilities, old_path)?;
@@ -453,14 +453,7 @@ impl SshService {
         let profile = self.current_profile(&profile.id).await?;
         ensure_sftp_writable(&profile)?;
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities, false)?;
-        if capabilities.operating_system == RemoteOperatingSystem::Windows
-            && !matches!(kind, RemoteEntryKind::File | RemoteEntryKind::Directory)
-        {
-            return Err(DomainError::Forbidden(
-                "Windows 首版拒绝删除符号链接或未知 reparse point".into(),
-            ));
-        }
+        ensure_remote_write_platform(&profile, &capabilities)?;
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         let path = resolved_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
@@ -603,7 +596,6 @@ fn validate_diagnostic_platform(
 pub(super) fn ensure_remote_write_platform(
     profile: &SshProfile,
     capabilities: &SshRemoteCapabilities,
-    replaces_existing_file: bool,
 ) -> Result<()> {
     if capabilities.sftp != RemoteCapabilityState::Available {
         return Err(DomainError::Forbidden(
@@ -611,11 +603,7 @@ pub(super) fn ensure_remote_write_platform(
         ));
     }
     match capabilities.operating_system {
-        RemoteOperatingSystem::Linux => Ok(()),
-        RemoteOperatingSystem::Windows if replaces_existing_file => Err(DomainError::Forbidden(
-            "Windows SFTP 尚不能保证保留 NTFS ACL，已禁用编辑和覆盖现有文件".into(),
-        )),
-        RemoteOperatingSystem::Windows => Ok(()),
+        RemoteOperatingSystem::Linux | RemoteOperatingSystem::Windows => Ok(()),
         RemoteOperatingSystem::Unknown => Err(DomainError::Forbidden(format!(
             "远端平台尚未确认，不能对连接「{}」执行写操作",
             profile.name
@@ -699,6 +687,18 @@ mod tests {
             profile_for_capabilities(&profile, &capabilities).remote_platform,
             RemotePlatformPreference::Linux
         );
+    }
+
+    #[test]
+    fn windows_sftp_write_is_allowed_when_capability_is_available() {
+        let profile = SshProfile::new("windows", "windows.example.com");
+        let capabilities = SshRemoteCapabilities {
+            operating_system: RemoteOperatingSystem::Windows,
+            sftp: RemoteCapabilityState::Available,
+            ..SshRemoteCapabilities::default()
+        };
+
+        assert!(ensure_remote_write_platform(&profile, &capabilities).is_ok());
     }
 
     #[test]
