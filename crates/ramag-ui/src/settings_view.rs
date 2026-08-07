@@ -6,7 +6,6 @@ mod pages;
 mod ssh;
 mod update;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,8 +19,8 @@ use gpui_component::{
 };
 use ramag_app::{AvailableUpdate, ClipboardService, ConnectionService, SshService, UpdateService};
 use ramag_domain::entities::{
-    ClipboardSettings, DownloadProgress, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
-    MAX_ID_CONVERTER_PROGRAM_BYTES, SshModuleSettings, UpdateCancellation,
+    ClipboardSettings, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
+    MAX_ID_CONVERTER_PROGRAM_BYTES, SshModuleSettings,
 };
 
 use crate::MAX_SEARCH_INPUT_BYTES;
@@ -60,7 +59,7 @@ impl SettingsPage {
             Self::Database => "数据库客户端",
             Self::VersionControl => "版本管理",
             Self::Ssh => "SSH 管理",
-            Self::Update => "关于与更新",
+            Self::Update => "关于",
             Self::Clipboard => "剪贴板",
         }
     }
@@ -69,8 +68,8 @@ impl SettingsPage {
         match self {
             Self::Database => "管理数据库连接配置与搜索行为。",
             Self::VersionControl => "管理 Git 版本控制的模块级配置。",
-            Self::Ssh => "管理 SSH 与 SFTP 的模块级配置。",
-            Self::Update => "查看当前版本、检查更新并下载已校验的安装包。",
+            Self::Ssh => "管理 SSH 与 SFTP 配置。",
+            Self::Update => "查看版本信息与可用更新。",
             Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与历史数据。",
         }
     }
@@ -84,13 +83,9 @@ impl SettingsPage {
 enum UpdateUiState {
     #[default]
     Idle,
-    Checking,
-    UpToDate {
-        latest_version: String,
-    },
+    UpToDate,
     Available(AvailableUpdate),
     UnsupportedPlatform(AvailableUpdate),
-    Error(String),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -121,11 +116,6 @@ pub struct SettingsView {
     ssh_service: Arc<SshService>,
     update_service: Option<Arc<UpdateService>>,
     update_state: UpdateUiState,
-    update_downloading: bool,
-    update_cancellation: Option<UpdateCancellation>,
-    update_progress: Arc<parking_lot::Mutex<DownloadProgress>>,
-    update_downloaded_path: Option<PathBuf>,
-    update_download_error: Option<String>,
     clipboard: ClipboardSettings,
     loaded_revision: u64,
     saving_clipboard: bool,
@@ -270,11 +260,6 @@ impl SettingsView {
             ssh_service,
             update_service,
             update_state: UpdateUiState::Idle,
-            update_downloading: false,
-            update_cancellation: None,
-            update_progress: Arc::new(parking_lot::Mutex::new(DownloadProgress::default())),
-            update_downloaded_path: None,
-            update_download_error: None,
             clipboard,
             loaded_revision,
             saving_clipboard: false,
@@ -381,6 +366,7 @@ mod tests {
     #[test]
     fn update_page_is_always_last() {
         assert_eq!(SettingsPage::ALL.last(), Some(&SettingsPage::Update));
+        assert_eq!(SettingsPage::Update.title(), "关于");
     }
 
     #[test]

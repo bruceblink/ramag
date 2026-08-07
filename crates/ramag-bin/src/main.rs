@@ -14,10 +14,10 @@ use gpui::{
     Action, App, Bounds, KeyBinding, Menu, MenuItem, Subscription, TitlebarOptions, WindowBounds,
     WindowKind, WindowOptions, prelude::*, px, size,
 };
-use gpui_component::{Root, WindowExt as _, notification::Notification};
+use gpui_component::Root;
 use ramag_app::{
     ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService, RedisService,
-    SshService, ToolRegistry, UpdateCheckResult, UpdateService,
+    SshService, ToolRegistry, UpdateService,
 };
 use ramag_domain::traits::{
     ClipboardDriver, DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
@@ -46,10 +46,10 @@ use ramag_tool_vcs::{
     ToggleHistoryPane, VcsTool, create_vcs_view,
 };
 use ramag_ui::{
-    CloseTab, CycleSection, CycleSectionReverse, DATABASE_SEARCH_SETTINGS_PREF_KEY, HomeEvent,
-    HomeView, NavTarget, RamagAssets, SelectTool1, SelectTool2, SelectTool3, SelectTool4,
-    SettingsView, Shell, StorageGlobal, init_database_search_settings, init_theme,
-    sync_update_indicator,
+    CloseTab, CycleSection, CycleSectionReverse, DATABASE_SEARCH_SETTINGS_PREF_KEY,
+    FEEDBACK_ISSUE_URL, HomeEvent, HomeView, NavTarget, RamagAssets, SelectTool1, SelectTool2,
+    SelectTool3, SelectTool4, SettingsView, Shell, StorageGlobal, init_database_search_settings,
+    init_theme, sync_update_indicator,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -68,12 +68,6 @@ struct OpenLogDir;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag)]
 struct OpenFeedbackIssue;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag)]
-struct CheckForUpdates;
-
-const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
 
 fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
@@ -426,21 +420,6 @@ fn main() {
             cx.open_url(FEEDBACK_ISSUE_URL);
         });
 
-        let update_service_for_action = deps.update_service.clone();
-        cx.on_action(move |_: &CheckForUpdates, cx: &mut App| {
-            let Some(service) = update_service_for_action.clone() else {
-                push_main_window_notification(
-                    gpui_component::notification::Notification::error(
-                        "更新检查组件初始化失败，请查看日志",
-                    )
-                    .autohide(true),
-                    cx,
-                );
-                return;
-            };
-            spawn_update_check(service, true, cx);
-        });
-
         cx.set_menus(vec![
             Menu {
                 name: "Ramag".into(),
@@ -451,7 +430,6 @@ fn main() {
                 name: "帮助".into(),
                 items: vec![
                     MenuItem::action("查看日志", OpenLogDir),
-                    MenuItem::action("检查更新", CheckForUpdates),
                     MenuItem::action("反馈问题", OpenFeedbackIssue),
                 ],
                 disabled: false,
@@ -462,62 +440,25 @@ fn main() {
         if !cfg!(debug_assertions)
             && let Some(service) = deps.update_service.clone()
         {
-            spawn_update_check(service, false, cx);
+            spawn_update_check(service, cx);
         }
     });
 }
 
-fn spawn_update_check(service: Arc<UpdateService>, force: bool, cx: &mut App) {
+fn spawn_update_check(service: Arc<UpdateService>, cx: &mut App) {
     cx.spawn(async move |cx| {
-        if !force {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(3))
-                .await;
-        }
-        let result = service.check(force).await;
-        cx.update(|cx| {
-            if let Ok(result) = &result {
-                sync_update_indicator(result, cx);
-            }
-            match result {
-                Ok(UpdateCheckResult::Skipped) => {}
-                Ok(UpdateCheckResult::UpToDate {
-                    current_version, ..
-                }) if force => {
-                    push_main_window_notification(
-                        Notification::success(format!("Ramag {current_version} 已是最新版本"))
-                            .autohide(true),
-                        cx,
-                    );
-                }
-                Ok(UpdateCheckResult::UpToDate { .. })
-                | Ok(UpdateCheckResult::Available(_))
-                | Ok(UpdateCheckResult::UnsupportedPlatform(_)) => {}
-                Err(error) if force => {
-                    push_main_window_notification(
-                        Notification::error(format!("检查更新失败：{error}")).autohide(true),
-                        cx,
-                    );
-                }
-                Err(error) => {
-                    warn!(error = %error, "automatic update check failed");
-                }
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs(3))
+            .await;
+        let result = service.check(false).await;
+        cx.update(|cx| match result {
+            Ok(result) => sync_update_indicator(&result, cx),
+            Err(error) => {
+                warn!(error = %error, "automatic update check failed");
             }
         });
     })
     .detach();
-}
-
-fn push_main_window_notification(notification: Notification, cx: &mut App) {
-    let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|global| global.0) else {
-        warn!("main window unavailable for update notification");
-        return;
-    };
-    if let Err(error) = handle.update(cx, |_, window, cx| {
-        window.push_notification(notification, cx);
-    }) {
-        warn!(error = %error, "show update notification failed");
-    }
 }
 
 fn confirm_ssh_host(prompt: &str) -> bool {

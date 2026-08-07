@@ -58,6 +58,8 @@ pub use transfer_ui::{
     transfer_notification, transfer_progress_row,
 };
 
+pub const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
+
 /// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
 pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {
     use gpui::Styled as _;

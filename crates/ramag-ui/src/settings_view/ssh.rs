@@ -1,6 +1,6 @@
 //! SSH 模块级设置页。
 
-use super::{SettingsView, pages::settings_card};
+use super::SettingsView;
 use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, Window, div, prelude::*, px};
 use gpui_component::{ActiveTheme, Disableable as _, h_flex, v_flex};
 use ramag_domain::entities::SshModuleSettings;
@@ -19,31 +19,25 @@ impl SettingsView {
                 page.child(div().text_xs().text_color(muted).child("保存中…"))
             })
             .child(
-                settings_card("SFTP 兼容", theme.border).child(ssh_toggle_row(
-                    "settings-ssh-windows-sftp-compatibility",
-                    "Windows SFTP 兼容模式",
-                    [
-                        "仅当 Windows 远端使用标准 SFTP 无法列出目录或盘符时开启。",
-                        "开启后将通过 SSH 启动 Windows OpenSSH 的 sftp-server.exe。",
-                        "Linux 或标准 Windows SFTP 正常时无需开启。",
-                    ],
-                    settings.windows_sftp_compatibility,
-                    disabled,
-                    cx.listener(|this, _: &bool, _, cx| {
-                        let mut next = this.ssh_module_settings;
-                        next.windows_sftp_compatibility = !next.windows_sftp_compatibility;
-                        this.save_ssh_module_settings(next, cx);
-                    }),
-                    muted,
-                )),
-            )
-            .child(
-                div()
+                v_flex()
                     .w_full()
-                    .text_xs()
-                    .whitespace_normal()
-                    .text_color(muted)
-                    .child("这是 SSH 模块级开关，会影响所有 Windows SSH/SFTP 连接；修改后已有目录会在下一次请求时按新通道重新建立。"),
+                    .p(px(16.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(8.0))
+                    .child(ssh_toggle_row(
+                        "settings-ssh-windows-sftp-compatibility",
+                        "Windows SFTP 兼容模式",
+                        "SSH 可连接，但标准 SFTP 无法访问 Windows 目录时开启。",
+                        settings.windows_sftp_compatibility,
+                        disabled,
+                        cx.listener(|this, _: &bool, _, cx| {
+                            let mut next = this.ssh_module_settings;
+                            next.windows_sftp_compatibility = !next.windows_sftp_compatibility;
+                            this.save_ssh_module_settings(next, cx);
+                        }),
+                        muted,
+                    )),
             )
             .into_any_element()
     }
@@ -80,16 +74,12 @@ impl SettingsView {
 fn ssh_toggle_row(
     id: &'static str,
     title: &'static str,
-    description_lines: [&'static str; 3],
+    description: &'static str,
     checked: bool,
     disabled: bool,
     on_click: impl Fn(&bool, &mut Window, &mut gpui::App) + 'static,
     muted: gpui::Hsla,
 ) -> impl IntoElement {
-    let mut description = v_flex().w_full().gap(px(3.0));
-    for line in description_lines {
-        description = description.child(div().w_full().text_xs().text_color(muted).child(line));
-    }
     v_flex()
         .w_full()
         .gap(px(6.0))
@@ -113,5 +103,11 @@ fn ssh_toggle_row(
                         .on_click(on_click),
                 ),
         )
-        .child(description)
+        .child(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(muted)
+                .child(description),
+        )
 }

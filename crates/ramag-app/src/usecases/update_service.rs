@@ -9,10 +9,20 @@ use ramag_domain::entities::{ReleaseAsset, ReleaseInfo, UpdateCancellation, Upda
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{Storage, UpdateDriver};
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 pub const UPDATE_CHECK_PREF_KEY: &str = "update_last_check_at_v1";
 pub const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPDATE_RESULT_PREF_KEY: &str = "update_last_result_v1";
+const MAX_CACHED_UPDATE_NOTICE_BYTES: usize = 256;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CachedUpdateNotice {
+    current_version: String,
+    latest_version: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdatePlatform {
@@ -72,13 +82,18 @@ impl UpdateService {
 
     pub async fn check(&self, force: bool) -> Result<UpdateCheckResult> {
         let _guard = self.check_lock.lock().await;
-        if !force && !self.should_check().await {
-            return Ok(UpdateCheckResult::Skipped);
+        if !force
+            && !self.should_check().await
+            && let Some(result) = self.load_cached_result().await
+        {
+            *self.last_result.write() = Some(result.clone());
+            return Ok(result);
         }
         self.mark_check_attempt().await;
 
         let release = self.driver.latest_stable_release().await?;
         let result = evaluate_release(&self.current_version, release, current_platform())?;
+        self.persist_result(&result).await;
         *self.last_result.write() = Some(result.clone());
         Ok(result)
     }
@@ -143,6 +158,98 @@ impl UpdateService {
             warn!(error = %error, "persist update check timestamp failed");
         }
     }
+
+    async fn load_cached_result(&self) -> Option<UpdateCheckResult> {
+        let value = match self.storage.get_preference(UPDATE_RESULT_PREF_KEY).await {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(error = %error, "load cached update result failed");
+                return None;
+            }
+        }?;
+        match parse_cached_result(&self.current_version, &value) {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(error = %error, "parse cached update result failed");
+                None
+            }
+        }
+    }
+
+    async fn persist_result(&self, result: &UpdateCheckResult) {
+        let Some(notice) = cached_notice(&self.current_version, result) else {
+            return;
+        };
+        let value = match serde_json::to_string(&notice) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(error = %error, "serialize update result failed");
+                return;
+            }
+        };
+        if let Err(error) = self
+            .storage
+            .set_preference(UPDATE_RESULT_PREF_KEY, &value)
+            .await
+        {
+            warn!(error = %error, "persist update result failed");
+        }
+    }
+}
+
+fn cached_notice(current_version: &str, result: &UpdateCheckResult) -> Option<CachedUpdateNotice> {
+    let latest_version = match result {
+        UpdateCheckResult::Skipped => return None,
+        UpdateCheckResult::UpToDate { latest_version, .. } => latest_version.clone(),
+        UpdateCheckResult::Available(update) | UpdateCheckResult::UnsupportedPlatform(update) => {
+            update.release.version.clone()
+        }
+    };
+    Some(CachedUpdateNotice {
+        current_version: current_version.into(),
+        latest_version,
+    })
+}
+
+fn parse_cached_result(current_version: &str, value: &str) -> Result<Option<UpdateCheckResult>> {
+    if value.len() > MAX_CACHED_UPDATE_NOTICE_BYTES {
+        return Err(DomainError::Storage("缓存更新结果过大".into()));
+    }
+    let cached: CachedUpdateNotice = serde_json::from_str(value)
+        .map_err(|error| DomainError::Storage(format!("缓存更新结果无效：{error}")))?;
+    if cached.current_version != current_version {
+        return Ok(None);
+    }
+    let current = Version::parse(current_version)
+        .map_err(|error| DomainError::InvalidConfig(format!("当前应用版本无效：{error}")))?;
+    let latest = Version::parse(&cached.latest_version)
+        .map_err(|error| DomainError::Storage(format!("缓存更新版本无效：{error}")))?;
+    if current.to_string() != current_version
+        || latest.to_string() != cached.latest_version
+        || !latest.pre.is_empty()
+    {
+        return Err(DomainError::Storage("缓存更新版本不是规范稳定版本".into()));
+    }
+    if latest <= current {
+        return Ok(Some(UpdateCheckResult::UpToDate {
+            current_version: current_version.into(),
+            latest_version: cached.latest_version,
+        }));
+    }
+    let tag_name = format!("v{}", cached.latest_version);
+    Ok(Some(UpdateCheckResult::UnsupportedPlatform(
+        AvailableUpdate {
+            release: ReleaseInfo {
+                version: cached.latest_version,
+                release_url: format!("https://github.com/tools-rs/ramag/releases/tag/{tag_name}"),
+                tag_name,
+                notes: String::new(),
+                published_at: None,
+                assets: Vec::new(),
+            },
+            asset: None,
+        },
+    )))
 }
 
 pub fn asset_name_for(platform: UpdatePlatform, version: &str) -> String {
@@ -218,7 +325,10 @@ fn unix_timestamp() -> u64 {
 mod tests {
     use ramag_domain::entities::{ReleaseAsset, ReleaseInfo};
 
-    use super::{UpdateCheckResult, UpdatePlatform, asset_name_for, evaluate_release};
+    use super::{
+        UpdateCheckResult, UpdatePlatform, asset_name_for, cached_notice, evaluate_release,
+        parse_cached_result,
+    };
 
     #[test]
     fn asset_names_are_exact_and_platform_specific() {
@@ -304,5 +414,44 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cached_update_notice_restores_after_restart_without_remote_metadata() {
+        let available = evaluate_release(
+            "1.0.0",
+            release("1.1.0", true),
+            Some(UpdatePlatform::MacosArm64),
+        )
+        .expect("newer release should evaluate");
+        let notice = cached_notice("1.0.0", &available).expect("result should be cacheable");
+        let value = serde_json::to_string(&notice).expect("notice should serialize");
+
+        let restored = parse_cached_result("1.0.0", &value)
+            .expect("cached notice should parse")
+            .expect("same app version should restore");
+        let UpdateCheckResult::UnsupportedPlatform(update) = restored else {
+            panic!("cached update should restore as a safe update notice");
+        };
+        assert_eq!(update.release.version, "1.1.0");
+        assert_eq!(
+            update.release.release_url,
+            "https://github.com/tools-rs/ramag/releases/tag/v1.1.0"
+        );
+        assert!(update.asset.is_none());
+    }
+
+    #[test]
+    fn cached_update_notice_rejects_stale_or_noncanonical_versions() {
+        let value = r#"{"current_version":"1.0.0","latest_version":"1.1.0"}"#;
+        assert!(
+            parse_cached_result("1.0.1", value)
+                .expect("different app version should not be an error")
+                .is_none()
+        );
+
+        let prerelease = r#"{"current_version":"1.0.0","latest_version":"1.1.0-beta.1"}"#;
+        assert!(parse_cached_result("1.0.0", prerelease).is_err());
+        assert!(parse_cached_result("1.0.0", &"x".repeat(257)).is_err());
     }
 }

@@ -43,14 +43,14 @@ impl Global for UpdateIndicatorGlobal {}
 
 struct ActivityItemDecoration {
     tooltip: SharedString,
-    badge_count: usize,
+    show_badge: bool,
 }
 
 impl ActivityItemDecoration {
-    fn new(tooltip: impl Into<SharedString>, badge_count: usize) -> Self {
+    fn new(tooltip: impl Into<SharedString>, show_badge: bool) -> Self {
         Self {
             tooltip: tooltip.into(),
-            badge_count,
+            show_badge,
         }
     }
 }
@@ -149,7 +149,7 @@ impl Render for ActivityBar {
             is_home_selected,
             accent,
             transparent,
-            ActivityItemDecoration::new("首页", 0),
+            ActivityItemDecoration::new("首页", false),
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.navigate(NavTarget::Home, cx);
             }),
@@ -170,7 +170,7 @@ impl Render for ActivityBar {
                 is_selected,
                 accent,
                 transparent,
-                ActivityItemDecoration::new(tip, 0),
+                ActivityItemDecoration::new(tip, false),
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.navigate(NavTarget::Tool(id_for_click.clone()), cx);
                 }),
@@ -190,7 +190,7 @@ impl Render for ActivityBar {
             false,
             accent,
             transparent,
-            ActivityItemDecoration::new(theme_tip, 0),
+            ActivityItemDecoration::new(theme_tip, false),
             |_: &ClickEvent, _, app| {
                 let next = match crate::theme::current_mode(app) {
                     crate::theme::Mode::Light => crate::theme::Mode::Dark,
@@ -206,7 +206,7 @@ impl Render for ActivityBar {
             settings_selected,
             accent,
             transparent,
-            ActivityItemDecoration::new("设置", usize::from(update_available)),
+            ActivityItemDecoration::new("设置", update_available),
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.navigate(NavTarget::Settings, cx);
             }),
@@ -247,16 +247,16 @@ fn activity_item(
 ) -> impl IntoElement {
     let ActivityItemDecoration {
         tooltip,
-        badge_count,
+        show_badge,
     } = decoration;
     let mut button = crate::clickable_button(SharedString::from(id.to_string())).ghost();
-    button = if badge_count == 0 {
+    button = if !show_badge {
         button.icon(icon)
     } else {
         button
             .size(px(32.0))
             .p_0()
-            .child(Badge::new().count(badge_count).color(accent).child(icon))
+            .child(Badge::new().dot().color(accent).child(icon))
     };
     button = button.tooltip(tooltip);
     h_flex()
