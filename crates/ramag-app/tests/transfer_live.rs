@@ -19,7 +19,7 @@ use ramag_app::usecases::transfer;
 use ramag_app::{ConnectionService, MongoService, RedisService};
 use ramag_domain::entities::{
     ConflictPolicy, ConnectionConfig, ConnectionId, DriverKind, MongoQuerySpec, Query, QueryRecord,
-    QueryRecordId, RedisValue, StreamEntry, TransferProgress, TransferSummary, ValuePageCursor,
+    QueryRecordId, RedisValue, StreamEntry, TransferProgress, ValuePageCursor,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{Driver, Storage};
@@ -1119,12 +1119,6 @@ async fn mongo_export_import_roundtrip() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&collection_path);
     let _ = std::fs::remove_file(&timeseries_path);
-}
-
-/// 汇总结构可用于断言（编译期防字段误删）
-#[allow(dead_code)]
-fn assert_summary_shape(summary: &TransferSummary) -> (u64, u64) {
-    (summary.objects, summary.items)
 }
 
 /// 性能探针：对种子库做只读导出（MySQL / PG / Mongo），Redis 走 db0 导出 → db14 导入、

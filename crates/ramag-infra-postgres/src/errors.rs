@@ -1,4 +1,4 @@
-//! PG SQLSTATE → DomainError 映射。仅识别 Database 变体，其余走 sql-shared 兜底
+//! PostgreSQL SQLSTATE 到 DomainError 的映射。仅处理数据库错误，其余由 sql-shared 兜底。
 
 use ramag_domain::error::DomainError;
 use ramag_infra_sql_shared::errors::{map_database_error, map_sqlx_common};
@@ -9,7 +9,7 @@ pub fn map_postgres_error(err: &sqlx::Error) -> DomainError {
 
 pub fn map_postgres_database_error(err: &sqlx::Error) -> Option<DomainError> {
     map_database_error(err, postgres_error_friendly, |code, msg| {
-        // SQLSTATE 类码前 2 位：08=连接 / 28=认证 → ConnectionFailed
+        // SQLSTATE 类码前两位：08 表示连接错误，28 表示认证错误。
         match code.get(..2).unwrap_or("") {
             "08" | "28" => DomainError::ConnectionFailed(msg),
             _ => DomainError::QueryFailed(msg),
@@ -17,14 +17,14 @@ pub fn map_postgres_database_error(err: &sqlx::Error) -> Option<DomainError> {
     })
 }
 
-/// SQLSTATE → 中文友好提示
+/// 将 SQLSTATE 转换为中文提示。
 fn postgres_error_friendly(code: &str, raw: &str) -> String {
     match code {
         // 08 连接
         "08000" => format!("连接异常（{raw}）"),
         "08003" => format!("连接不存在（{raw}）"),
         "08006" => format!("连接失败（{raw}）"),
-        "08001" => format!("无法建立连接（检查 host/port/防火墙）：{raw}"),
+        "08001" => format!("无法建立连接，请检查主机、端口和防火墙：{raw}"),
         "08004" => format!("服务器拒绝连接（{raw}）"),
 
         // 23 完整性约束
@@ -36,7 +36,7 @@ fn postgres_error_friendly(code: &str, raw: &str) -> String {
 
         // 25 事务状态
         "25001" => format!("事务里只能跑一条语句（{raw}）"),
-        "25P02" => format!("事务已 abort，请 ROLLBACK 后重试：{raw}"),
+        "25P02" => format!("事务已中止，请回滚后重试：{raw}"),
         "25006" => format!("只读事务中不允许写：{raw}"),
 
         // 28 认证
@@ -58,7 +58,7 @@ fn postgres_error_friendly(code: &str, raw: &str) -> String {
         "53200" => format!("内存不足（{raw}）"),
         "53300" => format!("连接数已达上限（{raw}）"),
 
-        "57014" => format!("查询被取消（pg_cancel_backend）：{raw}"),
+        "57014" => format!("查询被取消：{raw}"),
 
         "3D000" => format!("数据库不存在：{raw}"),
         "0A000" => format!("不支持的特性：{raw}"),

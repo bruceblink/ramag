@@ -1,4 +1,4 @@
-//! 领域 trait 集合。infra 层实现，app 层依赖
+//! 由基础设施层实现、应用层依赖的领域接口。
 
 pub mod clipboard_driver;
 pub mod doc_driver;

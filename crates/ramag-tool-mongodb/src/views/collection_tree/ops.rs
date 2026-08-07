@@ -443,8 +443,15 @@ impl CollectionTreePanel {
                         this.remove_expanded_entry(&db);
                         this.open_databases.remove(&db);
                         this.invalidate_tree_rows();
+                        if let Some(connection) = this.connection.as_mut()
+                            && connection.database.as_deref() == Some(db.as_str())
+                        {
+                            // 已删除的配置默认库不能在下一次刷新时作为“空库”重新插回树中。
+                            connection.database = None;
+                        }
                         if this.active_db.as_deref() == Some(db.as_str()) {
                             this.active_db = None;
+                            this.auto_activate_pending = true;
                         }
                         if this.selected.as_ref().is_some_and(|(d, _)| d == &db) {
                             this.selected = None;
@@ -452,6 +459,9 @@ impl CollectionTreePanel {
                         this.pending_notification = Some(
                             Notification::success(format!("已删除数据库 {db}")).autohide(true),
                         );
+                        cx.emit(super::TreeEvent::DatabaseDropped {
+                            database: db.clone(),
+                        });
                         this.refresh_databases(cx);
                     }
                     Err(e) => {

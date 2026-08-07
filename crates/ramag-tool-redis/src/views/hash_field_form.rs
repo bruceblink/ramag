@@ -109,7 +109,8 @@ impl HashFieldForm {
         }
         let field = match &self.mode {
             HashFieldFormMode::Edit { field } => field.clone(),
-            HashFieldFormMode::Add => self.field_input.read(cx).value().trim().to_string(),
+            // Redis 字段名是二进制安全参数，不能静默删除合法的前后空格。
+            HashFieldFormMode::Add => self.field_input.read(cx).value().to_string(),
         };
         if field.is_empty() {
             self.state = SubmitState::Failed("请填写字段名".into());

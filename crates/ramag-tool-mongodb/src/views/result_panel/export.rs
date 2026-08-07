@@ -1,5 +1,4 @@
-//! 结果集导出 JSONL：每行一个原始文档，与当前集合的数据导入配对；不含集合创建选项或索引。
-//! rfd 保存框异步等待，序列化放受限工作池，结果回主线程提示（与 dbclient 同款）。
+//! 将选中文档导出为 JSONL。
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -8,6 +7,7 @@ use gpui::{Context, Window};
 use gpui_component::notification::Notification;
 use ramag_app::usecases::export;
 use ramag_domain::error::DomainError;
+use tracing::{error, info};
 
 use super::{ResultEvent, ResultPanel};
 
@@ -46,14 +46,10 @@ impl ResultPanel {
             cx,
         );
     }
-    /// 仅导出勾选文档为 JSONL（每行一个原始文档，不裁字段）。
     pub(crate) fn export_documents(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
-            self.pending_notification = Some(
-                Notification::info("已有导出任务正在进行")
-                    .title("导出")
-                    .autohide(true),
-            );
+            self.pending_notification =
+                Some(Notification::info("已有导出任务正在进行").autohide(true));
             cx.notify();
             return;
         }
@@ -67,6 +63,12 @@ impl ResultPanel {
             self.pending_notification = Some(Notification::warning("未选择数据").autohide(true));
             cx.notify();
             return;
+        }
+        if self.parse_column_filter(cx).drill_path.is_some() {
+            return self.notify_error(
+                "当前是路径钻取视图，行号不对应原始文档；请清空过滤列后再导出".to_string(),
+                cx,
+            );
         }
         let Some(table) = self.table.clone() else {
             return self.notify_error("无表格数据可导出".to_string(), cx);
@@ -93,7 +95,7 @@ impl ResultPanel {
         } else {
             None
         };
-        // 按范围行导原始文档。钻取视图下表格行与原始文档可能不一一对应。
+        // 防御无效选择索引；正常视图的表格行与当前层文档一一对应。
         if !rows.iter().any(|&index| documents.get(index).is_some()) {
             return self.notify_error(
                 "当前视图与原始文档不对应（钻取层），请返回上层后导出".to_string(),
@@ -108,7 +110,7 @@ impl ResultPanel {
             "jsonl",
         );
         let scope_label = scope;
-        // 用户取消时不做排序 / 序列化；保存框不占共享 worker，防重入避免重复弹框。
+        // 用户选定路径后才占用工作池。
         self.exporting = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -146,30 +148,41 @@ impl ResultPanel {
                     .await
                     {
                         Ok(()) => ExportOutcome::Saved(path),
-                        Err(error) => ExportOutcome::Failed(format!(
-                            "写入导出文件 {} 失败：{error}",
-                            path.display()
-                        )),
+                        Err(error) => ExportOutcome::Failed {
+                            path,
+                            error: error.to_string(),
+                        },
                     }
                 }
             };
             let _ = this.update(cx, |this, cx| {
                 this.exporting = false;
-                this.pending_notification = Some(match outcome {
-                    ExportOutcome::Saved(p) => Notification::success(format!(
-                        "{}（{}）",
-                        p.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "导出完成".to_string()),
-                        scope_label
-                    ))
-                    .title("导出成功")
-                    .autohide(true),
-                    ExportOutcome::Cancelled => Notification::info("已取消导出").autohide(true),
-                    ExportOutcome::Failed(e) => {
-                        Notification::error(e).title("导出失败").autohide(true)
+                this.pending_notification = match outcome {
+                    ExportOutcome::Saved(path) => {
+                        info!(path = %path.display(), scope = %scope_label, "result export completed");
+                        let file_name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        Some(
+                            Notification::success(format!(
+                                "已导出 {file_name}（{scope_label}）"
+                            ))
+                            .autohide(true),
+                        )
                     }
-                });
+                    ExportOutcome::Cancelled => None,
+                    ExportOutcome::Failed { path, error } => {
+                        error!(error = %error, path = %path.display(), "result export failed");
+                        Some(
+                            Notification::error(format!(
+                                "写入导出文件 {} 失败：{error}",
+                                path.display()
+                            ))
+                            .autohide(true),
+                        )
+                    }
+                };
                 cx.notify();
             });
         })
@@ -177,14 +190,12 @@ impl ResultPanel {
     }
 }
 
-/// rfd 文件保存结果（线程 → 主线程）
 enum ExportOutcome {
     Saved(PathBuf),
     Cancelled,
-    Failed(String),
+    Failed { path: PathBuf, error: String },
 }
 
-/// 按给定行序流式写 JSONL：每行一个紧凑 JSON 文档，越界行索引跳过
 fn write_selected_jsonl(
     writer: &mut dyn Write,
     documents: &[serde_json::Value],

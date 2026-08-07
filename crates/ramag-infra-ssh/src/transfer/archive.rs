@@ -394,20 +394,27 @@ where
     .await?
     .map_err(|error| map_sftp_error("打开远程归档文件", error))?
     .handle;
-    let opened =
-        match await_cancellable_sftp(session.raw.fstat(handle.clone()), &cancellation).await {
-            Ok(Ok(metadata)) => metadata.attrs,
-            Ok(Err(error)) => {
-                let _ = session.raw.close(handle).await;
-                return Err(map_sftp_error("确认远程归档文件", error));
+    let opened = match await_cancellable_sftp(session.raw.fstat(handle.clone()), &cancellation)
+        .await
+    {
+        Ok(Ok(metadata)) => metadata.attrs,
+        Ok(Err(error)) => {
+            if let Err(close_error) = session.raw.close(handle).await {
+                tracing::warn!(error = %close_error, "close ssh archive source after metadata failure failed");
             }
-            Err(error) => {
-                let _ = session.raw.close(handle).await;
-                return Err(error);
+            return Err(map_sftp_error("确认远程归档文件", error));
+        }
+        Err(error) => {
+            if let Err(close_error) = session.raw.close(handle).await {
+                tracing::warn!(error = %close_error, "close cancelled ssh archive source failed");
             }
-        };
+            return Err(error);
+        }
+    };
     if !opened.is_regular() || opened.len() != entry.attributes.len() {
-        let _ = session.raw.close(handle).await;
+        if let Err(error) = session.raw.close(handle).await {
+            tracing::warn!(error = %error, "close changed ssh archive source failed");
+        }
         return Err(DomainError::Forbidden("目录内容已变化，请重新下载".into()));
     }
     let stream = futures::stream::try_unfold(

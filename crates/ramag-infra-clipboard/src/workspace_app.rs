@@ -5,7 +5,7 @@ use cocoa::foundation::NSArray;
 use objc::{class, msg_send, sel, sel_impl};
 use tracing::warn;
 
-use ramag_domain::entities::ClipSource;
+use ramag_domain::entities::{ClipSource, is_safe_http_url};
 use ramag_domain::error::{DomainError, Result};
 
 use crate::pasteboard::{ns_string, tiff_to_png, to_rust_string};
@@ -47,6 +47,12 @@ pub(crate) fn app_icon_png(bundle_id: &str) -> Option<Vec<u8>> {
 
 /// 用默认浏览器打开链接（NSWorkspace openURL）
 pub(crate) fn open_url(url: &str) -> Result<()> {
+    let url = url.trim();
+    if !is_safe_http_url(url) {
+        return Err(DomainError::InvalidConfig(
+            "仅支持不含空白或控制字符的 HTTP/HTTPS 链接".into(),
+        ));
+    }
     unsafe {
         let ns_url: id = msg_send![class!(NSURL), URLWithString: ns_string(url)];
         if ns_url == nil {

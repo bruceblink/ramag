@@ -1,4 +1,4 @@
-//! Redis key 空间元数据：SCAN 浏览的 (name, type, ttl) 载体
+//! Redis SCAN 使用的 key、类型和 TTL 元数据。
 
 use serde::{Deserialize, Serialize};
 
@@ -104,9 +104,9 @@ fn validate_redis_command_parts<'a>(argv: impl IntoIterator<Item = &'a str>) -> 
                     .bytes()
                     .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
             {
-                return Err(DomainError::InvalidConfig(
-                    "Redis 命令名必须是至多 256 bytes、且不含空白或控制字符的 ASCII 文本".into(),
-                ));
+                return Err(DomainError::InvalidConfig(format!(
+                    "Redis 命令名不能超过 {MAX_REDIS_COMMAND_NAME_BYTES} bytes，且只能包含无空白的 ASCII 文本"
+                )));
             }
         }
     }
@@ -138,7 +138,6 @@ pub fn validate_redis_scan_count(count: u32) -> Result<()> {
     Ok(())
 }
 
-/// 与 `TYPE <key>` 应答对齐
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RedisType {
     String,
@@ -147,7 +146,6 @@ pub enum RedisType {
     Set,
     ZSet,
     Stream,
-    /// key 不存在
     None,
 }
 
@@ -165,7 +163,6 @@ impl RedisType {
         }
     }
 
-    /// `SCAN ... TYPE <type>` 用的小写字面量
     pub fn as_scan_arg(&self) -> &'static str {
         match self {
             RedisType::String => "string",
@@ -191,10 +188,10 @@ impl RedisType {
     }
 }
 
-/// Key 元数据。SCAN 阶段 `key_type` / `ttl_ms` 可为 None，UI 按需补查
+/// SCAN 阶段可只返回 key，类型和 TTL 由 UI 按需补查。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMeta {
-    /// utf-8 字符串，driver 保证（暂不支持二进制 key）
+    /// 驱动保证为 UTF-8；暂不支持二进制 key。
     pub key: String,
     /// None=未查询，Some(RedisType::None)=查过但 key 不存在
     pub key_type: Option<RedisType>,
@@ -203,7 +200,6 @@ pub struct KeyMeta {
 }
 
 impl KeyMeta {
-    /// 仅 key 名的最简元数据
     pub fn bare(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -213,7 +209,6 @@ impl KeyMeta {
     }
 }
 
-/// SCAN 一批应答
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     /// 下次游标，0 = 遍历结束

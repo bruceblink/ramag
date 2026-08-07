@@ -1,4 +1,4 @@
-//! 按 ConnectionConfig 构造 PgPool。缓存在 sql-shared::PoolCache
+//! 根据 ConnectionConfig 创建 PostgreSQL 连接池。
 
 use std::time::Duration;
 
@@ -11,10 +11,10 @@ use tracing::warn;
 
 use crate::errors::map_postgres_error;
 
-/// 服务端 `pg_stat_activity` 识别 ramag 连接用
+/// 供服务端在 `pg_stat_activity` 中识别 Ramag 连接。
 const DEFAULT_APPLICATION_NAME: &str = "ramag";
 
-/// PG 必须指定 database，空时返回 InvalidConfig
+/// PostgreSQL 必须指定数据库，否则返回配置错误。
 pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
     config.validate().map_err(DomainError::InvalidConfig)?;
     if config.driver != DriverKind::Postgres {
@@ -39,8 +39,8 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
         ramag_infra_tunnel::validate_ca_certificate_file(ca)?;
     }
 
-    // SSH 隧道：启用时先确保系统 ssh 转发就绪，DB 改连 127.0.0.1:本地端口；
-    // 就绪探测是阻塞调用，经 spawn_blocking 隔离，不占 tokio worker
+    // 启用 SSH 隧道时，数据库改连本地转发端口。
+    // 隧道探测是阻塞调用，放在线程池中执行。
     let cfg_for_tunnel = config.clone();
     let tunnel = tokio::task::spawn_blocking(move || ramag_infra_tunnel::ensure(&cfg_for_tunnel))
         .await
@@ -57,11 +57,11 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
         .password(&config.password)
         .database(database)
         .application_name(DEFAULT_APPLICATION_NAME)
-        .log_statements(tracing::log::LevelFilter::Debug)
-        .log_slow_statements(tracing::log::LevelFilter::Warn, Duration::from_secs(1));
+        // 查询正文可能含敏感字面量；耗时和结果规模由共享执行层单独记录。
+        .disable_statement_logging();
 
-    // TLS：关闭保持历史行为（Prefer 有则用、无则降级）；开启按验证等级三档映射。
-    // 经 SSH 隧道时 Full 降级为 Ca（实际连 127.0.0.1，主机名校验必败；隧道本身已加密）
+    // 未启用 TLS 时保留优先尝试加密的历史行为；启用时按验证等级配置。
+    // SSH 隧道连接本地主机，无法校验原主机名，因此完整验证降级为证书验证。
     let opts = if !config.tls {
         opts.ssl_mode(PgSslMode::Prefer)
     } else {

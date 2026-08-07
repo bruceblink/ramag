@@ -34,9 +34,9 @@ pub async fn server_version(client: &Client) -> Result<String> {
         .run_command(doc! {"buildInfo": 1})
         .await
         .map_err(map_mongo_error)?;
-    Ok(r.get_str("version")
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| "unknown".to_string()))
+    r.get_str("version")
+        .map(str::to_string)
+        .map_err(|error| DomainError::QueryFailed(format!("MongoDB 版本响应缺少 version：{error}")))
 }
 
 pub async fn find(

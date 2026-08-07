@@ -11,9 +11,20 @@ impl SshService {
         profile.validate().map_err(DomainError::InvalidConfig)?;
         self.ensure_module_settings_loaded().await?;
         let effective_profile = self.apply_module_settings(profile);
-        self.driver
+        let started = std::time::Instant::now();
+        let result = self
+            .driver
             .probe_remote_capabilities(&effective_profile)
-            .await
+            .await;
+        match &result {
+            Ok(capabilities) => {
+                tracing::info!(profile_id = %profile.id, os = ?capabilities.operating_system, sftp = ?capabilities.sftp, elapsed_ms = started.elapsed().as_millis(), "ssh connection test succeeded")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, elapsed_ms = started.elapsed().as_millis(), "ssh connection test failed")
+            }
+        }
+        result
     }
 
     pub async fn probe_remote_capabilities(
@@ -357,7 +368,16 @@ impl SshService {
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
         let path = resolved_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver.list_directory(&effective_profile, &path).await
+        let result = self.driver.list_directory(&effective_profile, &path).await;
+        match &result {
+            Ok(directory) => {
+                tracing::debug!(profile_id = %profile.id, path = ?path, entries = directory.entries.len(), "ssh directory listed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, "list ssh directory failed")
+            }
+        }
+        result
     }
 
     pub async fn read_file_preview(
@@ -370,9 +390,19 @@ impl SshService {
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
         let path = resolved_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver
+        let result = self
+            .driver
             .read_file_preview(&effective_profile, &path)
-            .await
+            .await;
+        match &result {
+            Ok(preview) => {
+                tracing::debug!(profile_id = %profile.id, path = ?path, bytes = preview.bytes.len(), total_bytes = preview.total_bytes, truncated = preview.truncated, "ssh file preview loaded")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, "load ssh file preview failed")
+            }
+        }
+        result
     }
 
     pub async fn read_file_chunk(
@@ -386,9 +416,19 @@ impl SshService {
         let capabilities = self.capabilities_for_profile(&profile, false).await?;
         let path = resolved_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver
+        let result = self
+            .driver
             .read_file_chunk(&effective_profile, &path, position)
-            .await
+            .await;
+        match &result {
+            Ok(chunk) => {
+                tracing::debug!(profile_id = %profile.id, path = ?path, bytes = chunk.bytes.len(), offset = chunk.offset, total_bytes = chunk.total_bytes, "ssh file chunk loaded")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, position = ?position, "load ssh file chunk failed")
+            }
+        }
+        result
     }
 
     pub async fn save_file(
@@ -413,9 +453,19 @@ impl SshService {
             )));
         }
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver
+        let result = self
+            .driver
             .save_file(&effective_profile, &path, expected, contents)
-            .await
+            .await;
+        match &result {
+            Ok(()) => {
+                tracing::info!(profile_id = %profile.id, path = ?path, previous_bytes = expected.len(), bytes = contents.len(), "ssh file saved")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, previous_bytes = expected.len(), bytes = contents.len(), "save ssh file failed")
+            }
+        }
+        result
     }
 
     pub async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()> {
@@ -426,9 +476,19 @@ impl SshService {
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         let path = resolved_new_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver
+        let result = self
+            .driver
             .create_directory(&effective_profile, &path)
-            .await
+            .await;
+        match &result {
+            Ok(()) => {
+                tracing::info!(profile_id = %profile.id, path = ?path, "ssh directory created")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, "create ssh directory failed")
+            }
+        }
+        result
     }
 
     pub async fn rename(&self, profile: &SshProfile, old_path: &str, new_path: &str) -> Result<()> {
@@ -441,9 +501,19 @@ impl SshService {
         let old_path = resolved_remote_path(&capabilities, old_path)?;
         let new_path = resolved_new_remote_path(&capabilities, new_path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver
+        let result = self
+            .driver
             .rename(&effective_profile, &old_path, &new_path)
-            .await
+            .await;
+        match &result {
+            Ok(()) => {
+                tracing::info!(profile_id = %profile.id, old_path = ?old_path, new_path = ?new_path, "ssh path renamed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, old_path = ?old_path, new_path = ?new_path, "rename ssh path failed")
+            }
+        }
+        result
     }
 
     pub async fn remove(
@@ -459,7 +529,16 @@ impl SshService {
         validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
         let path = resolved_remote_path(&capabilities, path)?;
         let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        self.driver.remove(&effective_profile, &path, kind).await
+        let result = self.driver.remove(&effective_profile, &path, kind).await;
+        match &result {
+            Ok(()) => {
+                tracing::info!(profile_id = %profile.id, path = ?path, kind = ?kind, "ssh remote entry removed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, kind = ?kind, "remove ssh remote entry failed")
+            }
+        }
+        result
     }
 }
 

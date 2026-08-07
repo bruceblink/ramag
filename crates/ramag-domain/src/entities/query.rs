@@ -1,4 +1,4 @@
-//! 查询与结果集实体
+//! SQL 查询与结果集。
 
 use serde::{Deserialize, Serialize};
 
@@ -6,15 +6,13 @@ use super::contains_case_insensitive;
 
 pub const MAX_SQL_QUERY_BYTES: usize = 32 * 1024 * 1024;
 
-/// 一次 SQL 查询请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
     pub sql: String,
     /// 会话默认库，driver 执行前发 USE 切换
     #[serde(default)]
     pub default_schema: Option<String>,
-    /// driver 层可选的自动 LIMIT 注入能力：Some(n) 给未带 LIMIT 的最外层 SELECT/WITH
-    /// 追加 `LIMIT n`。当前 UI 不再使用（恒传 None），保留供 driver 兜底与未来复用
+    /// 驱动可为最外层 SELECT/WITH 注入的 LIMIT；当前 UI 不使用。
     #[serde(default)]
     pub auto_limit: Option<u32>,
     /// 结果常驻内存上限；`None` 使用交互结果上限。
@@ -146,7 +144,6 @@ impl QueryResult {
     }
 }
 
-/// 服务端警告（MySQL SHOW WARNINGS 一行）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warning {
     /// 服务端级别：Note、Warning 或 Error。
@@ -176,7 +173,6 @@ impl Row {
     }
 }
 
-/// 单元格值。UI 按 variant 选渲染方式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
@@ -229,7 +225,6 @@ fn json_dynamic_bytes(value: &serde_json::Value) -> usize {
 }
 
 impl Value {
-    /// UI 显示用的短预览（截断长字符串）
     pub fn display_preview(&self, max_len: usize) -> String {
         match self {
             Value::Null => "NULL".to_string(),
@@ -333,7 +328,6 @@ impl Value {
         (length <= max_bytes).then_some(length)
     }
 
-    /// 单元格编辑初值：JSON 走 pretty 多行，其余等价 clipboard 形式
     pub fn display_for_edit(&self) -> String {
         match self {
             Value::Json(v) => serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
@@ -358,7 +352,7 @@ impl Value {
         }
     }
 
-    /// 剪贴板字符串（完整，不截断）。Null→空串、Bytes→hex、DateTime→RFC3339、Json→紧凑
+    /// 返回不截断的剪贴板文本。
     pub fn to_clipboard_string(&self) -> String {
         match self {
             Value::Null => String::new(),
@@ -600,9 +594,7 @@ fn truncate(s: &str, max_len: usize) -> String {
     prefix
 }
 
-/// 单行预览清洗：换行符（\n / \r）替换为空格。
-/// GPUI 单行文本 shaping 断言不允许 \n（含 \n 直接 panic→abort）；仅用于显示预览，
-/// 不影响 to_clipboard_string / display_for_edit 等完整取值。无换行时零拷贝
+/// GPUI 单行文本不接受换行符；此处理不影响完整取值接口。
 fn sanitize_inline(s: &str) -> String {
     if s.contains(['\n', '\r']) {
         s.replace(['\n', '\r'], " ")
@@ -710,7 +702,6 @@ mod tests {
         let dt = chrono::Utc
             .with_ymd_and_hms(2026, 4, 8, 17, 31, 15)
             .unwrap();
-        // 带亚秒精度（整秒时为 .000000）：高精度时间列才能命中
         assert_eq!(
             Value::DateTime(dt).to_sql_literal(),
             "'2026-04-08 17:31:15.000000'"
@@ -720,17 +711,14 @@ mod tests {
     #[test]
     fn sql_literal_pg_dialect() {
         use super::super::connection::DriverKind;
-        // PG：反斜杠不双写（standard_conforming_strings）
         assert_eq!(
             Value::Text("a\\b".to_string()).to_sql_literal_for(DriverKind::Postgres),
             "'a\\b'"
         );
-        // PG bytea 格式：'\xHEX'。
         assert_eq!(
             Value::Bytes(vec![0xde, 0xad]).to_sql_literal_for(DriverKind::Postgres),
             "'\\xdead'"
         );
-        // 单引号两方言都双写
         assert_eq!(
             Value::Text("O'x".to_string()).to_sql_literal_for(DriverKind::Postgres),
             "'O''x'"
@@ -762,7 +750,6 @@ mod tests {
 
     #[test]
     fn preview_text_strips_newlines() {
-        // 含换行的文本预览必须压成单行，否则结果表格渲染 panic
         let v = Value::Text("line1\nline2\r\nline3".to_string());
         let p = v.display_preview(80);
         assert!(!p.contains('\n') && !p.contains('\r'));

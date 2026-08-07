@@ -1,5 +1,4 @@
-//! ConnectionService：SQL 类多 driver 聚合，UI 持 `Arc<ConnectionService>` 即可。
-//! 内部按 `config.driver` 路由到 `HashMap<DriverKind, Arc<dyn Driver>>`；Redis 走独立的 RedisService
+//! SQL 连接服务，按配置的驱动类型路由操作。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,17 +28,15 @@ impl ConnectionService {
         }
     }
 
-    /// 按 config.driver 取 driver；缺失返回 InvalidConfig
+    /// 获取配置对应的驱动。
     fn driver_for(&self, config: &ConnectionConfig) -> Result<&Arc<dyn Driver>> {
         config.validate().map_err(DomainError::InvalidConfig)?;
         self.drivers
             .get(&config.driver)
-            .ok_or_else(|| DomainError::InvalidConfig(format!("驱动不可用: {:?}", config.driver)))
+            .ok_or_else(|| DomainError::InvalidConfig(format!("驱动不可用：{:?}", config.driver)))
     }
 
-    // 连接 CRUD（走 storage）
-
-    /// 含全部 driver 的连接
+    /// 列出所有驱动类型的连接。
     pub async fn list(&self) -> Result<Vec<ConnectionConfig>> {
         self.storage.list_connections().await
     }
@@ -50,8 +47,12 @@ impl ConnectionService {
 
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
         config.validate().map_err(DomainError::InvalidConfig)?;
-        self.storage.save_connection(config).await?;
+        if let Err(error) = self.storage.save_connection(config).await {
+            tracing::error!(error = %error, connection_id = %config.id, driver = ?config.driver, "save connection failed");
+            return Err(error);
+        }
         self.bump_revision();
+        tracing::info!(connection_id = %config.id, driver = ?config.driver, "connection saved");
         Ok(())
     }
 
@@ -63,13 +64,20 @@ impl ConnectionService {
         for config in configs {
             config.validate().map_err(DomainError::InvalidConfig)?;
         }
-        self.storage.save_connections(configs).await?;
+        if let Err(error) = self.storage.save_connections(configs).await {
+            tracing::error!(error = %error, count = configs.len(), "save imported connections failed");
+            return Err(error);
+        }
         self.bump_revision();
+        tracing::info!(count = configs.len(), "imported connections saved");
         Ok(())
     }
 
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
-        self.storage.delete_connection(id).await?;
+        if let Err(error) = self.storage.delete_connection(id).await {
+            tracing::error!(error = %error, connection_id = %id, "delete connection failed");
+            return Err(error);
+        }
         // 连接删除已由用户确认；同步清理不可再访问的查询历史与本地草稿，避免敏感文本残留。
         if let Err(e) = self.storage.clear_history(Some(id)).await {
             tracing::warn!(error = %e, connection_id = %id, "cleanup deleted connection history failed");
@@ -83,6 +91,7 @@ impl ConnectionService {
             }
         }
         self.bump_revision();
+        tracing::info!(connection_id = %id, "connection deleted");
         Ok(())
     }
 
@@ -95,17 +104,28 @@ impl ConnectionService {
         self.revision.fetch_add(1, Ordering::Release);
     }
 
-    // 连接动作（走 driver）
-
     pub async fn test(&self, config: &ConnectionConfig) -> Result<()> {
-        self.driver_for(config)?.test_connection(config).await
+        let started = std::time::Instant::now();
+        let result = match self.driver_for(config) {
+            Ok(driver) => driver.test_connection(config).await,
+            Err(error) => Err(error),
+        };
+        match &result {
+            Ok(()) => {
+                tracing::info!(connection_id = %config.id, driver = ?config.driver, elapsed_ms = started.elapsed().as_millis(), "connection test succeeded")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, driver = ?config.driver, elapsed_ms = started.elapsed().as_millis(), "connection test failed")
+            }
+        }
+        result
     }
 
     pub async fn server_version(&self, config: &ConnectionConfig) -> Result<String> {
         self.driver_for(config)?.server_version(config).await
     }
 
-    /// 失效池缓存。用户改 config 后必须调，否则旧池按旧 host/db 工作
+    /// 清除连接池缓存，避免配置修改后继续使用旧连接。
     pub fn evict_pool(&self, config: &ConnectionConfig) {
         if let Ok(driver) = self.driver_for(config) {
             driver.evict_pool(&config.id);
@@ -122,8 +142,7 @@ impl ConnectionService {
         }
     }
 
-    // 元数据查询（走 driver）。只读，故用 retry_idempotent_read! 兜底「查询执行到一半断连」
-    // （sqlx test_before_acquire 已能在取连接时换掉死连接，这里再加一层重连重试）
+    // 元数据查询是幂等读，连接中断时允许清除缓存并重试一次。
 
     pub async fn list_schemas(&self, config: &ConnectionConfig) -> Result<Vec<Schema>> {
         retry_idempotent_read!(
@@ -186,15 +205,23 @@ impl ConnectionService {
         )
     }
 
-    // 查询执行
-
     pub async fn cancel_query(&self, config: &ConnectionConfig, thread_id: u64) -> Result<()> {
-        self.driver_for(config)?
+        let result = self
+            .driver_for(config)?
             .cancel_query(config, thread_id)
-            .await
+            .await;
+        match &result {
+            Ok(()) => {
+                tracing::info!(connection_id = %config.id, thread_id, "query cancellation requested")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, thread_id, "query cancellation failed")
+            }
+        }
+        result
     }
 
-    /// 可取消执行 + 写历史。driver 把后端 thread id 写入 handle，UI 另线程取出转交 cancel_query
+    /// 执行可取消查询并写入历史；驱动通过句柄传递后端线程 ID。
     pub async fn execute_cancellable_with_history(
         &self,
         config: &ConnectionConfig,
@@ -205,11 +232,12 @@ impl ConnectionService {
             Ok(driver) => driver.execute_cancellable(config, query, handle).await,
             Err(e) => Err(e),
         };
+        log_query_result(config, query, &result, true);
         self.append_history_for(config, query, &result).await;
         result
     }
 
-    /// 无历史记录执行（导库等批量场景专用，避免成千上万条语句刷爆查询历史）
+    /// 执行但不写历史，供数据导入等批量场景使用。
     pub async fn execute(&self, config: &ConnectionConfig, query: &Query) -> Result<QueryResult> {
         self.driver_for(config)?.execute(config, query).await
     }
@@ -223,11 +251,12 @@ impl ConnectionService {
             Ok(driver) => driver.execute(config, query).await,
             Err(e) => Err(e),
         };
+        log_query_result(config, query, &result, false);
         self.append_history_for(config, query, &result).await;
         result
     }
 
-    /// 写历史失败仅 warn，不阻塞主流程
+    /// 历史写入失败仅记录警告，不阻塞查询。
     async fn append_history_for(
         &self,
         config: &ConnectionConfig,
@@ -251,11 +280,9 @@ impl ConnectionService {
             }
         };
         if let Err(e) = self.storage.append_history(&record).await {
-            tracing::warn!(error = %e, "append history failed");
+            tracing::warn!(error = %e, connection_id = %config.id, query_bytes = query.sql.len(), "append query history failed");
         }
     }
-
-    // 查询历史（走 storage）
 
     pub async fn list_history(
         &self,
@@ -267,13 +294,42 @@ impl ConnectionService {
             .await
     }
 
-    /// 删除单条查询历史（历史中心行删除按钮用）
     pub async fn delete_history(&self, id: &ramag_domain::entities::QueryRecordId) -> Result<()> {
         self.storage.delete_history(id).await
     }
 
-    /// 清空某连接（None = 全部）的查询历史
+    /// 清空指定连接的查询历史；`None` 表示全部连接。
     pub async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()> {
         self.storage.clear_history(connection_id).await
+    }
+}
+
+fn log_query_result(
+    config: &ConnectionConfig,
+    query: &Query,
+    result: &Result<QueryResult>,
+    cancellable: bool,
+) {
+    match result {
+        Ok(output) => tracing::info!(
+            connection_id = %config.id,
+            driver = ?config.driver,
+            query_bytes = query.sql.len(),
+            rows = output.rows.len(),
+            affected_rows = output.affected_rows,
+            warnings = output.warnings.len(),
+            truncated = output.truncated,
+            elapsed_ms = output.elapsed_ms,
+            cancellable,
+            "query completed"
+        ),
+        Err(error) => tracing::warn!(
+            error = %error,
+            connection_id = %config.id,
+            driver = ?config.driver,
+            query_bytes = query.sql.len(),
+            cancellable,
+            "query failed"
+        ),
     }
 }

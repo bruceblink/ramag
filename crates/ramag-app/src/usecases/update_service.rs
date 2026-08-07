@@ -10,7 +10,7 @@ use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{Storage, UpdateDriver};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{error, info, warn};
 
 pub const UPDATE_CHECK_PREF_KEY: &str = "update_last_check_at_v1";
 pub const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -39,8 +39,6 @@ pub struct AvailableUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateCheckResult {
-    /// 自动检查因本地节流策略被跳过；手动检查不会返回此状态。
-    Skipped,
     UpToDate {
         current_version: String,
         latest_version: String,
@@ -82,19 +80,40 @@ impl UpdateService {
 
     pub async fn check(&self, force: bool) -> Result<UpdateCheckResult> {
         let _guard = self.check_lock.lock().await;
+        info!(force, current_version = %self.current_version, "update check started");
         if !force
             && !self.should_check().await
             && let Some(result) = self.load_cached_result().await
         {
             *self.last_result.write() = Some(result.clone());
+            info!(
+                result = update_result_kind(&result),
+                "cached update check result restored"
+            );
             return Ok(result);
         }
         self.mark_check_attempt().await;
 
-        let release = self.driver.latest_stable_release().await?;
-        let result = evaluate_release(&self.current_version, release, current_platform())?;
+        let release = match self.driver.latest_stable_release().await {
+            Ok(release) => release,
+            Err(error) => {
+                warn!(error = %error, force, "update check failed");
+                return Err(error);
+            }
+        };
+        let result = match evaluate_release(&self.current_version, release, current_platform()) {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(error = %error, force, "update metadata validation failed");
+                return Err(error);
+            }
+        };
         self.persist_result(&result).await;
         *self.last_result.write() = Some(result.clone());
+        info!(
+            result = update_result_kind(&result),
+            "update check completed"
+        );
         Ok(result)
     }
 
@@ -124,9 +143,20 @@ impl UpdateService {
         if latest <= current {
             return Err(DomainError::Other("更新版本不高于当前版本".into()));
         }
-        self.driver
+        info!(version = %update.release.version, asset = %asset.name, expected_bytes = asset.size, "update download started");
+        let result = self
+            .driver
             .download_asset(&update.release, asset, progress, cancellation)
-            .await
+            .await;
+        match &result {
+            Ok(path) => {
+                info!(version = %update.release.version, asset = %asset.name, path = %path.display(), "update download completed")
+            }
+            Err(download_error) => {
+                error!(error = %download_error, version = %update.release.version, asset = %asset.name, "update download failed")
+            }
+        }
+        result
     }
 
     pub fn reveal_download(&self, path: &std::path::Path) -> Result<()> {
@@ -177,9 +207,7 @@ impl UpdateService {
     }
 
     async fn persist_result(&self, result: &UpdateCheckResult) {
-        let Some(notice) = cached_notice(&self.current_version, result) else {
-            return;
-        };
+        let notice = cached_notice(&self.current_version, result);
         let value = match serde_json::to_string(&notice) {
             Ok(value) => value,
             Err(error) => {
@@ -197,18 +225,25 @@ impl UpdateService {
     }
 }
 
-fn cached_notice(current_version: &str, result: &UpdateCheckResult) -> Option<CachedUpdateNotice> {
+fn update_result_kind(result: &UpdateCheckResult) -> &'static str {
+    match result {
+        UpdateCheckResult::UpToDate { .. } => "up_to_date",
+        UpdateCheckResult::Available(_) => "available",
+        UpdateCheckResult::UnsupportedPlatform(_) => "unsupported_platform",
+    }
+}
+
+fn cached_notice(current_version: &str, result: &UpdateCheckResult) -> CachedUpdateNotice {
     let latest_version = match result {
-        UpdateCheckResult::Skipped => return None,
         UpdateCheckResult::UpToDate { latest_version, .. } => latest_version.clone(),
         UpdateCheckResult::Available(update) | UpdateCheckResult::UnsupportedPlatform(update) => {
             update.release.version.clone()
         }
     };
-    Some(CachedUpdateNotice {
+    CachedUpdateNotice {
         current_version: current_version.into(),
         latest_version,
-    })
+    }
 }
 
 fn parse_cached_result(current_version: &str, value: &str) -> Result<Option<UpdateCheckResult>> {
@@ -424,7 +459,7 @@ mod tests {
             Some(UpdatePlatform::MacosArm64),
         )
         .expect("newer release should evaluate");
-        let notice = cached_notice("1.0.0", &available).expect("result should be cacheable");
+        let notice = cached_notice("1.0.0", &available);
         let value = serde_json::to_string(&notice).expect("notice should serialize");
 
         let restored = parse_cached_result("1.0.0", &value)

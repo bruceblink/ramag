@@ -81,7 +81,13 @@ pub(super) fn parse_value_for_kind(
             .parse::<i64>()
             .map(|i| Some(Value::Int(i)))
             .map_err(|_| format!("不是合法整数: {trimmed}")),
-        ColumnKind::Decimal | ColumnKind::Float => trimmed
+        ColumnKind::Decimal if is_decimal_number(trimmed) => {
+            // DECIMAL 不能先转 f64，否则大整数和高精度小数会在生成 SQL 前被舍入。
+            // 保留原文本；数据库会把带引号的精确十进制字面量转换为目标列类型。
+            Ok(Some(Value::Text(trimmed.to_string())))
+        }
+        ColumnKind::Decimal => Err(format!("不是合法十进制数值: {trimmed}")),
+        ColumnKind::Float => trimmed
             .parse::<f64>()
             .map(|f| Some(Value::Float(f)))
             .map_err(|_| format!("不是合法数值: {trimmed}")),
@@ -92,6 +98,40 @@ pub(super) fn parse_value_for_kind(
         },
         _ => Ok(Some(Value::Text(trimmed.to_string()))),
     }
+}
+
+fn is_decimal_number(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
+    let mut mantissa_digits = 0usize;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        mantissa_digits += 1;
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            mantissa_digits += 1;
+            index += 1;
+        }
+    }
+    if mantissa_digits == 0 {
+        return false;
+    }
+    if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
+        index += 1;
+        if matches!(bytes.get(index), Some(b'+') | Some(b'-')) {
+            index += 1;
+        }
+        let exponent_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == exponent_start {
+            return false;
+        }
+    }
+    index == bytes.len()
 }
 
 /// 行定位键：来自元数据的真实主键或全非空唯一索引（QueryTab 查询成功后异步注入）。
@@ -357,8 +397,17 @@ mod tests {
     #[test]
     fn parse_value_decimal_ok() {
         let v = parse_value_for_kind(ColumnKind::Decimal, "1.5", false, false).unwrap();
-        assert!(matches!(v, Some(Value::Float(_))));
-        assert_eq!(lit(v.as_ref().unwrap()), "1.5");
+        assert!(matches!(v, Some(Value::Text(_))));
+        assert_eq!(lit(v.as_ref().unwrap()), "'1.5'");
+    }
+
+    #[test]
+    fn parse_value_decimal_preserves_precision() {
+        let exact = "12345678901234567890.12345678901234567890";
+        let value = parse_value_for_kind(ColumnKind::Decimal, exact, false, false).unwrap();
+        assert_eq!(lit(value.as_ref().unwrap()), format!("'{exact}'"));
+        assert!(parse_value_for_kind(ColumnKind::Decimal, "1.2.3", false, false).is_err());
+        assert!(parse_value_for_kind(ColumnKind::Decimal, "1e", false, false).is_err());
     }
 
     #[test]

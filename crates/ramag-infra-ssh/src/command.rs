@@ -487,7 +487,11 @@ async fn stop_probe(
     if let Err(error) = child.start_kill() {
         tracing::warn!(error = %error, "kill openssh probe failed");
     }
-    let _ = timeout(PROBE_READER_TIMEOUT, child.wait()).await;
+    match timeout(PROBE_READER_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => tracing::warn!(error = %error, "wait killed openssh probe failed"),
+        Err(_) => tracing::warn!("killed openssh probe did not exit before timeout"),
+    }
     stdout_reader.abort();
     stderr_reader.abort();
 }

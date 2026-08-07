@@ -201,7 +201,7 @@ impl SshView {
         cx.notify();
     }
 
-    fn sync_directory_filter(
+    pub(super) fn sync_directory_filter(
         &mut self,
         id: &SshProfileId,
         window: &mut Window,

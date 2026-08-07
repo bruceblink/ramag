@@ -1,4 +1,4 @@
-//! MySQL 特有 hook：抓 thread id / SHOW WARNINGS / 空结果列定义。主执行流在 sql-shared
+//! MySQL 的取消标识、查询警告与空结果列定义处理。
 
 use std::sync::atomic::Ordering;
 
@@ -9,7 +9,7 @@ use sqlx::mysql::{MySqlConnection, MySqlDatabaseError};
 use sqlx::{Column as _, Executor, TypeInfo as _};
 use tracing::warn;
 
-/// 写入 thread id 到 cancel handle（`KILL QUERY` 需要）。失败仅 warn 不阻塞
+/// 记录 `KILL QUERY` 所需的线程 ID；失败仅记录警告。
 pub async fn record_backend_id(conn: &mut MySqlConnection, handle: &CancelHandle) {
     match sqlx::query_as::<_, (u64,)>("SELECT CONNECTION_ID()")
         .fetch_one(conn)
@@ -20,7 +20,7 @@ pub async fn record_backend_id(conn: &mut MySqlConnection, handle: &CancelHandle
     }
 }
 
-/// 抓 SHOW WARNINGS。每条 statement 后立即调（下条会清空 buffer），shared 累加多条
+/// 读取当前语句的 `SHOW WARNINGS` 结果。
 pub async fn fetch_warnings(conn: &mut MySqlConnection) -> Vec<Warning> {
     // 走 prepared 路径。sqlx 0.8 + async_trait + spawn 下 HRTB 不允许 raw_sql，
     // 需要 unsafe transmute 才能避开 1295。退化方案：捕获 1295 静默
@@ -53,8 +53,7 @@ pub async fn fetch_warnings(conn: &mut MySqlConnection) -> Vec<Warning> {
     }
 }
 
-/// 空结果集 fallback：走 `Connection::describe` 拿 SHOW/DESC 列定义。
-/// SHOW TABLES 空结果有列定义，不 fallback 会被 UI 误判为 DML
+/// 通过 `Connection::describe` 获取空结果集的列定义。
 pub async fn extract_columns_fallback(
     conn: &mut MySqlConnection,
     sql: &str,

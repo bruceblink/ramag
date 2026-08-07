@@ -87,17 +87,28 @@ impl Write for RotatingLogWriter {
 }
 
 pub(crate) fn init() -> Option<PathBuf> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let (filter, filter_error) = match std::env::var("RUST_LOG") {
+        Ok(value) => match EnvFilter::try_new(value) {
+            Ok(filter) => (filter, None),
+            Err(error) => (EnvFilter::new("info"), Some(error.to_string())),
+        },
+        Err(std::env::VarError::NotPresent) => (EnvFilter::new("info"), None),
+        Err(error) => (EnvFilter::new("info"), Some(error.to_string())),
+    };
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .with_target(false);
+        .with_target(true);
 
     let (log_path, log_file, fallback_error) = open_log_file();
     let has_log_file = log_file.is_some();
     let file_layer = log_file.map(|file| {
         tracing_subscriber::fmt::layer()
             .with_writer(std::sync::Mutex::new(file))
-            .with_target(false)
+            .with_target(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_thread_ids(true)
+            .with_thread_names(true)
             .with_ansi(false)
     });
 
@@ -110,6 +121,9 @@ pub(crate) fn init() -> Option<PathBuf> {
 
     if let Some(error) = fallback_error {
         error!(%error, "preferred log file unavailable");
+    }
+    if let Some(error) = filter_error {
+        error!(%error, "invalid RUST_LOG filter; using info");
     }
     if has_log_file {
         eprintln!("ramag log file: {}", log_path.display());
@@ -125,7 +139,15 @@ pub(crate) fn init() -> Option<PathBuf> {
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
-        error!(panic = %panic, "unhandled panic");
+        let location = panic.location();
+        error!(
+            panic = %panic,
+            file = location.map_or("unknown", std::panic::Location::file),
+            line = location.map_or(0, std::panic::Location::line),
+            column = location.map_or(0, std::panic::Location::column),
+            thread = ?std::thread::current().id(),
+            "unhandled panic"
+        );
         previous(panic);
     }));
 }
@@ -176,12 +198,27 @@ fn try_open_log_file_at(dir: &Path, max_bytes: u64) -> io::Result<(PathBuf, Rota
         ));
     }
     std::fs::create_dir_all(dir)?;
+    reject_symlink(dir, "log directory")?;
     set_private_dir_permissions(dir)?;
     let path = dir.join("ramag.log");
+    reject_symlink(&path, "log file")?;
+    reject_symlink(&path.with_extension("log.old"), "log backup")?;
     rotate_if_oversized_at(&path, max_bytes)?;
     let file = open_log_handle(&path, false)?;
     let writer = RotatingLogWriter::new(path.clone(), file, max_bytes)?;
     Ok((path, writer))
+}
+
+fn reject_symlink(path: &Path, kind: &str) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{kind} must not be a symbolic link: {}", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn open_log_handle(path: &Path, truncate: bool) -> io::Result<std::fs::File> {
@@ -402,6 +439,54 @@ mod tests {
             0o600
         );
         std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_log_file_is_rejected() -> std::io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-log-symlink-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let target = dir.join("target");
+        std::fs::write(&target, b"keep")?;
+        symlink(&target, dir.join("ramag.log"))?;
+
+        assert!(try_open_log_file(&dir).is_err());
+        assert_eq!(std::fs::read(&target)?, b"keep");
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_log_directory_is_rejected() -> std::io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ramag-log-dir-symlink-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let target = root.join("target");
+        std::fs::create_dir_all(&target)?;
+        let link = root.join("logs");
+        symlink(&target, &link)?;
+
+        assert!(try_open_log_file(&link).is_err());
+        assert!(!target.join("ramag.log").exists());
+        std::fs::remove_dir_all(root)?;
         Ok(())
     }
 }

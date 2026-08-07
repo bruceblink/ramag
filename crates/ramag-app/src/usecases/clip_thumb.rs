@@ -1,17 +1,16 @@
-//! 剪贴图片缩略图生成：解码 → 按最大宽度等比缩放 → 编码 PNG。
-//! 列表展示用缩略图（小图）降低"解密 + 解码"成本，原图仅详情/复制时加载
+//! 剪贴板图片缩略图生成，原图仅在查看详情或复制时加载。
 
 use std::io::Cursor;
 
 use image::{ImageFormat, ImageReader, Limits};
 use ramag_domain::error::{DomainError, Result};
 
-/// 缩略图最大宽度（高度等比，已小于此宽则不放大）
+/// 缩略图最大宽度；高度等比缩放，小图不放大。
 pub const THUMB_MAX_W: u32 = 320;
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
-/// 生成缩略图 PNG。解码失败（非图片 / 损坏）返回 Err，由调用方降级为无缩略图
+/// 生成 PNG 缩略图；解码失败时由调用方降级为无缩略图。
 pub fn make_thumbnail(png: &[u8], max_w: u32) -> Result<Vec<u8>> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
@@ -40,7 +39,6 @@ pub fn make_thumbnail(png: &[u8], max_w: u32) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// 构造一张纯色 PNG（宽 w 高 h）
     fn solid_png(w: u32, h: u32) -> Vec<u8> {
         let buf = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
         let mut out = Vec::new();
@@ -56,7 +54,7 @@ mod tests {
         let thumb = make_thumbnail(&png, 320).unwrap();
         let decoded = image::load_from_memory(&thumb).unwrap();
         assert_eq!(decoded.width(), 320);
-        assert_eq!(decoded.height(), 160); // 800:400 = 320:160
+        assert_eq!(decoded.height(), 160);
         assert!(thumb.len() < png.len());
     }
 

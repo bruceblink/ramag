@@ -1,4 +1,4 @@
-//! 领域层：实体 + trait 抽象。不依赖 UI / sqlx / redb / redis。
+//! 领域实体与接口，不依赖 UI 和基础设施实现。
 
 pub mod entities;
 pub mod error;

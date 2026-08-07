@@ -143,19 +143,15 @@ pub fn scan_dollar_quoted(bytes: &[u8], start: usize) -> Option<usize> {
 
 /// 按首关键字粗判 SQL 是否返回结果集
 pub fn is_query_returning_rows(sql: &str) -> bool {
-    let upper: String = sql
-        .chars()
-        .skip_while(|c| c.is_whitespace())
-        .take(8)
-        .collect::<String>()
-        .to_ascii_uppercase();
-
-    upper.starts_with("SELECT")
-        || upper.starts_with("SHOW")
-        || upper.starts_with("DESC")
-        || upper.starts_with("EXPLAIN")
-        || upper.starts_with("WITH")
-        || upper.starts_with("VALUES")
+    let code = sql_code_for_write_check(sql);
+    let Some(keyword) = first_keyword(&code) else {
+        return false;
+    };
+    matches!(
+        keyword.as_str(),
+        "SELECT" | "SHOW" | "DESC" | "DESCRIBE" | "EXPLAIN" | "WITH" | "VALUES" | "TABLE"
+    ) || (matches!(keyword.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE")
+        && contains_word(&code.to_ascii_uppercase(), "RETURNING"))
 }
 
 /// 取语句首关键字（大写）：跳过前导空白 / 行注释 / 块注释，取第一段连续字母。
@@ -197,11 +193,9 @@ pub fn first_keyword(stmt: &str) -> Option<String> {
 /// 黑名单式（命中写动词才拦）会被 MySQL 可执行注释 `/*! DELETE */`、
 /// PG 匿名代码块 `DO $$ ... $$`、`SELECT ... INTO/OUTFILE` 等绕过。
 pub fn is_write_statement(stmt: &str) -> bool {
-    // 只读 / 无害的首关键字白名单：这些开头才可能被判为非写。
-    // SET/USE/BEGIN 等会话级语句不改数据，生产只读连接应放行
+    // 只读首关键字白名单：会修改会话或事务状态的命令也不放行，避免污染复用连接。
     const SAFE_LEADING: &[&str] = &[
-        "SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "WITH", "VALUES", "TABLE", "SET", "USE",
-        "BEGIN", "START", "COMMIT", "ROLLBACK", "PRAGMA", "ANALYZE",
+        "SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "WITH", "VALUES", "TABLE",
     ];
     // 即便首词安全，语句体内出现这些写动词也视为写（覆盖 WITH ... DELETE /
     // EXPLAIN ANALYZE INSERT / SELECT ... INTO 建表 / SELECT ... INTO OUTFILE）
@@ -235,9 +229,8 @@ pub fn is_write_statement(stmt: &str) -> bool {
     {
         return true;
     }
-    // `... INTO tbl`（建表）/ `... INTO OUTFILE` 已由 OUTFILE 覆盖；
-    // 裸 SELECT INTO 建表（PG）：INTO 后跟标识符而非 @var / : 变量时视为写
-    contains_word(&upper, "INTO") && !upper.contains("INTO @") && !upper.contains("INTO :")
+    // PostgreSQL 的 SELECT INTO 会建表；MySQL 的 SELECT INTO @var 会修改会话状态。
+    contains_word(&upper, "INTO")
 }
 
 /// 屏蔽字符串、引用标识符与普通注释，只保留数据库会执行的 SQL 代码。
@@ -313,12 +306,8 @@ pub fn inject_limit_if_needed(stmt: &str, limit: Option<u32>) -> Option<String> 
     if n == 0 {
         return None;
     }
-    let prefix: String = stmt
-        .chars()
-        .take(8)
-        .collect::<String>()
-        .to_ascii_uppercase();
-    if !(prefix.starts_with("SELECT") || prefix.starts_with("WITH")) {
+    let code = sql_code_for_write_check(stmt);
+    if !first_keyword(&code).is_some_and(|keyword| matches!(keyword.as_str(), "SELECT" | "WITH")) {
         return None;
     }
 
@@ -337,8 +326,10 @@ pub fn inject_limit_if_needed(stmt: &str, limit: Option<u32>) -> Option<String> 
     }
 
     let core = &stmt[..tail_end];
-    let scan_start = core.len().saturating_sub(64);
-    let scan_str: String = core
+    let masked = sql_code_for_write_check(core);
+    let masked = masked.trim_end();
+    let scan_start = masked.len().saturating_sub(256);
+    let scan_str: String = masked
         .char_indices()
         .skip_while(|(i, _)| *i < scan_start)
         .map(|(_, c)| c)
@@ -492,6 +483,13 @@ mod tests {
     fn detect_returning_rows() {
         assert!(is_query_returning_rows("SELECT 1"));
         assert!(is_query_returning_rows("VALUES (1, 2)"));
+        assert!(is_query_returning_rows("-- comment\nSELECT 1"));
+        assert!(is_query_returning_rows(
+            "INSERT INTO t VALUES (1) RETURNING id"
+        ));
+        assert!(is_query_returning_rows(
+            "UPDATE t SET value = 1 RETURNING *"
+        ));
         assert!(!is_query_returning_rows("INSERT INTO t VALUES (1)"));
     }
 
@@ -567,10 +565,11 @@ mod tests {
     }
 
     #[test]
-    fn write_statement_session_and_empty_are_readonly() {
-        assert!(!is_write_statement("SET names utf8"));
-        assert!(!is_write_statement("USE mydb"));
-        assert!(!is_write_statement("BEGIN"));
+    fn write_statement_blocks_session_state_and_allows_empty() {
+        assert!(is_write_statement("SET names utf8"));
+        assert!(is_write_statement("USE mydb"));
+        assert!(is_write_statement("BEGIN"));
+        assert!(is_write_statement("ANALYZE users"));
         assert!(!is_write_statement(""));
         assert!(!is_write_statement("   "));
     }
@@ -594,6 +593,20 @@ mod tests {
         assert!(!is_write_statement(
             "SELECT * FROM t WHERE name = 'no limit'"
         ));
-        assert!(!is_write_statement("SELECT id INTO @v FROM t")); // MySQL 变量赋值，只读
+        assert!(is_write_statement("SELECT id INTO @v FROM t"));
+    }
+
+    #[test]
+    fn limit_detection_ignores_literals_and_long_trailing_comments() {
+        assert_eq!(
+            inject_limit_if_needed("-- heading\nSELECT * FROM t", Some(5)).as_deref(),
+            Some("-- heading\nSELECT * FROM t LIMIT 5")
+        );
+        assert_eq!(
+            inject_limit_if_needed("SELECT 'LIMIT' AS note FROM t", Some(5)).as_deref(),
+            Some("SELECT 'LIMIT' AS note FROM t LIMIT 5")
+        );
+        let sql = format!("SELECT * FROM t LIMIT 7 /* {} */", "x".repeat(300));
+        assert!(inject_limit_if_needed(&sql, Some(5)).is_none());
     }
 }

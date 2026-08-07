@@ -215,25 +215,7 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         )
     };
 
-    // TLS：mongodb 驱动无「验链不验名」档，故 Ca 与 Full 同为严格校验；
-    // None 档或经 SSH 隧道（实际连 127.0.0.1，校验必败、隧道已加密）时跳过证书校验
-    let tls = if config.tls {
-        let mut tls_opts = mongodb::options::TlsOptions::builder().build();
-        if let Some(ca) = config.ca_cert_path.as_deref().filter(|s| !s.is_empty()) {
-            tls_opts.ca_file_path = Some(std::path::PathBuf::from(ca));
-        }
-        let insecure = matches!(config.tls_verify, ramag_domain::entities::TlsVerify::None)
-            || config.ssh_target.is_some();
-        if insecure {
-            if config.ssh_target.is_some() {
-                warn!(host = %config.host, "TLS verification disabled over SSH tunnel");
-            }
-            tls_opts.allow_invalid_certificates = Some(true);
-        }
-        Some(mongodb::options::Tls::Enabled(tls_opts))
-    } else {
-        None
-    };
+    let tls = mongo_tls_options(config);
 
     let opts = ClientOptions::builder()
         .hosts(vec![ServerAddress::Tcp {
@@ -256,6 +238,30 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         map_mongo_error(e)
     })?;
     Ok(client)
+}
+
+/// Rustls 后端不支持只关闭主机名校验，因此 Ca 当前等同 Full；SSH 隧道会关闭验证。
+fn mongo_tls_options(config: &ConnectionConfig) -> Option<mongodb::options::Tls> {
+    if !config.tls {
+        return None;
+    }
+    let mut options = mongodb::options::TlsOptions::builder().build();
+    if let Some(ca) = config
+        .ca_cert_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
+        options.ca_file_path = Some(std::path::PathBuf::from(ca));
+    }
+    let disable_verification = matches!(config.tls_verify, ramag_domain::entities::TlsVerify::None)
+        || config.ssh_target.is_some();
+    if disable_verification {
+        if config.ssh_target.is_some() {
+            warn!(host = %config.host, "tls verification disabled over ssh tunnel");
+        }
+        options.allow_invalid_certificates = Some(true);
+    }
+    Some(mongodb::options::Tls::Enabled(options))
 }
 
 #[cfg(test)]
@@ -318,5 +324,24 @@ mod tests {
             cache.get_or_create(&config).await,
             Err(DomainError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn tls_none_disables_certificate_validation_but_ca_does_not() {
+        use ramag_domain::entities::TlsVerify;
+
+        let mut config = ConnectionConfig::new_mongodb("local", "127.0.0.1", 27017);
+        config.tls = true;
+        config.tls_verify = TlsVerify::Ca;
+        let Some(mongodb::options::Tls::Enabled(options)) = mongo_tls_options(&config) else {
+            panic!("TLS options should be enabled");
+        };
+        assert_ne!(options.allow_invalid_certificates, Some(true));
+
+        config.tls_verify = TlsVerify::None;
+        let Some(mongodb::options::Tls::Enabled(options)) = mongo_tls_options(&config) else {
+            panic!("TLS options should be enabled");
+        };
+        assert_eq!(options.allow_invalid_certificates, Some(true));
     }
 }

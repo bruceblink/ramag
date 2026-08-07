@@ -283,7 +283,11 @@ fn collect_search_rows(
 fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool, full_path: String) -> VisibleRow {
     VisibleRow {
         depth,
-        label: node.label.clone(),
+        label: if node.label.is_empty() && node.is_key {
+            "（空 Key）".to_string()
+        } else {
+            node.label.clone()
+        },
         full_path: Rc::new(full_path),
         is_key: node.is_key,
         leaf_type: node.leaf_type,

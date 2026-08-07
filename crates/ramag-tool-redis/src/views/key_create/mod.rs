@@ -152,7 +152,8 @@ impl KeyCreateForm {
     }
 
     fn build_argv_and_ttl(&self, cx: &gpui::App) -> Result<(Vec<String>, Option<i64>), String> {
-        let key = self.key_name.read(cx).value().trim().to_string();
+        // Redis Key 是二进制安全参数，不能静默删除合法的前后空格。
+        let key = self.key_name.read(cx).value().to_string();
         if key.is_empty() {
             return Err("请填写 Key 名".into());
         }
@@ -242,7 +243,7 @@ impl KeyCreateForm {
                 return;
             }
         };
-        let key = self.key_name.read(cx).value().trim().to_string();
+        let key = self.key_name.read(cx).value().to_string();
         let intended_type = self.selected_type;
 
         self.set_child_editors_disabled(true, cx);

@@ -80,6 +80,9 @@ impl MongoSessionPanel {
                         q.collection_dropped(database, collection, cx);
                     });
                 }
+                TreeEvent::DatabaseDropped { database } => {
+                    queries_handle.update(cx, |q, cx| q.database_dropped(database, cx));
+                }
                 TreeEvent::DatabaseActivated { database } => {
                     info!(db = %database, "database activated");
                     queries_handle.update(cx, |q, cx| q.set_database(database.clone(), cx));

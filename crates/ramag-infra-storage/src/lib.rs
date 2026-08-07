@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use directories::ProjectDirs;
 use parking_lot::RwLock;
 use redb::{Database, ReadableDatabase as _, ReadableTableMetadata as _, TableError};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use ramag_domain::entities::{
     ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, MAX_CLIPBOARD_SEARCH_BYTES,
@@ -101,12 +101,29 @@ fn open_database(path: &Path) -> Result<Database> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| DomainError::Storage(format!("创建数据目录失败：{e}")))?;
+        reject_symlink(parent, "数据目录")?;
     }
+    reject_symlink(path, "数据库文件")?;
     let database = Database::create(path)
         .map_err(|e| DomainError::Storage(format!("打开 redb 数据库失败：{e}")))?;
     set_private_file_permissions(path)
         .map_err(|e| DomainError::Storage(format!("收紧 redb 数据库权限失败：{e}")))?;
     Ok(database)
+}
+
+fn reject_symlink(path: &Path, label: &str) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(DomainError::Storage(format!(
+            "{label}不能是符号链接：{}",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DomainError::Storage(format!(
+            "检查{label}失败 {}：{error}",
+            path.display()
+        ))),
+    }
 }
 
 #[cfg(unix)]
@@ -279,21 +296,35 @@ impl Storage for RedbStorage {
 
     async fn get_preference(&self, key: &str) -> Result<Option<String>> {
         let db = self.db.clone();
-        let key = key.to_string();
-        run_blocking(move || repos::prefs_repo::get(db, key)).await
+        let key_owned = key.to_string();
+        let result = run_blocking(move || repos::prefs_repo::get(db, key_owned)).await;
+        if let Err(error) = &result {
+            warn!(error = %error, preference = key, "load preference failed");
+        }
+        result
     }
 
     async fn set_preference(&self, key: &str, value: &str) -> Result<()> {
         let db = self.db.clone();
-        let key = key.to_string();
+        let key_owned = key.to_string();
         let value = value.to_string();
-        run_blocking(move || repos::prefs_repo::set(db, key, value)).await
+        let result = run_blocking(move || repos::prefs_repo::set(db, key_owned, value)).await;
+        match &result {
+            Ok(()) => debug!(preference = key, "preference saved"),
+            Err(error) => warn!(error = %error, preference = key, "save preference failed"),
+        }
+        result
     }
 
     async fn delete_preference(&self, key: &str) -> Result<()> {
         let db = self.db.clone();
-        let key = key.to_string();
-        run_blocking(move || repos::prefs_repo::delete(db, key)).await
+        let key_owned = key.to_string();
+        let result = run_blocking(move || repos::prefs_repo::delete(db, key_owned)).await;
+        match &result {
+            Ok(()) => debug!(preference = key, "preference deleted"),
+            Err(error) => warn!(error = %error, preference = key, "delete preference failed"),
+        }
+        result
     }
 
     async fn seal(&self, plain: &[u8]) -> Result<Vec<u8>> {
@@ -453,6 +484,45 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_path_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.redb");
+        let link = tmp.path().join("linked.redb");
+        symlink(&target, &link).unwrap();
+
+        let error = match RedbStorage::open_with_key(&link, &[0x42; 32]) {
+            Ok(_) => panic!("符号链接数据库路径不应成功打开"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("数据库文件不能是符号链接"));
+        assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_parent_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let target_dir = tmp.path().join("target-dir");
+        std::fs::create_dir(&target_dir).unwrap();
+        let linked_dir = tmp.path().join("linked-dir");
+        symlink(&target_dir, &linked_dir).unwrap();
+
+        let error = match RedbStorage::open_with_key(&linked_dir.join("data.redb"), &[0x42; 32]) {
+            Ok(_) => panic!("符号链接数据目录不应成功打开"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("数据目录不能是符号链接"));
+        assert!(!target_dir.join("data.redb").exists());
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use tracing::debug;
 use crate::errors::map_mysql_error;
 use crate::types::map_column_type;
 
-/// 含系统库（mysql / information_schema / performance_schema / sys）；过滤交给 UI
+/// 列出包括系统库在内的所有数据库。
 pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
     debug!("listing schemas");
 
@@ -45,7 +45,7 @@ pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
     Ok(schemas)
 }
 
-/// 列出 BASE TABLE / VIEW / SYSTEM VIEW。后两者在 UI 都归为视图分组
+/// 列出普通表和视图。
 pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
     debug!(?schema, "listing tables");
 
@@ -84,7 +84,6 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
     Ok(tables)
 }
 
-/// COLUMNS 一行：name / data_type / column_type / is_nullable / column_default / column_comment / column_key
 type ColumnRow = (
     String,
     String,
@@ -95,7 +94,6 @@ type ColumnRow = (
     String,
 );
 
-/// 列出指定表的所有列
 pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Column>> {
     debug!(?schema, ?table, "listing columns");
 
@@ -142,7 +140,7 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
     Ok(columns)
 }
 
-/// 含主键 / 唯一 / 普通索引。基于 STATISTICS 一行一列，按 INDEX_NAME 聚合
+/// 列出主键、唯一索引和普通索引。
 pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Index>> {
     debug!(?schema, ?table, "listing indexes");
 
@@ -179,7 +177,7 @@ pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result
         entry.columns.push(col_name);
     }
 
-    // 主键置顶，其余按名
+    // 主键置顶，其余索引按名称排序。
     let mut indexes: Vec<Index> = grouped.into_values().collect();
     indexes.sort_by(|a, b| match (a.primary, b.primary) {
         (true, false) => std::cmp::Ordering::Less,
@@ -190,7 +188,6 @@ pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result
     Ok(indexes)
 }
 
-/// 基于 KEY_COLUMN_USAGE
 pub async fn list_foreign_keys(
     pool: &MySqlPool,
     schema: &str,

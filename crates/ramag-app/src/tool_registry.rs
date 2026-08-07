@@ -1,5 +1,4 @@
-//! ToolRegistry：进程启动时注册全部 Tool，UI 层取列表渲染导航。
-//! Tool 可动态启停（如剪贴板总开关）：停用后 list / find 均不可见，入口随之隐藏
+//! 工具注册表，支持按注册顺序查询和动态隐藏工具入口。
 
 use std::sync::Arc;
 
@@ -34,7 +33,7 @@ impl ToolRegistry {
         });
     }
 
-    /// 启停某个 Tool 的入口可见性；返回状态是否发生变化（未注册返回 false）
+    /// 设置工具入口可见性，返回状态是否变化；未注册时返回 `false`。
     pub fn set_enabled(&self, id: &str, enabled: bool) -> bool {
         let mut tools = self.tools.write();
         let Some(entry) = tools.iter_mut().find(|t| t.tool.meta().id == id) else {
@@ -48,7 +47,7 @@ impl ToolRegistry {
         true
     }
 
-    /// 按注册顺序，仅含已启用的 Tool
+    /// 按注册顺序返回已启用的工具。
     pub fn list(&self) -> Vec<Arc<dyn Tool>> {
         self.tools
             .read()

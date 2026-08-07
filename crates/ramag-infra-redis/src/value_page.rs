@@ -590,6 +590,7 @@ async fn write_stream(
                 entry.id
             )));
         }
+        validate_stream_entry_budget(key, entry)?;
         let mut cmd = redis::cmd("XADD");
         cmd.arg(key).arg(&entry.id);
         for (field, value) in &entry.fields {
@@ -601,6 +602,29 @@ async fn write_stream(
         written += 1;
     }
     Ok(written)
+}
+
+fn validate_stream_entry_budget(key: &str, entry: &StreamEntry) -> Result<()> {
+    ensure_member_size(entry.id.len())?;
+    let mut bytes = key
+        .len()
+        .checked_add(entry.id.len())
+        .ok_or_else(|| DomainError::InvalidConfig("Redis Stream 条目长度溢出".into()))?;
+    for (field, value) in &entry.fields {
+        ensure_member_size(field.len())?;
+        ensure_member_size(value.len())?;
+        bytes = bytes
+            .checked_add(field.len())
+            .and_then(|total| total.checked_add(value.len()))
+            .ok_or_else(|| DomainError::InvalidConfig("Redis Stream 条目长度溢出".into()))?;
+    }
+    if bytes > WRITE_CHUNK_BYTES {
+        return Err(DomainError::InvalidConfig(format!(
+            "Redis Stream 单条记录超过 {} MiB 写入上限",
+            WRITE_CHUNK_BYTES / 1024 / 1024
+        )));
+    }
+    Ok(())
 }
 
 fn new_key_cmd(command: &str, key: &str) -> redis::Cmd {
@@ -738,6 +762,21 @@ mod tests {
         assert_eq!(raw_count, 2);
         assert_eq!(last_id.as_deref(), Some("1-2"));
         assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn stream_entry_budget_rejects_oversized_id_or_total() {
+        let oversized_id = StreamEntry {
+            id: "x".repeat(MAX_REDIS_COMMAND_ARG_BYTES + 1),
+            fields: vec![("f".into(), "v".into())],
+        };
+        assert!(validate_stream_entry_budget("key", &oversized_id).is_err());
+
+        let oversized_total = StreamEntry {
+            id: "1-0".into(),
+            fields: vec![("f".into(), "v".repeat(WRITE_CHUNK_BYTES))],
+        };
+        assert!(validate_stream_entry_budget("key", &oversized_total).is_err());
     }
 
     #[test]

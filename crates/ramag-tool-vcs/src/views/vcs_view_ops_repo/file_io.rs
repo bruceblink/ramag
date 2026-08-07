@@ -20,12 +20,16 @@ pub(in crate::views) fn read_raw_file_content(
 ) -> RawFileContent {
     let abs = match resolve_repo_file(repo_root, rel) {
         Ok(path) => path,
-        Err(error) => return RawFileContent::with_error(rel.to_string(), error),
+        Err(error) => {
+            tracing::warn!(error = %error, relative_path = ?rel, "resolve repository file failed");
+            return RawFileContent::with_error(rel.to_string(), error);
+        }
     };
     // 不跟随符号链接：打开不可信仓库时不得借 tracked symlink 读取仓库外文件。
     let metadata = match std::fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) => {
+            tracing::warn!(error = %e, path = ?abs, "read repository file metadata failed");
             return RawFileContent {
                 path: rel.to_string(),
                 lines: Vec::new(),
@@ -54,6 +58,7 @@ pub(in crate::views) fn read_raw_file_content(
     let mut bytes = match read_first_bytes(&abs, PF_FILE_MAX_BYTES as usize + 1) {
         Ok(b) => b,
         Err(e) => {
+            tracing::warn!(error = %e, path = ?abs, "read repository file failed");
             return RawFileContent {
                 path: rel.to_string(),
                 lines: Vec::new(),
@@ -165,8 +170,6 @@ pub(in crate::views) fn write_project_file(
     rel: &str,
     text: &str,
 ) -> Result<(), String> {
-    use std::io::Write as _;
-
     let abs = resolve_repo_file(repo_root, rel)?;
     let root = repo_root
         .canonicalize()
@@ -189,16 +192,8 @@ pub(in crate::views) fn write_project_file(
         return Err("保存目标不是普通文件".into());
     }
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&abs)
-        .map_err(|error| format!("打开待保存文件失败: {error}"))?;
-    file.write_all(text.as_bytes())
-        .map_err(|error| format!("写入文件失败: {error}"))?;
-    file.sync_all()
-        .map_err(|error| format!("同步文件到磁盘失败: {error}"))?;
-    Ok(())
+    ramag_app::usecases::export::write_atomic(&abs, text)
+        .map_err(|error| format!("原子保存文件失败: {error}"))
 }
 
 /// 读取文件前 `limit` 字节（用于大文件截断预览）

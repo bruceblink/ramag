@@ -1,5 +1,4 @@
-//! RedisService：Redis 连接 + KV 操作聚合，与 ConnectionService 并列。
-//! Storage 与 ConnectionService 共用同一份 redb，list() 按 driver 过滤互不污染
+//! Redis 连接与键值操作服务。
 
 use std::sync::Arc;
 
@@ -20,9 +19,7 @@ impl RedisService {
         Self { driver, storage }
     }
 
-    // 连接 CRUD（仅 Redis driver 的连接）
-
-    /// 按 driver 过滤
+    /// 仅列出 Redis 连接。
     pub async fn list(&self) -> Result<Vec<ConnectionConfig>> {
         let all = self.storage.list_connections().await?;
         Ok(all
@@ -31,37 +28,57 @@ impl RedisService {
             .collect())
     }
 
-    /// 不限制 driver；调用方自检
+    /// 按 ID 获取连接，不限制驱动类型。
     pub async fn get(&self, id: &ConnectionId) -> Result<Option<ConnectionConfig>> {
         self.storage.get_connection(id).await
     }
 
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
-        self.storage.save_connection(config).await
+        let result = self.storage.save_connection(config).await;
+        match &result {
+            Ok(()) => tracing::info!(connection_id = %config.id, "redis connection saved"),
+            Err(error) => {
+                tracing::error!(error = %error, connection_id = %config.id, "save redis connection failed")
+            }
+        }
+        result
     }
 
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
-        self.storage.delete_connection(id).await
+        let result = self.storage.delete_connection(id).await;
+        match &result {
+            Ok(()) => tracing::info!(connection_id = %id, "redis connection deleted"),
+            Err(error) => {
+                tracing::error!(error = %error, connection_id = %id, "delete redis connection failed")
+            }
+        }
+        result
     }
 
-    // 连接动作
-
     pub async fn test(&self, config: &ConnectionConfig) -> Result<()> {
-        self.driver.test_connection(config).await
+        let started = std::time::Instant::now();
+        let result = self.driver.test_connection(config).await;
+        match &result {
+            Ok(()) => {
+                tracing::info!(connection_id = %config.id, elapsed_ms = started.elapsed().as_millis(), "redis connection test succeeded")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, elapsed_ms = started.elapsed().as_millis(), "redis connection test failed")
+            }
+        }
+        result
     }
 
     pub async fn server_version(&self, config: &ConnectionConfig) -> Result<String> {
         self.driver.server_version(config).await
     }
 
-    /// 失效该连接所有 db 的池
+    /// 清除该连接所有数据库的连接池缓存。
     pub fn evict_pool(&self, id: &ConnectionId) {
         self.driver.evict_pool(id);
     }
 
-    // KV 操作（按 db 索引）。只读操作用 retry_idempotent_read! 兜底闲置断连后的首次读
-
-    /// 一次性扫完整库；大库慎用
+    /// 一次性扫描完整数据库；大库慎用。
     pub async fn scan_all(
         &self,
         config: &ConnectionConfig,
@@ -72,7 +89,7 @@ impl RedisService {
     ) -> Result<Vec<KeyMeta>> {
         if !(1..=MAX_REDIS_SCAN_ALL_KEYS).contains(&max_keys) {
             return Err(DomainError::InvalidConfig(format!(
-                "Redis scan_all 最大 key 数必须在 1 - {MAX_REDIS_SCAN_ALL_KEYS} 之间"
+                "Redis scan_all 最大 key 数必须在 1–{MAX_REDIS_SCAN_ALL_KEYS} 之间"
             )));
         }
         let mut cursor = 0u64;
@@ -94,11 +111,19 @@ impl RedisService {
         if out.len() > max_keys {
             out.truncate(max_keys);
         }
+        tracing::info!(
+            connection_id = %config.id,
+            db,
+            keys = out.len(),
+            limited = out.len() >= max_keys,
+            filtered = pattern.is_some() || type_filter.is_some(),
+            "redis full scan completed"
+        );
         Ok(out)
     }
 
-    /// 单批 SCAN（增量加载用）：透传 cursor 给调用方循环续扫，随时可停；
-    /// pattern 服务端 MATCH 下推，避免大库全量拉回客户端过滤
+    /// 执行一批增量扫描，返回游标供调用方继续。
+    /// `pattern` 通过服务端 `MATCH` 过滤，避免拉取全库数据。
     pub async fn scan_batch(
         &self,
         config: &ConnectionConfig,
@@ -173,7 +198,7 @@ impl RedisService {
         )
     }
 
-    /// 导出用全量分段读（详见 KvDriver::read_value_page）
+    /// 分段读取完整值，供导出使用。
     pub async fn read_value_page(
         &self,
         config: &ConnectionConfig,
@@ -209,7 +234,7 @@ impl RedisService {
         )
     }
 
-    /// 导入用分段写（写操作不做断连重试）
+    /// 分段写入导入值；写操作不做断连重试。
     pub async fn write_value_items(
         &self,
         config: &ConnectionConfig,
@@ -217,7 +242,16 @@ impl RedisService {
         key: &str,
         items: &RedisValue,
     ) -> Result<u64> {
-        self.driver.write_value_items(config, db, key, items).await
+        let result = self.driver.write_value_items(config, db, key, items).await;
+        match &result {
+            Ok(written) => {
+                tracing::info!(connection_id = %config.id, db, key_bytes = key.len(), written, "redis value items written")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, db, key_bytes = key.len(), "write redis value items failed")
+            }
+        }
+        result
     }
 
     pub fn is_write_command(&self, command: &str) -> bool {
@@ -225,7 +259,16 @@ impl RedisService {
     }
 
     pub async fn delete_key(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<bool> {
-        self.driver.delete_key(config, db, key).await
+        let result = self.driver.delete_key(config, db, key).await;
+        match &result {
+            Ok(deleted) => {
+                tracing::info!(connection_id = %config.id, db, key_bytes = key.len(), deleted, "redis key delete completed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, db, key_bytes = key.len(), "delete redis key failed")
+            }
+        }
+        result
     }
 
     pub async fn set_ttl(
@@ -235,7 +278,16 @@ impl RedisService {
         key: &str,
         ttl_secs: Option<i64>,
     ) -> Result<bool> {
-        self.driver.set_ttl(config, db, key, ttl_secs).await
+        let result = self.driver.set_ttl(config, db, key, ttl_secs).await;
+        match &result {
+            Ok(changed) => {
+                tracing::info!(connection_id = %config.id, db, key_bytes = key.len(), changed, persistent = ttl_secs.is_none(), "redis ttl update completed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, db, key_bytes = key.len(), "update redis ttl failed")
+            }
+        }
+        result
     }
 
     pub async fn execute_command(
@@ -244,6 +296,41 @@ impl RedisService {
         db: u8,
         argv: Vec<String>,
     ) -> Result<RedisValue> {
-        self.driver.execute_command(config, db, argv).await
+        let command = safe_command_name(argv.first().map(String::as_str));
+        let argument_count = argv.len();
+        let write = argv.first().is_some_and(|name| self.is_write_command(name));
+        let result = self.driver.execute_command(config, db, argv).await;
+        match &result {
+            Ok(_) => {
+                tracing::info!(connection_id = %config.id, db, command, argument_count, write, "redis command completed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, connection_id = %config.id, db, command, argument_count, write, "redis command failed")
+            }
+        }
+        result
+    }
+}
+
+fn safe_command_name(command: Option<&str>) -> String {
+    command
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 32
+                && value.bytes().all(|byte| byte.is_ascii_alphabetic())
+        })
+        .map_or_else(|| "invalid".into(), str::to_ascii_uppercase)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_command_name;
+
+    #[test]
+    fn redis_log_command_name_never_keeps_arguments_or_controls() {
+        assert_eq!(safe_command_name(Some("get")), "GET");
+        assert_eq!(safe_command_name(Some("AUTH secret")), "invalid");
+        assert_eq!(safe_command_name(Some("GET\nsecret")), "invalid");
+        assert_eq!(safe_command_name(None), "invalid");
     }
 }

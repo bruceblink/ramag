@@ -313,7 +313,7 @@ fn validate_windows_drive_absolute(value: &str) -> Result<(), String> {
         return Err("Windows SFTP 路径必须使用 C:/path 形式的盘符绝对路径".into());
     }
     if value.contains('\\') || value.starts_with("//") || value.starts_with("\\\\") {
-        return Err("Windows SFTP 首版不支持 UNC 或设备路径".into());
+        return Err("Windows SFTP 暂不支持 UNC 或设备路径".into());
     }
     let tail = &value[3..];
     if tail.contains("//") {

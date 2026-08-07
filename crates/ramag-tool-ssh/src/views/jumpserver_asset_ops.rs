@@ -12,7 +12,10 @@ impl JumpServerPanel {
         if self.is_busy() {
             return;
         }
-        if self.selected_asset_id.as_deref() == Some(asset_id.as_str()) {
+        let selected_same_asset = self.selected_asset_id.as_deref() == Some(asset_id.as_str());
+        let retry_failed_detail =
+            selected_same_asset && self.detail.is_none() && self.detail_error.is_some();
+        if selected_same_asset && !retry_failed_detail {
             self.generation = self.generation.wrapping_add(1);
             self.selected_asset_id = None;
             self.detail = None;

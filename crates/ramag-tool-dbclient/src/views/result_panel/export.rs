@@ -1,4 +1,4 @@
-//! 结果集选中行导出 JSONL：rfd 选路径→受限工作池序列化/写入→回主线程 toast。
+//! 将结果集选中行导出为 JSONL。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,11 +15,10 @@ use super::ResultState;
 enum ExportOutcome {
     Saved(PathBuf),
     Cancelled,
-    Failed(String),
+    Failed { path: PathBuf, error: String },
 }
 
 impl ResultPanel {
-    /// 导出为 JSONL（每行一个 JSON 对象）
     pub fn export(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
             self.pending_notification =
@@ -82,7 +81,7 @@ impl ResultPanel {
             export::suggested_export_file_name(database_type, database, object, true, "jsonl");
         let ext = "jsonl";
 
-        // 保存框异步等待，不占用共享 worker；选定路径后才把序列化交给有界工作池。
+        // 用户选定路径后才占用工作池，避免文件对话框阻塞其他任务。
         self.exporting = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -104,37 +103,38 @@ impl ResultPanel {
                     .await
                     {
                         Ok(()) => ExportOutcome::Saved(path),
-                        Err(error) => ExportOutcome::Failed(format!(
-                            "写入导出文件 {} 失败：{error}",
-                            path.display()
-                        )),
+                        Err(error) => ExportOutcome::Failed {
+                            path,
+                            error: error.to_string(),
+                        },
                     }
                 }
             };
             let _ = this.update(cx, |this, cx| {
                 this.exporting = false;
-                let n = match outcome {
+                this.pending_notification = match outcome {
                     ExportOutcome::Saved(p) => {
                         info!(path = %p.display(), scope = %scope_label, "result export completed");
                         let file_name = p
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "导出完成".to_string());
-                        Notification::success(file_name)
-                            .title(format!("导出成功 · {scope_label}"))
-                            .autohide(true)
+                            .unwrap_or_else(|| p.display().to_string());
+                        Some(
+                            Notification::success(format!("已导出 {file_name}（{scope_label}）"))
+                                .autohide(true),
+                        )
                     }
-                    ExportOutcome::Cancelled => Notification::info("已取消导出").autohide(true),
-                    ExportOutcome::Failed(msg) => {
-                        error!(error = %msg, "result export failed");
-                        let short = msg
-                            .char_indices()
-                            .nth(80)
-                            .map_or_else(|| msg.clone(), |(end, _)| format!("{}…", &msg[..end]));
-                        Notification::error(short).title("导出失败").autohide(true)
+                    ExportOutcome::Cancelled => None,
+                    ExportOutcome::Failed { path, error } => {
+                        error!(error = %error, path = %path.display(), "result export failed");
+                        let message = format!("写入导出文件 {} 失败：{error}", path.display());
+                        let short = message.char_indices().nth(80).map_or_else(
+                            || message.clone(),
+                            |(end, _)| format!("{}…", &message[..end]),
+                        );
+                        Some(Notification::error(short).autohide(true))
                     }
                 };
-                this.pending_notification = Some(n);
                 cx.notify();
             });
         })

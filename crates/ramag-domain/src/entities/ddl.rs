@@ -1,8 +1,7 @@
-//! 按方言拼 DDL 查询。MySQL `SHOW CREATE TABLE/VIEW`；PG 视图走 `pg_get_viewdef`，表手拼列+约束+索引+注释
+//! 生成查看表或视图 DDL 的查询。
 
 use super::connection::DriverKind;
 
-/// 按 driver 拼"展示表 / 视图 DDL"的 SQL
 pub fn build_ddl_query(driver: DriverKind, schema: &str, table: &str, is_view: bool) -> String {
     let qschema = driver.quote_identifier(schema);
     let qtable = driver.quote_identifier(table);
@@ -16,7 +15,6 @@ pub fn build_ddl_query(driver: DriverKind, schema: &str, table: &str, is_view: b
             }
         }
         DriverKind::Postgres => {
-            // PG 字符串字面量内单引号转义 ''
             let s_lit = schema.replace('\'', "''");
             let t_lit = table.replace('\'', "''");
             if is_view {
@@ -25,16 +23,12 @@ pub fn build_ddl_query(driver: DriverKind, schema: &str, table: &str, is_view: b
                 postgres_table_ddl_sql(&s_lit, &t_lit)
             }
         }
-        // Redis / MongoDB 不走 SQL DDL
         DriverKind::Redis | DriverKind::Mongodb => String::new(),
     }
 }
 
-/// PG 表完整 DDL：列定义 + 约束 + 索引 + 注释 拼成单字段 ddl
-///
-/// `s_lit / t_lit` 已转义 SQL 单引号（`'` → `''`），可直接嵌入 SQL 字面量
+/// 参数必须已转义 SQL 字符串字面量中的单引号。
 fn postgres_table_ddl_sql(s_lit: &str, t_lit: &str) -> String {
-    // 拼接 cols（列+NOT NULL+DEFAULT）+ cons（pg_get_constraintdef）+ idx（pg_get_indexdef）+ 表/列 COMMENT
     format!(
         "WITH lines AS ( \
             SELECT a.attnum AS sort_key, \
@@ -119,20 +113,17 @@ mod tests {
     #[test]
     fn postgres_table_ddl_includes_constraints_and_indexes() {
         let sql = build_ddl_query(DriverKind::Postgres, "public", "users", false);
-        // 关键 SQL fragment 都在
         assert!(sql.contains("pg_attribute"));
-        assert!(sql.contains("pg_constraint")); // 约束
-        assert!(sql.contains("pg_index")); // 索引
-        assert!(sql.contains("pg_description")); // 注释
+        assert!(sql.contains("pg_constraint"));
+        assert!(sql.contains("pg_index"));
+        assert!(sql.contains("pg_description"));
         assert!(sql.contains("pg_get_constraintdef"));
         assert!(sql.contains("pg_get_indexdef"));
-        // schema/table 字面量正确嵌入
         assert!(sql.contains("\"public\".\"users\""));
     }
 
     #[test]
     fn postgres_table_ddl_escapes_single_quote() {
-        // schema/table 名含单引号时，转义为 '' 防 SQL 注入
         let sql = build_ddl_query(DriverKind::Postgres, "my'schema", "t", false);
         assert!(sql.contains("\"my''schema\".\"t\""));
         assert!(!sql.contains("\"my'schema\""));

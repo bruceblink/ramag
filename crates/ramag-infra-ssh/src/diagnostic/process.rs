@@ -117,11 +117,9 @@ pub(super) async fn execute_process(
             terminate_child(&mut child).await?;
             None
         }
-        signal = limit_rx.recv() => {
-            if signal.is_some() {
-                termination = DiagnosticTermination::OutputLimitExceeded;
-                terminate_child(&mut child).await?;
-            }
+        Some(()) = limit_rx.recv() => {
+            termination = DiagnosticTermination::OutputLimitExceeded;
+            terminate_child(&mut child).await?;
             None
         }
     };
@@ -146,7 +144,9 @@ async fn terminate_child(child: &mut tokio::process::Child) -> Result<()> {
     child.kill().await.map_err(|error| {
         DomainError::ConnectionFailed(format!("终止安全诊断 SSH 失败：{error}"))
     })?;
-    let _ = child.wait().await;
+    if let Err(error) = child.wait().await {
+        tracing::warn!(error = %error, "wait terminated ssh diagnostic process failed");
+    }
     Ok(())
 }
 
@@ -189,4 +189,27 @@ async fn join_reader(
     task.await
         .map_err(|error| DomainError::Other(format!("诊断 {stream} 读取任务异常退出：{error}")))?
         .map_err(|error| DomainError::ConnectionFailed(format!("读取诊断 {stream} 失败：{error}")))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn closed_output_still_waits_for_process_exit() {
+        let execution = execute_process(
+            "/bin/sh",
+            vec!["-c".into(), "exec 1>&- 2>&-; sleep 0.05; exit 7".into()],
+            HashMap::new(),
+            Vec::new(),
+            Duration::from_secs(1),
+            DiagnosticCancellation::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(execution.exit_code, Some(7));
+        assert_eq!(execution.termination, DiagnosticTermination::Completed);
+        assert!(!execution.truncated);
+    }
 }

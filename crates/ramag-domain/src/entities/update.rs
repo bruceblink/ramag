@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// GitHub Release 中可下载的单个平台安装包。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseAsset {
     pub name: String,
@@ -13,7 +12,6 @@ pub struct ReleaseAsset {
     pub sha256: Option<String>,
 }
 
-/// 已发布的稳定版本及其安装包。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseInfo {
     pub version: String,

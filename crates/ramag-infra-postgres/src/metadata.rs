@@ -1,4 +1,4 @@
-//! PG 元数据：优先 information_schema，少量索引/列注释走 pg_catalog
+//! PostgreSQL 元数据读取。优先使用 information_schema，索引和列注释使用 pg_catalog。
 
 use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
 use ramag_domain::error::Result;
@@ -11,7 +11,7 @@ use tracing::debug;
 use crate::errors::map_postgres_error;
 use crate::types::map_column_kind;
 
-/// 含系统 schema（pg_catalog / information_schema / pg_toast / pg_temp_*）；过滤交给 UI
+/// 返回全部模式，包括系统模式；展示层负责过滤。
 pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
     debug!("listing schemas");
 
@@ -42,7 +42,7 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
     Ok(schemas)
 }
 
-/// 列出 BASE TABLE / VIEW / MATERIALIZED VIEW。matview 不在 information_schema.tables，需 union pg_matviews
+/// 列出普通表、视图和物化视图。
 pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
     debug!(?schema, "listing tables");
 
@@ -144,14 +144,16 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
     .map_err(|e| map_postgres_error(&e))?;
     ensure_metadata_item_limit(rows.len(), "列")?;
 
-    // 主键列另查一次 key_column_usage + table_constraints
+    // 主键列需要通过约束信息单独查询。
     let pk_cols: Vec<(String,)> = sqlx::query_as(
         r#"
         SELECT kcu.column_name::text
         FROM information_schema.table_constraints tc
         JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name = kcu.constraint_name
+          ON tc.constraint_catalog = kcu.constraint_catalog
          AND tc.table_schema = kcu.table_schema
+         AND tc.table_name = kcu.table_name
+         AND tc.constraint_name = kcu.constraint_name
         WHERE tc.constraint_type = 'PRIMARY KEY'
           AND tc.table_schema = $1 AND tc.table_name = $2
         LIMIT $3
@@ -200,7 +202,7 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
     Ok(columns)
 }
 
-/// 例：data_type=character varying / udt=varchar / char_max=255 → "varchar(255)"
+/// 组合完整类型，例如将 varchar 和长度 255 组合为 varchar(255)。
 fn compose_full_type(data_type: &str, udt: &str, char_max: Option<i32>) -> String {
     let base = if udt.is_empty() { data_type } else { udt };
     if let Some(n) = char_max {
@@ -210,7 +212,7 @@ fn compose_full_type(data_type: &str, udt: &str, char_max: Option<i32>) -> Strin
     }
 }
 
-/// 含 BTREE/GIN/GIST/HASH/BRIN 等所有索引方法
+/// 列出所有索引方法创建的索引，包括表达式索引。
 pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<Index>> {
     debug!(?schema, ?table, "listing indexes");
 
@@ -220,14 +222,16 @@ pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             i.relname::text AS index_name,
             ix.indisunique AS is_unique,
             ix.indisprimary AS is_primary,
-            array_agg(a.attname::text ORDER BY key.ordinality) AS columns
+            array_agg(
+                pg_get_indexdef(ix.indexrelid, key.ordinality::int, true)
+                ORDER BY key.ordinality
+            ) AS columns
         FROM pg_index ix
         JOIN pg_class i ON i.oid = ix.indexrelid
         JOIN pg_class t ON t.oid = ix.indrelid
         JOIN pg_namespace n ON n.oid = t.relnamespace
         JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS key(attnum, ordinality)
           ON key.ordinality <= ix.indnkeyatts
-        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = key.attnum
         WHERE n.nspname = $1 AND t.relname = $2
         GROUP BY i.relname, ix.indisunique, ix.indisprimary
         ORDER BY ix.indisprimary DESC, i.relname
@@ -265,21 +269,26 @@ pub async fn list_foreign_keys(
     let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
         r#"
         SELECT
-            tc.constraint_name::text,
-            kcu.column_name::text,
-            ccu.table_schema::text AS ref_schema,
-            ccu.table_name::text   AS ref_table,
-            ccu.column_name::text  AS ref_column
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name = kcu.constraint_name
-         AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage ccu
-          ON ccu.constraint_name = tc.constraint_name
-         AND ccu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY'
-          AND tc.table_schema = $1 AND tc.table_name = $2
-        ORDER BY tc.constraint_name, kcu.ordinal_position
+            con.conname::text,
+            local_column.attname::text,
+            ref_schema.nspname::text,
+            ref_table.relname::text,
+            ref_column.attname::text
+        FROM pg_constraint con
+        JOIN pg_class local_table ON local_table.oid = con.conrelid
+        JOIN pg_namespace local_schema ON local_schema.oid = local_table.relnamespace
+        JOIN pg_class ref_table ON ref_table.oid = con.confrelid
+        JOIN pg_namespace ref_schema ON ref_schema.oid = ref_table.relnamespace
+        JOIN LATERAL generate_subscripts(con.conkey, 1) AS key(position) ON true
+        JOIN pg_attribute local_column
+          ON local_column.attrelid = local_table.oid
+         AND local_column.attnum = con.conkey[key.position]
+        JOIN pg_attribute ref_column
+          ON ref_column.attrelid = ref_table.oid
+         AND ref_column.attnum = con.confkey[key.position]
+        WHERE con.contype = 'f'
+          AND local_schema.nspname = $1 AND local_table.relname = $2
+        ORDER BY con.conname, key.position
         LIMIT $3
         "#,
     )

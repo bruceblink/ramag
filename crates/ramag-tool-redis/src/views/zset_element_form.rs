@@ -97,14 +97,15 @@ impl ZSetElementForm {
             cx.notify();
             return;
         }
-        if score_raw.parse::<f64>().is_err() {
+        if !score_raw.parse::<f64>().is_ok_and(|score| !score.is_nan()) {
             self.state = SubmitState::Failed("score 必须是数字".into());
             cx.notify();
             return;
         }
         let member = match &self.mode {
             ZSetElementFormMode::EditScore { member } => member.clone(),
-            ZSetElementFormMode::Add => self.member_input.read(cx).value().trim().to_string(),
+            // Redis 成员是二进制安全参数，不能静默删除合法的前后空格。
+            ZSetElementFormMode::Add => self.member_input.read(cx).value().to_string(),
         };
         if member.is_empty() {
             self.state = SubmitState::Failed("请填写成员名".into());

@@ -92,7 +92,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
         let second = if alternate { MOD_ALT } else { MOD_SHIFT };
         let modifiers = MOD_CONTROL | second | MOD_NOREPEAT;
         if let Err(error) = RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32) {
-            warn!(error = %error, "RegisterHotKey failed");
+            warn!(error = %error, "register clipboard hotkey failed");
             if ready_tx.send(None).is_err() {
                 warn!("hotkey initialization receiver dropped after registration failure");
             }
@@ -101,7 +101,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
         if ready_tx.send(Some(thread_id)).is_err() {
             warn!("hotkey initialization receiver dropped");
             if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
-                warn!(error = %error, "UnregisterHotKey failed after initialization cancellation");
+                warn!(error = %error, "unregister cancelled clipboard hotkey failed");
             }
             return;
         }
@@ -113,7 +113,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
             if status <= 0 {
                 if status < 0 {
                     let error = windows::core::Error::from_win32();
-                    warn!(error = %error, "GetMessageW failed");
+                    warn!(error = %error, "read clipboard hotkey message failed");
                 }
                 break;
             }
@@ -126,7 +126,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
             }
         }
         if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
-            warn!(error = %error, "UnregisterHotKey failed");
+            warn!(error = %error, "unregister clipboard hotkey failed");
         }
     }
 }

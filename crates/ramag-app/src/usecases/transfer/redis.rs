@@ -27,13 +27,11 @@ use super::{
 };
 use crate::usecases::RedisService;
 
-/// 枚举 key 的 SCAN COUNT：总耗时 ≈ 往返数 × RTT，取大批减少往返
-/// （服务端单次阻塞仍 ~1-2ms；与 key 树扫描取值一致）
+/// 较大的 `SCAN COUNT` 可减少网络往返。
 const SCAN_BATCH: u32 = 5_000;
-/// 单个容器 key 的值分页大小（HSCAN / LRANGE 等每页元素数）
+/// 单个容器 key 的分页条目数。
 pub(crate) const PAGE_ITEMS: u32 = TRANSFER_BATCH_ITEMS as u32;
 const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
-/// 进度节流：每处理 N 个 key 上报一次
 const PROGRESS_EVERY_KEYS: u32 = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,14 +408,19 @@ pub async fn import_redis_db(
         ));
     }
     let export_scope = parse_export_scope(&header)?;
-    let file_db = header.get("db").and_then(Value::as_u64).unwrap_or(0);
-    let db = target_db.unwrap_or(u8::try_from(file_db).unwrap_or(0));
+    let file_db = header
+        .get("db")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| DomainError::InvalidConfig("Redis 导出文件头缺少有效的 db 字段".into()))?;
+    let file_db = u8::try_from(file_db)
+        .map_err(|_| DomainError::InvalidConfig("Redis 导出文件头的 db 超出 0–255 范围".into()))?;
+    let db = target_db.unwrap_or(file_db);
 
     let mut summary = TransferSummary::default();
     let mut reporter = Reporter::new(progress);
     reporter.stage("导入 key", format!("DB {db}"));
 
-    // 状态机：跨行跟踪当前 key（大 key 多记录），完结时补 TTL
+    // 跨行跟踪大 key，完成后恢复 TTL。
     let mut current: Option<KeyCtx> = None;
     let mut line = String::new();
     loop {
@@ -468,7 +471,7 @@ pub async fn import_redis_db(
             let exists = !matches!(svc.key_type(config, db, key).await?, RedisType::None);
             if exists {
                 match policy {
-                    // Merge 在入口已拒绝，此处等价跳过兜底
+                    // `Merge` 已在入口拒绝，此处按跳过防御处理。
                     ConflictPolicy::Skip | ConflictPolicy::Merge => {
                         ctx.skip = true;
                         summary.skipped += 1;
@@ -503,7 +506,7 @@ pub async fn import_redis_db(
             continue;
         }
 
-        // 续记录：类型沿用首记录（Set/List 片段形态相同，靠推断会写错类型）
+        // 续记录沿用首记录类型，避免混淆形态相同的 Set 和 List。
         match current.as_ref() {
             Some(ctx) if ctx.key == key => {
                 if !ctx.skip {
@@ -563,7 +566,7 @@ async fn write_record_value(
     Ok(())
 }
 
-/// key 完结：按导出时的剩余 TTL 恢复过期时间
+/// 按导出时的剩余 TTL 恢复过期时间。
 async fn finalize_key(
     svc: &RedisService,
     config: &ConnectionConfig,
@@ -621,7 +624,7 @@ fn kind_name(kind: RedisType) -> &'static str {
     }
 }
 
-/// 值片段 → JSON。返回 (JSON, 条目数)
+/// 将值片段编码为 JSON，并返回条目数。
 fn encode_fragment(items: &RedisValue) -> Result<(Value, u64)> {
     Ok(match items {
         RedisValue::Text(text) => (json!({"text": text}), 1),
@@ -680,7 +683,7 @@ fn encode_item(value: &RedisValue) -> Result<Value> {
     })
 }
 
-/// JSON → 值片段（导入侧）。`kind` 只在首记录出现；string 片段自描述可省
+/// 将 JSON 解码为值片段；字符串片段可自行描述类型。
 fn decode_fragment(kind: Option<&str>, fragment: &Value) -> Result<RedisValue> {
     if let Some(object) = fragment.as_object() {
         if let Some(text) = object.get("text").and_then(Value::as_str) {
@@ -832,7 +835,6 @@ mod tests {
         for (kind, value) in samples {
             let (fragment, _count) = encode_fragment(&value).unwrap();
             let decoded = decode_fragment(Some(kind), &fragment).unwrap();
-            // 往返后再编码一次，对比 JSON 形态（RedisValue 无 PartialEq）
             let (fragment2, _) = encode_fragment(&decoded).unwrap();
             assert_eq!(fragment, fragment2, "kind={kind}");
         }
@@ -840,7 +842,6 @@ mod tests {
 
     #[test]
     fn collection_fragment_requires_kind_but_string_is_self_described() {
-        // 集合片段没类型必须报错（Set 续片与 List 同形，推断会写错类型）
         assert!(decode_fragment(None, &json!([{"t": "x"}])).is_err());
         assert!(matches!(
             decode_fragment(None, &json!({"text": "s"})).unwrap(),

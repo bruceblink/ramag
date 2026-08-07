@@ -111,6 +111,29 @@ fn extract_stmt_ignores_semicolon_in_string() {
 }
 
 #[test]
+fn extract_stmt_ignores_semicolon_after_doubled_quote_escape() {
+    let sql = "SELECT 'a'';b'; SELECT 2";
+    assert_eq!(
+        extract_statement_at_cursor(sql, 5, None).trim(),
+        "SELECT 'a'';b'"
+    );
+    assert_eq!(
+        extract_statement_at_cursor(sql, sql.len(), None).trim(),
+        "SELECT 2"
+    );
+}
+
+#[test]
+fn extract_stmt_ignores_semicolon_in_nested_postgres_comment() {
+    let sql = "SELECT 1 /* outer /* inner */ ; still outer */; SELECT 2";
+    assert!(extract_statement_at_cursor(sql, 5, Some(DriverKind::Postgres)).contains("outer"));
+    assert_eq!(
+        extract_statement_at_cursor(sql, sql.len(), Some(DriverKind::Postgres)).trim(),
+        "SELECT 2"
+    );
+}
+
+#[test]
 fn extract_stmt_ignores_semicolon_in_comment() {
     let sql = "SELECT 1 -- comment ;\n; SELECT 2";
     let first = extract_statement_at_cursor(sql, 5, None);

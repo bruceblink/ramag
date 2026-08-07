@@ -1,4 +1,4 @@
-//! Storage trait：本地持久化统一抽象。infra 层用 redb 实现
+//! 本地持久化接口。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,10 +13,8 @@ use crate::error::Result;
 
 #[async_trait]
 pub trait Storage: Send + Sync {
-    // 连接配置
     async fn list_connections(&self) -> Result<Vec<ConnectionConfig>>;
     async fn get_connection(&self, id: &ConnectionId) -> Result<Option<ConnectionConfig>>;
-    /// 新增或更新
     async fn save_connection(&self, config: &ConnectionConfig) -> Result<()>;
     /// 原子新增或更新一批连接；任一条失败时不得留下部分写入。
     async fn save_connections(&self, _configs: &[ConnectionConfig]) -> Result<()> {
@@ -26,7 +24,7 @@ pub trait Storage: Send + Sync {
     }
     async fn delete_connection(&self, id: &ConnectionId) -> Result<()>;
 
-    // SSH 配置（默认 NotImplemented，保持现有测试 mock 兼容）
+    // 默认实现用于兼容未实现 SSH 存储的测试替身。
 
     async fn list_ssh_profiles(&self) -> Result<Vec<SshProfile>> {
         Err(crate::error::DomainError::NotImplemented(
@@ -52,8 +50,6 @@ pub trait Storage: Send + Sync {
         ))
     }
 
-    // Git 仓库（VCS 最近仓库列表）
-
     /// 按 name 字母序，列表顺序稳定不随打开顺序漂移
     async fn list_repos(&self) -> Result<Vec<RepoConfig>> {
         Err(crate::error::DomainError::NotImplemented(
@@ -74,8 +70,6 @@ pub trait Storage: Send + Sync {
             "delete_repo".into(),
         ))
     }
-
-    // 查询历史
 
     async fn append_history(&self, record: &QueryRecord) -> Result<()>;
 
@@ -108,7 +102,6 @@ pub trait Storage: Send + Sync {
     /// connection_id=None 清空全部
     async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()>;
 
-    // 偏好 KV
     async fn get_preference(&self, key: &str) -> Result<Option<String>>;
     async fn set_preference(&self, key: &str, value: &str) -> Result<()>;
     /// 删除单条偏好；默认以空值覆盖，旧 mock 无需同步实现。
@@ -126,9 +119,8 @@ pub trait Storage: Send + Sync {
         Err(crate::error::DomainError::NotImplemented("unseal".into()))
     }
 
-    // 剪贴板历史（默认 NotImplemented，与 repos 同策略：旧 mock 实现不强制跟进）
+    // 默认实现用于兼容未实现剪贴板存储的测试替身。
 
-    /// 新增或更新（按 id upsert）
     async fn clip_save(&self, _item: &ClipItem) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_save".into(),

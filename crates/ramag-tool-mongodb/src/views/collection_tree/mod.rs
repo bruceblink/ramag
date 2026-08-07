@@ -126,6 +126,10 @@ pub enum TreeEvent {
         database: String,
         collection: String,
     },
+    /// 数据库删除成功，查询面板据此清除旧库与旧集合写入目标。
+    DatabaseDropped {
+        database: String,
+    },
     DatabaseActivated {
         database: String,
     },
@@ -864,7 +868,12 @@ impl Render for CollectionTreePanel {
         } else {
             format!("数据库 ({visible_dbs}/{total_dbs})")
         };
-        if !filter.is_empty() && total_dbs > 50 {
+        let searchable_dbs = self
+            .databases
+            .iter()
+            .filter(|database| show_system || !is_system_db(&database.name))
+            .count();
+        if !filter.is_empty() && searchable_dbs > AUTO_LOAD_MAX_DATABASES {
             footer_text.push_str(" · 库过多，搜索仅覆盖已展开的库");
         }
         if self.mutation_gate.is_busy() {

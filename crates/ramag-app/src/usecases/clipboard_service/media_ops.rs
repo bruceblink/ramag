@@ -9,7 +9,7 @@ use super::{ClipboardService, MAX_AGE_DAYS, MAX_ITEMS};
 const MAX_ORPHAN_REMOVALS_PER_RUN: usize = 10_000;
 
 impl ClipboardService {
-    /// 读原图明文 PNG（读密文 → 解密）；非图片或无图返回 None。
+    /// 读取并解密原图；没有图片时返回 `None`。
     pub async fn load_image(&self, item: &ClipItem) -> Result<Option<Vec<u8>>> {
         match &item.image_path {
             Some(path) => {
@@ -20,7 +20,7 @@ impl ClipboardService {
         }
     }
 
-    /// 读缩略图明文 PNG（列表展示用）；无缩略图回退原图。
+    /// 读取并解密缩略图；没有缩略图时回退到原图。
     pub async fn load_thumb(&self, item: &ClipItem) -> Result<Option<Vec<u8>>> {
         match &item.thumb_path {
             Some(path) => {
@@ -87,7 +87,7 @@ impl ClipboardService {
         Ok(cleanup_token)
     }
 
-    /// 撤销删除：把条目连同尚在宽限期内的媒体引用原样回存。
+    /// 恢复条目及仍在宽限期内的媒体引用。
     pub async fn restore(&self, item: ClipItem) -> Result<()> {
         let _guard = self.history_mutation_lock.lock().await;
         if let Some(existing) = self.storage.clip_get(&item.id).await? {
@@ -128,7 +128,7 @@ impl ClipboardService {
         Ok(())
     }
 
-    /// 撤销窗口到期后物理清理媒体；已撤销或文本条目为空操作。
+    /// 撤销窗口到期后清理媒体；已恢复或文本条目无需处理。
     pub async fn finalize_deleted_media(&self, id: &ClipId, token: u64) -> Result<()> {
         let _guard = self.history_mutation_lock.lock().await;
         let Some(paths) = self.pending_media_deletes.expire(id, token) else {

@@ -89,7 +89,14 @@ pub fn open_confirm_with_cancel(
             .title(crate::closable_dialog_title(
                 "ramag-confirm-close",
                 title.clone(),
-                |_, _| {},
+                {
+                    let cell = on_cancel_cell.clone();
+                    move |window, app| {
+                        if let Some(callback) = cell.borrow_mut().take() {
+                            callback(window, app);
+                        }
+                    }
+                },
             ))
             .close_button(false)
             .on_cancel({

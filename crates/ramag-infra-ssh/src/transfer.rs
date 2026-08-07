@@ -252,7 +252,7 @@ impl TransferEngine {
             if transfer_result.is_ok() || matches!(error, DomainError::ConnectionFailed(_)) {
                 transfer_result = Err(error);
             } else {
-                tracing::warn!(error = %error, "close failed ssh upload handle failed");
+                tracing::warn!(error = %error, "close SSH upload handle failed");
             }
         }
         let transferred = match transfer_result {
@@ -338,26 +338,36 @@ impl TransferEngine {
                 return Err(map_sftp_error("打开远程下载文件", error));
             }
         };
-        let opened_metadata =
-            match await_cancellable_sftp(session.raw.fstat(handle.clone()), &cancellation).await? {
-                Ok(metadata) if metadata.attrs.is_regular() => metadata.attrs,
-                Ok(_) => {
-                    let _ = session.raw.close(handle).await;
-                    drop(destination);
-                    cleanup_local(&temporary).await;
-                    return Err(DomainError::Forbidden(
-                        "远程下载源在打开时已不再是普通文件".into(),
-                    ));
+        let opened_metadata = match await_cancellable_sftp(
+            session.raw.fstat(handle.clone()),
+            &cancellation,
+        )
+        .await?
+        {
+            Ok(metadata) if metadata.attrs.is_regular() => metadata.attrs,
+            Ok(_) => {
+                if let Err(error) = session.raw.close(handle).await {
+                    tracing::warn!(error = %error, "close changed ssh download source failed");
                 }
-                Err(error) => {
-                    let _ = session.raw.close(handle).await;
-                    drop(destination);
-                    cleanup_local(&temporary).await;
-                    return Err(map_sftp_error("确认已打开远程下载文件", error));
+                drop(destination);
+                cleanup_local(&temporary).await;
+                return Err(DomainError::Forbidden(
+                    "远程下载源在打开时已不再是普通文件".into(),
+                ));
+            }
+            Err(error) => {
+                if let Err(close_error) = session.raw.close(handle).await {
+                    tracing::warn!(error = %close_error, "close ssh download source after metadata failure failed");
                 }
-            };
+                drop(destination);
+                cleanup_local(&temporary).await;
+                return Err(map_sftp_error("确认已打开远程下载文件", error));
+            }
+        };
         let Some(total) = opened_metadata.size else {
-            let _ = session.raw.close(handle).await;
+            if let Err(error) = session.raw.close(handle).await {
+                tracing::warn!(error = %error, "close ssh download source without size failed");
+            }
             drop(destination);
             cleanup_local(&temporary).await;
             return Err(DomainError::Other(
@@ -365,7 +375,9 @@ impl TransferEngine {
             ));
         };
         if production && let Err(error) = ensure_production_download_size(Some(total)) {
-            let _ = session.raw.close(handle).await;
+            if let Err(close_error) = session.raw.close(handle).await {
+                tracing::warn!(error = %close_error, "close oversized production ssh download failed");
+            }
             drop(destination);
             cleanup_local(&temporary).await;
             return Err(error);
@@ -391,7 +403,7 @@ impl TransferEngine {
             if transfer_result.is_ok() || matches!(error, DomainError::ConnectionFailed(_)) {
                 transfer_result = Err(error);
             } else {
-                tracing::warn!(error = %error, "close failed ssh download handle failed");
+                tracing::warn!(error = %error, "close SSH download handle failed");
             }
         }
         let transferred = match transfer_result {

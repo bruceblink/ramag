@@ -220,7 +220,10 @@ impl SshService {
         stored_profile
             .validate()
             .map_err(DomainError::InvalidConfig)?;
-        self.storage.save_ssh_profile(&stored_profile).await?;
+        if let Err(error) = self.storage.save_ssh_profile(&stored_profile).await {
+            tracing::error!(error = %error, profile_id = %profile.id, "save ssh profile failed");
+            return Err(error);
+        }
         self.advance_terminal_generation(&profile.id);
         self.remote_capabilities.lock().remove(&profile.id);
         self.cancel_profile_transfers(&profile.id);
@@ -232,11 +235,15 @@ impl SshService {
                 "disconnect stale ssh profile session failed"
             );
         }
+        tracing::info!(profile_id = %profile.id, "ssh profile saved and stale session cleared");
         Ok(())
     }
 
     pub async fn delete_profile(&self, id: &SshProfileId) -> Result<()> {
-        self.storage.delete_ssh_profile(id).await?;
+        if let Err(error) = self.storage.delete_ssh_profile(id).await {
+            tracing::error!(error = %error, profile_id = %id, "delete ssh profile failed");
+            return Err(error);
+        }
         self.block_terminal_launches(id);
         self.remote_capabilities.lock().remove(id);
         self.diagnostic_profiles.lock().remove(id);
@@ -264,6 +271,7 @@ impl SshService {
                 tracing::warn!(error = %error, profile_id = %id, "load ssh workspace preference for cleanup failed");
             }
         }
+        tracing::info!(profile_id = %id, "ssh profile deleted");
         Ok(())
     }
 
@@ -310,9 +318,19 @@ impl SshService {
                 "加密后的 SSH 工作区恢复数据过大".into(),
             ));
         }
-        self.storage
+        let result = self
+            .storage
             .set_preference(WORKSPACE_PREFERENCE_KEY, &stored)
-            .await
+            .await;
+        match &result {
+            Ok(()) => tracing::debug!(
+                workspaces = preference.workspaces.len(),
+                favorites = preference.path_favorites.len(),
+                "ssh workspace preference saved"
+            ),
+            Err(error) => tracing::warn!(error = %error, "save ssh workspace preference failed"),
+        }
+        result
     }
 
     fn cancel_profile_transfers(&self, profile_id: &SshProfileId) {

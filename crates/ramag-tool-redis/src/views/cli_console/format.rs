@@ -63,6 +63,11 @@ fn parse_double_quoted(chars: &mut Chars, out: &mut String) -> Result<(), String
                         hex_nibble(h1).ok_or_else(|| "\\x 后须为两位十六进制".to_string())?;
                     let low = hex_nibble(h2).ok_or_else(|| "\\x 后须为两位十六进制".to_string())?;
                     let byte = (high << 4) | low;
+                    if !byte.is_ascii() {
+                        return Err(
+                            "当前命令行仅支持 UTF-8 参数，\\xHH 不能表示 80-FF 原始字节".into()
+                        );
+                    }
                     out.push(byte as char);
                 }
                 Some(other) => out.push(other),
@@ -535,6 +540,7 @@ mod tests {
             vec!["SET", "key", "Az/"]
         );
         assert!(tokenize(r#"SET key "\xG0""#).is_err());
+        assert!(tokenize(r#"SET key "\xFF""#).is_err());
     }
 
     #[test]

@@ -94,7 +94,7 @@ impl KvDriver for RedisDriver {
         run_in_tokio(async move {
             let mut mgr = pools.get_or_create(&config, 0).await?;
             let info = run_info(&mut mgr, &["server"]).await?;
-            Ok(parse_redis_version(&info))
+            parse_redis_version(&info)
         })
         .await
     }
@@ -207,7 +207,6 @@ impl KvDriver for RedisDriver {
         let key = key.to_owned();
         run_in_tokio(async move {
             let mut mgr = pools.get_or_create(&config, db).await?;
-            // 先 TYPE 再按类型 dispatch
             let t: String = redis::cmd("TYPE")
                 .arg(&key)
                 .query_async(&mut mgr)
@@ -352,6 +351,7 @@ impl KvDriver for RedisDriver {
     ) -> Result<bool> {
         ensure_redis_config(config)?;
         validate_redis_key(key)?;
+        validate_ttl_secs(ttl_secs)?;
         ensure_writable(config, "TTL change")?;
         let config = config.clone();
         let pools = self.pools.clone_handle();
@@ -481,13 +481,27 @@ async fn run_info(mgr: &mut ConnectionManager, sections: &[&str]) -> Result<Stri
 }
 
 /// 从 INFO server 文本提取 redis_version
-fn parse_redis_version(info: &str) -> String {
+fn parse_redis_version(info: &str) -> Result<String> {
     for line in info.lines() {
         if let Some(rest) = line.strip_prefix("redis_version:") {
-            return rest.trim().to_string();
+            let version = rest.trim();
+            if !version.is_empty() {
+                return Ok(version.to_string());
+            }
         }
     }
-    "unknown".into()
+    Err(DomainError::QueryFailed(
+        "Redis INFO server 应答缺少 redis_version".into(),
+    ))
+}
+
+fn validate_ttl_secs(ttl_secs: Option<i64>) -> Result<()> {
+    if ttl_secs.is_some_and(|seconds| seconds <= 0) {
+        return Err(DomainError::InvalidConfig(
+            "Redis TTL 必须是正秒数；零或负数会立即删除键".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// 通用读取与详情页共用全局条目上限；累计内容仍受字节预算约束。
@@ -1037,12 +1051,20 @@ mod tests {
     #[test]
     fn parse_version_finds_field() {
         let info = "# Server\r\nredis_version:7.2.4\r\nredis_mode:standalone\r\n";
-        assert_eq!(parse_redis_version(info), "7.2.4");
+        assert_eq!(parse_redis_version(info).unwrap(), "7.2.4");
     }
 
     #[test]
-    fn parse_version_missing_returns_unknown() {
-        assert_eq!(parse_redis_version("# Server\r\nfoo:bar\r\n"), "unknown");
+    fn parse_version_missing_returns_error() {
+        assert!(parse_redis_version("# Server\r\nfoo:bar\r\n").is_err());
+    }
+
+    #[test]
+    fn ttl_rejects_values_that_redis_would_treat_as_delete() {
+        assert!(validate_ttl_secs(None).is_ok());
+        assert!(validate_ttl_secs(Some(1)).is_ok());
+        assert!(validate_ttl_secs(Some(0)).is_err());
+        assert!(validate_ttl_secs(Some(-1)).is_err());
     }
 
     #[test]

@@ -487,19 +487,32 @@ impl TerminalCore {
             return;
         };
         let shutdown_complete = self.shutdown_complete.clone();
+        let thread = Arc::new(Mutex::new(Some(thread)));
+        let reaper_thread = thread.clone();
         // PTY 的析构会终止并回收子进程；放到专用回收线程，避免阻塞 GPUI。
         if let Err(error) = std::thread::Builder::new()
             .name("ramag-terminal-reaper".into())
             .spawn(move || {
-                match thread.join() {
-                    Ok((event_loop, state)) => drop((event_loop, state)),
-                    Err(_) => tracing::warn!("terminal event loop panicked during shutdown"),
+                if let Some(thread) = reaper_thread.lock().take() {
+                    join_terminal_thread(thread);
                 }
                 shutdown_complete.store(true, Ordering::Release);
             })
         {
             tracing::warn!(error = %error, "spawn terminal reaper failed");
+            // 线程资源耗尽时退回同步回收；这是罕见失败路径，不能把 PTY 子进程留成孤儿。
+            if let Some(thread) = thread.lock().take() {
+                join_terminal_thread(thread);
+            }
+            self.shutdown_complete.store(true, Ordering::Release);
         }
+    }
+}
+
+fn join_terminal_thread(thread: TerminalThread) {
+    match thread.join() {
+        Ok((event_loop, state)) => drop((event_loop, state)),
+        Err(_) => tracing::warn!("terminal event loop panicked during shutdown"),
     }
 }
 

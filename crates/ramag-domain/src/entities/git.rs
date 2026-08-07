@@ -1,4 +1,4 @@
-//! Git 领域实体：纯数据结构 + serde。infra 层填值，UI 层只读
+//! Git 领域实体。
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -24,7 +24,7 @@ pub const MAX_GIT_TAG_MESSAGE_BYTES: usize = 64 * 1024;
 /// Stash 说明同样通过单个 argv 传递。
 pub const MAX_GIT_STASH_MESSAGE_BYTES: usize = 16 * 1024;
 
-/// 仓库运行时 UUID（不持久化进 git；上层用 path 去重）
+/// 仓库运行时 UUID，不写入 Git。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RepoId(pub Uuid);
 
@@ -46,19 +46,16 @@ impl std::fmt::Display for RepoId {
     }
 }
 
-/// 仓库配置：本地路径 + 别名。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     pub id: RepoId,
     pub name: String,
-    /// 工作树根路径（含 .git 的那一级）
+    /// 工作树根目录。
     pub path: String,
-    /// 上次打开时间，用于「最近」排序
     pub last_opened_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl RepoConfig {
-    /// name 取路径最后一段
     pub fn from_path(path: impl Into<String>) -> Self {
         let path: String = path.into();
         let name = std::path::Path::new(&path)
@@ -74,7 +71,6 @@ impl RepoConfig {
     }
 }
 
-/// 文件变更类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileChangeKind {
     Added,
@@ -83,23 +79,20 @@ pub enum FileChangeKind {
     /// 重命名：path 是新名，old_path 持旧名
     Renamed,
     Copied,
-    /// 普通文件 ↔ 软链接
     TypeChanged,
     Untracked,
-    /// merge / rebase 进行中
     Conflicted,
 }
 
-/// 单文件的工作区 + 暂存区状态。同一文件可同时 staged + unstaged（先 add 再改）
+/// 同一文件可同时有暂存区和工作区改动。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStatus {
-    /// 工作树相对路径
     pub path: String,
-    /// rename / copy 时的旧路径
+    /// 重命名或复制前的路径。
     pub old_path: Option<String>,
-    /// 暂存区相对 HEAD 的变更，None = 暂存区无此改动
+    /// 暂存区相对 HEAD 的变更。
     pub staged: Option<FileChangeKind>,
-    /// 工作区相对暂存区的变更，None = 与暂存区一致
+    /// 工作区相对暂存区的变更。
     pub unstaged: Option<FileChangeKind>,
 }
 
@@ -110,24 +103,17 @@ impl FileStatus {
     }
 }
 
-/// 工作区状态聚合
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkingTreeStatus {
-    /// 当前 HEAD 指向的分支，detached 时 None
+    /// detached HEAD 时为 `None`。
     pub head_branch: Option<String>,
-    /// HEAD 短 hash
     pub head_commit: Option<String>,
-    /// merge / rebase / cherry-pick 进行中
     pub operation: Option<RepoOperation>,
-    /// 全部文件（staged + unstaged + untracked + conflicted）
     pub files: Vec<FileStatus>,
-    /// 落后远程的 commit 数
     pub behind: Option<usize>,
-    /// 领先远程的 commit 数
     pub ahead: Option<usize>,
 }
 
-/// 仓库进行中的特殊操作
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepoOperation {
     Merge,
@@ -164,7 +150,6 @@ impl std::fmt::Display for CommitId {
     }
 }
 
-/// 作者 / 提交者签名
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
     pub name: String,
@@ -172,7 +157,6 @@ pub struct Signature {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// commit 对象（log 列表 + 详情共用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commit {
     pub id: CommitId,
@@ -180,9 +164,7 @@ pub struct Commit {
     pub parents: Vec<CommitId>,
     pub author: Signature,
     pub committer: Signature,
-    /// 消息首行
     pub subject: String,
-    /// 首行之后的正文，可能为空
     pub body: String,
     /// 关联的 ref 名（branch / remote / tag），用于 log 贴标签
     #[serde(default)]
@@ -242,7 +224,6 @@ pub struct Branch {
     pub behind: Option<usize>,
 }
 
-/// diff 行类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffLineKind {
     Context,
@@ -250,7 +231,6 @@ pub enum DiffLineKind {
     Delete,
 }
 
-/// 一行 diff 内容
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
@@ -262,7 +242,6 @@ pub struct DiffLine {
     pub text: String,
 }
 
-/// 一个 hunk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hunk {
     pub old_start: u32,
@@ -274,7 +253,6 @@ pub struct Hunk {
     pub lines: Vec<DiffLine>,
 }
 
-/// 单文件完整 diff
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiff {
     pub path: String,
@@ -287,32 +265,25 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
-/// Reflog 单条：HEAD@{N} 时刻的 ref 状态 + 操作。用于「找回丢失 commit」
+/// Reflog 中某一时刻的 ref 状态与操作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflogEntry {
-    /// 该时刻 ref 指向的 commit
     pub commit: CommitId,
     /// 形如 "HEAD@{0}"
     pub selector: String,
-    /// 操作类型。
     pub action: String,
-    /// Reflog 消息。
     pub subject: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// blame 单行：文件某一行的归属
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlameLine {
     pub commit: CommitId,
     pub author: String,
-    /// 作者时间。
     pub timestamp: chrono::DateTime<chrono::Utc>,
     /// 当前文件中的行号（1-based）
     pub line_no: u32,
-    /// 该 commit 的 subject
     pub subject: String,
-    /// 该行原始内容
     pub content: String,
 }
 
@@ -351,13 +322,11 @@ impl RebaseAction {
     }
 }
 
-/// 交互式 rebase 单条计划
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebaseTodo {
     pub action: RebaseAction,
     /// 完整 commit hash
     pub hash: String,
-    /// 首行消息
     pub subject: String,
 }
 
@@ -374,7 +343,6 @@ fn char_prefix(value: &str, max_chars: usize) -> &str {
         .map_or(value, |(end, _)| &value[..end])
 }
 
-/// 三方冲突文件内容
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConflictContent {
     pub path: String,

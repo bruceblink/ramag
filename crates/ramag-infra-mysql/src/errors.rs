@@ -1,29 +1,27 @@
-//! MySQL 错误码 → DomainError 映射。仅识别 Database 变体，其余走 sql-shared 兜底
+//! MySQL 错误码到领域错误的映射。
 //! 参考：<https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html>
 
 use ramag_domain::error::DomainError;
 use ramag_infra_sql_shared::errors::map_sqlx_common;
 use sqlx::mysql::MySqlDatabaseError;
 
-/// 先识别 mysql 错误码，未命中走 shared 通用映射
+/// 优先识别 MySQL 错误码，未命中时使用通用映射。
 pub fn map_mysql_error(err: &sqlx::Error) -> DomainError {
     map_mysql_database_error(err).unwrap_or_else(|| map_sqlx_common(err))
 }
 
-/// 仅识别 mysql 错误码，非 Database 变体返回 None
+/// 映射 MySQL 数据库错误，其他错误返回 `None`。
 pub fn map_mysql_database_error(err: &sqlx::Error) -> Option<DomainError> {
     let database_error = err.as_database_error()?;
     let mysql_error = database_error.try_downcast_ref::<MySqlDatabaseError>()?;
     let number = mysql_error.number();
     let message = mysql_error_friendly(number, mysql_error.message());
     Some(match number {
-        // 网络 / 认证 → ConnectionFailed
         1045 | 1049 | 2003 | 2005 => DomainError::ConnectionFailed(message),
         _ => DomainError::QueryFailed(message),
     })
 }
 
-/// MySQL 错误码 → 中文友好提示
 fn mysql_error_friendly(number: u16, raw: &str) -> String {
     match number {
         1044 => format!("目标账号没有创建或访问该数据库的权限（{raw}）"),
@@ -48,9 +46,9 @@ fn mysql_error_friendly(number: u16, raw: &str) -> String {
         1452 => format!("外键引用的记录不存在（{raw}）"),
         1690 => format!("数值类型越界（{raw}）"),
         1927 => format!("查询被取消（KILL QUERY）：{raw}"),
-        2003 => format!("无法连接到 MySQL 服务器（检查 host/port/防火墙）：{raw}"),
+        2003 => format!("无法连接到 MySQL 服务器，请检查主机、端口和防火墙：{raw}"),
         2005 => format!("无法解析主机名：{raw}"),
-        2006 => format!("MySQL 连接已断开（gone away）：{raw}"),
+        2006 => format!("MySQL 连接已断开：{raw}"),
         2013 => format!("查询期间连接断开：{raw}"),
         _ => raw.to_string(),
     }

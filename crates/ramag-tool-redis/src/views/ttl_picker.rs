@@ -45,10 +45,7 @@ impl TtlPicker {
 
     /// 将 PTTL 回填为永久、预设或自定义秒数。
     pub fn set_initial_ms(&mut self, ms: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
-        let secs_opt: Option<i64> = match ms {
-            Some(m) if m > 0 => Some(m / 1000),
-            _ => None,
-        };
+        let secs_opt = ttl_ms_to_secs(ms);
         match secs_opt {
             None => self.mode = Mode::Forever,
             Some(s) => {
@@ -99,6 +96,14 @@ impl TtlPicker {
                 Ok(Some(secs))
             }
         }
+    }
+}
+
+fn ttl_ms_to_secs(ms: Option<i64>) -> Option<i64> {
+    match ms {
+        // 向上取整，避免剩余不足一秒时回填为非法的 0，也不会因编辑而提前过期。
+        Some(milliseconds) if milliseconds > 0 => Some(milliseconds.saturating_add(999) / 1000),
+        _ => None,
     }
 }
 
@@ -196,5 +201,18 @@ impl Render for TtlPicker {
         }
 
         row
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ttl_ms_to_secs;
+
+    #[test]
+    fn positive_subsecond_ttl_rounds_up_to_one_second() {
+        assert_eq!(ttl_ms_to_secs(Some(1)), Some(1));
+        assert_eq!(ttl_ms_to_secs(Some(999)), Some(1));
+        assert_eq!(ttl_ms_to_secs(Some(1_001)), Some(2));
+        assert_eq!(ttl_ms_to_secs(Some(-1)), None);
     }
 }

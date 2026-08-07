@@ -127,7 +127,7 @@ pub struct SshServiceName(String);
 impl SshServiceName {
     pub fn parse(value: &str) -> Result<Self, String> {
         if value.is_empty() || value.len() > 128 {
-            return Err("服务名长度必须是 1 - 128 bytes".into());
+            return Err("服务名长度必须在 1–128 bytes 之间".into());
         }
         let mut bytes = value.bytes();
         if !bytes
@@ -165,7 +165,7 @@ pub struct DiagnosticTimeRange {
 impl DiagnosticTimeRange {
     pub fn last_minutes(minutes: u16) -> Result<Self, String> {
         if !(1..=1_440).contains(&minutes) {
-            return Err("诊断时间范围必须是最近 1 - 1440 分钟".into());
+            return Err("诊断时间范围必须在最近 1–1440 分钟内".into());
         }
         Ok(Self { minutes })
     }
@@ -231,7 +231,7 @@ impl SshDiagnosticOperation {
                 ..
             } => {
                 if !(1..=MAX_DIAGNOSTIC_ITEMS as u16).contains(max_items) {
-                    return Err(format!("日志条数必须是 1 - {MAX_DIAGNOSTIC_ITEMS}"));
+                    return Err(format!("日志条数必须在 1–{MAX_DIAGNOSTIC_ITEMS} 之间"));
                 }
                 if (*source == SshLogSource::Service) != service.is_some() {
                     return Err("服务日志必须且只能提供精确服务名".into());

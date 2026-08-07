@@ -102,7 +102,6 @@ impl QueryPanel {
         cx: &mut Context<Self>,
     ) {
         self.connection = conn.clone();
-        // 切换连接时把 active_schema 重置为新连接的 database 字段
         self.active_schema = conn
             .as_ref()
             .and_then(|c| c.database.clone())
@@ -452,6 +451,7 @@ impl Render for QueryPanel {
                                 .xsmall()
                                 .icon(IconName::Close)
                                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
                                     this.close_tab(idx, window, cx);
                                 })),
                         )

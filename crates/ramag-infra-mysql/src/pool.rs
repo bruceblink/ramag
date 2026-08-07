@@ -1,4 +1,4 @@
-//! 按 ConnectionConfig 构造 MySqlPool。缓存逻辑在 sql-shared::PoolCache
+//! 根据连接配置构造 MySQL 连接池。
 
 use std::time::Duration;
 
@@ -44,12 +44,12 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
         .port(port)
         .username(&config.username)
         .password(&config.password)
-        // utf8mb4 覆盖 emoji + 全部中文
+        // utf8mb4 覆盖 emoji 和完整 Unicode 字符。
         .charset("utf8mb4")
-        // 统一 UTC 避免时区歧义
+        // 统一使用 UTC，避免时区歧义。
         .timezone(Some("+00:00".into()))
-        .log_statements(tracing::log::LevelFilter::Debug)
-        .log_slow_statements(tracing::log::LevelFilter::Warn, Duration::from_secs(1));
+        // 查询正文可能含敏感字面量；耗时和结果规模由共享执行层单独记录。
+        .disable_statement_logging();
 
     // TLS：关闭保持历史行为（Preferred 有则用、无则降级）；开启按验证等级三档映射。
     // 经 SSH 隧道时 Full 降级为 Ca（实际连 127.0.0.1，主机名校验必败；隧道本身已加密）
@@ -58,7 +58,7 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
     } else {
         let mut verify = config.tls_verify;
         if config.ssh_target.is_some() && verify == ramag_domain::entities::TlsVerify::Full {
-            warn!(host = %config.host, "tls verify downgraded Full->Ca over ssh tunnel");
+            warn!(host = %config.host, from = "full", to = "ca", "TLS verification downgraded over SSH tunnel");
             verify = ramag_domain::entities::TlsVerify::Ca;
         }
         let opts = match verify {

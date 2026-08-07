@@ -338,6 +338,10 @@ pub(super) fn extract_statement_at_cursor(
                         continue;
                     }
                     if bytes[i] == quote {
+                        if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                            i += 2;
+                            continue;
+                        }
                         i += 1;
                         break;
                     }
@@ -357,11 +361,7 @@ pub(super) fn extract_statement_at_cursor(
                 }
             }
             b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                i += 2;
+                i = block_comment_end(bytes, i, pg);
             }
             b';' => {
                 splits.push(i);

@@ -90,6 +90,14 @@ fn download_url_must_match_repository_tag_and_asset() {
 }
 
 #[test]
+fn asset_name_rejects_empty_paths_and_separators() {
+    assert!(is_safe_asset_name("Ramag-1.2.3.dmg"));
+    assert!(!is_safe_asset_name(""));
+    assert!(!is_safe_asset_name("../Ramag.dmg"));
+    assert!(!is_safe_asset_name("folder/Ramag.dmg"));
+}
+
+#[test]
 fn cached_file_requires_exact_size_and_sha256() {
     use sha2::{Digest, Sha256};
 
@@ -126,4 +134,33 @@ fn cached_file_requires_exact_size_and_sha256() {
             .expect("reject wrong hash")
     );
     std::fs::remove_dir_all(directory).expect("remove temp directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_preparation_rejects_symlinked_updates_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "ramag-update-link-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    ));
+    let target = root.join("target");
+    std::fs::create_dir_all(&target).expect("create target directory");
+    symlink(&target, root.join("updates")).expect("create updates symlink");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("create test runtime");
+
+    assert!(
+        runtime
+            .block_on(prepare_cache_dir(&root.join("updates").join("1.2.3")))
+            .is_err()
+    );
+    std::fs::remove_dir_all(root).expect("remove test directory");
 }

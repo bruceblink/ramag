@@ -1,4 +1,4 @@
-//! 领域实体：纯 Rust 数据结构 + serde。
+//! 领域实体。
 
 pub mod clipboard;
 pub mod connection;
@@ -129,17 +129,16 @@ pub use update::{
     DownloadProgress, ReleaseAsset, ReleaseInfo, UpdateCancellation, UpdateProgressFn,
 };
 
-/// 在已小写的查询词下做不区分大小写匹配；ASCII 常见路径不分配整段小写副本。
+/// 使用已转为小写的查询词匹配，ASCII 路径不分配正文副本。
 pub fn contains_case_insensitive(text: &str, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
     }
-    // 常见的同大小写 / 无大小写文字（如中文）先走标准库子串搜索，零分配且更快。
+    // 中文等无大小写文本可直接命中。
     if text.contains(query_lower) {
         return true;
     }
-    // ASCII 查询不会命中 UTF-8 多字节中的高位字节，可直接逐字节比较；
-    // 即使正文含 Unicode，也无需为整段正文分配 lowercase 副本。
+    // ASCII 不会命中 UTF-8 多字节中的高位字节，可安全逐字节比较。
     if query_lower.is_ascii() {
         let query = query_lower.as_bytes();
         return text

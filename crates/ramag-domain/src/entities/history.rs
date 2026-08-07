@@ -1,4 +1,4 @@
-//! 查询历史：每条 SQL 不论成败都落库，UI 可回看 / 重跑
+//! 成功和失败的查询历史。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -147,7 +147,6 @@ impl QueryRecord {
         }
     }
 
-    /// SQL 单行预览：去多余空白 + 截断
     pub fn sql_preview(&self, max_chars: usize) -> String {
         compact_text_preview(&self.sql, max_chars)
     }

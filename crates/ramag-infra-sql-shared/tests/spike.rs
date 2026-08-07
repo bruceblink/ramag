@@ -112,8 +112,8 @@ impl SqlBackend for StubMysqlBackend {
     }
 }
 
-/// 类型系统验证：所有泛型模板函数能闭合编译
-#[allow(dead_code)]
+/// 类型系统验证：所有泛型模板函数能闭合编译。
+#[test]
 fn type_check_template_functions() {
     let backend = StubMysqlBackend {
         pools: PoolCache::new(),

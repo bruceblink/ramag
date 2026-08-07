@@ -1,10 +1,10 @@
-//! Tool trait：工具元数据。UI 渲染由 ramag-ui 的 ToolView 扩展，不放 domain
+//! 工具元数据；UI 渲染由 `ramag-ui` 扩展。
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMeta {
-    /// 唯一 id，如 "dbclient"
+    /// 工具唯一标识。
     pub id: String,
     pub name: String,
     pub description: String,
@@ -32,7 +32,6 @@ impl ToolMeta {
     }
 }
 
-/// 工具最小抽象，实现该 trait 才能被 ToolRegistry 注册
 pub trait Tool: Send + Sync {
     fn meta(&self) -> &ToolMeta;
 }

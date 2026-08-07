@@ -1,4 +1,4 @@
-//! Driver trait：SQL 类数据库驱动统一抽象。dyn-safe，不引入关联类型
+//! SQL 数据库接口。
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -10,7 +10,7 @@ use crate::entities::{
 };
 use crate::error::Result;
 
-/// 查询取消句柄。driver 把后端 session/thread id 写入，调用方读出转交 `cancel_query`。值 0 = 还没拿到
+/// 保存用于取消查询的后端会话 ID；`0` 表示尚未取得。
 pub type CancelHandle = Arc<AtomicU64>;
 
 #[async_trait]
@@ -18,7 +18,6 @@ pub trait Driver: Send + Sync {
     /// 用于日志 / UI 显示，如 "mysql"
     fn name(&self) -> &'static str;
 
-    /// 测试连接可达
     async fn test_connection(&self, config: &ConnectionConfig) -> Result<()>;
 
     /// 服务端版本，如 "8.0.32"
@@ -28,10 +27,9 @@ pub trait Driver: Send + Sync {
         ))
     }
 
-    /// 执行一条查询
     async fn execute(&self, config: &ConnectionConfig, query: &Query) -> Result<QueryResult>;
 
-    /// 可取消版执行。默认退化到 `execute`（不支持取消）
+    /// 默认不支持取消，直接调用 `execute`。
     async fn execute_cancellable(
         &self,
         config: &ConnectionConfig,
@@ -59,7 +57,6 @@ pub trait Driver: Send + Sync {
         table: &str,
     ) -> Result<Vec<Column>>;
 
-    /// 含主键 / 唯一 / 普通索引
     async fn list_indexes(
         &self,
         config: &ConnectionConfig,
@@ -74,6 +71,6 @@ pub trait Driver: Send + Sync {
         table: &str,
     ) -> Result<Vec<ForeignKey>>;
 
-    /// 失效指定连接的池缓存。用户改 config 后必须调，否则会按旧 host/db 继续工作
+    /// 配置变更后使对应连接池失效。
     fn evict_pool(&self, _id: &ConnectionId) {}
 }

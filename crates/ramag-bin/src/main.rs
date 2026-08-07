@@ -159,7 +159,14 @@ fn main() {
     }
 
     let log_path = logging::init();
-    info!(version = env!("CARGO_PKG_VERSION"), "ramag launching");
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        process_id = std::process::id(),
+        debug = cfg!(debug_assertions),
+        "application starting"
+    );
 
     // 单实例：已有实例在跑则通知其唤起主窗口后静默退出（避免 redb 文件锁报错）；
     // macOS 由系统 LaunchServices 保证 .app 单实例，无需自建
@@ -443,6 +450,7 @@ fn main() {
             spawn_update_check(service, cx);
         }
     });
+    info!("application stopped");
 }
 
 fn spawn_update_check(service: Arc<UpdateService>, cx: &mut App) {

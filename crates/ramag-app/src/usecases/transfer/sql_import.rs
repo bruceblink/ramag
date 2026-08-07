@@ -20,10 +20,8 @@ use super::sql_catalog::parse_marker;
 use super::{MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
 
-/// 达到字节或语句数上限后执行批次。
 const CHUNK_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
 const CHUNK_FLUSH_STMTS: usize = TRANSFER_BATCH_ITEMS;
-/// 单行长度保护（自家文件单行 ≤ ~1 MiB；异常长行直接拒绝）
 const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +54,7 @@ impl SegmentKind {
         })
     }
 
-    /// 重复对象类错误只记警告的段（部分表被跳过时，这些段天然会撞已存在对象）
+    /// 这些结构段允许因对象已存在而跳过错误。
     fn tolerates_errors(self) -> bool {
         matches!(
             self,
@@ -84,7 +82,6 @@ struct Segment {
     kind: SegmentKind,
     name: String,
     buffer: String,
-    /// 尚未遇到行尾分号的语句。
     pending_statement: String,
     stmt_lines: usize,
     skip: bool,
@@ -264,7 +261,7 @@ async fn import_sql(
 
     let mut header_engine: Option<String> = None;
     let mut header_database: Option<String> = None;
-    // 目标库（ramag 文件以文件头为准；generic 文件用调用方指定）
+    // Ramag 文件使用文件头中的目标库，普通 SQL 使用调用方指定值。
     let mut schema: Option<String> = fallback_schema.map(str::to_string);
     let mut existing: HashMap<String, bool> = HashMap::new();
     let mut skipped_objects: HashSet<String> = HashSet::new();
@@ -281,7 +278,7 @@ async fn import_sql(
         let marker = if eof { None } else { parse_marker(trimmed) };
         let is_end_marker = trimmed == "-- ramag:end";
         if eof || marker.is_some() || is_end_marker {
-            // 段边界：先冲洗上一段，再切换
+            // 段切换前先提交上一段。
             if !segment.pending_statement.trim().is_empty() {
                 let statement = std::mem::take(&mut segment.pending_statement);
                 queue_statement(
@@ -336,7 +333,7 @@ async fn import_sql(
             segment = Segment::new(kind, name);
             reporter.stage(format!("导入{}", kind.label()), name);
 
-            // 进入首个内容段前，校验文件头并加载既有对象清单
+            // 进入内容前校验文件头并加载已有对象。
             if kind == SegmentKind::Header {
                 let engine = header_engine.as_deref().unwrap_or("");
                 let matches_engine = matches!(
@@ -354,17 +351,20 @@ async fn import_sql(
                         "文件缺少 database 头，无法确定目标库".into(),
                     ));
                 };
-                // 目标库可能尚不存在（header 段会创建），失败按空清单处理
-                existing = svc
-                    .list_tables(config, &db)
-                    .await
-                    .map(|tables| {
-                        tables
-                            .into_iter()
-                            .map(|table| (table.name, table.is_view))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let schema_exists = svc
+                    .list_schemas(config)
+                    .await?
+                    .iter()
+                    .any(|schema| schema.name == db);
+                existing = if schema_exists {
+                    svc.list_tables(config, &db)
+                        .await?
+                        .into_iter()
+                        .map(|table| (table.name, table.is_view))
+                        .collect()
+                } else {
+                    HashMap::new()
+                };
                 schema = Some(db);
             }
             apply_policy(
@@ -381,7 +381,6 @@ async fn import_sql(
             continue;
         }
 
-        // 文件头注释信息
         if let Some(rest) = trimmed.strip_prefix("-- engine: ") {
             header_engine = Some(rest.trim().to_string());
             continue;
@@ -391,19 +390,18 @@ async fn import_sql(
             continue;
         }
         if trimmed.is_empty() || trimmed.trim_start().starts_with("--") {
-            // 空行与 SQL 注释不进执行块（MySQL 预处理协议拒绝纯注释语句）
+            // MySQL 预处理协议拒绝纯注释语句。
             continue;
         }
         if is_use_statement(trimmed) {
-            // 目标库统一走 default_schema（COM_QUERY 简单协议）；
-            // 文件内的 USE 行为 CLI 兼容保留，导入时跳过（预处理协议不支持 USE）
+            // 目标库通过查询配置指定，预处理协议不执行文件中的 USE。
             continue;
         }
 
         if segment.skip || segment.failed {
             continue;
         }
-        // 合并策略：数据段 INSERT 改写为条目级去重形态（generic 文件仅 MySQL 可安全按行改写）
+        // 合并时将数据段 INSERT 改写为跳过冲突的形式。
         let rewritten = (policy == ConflictPolicy::Merge
             && (segment.kind == SegmentKind::Data
                 || (segment.kind == SegmentKind::Generic && config.driver == DriverKind::Mysql)))
@@ -461,7 +459,7 @@ async fn import_sql(
     Ok(finish_summary(summary, start))
 }
 
-/// 段开始时应用冲突策略（存在性检查 + Overwrite 的 DROP）
+/// 在段开始时应用对象冲突策略。
 #[allow(clippy::too_many_arguments)]
 async fn apply_policy(
     svc: &ConnectionService,
@@ -489,8 +487,7 @@ async fn apply_policy(
                     summary.skipped += 1;
                 }
                 ConflictPolicy::Merge => {
-                    // 保留已存在对象：跳过其 DDL 段本身；数据 / 索引段照常执行，
-                    // 数据段的 INSERT 已被改写为条目级去重形态
+                    // 保留已有对象，跳过 DDL；数据和索引段继续执行。
                     segment.skip = true;
                 }
                 ConflictPolicy::Fail => {
@@ -583,7 +580,7 @@ fn sql_chunk_payload_limit(driver: DriverKind) -> usize {
     }
 }
 
-/// 执行段内累计的语句块
+/// 执行段内累计的语句块。
 async fn flush_segment(
     svc: &ConnectionService,
     config: &ConnectionConfig,
@@ -633,7 +630,7 @@ async fn flush_segment(
     Ok(())
 }
 
-/// 段收尾：计数成功对象
+/// 在段结束时统计成功对象。
 fn finish_segment(
     segment: &Segment,
     summary: &mut TransferSummary,
@@ -741,12 +738,10 @@ mod tests {
                 "INSERT INTO \"s\".\"t\" (\"a\") OVERRIDING SYSTEM VALUE VALUES (1) ON CONFLICT DO NOTHING;\n"
             )
         );
-        // 非 INSERT 行不改写
         assert_eq!(
             merge_rewrite_line("CREATE TABLE t (a int);\n", DriverKind::Mysql),
             None
         );
-        // PG 行尾无分号（异常形态）不强行改写
         assert_eq!(
             merge_rewrite_line("INSERT INTO t VALUES (1)", DriverKind::Postgres),
             None

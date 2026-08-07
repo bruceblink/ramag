@@ -80,10 +80,16 @@ impl Render for TableTreePanel {
         };
         let searchable_schemas = tree_view.searchable_schemas;
         let failed_schemas = tree_view.failed_schemas;
-        let search_incomplete = has_filter && searchable_schemas < total_schemas;
+        // 搜索范围必须与“显示系统库”筛选一致，否则隐藏的系统库会让进度永远无法完成。
+        let search_scope_total = self
+            .schemas
+            .iter()
+            .filter(|schema| show_system || !is_system_schema(&schema.name))
+            .count();
+        let search_incomplete = has_filter && searchable_schemas < search_scope_total;
         if search_incomplete {
             header_text.push_str(&format!(
-                " · 当前搜索范围 {searchable_schemas}/{total_schemas} 个库"
+                " · 当前搜索范围 {searchable_schemas}/{search_scope_total} 个库"
             ));
         }
         if has_filter && failed_schemas > 0 {
@@ -217,7 +223,7 @@ impl Render for TableTreePanel {
 
         let can_retry_failed = failed_schemas > 0;
         let header_bar =
-            if has_filter && search_incomplete && (total_schemas > 50 || can_retry_failed) {
+            if has_filter && search_incomplete && (search_scope_total > 50 || can_retry_failed) {
                 if let Some(progress) = self.full_search {
                     header_bar.child(
                         ramag_ui::clickable_button("stop-full-schema-search")
@@ -229,7 +235,7 @@ impl Render for TableTreePanel {
                     )
                 } else {
                     let retry_only = failed_schemas > 0
-                        && searchable_schemas.saturating_add(failed_schemas) == total_schemas;
+                        && searchable_schemas.saturating_add(failed_schemas) == search_scope_total;
                     header_bar.child(
                         ramag_ui::clickable_button("search-all-schemas")
                             .small()

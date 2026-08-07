@@ -144,20 +144,13 @@ async fn download_verified_asset(
         Some(hash) => hash.clone(),
         None => fetch_checksum(client, &release.tag_name, &asset.name).await?,
     };
-    tokio::fs::create_dir_all(&cache_dir)
-        .await
-        .map_err(|error| {
-            DomainError::Storage(format!(
-                "创建更新缓存目录失败 {}：{error}",
-                cache_dir.display()
-            ))
-        })?;
+    prepare_cache_dir(&cache_dir).await?;
     let destination = cache_dir.join(&asset.name);
     let partial = cache_dir.join(format!("{}.part", asset.name));
     cache::reject_symlink(&destination).await?;
     cache::reject_symlink(&partial).await?;
 
-    if tokio::fs::try_exists(&destination).await.unwrap_or(false) {
+    if path_exists(&destination).await? {
         if verify_file(&destination, asset.size, &expected_hash).await? {
             progress(DownloadProgress {
                 downloaded: asset.size,
@@ -174,7 +167,7 @@ async fn download_verified_asset(
                 ))
             })?;
     }
-    if tokio::fs::try_exists(&partial).await.unwrap_or(false) {
+    if path_exists(&partial).await? {
         tokio::fs::remove_file(&partial).await.map_err(|error| {
             DomainError::Storage(format!(
                 "清理更新临时文件失败 {}：{error}",
@@ -218,6 +211,29 @@ async fn download_verified_asset(
             ))
         })?;
     Ok(destination)
+}
+
+async fn prepare_cache_dir(cache_dir: &Path) -> Result<()> {
+    let cache_parent = cache_dir
+        .parent()
+        .ok_or_else(|| DomainError::Storage("更新缓存目录缺少父目录".into()))?;
+    cache::reject_symlink(cache_parent).await?;
+    tokio::fs::create_dir_all(cache_dir)
+        .await
+        .map_err(|error| {
+            DomainError::Storage(format!(
+                "创建更新缓存目录失败 {}：{error}",
+                cache_dir.display()
+            ))
+        })?;
+    cache::reject_symlink(cache_parent).await?;
+    cache::reject_symlink(cache_dir).await
+}
+
+async fn path_exists(path: &Path) -> Result<bool> {
+    tokio::fs::try_exists(path).await.map_err(|error| {
+        DomainError::Storage(format!("检查更新缓存路径失败 {}：{error}", path.display()))
+    })
 }
 
 async fn download_to_partial(
@@ -458,7 +474,9 @@ fn is_allowed_http_url(url: &Url) -> bool {
 }
 
 fn is_safe_asset_name(name: &str) -> bool {
-    !name.contains('/')
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.contains('/')
         && !name.contains('\\')
         && name != "."
         && name != ".."

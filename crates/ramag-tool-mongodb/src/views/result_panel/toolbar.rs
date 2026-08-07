@@ -143,9 +143,11 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_insert_dialog(window, cx)))
         })
         .child({
+            let path_drilled = panel.parse_column_filter(cx).drill_path.is_some();
             let can_del = panel.can_write()
                 && !panel.selected_rows.is_empty()
                 && !panel.is_drilled()
+                && !path_drilled
                 && !panel.row_view_building
                 && panel.row_view_error.is_none();
             let disabled_reason = if panel.row_view_building {
@@ -156,6 +158,8 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 "只读"
             } else if panel.is_drilled() {
                 "请返回上层"
+            } else if path_drilled {
+                "请清空路径钻取"
             } else {
                 "请先选择数据"
             };
@@ -188,11 +192,13 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
         })
         .child({
             let has_data = panel.docs_arc.as_ref().is_some_and(|docs| !docs.is_empty());
+            let path_drilled = panel.parse_column_filter(cx).drill_path.is_some();
             ramag_ui::clickable_button("mongo-export")
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::upload())
-                .disabled(!has_data || panel.table_building || panel.exporting)
+                .when(path_drilled, |button| button.tooltip("请清空路径钻取"))
+                .disabled(!has_data || panel.table_building || panel.exporting || path_drilled)
                 .on_click(cx.listener(|panel, _, _, cx| panel.export_documents(cx)))
         })
         .child(if panel.running {

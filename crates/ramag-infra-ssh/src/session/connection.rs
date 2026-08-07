@@ -231,14 +231,14 @@ impl SftpConnection {
             Ok(Ok(session)) => session,
             Ok(Err(error)) => {
                 stop_child(&mut child).await;
-                let _ = timeout(Duration::from_secs(1), protocol_task).await;
-                let _ = timeout(Duration::from_secs(1), stderr_task).await;
+                wait_cleanup_task(protocol_task, "protocol relay").await;
+                wait_cleanup_task(stderr_task, "stderr drain").await;
                 return Err(connection_error(error.to_string(), &stderr_tail.lock()));
             }
             Err(_) => {
                 stop_child(&mut child).await;
-                let _ = timeout(Duration::from_secs(1), protocol_task).await;
-                let _ = timeout(Duration::from_secs(1), stderr_task).await;
+                wait_cleanup_task(protocol_task, "protocol relay").await;
+                wait_cleanup_task(stderr_task, "stderr drain").await;
                 return Err(connection_error(
                     "SFTP 协议握手在 15 秒内未完成".into(),
                     &stderr_tail.lock(),
@@ -365,6 +365,19 @@ fn bounded_chunk(server_limit: Option<u64>) -> u32 {
         .clamp(1, u64::from(u32::MAX)) as u32
 }
 
+async fn wait_cleanup_task(task: tokio::task::JoinHandle<()>, task_name: &'static str) {
+    match timeout(Duration::from_secs(1), task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(error = %error, task = task_name, "ssh sftp cleanup task failed")
+        }
+        Err(_) => tracing::warn!(
+            task = task_name,
+            "ssh sftp cleanup task did not stop in time"
+        ),
+    }
+}
+
 async fn relay_bounded_packets<R, W>(mut stdout: R, mut destination: W, allow_text_preamble: bool)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -373,7 +386,9 @@ where
     let Some((header, first_body_byte)) =
         read_first_packet_header(&mut stdout, allow_text_preamble).await
     else {
-        let _ = destination.shutdown().await;
+        if let Err(error) = destination.shutdown().await {
+            tracing::warn!(error = %error, "shutdown ssh sftp relay after missing packet failed");
+        }
         return;
     };
     let mut buffer = [0u8; 32 * 1024];
@@ -387,7 +402,9 @@ where
     .await
     {
         tracing::warn!(error = %error, "relay ssh sftp first packet failed");
-        let _ = destination.shutdown().await;
+        if let Err(shutdown_error) = destination.shutdown().await {
+            tracing::warn!(error = %shutdown_error, "shutdown ssh sftp relay after packet failure failed");
+        }
         return;
     }
     loop {

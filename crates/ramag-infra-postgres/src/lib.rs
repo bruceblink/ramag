@@ -1,5 +1,5 @@
-//! PostgreSQL 驱动。impl SqlBackend，`impl_driver_for!` 宏代理到 Driver。
-//! 方言：双引号 / `pg_cancel_backend()` / 连接级 db / 切默认 schema 走 SET search_path / 识别 dollar-quoted
+//! PostgreSQL 驱动。实现 SqlBackend，并通过 `impl_driver_for!` 提供 Driver 接口。
+//! 支持双引号标识符、取消查询、切换默认模式和美元引号字符串。
 
 pub mod errors;
 pub mod execute;
@@ -20,7 +20,7 @@ use ramag_infra_sql_shared::sql::SplitOptions;
 use sqlx::postgres::{PgPool, PgQueryResult, PgRow, Postgres};
 use sqlx::{Column as _, Row as _, TypeInfo as _};
 
-/// 内部仅持 Arc 包装池缓存，Clone 是 O(1)
+/// 内部只持有共享连接池缓存，克隆不会复制连接池。
 #[derive(Clone, Default)]
 pub struct PostgresDriver {
     pools: PoolCache<Postgres>,
@@ -57,7 +57,7 @@ impl SqlBackend for PostgresDriver {
     }
 
     fn use_database_sql(&self, db: &str) -> Option<String> {
-        // PG 库是连接级，无法切；这里发 SET search_path 让裸表名按选定 schema 解析（对齐 MySQL UX）
+        // PostgreSQL 无法在现有连接中切换数据库，因此通过搜索路径切换默认模式。
         Some(format!(
             "SET search_path TO \"{}\"",
             db.replace('"', "\"\"")

@@ -1,6 +1,4 @@
-//! 跨平台剪贴板驱动 trait。
-//! 与 Driver / KvDriver 等不同：方法全部为同步快调用（无网络 IO），
-//! 涉及系统 UI 的方法应在 GPUI 前台 executor 调用。
+//! 跨平台剪贴板接口；系统 UI 操作必须在 GPUI 前台执行器调用。
 
 use std::sync::Arc;
 
@@ -8,22 +6,20 @@ use crate::entities::{CapturedClip, ClipSource};
 use crate::error::Result;
 
 pub trait ClipboardDriver: Send + Sync {
-    /// 系统剪贴板修改计数，轮询比对用
+    /// 系统剪贴板修改计数。
     fn change_count(&self) -> i64;
 
-    /// 最近一次由本应用写回产生的 changeCount，自写回抑制用
+    /// 本应用最近一次写回产生的修改计数。
     fn own_change_count(&self) -> i64;
 
-    /// 读取当前剪贴板。空剪贴板或无可识别类型返回 None
+    /// 空剪贴板或无可识别类型时返回 `None`。
     fn read(&self) -> Result<Option<CapturedClip>>;
 
     /// 写文本回剪贴板（可附带 RTF 富文本表示）
     fn write_text(&self, text: &str, rtf: Option<&[u8]>) -> Result<()>;
 
-    /// 写 PNG 图片回剪贴板
     fn write_image_png(&self, png: &[u8]) -> Result<()>;
 
-    /// 写文件路径列表回剪贴板
     fn write_files(&self, paths: &[String]) -> Result<()>;
 
     /// 采集来源应用标注。实现可返回比「当前前台应用」更精确的来源
@@ -35,20 +31,19 @@ pub trait ClipboardDriver: Send + Sync {
         self.frontmost_app().map(|source| source.bundle_id)
     }
 
-    /// 应用图标 PNG（实现内部按 bundle_id 缓存）；取不到返回 None
+    /// 获取应用图标；实现负责缓存。
     fn app_icon_png(&self, bundle_id: &str) -> Option<Arc<Vec<u8>>>;
 
     /// 字节落盘到媒体缓存（key 形如 `{hash}.img` / `{hash}.thumb`，同名去重），返回路径。
     /// 加密由上层 service 负责，此处只写原始字节
     fn persist_media(&self, key: &str, bytes: &[u8]) -> Result<String>;
 
-    /// 读媒体文件原始字节（密文，由 service 解密）
+    /// 读取媒体密文，解密由上层服务负责。
     fn read_media(&self, path: &str) -> Result<Vec<u8>>;
 
-    /// 列出媒体缓存目录内全部文件路径（孤儿清理用）
     fn list_media(&self) -> Result<Vec<String>>;
 
-    /// 删除落盘媒体文件（容忍文件不存在）
+    /// 删除媒体文件，文件不存在时仍成功。
     fn remove_media(&self, path: &str) -> Result<()>;
 
     /// 流式清空受管媒体目录，不把全部路径先收集到内存。
@@ -60,12 +55,9 @@ pub trait ClipboardDriver: Send + Sync {
     /// 激活指定目标（None 跳过激活）并模拟平台粘贴快捷键
     fn paste_to_app(&self, activation_target: Option<&str>) -> Result<()>;
 
-    /// 用默认浏览器打开链接
     fn open_url(&self, url: &str) -> Result<()>;
 
-    /// 在系统文件管理器中显示文件
     fn reveal_in_file_manager(&self, paths: &[String]) -> Result<()>;
 
-    /// 文件路径是否仍存在（粘贴前失效校验）
     fn paths_exist(&self, paths: &[String]) -> bool;
 }

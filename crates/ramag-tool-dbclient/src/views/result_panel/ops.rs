@@ -396,22 +396,6 @@ impl ResultPanel {
         if !self.guard_generated_query(&q, cx) {
             return false;
         }
-        let new_row_values: Option<Vec<Value>> = match &self.state {
-            ResultState::Ok(r) => Some(
-                r.columns
-                    .iter()
-                    .map(|c| {
-                        values
-                            .iter()
-                            .find(|(name, _)| name.eq_ignore_ascii_case(c))
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(Value::Null)
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        };
-
         let result_revision = self.result_revision;
         self.dml_busy = true;
         cx.notify();
@@ -428,21 +412,12 @@ impl ResultPanel {
                             );
                         } else {
                             let same_result = this.result_revision == result_revision;
-                            let mut result_changed = false;
-                            if same_result
-                                && let (ResultState::Ok(r), Some(vs)) =
-                                    (&mut this.state, new_row_values)
-                            {
-                                let r = Arc::make_mut(r);
-                                r.rows.push(ramag_domain::entities::Row { values: vs });
-                                result_changed = true;
-                            }
-                            if result_changed {
-                                this.mark_result_changed();
-                            }
                             this.pending_notification = Some(if same_result {
-                                Notification::success(format!("已新增 {} 行", qr.affected_rows))
-                                    .autohide(true)
+                                Notification::success(format!(
+                                    "已新增 {} 行；请重新查询查看数据库默认值和生成字段",
+                                    qr.affected_rows
+                                ))
+                                .autohide(true)
                             } else {
                                 Notification::warning(format!(
                                     "已新增 {} 行；当前结果已变化，请重新查询核对",

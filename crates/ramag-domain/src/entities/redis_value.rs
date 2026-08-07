@@ -1,38 +1,27 @@
-//! Redis 运行时值。不实现 Eq/Hash（内部含 f64 ZSet score）
+//! Redis 运行时值；ZSet 分数为 `f64`，因此不实现 `Eq` 和 `Hash`。
 
 use serde::{Deserialize, Serialize};
 
-/// Redis 单 key 完整值。`KvDriver::get_value` 按 TYPE 自动 dispatch
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RedisValue {
-    /// key 不存在 / nil bulk
     Nil,
-    /// UTF-8 可解码 String
     Text(String),
-    /// UTF-8 解码失败的 fallback，或 BLOB
+    /// 非 UTF-8 字符串或二进制数据。
     Bytes(Vec<u8>),
-    /// INCR 应答 / String 数字编码
     Int(i64),
-    /// RESP3 浮点数或 ZSCORE。
     Float(f64),
-    /// RESP3 布尔值。
     Bool(bool),
-    /// 保留服务端顺序
     List(Vec<RedisValue>),
-    /// 用 Vec 保留 HSET 顺序
+    /// 使用 `Vec` 保留服务端顺序。
     Hash(Vec<(String, RedisValue)>),
-    /// 唯一元素由服务端保证
     Set(Vec<RedisValue>),
-    /// (member, score)，按 score 升序
+    /// `(member, score)`，按分数升序。
     ZSet(Vec<(RedisValue, f64)>),
-    /// 按时间序排列
     Stream(Vec<StreamEntry>),
-    /// 通用数组（CONFIG GET / CLUSTER NODES 等复合应答）
     Array(Vec<RedisValue>),
 }
 
-/// Redis key 的受控加载结果。集合值按元素、String 按字节限制；`total` 保存服务端总量，
-/// 让界面明确区分“已完整加载”和“当前只展示一部分”。
+/// 受控加载结果；`total` 用于区分完整值和安全前缀。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisValueLoad {
     pub value: RedisValue,
@@ -41,7 +30,6 @@ pub struct RedisValueLoad {
     /// 内容因累计字节预算只保留了安全前缀；调用方不得把它当作完整值覆盖回服务端。
     #[serde(default)]
     pub byte_limited: bool,
-    /// 是否达到单结果提示线。
     #[serde(default)]
     pub memory_warning: bool,
 }
@@ -59,11 +47,9 @@ impl RedisValueLoad {
     }
 }
 
-/// 导出用分段读取游标。与 `get_value_limited`（UI 受限预览）不同：
-/// 配合 `KvDriver::read_value_page` 从 `Start` 起逐页读完整值，不截断
+/// 从 `Start` 起逐页读取完整值的游标。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ValuePageCursor {
-    /// 首页
     Start,
     /// List 元素偏移 / String 字节偏移
     Offset(u64),
@@ -73,13 +59,11 @@ pub enum ValuePageCursor {
     AfterId(String),
 }
 
-/// 一页完整值片段
 #[derive(Debug, Clone)]
 pub struct RedisValuePage {
-    /// 与整值同构的片段：List → List 片段、Hash → Hash 片段、String → Text / Bytes 片段。
-    /// 首页未传类型时，调用方从 variant 得知 key 类型
+    /// 与完整值使用相同 variant 的当前片段。
     pub items: RedisValue,
-    /// None = 已读完
+    /// `None` 表示读取完成。
     pub next: Option<ValuePageCursor>,
     /// 实体无法表达而跳过的条目数（如二进制 hash field 名）
     pub skipped: u64,
@@ -87,12 +71,9 @@ pub struct RedisValuePage {
     pub ttl_ms: Option<i64>,
 }
 
-/// Stream 单条消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamEntry {
-    /// 形如 `<ms>-<seq>`
     pub id: String,
-    /// XADD 的 key=value 列表
     pub fields: Vec<(String, String)>,
 }
 
@@ -101,7 +82,7 @@ impl RedisValue {
         matches!(self, RedisValue::Nil)
     }
 
-    /// 元素数量；标量返回 None
+    /// 集合元素数量；标量返回 `None`。
     pub fn len(&self) -> Option<usize> {
         match self {
             RedisValue::List(v) | RedisValue::Set(v) | RedisValue::Array(v) => Some(v.len()),
@@ -121,12 +102,11 @@ impl RedisValue {
         }
     }
 
-    /// 标量固定返回 false
     pub fn is_empty(&self) -> bool {
         self.len().is_some_and(|n| n == 0)
     }
 
-    /// UI 单行预览，截断长字符串
+    /// 生成经过截断和换行清理的单行预览。
     pub fn display_preview(&self, max_len: usize) -> String {
         match self {
             RedisValue::Nil => "(nil)".to_string(),
@@ -154,9 +134,7 @@ fn truncate(s: &str, max_len: usize) -> String {
     preview
 }
 
-/// 单行预览清洗：换行符（\n / \r）替换为空格。
-/// GPUI 单行文本 shaping 断言不允许 \n（含 \n 直接 panic→abort）；仅用于显示预览。
-/// 无换行时零拷贝
+/// GPUI 单行文本不接受换行符。
 fn sanitize_inline(s: &str) -> String {
     if s.contains(['\n', '\r']) {
         s.replace(['\n', '\r'], " ")
@@ -204,7 +182,6 @@ mod tests {
 
     #[test]
     fn preview_text_strips_newlines() {
-        // 含换行的 String 值预览必须压成单行，否则 key 详情渲染 panic
         let v = RedisValue::Text("line1\nline2\r\nline3".to_string());
         let p = v.display_preview(80);
         assert!(!p.contains('\n') && !p.contains('\r'));

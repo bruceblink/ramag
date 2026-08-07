@@ -1,5 +1,4 @@
-//! MySQL 驱动。impl SqlBackend，`impl_driver_for!` 宏代理到 Driver。
-//! 方言：反引号 / `KILL QUERY` / `USE <db>` / 无 dollar-quoted
+//! MySQL 驱动及其 SQL 方言实现。
 
 pub mod errors;
 pub mod execute;
@@ -20,7 +19,6 @@ use ramag_infra_sql_shared::sql::SplitOptions;
 use sqlx::mysql::{MySql, MySqlConnection, MySqlPool, MySqlQueryResult, MySqlRow};
 use sqlx::{Column as _, Row as _, TypeInfo as _};
 
-/// 内部仅持 Arc 包装池缓存，Clone 是 O(1)
 #[derive(Clone, Default)]
 pub struct MysqlDriver {
     pools: PoolCache<MySql>,

@@ -37,7 +37,6 @@ impl std::fmt::Display for DataSyncTaskId {
     }
 }
 
-/// 一个源对象到一个目标对象的确定性映射。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncObjectMapping {
     pub source: String,

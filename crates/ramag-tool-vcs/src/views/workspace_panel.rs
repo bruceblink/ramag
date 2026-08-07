@@ -45,6 +45,7 @@ enum ChangeRow {
 
 #[derive(Clone, PartialEq, Eq)]
 struct WorkspaceRowsCacheKey {
+    status_request_seq: u64,
     files_identity: usize,
     files_len: usize,
     collapsed_version: u64,
@@ -100,6 +101,7 @@ impl VcsView {
             .trim()
             .to_lowercase();
         let key = WorkspaceRowsCacheKey {
+            status_request_seq: self.status_request_seq,
             files_identity: status.files.as_ptr() as usize,
             files_len: status.files.len(),
             collapsed_version: self.changes_collapsed_dirs_version,
@@ -670,6 +672,7 @@ mod tests {
     fn workspace_rows_cache_requires_all_inputs_to_match() {
         let rows = Rc::new(Vec::new());
         let key = WorkspaceRowsCacheKey {
+            status_request_seq: 11,
             files_identity: 17,
             files_len: 3,
             collapsed_version: 2,
@@ -685,6 +688,10 @@ mod tests {
         if let Some(cached) = cached {
             assert!(Rc::ptr_eq(&cached, &rows));
         }
+
+        let mut changed = key.clone();
+        changed.status_request_seq += 1;
+        assert!(cache.get(&changed).is_none());
 
         let mut changed = key.clone();
         changed.query = "tests".into();

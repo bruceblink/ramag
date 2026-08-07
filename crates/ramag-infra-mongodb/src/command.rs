@@ -1,4 +1,4 @@
-//! MongoDB 写命令识别：生产模式只读保护用。
+//! MongoDB 命令分类，用于生产模式的只读保护。
 //! 命令是 runCommand 风格 JSON（顶层第一个 key 即命令名）。为避开 serde_json 无 preserve_order
 //! 时 Object 的 key 顺序问题，这里遍历全部顶层 key 匹配写命令名（命令参数是 value，不会误判）。
 //! 特例：`aggregate` 本身只读，但 pipeline 含 `$out` / `$merge` 会写出集合，需单独识别
@@ -25,7 +25,9 @@ pub fn command_is_write(command: &Value) -> bool {
     {
         return true;
     }
-    false
+    // 生产模式采用读命令白名单：未知命令按写操作处理，避免新版或管理命令绕过只读保护。
+    !obj.keys()
+        .any(|key| READ_COMMANDS.contains(&key.to_ascii_lowercase().as_str()))
 }
 
 /// 聚合管线是否含写出阶段（`$out` / `$merge`）
@@ -97,6 +99,36 @@ const WRITE_COMMANDS: &[&str] = &[
     "setfeaturecompatibilityversion",
 ];
 
+/// 明确不会修改数据或服务器状态的命令名（小写）。
+const READ_COMMANDS: &[&str] = &[
+    "aggregate",
+    "buildinfo",
+    "collstats",
+    "connectionstatus",
+    "count",
+    "currentop",
+    "dbstats",
+    "distinct",
+    "explain",
+    "find",
+    "getcmdlineopts",
+    "getdefaultrwconcern",
+    "getlog",
+    "getparameter",
+    "hello",
+    "hostinfo",
+    "listcollections",
+    "listcommands",
+    "listdatabases",
+    "listindexes",
+    "ping",
+    "replsetgetstatus",
+    "serverstatus",
+    "top",
+    "validate",
+    "whatsmyuri",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +188,10 @@ mod tests {
     fn non_object_is_not_write() {
         assert!(!command_is_write(&json!("string")));
         assert!(!command_is_write(&json!(42)));
+    }
+
+    #[test]
+    fn unknown_command_is_blocked_conservatively() {
+        assert!(command_is_write(&json!({"futureServerCommand": 1})));
     }
 }

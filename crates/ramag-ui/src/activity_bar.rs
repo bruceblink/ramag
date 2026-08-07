@@ -57,9 +57,7 @@ impl ActivityItemDecoration {
 
 /// 将更新检查结果同步到设置入口角标。
 pub fn sync_update_indicator(result: &UpdateCheckResult, cx: &mut App) {
-    let Some(available) = indicator_value(result) else {
-        return;
-    };
+    let available = indicator_value(result);
     let current = cx
         .try_global::<UpdateIndicatorGlobal>()
         .is_some_and(|state| state.available);
@@ -68,11 +66,10 @@ pub fn sync_update_indicator(result: &UpdateCheckResult, cx: &mut App) {
     }
 }
 
-fn indicator_value(result: &UpdateCheckResult) -> Option<bool> {
+fn indicator_value(result: &UpdateCheckResult) -> bool {
     match result {
-        UpdateCheckResult::Skipped => None,
-        UpdateCheckResult::UpToDate { .. } => Some(false),
-        UpdateCheckResult::Available(_) | UpdateCheckResult::UnsupportedPlatform(_) => Some(true),
+        UpdateCheckResult::UpToDate { .. } => false,
+        UpdateCheckResult::Available(_) | UpdateCheckResult::UnsupportedPlatform(_) => true,
     }
 }
 
@@ -296,14 +293,10 @@ mod tests {
 
     #[test]
     fn update_indicator_tracks_only_real_update_results() {
-        assert_eq!(indicator_value(&UpdateCheckResult::Skipped), None);
-        assert_eq!(
-            indicator_value(&UpdateCheckResult::UpToDate {
-                current_version: "0.0.2".into(),
-                latest_version: "0.0.2".into(),
-            }),
-            Some(false)
-        );
-        assert_eq!(indicator_value(&available_result()), Some(true));
+        assert!(!indicator_value(&UpdateCheckResult::UpToDate {
+            current_version: "0.0.2".into(),
+            latest_version: "0.0.2".into(),
+        }));
+        assert!(indicator_value(&available_result()));
     }
 }

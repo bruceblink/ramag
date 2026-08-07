@@ -345,6 +345,7 @@ fn build_tree_rows(
 
     let searchable_schemas = schemas
         .iter()
+        .filter(|schema| show_system || !is_system_schema(&schema.name))
         .filter(|schema| {
             expanded
                 .get(&schema.name)
@@ -353,6 +354,7 @@ fn build_tree_rows(
         .count();
     let failed_schemas = schemas
         .iter()
+        .filter(|schema| show_system || !is_system_schema(&schema.name))
         .filter(|schema| {
             expanded
                 .get(&schema.name)
@@ -542,5 +544,48 @@ mod tests {
                 .iter()
                 .any(|row| { matches!(row, TreeRow::Table { key, .. } if key.1 == "ÜBERblick") })
         );
+    }
+
+    #[test]
+    fn hidden_system_schemas_are_not_counted_in_search_progress() {
+        let schemas = vec![
+            Schema {
+                name: "public".into(),
+                charset: None,
+                collation: None,
+            },
+            Schema {
+                name: "pg_catalog".into(),
+                charset: None,
+                collation: None,
+            },
+        ];
+        let expanded = HashMap::from([(
+            "public".into(),
+            SchemaTables {
+                tables: Vec::new(),
+                ..Default::default()
+            },
+        )]);
+
+        let hidden = build_tree_rows(
+            &schemas,
+            &expanded,
+            &HashSet::new(),
+            &HashMap::new(),
+            false,
+            "users",
+        );
+        assert_eq!(hidden.searchable_schemas, 1);
+
+        let shown = build_tree_rows(
+            &schemas,
+            &expanded,
+            &HashSet::new(),
+            &HashMap::new(),
+            true,
+            "users",
+        );
+        assert_eq!(shown.searchable_schemas, 1);
     }
 }

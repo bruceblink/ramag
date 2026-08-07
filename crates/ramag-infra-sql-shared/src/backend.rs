@@ -358,7 +358,7 @@ where
     if let Some(schema) = query.default_schema.as_deref().filter(|s| !s.is_empty())
         && let Some(use_sql) = b.use_database_sql(schema)
     {
-        debug!(?use_sql, "switching default schema before query");
+        debug!(schema, "switching default schema before query");
         // MySQL `USE <db>` 在 prepared statement 协议不支持，必须走 COM_QUERY 简单查询
         conn.execute(use_sql.as_str())
             .await

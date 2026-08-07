@@ -1,5 +1,4 @@
-//! 按库导出 / 导入的共享 UI 件：传输状态槽（取消位 + 进度快照）、
-//! 进度轮询 ticker、导入冲突策略选择对话框。三个数据库工具共用
+//! 数据库导入、导出的共享 UI。
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -18,9 +17,9 @@ use gpui_component::{
 };
 use ramag_domain::entities::{ConflictPolicy, TransferProgress, TransferSummary};
 use ramag_domain::error::DomainError;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
-/// 面板持有的传输状态：一次只允许一个进行中的导出 / 导入
+/// 单任务传输状态。
 #[derive(Default)]
 pub struct TransferState {
     cancel: Option<Arc<AtomicBool>>,
@@ -46,7 +45,7 @@ impl TransferState {
         self.cancel.as_ref().is_some_and(|c| Arc::ptr_eq(c, token))
     }
 
-    /// 归属校验通过则清槽并返回 true；迟到回调返回 false（不得再改面板状态）
+    /// 仅允许当前任务清理状态，避免迟到回调覆盖新任务。
     pub fn finish(&mut self, token: &Arc<AtomicBool>) -> bool {
         if !self.is_current(token) {
             return false;
@@ -59,6 +58,7 @@ impl TransferState {
     pub fn request_cancel(&self) {
         if let Some(cancel) = &self.cancel {
             cancel.store(true, Ordering::Relaxed);
+            info!("database transfer cancellation requested");
         }
     }
 
@@ -68,7 +68,7 @@ impl TransferState {
             .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     }
 
-    /// 最新进度行；渲染期用 try_lock 避免阻塞
+    /// 非阻塞读取最新进度。
     pub fn progress_line(&self) -> Option<String> {
         let slot = self.progress.as_ref()?;
         match slot.try_lock() {
@@ -78,19 +78,20 @@ impl TransferState {
     }
 }
 
-/// 服务层进度回调：把最新快照写进共享槽（渲染侧 try_lock 读取）
 pub fn progress_sink(
     slot: Arc<Mutex<TransferProgress>>,
 ) -> impl Fn(TransferProgress) + Send + Sync {
-    move |progress| {
-        if let Ok(mut guard) = slot.lock() {
-            *guard = progress;
+    let poison_reported = AtomicBool::new(false);
+    move |progress| match slot.lock() {
+        Ok(mut guard) => *guard = progress,
+        Err(_) if !poison_reported.swap(true, Ordering::Relaxed) => {
+            warn!("database transfer progress lock poisoned");
         }
+        Err(_) => {}
     }
 }
 
-/// 传输完成通知：None = 用户取消了文件选择（静默）。
-/// 汇总进 toast，警告明细进日志；`cancelled_note` 区分导出（文件未生成）与导入（部分已生效）
+/// 汇总结果用于通知，警告明细写入日志；取消文件选择时不提示。
 pub fn transfer_notification(
     verb: &str,
     cancelled_note: &str,
@@ -116,7 +117,8 @@ pub fn transfer_notification(
                 text.push_str("；明细见日志");
             }
             Some(if summary.cancelled {
-                Notification::warning(text).title(format!("{verb}已取消（{cancelled_note}）"))
+                text.push_str(&format!("；{cancelled_note}"));
+                Notification::warning(text).title(target)
             } else if summary.failed > 0 {
                 Notification::warning(text).title(target)
             } else {
@@ -124,7 +126,11 @@ pub fn transfer_notification(
             })
         }
         Err(error) => {
-            Some(Notification::error(error.message().to_string()).title(format!("{verb}失败")))
+            error!(error = %error, operation = verb, "database transfer failed");
+            Some(Notification::error(format!(
+                "{verb}失败：{}",
+                error.message()
+            )))
         }
     }
 }

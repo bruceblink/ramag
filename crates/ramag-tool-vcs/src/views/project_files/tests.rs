@@ -104,23 +104,25 @@ fn status_kind_map_keeps_display_precedence() {
 }
 
 #[test]
-fn status_cache_requires_matching_vec_identity_and_length() {
+fn status_cache_requires_matching_refresh_identity_and_length() {
     let kinds = Rc::new(HashMap::new());
     let cache = ProjectStatusCacheEntry {
         project_files_version: 7,
+        status_request_seq: 9,
         files_identity: 11,
         files_len: 2,
         kinds: kinds.clone(),
     };
 
-    let cached = cache.get(7, 11, 2);
+    let cached = cache.get(7, 9, 11, 2);
     assert!(cached.is_some());
     if let Some(cached) = cached {
         assert!(Rc::ptr_eq(&cached, &kinds));
     }
-    assert!(cache.get(8, 11, 2).is_none());
-    assert!(cache.get(7, 12, 2).is_none());
-    assert!(cache.get(7, 11, 3).is_none());
+    assert!(cache.get(8, 9, 11, 2).is_none());
+    assert!(cache.get(7, 10, 11, 2).is_none());
+    assert!(cache.get(7, 9, 12, 2).is_none());
+    assert!(cache.get(7, 9, 11, 3).is_none());
 }
 
 #[test]

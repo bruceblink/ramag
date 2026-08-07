@@ -95,32 +95,36 @@ impl PairsEditor {
             let right_input = row.right.read(cx);
             let left_value = left_input.value();
             let right_value = right_input.value();
-            let left = left_value.trim();
+            let left_raw = left_value.as_ref();
             let right = right_value.as_ref();
-            if left.is_empty() && right.is_empty() {
+            if left_raw.is_empty() && right.is_empty() {
                 continue;
             }
-            match self.kind {
+            let left = match self.kind {
                 PairsKind::Hash | PairsKind::Stream => {
-                    if left.is_empty() {
+                    if left_raw.is_empty() {
                         return Err(format!("第 {} 行：字段名不能为空", idx + 1));
                     }
+                    // Redis 字段名是二进制安全参数，保留合法的前后空格。
+                    left_raw
                 }
                 PairsKind::ZSet => {
+                    let left = left_raw.trim();
                     if left.is_empty() {
                         return Err(format!("第 {} 行：score 不能为空", idx + 1));
                     }
-                    if left.parse::<f64>().is_err() {
+                    if !left.parse::<f64>().is_ok_and(|score| !score.is_nan()) {
                         return Err(format!(
                             "第 {} 行：score 必须是数字（如 1.5），实得 `{left}`",
                             idx + 1
                         ));
                     }
-                    if right.trim().is_empty() {
+                    if right.is_empty() {
                         return Err(format!("第 {} 行：成员名不能为空", idx + 1));
                     }
+                    left
                 }
-            }
+            };
             let pair_bytes = left
                 .len()
                 .checked_add(right.len())

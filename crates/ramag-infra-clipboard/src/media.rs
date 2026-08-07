@@ -43,6 +43,7 @@ impl MediaStore {
         let path = self.dir.join(file_name);
         fs::create_dir_all(&self.dir)
             .map_err(|e| DomainError::Storage(format!("创建媒体缓存目录失败：{e}")))?;
+        self.ensure_regular_dir()?;
         set_private_dir_permissions(&self.dir)
             .map_err(|e| DomainError::Storage(format!("收紧媒体缓存目录权限失败：{e}")))?;
         match fs::symlink_metadata(&path) {
@@ -98,12 +99,15 @@ impl MediaStore {
             file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
-            fs::rename(&temp, path)
+            fs::hard_link(&temp, path)
         })();
 
         match write_result {
-            Ok(()) => Ok(()),
-            Err(_error) if path.exists() => {
+            Ok(()) => {
+                remove_temp_file(&temp);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 remove_temp_file(&temp);
                 Ok(())
             }
@@ -118,6 +122,7 @@ impl MediaStore {
 
     /// 读字节（密文，由 service 解密）；仅允许缓存目录内
     pub(crate) fn read(&self, path: &str) -> Result<Vec<u8>> {
+        self.ensure_regular_dir()?;
         let p = self
             .managed_path(path)
             .ok_or_else(|| DomainError::Storage("拒绝读取媒体目录外文件".into()))?;
@@ -137,6 +142,15 @@ impl MediaStore {
     }
 
     fn list_with_limit(&self, limit: usize) -> Result<Vec<String>> {
+        match fs::symlink_metadata(&self.dir) {
+            Ok(_) => self.ensure_regular_dir()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(DomainError::Storage(format!(
+                    "检查剪贴媒体目录失败：{error}"
+                )));
+            }
+        }
         let entries = match fs::read_dir(&self.dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -177,6 +191,15 @@ impl MediaStore {
 
     /// 删除约束在媒体缓存目录内（防御任意路径删除）；文件不存在视为成功
     pub(crate) fn remove(&self, path: &str) -> Result<()> {
+        match fs::symlink_metadata(&self.dir) {
+            Ok(_) => self.ensure_regular_dir()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(DomainError::Storage(format!(
+                    "检查剪贴媒体目录失败：{error}"
+                )));
+            }
+        }
         let Some(p) = self.managed_path(path) else {
             warn!(path, "refuse to remove file outside media dir");
             return Ok(());
@@ -236,6 +259,17 @@ impl MediaStore {
     fn managed_path(&self, path: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
         (path.parent() == Some(self.dir.as_path()) && path.file_name().is_some()).then_some(path)
+    }
+
+    fn ensure_regular_dir(&self) -> Result<()> {
+        let metadata = fs::symlink_metadata(&self.dir)
+            .map_err(|error| DomainError::Storage(format!("检查剪贴媒体目录失败：{error}")))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(DomainError::Storage(
+                "剪贴媒体目录不是可安全使用的普通目录".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -393,6 +427,32 @@ mod tests {
             assert_eq!(dir_mode, 0o700);
             assert_eq!(file_mode, 0o600);
         }
+        std::fs::remove_dir_all(dir)
+            .map_err(|error| DomainError::Storage(format!("清理测试目录失败：{error}")))?;
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_publish_does_not_replace_existing_file() -> ramag_domain::error::Result<()> {
+        static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ramag-media-publish-test-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| DomainError::Storage(format!("创建测试目录失败：{error}")))?;
+        let path = dir.join("same.img");
+        std::fs::write(&path, b"first")
+            .map_err(|error| DomainError::Storage(format!("写测试文件失败：{error}")))?;
+
+        MediaStore { dir: dir.clone() }.persist_atomic(&path, b"second")?;
+
+        assert_eq!(
+            std::fs::read(&path)
+                .map_err(|error| DomainError::Storage(format!("读取测试文件失败：{error}")))?,
+            b"first"
+        );
         std::fs::remove_dir_all(dir)
             .map_err(|error| DomainError::Storage(format!("清理测试目录失败：{error}")))?;
         Ok(())

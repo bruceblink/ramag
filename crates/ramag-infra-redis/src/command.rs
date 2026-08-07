@@ -12,8 +12,102 @@ pub fn is_write_command(cmd: &str) -> bool {
     if WRITE_COMMANDS.contains(&upper.as_str()) || BLOCKING_OR_UNSAFE.contains(&upper.as_str()) {
         return true;
     }
-    is_module_write_command(&upper)
+    if upper.contains('.') {
+        return is_module_write_command(&upper);
+    }
+    // 生产只读保护采用白名单：未知核心命令按写操作处理，避免新命令默认绕过保护。
+    !READ_COMMANDS.contains(&upper.as_str())
 }
+
+const READ_COMMANDS: &[&str] = &[
+    "BITCOUNT",
+    "BITFIELD_RO",
+    "BITPOS",
+    "COMMAND",
+    "DBSIZE",
+    "DUMP",
+    "ECHO",
+    "EVALSHA_RO",
+    "EVAL_RO",
+    "EXISTS",
+    "EXPIRETIME",
+    "FCALL_RO",
+    "GEODIST",
+    "GEOHASH",
+    "GEOPOS",
+    "GEORADIUSBYMEMBER_RO",
+    "GEORADIUS_RO",
+    "GEOSEARCH",
+    "GET",
+    "GETBIT",
+    "GETRANGE",
+    "HEXISTS",
+    "HGET",
+    "HGETALL",
+    "HKEYS",
+    "HLEN",
+    "HMGET",
+    "HRANDFIELD",
+    "HSCAN",
+    "HSTRLEN",
+    "HVALS",
+    "INFO",
+    "KEYS",
+    "LASTSAVE",
+    "LCS",
+    "LINDEX",
+    "LLEN",
+    "LOLWUT",
+    "LPOS",
+    "LRANGE",
+    "MGET",
+    "OBJECT",
+    "PEXPIRETIME",
+    "PFCOUNT",
+    "PING",
+    "PTTL",
+    "RANDOMKEY",
+    "ROLE",
+    "SCAN",
+    "SCARD",
+    "SDIFF",
+    "SINTER",
+    "SINTERCARD",
+    "SISMEMBER",
+    "SMEMBERS",
+    "SMISMEMBER",
+    "SORT_RO",
+    "SRANDMEMBER",
+    "STRLEN",
+    "SUNION",
+    "TIME",
+    "TTL",
+    "TYPE",
+    "XINFO",
+    "XLEN",
+    "XPENDING",
+    "XRANGE",
+    "XREAD",
+    "XREVRANGE",
+    "ZCARD",
+    "ZCOUNT",
+    "ZDIFF",
+    "ZINTER",
+    "ZINTERCARD",
+    "ZLEXCOUNT",
+    "ZMSCORE",
+    "ZRANDMEMBER",
+    "ZRANGE",
+    "ZRANGEBYLEX",
+    "ZRANGEBYSCORE",
+    "ZRANK",
+    "ZREVRANGE",
+    "ZREVRANGEBYLEX",
+    "ZREVRANGEBYSCORE",
+    "ZREVRANK",
+    "ZSCORE",
+    "ZUNION",
+];
 
 /// 模块命令形如 `JSON.SET` / `TS.ADD` / `FT.DROPINDEX`。无法穷举各模块的读命令，
 /// 故采用保守策略：已知只读后缀（GET/MGET/RANGE/INFO 等）放行，其余点号命令一律当写。
@@ -21,12 +115,12 @@ fn is_module_write_command(upper: &str) -> bool {
     let Some((namespace, sub)) = upper.split_once('.') else {
         return false;
     };
-    // 仅对已知模块命名空间生效，避免误判含点号的普通字符串
+    // 未知模块命名空间同样保守拦截。
     const MODULE_NAMESPACES: &[&str] = &[
         "JSON", "TS", "FT", "GRAPH", "BF", "CF", "CMS", "TOPK", "TDIGEST", "SEARCH",
     ];
     if !MODULE_NAMESPACES.contains(&namespace) {
-        return false;
+        return true;
     }
     // 只读子命令后缀白名单：命中放行，其余（SET/DEL/ADD/INCRBY/CREATE/DROP…）当写
     const READ_SUFFIXES: &[&str] = &[
@@ -215,6 +309,12 @@ const BLOCKING_OR_UNSAFE: &[&str] = &[
     "SPUBLISH",
     "CLIENT",
     "WAIT",
+    "AUTH",
+    "HELLO",
+    "QUIT",
+    "READONLY",
+    "READWRITE",
+    "SELECT",
 ];
 
 #[cfg(test)]
@@ -291,8 +391,8 @@ mod tests {
         ] {
             assert!(!is_write_command(c), "{c} 应判为只读命令");
         }
-        // 含点号的普通字符串（非模块命名空间）不误判
-        assert!(!is_write_command("MY.CUSTOM"));
+        // 未知模块命令保守拦截，避免生产模式默认放行未来写命令。
+        assert!(is_write_command("MY.CUSTOM"));
     }
 
     #[test]

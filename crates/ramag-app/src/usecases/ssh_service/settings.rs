@@ -32,6 +32,11 @@ impl SshService {
         if changed {
             self.remote_capabilities.lock().clear();
         }
+        tracing::info!(
+            changed,
+            windows_sftp_compatibility = settings.windows_sftp_compatibility,
+            "ssh module settings saved"
+        );
         Ok(())
     }
 
@@ -56,6 +61,10 @@ impl SshService {
         };
         *self.module_settings.lock() = settings;
         self.module_settings_loaded.store(true, Ordering::Release);
+        tracing::info!(
+            windows_sftp_compatibility = settings.windows_sftp_compatibility,
+            "ssh module settings loaded"
+        );
         Ok(())
     }
 

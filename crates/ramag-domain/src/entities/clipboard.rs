@@ -1,10 +1,9 @@
-//! 剪贴板历史实体：条目 / 类型 / 设置 / 采集原始数据 + 分类与指纹纯函数
+//! 剪贴板历史、设置和采集数据。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// 剪贴条目唯一标识
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClipId(pub Uuid);
 
@@ -47,7 +46,6 @@ impl ClipKind {
         }
     }
 
-    /// 英文类型名（卡片标题条用，对齐 Paste 风格）
     pub fn label_en(&self) -> &'static str {
         match self {
             ClipKind::Text => "Text",
@@ -58,7 +56,6 @@ impl ClipKind {
         }
     }
 
-    /// 全部枚举值（UI 筛选器用）
     pub fn all() -> &'static [ClipKind] {
         &[
             ClipKind::Text,
@@ -70,19 +67,18 @@ impl ClipKind {
     }
 }
 
-/// 来源应用
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipSource {
     pub bundle_id: String,
     pub name: String,
 }
 
-/// 剪贴条目。文本内容直接入库（加密），图片落盘只存路径
+/// 文本加密入库，图片仅保存加密文件路径。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipItem {
     pub id: ClipId,
     pub kind: ClipKind,
-    /// Text/Link/Color 的内容；Image/Files 为 None
+    /// 仅文本、链接和颜色类型使用。
     pub text: Option<String>,
     /// 富文本 RTF 原始数据（伴随 text；粘贴时与纯文本一起写回）
     #[serde(default)]
@@ -97,7 +93,6 @@ pub struct ClipItem {
     /// Files 类型的路径列表
     #[serde(default)]
     pub files: Vec<String>,
-    /// 列表预览摘要
     pub preview: String,
     pub source: Option<ClipSource>,
     /// 原始内容字节数（文本字节 / PNG 字节）
@@ -133,10 +128,8 @@ pub const MAX_CLIPBOARD_ITEM_BYTES: u64 = 64 * 1024 * 1024;
 /// 全量历史搜索会逐条解密与匹配，异常长查询词只会放大比较成本。
 pub const MAX_CLIPBOARD_SEARCH_BYTES: usize = 4 * 1024;
 
-/// 采集与展示设置（prefs KV 以 JSON 持久化）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipboardSettings {
-    /// 总开关：false 暂停记录
     pub enabled: bool,
     pub capture_images: bool,
     /// 单条内容字节上限，超出跳过不记录
@@ -174,7 +167,7 @@ impl Default for ClipboardSettings {
     }
 }
 
-/// 驱动读到的原始采集内容（未分类、未落库）
+/// 尚未分类或持久化的原始采集内容。
 #[derive(Debug, Clone, Default)]
 pub struct CapturedClip {
     pub text: Option<String>,
@@ -198,7 +191,6 @@ pub fn fnv1a_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// 文本二次分类：URL → Link、颜色字面量 → Color、否则 Text
 pub fn classify_text(s: &str) -> ClipKind {
     let t = s.trim();
     if is_safe_http_url(t) {
@@ -262,7 +254,6 @@ pub fn parse_hex_color(t: &str) -> Option<(u8, u8, u8)> {
     }
 }
 
-/// 列表预览摘要：文本取首行截断，图片报尺寸，文件报名字
 pub fn make_preview(
     kind: ClipKind,
     text: Option<&str>,
@@ -337,7 +328,6 @@ mod tests {
 
     #[test]
     fn fnv_hash_stable_known_values() {
-        // 与 FNV-1a 参考值一致，保证跨版本稳定
         assert_eq!(fnv1a_hash(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a_hash(b"a"), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(fnv1a_hash(b"hello"), fnv1a_hash(b"hello"));

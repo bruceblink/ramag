@@ -312,10 +312,109 @@ pub(super) fn compare_cells(a: &str, b: &str, numeric: bool) -> std::cmp::Orderi
         (false, true) => return Ordering::Greater,
         _ => {}
     }
-    if numeric && let (Ok(x), Ok(y)) = (a.parse::<f64>(), b.parse::<f64>()) {
-        return x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+    if numeric {
+        if let (Some(x), Some(y)) = (DecimalKey::parse(a), DecimalKey::parse(b)) {
+            return x.cmp(&y);
+        }
+        if let (Ok(x), Ok(y)) = (a.parse::<f64>(), b.parse::<f64>()) {
+            return x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+        }
     }
     a.cmp(b)
+}
+
+/// 可比较的有限十进制数；保留任意位数，避免 Decimal128 / Int64 经 f64 丢精度。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecimalKey {
+    negative: bool,
+    /// 首个有效数字相对小数点的位置；越大绝对值越大。
+    magnitude: i64,
+    digits: Vec<u8>,
+}
+
+impl DecimalKey {
+    fn parse(text: &str) -> Option<Self> {
+        let (negative, unsigned) = match text.as_bytes().first() {
+            Some(b'-') => (true, &text[1..]),
+            Some(b'+') => (false, &text[1..]),
+            _ => (false, text),
+        };
+        let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => (mantissa, exponent.parse::<i64>().ok()?),
+            None => (unsigned, 0),
+        };
+        let mut digits = Vec::with_capacity(mantissa.len());
+        let mut decimal_position = None;
+        for byte in mantissa.bytes() {
+            match byte {
+                b'0'..=b'9' => digits.push(byte),
+                b'.' if decimal_position.is_none() => {
+                    decimal_position = Some(i64::try_from(digits.len()).ok()?);
+                }
+                _ => return None,
+            }
+        }
+        if digits.is_empty() {
+            return None;
+        }
+        let decimal_position = decimal_position
+            .unwrap_or_else(|| i64::try_from(digits.len()).unwrap_or(i64::MAX))
+            .checked_add(exponent)?;
+        let leading = digits.iter().position(|digit| *digit != b'0');
+        let Some(leading) = leading else {
+            return Some(Self {
+                negative: false,
+                magnitude: 0,
+                digits: Vec::new(),
+            });
+        };
+        let magnitude = decimal_position.checked_sub(i64::try_from(leading).ok()?)?;
+        digits.drain(..leading);
+        while digits.last() == Some(&b'0') {
+            digits.pop();
+        }
+        Some(Self {
+            negative,
+            magnitude,
+            digits,
+        })
+    }
+
+    fn absolute_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.magnitude.cmp(&other.magnitude).then_with(|| {
+            let len = self.digits.len().max(other.digits.len());
+            (0..len)
+                .map(|index| {
+                    self.digits
+                        .get(index)
+                        .copied()
+                        .unwrap_or(b'0')
+                        .cmp(&other.digits.get(index).copied().unwrap_or(b'0'))
+                })
+                .find(|ordering| !ordering.is_eq())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+}
+
+impl Ord for DecimalKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.digits.is_empty() && other.digits.is_empty() {
+            return std::cmp::Ordering::Equal;
+        }
+        match (self.negative, other.negative) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (true, true) => self.absolute_cmp(other).reverse(),
+            (false, false) => self.absolute_cmp(other),
+        }
+    }
+}
+
+impl PartialOrd for DecimalKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// 数值列预解析一次，避免比较阶段重复解析。
@@ -330,7 +429,7 @@ pub(super) fn sort_row_indices(
         table
             .rows
             .iter()
-            .map(|row| row[column_index].text.parse::<f64>().ok())
+            .map(|row| DecimalKey::parse(&row[column_index].text))
             .collect::<Vec<_>>()
     });
     indices.sort_by(|&left, &right| {
@@ -338,9 +437,9 @@ pub(super) fn sort_row_indices(
         let right_text = &table.rows[right][column_index].text;
         let ordering = numeric_values
             .as_ref()
-            .and_then(|values| values[left].zip(values[right]))
-            .and_then(|(left, right)| left.partial_cmp(&right))
-            .unwrap_or_else(|| compare_cells(left_text, right_text, false));
+            .and_then(|values| values[left].as_ref().zip(values[right].as_ref()))
+            .map(|(left, right)| left.cmp(right))
+            .unwrap_or_else(|| compare_cells(left_text, right_text, numeric));
         if matches!(direction, SortDir::Desc) {
             ordering.reverse()
         } else {
@@ -402,6 +501,15 @@ mod tests {
         assert_eq!(compare_cells("9", "10", false), Ordering::Greater);
         assert_eq!(compare_cells("", "x", false), Ordering::Less);
         assert_eq!(compare_cells("x", "", false), Ordering::Greater);
+        assert_eq!(
+            compare_cells("9007199254740992", "9007199254740993", true),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells("1.0000000000000000001", "1.0000000000000000002", true),
+            Ordering::Less
+        );
+        assert_eq!(compare_cells("-1.2e3", "-1199", true), Ordering::Less);
     }
 
     #[test]

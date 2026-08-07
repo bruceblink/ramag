@@ -1,21 +1,19 @@
-//! SQL 导出用目录查询构造与结果解析。
+//! SQL 导出的目录查询构造与结果解析。
 //! PG 结构化 DDL（FK 拆出、含 IDENTITY / 生成列 / 序列）由服务端 pg_catalog 拼串返回；
-//! MySQL 直接复用 SHOW CREATE。所有标识符 / 字面量转义在生成 SQL 的一侧完成
+//! MySQL 直接复用 `SHOW CREATE`；标识符和字面量在生成 SQL 时转义。
 
 use ramag_domain::entities::{DriverKind, QueryResult, Value};
 use ramag_domain::error::{DomainError, Result};
 
-/// PG：'literal' 单引号转义
 fn pg_lit(text: &str) -> String {
     text.replace('\'', "''")
 }
 
-/// MySQL：字符串字面量转义（反斜杠 + 单引号）
 fn mysql_lit(text: &str) -> String {
     text.replace('\\', "\\\\").replace('\'', "''")
 }
 
-/// 结果集第一列取字符串（服务端拼好的语句 / DDL）
+/// 提取结果集第一列中的字符串。
 pub(crate) fn first_column_strings(result: &QueryResult) -> Vec<String> {
     result
         .rows
@@ -279,7 +277,7 @@ pub(crate) fn parse_pg_sequences(result: &QueryResult) -> PgSequenceInfo {
     info
 }
 
-/// 段标记（App 导出文件的结构锚点；导入据此按对象应用冲突策略）
+/// 生成导出文件段标记，供导入时按对象应用冲突策略。
 pub(crate) fn begin_marker(kind: &str, name: &str) -> String {
     if name.is_empty() {
         format!("-- ramag:begin {kind}\n")
@@ -288,7 +286,7 @@ pub(crate) fn begin_marker(kind: &str, name: &str) -> String {
     }
 }
 
-/// 解析段标记行；返回 (kind, name)
+/// 解析段标记，返回类型和名称。
 pub(crate) fn parse_marker(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim().strip_prefix("-- ramag:begin ")?;
     Some(match rest.split_once(':') {
@@ -381,7 +379,6 @@ mod tests {
         );
         assert_eq!(parse_marker(&begin_marker("fk", "")), Some(("fk", "")));
         assert_eq!(parse_marker("SELECT 1;"), None);
-        // 名字里带冒号也只按第一个冒号切
         assert_eq!(
             parse_marker("-- ramag:begin data:a:b"),
             Some(("data", "a:b"))

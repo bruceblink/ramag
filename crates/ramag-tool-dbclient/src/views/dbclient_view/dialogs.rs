@@ -261,7 +261,6 @@ impl DbClientView {
                     cx.notify();
                     return;
                 }
-                // 关闭对应 session（如果开着）
                 let to_close: Vec<usize> = this
                     .sessions
                     .iter()

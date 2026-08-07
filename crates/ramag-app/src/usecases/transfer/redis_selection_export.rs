@@ -1,7 +1,7 @@
-//! Redis 单 Key / 命名空间前缀导出。
+//! Redis 单个 key 或命名空间前缀导出。
 //!
 //! 文件沿用整 DB JSONL 记录格式，因此类型、TTL、二进制值和大集合续片都能直接恢复；
-//! 首行额外记录 key / prefix 范围，导入端据此拒绝范围外记录。
+//! 首行额外记录 key 或 prefix 范围，导入端据此拒绝范围外记录。
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -147,7 +147,7 @@ fn write_header(sink: &mut super::ExportSink, db: u8, scope: &str, object: &str)
     ))
 }
 
-/// 把命名空间作为字面前缀，避免其中的 glob 字符误匹配其他 Key。
+/// 转义 glob 字符，确保命名空间按字面前缀匹配。
 fn escape_glob_literal(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {

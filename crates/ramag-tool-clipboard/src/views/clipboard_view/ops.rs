@@ -373,7 +373,10 @@ impl ClipboardView {
                         this.img_cache.insert(path, image, retained_bytes);
                         cx.notify();
                     }
-                    _ => this.img_cache.fail(&path),
+                    _ => {
+                        this.img_cache.fail(&path);
+                        cx.notify();
+                    }
                 });
             })
             .detach();

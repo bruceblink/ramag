@@ -23,7 +23,7 @@ const SETTINGS_KEY: &str = "clipboard_settings";
 /// 剪贴设置远小于通用偏好 16 MiB 上限；先拒绝异常大 JSON，避免反序列化时无谓分配。
 const MAX_SETTINGS_JSON_BYTES: usize = 256 * 1024;
 
-/// 历史清理上限（固定策略，不开放设置）：最多 100 万条 / 360 天，超出在每次入库后清理最旧
+/// 固定保留上限：100 万条或 360 天，入库后清理超限记录。
 const MAX_ITEMS: u32 = 1_000_000;
 const MAX_AGE_DAYS: u32 = 360;
 
@@ -50,7 +50,7 @@ fn validate_search_query(query: &str) -> Result<()> {
     Ok(())
 }
 
-/// 不触发 IO 的采集判定结果。
+/// 不触发 I/O 的采集判定结果。
 #[derive(Debug, PartialEq)]
 pub enum CaptureDecision {
     Skip(&'static str),
@@ -82,7 +82,7 @@ pub struct ClipboardService {
     pending_media_deletes: Arc<PendingMediaDeletes>,
 }
 
-/// 全局热键注册状态（AtomicU8 编码）
+/// 全局热键注册状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyState {
     Disabled,
@@ -115,7 +115,7 @@ impl ClipboardService {
             storage,
             revision: Arc::new(AtomicU64::new(0)),
             cache: Arc::new(RwLock::new(Vec::new())),
-            // 首次初始化默认关闭；启动由 prime_capture_enabled 恢复用户已保存的选择
+            // 初始化时保持关闭，启动预热后再恢复用户设置。
             capture_enabled: Arc::new(AtomicBool::new(false)),
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
             auto_paste: Arc::new(AtomicBool::new(true)),
@@ -313,7 +313,7 @@ impl ClipboardService {
             return Ok(false);
         }
         let count = self.driver.change_count();
-        // 自写回产生的变更跳过（避免复制回剪贴板又记一遍）
+        // 跳过自身写回，避免重复记录。
         if count == self.driver.own_change_count() {
             return Ok(false);
         }
@@ -380,8 +380,7 @@ impl ClipboardService {
             return Ok(true);
         }
 
-        // 图片先完成受限解码，拒绝只有伪造 PNG 头的损坏输入；再把原图与缩略图加密落盘。
-        // 缩略图生成（解码 + 缩放 + 编码）是 CPU 大头，挪工作线程避免采集时 UI 卡顿
+        // 先受限解码图片，再加密保存原图和缩略图。
         let image_png = captured.image_png.take().map(Arc::new);
         let (image_path, thumb_path) = match (&image_png, settings.capture_images) {
             (Some(png), true) => {
@@ -546,7 +545,6 @@ impl ClipboardService {
                 }
             }
             ClipKind::Files => {
-                // 文件失效校验：路径已不存在则拒绝复制，提示用户
                 if !self.driver.paths_exist(&item.files) {
                     return Err(DomainError::NotFound("文件已移动或删除".into()));
                 }
@@ -563,7 +561,6 @@ impl ClipboardService {
     }
 
     async fn touch_current_clip(&self, item: ClipItem) -> Result<()> {
-        // 复制即提升为最新
         let latest = touch_item(&item, Utc::now());
         self.storage.clip_save(&latest).await?;
         self.cache_upsert(latest);
@@ -571,7 +568,7 @@ impl ClipboardService {
         Ok(())
     }
 
-    /// 复制并粘贴到目标应用（需辅助功能权限；无权限降级为仅复制并返回 Err）
+    /// 复制并粘贴到目标应用；无辅助功能权限时仅完成复制并返回错误。
     pub async fn paste_to_app(
         &self,
         item: &ClipItem,
@@ -581,7 +578,7 @@ impl ClipboardService {
         self.driver.paste_to_app(activation_target)
     }
 
-    /// 仅复制纯文本（剥离 RTF 富文本格式）；非文本类型回退普通复制
+    /// 仅复制纯文本；非文本类型回退到普通复制。
     pub async fn copy_as_plain_text(&self, item: &ClipItem) -> Result<()> {
         let _guard = self.history_mutation_lock.lock().await;
         let current = self.current_clip(&item.id).await?;
@@ -636,7 +633,7 @@ fn serialize_clipboard_settings(settings: &ClipboardSettings) -> Result<String> 
     Ok(json)
 }
 
-/// 纯判定：是否记录该次采集（无 IO，便于测试）
+/// 判断是否记录本次采集，不执行 I/O。
 pub fn decide_capture(captured: &CapturedClip, settings: &ClipboardSettings) -> CaptureDecision {
     if captured.concealed {
         return CaptureDecision::Skip("concealed");
@@ -794,8 +791,7 @@ fn touch_item(item: &ClipItem, now: chrono::DateTime<Utc>) -> ClipItem {
     latest
 }
 
-/// 工作线程生成缩略图（std::thread + oneshot，与 Storage 桥接同款；不引入 runtime）。
-/// 采集循环跑在 GPUI 前台 executor，图片编解码留在主线程会造成可感知卡顿
+/// 在线程池生成缩略图，避免阻塞 GPUI 前台执行器。
 async fn make_thumbnail_off_thread(png: Arc<Vec<u8>>) -> Result<Vec<u8>> {
     crate::run_blocking(move || make_thumbnail(png.as_slice(), THUMB_MAX_W)).await
 }

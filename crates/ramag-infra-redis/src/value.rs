@@ -36,41 +36,32 @@ fn decode_bulk(bytes: Vec<u8>) -> RedisValue {
 
 /// RESP3 Map → Hash（key 须 utf-8；否则 fallback Array）
 fn decode_map(pairs: Vec<(RV, RV)>) -> RedisValue {
-    let mut hash: Vec<(String, RedisValue)> = Vec::with_capacity(pairs.len());
-    for (k, v) in pairs {
-        match k {
-            RV::SimpleString(s) => hash.push((s, decode_value(v))),
-            RV::BulkString(bytes) => match String::from_utf8(bytes) {
-                Ok(s) => hash.push((s, decode_value(v))),
-                Err(_) => return fallback_map_to_array(hash, v),
-            },
-            other => return fallback_map_to_array_other(hash, other, v),
-        }
+    let keys_are_text = pairs.iter().all(|(key, _)| match key {
+        RV::SimpleString(_) => true,
+        RV::BulkString(bytes) => std::str::from_utf8(bytes).is_ok(),
+        _ => false,
+    });
+    if !keys_are_text {
+        return RedisValue::Array(
+            pairs
+                .into_iter()
+                .flat_map(|(key, value)| [decode_value(key), decode_value(value)])
+                .collect(),
+        );
     }
-    RedisValue::Hash(hash)
-}
-
-fn fallback_map_to_array(partial: Vec<(String, RedisValue)>, last_v: RV) -> RedisValue {
-    let mut arr: Vec<RedisValue> = partial
-        .into_iter()
-        .flat_map(|(k, v)| [RedisValue::Text(k), v])
-        .collect();
-    arr.push(decode_value(last_v));
-    RedisValue::Array(arr)
-}
-
-fn fallback_map_to_array_other(
-    partial: Vec<(String, RedisValue)>,
-    other_k: RV,
-    last_v: RV,
-) -> RedisValue {
-    let mut arr: Vec<RedisValue> = partial
-        .into_iter()
-        .flat_map(|(k, v)| [RedisValue::Text(k), v])
-        .collect();
-    arr.push(decode_value(other_k));
-    arr.push(decode_value(last_v));
-    RedisValue::Array(arr)
+    RedisValue::Hash(
+        pairs
+            .into_iter()
+            .map(|(key, value)| {
+                let key = match key {
+                    RV::SimpleString(text) => text,
+                    RV::BulkString(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    other => decode_value(other).display_preview(128),
+                };
+                (key, decode_value(value))
+            })
+            .collect(),
+    )
 }
 
 /// HGETALL 扁平 [field, value, ...] → Hash
@@ -331,5 +322,21 @@ mod tests {
             RV::BulkString(b"b".to_vec()),
         ]);
         assert!(decode_hash_pairs(arr).is_err());
+    }
+
+    #[test]
+    fn decode_map_fallback_preserves_invalid_key_and_later_pairs() {
+        let value = decode_value(RV::Map(vec![
+            (RV::BulkString(vec![0xff]), RV::Int(1)),
+            (RV::BulkString(b"later".to_vec()), RV::Int(2)),
+        ]));
+
+        assert!(matches!(
+            value,
+            RedisValue::Array(values)
+                if values.len() == 4
+                    && matches!(&values[0], RedisValue::Bytes(bytes) if bytes == &vec![0xff])
+                    && matches!(&values[3], RedisValue::Int(2))
+        ));
     }
 }

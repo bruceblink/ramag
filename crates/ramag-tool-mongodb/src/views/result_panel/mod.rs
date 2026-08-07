@@ -505,11 +505,8 @@ impl ResultPanel {
         self.table_build_seq = self.table_build_seq.wrapping_add(1);
         let request_seq = self.table_build_seq;
         self.table = None;
-        let raw_bytes = self
-            .result
-            .as_ref()
-            .map_or(0, |result| result.retained_bytes);
-        let _ = self.account_result_bytes(raw_bytes, cx);
+        let document_bytes = self.retained_document_bytes();
+        let _ = self.account_result_bytes(document_bytes, cx);
         self.invalidate_row_view();
         self.table_building = !docs.is_empty();
         self.column_completion_source.write().clear();
@@ -572,9 +569,7 @@ impl ResultPanel {
                 match built {
                     Ok(Some((table, completions))) => {
                         let combined_bytes = this
-                            .result
-                            .as_ref()
-                            .map_or(0, |result| result.retained_bytes)
+                            .retained_document_bytes()
                             .saturating_add(table.retained_bytes());
                         let outcome = this.account_result_bytes(combined_bytes, cx);
                         if outcome.current_evicted {
@@ -606,6 +601,16 @@ impl ResultPanel {
             });
         })
         .detach();
+    }
+
+    /// 原始结果之外，显式下钻层会持有嵌套值副本，也必须计入全局预算。
+    fn retained_document_bytes(&self) -> usize {
+        self.result
+            .as_ref()
+            .map_or(0, |result| result.retained_bytes)
+            .saturating_add(self.drill_stack.iter().fold(0usize, |total, level| {
+                total.saturating_add(level.owned_bytes)
+            }))
     }
 
     pub(crate) fn filtered_column_indices(&self, cx: &gpui::App) -> Option<Vec<usize>> {

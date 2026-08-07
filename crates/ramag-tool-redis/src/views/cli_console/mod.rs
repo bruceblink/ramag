@@ -812,7 +812,48 @@ fn transcript_entry_bytes(entry: &Entry) -> usize {
         Outcome::Ok(lines) => lines.iter().map(|line| line.len()).sum(),
         Outcome::Err(value) => value.len(),
     };
-    entry.command.len().saturating_add(outcome_bytes)
+    let raw_bytes = entry
+        .raw
+        .as_deref()
+        .map(redis_value_retained_bytes)
+        .unwrap_or_default();
+    entry
+        .command
+        .len()
+        .saturating_add(outcome_bytes)
+        .saturating_add(raw_bytes)
+}
+
+/// 估算续展开原始结果实际持有的载荷；容器开销不计也不会低估大值的主体数据。
+fn redis_value_retained_bytes(value: &RedisValue) -> usize {
+    match value {
+        RedisValue::Nil | RedisValue::Int(_) | RedisValue::Float(_) | RedisValue::Bool(_) => 0,
+        RedisValue::Text(value) => value.len(),
+        RedisValue::Bytes(value) => value.len(),
+        RedisValue::List(values) | RedisValue::Set(values) | RedisValue::Array(values) => {
+            values.iter().fold(0usize, |total, value| {
+                total.saturating_add(redis_value_retained_bytes(value))
+            })
+        }
+        RedisValue::Hash(pairs) => pairs.iter().fold(0usize, |total, (key, value)| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(redis_value_retained_bytes(value))
+        }),
+        RedisValue::ZSet(pairs) => pairs.iter().fold(0usize, |total, (member, _)| {
+            total.saturating_add(redis_value_retained_bytes(member))
+        }),
+        RedisValue::Stream(entries) => entries.iter().fold(0usize, |total, entry| {
+            entry.fields.iter().fold(
+                total.saturating_add(entry.id.len()),
+                |entry_total, (field, value)| {
+                    entry_total
+                        .saturating_add(field.len())
+                        .saturating_add(value.len())
+                },
+            )
+        }),
+    }
 }
 
 fn transcript_line_count(entries: &[Entry]) -> usize {
@@ -891,7 +932,8 @@ mod tests {
     use super::{
         Entry, MAX_TRANSCRIPT_ENTRIES, MAX_TRANSCRIPT_LINES, Outcome, clear_completed_entries,
         command_preview, next_cursor, outcome_line_count, pending_command_count, prev_cursor,
-        prune_transcript_entries, push_command_history, split_display_lines, transcript_line_count,
+        prune_transcript_entries, push_command_history, redis_value_retained_bytes,
+        split_display_lines, transcript_line_count,
     };
     use std::collections::VecDeque;
 
@@ -1080,5 +1122,18 @@ mod tests {
     fn command_preview_is_unicode_safe_and_visible() {
         assert_eq!(command_preview("你好世界", 2), "你好…（共 12 bytes）");
         assert_eq!(command_preview("PING", 10), "PING");
+    }
+
+    #[test]
+    fn retained_bytes_counts_nested_raw_payloads() {
+        let value = ramag_domain::entities::RedisValue::Hash(vec![(
+            "field".into(),
+            ramag_domain::entities::RedisValue::Array(vec![
+                ramag_domain::entities::RedisValue::Text("value".into()),
+                ramag_domain::entities::RedisValue::Bytes(vec![0; 3]),
+            ]),
+        )]);
+
+        assert_eq!(redis_value_retained_bytes(&value), 13);
     }
 }

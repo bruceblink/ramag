@@ -228,6 +228,7 @@ impl Render for DbClientView {
                         .xsmall()
                         .icon(IconName::Close)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
                             this.close_session(idx, cx);
                         })),
                 )

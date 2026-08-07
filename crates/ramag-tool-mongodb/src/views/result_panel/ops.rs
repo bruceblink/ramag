@@ -301,6 +301,9 @@ impl ResultPanel {
         if self.row_view_building {
             return self.notify_error("正在筛选 / 排序，请完成后再删除".to_string(), cx);
         }
+        if self.parse_column_filter(cx).drill_path.is_some() {
+            return self.notify_error("请清空路径钻取后再删除文档".to_string(), cx);
+        }
         if let Some(error) = &self.row_view_error {
             return self.notify_error(format!("当前行视图不可用：{error}"), cx);
         }
@@ -395,7 +398,13 @@ impl ResultPanel {
             return false;
         };
         let db = self.database.clone();
-        let batches = delete_id_batches(ids, MAX_DELETE_BATCH_IDS, MAX_DELETE_BATCH_BYTES);
+        let batches = match delete_id_batches(ids, MAX_DELETE_BATCH_IDS, MAX_DELETE_BATCH_BYTES) {
+            Ok(batches) => batches,
+            Err(message) => {
+                self.notify_error(message, cx);
+                return false;
+            }
+        };
         self.doc_dml_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -464,7 +473,11 @@ impl ResultPanel {
     }
 }
 
-fn delete_id_batches(ids: Vec<Value>, max_ids: usize, max_bytes: usize) -> Vec<Vec<Value>> {
+fn delete_id_batches(
+    ids: Vec<Value>,
+    max_ids: usize,
+    max_bytes: usize,
+) -> Result<Vec<Vec<Value>>, String> {
     debug_assert!(max_ids > 0);
     debug_assert!(max_bytes > 0);
     let mut batches = Vec::new();
@@ -473,6 +486,12 @@ fn delete_id_batches(ids: Vec<Value>, max_ids: usize, max_bytes: usize) -> Vec<V
 
     for id in ids {
         let id_bytes = estimated_json_value_bytes(&id);
+        if id_bytes > max_bytes {
+            return Err(format!(
+                "MongoDB _id 估算大小超过单批 {} MiB 上限，无法安全删除",
+                max_bytes / 1024 / 1024
+            ));
+        }
         let exceeds_count = current.len() >= max_ids;
         let exceeds_bytes = current_bytes.saturating_add(id_bytes) > max_bytes;
         if !current.is_empty() && (exceeds_count || exceeds_bytes) {
@@ -486,7 +505,7 @@ fn delete_id_batches(ids: Vec<Value>, max_ids: usize, max_bytes: usize) -> Vec<V
     if !current.is_empty() {
         batches.push(current);
     }
-    batches
+    Ok(batches)
 }
 
 fn mongo_response_u64(value: Option<&Value>) -> Option<u64> {
@@ -563,11 +582,19 @@ mod tests {
 
     #[test]
     fn delete_batches_bound_count_and_estimated_bytes() {
-        let by_count = delete_id_batches(vec![json!(1), json!(2), json!(3)], 2, usize::MAX);
+        let by_count =
+            delete_id_batches(vec![json!(1), json!(2), json!(3)], 2, usize::MAX).unwrap();
         assert_eq!(by_count.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1]);
 
-        let by_bytes = delete_id_batches(vec![json!("a"), json!("b"), json!("c")], 10, 130);
+        let by_bytes =
+            delete_id_batches(vec![json!("a"), json!("b"), json!("c")], 10, 130).unwrap();
         assert_eq!(by_bytes.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    #[test]
+    fn delete_batches_reject_a_single_oversized_id() {
+        let result = delete_id_batches(vec![json!("oversized")], 10, 4);
+        assert!(result.is_err());
     }
 
     #[test]

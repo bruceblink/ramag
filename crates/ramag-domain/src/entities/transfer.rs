@@ -1,8 +1,8 @@
-//! 按库导出 / 导入共享实体：冲突策略、进度快照、结果汇总
+//! 数据导入、导出的冲突策略、进度和结果。
 
 use serde::{Deserialize, Serialize};
 
-/// 汇总警告明细上限；超出后只累计数量，防止大库导出时无界膨胀
+/// 超出上限的警告只累计数量。
 pub const MAX_TRANSFER_WARNINGS: usize = 100;
 
 /// 导入冲突处理策略（同名表 / collection / key 已存在时）
@@ -20,7 +20,6 @@ pub enum ConflictPolicy {
     Fail,
 }
 
-/// 导出 / 导入进度快照，经回调推给 UI；UI 侧自行节流渲染
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransferProgress {
     /// 当前阶段（如「导出表结构」「写入数据」）
@@ -28,7 +27,7 @@ pub struct TransferProgress {
     /// 当前对象（表 / collection / key）
     pub object: String,
     pub objects_done: u64,
-    /// None = 总数未知
+    /// `None` 表示总数未知。
     pub objects_total: Option<u64>,
     /// 已处理条目（行 / 文档 / key）
     pub items_done: u64,
@@ -36,8 +35,7 @@ pub struct TransferProgress {
 }
 
 impl TransferProgress {
-    /// 工具栏单行进度文案，如「导出数据 users · 3/17 · 12500 条 · 4.2 MiB」。
-    /// 压成单行（GPUI 单行 shaping 不允许换行符）
+    /// 生成不含换行符的工具栏进度文案。
     pub fn display_line(&self) -> String {
         let mut text = self.stage.replace(['\n', '\r'], " ");
         if !self.object.is_empty() {
@@ -61,7 +59,6 @@ impl TransferProgress {
     }
 }
 
-/// 人读字节数（KiB / MiB / GiB 两位精度）
 pub fn format_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     let bytes_f = bytes as f64;
@@ -76,7 +73,6 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// 进度回调引用。服务层在批次边界调用
 pub type ProgressFn<'a> = &'a (dyn Fn(TransferProgress) + Send + Sync);
 
 /// 导出 / 导入结果汇总。取消不是错误：`cancelled=true` + 已完成部分留在计数里
@@ -92,7 +88,6 @@ pub struct TransferSummary {
     pub failed: u64,
     pub bytes: u64,
     pub elapsed_ms: u64,
-    /// 用户中途取消
     pub cancelled: bool,
     /// 警告明细（跳过原因 / 不支持对象），超上限只计数
     pub warnings: Vec<String>,
@@ -109,9 +104,13 @@ impl TransferSummary {
         }
     }
 
-    /// 状态栏一句话摘要
     pub fn brief(&self, verb: &str) -> String {
-        let mut text = format!("{verb}完成：{} 个对象、{} 条", self.objects, self.items);
+        let status = if self.cancelled {
+            "已取消"
+        } else {
+            "完成"
+        };
+        let mut text = format!("{verb}{status}：{} 个对象、{} 条", self.objects, self.items);
         if self.skipped > 0 {
             text.push_str(&format!("，跳过 {}", self.skipped));
         }
@@ -121,9 +120,6 @@ impl TransferSummary {
         let warning_count = self.warnings.len() as u64 + self.warnings_overflow;
         if warning_count > 0 {
             text.push_str(&format!("，警告 {warning_count}"));
-        }
-        if self.cancelled {
-            text.push_str("（已取消）");
         }
         text
     }
@@ -215,10 +211,11 @@ mod tests {
         };
         summary.push_warning("w");
         let text = summary.brief("导入");
+        assert!(text.starts_with("导入已取消："));
+        assert!(!text.contains("导入完成"));
         assert!(text.contains("3 个对象"));
         assert!(text.contains("跳过 1"));
         assert!(text.contains("失败 2"));
         assert!(text.contains("警告 1"));
-        assert!(text.contains("已取消"));
     }
 }

@@ -10,7 +10,7 @@ use ramag_domain::entities::{
     MAX_GIT_PATH_BYTES, MAX_GIT_PATH_DEPTH, MAX_GIT_POSITIONAL_ARG_BYTES,
 };
 use ramag_domain::error::{DomainError, Result};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::errors::friendly_git_error;
 
@@ -49,10 +49,25 @@ pub(crate) fn command() -> Command {
 
 /// `-C` 锁定仓库目录；`-c core.quotepath=false` 让非 ASCII 路径走原始 utf-8
 pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let started = std::time::Instant::now();
     let output = run_git_output(repo_path, args)?;
     if !output.status.success() {
-        return Err(output_error(args, &output));
+        let error = output_error(args, &output);
+        warn!(
+            error = %error,
+            operation = args.first().copied().unwrap_or("unknown"),
+            exit_code = ?output.status.code(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "git command failed"
+        );
+        return Err(error);
     }
+    debug!(
+        operation = args.first().copied().unwrap_or("unknown"),
+        bytes = output.stdout.len(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "git command completed"
+    );
     Ok(output.stdout)
 }
 
@@ -216,7 +231,6 @@ pub(crate) fn read_limited(
         bytes.extend_from_slice(&buffer[..keep]);
         if keep < read {
             truncated = true;
-            break;
         }
     }
     Ok(LimitedBytes { bytes, truncated })
@@ -248,6 +262,9 @@ pub(crate) fn run_git_streaming(
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
+    let operation = args.first().copied().unwrap_or("unknown");
+    let started = std::time::Instant::now();
+    info!(operation, "git streaming command started");
     let child = command()
         .env("LC_ALL", "C")
         .env("LANG", "C")
@@ -366,15 +383,24 @@ pub(crate) fn run_git_streaming(
     let status = status_result?;
 
     if cancel.load(Ordering::Relaxed) {
+        info!(
+            operation,
+            elapsed_ms = started.elapsed().as_millis(),
+            "git streaming command cancelled"
+        );
         return Err(DomainError::QueryFailed("已取消操作".into()));
     }
     if !status.success() {
         let tail: Vec<String> = last_lines.into_iter().collect();
-        return Err(DomainError::QueryFailed(friendly_git_error(
-            args,
-            &tail.join("\n"),
-        )));
+        let error = DomainError::QueryFailed(friendly_git_error(args, &tail.join("\n")));
+        warn!(error = %error, operation, exit_code = ?status.code(), elapsed_ms = started.elapsed().as_millis(), "git streaming command failed");
+        return Err(error);
     }
+    info!(
+        operation,
+        elapsed_ms = started.elapsed().as_millis(),
+        "git streaming command completed"
+    );
     Ok(())
 }
 
@@ -736,6 +762,13 @@ mod tests {
         let captured = read_limited(std::io::Cursor::new(b"123456"), 4)?;
         assert_eq!(captured.bytes, b"1234");
         assert!(captured.truncated);
+
+        let oversized = vec![b'x'; 32 * 1024];
+        let mut cursor = std::io::Cursor::new(&oversized);
+        let captured = read_limited(&mut cursor, 4)?;
+        assert_eq!(captured.bytes, b"xxxx");
+        assert!(captured.truncated);
+        assert_eq!(cursor.position(), oversized.len() as u64);
 
         let exact = read_limited(std::io::Cursor::new(b"1234"), 4)?;
         assert_eq!(exact.bytes, b"1234");

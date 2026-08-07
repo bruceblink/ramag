@@ -75,11 +75,8 @@ fn decode_record_reusing(
     let json = cipher.decrypt_hex_into(hex, scratch).map_err(|error| {
         DomainError::Storage(format!("读取剪贴条目 {uuid} 失败：{}", error.message()))
     })?;
-    serde_json::from_slice(json).map_err(|error| {
-        DomainError::Storage(format!(
-            "读取剪贴条目 {uuid} 失败：反序列化剪贴条目失败：{error}"
-        ))
-    })
+    serde_json::from_slice(json)
+        .map_err(|error| DomainError::Storage(format!("反序列化剪贴条目 {uuid} 失败：{error}")))
 }
 
 /// 启动时解密一条主记录，尽早发现系统凭据与数据库不匹配。

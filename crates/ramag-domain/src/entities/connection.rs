@@ -1,4 +1,4 @@
-//! 连接配置实体
+//! 数据库连接配置。
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -22,7 +22,6 @@ pub const MAX_CONNECTION_SSH_TARGET_BYTES: usize = 4 * 1024;
 /// 本地最多保存的连接配置数量；导入与存储共用，避免边界在不同层漂移。
 pub const MAX_CONNECTION_CONFIGS: usize = 2048;
 
-/// 连接唯一标识
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub Uuid);
 
@@ -44,15 +43,11 @@ impl std::fmt::Display for ConnectionId {
     }
 }
 
-/// 数据库类型。Hash 派生用于 `ConnectionService` 的 `HashMap<DriverKind, Arc<dyn Driver>>` dispatch
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DriverKind {
     Mysql,
-    /// 与 Mysql 共用 SqlBackend 抽象层
     Postgres,
-    /// KV 形态，走 KvDriver 而非 Driver
     Redis,
-    /// 文档形态，走 DocDriver 而非 Driver / KvDriver
     Mongodb,
 }
 
@@ -79,7 +74,7 @@ pub enum TlsVerify {
     Full,
 }
 
-/// 连接配置。密码运行时明文，落盘前由 storage 层 AES-GCM 加密
+/// 密码仅在运行时为明文，持久化前由存储层加密。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: ConnectionId,

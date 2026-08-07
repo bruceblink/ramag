@@ -224,7 +224,7 @@ fn add_tray_icon(hwnd: HWND) -> bool {
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
     if !added {
-        warn!("Shell_NotifyIconW NIM_ADD failed");
+        warn!("add system tray icon failed");
     }
     added
 }

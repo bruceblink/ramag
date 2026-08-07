@@ -7,6 +7,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::JumpServerDriver;
+use tracing::{error, info, warn};
 
 use super::SshService;
 
@@ -31,7 +32,19 @@ impl SshService {
         credential: &JumpServerCredential,
     ) -> Result<JumpServerSession> {
         credential.validate().map_err(DomainError::InvalidConfig)?;
-        self.jumpserver_driver()?.authenticate(credential).await
+        let started = std::time::Instant::now();
+        let result = self.jumpserver_driver()?.authenticate(credential).await;
+        match &result {
+            Ok(session) => info!(
+                organizations = session.organizations.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "jumpserver authentication succeeded"
+            ),
+            Err(auth_error) => {
+                warn!(error = %auth_error, elapsed_ms = started.elapsed().as_millis(), "jumpserver authentication failed")
+            }
+        }
+        result
     }
 
     /// 读取本机加密保存的 JumpServer 连接，并自动迁移旧版单连接数据。
@@ -48,7 +61,13 @@ impl SshService {
             validate_connections(&connections)?;
             if connections.len() != original_len {
                 self.store_jumpserver_connections(&connections).await?;
+                info!(
+                    before = original_len,
+                    after = connections.len(),
+                    "duplicate jumpserver connections repaired"
+                );
             }
+            info!(count = connections.len(), "jumpserver connections loaded");
             return Ok(connections);
         }
 
@@ -68,6 +87,10 @@ impl SshService {
         self.storage
             .delete_preference(LEGACY_CREDENTIAL_PREFERENCE_KEY)
             .await?;
+        info!(
+            count = connections.len(),
+            "legacy jumpserver connection migrated"
+        );
         Ok(connections)
     }
 
@@ -106,6 +129,7 @@ impl SshService {
             .retain(|item| !same_connection_identity(&item.credential, &connection.credential));
         connections.insert(0, connection.clone());
         self.store_jumpserver_connections(&connections).await?;
+        info!(connection_id = %connection.id, total = connections.len(), "jumpserver connection saved");
         Ok(connection)
     }
 
@@ -118,20 +142,40 @@ impl SshService {
                 "选中的 JumpServer 连接已不存在".into(),
             ));
         }
-        if connections.is_empty() {
+        let result = if connections.is_empty() {
             self.storage
                 .delete_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY)
                 .await
         } else {
             self.store_jumpserver_connections(&connections).await
+        };
+        match &result {
+            Ok(()) => info!(
+                connection_id,
+                remaining = connections.len(),
+                "jumpserver connection deleted"
+            ),
+            Err(delete_error) => {
+                error!(error = %delete_error, connection_id, "delete jumpserver connection failed")
+            }
         }
+        result
     }
 
     pub async fn load_jumpserver_catalog(
         &self,
         session: &JumpServerSession,
     ) -> Result<JumpServerCatalog> {
-        self.jumpserver_driver()?.load_catalog(session).await
+        let result = self.jumpserver_driver()?.load_catalog(session).await;
+        match &result {
+            Ok(catalog) => info!(
+                assets = catalog.assets.len(),
+                nodes = catalog.nodes.len(),
+                "jumpserver catalog loaded"
+            ),
+            Err(load_error) => warn!(error = %load_error, "load jumpserver catalog failed"),
+        }
+        result
     }
 
     pub async fn jumpserver_asset_detail(
@@ -139,7 +183,16 @@ impl SshService {
         session: &JumpServerSession,
         asset: &JumpServerAsset,
     ) -> Result<JumpServerAssetDetail> {
-        self.jumpserver_driver()?.asset_detail(session, asset).await
+        let result = self.jumpserver_driver()?.asset_detail(session, asset).await;
+        match &result {
+            Ok(detail) => {
+                info!(asset_id = %asset.id, accounts = detail.accounts.len(), active = detail.asset.active, rdp_web = detail.rdp_web_enabled, "jumpserver asset detail loaded")
+            }
+            Err(detail_error) => {
+                warn!(error = %detail_error, asset_id = %asset.id, "load jumpserver asset detail failed")
+            }
+        }
+        result
     }
 
     /// 重新校验授权后创建一次性 RDP Web 会话，地址只返回内存供浏览器立即打开。
@@ -167,9 +220,16 @@ impl SshService {
         account
             .validate_for_web_session()
             .map_err(DomainError::InvalidConfig)?;
-        driver
+        let result = driver
             .create_rdp_web_session(session, &detail.asset, account)
-            .await
+            .await;
+        match &result {
+            Ok(_) => info!(asset_id = %asset.id, "jumpserver rdp web session created"),
+            Err(session_error) => {
+                warn!(error = %session_error, asset_id = %asset.id, "create jumpserver rdp web session failed")
+            }
+        }
+        result
     }
 
     /// 快捷入口只保存目标 ID；每次打开仍重新登录并校验实时授权。
@@ -256,6 +316,7 @@ impl SshService {
             .fresh_jumpserver_profile(session, asset, account_id)
             .await?;
         self.test_connection(&profile).await?;
+        info!(asset_id = %asset.id, profile_id = %profile.id, "jumpserver ssh asset test succeeded");
         Ok(profile)
     }
 
@@ -270,6 +331,7 @@ impl SshService {
             .fresh_jumpserver_profile(session, asset, account_id)
             .await?;
         self.save_profile(&profile).await?;
+        info!(asset_id = %asset.id, profile_id = %profile.id, "jumpserver ssh asset saved");
         Ok(profile)
     }
 
@@ -285,6 +347,7 @@ impl SshService {
             .fresh_jumpserver_profile_with_rdp(session, asset, account_id, Some(connection_id))
             .await?;
         self.save_profile(&profile).await?;
+        info!(connection_id, asset_id = %asset.id, profile_id = %profile.id, "jumpserver asset saved for connection");
         Ok(profile)
     }
 

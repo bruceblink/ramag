@@ -1,4 +1,4 @@
-//! PG 特有 hook：抓 backend pid / 空结果列头 fallback。主执行流在 sql-shared
+//! PostgreSQL 特有的取消标识记录与空结果列信息读取。主执行流程在 sql-shared。
 
 use std::sync::atomic::Ordering;
 
@@ -7,7 +7,7 @@ use sqlx::postgres::PgConnection;
 use sqlx::{Column as _, Executor, TypeInfo as _};
 use tracing::warn;
 
-/// 写入 backend pid 到 cancel handle（pg_cancel_backend 用）。失败仅 warn 不阻塞
+/// 记录后端进程 ID，供取消查询使用。失败时记录警告，不阻塞查询。
 pub async fn record_backend_id(conn: &mut PgConnection, handle: &CancelHandle) {
     match sqlx::query_as::<_, (i32,)>("SELECT pg_backend_pid()")
         .fetch_one(conn)
@@ -18,7 +18,7 @@ pub async fn record_backend_id(conn: &mut PgConnection, handle: &CancelHandle) {
     }
 }
 
-/// 空结果集 fallback：用 Executor::describe 取列头。`SELECT ... WHERE 1=0` 等会用到
+/// 空结果集没有行可供推断时，通过 describe 读取列信息。
 pub async fn extract_columns_fallback(
     conn: &mut PgConnection,
     sql: &str,

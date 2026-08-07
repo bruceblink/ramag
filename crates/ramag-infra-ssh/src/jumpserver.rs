@@ -293,7 +293,7 @@ async fn list_nodes(client: &Client, session: &JumpServerSession) -> Result<Vec<
     for organization in organizations {
         let org_id = organization.as_ref().map(|org| org.id.as_str());
         if !list_organization_nodes(client, session, org_id, &mut nodes, &mut seen).await? {
-            tracing::info!("JumpServer node API is unavailable; using flat asset list");
+            tracing::info!("JumpServer node API unavailable; using flat asset list");
             return Ok(Vec::new());
         }
     }

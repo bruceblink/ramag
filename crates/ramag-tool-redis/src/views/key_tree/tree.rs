@@ -53,7 +53,10 @@ pub(super) fn build_tree(keys: &[KeyMeta]) -> Vec<TreeNode> {
     let mut roots: BTreeMap<String, NodeBuilder> = BTreeMap::new();
     for key in keys {
         if key.key.is_empty() || key.key.split(NAMESPACE_SEP).any(str::is_empty) {
-            // 跳过空 key 或形如 "::" 的异常路径
+            // Redis Key 是二进制安全的；空段无法可靠映射为命名空间，按完整叶子展示。
+            let node = roots.entry(key.key.clone()).or_default();
+            node.is_key = true;
+            node.leaf_type = key.key_type;
             continue;
         }
         let mut siblings = &mut roots;
@@ -161,15 +164,17 @@ mod tests {
     }
 
     #[test]
-    fn skip_empty_segments() {
+    fn keys_with_empty_namespace_segments_remain_visible() {
         let keys = vec![
             meta("good:key", RedisType::String),
             meta("::bad", RedisType::String),
             meta("bad::key", RedisType::String),
+            meta("", RedisType::String),
         ];
         let tree = build_tree(&keys);
         let labels: Vec<_> = tree.iter().map(|n| n.label.as_str()).collect();
-        assert_eq!(labels, vec!["good"]);
+        assert_eq!(labels, vec!["good", "", "::bad", "bad::key"]);
+        assert!(tree[1..].iter().all(|node| node.is_key));
     }
 
     /// SCAN 装载的 bare key（key_type=None）必须仍被识别为叶子：

@@ -1,5 +1,4 @@
-//! MongoDB 文档数据库实体。文档以 serde_json::Value 表达，
-//! infra 层负责 BSON ↔ Extended JSON 双向映射（ObjectId → `{"$oid":...}` 等）
+//! MongoDB 实体；基础设施层负责 BSON 与 Extended JSON 转换。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,12 +17,10 @@ pub const MAX_MONGO_VALUE_NODES: usize = 100_000;
 pub const MAX_MONGO_NESTING_DEPTH: usize = 100;
 pub const MAX_MONGO_PIPELINE_STAGES: usize = 1_000;
 
-/// 估算 Extended JSON 值的常驻内存。
 pub fn mongo_value_retained_bytes(value: &Value) -> usize {
     std::mem::size_of::<Value>().saturating_add(mongo_value_dynamic_bytes(value))
 }
 
-/// 估算 MongoDB 文档集合的常驻内存。
 pub fn mongo_documents_retained_bytes(documents: &[Value], capacity: usize) -> usize {
     let mut bytes = capacity.saturating_mul(std::mem::size_of::<Value>());
     for document in documents {
@@ -198,7 +195,6 @@ fn reserve_mongo_bytes(current: usize, added: usize, label: &str, limit: usize) 
     Ok(next)
 }
 
-/// 数据库
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MongoDatabase {
     pub name: String,
@@ -207,12 +203,11 @@ pub struct MongoDatabase {
     pub empty: bool,
 }
 
-/// 集合（含 view 兼容）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MongoCollection {
     pub name: String,
     pub database: String,
-    /// 视图，无法写入
+    /// 视图不可写入。
     pub is_view: bool,
 }
 
@@ -233,7 +228,6 @@ pub struct MongoIndex {
 /// `DateTime → {"$date": "ISO8601"}`、`Binary → {"$binary": {"base64": "...", "subType": "..."}}`。
 pub type MongoDocument = Value;
 
-/// `find` 查询规格
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MongoQuerySpec {
     /// filter（必须为 JSON 对象，空对象 = 匹配全部）
@@ -289,7 +283,6 @@ impl MongoQuerySpec {
     }
 }
 
-/// 查询结果。无论 read / write 都用同一结构上报
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MongoQueryResult {
     /// read 类返回的文档；write 类为空
@@ -319,7 +312,6 @@ pub struct InsertManyOutcome {
     pub duplicates: u64,
 }
 
-/// 集合统计
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MongoCollectionStats {
     pub count: u64,
@@ -330,12 +322,10 @@ pub struct MongoCollectionStats {
 }
 
 impl MongoQueryResult {
-    /// read 类构造（拼摘要）
     pub fn read(documents: Vec<MongoDocument>, elapsed_ms: u64) -> Self {
         Self::read_maybe_truncated(documents, elapsed_ms, false)
     }
 
-    /// read 类构造，携带截断标志（游标超上限只取前 N 时 truncated=true）
     pub fn read_maybe_truncated(
         documents: Vec<MongoDocument>,
         elapsed_ms: u64,
@@ -354,9 +344,9 @@ impl MongoQueryResult {
     ) -> Self {
         let n = documents.len();
         let summary = if truncated {
-            format!("已加载前 {n} 条（结果被截断）, {elapsed_ms}ms")
+            format!("已加载前 {n} 条（结果被截断），{elapsed_ms} ms")
         } else {
-            format!("{n} docs, {elapsed_ms}ms")
+            format!("{n} 条，{elapsed_ms} ms")
         };
         Self {
             documents,
@@ -369,13 +359,12 @@ impl MongoQueryResult {
         }
     }
 
-    /// write 类构造
     pub fn write(affected: u64, elapsed_ms: u64, op: &str) -> Self {
         Self {
             documents: Vec::new(),
             affected,
             elapsed_ms,
-            summary: format!("{op} affected={affected}, {elapsed_ms}ms"),
+            summary: format!("{op}：影响 {affected} 条，{elapsed_ms} ms"),
             truncated: false,
             retained_bytes: 0,
             memory_warning: false,
@@ -393,14 +382,14 @@ mod tests {
         let r = MongoQueryResult::read(vec![json!({"a": 1}), json!({"a": 2})], 5);
         assert_eq!(r.documents.len(), 2);
         assert_eq!(r.affected, 0);
-        assert!(r.summary.contains("2 docs"));
+        assert!(r.summary.contains("2 条"));
     }
 
     #[test]
     fn write_summary_includes_op() {
         let r = MongoQueryResult::write(3, 12, "updateOne");
         assert!(r.summary.contains("updateOne"));
-        assert!(r.summary.contains("affected=3"));
+        assert!(r.summary.contains("影响 3 条"));
     }
 
     #[test]

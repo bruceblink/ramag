@@ -170,8 +170,12 @@ pub(super) fn build_patch_for_hunk(diff: &FileDiff, hunk_idx: usize) -> Result<S
     let mut out = String::new();
     let path = &diff.path;
     let old_path = diff.old_path.as_deref().unwrap_or(path);
-    if path.chars().any(char::is_control) || old_path.chars().any(char::is_control) {
-        return Err("文件路径包含控制字符，当前不支持行级操作；请改用整文件暂存或撤回".into());
+    if path
+        .chars()
+        .chain(old_path.chars())
+        .any(|character| character.is_control() || matches!(character, '\\' | '"'))
+    {
+        return Err("文件路径需要 Git 引号转义，当前不支持行级操作；请改用整文件暂存或撤回".into());
     }
     append_patch_bounded(
         &mut out,
@@ -290,6 +294,10 @@ mod tests {
     fn patch_builder_rejects_paths_that_need_git_header_quoting() {
         let mut special = diff(FileChangeKind::Modified, 1, 1);
         special.path = "line\nbreak.rs".into();
+        assert!(build_patch_for_hunk(&special, 0).is_err());
+        special.path = r#"quote"name.rs"#.into();
+        assert!(build_patch_for_hunk(&special, 0).is_err());
+        special.path = r#"back\slash.rs"#.into();
         assert!(build_patch_for_hunk(&special, 0).is_err());
     }
 }

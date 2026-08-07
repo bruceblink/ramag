@@ -245,7 +245,6 @@ impl QueryTab {
     }
 
     pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
-        // 切换连接时把默认库重置成新连接的 database 字段
         self.active_schema = conn
             .as_ref()
             .and_then(|c| c.database.clone())

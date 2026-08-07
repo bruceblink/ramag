@@ -41,6 +41,7 @@ pub(super) struct ProjectRowsCacheEntry {
 /// 按状态数组身份缓存文件状态。
 pub(super) struct ProjectStatusCacheEntry {
     project_files_version: u64,
+    status_request_seq: u64,
     files_identity: usize,
     files_len: usize,
     kinds: Rc<HashMap<usize, FileChangeKind>>,
@@ -50,10 +51,12 @@ impl ProjectStatusCacheEntry {
     fn get(
         &self,
         project_files_version: u64,
+        status_request_seq: u64,
         files_identity: usize,
         files_len: usize,
     ) -> Option<Rc<HashMap<usize, FileChangeKind>>> {
         (self.project_files_version == project_files_version
+            && self.status_request_seq == status_request_seq
             && self.files_identity == files_identity
             && self.files_len == files_len)
             .then(|| self.kinds.clone())
@@ -254,10 +257,14 @@ impl VcsView {
         });
         {
             let cache = self.project_status_cache.borrow();
-            if let Some(kinds) = cache
-                .as_ref()
-                .and_then(|entry| entry.get(self.project_files_version, files_identity, files_len))
-            {
+            if let Some(kinds) = cache.as_ref().and_then(|entry| {
+                entry.get(
+                    self.project_files_version,
+                    self.status_request_seq,
+                    files_identity,
+                    files_len,
+                )
+            }) {
                 return kinds;
             }
         }
@@ -270,6 +277,7 @@ impl VcsView {
         ));
         *self.project_status_cache.borrow_mut() = Some(ProjectStatusCacheEntry {
             project_files_version: self.project_files_version,
+            status_request_seq: self.status_request_seq,
             files_identity,
             files_len,
             kinds: kinds.clone(),

@@ -1,4 +1,4 @@
-//! PG 行解码：PgRow → Domain Value。常见原生类型转可读文本，未知二进制类型保留为 Bytes
+//! PostgreSQL 行解码。常见原生类型转为可读值，未知二进制类型保留原始字节。
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -38,7 +38,7 @@ fn decode_column(row: &PgRow, col: &PgColumn) -> Result<Value> {
         "FLOAT4" => decode_as::<f32, _>(row, col, |value| Value::Float(value as f64)),
         "FLOAT8" => decode_as::<f64, _>(row, col, Value::Float),
 
-        // BigDecimal 保精度
+        // 使用 BigDecimal 避免精度损失。
         "NUMERIC" => decode_as::<BigDecimal, _>(row, col, |value| Value::Text(value.to_string())),
 
         "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CITEXT" => {
@@ -47,9 +47,9 @@ fn decode_column(row: &PgRow, col: &PgColumn) -> Result<Value> {
 
         "BYTEA" => decode_as::<Vec<u8>, _>(row, col, Value::Bytes),
 
-        // 带时区
+        // 保留带时区时间表示的准确时刻。
         "TIMESTAMPTZ" => decode_as::<DateTime<Utc>, _>(row, col, Value::DateTime),
-        // 无时区按 UTC
+        // 无时区时间按 UTC 解释。
         "TIMESTAMP" => decode_as::<NaiveDateTime, _>(row, col, |value| {
             Value::DateTime(DateTime::<Utc>::from_naive_utc_and_offset(value, Utc))
         }),
@@ -296,7 +296,7 @@ fn decode_data_error(col: &PgColumn, detail: &str) -> DomainError {
     ))
 }
 
-/// 把 information_schema 的 (data_type, full_type) 映射到 ColumnKind
+/// 将 information_schema 的类型信息映射为领域类型。
 pub fn map_column_kind(data_type: &str, full_type: &str) -> ColumnType {
     let kind = match data_type.to_ascii_lowercase().as_str() {
         "boolean" => ColumnKind::Bool,

@@ -324,8 +324,10 @@ impl Drop for LogPager {
         if !self.finished {
             terminate_pager_child(&mut self.child);
         }
-        if let Some(reader) = self.stderr_reader.take() {
-            let _ = reader.join();
+        if let Some(reader) = self.stderr_reader.take()
+            && reader.join().is_err()
+        {
+            tracing::warn!("git log stderr reader panicked during cleanup");
         }
     }
 }

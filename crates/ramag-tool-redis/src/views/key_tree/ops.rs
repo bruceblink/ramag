@@ -250,9 +250,13 @@ impl KeyTreePanel {
                 }
                 match r {
                     Ok(RedisValue::Int(1)) => {
-                        if let Some(k) = this.keys.iter_mut().find(|k| k.key == old) {
-                            k.key = new.clone();
-                        }
+                        apply_local_rename(
+                            &mut this.keys,
+                            &mut this.seen_keys,
+                            &mut this.key_bytes,
+                            &old,
+                            &new,
+                        );
                         this.rebuild_tree();
                         if this.selected.as_deref() == Some(old.as_str()) {
                             this.selected = Some(new.clone());
@@ -463,6 +467,25 @@ impl KeyTreePanel {
     }
 }
 
+fn apply_local_rename(
+    keys: &mut Vec<ramag_domain::entities::KeyMeta>,
+    seen_keys: &mut std::collections::HashSet<String>,
+    key_bytes: &mut usize,
+    old: &str,
+    new: &str,
+) {
+    // 服务端 RENAMENX 成功说明目标不存在；本地同名项只能是陈旧快照，应先移除。
+    keys.retain(|meta| meta.key != new);
+    if let Some(meta) = keys.iter_mut().find(|meta| meta.key == old) {
+        meta.key = new.to_string();
+    }
+    seen_keys.clear();
+    seen_keys.extend(keys.iter().map(|meta| meta.key.clone()));
+    *key_bytes = keys
+        .iter()
+        .fold(0usize, |total, meta| total.saturating_add(meta.key.len()));
+}
+
 /// 循环「SCAN 收集一轮 → 分批 DEL」直到该 pattern 再无匹配；返回实际删除数。
 /// 不一次性收集全部 key，内存上界 = SCAN_BATCH 个 key 名
 async fn delete_by_pattern(
@@ -552,5 +575,22 @@ mod tests {
         assert_eq!(parse_delete_count(RedisValue::Int(2)).ok(), Some(2));
         assert!(parse_delete_count(RedisValue::Int(-1)).is_err());
         assert!(parse_delete_count(RedisValue::Text("OK".into())).is_err());
+    }
+
+    #[test]
+    fn local_rename_rebuilds_dedup_and_byte_accounting() {
+        let mut keys = vec![
+            ramag_domain::entities::KeyMeta::bare("old"),
+            ramag_domain::entities::KeyMeta::bare("new"),
+        ];
+        let mut seen = std::collections::HashSet::from(["old".into(), "new".into()]);
+        let mut bytes = 6;
+
+        apply_local_rename(&mut keys, &mut seen, &mut bytes, "old", "new");
+
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key, "new");
+        assert_eq!(seen, std::collections::HashSet::from(["new".into()]));
+        assert_eq!(bytes, 3);
     }
 }

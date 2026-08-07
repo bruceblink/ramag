@@ -15,7 +15,7 @@ use super::paging::{
 };
 use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
-    parse_mysql_error_line,
+    parse_mysql_error_line, strip_leading_comments,
 };
 use super::{QueryTab, QueryTabEvent};
 use crate::sql_completion::extract_tables_in_use_for_prefetch;
@@ -512,11 +512,11 @@ impl QueryTab {
 
     /// DDL 后刷新默认 Schema 的表缓存。
     pub(super) fn maybe_refresh_cache_after_ddl(&self, sql: &str, cx: &mut Context<Self>) {
-        let first = sql
-            .split_whitespace()
-            .next()
-            .map(|w| w.to_ascii_uppercase())
-            .unwrap_or_default();
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        let body = strip_leading_comments(sql, conn.driver);
+        let first = ramag_infra_sql_shared::sql::first_keyword(body).unwrap_or_default();
         let is_ddl = matches!(
             first.as_str(),
             "CREATE" | "DROP" | "ALTER" | "RENAME" | "TRUNCATE"
@@ -524,9 +524,6 @@ impl QueryTab {
         if !is_ddl {
             return;
         }
-        let Some(conn) = self.connection.clone() else {
-            return;
-        };
         let Some(schema) = self
             .active_schema
             .clone()
@@ -568,7 +565,7 @@ impl QueryTab {
                     cache
                         .write()
                         .cancel_table_refresh(&schema, cache_generation);
-                    error!(error = %e, "DDL schema refresh failed");
+                    error!(error = %e, "refresh schema after DDL failed");
                 }
             }
         })

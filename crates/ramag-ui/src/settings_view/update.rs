@@ -22,7 +22,6 @@ impl SettingsView {
             return;
         };
         self.update_state = match result {
-            UpdateCheckResult::Skipped => return,
             UpdateCheckResult::UpToDate { .. } => UpdateUiState::UpToDate,
             UpdateCheckResult::Available(update) => UpdateUiState::Available(update),
             UpdateCheckResult::UnsupportedPlatform(update) => {

@@ -6,11 +6,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Context, Entity, IntoElement, MouseDownEvent, ParentElement, Render, Styled, Subscription,
+    App, Context, Entity, IntoElement, MouseDownEvent, ParentElement, Render, Styled, Subscription,
     Window, div, prelude::*, px, relative,
 };
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, WindowExt as _,
+    notification::Notification,
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
@@ -179,27 +180,45 @@ impl RedisSessionPanel {
                 }
                 KeyDetailEvent::RequestDeleteKey(key) => {
                     let panel_for_run = this.detail.clone();
+                    let target_key = key.clone();
                     this.confirm_delete_op(
                         "删除 Key？".into(),
                         format!(
                             "将永久删除 key「{}」，此操作不可撤销。",
                             truncate_for_dialog(key, 80)
                         ),
-                        Rc::new(move |_w, app| {
+                        Rc::new(move |window, app| {
+                            if !confirmed_target_is_current(
+                                &panel_for_run,
+                                &target_key,
+                                window,
+                                app,
+                            ) {
+                                return;
+                            }
                             panel_for_run.update(app, |p, cx| p.delete_key_now(cx));
                         }),
                         window,
                         cx,
                     );
                 }
-                KeyDetailEvent::RequestDeleteHashField(_key, field) => {
+                KeyDetailEvent::RequestDeleteHashField(key, field) => {
                     let panel_for_run = this.detail.clone();
+                    let target_key = key.clone();
                     let field = field.clone();
                     let field_label = truncate_for_dialog(&field, 80);
                     this.confirm_delete_op(
                         "删除 Hash 字段？".into(),
                         format!("将删除字段「{field_label}」，此操作不可撤销。"),
-                        Rc::new(move |_w, app| {
+                        Rc::new(move |window, app| {
+                            if !confirmed_target_is_current(
+                                &panel_for_run,
+                                &target_key,
+                                window,
+                                app,
+                            ) {
+                                return;
+                            }
                             let field = field.clone();
                             panel_for_run.update(app, |p, cx| p.delete_hash_field(field, cx));
                         }),
@@ -207,8 +226,9 @@ impl RedisSessionPanel {
                         cx,
                     );
                 }
-                KeyDetailEvent::RequestDeleteListElement(_key, value, idx) => {
+                KeyDetailEvent::RequestDeleteListElement(key, value, idx) => {
                     let panel_for_run = this.detail.clone();
+                    let target_key = key.clone();
                     let value = value.clone();
                     let idx_v = *idx;
                     let value_label = truncate_for_dialog(&value, 80);
@@ -218,7 +238,15 @@ impl RedisSessionPanel {
                             "将精确删除序号 {idx_v} 的元素「{value_label}」。\
                              若列表已变化则自动取消；此操作不可撤销。"
                         ),
-                        Rc::new(move |_w, app| {
+                        Rc::new(move |window, app| {
+                            if !confirmed_target_is_current(
+                                &panel_for_run,
+                                &target_key,
+                                window,
+                                app,
+                            ) {
+                                return;
+                            }
                             let value = value.clone();
                             panel_for_run
                                 .update(app, |p, cx| p.delete_list_element(value, idx_v, cx));
@@ -227,14 +255,23 @@ impl RedisSessionPanel {
                         cx,
                     );
                 }
-                KeyDetailEvent::RequestDeleteSetElement(_key, member) => {
+                KeyDetailEvent::RequestDeleteSetElement(key, member) => {
                     let panel_for_run = this.detail.clone();
+                    let target_key = key.clone();
                     let member = member.clone();
                     let member_label = truncate_for_dialog(&member, 80);
                     this.confirm_delete_op(
                         "删除 Set 成员？".into(),
                         format!("将删除成员「{member_label}」，此操作不可撤销。"),
-                        Rc::new(move |_w, app| {
+                        Rc::new(move |window, app| {
+                            if !confirmed_target_is_current(
+                                &panel_for_run,
+                                &target_key,
+                                window,
+                                app,
+                            ) {
+                                return;
+                            }
                             let member = member.clone();
                             panel_for_run.update(app, |p, cx| p.delete_set_element(member, cx));
                         }),
@@ -242,14 +279,23 @@ impl RedisSessionPanel {
                         cx,
                     );
                 }
-                KeyDetailEvent::RequestDeleteZSetMember(_key, member) => {
+                KeyDetailEvent::RequestDeleteZSetMember(key, member) => {
                     let panel_for_run = this.detail.clone();
+                    let target_key = key.clone();
                     let member = member.clone();
                     let member_label = truncate_for_dialog(&member, 80);
                     this.confirm_delete_op(
                         "删除 ZSet 成员？".into(),
                         format!("将删除成员「{member_label}」，此操作不可撤销。"),
-                        Rc::new(move |_w, app| {
+                        Rc::new(move |window, app| {
+                            if !confirmed_target_is_current(
+                                &panel_for_run,
+                                &target_key,
+                                window,
+                                app,
+                            ) {
+                                return;
+                            }
                             let member = member.clone();
                             panel_for_run.update(app, |p, cx| p.delete_zset_member(member, cx));
                         }),
@@ -257,14 +303,23 @@ impl RedisSessionPanel {
                         cx,
                     );
                 }
-                KeyDetailEvent::RequestDeleteStreamEntry(_key, entry_id) => {
+                KeyDetailEvent::RequestDeleteStreamEntry(key, entry_id) => {
                     let panel_for_run = this.detail.clone();
+                    let target_key = key.clone();
                     let entry_id = entry_id.clone();
                     let id_label = truncate_for_dialog(&entry_id, 80);
                     this.confirm_delete_op(
                         "删除 Stream 条目？".into(),
                         format!("将删除条目「{id_label}」，此操作不可撤销。"),
-                        Rc::new(move |_w, app| {
+                        Rc::new(move |window, app| {
+                            if !confirmed_target_is_current(
+                                &panel_for_run,
+                                &target_key,
+                                window,
+                                app,
+                            ) {
+                                return;
+                            }
                             let entry_id = entry_id.clone();
                             panel_for_run.update(app, |p, cx| p.delete_stream_entry(entry_id, cx));
                         }),
@@ -368,6 +423,22 @@ impl RedisSessionPanel {
             self.open_console(window, cx);
         }
     }
+}
+
+fn confirmed_target_is_current(
+    panel: &Entity<KeyDetailPanel>,
+    expected_key: &str,
+    window: &mut Window,
+    app: &mut App,
+) -> bool {
+    if panel.read(app).current_key() == Some(expected_key) {
+        return true;
+    }
+    window.push_notification(
+        Notification::warning("当前 Key 已变化，为避免误删已取消操作").autohide(true),
+        app,
+    );
+    false
 }
 
 impl Render for RedisSessionPanel {

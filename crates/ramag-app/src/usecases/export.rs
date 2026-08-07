@@ -1,4 +1,4 @@
-//! 结果集导出：JSONL 文本（每行一个 JSON 对象），供 UI 写文件
+//! 将结果集导出为每行一个 JSON 对象的 JSONL 文件。
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -276,7 +276,7 @@ pub fn write_jsonl(writer: &mut dyn Write, result: &QueryResult) -> Result<()> {
     write_jsonl_view(writer, result, None, None)
 }
 
-/// 按源行 / 源列索引流式导出 JSONL；None 表示全部，不复制 QueryResult 或单元格。
+/// 按行列索引流式导出 JSONL；`None` 表示全部。
 pub fn write_jsonl_view(
     writer: &mut dyn Write,
     result: &QueryResult,
@@ -496,7 +496,6 @@ mod tests {
         let text = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
-        // 行序按传入索引 [1,0]；列仅投影选中的 name/id，data 不出现。
         let row0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(row0["id"], 2);
         assert_eq!(row0["name"], "李, 四");

@@ -171,7 +171,7 @@ impl SshProfile {
             return Err("主机或 SSH 别名不能包含空白字符".into());
         }
         if self.port == Some(0) {
-            return Err("SSH 端口必须是 1 - 65535".into());
+            return Err("SSH 端口必须在 1–65535 之间".into());
         }
         validate_optional_single_line("用户名", Some(&self.username), MAX_SSH_USERNAME_BYTES)?;
         if self.username.chars().any(char::is_whitespace) {
@@ -204,7 +204,7 @@ impl SshProfile {
                     .ok_or_else(|| "密钥文件认证必须选择密钥路径".to_string())?;
                 validate_absolute_local_path("密钥路径", key_path)?;
                 if key_path.to_ascii_lowercase().ends_with(".ppk") {
-                    return Err("首个版本不支持 PuTTY .ppk 密钥，请转换为 OpenSSH 格式".into());
+                    return Err("暂不支持 PuTTY .ppk 密钥，请转换为 OpenSSH 格式".into());
                 }
             }
         }
@@ -488,7 +488,7 @@ pub fn parent_remote_path(path: &str) -> Result<String, String> {
 pub fn validate_local_transfer_path(path: &Path) -> Result<(), String> {
     let value = path
         .to_str()
-        .ok_or_else(|| "首个版本仅支持 UTF-8 本地路径".to_string())?;
+        .ok_or_else(|| "仅支持 UTF-8 本地路径".to_string())?;
     validate_absolute_local_path("本地文件路径", value)
 }
 

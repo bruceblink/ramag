@@ -274,27 +274,56 @@ impl DataSyncService {
     }
 
     pub async fn preflight(&self, request: DataSyncRequest) -> Result<PreparedDataSync> {
-        let source = self
-            .connection_service
-            .get(&request.source_connection_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("源连接不存在或已被删除".into()))?;
-        let target = self
-            .connection_service
-            .get(&request.target_connection_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("目标连接不存在或已被删除".into()))?;
-        request.validate_connections(&source, &target)?;
-        reject_obvious_self_sync(&request, &source, &target)?;
+        tracing::info!(
+            task_id = %request.task_id,
+            engine = ?request.engine,
+            source_connection_id = %request.source_connection_id,
+            target_connection_id = %request.target_connection_id,
+            "data sync preflight started"
+        );
+        let result = async {
+            let source = self
+                .connection_service
+                .get(&request.source_connection_id)
+                .await?
+                .ok_or_else(|| DomainError::NotFound("源连接不存在或已被删除".into()))?;
+            let target = self
+                .connection_service
+                .get(&request.target_connection_id)
+                .await?
+                .ok_or_else(|| DomainError::NotFound("目标连接不存在或已被删除".into()))?;
+            request.validate_connections(&source, &target)?;
+            reject_obvious_self_sync(&request, &source, &target)?;
 
-        match &request.scope {
-            ramag_domain::entities::DataSyncScope::Mongo(scope) => {
-                preflight_mongo(self, request.clone(), source, target, scope.clone()).await
-            }
-            ramag_domain::entities::DataSyncScope::Sql(scope) => {
-                preflight_sql(self, request.clone(), source, target, scope.clone()).await
+            match &request.scope {
+                ramag_domain::entities::DataSyncScope::Mongo(scope) => {
+                    preflight_mongo(self, request.clone(), source, target, scope.clone()).await
+                }
+                ramag_domain::entities::DataSyncScope::Sql(scope) => {
+                    preflight_sql(self, request.clone(), source, target, scope.clone()).await
+                }
             }
         }
+        .await;
+        match &result {
+            Ok(prepared) => tracing::info!(
+                task_id = %prepared.report.task_id,
+                engine = ?prepared.report.engine,
+                objects = prepared.report.objects.len(),
+                objects_total = ?prepared.report.objects_total,
+                warnings = prepared.report.warnings.len(),
+                target_exists = prepared.report.target_scope_exists,
+                second_confirmation = prepared.report.requires_second_confirmation,
+                "data sync preflight completed"
+            ),
+            Err(error) => tracing::warn!(
+                error = %error,
+                task_id = %request.task_id,
+                engine = ?request.engine,
+                "data sync preflight failed"
+            ),
+        }
+        result
     }
 
     pub fn start(
@@ -308,13 +337,14 @@ impl DataSyncService {
             DataSyncConfirmation::CreateMissingTargets
         };
         if confirmation != expected {
-            return Err(DomainError::InvalidConfig(
-                if prepared.report.requires_second_confirmation {
+            let error =
+                DomainError::InvalidConfig(if prepared.report.requires_second_confirmation {
                     "目标范围或对象已存在，必须完成二次确认后才能同步".into()
                 } else {
                     "同步确认状态与最新预检结果不一致，请重新预检".into()
-                },
-            ));
+                });
+            tracing::warn!(error = %error, task_id = %prepared.request.task_id, "data sync start rejected");
+            return Err(error);
         }
         let context = DataSyncExecutionContext {
             source_connection: prepared.report.source_connection.clone(),
@@ -322,10 +352,17 @@ impl DataSyncService {
             target_connection: prepared.report.target_connection.clone(),
             target_scope: prepared.report.target_scope.clone(),
         };
-        let permit = self
-            .gate
-            .begin(prepared.request.task_id.clone(), context)
-            .ok_or_else(|| DomainError::Forbidden("已有数据同步任务正在进行".into()))?;
+        let Some(permit) = self.gate.begin(prepared.request.task_id.clone(), context) else {
+            let error = DomainError::Forbidden("已有数据同步任务正在进行".into());
+            tracing::warn!(error = %error, task_id = %prepared.request.task_id, "data sync start rejected");
+            return Err(error);
+        };
+        tracing::info!(
+            task_id = %permit.task_id(),
+            engine = ?prepared.request.engine,
+            objects = prepared.report.objects.len(),
+            "data sync started"
+        );
         Ok(StartedDataSync { permit, prepared })
     }
 
@@ -353,17 +390,52 @@ impl DataSyncService {
         }
         match result {
             Ok(()) if summary.cancelled => {
+                tracing::info!(
+                    task_id = %permit.task_id(),
+                    objects = summary.objects,
+                    scanned = summary.scanned,
+                    inserted = summary.inserted,
+                    skipped = summary.skipped,
+                    failed = summary.failed,
+                    bytes = summary.bytes,
+                    elapsed_ms = summary.elapsed_ms,
+                    "data sync cancelled"
+                );
                 if !self.gate.finish_cancelled(&permit, summary) {
                     tracing::warn!(task_id = %permit.task_id(), "stale sync cancellation result ignored");
                 }
             }
             Ok(()) => {
+                tracing::info!(
+                    task_id = %permit.task_id(),
+                    objects = summary.objects,
+                    scanned = summary.scanned,
+                    inserted = summary.inserted,
+                    skipped = summary.skipped,
+                    failed = summary.failed,
+                    warnings = summary.warnings.len(),
+                    bytes = summary.bytes,
+                    elapsed_ms = summary.elapsed_ms,
+                    "data sync completed"
+                );
                 if !self.gate.finish_completed(&permit, summary) {
                     tracing::warn!(task_id = %permit.task_id(), "stale sync completion result ignored");
                 }
             }
             Err(error) => {
                 summary.failed = summary.failed.max(1);
+                tracing::error!(
+                    error = %error,
+                    task_id = %permit.task_id(),
+                    objects = summary.objects,
+                    scanned = summary.scanned,
+                    inserted = summary.inserted,
+                    skipped = summary.skipped,
+                    failed = summary.failed,
+                    bytes = summary.bytes,
+                    elapsed_ms = summary.elapsed_ms,
+                    "data sync failed"
+                );
                 if !self.gate.finish_failed(&permit, summary, error.to_string()) {
                     tracing::warn!(task_id = %permit.task_id(), "stale sync failure result ignored");
                 }
@@ -372,7 +444,9 @@ impl DataSyncService {
     }
 
     pub fn request_cancel(&self, permit: &DataSyncPermit) -> bool {
-        self.gate.request_cancel(permit)
+        let accepted = self.gate.request_cancel(permit);
+        tracing::info!(task_id = %permit.task_id(), accepted, "data sync cancellation requested");
+        accepted
     }
 
     pub fn acknowledge_result(&self, permit: &DataSyncPermit) -> bool {

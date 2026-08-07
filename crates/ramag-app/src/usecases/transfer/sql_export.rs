@@ -27,7 +27,6 @@ use super::{
 };
 use crate::usecases::ConnectionService;
 
-/// 导出读取与 INSERT 生成共用批次上限。
 const PAGE_ROWS: u32 = TRANSFER_BATCH_ITEMS as u32;
 const INSERT_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
 const INSERT_MAX_ROWS: usize = TRANSFER_BATCH_ITEMS;
@@ -284,18 +283,21 @@ async fn write_header(
     sink.write_str(&begin_marker("header", ""))?;
     match driver {
         DriverKind::Mysql => {
-            // 建库带上源库字符集 / 排序规则（取不到就用服务端默认）
-            let charset_clause = svc
-                .list_schemas(config)
-                .await
-                .ok()
-                .and_then(|schemas| schemas.into_iter().find(|s| s.name == schema))
-                .map(|s| {
+            // 建库时尽量保留源库字符集和排序规则。
+            let source_schema = match svc.list_schemas(config).await {
+                Ok(schemas) => schemas.into_iter().find(|item| item.name == schema),
+                Err(error) => {
+                    tracing::warn!(error = %error, schema, "load source schema options failed");
+                    None
+                }
+            };
+            let charset_clause = source_schema
+                .map(|source_schema| {
                     let mut clause = String::new();
-                    if let Some(charset) = s.charset {
+                    if let Some(charset) = source_schema.charset {
                         clause.push_str(&format!(" DEFAULT CHARACTER SET {charset}"));
                     }
-                    if let Some(collation) = s.collation {
+                    if let Some(collation) = source_schema.collation {
                         clause.push_str(&format!(" COLLATE {collation}"));
                     }
                     clause
@@ -389,8 +391,7 @@ async fn export_table_data(
         config,
         generated_columns_query(driver, schema, &table.name),
     )
-    .await
-    .unwrap_or_default();
+    .await?;
     let export_cols: Vec<&Column> = columns
         .iter()
         .filter(|c| !generated.contains(&c.name))
@@ -447,9 +448,14 @@ async fn export_table_data(
             export_cols
                 .iter()
                 .position(|c| c.name == p.name)
-                .unwrap_or_default()
+                .ok_or_else(|| {
+                    DomainError::Other(format!(
+                        "表 {} 的主键列 {} 未出现在导出列中",
+                        table.name, p.name
+                    ))
+                })
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     sink.write_str(&begin_marker("data", &table.name))?;
     reporter.stage("导出数据", &table.name);
@@ -545,8 +551,15 @@ async fn export_table_data(
                 last_key = Some(
                     pk_indices
                         .iter()
-                        .map(|&i| last_row.values.get(i).cloned().unwrap_or(Value::Null))
-                        .collect(),
+                        .map(|&index| {
+                            last_row.values.get(index).cloned().ok_or_else(|| {
+                                DomainError::QueryFailed(format!(
+                                    "表 {} 的主键结果列缺失",
+                                    table.name
+                                ))
+                            })
+                        })
+                        .collect::<Result<_>>()?,
                 );
             }
         } else {
@@ -611,7 +624,7 @@ async fn view_ddl(
     let result = svc.execute(config, &Query::new(sql)).await?;
     match driver {
         DriverKind::Mysql => {
-            // DEFINER 依赖导出侧账号，导入到别的实例会因用户不存在而失败，剥掉
+            // 导入端可能没有原账号，因此移除 DEFINER。
             Ok(format!(
                 "{};",
                 strip_mysql_definer(&parse_show_create(&result)?)
@@ -637,13 +650,13 @@ fn qualified_name(driver: DriverKind, schema: &str, name: &str) -> String {
     )
 }
 
-/// 去掉 MySQL DDL 里的 DEFINER=`user`@`host` 子句
+/// 移除 MySQL DDL 中的 `DEFINER` 子句。
 fn strip_mysql_definer(ddl: &str) -> String {
     let Some(start) = ddl.find(" DEFINER=") else {
         return ddl.to_string();
     };
     let rest = &ddl[start + " DEFINER=".len()..];
-    // DEFINER=`u`@`h` / DEFINER=u@h，跳过两个可能带反引号的段
+    // 跳过用户名和主机名两个可能带反引号的段。
     let mut chars = rest.char_indices().peekable();
     let mut segments = 0;
     let mut in_quote = false;
@@ -741,7 +754,6 @@ mod tests {
     fn definer_clause_is_stripped() {
         let ddl = "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`local host` SQL SECURITY DEFINER VIEW `v` AS select 1";
         let stripped = strip_mysql_definer(ddl);
-        // SQL SECURITY DEFINER 是另一个合法子句，只应剥掉 DEFINER=`u`@`h`
         assert!(!stripped.contains("DEFINER="));
         assert!(stripped.contains("CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW"));
         assert_eq!(

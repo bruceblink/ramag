@@ -26,7 +26,6 @@ use super::{
 };
 use crate::usecases::MongoService;
 
-/// 导出与导入统一使用 5,000 条 / 32 MiB 批次。
 const PAGE_DOCS: i64 = TRANSFER_BATCH_ITEMS as i64;
 const IMPORT_BATCH_DOCS: usize = TRANSFER_BATCH_ITEMS;
 const IMPORT_BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;
@@ -234,7 +233,6 @@ pub async fn import_mongo_database(
     let mut summary = TransferSummary::default();
     let mut reporter = Reporter::new(progress);
 
-    // 首行文件头
     let mut header_line = String::new();
     read_line_bounded(
         &mut reader,
@@ -261,11 +259,11 @@ pub async fn import_mongo_database(
 
     let existing: std::collections::HashSet<String> = svc
         .list_collections(config, &db)
-        .await
-        .map(|cols| cols.into_iter().map(|c| c.name).collect())
-        .unwrap_or_default();
+        .await?
+        .into_iter()
+        .map(|collection| collection.name)
+        .collect();
 
-    // 当前集合状态机
     let mut current: Option<CollectionCtx> = None;
     let mut seen_collections = std::collections::HashSet::new();
     let mut line = String::new();
@@ -330,7 +328,7 @@ pub async fn import_mongo_database(
                         ctx.skip = true;
                         summary.skipped += 1;
                     }
-                    // 合并：保留集合，靠无序批量的重复 _id 跳过实现条目级补齐
+                    // 合并时保留集合，通过跳过重复 _id 补齐文档。
                     ConflictPolicy::Merge => should_create = false,
                     ConflictPolicy::Fail => {
                         return Err(DomainError::QueryFailed(format!(
@@ -342,7 +340,7 @@ pub async fn import_mongo_database(
                         if let Err(error) =
                             svc.run_command(config, &db, json!({"drop": name})).await
                         {
-                            // 目标并发消失视作已删；其余错误按对象失败处理
+                            // 目标并发消失视为已删除，其余错误按对象失败处理。
                             if !error.message().contains("NamespaceNotFound") {
                                 ctx.skip = true;
                                 summary.failed += 1;
@@ -527,7 +525,7 @@ fn create_collection_command(name: &str, options: serde_json::Map<String, Value>
     Value::Object(command)
 }
 
-/// 集合收尾：冲洗余批并重建索引。集合本身已在读入声明时按创建选项建立。
+/// 提交剩余文档并重建集合索引。
 async fn finalize_collection(
     svc: &MongoService,
     config: &ConnectionConfig,
@@ -691,7 +689,7 @@ pub async fn import_jsonl_into_collection(
     reporter.snapshot.objects_total = Some(1);
 
     if policy == ConflictPolicy::Overwrite {
-        // 清空文档而非 drop：保留集合定义与索引
+        // 仅清空文档，保留集合定义和索引。
         reporter.stage("清空集合", format!("{db}.{coll}"));
         svc.run_command(
             config,
@@ -702,7 +700,7 @@ pub async fn import_jsonl_into_collection(
     }
     reporter.stage("导入文档", format!("{db}.{coll}"));
 
-    // Fail 策略严格插入：重复 _id 直接报错停止；其余策略跳过重复并计数
+    // `Fail` 遇到重复 _id 即停止，其他策略跳过并计数。
     let skip_duplicates = policy != ConflictPolicy::Fail;
     let mut duplicates: u64 = 0;
     let mut batch: Vec<Value> = Vec::with_capacity(IMPORT_BATCH_DOCS);
@@ -808,7 +806,7 @@ pub async fn import_jsonl_into_collection(
     Ok(finish_summary(summary, start))
 }
 
-/// 冲洗集合级导入批：Fail 策略错误即停；其余策略计失败 + 告警后继续
+/// 提交集合导入批次；`Fail` 遇错即停，其他策略记录警告后继续。
 #[allow(clippy::too_many_arguments)]
 async fn flush_jsonl_batch(
     svc: &MongoService,
@@ -866,7 +864,6 @@ mod tests {
                 .and_then(Value::as_str),
             Some("0123456789abcdef01234567")
         );
-        // 字符串 _id 以 $ 开头也被 $literal 保护
         let tricky = keyset_filter(&Some(json!("$field")));
         assert_eq!(
             tricky

@@ -345,6 +345,24 @@ impl MongoQueryTab {
         cx.notify();
     }
 
+    /// 数据库删除后，旧结果不能继续编辑；先落到 admin，等待树选择新的业务库。
+    pub fn database_dropped(&mut self, db: &str, cx: &mut Context<Self>) {
+        if self.database != db {
+            return;
+        }
+        self.run_seq = self.run_seq.wrapping_add(1);
+        self.current_task = None;
+        self.running = false;
+        self.database = "admin".to_string();
+        self.collection = None;
+        self.pager = None;
+        self.result.update(cx, |panel, cx| {
+            panel.switch_database("admin".to_string(), cx);
+            panel.set_error(format!("数据库 {db} 已删除，旧结果与编辑入口已失效"), cx);
+        });
+        cx.notify();
+    }
+
     /// 解析并校验命令；高危操作先展示目标与风险，确认后才进入真正执行路径。
     pub fn request_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {

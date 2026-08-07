@@ -113,7 +113,7 @@ impl HotkeyListener {
             let status =
                 InstallEventHandler(target, hotkey_handler, 1, &spec, tx_ptr, &mut handler_ref);
             if status != 0 {
-                warn!(status, "InstallEventHandler failed");
+                warn!(status, "install clipboard hotkey event handler failed");
                 drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
                 return None;
             }
@@ -125,7 +125,7 @@ impl HotkeyListener {
             let mut hotkey_ref: EventHotKeyRef = std::ptr::null_mut();
             let status = RegisterEventHotKey(KEY_V, modifiers, hot_id, target, 0, &mut hotkey_ref);
             if status != 0 {
-                warn!(status, combo, "RegisterEventHotKey failed");
+                warn!(status, combo, "register clipboard hotkey failed");
                 // 注册失败后须先移除 handler；若移除失败，保留 Sender 避免回调悬空。
                 let remove_status = RemoveEventHandler(handler_ref);
                 if remove_status == 0 {
@@ -166,7 +166,10 @@ impl Drop for HotkeyListener {
         let cleaned = unsafe {
             let unregister_status = UnregisterEventHotKey(self.hotkey_ref as EventHotKeyRef);
             if unregister_status != 0 {
-                warn!(status = unregister_status, "UnregisterEventHotKey failed");
+                warn!(
+                    status = unregister_status,
+                    "unregister clipboard hotkey failed"
+                );
             }
             let remove_status = RemoveEventHandler(self.handler_ref as EventHandlerRef);
             if remove_status == 0 {

@@ -364,6 +364,12 @@ pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
             MAX_CLIPBOARD_BYTES / 1024 / 1024
         )));
     }
+    if rtf.is_some_and(|bytes| bytes.len().saturating_add(1) > MAX_CLIPBOARD_BYTES) {
+        return Err(DomainError::InvalidConfig(format!(
+            "RTF 内容超过 {} MiB 上限",
+            MAX_CLIPBOARD_BYTES / 1024 / 1024
+        )));
+    }
     let mut units: Vec<u16> = text.encode_utf16().collect();
     units.push(0);
     let bytes = unsafe { std::slice::from_raw_parts(units.as_ptr().cast::<u8>(), units.len() * 2) };

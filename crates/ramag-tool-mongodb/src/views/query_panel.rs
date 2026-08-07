@@ -458,6 +458,19 @@ impl MongoQueryPanel {
         }
         self.schedule_draft_persist(cx);
     }
+
+    /// 数据库删除成功后立即切到安全的 `admin` 上下文；树刷新后若有其它业务库会再次同步。
+    pub fn database_dropped(&mut self, database: &str, cx: &mut Context<Self>) {
+        if self.database != database {
+            return;
+        }
+        self.database = "admin".to_string();
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| tab.database_dropped(database, cx));
+        }
+        self.schedule_draft_persist(cx);
+        cx.notify();
+    }
 }
 
 impl Render for MongoQueryPanel {
@@ -499,17 +512,24 @@ impl Render for MongoQueryPanel {
                     .child(SharedString::from(title))
                     .when(!only_one, |tab| {
                         tab.child(
-                            ramag_ui::clickable_button(SharedString::from(format!(
-                                "mongo-tab-close-{i}"
-                            )))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(
-                                move |this, _: &ClickEvent, window, cx| {
-                                    this.close_tab(i, window, cx);
-                                },
-                            )),
+                            // 父标签在 mouse_down 时切换；关闭按钮必须更早阻止冒泡。
+                            div()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .child(
+                                    ramag_ui::clickable_button(SharedString::from(format!(
+                                        "mongo-tab-close-{i}"
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, window, cx| {
+                                            this.close_tab(i, window, cx);
+                                        },
+                                    )),
+                                ),
                         )
                     })
                     .on_mouse_down(

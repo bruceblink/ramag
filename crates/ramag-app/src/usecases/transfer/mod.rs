@@ -1,9 +1,9 @@
-//! 按库导出 / 导入编排：SQL(.sql) / MongoDB(.jsonl) / Redis(.jsonl)。
+//! SQL、MongoDB 与 Redis 的流式导入导出编排。
 //!
 //! 导出：async 生产者分批读库 → 有界通道 → 阻塞池 `write_atomic_with` 落盘；
 //! 只有生产者显式 `finish()` 才提交文件，取消或出错都不会留下半截文件。
 //! 导入：流式读文件、分批写库。进度按批次回调，`AtomicBool` 随时取消；
-//! 取消不是错误——返回 `cancelled=true` 的汇总（导入已写入的部分保留）
+//! 取消时返回 `cancelled=true`，并保留已导入的数据。
 
 pub mod jsonl_table;
 pub mod mongo;
@@ -34,10 +34,10 @@ use std::time::Instant;
 use ramag_domain::entities::{ProgressFn, TransferProgress, TransferSummary};
 use ramag_domain::error::{DomainError, Result};
 
-/// 导出块攒到该字节数再投递写线程，减少通道往返
+/// 导出块达到该大小后再投递，减少通道往返。
 const SINK_FLUSH_BYTES: usize = 256 * 1024;
 const SINK_QUEUE_BLOCKS: usize = 64;
-/// 写线程通道断开（生产端取消 / 出错提前 drop）时的内部哨兵，转成「放弃临时文件」
+/// 生产端提前退出时通知写线程放弃临时文件。
 const SINK_ABORT_MESSAGE: &str = "__ramag_transfer_abort__";
 const SINK_CLOSED_MESSAGE: &str = "导出写文件线程已退出";
 /// 为 MySQL 外键检查前缀预留批次空间。
@@ -48,7 +48,7 @@ enum SinkMsg {
     Finish,
 }
 
-/// 导出文件写入端：带本地缓冲的通道封装，统计已投递字节
+/// 带缓冲的导出文件写入端。
 pub(crate) struct ExportSink {
     sender: SyncSender<SinkMsg>,
     buffer: Vec<u8>,
@@ -84,7 +84,7 @@ impl ExportSink {
             .map_err(|_| DomainError::Storage(SINK_CLOSED_MESSAGE.into()))
     }
 
-    /// 提交文件。不调用（直接 drop）= 放弃：临时文件被清理，原文件不动
+    /// 提交文件；未调用时清理临时文件并保留原文件。
     pub(crate) fn finish(mut self) -> Result<()> {
         self.flush()?;
         self.sender
@@ -98,8 +98,7 @@ enum WriteOutcome {
     Aborted,
 }
 
-/// 组装「阻塞池写线程 + async 生产者」管道。生产者拿到 [`ExportSink`]，
-/// 成功路径必须 `finish()`；返回 Ok 但未 finish（取消场景）不算错——文件不落地
+/// 组装阻塞写线程与异步生产者；仅调用 `finish()` 后提交文件。
 pub(crate) async fn with_export_sink<T, F, Fut>(path: &Path, produce: F) -> Result<T>
 where
     F: FnOnce(ExportSink) -> Fut,
@@ -133,7 +132,7 @@ where
     let (write_result, produce_result) = futures::join!(writer, produce(sink));
     match (write_result, produce_result) {
         (Ok(_), Ok(value)) => Ok(value),
-        // 写盘失败会让生产端 send 报「线程已退出」；此时写盘错误才是根因
+        // 写盘失败会导致生产端发送失败，应优先返回根因。
         (Err(write_error), Err(produce_error)) => {
             if produce_error.message() == SINK_CLOSED_MESSAGE {
                 Err(write_error)
@@ -173,7 +172,7 @@ pub(crate) fn read_line_bounded(
     Ok(read)
 }
 
-/// JSONL 一行：序列化进复用 buffer 再整体投递，避免逐行分配
+/// 使用复用缓冲区写入一条 JSONL 记录。
 pub(crate) fn write_json_line(
     sink: &mut ExportSink,
     buffer: &mut Vec<u8>,
@@ -192,7 +191,7 @@ pub(crate) fn write_json_line(
     sink.write(buffer)
 }
 
-/// 进度上报器：持有快照，按批次边界 emit；`emit_every` 供逐 key 等高频场景节流
+/// 保存进度快照，并支持高频场景节流上报。
 pub(crate) struct Reporter<'a> {
     emit: ProgressFn<'a>,
     pub snapshot: TransferProgress,
@@ -218,7 +217,7 @@ impl<'a> Reporter<'a> {
         (self.emit)(self.snapshot.clone());
     }
 
-    /// 每 `every` 次调用真正 emit 一次
+    /// 每调用 `every` 次上报一次。
     pub(crate) fn emit_every(&mut self, every: u32) {
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(every.max(1)) {
@@ -227,7 +226,7 @@ impl<'a> Reporter<'a> {
     }
 }
 
-/// 统一收口：填 elapsed 后返回
+/// 写入耗时并返回汇总。
 pub(crate) fn finish_summary(mut summary: TransferSummary, start: Instant) -> TransferSummary {
     summary.elapsed_ms = start.elapsed().as_millis() as u64;
     summary
@@ -259,7 +258,6 @@ mod tests {
             .await?;
             assert_eq!(value, 42);
 
-            // 不 finish（模拟取消）：返回 Ok 但文件不落地
             let cancelled = with_export_sink(&aborted, |mut sink| async move {
                 sink.write_str("partial")?;
                 Ok(7)

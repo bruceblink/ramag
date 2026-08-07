@@ -352,7 +352,7 @@ impl SshView {
             } else {
                 Ok(Vec::new())
             };
-            let _ = this.update(async_cx, |this, cx| {
+            let _ = this.update_in(async_cx, |this, window, cx| {
                 this.deleting_profile = false;
                 match (result, profiles) {
                     (Ok(()), Ok(profiles)) => {
@@ -365,6 +365,14 @@ impl SshView {
                                 .workspaces
                                 .first()
                                 .map(|workspace| workspace.profile.id.clone());
+                        }
+                        if let Some(active_id) = this.active_workspace_id.clone() {
+                            this.sync_directory_filter(&active_id, window, cx);
+                        } else {
+                            this.view_mode = super::model::ViewMode::Manager;
+                            this.directory_search.update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
                         }
                         this.notice = Some(Notice::info("已删除"));
                         this.persist_workspaces(cx);

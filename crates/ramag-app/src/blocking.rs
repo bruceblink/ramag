@@ -1,5 +1,4 @@
-//! 应用层 CPU / 文件 I/O 的固定工作线程池。剪贴板缩略图与媒体读写共用，
-//! 避免在 GPUI 前台 executor 阻塞，也避免每次操作新建 OS 线程。
+//! CPU 与文件 I/O 共用的固定工作线程池，避免阻塞 GPUI 前台执行器或频繁创建线程。
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -39,10 +38,10 @@ impl WorkerPool {
         match self.sender.try_send(job) {
             Ok(()) => Ok(()),
             Err(mpsc::TrySendError::Full(_)) => {
-                Err(DomainError::Other("app worker 队列繁忙，请稍后重试".into()))
+                Err(DomainError::Other("后台任务队列繁忙，请稍后重试".into()))
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                Err(DomainError::Other("app worker pool 已停止".into()))
+                Err(DomainError::Other("后台任务线程池已停止".into()))
             }
         }
     }
@@ -72,7 +71,7 @@ fn pool() -> Result<&'static WorkerPool> {
     }
 }
 
-/// 在线程数受控的共享 worker 中执行 CPU / 文件 I/O，避免 UI 工具按任务新建线程。
+/// 在线程数受控的共享线程池中执行 CPU 或文件 I/O。
 pub async fn run_blocking<F, T>(operation: F) -> Result<T>
 where
     F: FnOnce() -> Result<T> + Send + 'static,
@@ -81,12 +80,12 @@ where
     let (sender, receiver) = oneshot::channel();
     pool()?.execute(Box::new(move || {
         let result = catch_unwind(AssertUnwindSafe(operation))
-            .unwrap_or_else(|_| Err(DomainError::Other("app worker 任务发生 panic".into())));
+            .unwrap_or_else(|_| Err(DomainError::Other("后台任务执行时发生 panic".into())));
         let _ = sender.send(result);
     }))?;
     receiver
         .await
-        .unwrap_or_else(|_| Err(DomainError::Other("app worker 任务异常退出".into())))
+        .unwrap_or_else(|_| Err(DomainError::Other("后台任务异常退出".into())))
 }
 
 #[cfg(test)]

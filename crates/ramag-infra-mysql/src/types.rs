@@ -1,4 +1,4 @@
-//! MySQL 行解码：MySqlRow → Domain Value。按 SQL 类型名精确分发；DECIMAL 用 Text 保精度；失败 Text 兜底
+//! MySQL 行解码；DECIMAL 使用文本保留精度，失败时尝试文本兜底。
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use ramag_domain::entities::{ColumnKind, ColumnType, Value};
@@ -144,7 +144,7 @@ fn fallback_text(
         })
 }
 
-/// 把 INFORMATION_SCHEMA.COLUMNS 的 (data_type, column_type) 映射到 ColumnKind
+/// 将 MySQL 列类型映射为领域列类型。
 pub fn map_column_type(data_type: &str, column_type: &str) -> ColumnType {
     let kind = match data_type.to_ascii_uppercase().as_str() {
         "TINYINT" if column_type.eq_ignore_ascii_case("tinyint(1)") => ColumnKind::Bool,

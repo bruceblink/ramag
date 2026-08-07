@@ -1,8 +1,6 @@
-//! 表级 JSONL 导入：每行一个 JSON 对象，键名匹配目标表列后分批 INSERT。
-//! 与结果集 JSONL 导出配对，仅数据行、无 DDL；行内缺少的列不出现在
-//! INSERT 列表（走库默认值 / 自增），未匹配表列的键忽略并汇总告警。
-//! 策略语义：Skip=冲突行跳过、Overwrite=先清空表再导入、Fail=纯 INSERT 冲突即停；
-//! Merge 在行级与 Skip 重合，调用方不提供该选项（防御性传入时按 Skip 处理）
+//! 表级 JSONL 导入：按目标表列匹配每行对象并分批插入。
+//! 缺少的列使用数据库默认值，未知键会被忽略并汇总警告。
+//! `Merge` 在行级等同于 `Skip`。
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::BufReader;
@@ -19,12 +17,9 @@ use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use super::{Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
 
-/// INSERT 批次的行数与字节阈值。
 const BATCH_ROWS: usize = TRANSFER_BATCH_ITEMS;
 const BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;
-/// 单行长度保护（异常长行直接拒绝，防脏文件撑爆内存）
 const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
-/// 未匹配键告警最多点名的键数
 const MAX_UNKNOWN_KEYS_LISTED: usize = 8;
 
 pub async fn import_jsonl_into_table(
@@ -72,7 +67,7 @@ pub async fn import_jsonl_into_table(
     let qualified = qualified_table(config.driver, schema, table);
 
     if policy == ConflictPolicy::Overwrite {
-        // DELETE 而非 TRUNCATE：保持普通 DML 语义，外键约束冲突能正常暴露
+        // 使用 DELETE 保留普通 DML 语义，使外键冲突正常暴露。
         reporter.stage("清空表", format!("{schema}.{table}"));
         run_sql(svc, config, schema, &format!("DELETE FROM {qualified}")).await?;
     }
@@ -81,7 +76,7 @@ pub async fn import_jsonl_into_table(
     let mut line = String::new();
     let mut line_no: u64 = 0;
     let mut unknown_keys: BTreeSet<String> = BTreeSet::new();
-    // 当前批：同列集的行攒成一条多行 INSERT；列集变化（异构行）先冲洗
+    // 同列集的行组成多行 INSERT，列集变化时先提交当前批次。
     let mut batch_cols: Vec<String> = Vec::new();
     let mut batch_rows: Vec<String> = Vec::new();
     let mut batch_bytes = 0usize;
@@ -237,7 +232,7 @@ pub async fn import_jsonl_into_table(
     Ok(finish_summary(summary, start))
 }
 
-/// 冲洗当前批：Fail 策略错误即停；其余策略计失败 + 告警后继续
+/// 提交当前批次；`Fail` 策略遇错即停，其他策略记录警告后继续。
 #[allow(clippy::too_many_arguments)]
 async fn flush_batch(
     svc: &ConnectionService,
@@ -291,7 +286,7 @@ async fn run_sql(
     Ok(result.affected_rows)
 }
 
-/// 按表列顺序取出该行出现的列名；未匹配表列的键收集给调用方汇总告警
+/// 按表列顺序返回当前行的匹配列，并收集未知键。
 fn present_columns(
     column_names: &[String],
     column_set: &HashSet<String>,
@@ -310,7 +305,7 @@ fn present_columns(
         .collect()
 }
 
-/// 渲染一行的 VALUES 元组；cols 即该行的 present 集，缺键不可达（防御填 NULL）
+/// 渲染一行 `VALUES` 元组；缺失值防御性填充为 `NULL`。
 fn render_row(
     driver: DriverKind,
     cols: &[String],
@@ -330,7 +325,7 @@ fn render_row(
     out
 }
 
-/// JSON 值转 SQL 字面量；嵌套对象 / 数组按 JSON 文本入列（JSON 列可解析）
+/// 将 JSON 值转换为 SQL 字面量；嵌套值以 JSON 文本写入。
 fn sql_literal(driver: DriverKind, value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Null => "NULL".to_string(),
@@ -342,7 +337,7 @@ fn sql_literal(driver: DriverKind, value: &serde_json::Value) -> String {
     }
 }
 
-/// 字符串字面量：单引号翻倍；MySQL 默认反斜杠转义需再翻倍反斜杠，PG 标准串不需要
+/// 转义 SQL 字符串字面量。
 fn quote_string(driver: DriverKind, text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('\'');
@@ -372,7 +367,7 @@ fn qualified_table(driver: DriverKind, schema: &str, table: &str) -> String {
     )
 }
 
-/// 多行 INSERT：Skip/Merge 用引擎原生冲突跳过（MySQL IGNORE / PG DO NOTHING）
+/// 构造多行插入；`Skip` 和 `Merge` 使用数据库原生冲突跳过语法。
 fn build_insert_sql(
     driver: DriverKind,
     policy: ConflictPolicy,
@@ -440,7 +435,6 @@ mod tests {
             sql_literal(DriverKind::Mysql, &serde_json::json!(1.5)),
             "1.5"
         );
-        // MySQL 反斜杠翻倍；PG 保持原样
         assert_eq!(
             sql_literal(DriverKind::Mysql, &serde_json::json!("a'b\\c")),
             "'a''b\\\\c'"
@@ -449,7 +443,6 @@ mod tests {
             sql_literal(DriverKind::Postgres, &serde_json::json!("a'b\\c")),
             "'a''b\\c'"
         );
-        // 嵌套结构按 JSON 文本入列
         assert_eq!(
             sql_literal(DriverKind::Postgres, &serde_json::json!({"k": 1})),
             "'{\"k\":1}'"
