@@ -1,4 +1,4 @@
-//! 系统凭据库：macOS 使用 Keychain，Windows 使用 Credential Manager。
+//! 系统凭据库：macOS 使用 Keychain，Windows 使用 Credential Manager，Linux 使用 Secret Service。
 //! 32 字节主密钥仅存系统凭据库，不落盘；redb 文件被拷走也无法解密。
 
 use ramag_domain::error::{DomainError, Result};

@@ -1,15 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod clipboard_runtime;
 mod composition;
 mod logging;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg_attr(target_os = "linux", path = "single_instance_linux.rs")]
 mod single_instance;
 #[cfg(target_os = "windows")]
 mod tray;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod window_layout;
 mod windows;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use clipboard_runtime::*;
 use composition::*;
 use windows::*;
@@ -17,18 +21,23 @@ use windows::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use gpui::WindowKind;
 use gpui::{
     Action, App, Bounds, KeyBinding, Menu, MenuItem, Subscription, TitlebarOptions, WindowBounds,
-    WindowKind, WindowOptions, prelude::*, px, size,
+    WindowOptions, prelude::*, px, size,
 };
 use gpui_component::Root;
 use ramag_app::{
     ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService, RedisService,
     SshService, ToolRegistry, UpdateService,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use ramag_domain::traits::ClipboardDriver;
 use ramag_domain::traits::{
-    ClipboardDriver, DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
+    DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_infra_clipboard::{HotkeyListener, PlatformClipboardDriver, foreground_display_index};
 use ramag_infra_git::GitDriverImpl;
 use ramag_infra_mongodb::MongoDriver;
@@ -38,6 +47,7 @@ use ramag_infra_redis::RedisDriver;
 use ramag_infra_ssh::{JumpServerHttpDriver, OpenSshDriver};
 use ramag_infra_storage::RedbStorage;
 use ramag_infra_update::GitHubUpdateDriver;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_tool_clipboard::{
     ClipboardTool, CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip,
     SelectPrevClip, create_clipboard_drawer, create_clipboard_view,
@@ -62,6 +72,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::window_layout::{drawer_bounds, preferred_display};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
@@ -103,7 +114,7 @@ struct AppDeps {
     mongo_service: Arc<MongoService>,
     data_sync_service: Arc<DataSyncService>,
     data_sync_gate: Arc<DataSyncGate>,
-    clipboard_service: Arc<ClipboardService>,
+    clipboard_service: Option<Arc<ClipboardService>>,
     ssh_service: Arc<SshService>,
     update_service: Option<Arc<UpdateService>>,
     storage: Arc<dyn Storage>,
@@ -177,7 +188,7 @@ fn main() {
 
     // 单实例：已有实例在跑则通知其唤起主窗口后静默退出（避免 redb 文件锁报错）；
     // macOS 由系统 LaunchServices 保证 .app 单实例，无需自建
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     let instance_guard = match single_instance::acquire() {
         single_instance::InstanceRole::Secondary => {
             info!("another instance is running; asked it to reveal and exiting");
@@ -211,7 +222,10 @@ fn main() {
         mongo_service.clone(),
         data_sync_gate.clone(),
     ));
-    let clipboard_service: Arc<ClipboardService> = build_clipboard_service(storage.clone());
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let clipboard_service = Some(build_clipboard_service(storage.clone()));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let clipboard_service: Option<Arc<ClipboardService>> = None;
     let ssh_service: Arc<SshService> = build_ssh_service(storage.clone());
     let update_service = build_update_service(storage.clone());
 
@@ -224,19 +238,23 @@ fn main() {
         .cloned();
 
     // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
-    let clipboard_enabled = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime.block_on(clipboard_service.prime_capture_enabled()),
-        Err(error) => {
-            warn!(error = %error, fallback = "tool_hidden", "load clipboard settings failed");
-            false
-        }
-    };
-
     let registry = build_tool_registry();
-    registry.set_enabled(ClipboardTool::ID, clipboard_enabled);
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let clipboard_enabled = clipboard_service.as_ref().is_some_and(|service| {
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime.block_on(service.prime_capture_enabled()),
+                Err(error) => {
+                    warn!(error = %error, fallback = "tool_hidden", "load clipboard settings failed");
+                    false
+                }
+            }
+        });
+        registry.set_enabled(ClipboardTool::ID, clipboard_enabled);
+    }
     info!(tool_count = registry.count(), "tools registered");
 
     let deps = AppDeps {
@@ -324,6 +342,18 @@ fn main() {
             spawn_instance_activation(instance_guard, deps.clone(), cx);
         }
 
+        // Linux 无后台常驻功能：关闭最后一个窗口即退出；重复启动会唤起已有实例。
+        #[cfg(target_os = "linux")]
+        {
+            cx.on_window_closed(|cx, _window_id| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            spawn_instance_activation(instance_guard, deps.clone(), cx);
+        }
+
         // 主修饰键+W 全局 fallback：视图层先消费（关 tab），没消费就关窗。
         // 关窗须 defer：此刻正处在该窗口的按键分发栈内（window 已被 take 出），
         // 直接 handle.update 会重入 take 失败而静默不关；defer 到本次分发结束后再移除
@@ -376,33 +406,37 @@ fn main() {
             KeyBinding::new("secondary-r", RefreshWorkspace, Some("VcsView")),
             KeyBinding::new("secondary-s", SaveProjectFile, Some("VcsView")),
             KeyBinding::new("secondary-shift-h", ToggleHistoryPane, Some("VcsView")),
-            KeyBinding::new("secondary-f", FocusClipSearch, Some("ClipboardView")),
-            KeyBinding::new("enter", CopySelectedClip, Some("ClipboardView")),
-            KeyBinding::new("delete", DeleteSelectedClip, Some("ClipboardView")),
-            KeyBinding::new("backspace", DeleteSelectedClip, Some("ClipboardView")),
-            KeyBinding::new("down", SelectNextClip, Some("ClipboardView")),
-            KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
             KeyBinding::new("secondary-t", NewSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("Terminal")),
             KeyBinding::new("secondary-r", RefreshSftp, Some("SshWorkspace")),
         ]);
 
-        {
-            let svc = deps.clipboard_service.clone();
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        cx.bind_keys([
+            KeyBinding::new("secondary-f", FocusClipSearch, Some("ClipboardView")),
+            KeyBinding::new("enter", CopySelectedClip, Some("ClipboardView")),
+            KeyBinding::new("delete", DeleteSelectedClip, Some("ClipboardView")),
+            KeyBinding::new("backspace", DeleteSelectedClip, Some("ClipboardView")),
+            KeyBinding::new("down", SelectNextClip, Some("ClipboardView")),
+            KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
+        ]);
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(svc) = deps.clipboard_service.clone() {
+            let cleanup_service = svc.clone();
             cx.spawn(async move |_| {
-                if let Err(e) = svc.cleanup_orphans().await {
+                if let Err(e) = cleanup_service.cleanup_orphans().await {
                     tracing::warn!(error = %e, "clipboard orphan cleanup failed");
                 }
             })
             .detach();
+            let preload_service = svc.clone();
+            cx.spawn(async move |_| preload_service.preload().await)
+                .detach();
+            spawn_clipboard_capture(svc.clone(), cx);
+            spawn_clipboard_hotkey(svc, deps.registry.clone(), cx);
         }
-        {
-            let svc = deps.clipboard_service.clone();
-            cx.spawn(async move |_| svc.preload().await).detach();
-        }
-        spawn_clipboard_capture(deps.clipboard_service.clone(), cx);
-        spawn_clipboard_hotkey(deps.clipboard_service.clone(), deps.registry.clone(), cx);
 
         let log_path_for_open = log_path.clone();
         cx.on_action(move |_: &OpenLogDir, cx: &mut App| {
@@ -495,10 +529,7 @@ fn confirm_ssh_host(prompt: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CAPTURE_INTERVAL, CAPTURE_MAX_RETRY_INTERVAL, MainWindowOpenGate, build_tool_registry,
-        next_capture_retry_interval,
-    };
+    use super::{MainWindowOpenGate, build_tool_registry};
 
     #[test]
     fn main_window_open_gate_coalesces_repeated_requests() {
@@ -510,8 +541,11 @@ mod tests {
         assert!(gate.try_begin());
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn clipboard_capture_retry_backoff_is_bounded() {
+        use super::{CAPTURE_INTERVAL, CAPTURE_MAX_RETRY_INTERVAL, next_capture_retry_interval};
+
         let mut interval = CAPTURE_INTERVAL;
         assert_eq!(
             next_capture_retry_interval(interval),
@@ -527,6 +561,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn clipboard_tool_is_registered_last() {
         let ids = build_tool_registry()
@@ -536,5 +571,17 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, ["dbclient", "vcs", "ssh", "clipboard"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clipboard_tool_is_not_registered_on_linux() {
+        let ids = build_tool_registry()
+            .list()
+            .into_iter()
+            .map(|tool| tool.meta().id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["dbclient", "vcs", "ssh"]);
     }
 }

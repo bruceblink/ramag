@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ramag
+Comment=Developer database, Git and SSH toolkit
+Exec=ramag
+Icon=com.ramag.Ramag
+Terminal=false
+Categories=Development;Database;
+StartupNotify=true
+StartupWMClass=com.ramag.Ramag

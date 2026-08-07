@@ -65,11 +65,12 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx.open_window(
             WindowOptions {
+                app_id: Some("com.ramag.Ramag".into()),
                 window_bounds: Some(window_bounds),
                 window_min_size: Some(size(px(800.0), px(500.0))),
                 // 原生标题栏需 appears_transparent=false，否则失去双击 zoom 命中区
                 titlebar: Some(TitlebarOptions {
-                    title: if cfg!(target_os = "windows") {
+                    title: if cfg!(any(target_os = "windows", target_os = "linux")) {
                         Some("Ramag".into())
                     } else {
                         None
@@ -96,7 +97,10 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
                 let git_driver: Arc<dyn GitDriver> = Arc::new(GitDriverImpl::new());
                 let vcs_view = create_vcs_view(git_driver, storage.clone(), window, cx);
 
-                let clipboard_view = create_clipboard_view(clipboard_service.clone(), window, cx);
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                let clipboard_view = clipboard_service
+                    .as_ref()
+                    .map(|service| create_clipboard_view(service.clone(), window, cx));
                 let ssh_view = create_ssh_view(ssh_service.clone(), window, cx);
                 let settings_view = cx.new(|cx| {
                     SettingsView::new(
@@ -116,7 +120,10 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
                     shell.set_settings_view(settings_view.clone().into());
                     shell.register_tool_view(DbClientTool::ID, dbclient_view.clone().into());
                     shell.register_tool_view(VcsTool::ID, vcs_view.into());
-                    shell.register_tool_view(ClipboardTool::ID, clipboard_view.clone().into());
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if let Some(clipboard_view) = clipboard_view.clone() {
+                        shell.register_tool_view(ClipboardTool::ID, clipboard_view.into());
+                    }
                     shell.register_tool_view(SshTool::ID, ssh_view.into());
 
                     let home_subscription: Subscription = cx.subscribe_in(
@@ -189,7 +196,7 @@ pub(super) fn spawn_tray_loop(
     .detach();
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub(super) fn spawn_instance_activation(
     guard: single_instance::PrimaryGuard,
     deps: AppDeps,

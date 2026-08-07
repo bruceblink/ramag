@@ -44,7 +44,10 @@ impl SettingsView {
                     .child("设置"),
             );
 
-        for page in SettingsPage::ALL {
+        for &page in SettingsPage::ALL
+            .iter()
+            .filter(|&&page| page != SettingsPage::Clipboard || self.clipboard_service.is_some())
+        {
             let selected = self.selected_page == page;
             navigation = navigation.child(settings_navigation_item(
                 page,

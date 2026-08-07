@@ -15,6 +15,16 @@ use tracing::error;
 
 impl SettingsView {
     pub(super) fn render_clipboard_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(service) = self.clipboard_service.as_ref() else {
+            return settings_card("当前平台不可用", cx.theme().border)
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("当前平台未启用剪贴板工具。"),
+                )
+                .into_any_element();
+        };
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let border = theme.border;
@@ -27,7 +37,7 @@ impl SettingsView {
             .when(disabled, |page| {
                 page.child(div().text_xs().text_color(muted).child("保存中…"))
             })
-            .when(self.clipboard_service.settings_degraded(), |page| {
+            .when(service.settings_degraded(), |page| {
                 page.child(
                     div()
                         .text_xs()
@@ -36,8 +46,7 @@ impl SettingsView {
                 )
             })
             .when(
-                settings.enabled
-                    && matches!(self.clipboard_service.hotkey_state(), HotkeyState::Failed),
+                settings.enabled && matches!(service.hotkey_state(), HotkeyState::Failed),
                 |page| {
                     page.child(div().text_xs().text_color(gpui::red()).child(format!(
                         "全局热键 {} 注册失败：组合键可能被其它应用占用，可尝试切换备用热键。",
@@ -176,10 +185,12 @@ impl SettingsView {
         if self.clearing_clipboard_history {
             return;
         }
+        let Some(service) = self.clipboard_service.clone() else {
+            return;
+        };
         self.clearing_clipboard_history = true;
         cx.notify();
 
-        let service = self.clipboard_service.clone();
         cx.spawn(async move |this, cx| {
             let result = service.clear().await;
             let _ = this.update(cx, |this, cx| {

@@ -146,6 +146,93 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  linux-package:
+    name: Build and verify Linux x86_64 packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Install Linux build and packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            desktop-file-utils \
+            dpkg-dev \
+            file \
+            jq \
+            libasound2-dev \
+            libdbus-1-dev \
+            libfontconfig-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev \
+            libzstd-dev \
+            patchelf \
+            pkg-config \
+            shellcheck \
+            squashfs-tools \
+            xz-utils
+          desktop-file-validate scripts/linux/com.ramag.Ramag.desktop
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(
+            awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \
+              rust-toolchain.toml
+          )"
+          [[ -n "$toolchain" ]]
+          rustup toolchain install "$toolchain" --profile minimal
+          rustup target add --toolchain "$toolchain" x86_64-unknown-linux-gnu
+          rustup run "$toolchain" rustc -Vv
+          rustup run "$toolchain" cargo -V
+
+      - name: Restore Linux Cargo download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: linux-amd64-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            linux-amd64-cargo-
+
+      - name: Test Linux packaging logic
+        shell: bash
+        run: |
+          shellcheck -x scripts/package-linux.sh scripts/linux/*.sh
+          make linux-package-test
+
+      - name: Build and package Linux
+        shell: bash
+        run: make linux-package
+
+      - name: Upload verified Linux packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ramag-linux-${{ github.sha }}
+          path: |
+            target/linux-dist/Ramag-*-linux-amd64.deb
+            target/linux-dist/Ramag-*-linux-x86_64.AppImage
+            target/linux-dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   release:
     name: Publish GitHub Release
     if: >-
@@ -154,6 +241,7 @@ jobs:
     needs:
       - windows-package
       - macos-package
+      - linux-package
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: desktop-release
@@ -172,35 +260,52 @@ jobs:
           name: ramag-macos-${{ github.sha }}
           path: release-input/macos
 
+      - name: Download verified Linux packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ramag-linux-${{ github.sha }}
+          path: release-input/linux
+
       - name: Verify and combine release assets
         shell: bash
         run: |
           set -euo pipefail
           windows_dir="release-input/windows"
           macos_dir="release-input/macos"
+          linux_dir="release-input/linux"
           shopt -s nullglob
           installers=("$windows_dir"/Ramag-*-windows-x64-setup.exe)
           arm_disk_images=("$macos_dir"/Ramag-*-macos-arm64.dmg)
           intel_disk_images=("$macos_dir"/Ramag-*-macos-x86_64.dmg)
+          deb_packages=("$linux_dir"/Ramag-*-linux-amd64.deb)
+          appimages=("$linux_dir"/Ramag-*-linux-x86_64.AppImage)
           [[ ${#installers[@]} -eq 1 ]]
           [[ ${#arm_disk_images[@]} -eq 1 ]]
           [[ ${#intel_disk_images[@]} -eq 1 ]]
+          [[ ${#deb_packages[@]} -eq 1 ]]
+          [[ ${#appimages[@]} -eq 1 ]]
           [[ -f "$windows_dir/SHA256SUMS.txt" ]]
           [[ -f "$macos_dir/SHA256SUMS.txt" ]]
+          [[ -f "$linux_dir/SHA256SUMS.txt" ]]
           (cd "$windows_dir" && sha256sum --check SHA256SUMS.txt)
           (cd "$macos_dir" && sha256sum --check SHA256SUMS.txt)
+          (cd "$linux_dir" && sha256sum --check SHA256SUMS.txt)
 
           mkdir release-assets
           cp \
             "${installers[0]}" \
             "${arm_disk_images[0]}" \
             "${intel_disk_images[0]}" \
+            "${deb_packages[0]}" \
+            "${appimages[0]}" \
             release-assets/
           cd release-assets
           sha256sum \
             Ramag-*-windows-x64-setup.exe \
             Ramag-*-macos-arm64.dmg \
             Ramag-*-macos-x86_64.dmg \
+            Ramag-*-linux-amd64.deb \
+            Ramag-*-linux-x86_64.AppImage \
             >SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
 
@@ -218,6 +323,8 @@ jobs:
             Ramag-*-windows-x64-setup.exe
             Ramag-*-macos-arm64.dmg
             Ramag-*-macos-x86_64.dmg
+            Ramag-*-linux-amd64.deb
+            Ramag-*-linux-x86_64.AppImage
             SHA256SUMS.txt
             update-manifest.json
           )
@@ -239,6 +346,16 @@ jobs:
             echo "Release tag $tag does not match packaged version $version." >&2
             exit 1
           fi
+          for expected_asset in \
+            "Ramag-$version-macos-arm64.dmg" \
+            "Ramag-$version-macos-x86_64.dmg" \
+            "Ramag-$version-linux-amd64.deb" \
+            "Ramag-$version-linux-x86_64.AppImage"; do
+            if [[ ! -f "$expected_asset" ]]; then
+              echo "Release asset version mismatch: $expected_asset is missing." >&2
+              exit 1
+            fi
+          done
 
           tag_ref=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha')
           read -r tag_object_type tag_object_sha <<<"$tag_ref"
@@ -256,7 +373,9 @@ jobs:
           for asset in \
             Ramag-*-windows-x64-setup.exe \
             Ramag-*-macos-arm64.dmg \
-            Ramag-*-macos-x86_64.dmg; do
+            Ramag-*-macos-x86_64.dmg \
+            Ramag-*-linux-amd64.deb \
+            Ramag-*-linux-x86_64.AppImage; do
             hash=$(awk -v asset="$asset" '$2 == asset { print $1 }' SHA256SUMS.txt)
             [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
             size=$(stat --format='%s' "$asset")
@@ -282,7 +401,7 @@ jobs:
               published_at: $published_at,
               assets: $assets
             }' >update-manifest.json
-          jq -e '.schema_version == 1 and (.assets | length) == 3' \
+          jq -e '.schema_version == 1 and (.assets | length) == 5' \
             update-manifest.json >/dev/null
 
           title="Ramag ${tag#v}"

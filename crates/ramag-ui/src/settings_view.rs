@@ -111,7 +111,7 @@ enum DatabaseConverterTestDirection {
 
 pub struct SettingsView {
     selected_page: SettingsPage,
-    clipboard_service: Arc<ClipboardService>,
+    clipboard_service: Option<Arc<ClipboardService>>,
     connection_service: Arc<ConnectionService>,
     ssh_service: Arc<SshService>,
     update_service: Option<Arc<UpdateService>>,
@@ -140,14 +140,17 @@ pub struct SettingsView {
 
 impl SettingsView {
     pub fn new(
-        clipboard_service: Arc<ClipboardService>,
+        clipboard_service: Option<Arc<ClipboardService>>,
         connection_service: Arc<ConnectionService>,
         ssh_service: Arc<SshService>,
         update_service: Option<Arc<UpdateService>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (clipboard, loaded_revision) = clipboard_service.settings_snapshot_with_revision();
+        let (clipboard, loaded_revision) = clipboard_service
+            .as_ref()
+            .map(|service| service.settings_snapshot_with_revision())
+            .unwrap_or_default();
         let ssh_module_settings = ssh_service.module_settings_snapshot();
         let database = crate::database_search_settings(cx);
         let database_enabled_draft = database.id_conversion_enabled;
@@ -196,19 +199,20 @@ impl SettingsView {
         )
         .detach();
 
-        let service = clipboard_service.clone();
-        cx.spawn(async move |this, cx| {
-            service.load_settings().await;
-            let (settings, revision) = service.settings_snapshot_with_revision();
-            let _ = this.update(cx, |this, cx| {
-                if !this.saving_clipboard {
-                    this.clipboard = settings;
-                    this.loaded_revision = revision;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        if let Some(service) = clipboard_service.clone() {
+            cx.spawn(async move |this, cx| {
+                service.load_settings().await;
+                let (settings, revision) = service.settings_snapshot_with_revision();
+                let _ = this.update(cx, |this, cx| {
+                    if !this.saving_clipboard {
+                        this.clipboard = settings;
+                        this.loaded_revision = revision;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
 
         let ssh_settings_service = ssh_service.clone();
         cx.spawn(async move |this, cx| {
@@ -229,29 +233,34 @@ impl SettingsView {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(600))
-                    .await;
-                let alive = this
-                    .update(cx, |this, cx| {
-                        let revision = this.clipboard_service.settings_revision();
-                        if !this.saving_clipboard && revision != this.loaded_revision {
-                            let (settings, revision) =
-                                this.clipboard_service.settings_snapshot_with_revision();
-                            this.clipboard = settings;
-                            this.loaded_revision = revision;
-                            cx.notify();
-                        }
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
+        if clipboard_service.is_some() {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(600))
+                        .await;
+                    let alive = this
+                        .update(cx, |this, cx| {
+                            let Some(service) = this.clipboard_service.as_ref() else {
+                                return;
+                            };
+                            let revision = service.settings_revision();
+                            if !this.saving_clipboard && revision != this.loaded_revision {
+                                let (settings, revision) =
+                                    service.settings_snapshot_with_revision();
+                                this.clipboard = settings;
+                                this.loaded_revision = revision;
+                                cx.notify();
+                            }
+                        })
+                        .is_ok();
+                    if !alive {
+                        break;
+                    }
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        }
 
         Self {
             selected_page: SettingsPage::default(),
@@ -287,11 +296,13 @@ impl SettingsView {
         if self.saving_clipboard || self.clipboard == next {
             return;
         }
+        let Some(service) = self.clipboard_service.clone() else {
+            return;
+        };
         let previous = std::mem::replace(&mut self.clipboard, next.clone());
         self.saving_clipboard = true;
         cx.notify();
 
-        let service = self.clipboard_service.clone();
         cx.spawn(async move |this, cx| {
             let result = service.save_settings(&next).await;
             let _ = this.update(cx, |this, cx| {

@@ -8,6 +8,7 @@
         db-test-status db-test-down db-test-clean \
         _db-test-test _db-test-check _db-test-clippy _db-test-fmt \
         dmg dmg-x86 dmg-arm64 mac-package mac-package-test \
+        linux-package linux-package-test \
         win-debug \
         clean \
         deps-update lock-refresh
@@ -39,6 +40,9 @@ help:
 	@printf "    make dmg-x86        交叉编译 Intel mac\n"
 	@printf "    make dmg-arm64      交叉编译 Apple Silicon\n"
 	@printf "    make mac-package    验证并生成 ARM64 与 Intel 两个正式 DMG；对外 Release 走 Actions\n"
+	@printf "\n  \033[36mLinux x86_64\033[0m\n"
+	@printf "    make linux-package  生成 deb、AppImage 与 SHA256SUMS；需在 Linux x86_64 运行\n"
+	@printf "    make linux-package-test  测试 Linux 打包命名、版本与桌面元数据\n"
 	@printf "\n  \033[36mWindows x64\033[0m\n"
 	@printf "    make win-debug      macOS 交叉构建 debug（用于编译验证）\n"
 	@printf "    build-windows.ps1   Windows 原生构建 debug / release（-Release）\n"
@@ -146,6 +150,13 @@ mac-package:
 
 mac-package-test:
 	./scripts/macos/package-tests.sh
+
+# === 打包（Linux x86_64）============================================
+linux-package:
+	./scripts/package-linux.sh
+
+linux-package-test:
+	./scripts/linux/package-tests.sh
 
 # === 跨编（macOS → Windows）==========================================
 # 在 macOS 上直接编出 debug ramag.exe（x64），无需 Windows 机器。脚本内含前置依赖检查

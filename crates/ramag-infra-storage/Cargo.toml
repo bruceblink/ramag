@@ -47,9 +47,12 @@ hex = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
-# 钥匙串主密钥：按 target 选原生后端（macOS Keychain / Windows 凭据管理器）
+# 系统凭据库：按 target 选择原生后端；Linux 使用 Secret Service（GNOME Keyring 等兼容实现）。
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }

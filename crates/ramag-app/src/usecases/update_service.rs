@@ -29,6 +29,8 @@ pub enum UpdatePlatform {
     MacosArm64,
     MacosX86_64,
     WindowsX86_64,
+    LinuxDebX86_64,
+    LinuxAppImageX86_64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,6 +294,10 @@ pub fn asset_name_for(platform: UpdatePlatform, version: &str) -> String {
         UpdatePlatform::MacosArm64 => format!("Ramag-{version}-macos-arm64.dmg"),
         UpdatePlatform::MacosX86_64 => format!("Ramag-{version}-macos-x86_64.dmg"),
         UpdatePlatform::WindowsX86_64 => format!("Ramag-{version}-windows-x64-setup.exe"),
+        UpdatePlatform::LinuxDebX86_64 => format!("Ramag-{version}-linux-amd64.deb"),
+        UpdatePlatform::LinuxAppImageX86_64 => {
+            format!("Ramag-{version}-linux-x86_64.AppImage")
+        }
     }
 }
 
@@ -345,6 +351,13 @@ pub fn current_platform() -> Option<UpdatePlatform> {
     {
         return Some(UpdatePlatform::WindowsX86_64);
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        if std::env::var_os("APPIMAGE").is_some_and(|path| !path.is_empty()) {
+            return Some(UpdatePlatform::LinuxAppImageX86_64);
+        }
+        return Some(UpdatePlatform::LinuxDebX86_64);
+    }
     #[allow(unreachable_code)]
     None
 }
@@ -378,6 +391,14 @@ mod tests {
         assert_eq!(
             asset_name_for(UpdatePlatform::WindowsX86_64, "1.2.3"),
             "Ramag-1.2.3-windows-x64-setup.exe"
+        );
+        assert_eq!(
+            asset_name_for(UpdatePlatform::LinuxDebX86_64, "1.2.3"),
+            "Ramag-1.2.3-linux-amd64.deb"
+        );
+        assert_eq!(
+            asset_name_for(UpdatePlatform::LinuxAppImageX86_64, "1.2.3"),
+            "Ramag-1.2.3-linux-x86_64.AppImage"
         );
     }
 

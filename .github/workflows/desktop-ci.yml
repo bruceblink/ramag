@@ -1,0 +1,203 @@
+name: Desktop CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-quality:
+    name: Linux x86_64 quality gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            desktop-file-utils \
+            jq \
+            libasound2-dev \
+            libdbus-1-dev \
+            libfontconfig-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev \
+            libzstd-dev \
+            pkg-config \
+            shellcheck
+          desktop-file-validate scripts/linux/com.ramag.Ramag.desktop
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(
+            awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \
+              rust-toolchain.toml
+          )"
+          [[ -n "$toolchain" ]]
+          rustup toolchain install "$toolchain" --profile minimal \
+            --component clippy --component rustfmt
+          rustup target add --toolchain "$toolchain" x86_64-unknown-linux-gnu
+          rustup run "$toolchain" rustc -Vv
+          uname -m
+
+      - name: Restore Cargo download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: linux-ci-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            linux-ci-cargo-
+
+      - name: Validate Linux packaging logic
+        run: |
+          shellcheck -x scripts/package-linux.sh scripts/linux/*.sh
+          make linux-package-test
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Check all targets
+        run: make check
+
+      - name: Lint all targets
+        run: make clippy
+
+      - name: Test workspace
+        run: make test
+
+  macos-quality:
+    name: macOS quality gates
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(
+            awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \
+              rust-toolchain.toml
+          )"
+          [[ -n "$toolchain" ]]
+          rustup toolchain install "$toolchain" --profile minimal \
+            --component clippy --component rustfmt
+          rustup run "$toolchain" rustc -Vv
+          sw_vers
+          uname -m
+          jq --version
+
+      - name: Restore Cargo download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: macos-ci-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            macos-ci-cargo-
+
+      - name: Validate macOS packaging logic
+        run: make mac-package-test
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Check all targets
+        run: make check
+
+      - name: Lint all targets
+        run: make clippy
+
+      - name: Test workspace
+        run: make test
+
+  windows-quality:
+    name: Windows x64 quality gates
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $ChannelLine = Get-Content rust-toolchain.toml |
+            Where-Object { $_ -match '^\s*channel\s*=' } |
+            Select-Object -First 1
+          if ($ChannelLine -notmatch '"([^"]+)"') {
+            throw "rust-toolchain.toml does not contain a valid channel."
+          }
+          $Toolchain = $Matches[1]
+          rustup toolchain install $Toolchain --profile minimal `
+            --component clippy --component rustfmt
+          rustup target add --toolchain $Toolchain x86_64-pc-windows-msvc
+          rustup run $Toolchain rustc -Vv
+          rustup run $Toolchain cargo -V
+
+      - name: Restore Cargo download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-ci-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            windows-ci-cargo-
+
+      - name: Validate Windows packaging logic
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
+          $PesterConfig = New-PesterConfiguration
+          $PesterConfig.Run.Path = "./scripts/windows/package.Tests.ps1"
+          $PesterConfig.Run.Exit = $true
+          Invoke-Pester -Configuration $PesterConfig
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check all targets
+        run: cargo check --all-targets
+
+      - name: Lint all targets
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --all

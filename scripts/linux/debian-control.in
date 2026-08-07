@@ -1,0 +1,13 @@
+Package: ramag
+Version: @VERSION@
+Section: devel
+Priority: optional
+Architecture: amd64
+Maintainer: Ramag Maintainers <tools-rs@users.noreply.github.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: ca-certificates, libc6, libdbus-1-3, libfontconfig1, libgcc-s1, libvulkan1, libwayland-client0, libxkbcommon0, xdg-utils
+Recommends: git, openssh-client, xdg-desktop-portal, xdg-desktop-portal-gtk, gnome-keyring
+Homepage: https://github.com/tools-rs/ramag
+Description: Developer database, Git and SSH toolkit
+ Ramag provides graphical database, version-control and SSH tools.
+ Linux clipboard integration is intentionally not included.

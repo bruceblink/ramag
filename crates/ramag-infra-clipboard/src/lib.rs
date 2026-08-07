@@ -1,4 +1,5 @@
 #![allow(unexpected_cfgs)]
+#![cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 //! 剪贴板驱动：按平台分发。

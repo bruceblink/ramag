@@ -55,6 +55,7 @@ pub(super) fn build_tool_registry() -> Arc<ToolRegistry> {
     registry.register(Arc::new(DbClientTool::new()));
     registry.register(Arc::new(VcsTool::new()));
     registry.register(Arc::new(SshTool::new()));
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     registry.register(Arc::new(ClipboardTool::new()));
     registry
 }
@@ -69,6 +70,7 @@ pub(super) fn build_mongo_service(storage: Arc<dyn Storage>) -> Arc<MongoService
     Arc::new(MongoService::new(driver, storage))
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn build_clipboard_service(storage: Arc<dyn Storage>) -> Arc<ClipboardService> {
     let driver: Arc<dyn ClipboardDriver> = Arc::new(PlatformClipboardDriver::new());
     Arc::new(ClipboardService::new(driver, storage))
