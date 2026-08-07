@@ -2,6 +2,7 @@
 
 use super::*;
 
+/// 采集间隔。两平台统一轮询系统剪贴板序列号，仅在变化时读取内容。
 pub(super) const CAPTURE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
 /// 持久化或系统剪贴板持续失败时指数退避，避免每 400ms 重复占用 CPU 与刷日志。
 pub(super) const CAPTURE_MAX_RETRY_INTERVAL: std::time::Duration =

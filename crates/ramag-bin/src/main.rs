@@ -493,7 +493,6 @@ fn confirm_ssh_host(prompt: &str) -> bool {
     )
 }
 
-/// 采集间隔。两平台统一轮询系统剪贴板序列号，仅在变化时读取内容。
 #[cfg(test)]
 mod tests {
     use super::{

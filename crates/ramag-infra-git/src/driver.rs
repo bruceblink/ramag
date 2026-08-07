@@ -1,5 +1,9 @@
 //! Git 驱动入口。
 
+mod open;
+mod remote_ops;
+mod repository_ops;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -29,44 +33,7 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn open_repo(&self, path: &Path) -> Result<RepoConfig> {
-        // Windows 的 std::fs::canonicalize 常返回 `\\?\` 路径，Git for Windows 和 UI
-        // 未必都能识别；dunce 仅在可无歧义转换时还原为常规路径。
-        let canonical = dunce::canonicalize(path)
-            .map_err(|e| DomainError::InvalidConfig(format!("路径无法访问: {e}")))?;
-
-        // 串行化同一路径的首次打开并在锁内双检，避免并发创建孤儿句柄。
-        let open_lock = self.open_lock(&canonical);
-        let _guard = open_lock.lock().await;
-
-        // 同 path 复用已打开句柄；同时清理旧版本或异常中断留下的失效映射。
-        if let Some(existing_id) = self.by_path.get(&canonical) {
-            let id = existing_id.clone();
-            drop(existing_id);
-            if self.repos.contains_key(&id) {
-                let path_string = canonical.to_string_lossy().into_owned();
-                return Ok(RepoConfig::from_path(path_string).with_id(id));
-            }
-            self.by_path.remove(&canonical);
-        }
-
-        let canonical_for_open = canonical.clone();
-        let repo =
-            run_blocking(move || gix::open(&canonical_for_open).map_err(errors::map_open_error))
-                .await?;
-
-        let git_dir = repo.git_dir().to_path_buf();
-        let id = RepoId::new();
-        let handle = Arc::new(OpenRepo {
-            path: canonical.clone(),
-            git_dir,
-            write_lock: Arc::new(parking_lot::Mutex::new(())),
-            log_pager: parking_lot::Mutex::new(None),
-        });
-        self.repos.insert(id.clone(), handle);
-        self.by_path.insert(canonical.clone(), id.clone());
-
-        let path_string = canonical.to_string_lossy().into_owned();
-        Ok(RepoConfig::from_path(path_string).with_id(id))
+        open::open_repo(self, path).await
     }
 
     async fn close_repo(&self, repo: &RepoId) -> Result<()> {
@@ -233,12 +200,7 @@ impl GitDriver for GitDriverImpl {
     }
 
     async fn fetch(&self, repo: &RepoId, remote: &str) -> Result<()> {
-        if !remote.is_empty() {
-            git_cmd::validate_name_arg(remote, "远程名")?;
-        }
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        run_write_blocking(handle, move |p| remote::fetch(p, &remote)).await
+        remote_ops::fetch(self, repo, remote).await
     }
 
     async fn push(
@@ -249,24 +211,11 @@ impl GitDriver for GitDriverImpl {
         set_upstream: bool,
         force_with_lease: bool,
     ) -> Result<()> {
-        git_cmd::validate_name_arg(remote, "远程名")?;
-        git_cmd::validate_name_arg(branch, "分支名")?;
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        let branch = branch.to_string();
-        run_write_blocking(handle, move |p| {
-            remote::push(p, &remote, &branch, set_upstream, force_with_lease)
-        })
-        .await
+        remote_ops::push(self, repo, remote, branch, set_upstream, force_with_lease).await
     }
 
     async fn pull(&self, repo: &RepoId, remote: &str, branch: &str, rebase: bool) -> Result<()> {
-        git_cmd::validate_name_arg(remote, "远程名")?;
-        git_cmd::validate_name_arg(branch, "分支名")?;
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        let branch = branch.to_string();
-        run_write_blocking(handle, move |p| remote::pull(p, &remote, &branch, rebase)).await
+        remote_ops::pull(self, repo, remote, branch, rebase).await
     }
 
     async fn fetch_streaming(
@@ -276,15 +225,7 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<()> {
-        if !remote.is_empty() {
-            git_cmd::validate_name_arg(remote, "远程名")?;
-        }
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        run_write_blocking(handle, move |p| {
-            remote::fetch_streaming(p, &remote, cancel, progress)
-        })
-        .await
+        remote_ops::fetch_streaming(self, repo, remote, cancel, progress).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -298,22 +239,16 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<()> {
-        git_cmd::validate_name_arg(remote, "远程名")?;
-        git_cmd::validate_name_arg(branch, "分支名")?;
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        let branch = branch.to_string();
-        run_write_blocking(handle, move |p| {
-            remote::push_streaming(
-                p,
-                &remote,
-                &branch,
-                set_upstream,
-                force_with_lease,
-                cancel,
-                progress,
-            )
-        })
+        remote_ops::push_streaming(
+            self,
+            repo,
+            remote,
+            branch,
+            set_upstream,
+            force_with_lease,
+            cancel,
+            progress,
+        )
         .await
     }
 
@@ -326,20 +261,10 @@ impl GitDriver for GitDriverImpl {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: std::sync::Arc<std::sync::Mutex<String>>,
     ) -> Result<()> {
-        git_cmd::validate_name_arg(remote, "远程名")?;
-        git_cmd::validate_name_arg(branch, "分支名")?;
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        let branch = branch.to_string();
-        run_write_blocking(handle, move |p| {
-            remote::pull_streaming(p, &remote, &branch, rebase, cancel, progress)
-        })
-        .await
+        remote_ops::pull_streaming(self, repo, remote, branch, rebase, cancel, progress).await
     }
-
     async fn list_stashes(&self, repo: &RepoId) -> Result<Vec<Stash>> {
-        let handle = self.get_repo(repo)?;
-        run_blocking(move || stash::list(&handle.path)).await
+        repository_ops::list_stashes(self, repo).await
     }
 
     async fn stash_save(
@@ -348,30 +273,19 @@ impl GitDriver for GitDriverImpl {
         message: Option<&str>,
         include_untracked: bool,
     ) -> Result<()> {
-        if let Some(message) = message {
-            stash::validate_message(message)?;
-        }
-        let handle = self.get_repo(repo)?;
-        let msg = message.map(str::to_owned);
-        run_write_blocking(handle, move |p| {
-            stash::save(p, msg.as_deref(), include_untracked)
-        })
-        .await
+        repository_ops::stash_save(self, repo, message, include_untracked).await
     }
 
     async fn stash_apply(&self, repo: &RepoId, idx: usize, pop: bool) -> Result<()> {
-        let handle = self.get_repo(repo)?;
-        run_write_blocking(handle, move |p| stash::apply(p, idx, pop)).await
+        repository_ops::stash_apply(self, repo, idx, pop).await
     }
 
     async fn stash_drop(&self, repo: &RepoId, idx: usize) -> Result<()> {
-        let handle = self.get_repo(repo)?;
-        run_write_blocking(handle, move |p| stash::drop(p, idx)).await
+        repository_ops::stash_drop(self, repo, idx).await
     }
 
     async fn list_tags(&self, repo: &RepoId) -> Result<Vec<Tag>> {
-        let handle = self.get_repo(repo)?;
-        run_blocking(move || tag::list(&handle.path)).await
+        repository_ops::list_tags(self, repo).await
     }
 
     async fn create_tag(
@@ -382,37 +296,15 @@ impl GitDriver for GitDriverImpl {
         message: Option<&str>,
         sign: bool,
     ) -> Result<()> {
-        git_cmd::validate_name_arg(name, "tag 名")?;
-        if let Some(target) = target {
-            git_cmd::validate_positional_arg(target, "tag 目标")?;
-        }
-        if let Some(message) = message {
-            tag::validate_message(message)?;
-        }
-        let handle = self.get_repo(repo)?;
-        let name = name.to_string();
-        let target = target.map(str::to_owned);
-        let message = message.map(str::to_owned);
-        run_write_blocking(handle, move |p| {
-            tag::create(p, &name, target.as_deref(), message.as_deref(), sign)
-        })
-        .await
+        repository_ops::create_tag(self, repo, name, target, message, sign).await
     }
 
     async fn delete_tag(&self, repo: &RepoId, name: &str) -> Result<()> {
-        git_cmd::validate_name_arg(name, "tag 名")?;
-        let handle = self.get_repo(repo)?;
-        let name = name.to_string();
-        run_write_blocking(handle, move |p| tag::delete(p, &name)).await
+        repository_ops::delete_tag(self, repo, name).await
     }
 
     async fn push_tag(&self, repo: &RepoId, remote: &str, name: &str) -> Result<()> {
-        git_cmd::validate_name_arg(remote, "远程名")?;
-        git_cmd::validate_name_arg(name, "tag 名")?;
-        let handle = self.get_repo(repo)?;
-        let remote = remote.to_string();
-        let name = name.to_string();
-        run_write_blocking(handle, move |p| tag::push(p, &remote, &name)).await
+        repository_ops::push_tag(self, repo, remote, name).await
     }
 
     async fn stage_patch(&self, repo: &RepoId, patch: &str) -> Result<()> {
