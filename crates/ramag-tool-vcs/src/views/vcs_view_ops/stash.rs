@@ -27,7 +27,12 @@ impl VcsView {
                 match result {
                     Ok(list) => this.stashes = list,
                     Err(e) => {
-                        error!(error = %e, "load stashes failed");
+                        error!(
+                            operation = "git_stash_list",
+                            repo_id = %repo,
+                            error = %e,
+                            "load stashes failed"
+                        );
                         this.error = Some(format!("加载 Stash 列表失败：{e}"));
                     }
                 }
@@ -73,7 +78,12 @@ impl VcsView {
                 }
                 match result {
                     Err(e) => {
-                        error!(error = %e, "stash save failed");
+                        error!(
+                            operation = "git_stash_save",
+                            repo_id = %repo,
+                            error = %e,
+                            "stash save failed"
+                        );
                         this.error = Some(format!("Stash 失败：{e}"));
                     }
                     Ok(_) => {
@@ -121,11 +131,23 @@ impl VcsView {
             // 操作后刷新 stashes + status
             let new_stashes = driver.list_stashes(&repo).await;
             if let Err(error) = &new_stashes {
-                tracing::warn!(error = %error, "stash list refresh failed");
+                tracing::warn!(
+                    operation = "git_stash_refresh",
+                    repo_id = %repo,
+                    resource = "stashes",
+                    error = %error,
+                    "stash list refresh failed"
+                );
             }
             let new_status = driver.status(&repo).await;
             if let Err(error) = &new_status {
-                tracing::warn!(error = %error, "workspace status refresh failed after stash");
+                tracing::warn!(
+                    operation = "git_stash_refresh",
+                    repo_id = %repo,
+                    resource = "workspace_status",
+                    error = %error,
+                    "workspace status refresh failed after stash"
+                );
             }
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -150,7 +172,14 @@ impl VcsView {
                         if conflict_count > 0
                             && matches!(op, StashOp::Apply(_) | StashOp::Pop(_)) =>
                     {
-                        tracing::info!(error = %e, ?op, conflict_count, "stash apply paused on conflict");
+                        tracing::info!(
+                            operation = "git_stash_operation",
+                            repo_id = %repo,
+                            stash_operation = ?op,
+                            conflict_count,
+                            error = %e,
+                            "stash apply paused on conflict"
+                        );
                         this.error = None;
                         this.view_mode = super::super::helpers::ViewMode::Workspace;
                         this.files_view_mode = FilesViewMode::Changes;
@@ -163,10 +192,22 @@ impl VcsView {
                         );
                     }
                     Err(e) => {
-                        error!(error = %e, ?op, "stash operation failed");
+                        error!(
+                            operation = "git_stash_operation",
+                            repo_id = %repo,
+                            stash_operation = ?op,
+                            error = %e,
+                            "stash operation failed"
+                        );
                         this.error = Some(format!("Stash 操作失败：{e}"));
                     }
                     Ok(_) => {
+                        tracing::info!(
+                            operation = "git_stash_operation",
+                            repo_id = %repo,
+                            stash_operation = ?op,
+                            "stash operation completed"
+                        );
                         // apply / pop 会改工作区文件 → tabs 对齐
                         if matches!(op, StashOp::Apply(_) | StashOp::Pop(_)) {
                             this.sync_changes_tabs_with_status(cx);

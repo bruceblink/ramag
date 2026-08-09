@@ -1,5 +1,6 @@
 //! 基于增量 SCAN 与命名空间折叠的 Redis Key 树。
 
+mod helpers;
 mod ops;
 mod render;
 mod scan;

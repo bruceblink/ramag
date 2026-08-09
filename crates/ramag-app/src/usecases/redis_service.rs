@@ -36,9 +36,18 @@ impl RedisService {
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
         let result = self.storage.save_connection(config).await;
         match &result {
-            Ok(()) => tracing::info!(connection_id = %config.id, "redis connection saved"),
+            Ok(()) => tracing::info!(
+                operation = "redis_connection_save",
+                connection_id = %config.id,
+                "redis connection saved"
+            ),
             Err(error) => {
-                tracing::error!(error = %error, connection_id = %config.id, "save redis connection failed")
+                tracing::error!(
+                    operation = "redis_connection_save",
+                    error = %error,
+                    connection_id = %config.id,
+                    "save redis connection failed"
+                )
             }
         }
         result
@@ -47,9 +56,18 @@ impl RedisService {
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
         let result = self.storage.delete_connection(id).await;
         match &result {
-            Ok(()) => tracing::info!(connection_id = %id, "redis connection deleted"),
+            Ok(()) => tracing::info!(
+                operation = "redis_connection_delete",
+                connection_id = %id,
+                "redis connection deleted"
+            ),
             Err(error) => {
-                tracing::error!(error = %error, connection_id = %id, "delete redis connection failed")
+                tracing::error!(
+                    operation = "redis_connection_delete",
+                    error = %error,
+                    connection_id = %id,
+                    "delete redis connection failed"
+                )
             }
         }
         result
@@ -60,10 +78,21 @@ impl RedisService {
         let result = self.driver.test_connection(config).await;
         match &result {
             Ok(()) => {
-                tracing::info!(connection_id = %config.id, elapsed_ms = started.elapsed().as_millis(), "redis connection test succeeded")
+                tracing::info!(
+                    operation = "redis_connection_test",
+                    connection_id = %config.id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "redis connection test succeeded"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, elapsed_ms = started.elapsed().as_millis(), "redis connection test failed")
+                tracing::warn!(
+                    operation = "redis_connection_test",
+                    error = %error,
+                    connection_id = %config.id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "redis connection test failed"
+                )
             }
         }
         result
@@ -112,6 +141,7 @@ impl RedisService {
             out.truncate(max_keys);
         }
         tracing::info!(
+            operation = "redis_scan_all",
             connection_id = %config.id,
             db,
             keys = out.len(),
@@ -245,10 +275,24 @@ impl RedisService {
         let result = self.driver.write_value_items(config, db, key, items).await;
         match &result {
             Ok(written) => {
-                tracing::info!(connection_id = %config.id, db, key_bytes = key.len(), written, "redis value items written")
+                tracing::info!(
+                    operation = "redis_value_write",
+                    connection_id = %config.id,
+                    db,
+                    key_bytes = key.len(),
+                    written,
+                    "redis value items written"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, key_bytes = key.len(), "write redis value items failed")
+                tracing::warn!(
+                    operation = "redis_value_write",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    key_bytes = key.len(),
+                    "write redis value items failed"
+                )
             }
         }
         result
@@ -262,10 +306,24 @@ impl RedisService {
         let result = self.driver.delete_key(config, db, key).await;
         match &result {
             Ok(deleted) => {
-                tracing::info!(connection_id = %config.id, db, key_bytes = key.len(), deleted, "redis key delete completed")
+                tracing::info!(
+                    operation = "redis_key_delete",
+                    connection_id = %config.id,
+                    db,
+                    key_bytes = key.len(),
+                    deleted,
+                    "redis key delete completed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, key_bytes = key.len(), "delete redis key failed")
+                tracing::warn!(
+                    operation = "redis_key_delete",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    key_bytes = key.len(),
+                    "delete redis key failed"
+                )
             }
         }
         result
@@ -281,10 +339,25 @@ impl RedisService {
         let result = self.driver.set_ttl(config, db, key, ttl_secs).await;
         match &result {
             Ok(changed) => {
-                tracing::info!(connection_id = %config.id, db, key_bytes = key.len(), changed, persistent = ttl_secs.is_none(), "redis ttl update completed")
+                tracing::info!(
+                    operation = "redis_ttl_update",
+                    connection_id = %config.id,
+                    db,
+                    key_bytes = key.len(),
+                    changed,
+                    persistent = ttl_secs.is_none(),
+                    "redis ttl update completed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, key_bytes = key.len(), "update redis ttl failed")
+                tracing::warn!(
+                    operation = "redis_ttl_update",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    key_bytes = key.len(),
+                    "update redis ttl failed"
+                )
             }
         }
         result
@@ -302,10 +375,27 @@ impl RedisService {
         let result = self.driver.execute_command(config, db, argv).await;
         match &result {
             Ok(_) => {
-                tracing::info!(connection_id = %config.id, db, command, argument_count, write, "redis command completed")
+                tracing::info!(
+                    operation = "redis_command",
+                    connection_id = %config.id,
+                    db,
+                    command,
+                    argument_count,
+                    write,
+                    "redis command completed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, command, argument_count, write, "redis command failed")
+                tracing::warn!(
+                    operation = "redis_command",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    command,
+                    argument_count,
+                    write,
+                    "redis command failed"
+                )
             }
         }
         result

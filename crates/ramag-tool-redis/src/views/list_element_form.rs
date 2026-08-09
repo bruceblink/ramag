@@ -86,6 +86,7 @@ impl ListElementForm {
         let config = self.config.clone();
         let db = self.db;
         let key = self.key.clone();
+        let key_bytes = key.len();
         let mut argv = vec![cmd.to_string(), key];
         let element_count = elems.len();
         argv.extend(elems);
@@ -93,13 +94,30 @@ impl ListElementForm {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(command = cmd, element_count, "list elements added");
+                    info!(
+                        operation = "redis_list_push",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        command = cmd,
+                        element_count,
+                        "list elements added"
+                    );
                     cx.emit(ListElementFormEvent::Saved);
                 }
                 Err(e) => {
                     this.editor
                         .update(cx, |editor, cx| editor.set_disabled(false, cx));
-                    error!(error = %e, command = cmd, element_count, "add list elements failed");
+                    error!(
+                        operation = "redis_list_push",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        command = cmd,
+                        element_count,
+                        error = %e,
+                        "add list elements failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

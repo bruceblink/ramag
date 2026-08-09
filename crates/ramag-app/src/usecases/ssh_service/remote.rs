@@ -19,10 +19,23 @@ impl SshService {
             .await;
         match &result {
             Ok(capabilities) => {
-                tracing::info!(profile_id = %profile.id, os = ?capabilities.operating_system, sftp = ?capabilities.sftp, elapsed_ms = started.elapsed().as_millis(), "ssh connection test succeeded")
+                tracing::info!(
+                    operation = "ssh_connection_test",
+                    profile_id = %profile.id,
+                    os = ?capabilities.operating_system,
+                    sftp = ?capabilities.sftp,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "ssh connection test succeeded"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, elapsed_ms = started.elapsed().as_millis(), "ssh connection test failed")
+                tracing::warn!(
+                    operation = "ssh_connection_test",
+                    error = %error,
+                    profile_id = %profile.id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "ssh connection test failed"
+                )
             }
         }
         result
@@ -247,6 +260,7 @@ impl SshService {
             }
         }
         tracing::info!(
+            operation = "ssh_capabilities_probe",
             profile_id = %profile.id,
             operating_system = ?capabilities.operating_system,
             shell = ?capabilities.shell,
@@ -290,10 +304,21 @@ impl SshService {
             .await;
         match &result {
             Ok(()) => {
-                tracing::info!(profile_id = %profile.id, path = ?path, "ssh directory created")
+                tracing::info!(
+                    operation = "ssh_directory_create",
+                    profile_id = %profile.id,
+                    path = ?path,
+                    "ssh directory created"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, "create ssh directory failed")
+                tracing::warn!(
+                    operation = "ssh_directory_create",
+                    error = %error,
+                    profile_id = %profile.id,
+                    path = ?path,
+                    "create ssh directory failed"
+                )
             }
         }
         result
@@ -315,10 +340,23 @@ impl SshService {
             .await;
         match &result {
             Ok(()) => {
-                tracing::info!(profile_id = %profile.id, old_path = ?old_path, new_path = ?new_path, "ssh path renamed")
+                tracing::info!(
+                    operation = "ssh_path_rename",
+                    profile_id = %profile.id,
+                    old_path = ?old_path,
+                    new_path = ?new_path,
+                    "ssh path renamed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, old_path = ?old_path, new_path = ?new_path, "rename ssh path failed")
+                tracing::warn!(
+                    operation = "ssh_path_rename",
+                    error = %error,
+                    profile_id = %profile.id,
+                    old_path = ?old_path,
+                    new_path = ?new_path,
+                    "rename ssh path failed"
+                )
             }
         }
         result
@@ -340,10 +378,23 @@ impl SshService {
         let result = self.driver.remove(&effective_profile, &path, kind).await;
         match &result {
             Ok(()) => {
-                tracing::info!(profile_id = %profile.id, path = ?path, kind = ?kind, "ssh remote entry removed")
+                tracing::info!(
+                    operation = "ssh_remote_remove",
+                    profile_id = %profile.id,
+                    path = ?path,
+                    kind = ?kind,
+                    "ssh remote entry removed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, kind = ?kind, "remove ssh remote entry failed")
+                tracing::warn!(
+                    operation = "ssh_remote_remove",
+                    error = %error,
+                    profile_id = %profile.id,
+                    path = ?path,
+                    kind = ?kind,
+                    "remove ssh remote entry failed"
+                )
             }
         }
         result

@@ -297,12 +297,17 @@ pub(super) async fn open_repo_async(
     path: std::path::PathBuf,
     cx: &mut gpui::AsyncApp,
 ) {
-    info!(?path, "opening repository");
+    info!(operation = "git_repo_open", path = %path.display(), "opening repository");
     let open_result = driver.open_repo(&path).await;
     let repo_config = match open_result {
         Ok(r) => r,
         Err(e) => {
-            error!(error = %e, "open repository failed");
+            error!(
+                operation = "git_repo_open",
+                path = %path.display(),
+                error = %e,
+                "open repository failed"
+            );
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 this.loading_label = None;
@@ -326,7 +331,13 @@ pub(super) async fn open_repo_async(
         .unwrap_or(false);
     if !capacity_available {
         if let Err(error) = driver.close_repo(&repo_config.id).await {
-            tracing::warn!(error = %error, "close repository after tab limit rejection failed");
+            tracing::warn!(
+                operation = "git_repo_open_cleanup",
+                repo_id = %repo_config.id,
+                reason = "tab_limit",
+                error = %error,
+                "close repository after tab limit rejection failed"
+            );
         }
         return;
     }
@@ -350,7 +361,13 @@ pub(super) async fn open_repo_async(
         .unwrap_or(false);
     if !draft_safe {
         if let Err(error) = driver.close_repo(&repo_config.id).await {
-            tracing::warn!(error = %error, "close repository after commit draft rejection failed");
+            tracing::warn!(
+                operation = "git_repo_open_cleanup",
+                repo_id = %repo_config.id,
+                reason = "draft_rejected",
+                error = %error,
+                "close repository after commit draft rejection failed"
+            );
         }
         return;
     }
@@ -403,7 +420,13 @@ pub(super) async fn open_repo_async(
         match status {
             Ok(s) => this.status = Some(s),
             Err(e) => {
-                tracing::error!(error = %e, "load repository status failed");
+                tracing::error!(
+                    operation = "git_repo_open",
+                    repo_id = %id,
+                    resource = "workspace_status",
+                    error = %e,
+                    "load repository status failed"
+                );
                 this.status = None;
                 load_errors.push(format!("读取工作区状态失败：{e}"));
             }
@@ -414,7 +437,13 @@ pub(super) async fn open_repo_async(
                 this.remote_branches = remote;
             }
             Err(e) => {
-                tracing::error!(error = %e, "load repository branches failed");
+                tracing::error!(
+                    operation = "git_repo_open",
+                    repo_id = %id,
+                    resource = "branches",
+                    error = %e,
+                    "load repository branches failed"
+                );
                 this.local_branches.clear();
                 this.remote_branches.clear();
                 load_errors.push(format!("读取分支失败：{e}"));
@@ -433,7 +462,13 @@ pub(super) async fn open_repo_async(
             cx.spawn(async move |this, cx| {
                 let draft = match storage.get_preference(&commit_draft_pref_key(&path)).await {
                     Ok(Some(draft)) if draft.len() > MAX_COMMIT_MESSAGE_BYTES => {
-                        tracing::warn!(bytes = draft.len(), "ignore oversized commit draft");
+                        tracing::warn!(
+                            operation = "git_commit_draft_load",
+                            path = %path,
+                            bytes = draft.len(),
+                            reason = "size_limit",
+                            "ignore oversized commit draft"
+                        );
                         let _ = this.update(cx, |this, cx| {
                             this.commit_draft_error = Some(format!(
                                 "已忽略超过 {} MiB 上限的历史提交草稿",
@@ -446,7 +481,12 @@ pub(super) async fn open_repo_async(
                     Ok(Some(draft)) if !draft.is_empty() => draft,
                     Ok(_) => return,
                     Err(e) => {
-                        tracing::warn!(error = %e, "load commit draft failed");
+                        tracing::warn!(
+                            operation = "git_commit_draft_load",
+                            path = %path,
+                            error = %e,
+                            "load commit draft failed"
+                        );
                         return;
                     }
                 };

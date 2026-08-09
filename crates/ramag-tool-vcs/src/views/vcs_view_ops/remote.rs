@@ -226,16 +226,35 @@ impl VcsView {
                     .flatten();
                 match (result, paused) {
                     (_, Some(operation)) => {
-                        info!(?operation, "pull paused");
+                        info!(
+                            operation = "git_remote_operation",
+                            repo_id = %repo,
+                            remote_operation = ?op,
+                            paused_operation = ?operation,
+                            "pull paused"
+                        );
                         this.handle_operation_paused(operation, cx);
                         this.refresh_after_head_change(cx);
                     }
                     (Err(e), None) => {
-                        error!(error = %e, ?op, "remote operation failed");
+                        error!(
+                            operation = "git_remote_operation",
+                            repo_id = %repo,
+                            remote_operation = ?op,
+                            error = %e,
+                            "remote operation failed"
+                        );
                         this.error = Some(format!("{op_label} 失败：{e}"));
                     }
                     (Ok(_), None) => {
-                        info!(?op, "remote operation completed");
+                        info!(
+                            operation = "git_remote_operation",
+                            repo_id = %repo,
+                            remote_operation = ?op,
+                            remote = %remote_name,
+                            branch = %remote_branch,
+                            "remote operation completed"
+                        );
                         // fetch 后 behind 增加 = 远端有新 commit 被发现
                         let post_behind =
                             this.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
@@ -285,6 +304,11 @@ impl VcsView {
         if let Some(cancel) = &self.remote_op_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             self.busy_label = Some("取消中…");
+            tracing::info!(
+                operation = "git_remote_cancel",
+                repo_id = ?self.repo.as_ref().map(|repo| &repo.id),
+                "remote operation cancellation requested"
+            );
             cx.notify();
         }
     }
@@ -296,7 +320,10 @@ impl VcsView {
             Ok(text) => text.clone(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
             Err(std::sync::TryLockError::Poisoned(error)) => {
-                tracing::warn!("remote progress lock poisoned");
+                tracing::warn!(
+                    operation = "git_remote_progress",
+                    "remote progress lock poisoned"
+                );
                 error.into_inner().clone()
             }
         };

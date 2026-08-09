@@ -48,7 +48,13 @@ impl RedisSessionPanel {
                 this.clear_dialog_subscription();
                 match ev {
                     KeyCreateEvent::Created { key, ttl_warning } => {
-                        info!(key_bytes = key.len(), "key created via dialog");
+                        info!(
+                            operation = "redis_key_create",
+                            connection_id = %this.config.id,
+                            db = this.db,
+                            key_bytes = key.len(),
+                            "key created via dialog"
+                        );
                         let new_key = key.clone();
                         window.close_dialog(cx);
                         if let Some(warning) = ttl_warning {
@@ -107,7 +113,13 @@ impl RedisSessionPanel {
                 this.clear_dialog_subscription();
                 match ev {
                     TtlEditEvent::Updated(_) => {
-                        info!(key_bytes = key_for_reload.len(), "ttl updated");
+                        info!(
+                            operation = "redis_ttl_update",
+                            connection_id = %this.config.id,
+                            db = this.db,
+                            key_bytes = key_for_reload.len(),
+                            "ttl updated"
+                        );
                         window.close_dialog(cx);
                         this.reload_detail_if_key(&key_for_reload, cx);
                     }
@@ -156,7 +168,13 @@ impl RedisSessionPanel {
                 this.clear_dialog_subscription();
                 match ev {
                     ValueEditEvent::Saved => {
-                        info!(key_bytes = key_for_reload.len(), "value saved");
+                        info!(
+                            operation = "redis_value_save",
+                            connection_id = %this.config.id,
+                            db = this.db,
+                            key_bytes = key_for_reload.len(),
+                            "value saved"
+                        );
                         window.close_dialog(cx);
                         this.reload_detail_if_key(&key_for_reload, cx);
                     }
@@ -217,7 +235,14 @@ impl RedisSessionPanel {
                 this.clear_dialog_subscription();
                 match ev {
                     HashFieldFormEvent::Saved { field } => {
-                        info!(field_bytes = field.len(), "hash field saved");
+                        info!(
+                            operation = "redis_hash_field_save",
+                            connection_id = %this.config.id,
+                            db = this.db,
+                            key_bytes = key_for_reload.len(),
+                            field_bytes = field.len(),
+                            "hash field saved"
+                        );
                         window.close_dialog(cx);
                         this.reload_detail_if_key(&key_for_reload, cx);
                     }

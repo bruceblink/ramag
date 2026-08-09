@@ -112,7 +112,13 @@ impl ClipboardView {
                         this.search_results = result.items.into_iter().map(Arc::new).collect();
                     }
                     Err(e) => {
-                        error!(error = %e, mode = "full", "clipboard search failed");
+                        error!(
+                            operation = "clipboard_search",
+                            mode = "full",
+                            query_bytes = query.len(),
+                            error = %e,
+                            "clipboard search failed"
+                        );
                         this.search_results.clear();
                         this.search_truncated = false;
                         this.pending_notification = Some(Notification::error(format!(
@@ -136,7 +142,12 @@ impl ClipboardView {
                         this.pending_notification = Some(Notification::info("已复制到剪贴板"))
                     }
                     Err(e) => {
-                        error!(error = %e, "copy clipboard entry failed");
+                        error!(
+                            operation = "clipboard_copy",
+                            clip_id = %item.id,
+                            error = %e,
+                            "copy clipboard entry failed"
+                        );
                         this.pending_notification = Some(Notification::error(e.to_string()));
                     }
                 }
@@ -156,7 +167,12 @@ impl ClipboardView {
                         this.pending_notification = Some(Notification::info("已复制为纯文本"))
                     }
                     Err(e) => {
-                        error!(error = %e, "plain-text copy failed");
+                        error!(
+                            operation = "clipboard_copy_plain",
+                            clip_id = %item.id,
+                            error = %e,
+                            "plain-text copy failed"
+                        );
                         this.pending_notification = Some(Notification::error(e.to_string()));
                     }
                 }
@@ -169,7 +185,12 @@ impl ClipboardView {
     /// 浏览器打开链接（同步调用，失败弹通知）
     pub(super) fn open_link(&mut self, url: String, cx: &mut Context<Self>) {
         if let Err(e) = self.service.open_url(&url) {
-            error!(error = %e, "open URL failed");
+            error!(
+                operation = "clipboard_open_url",
+                url_bytes = url.len(),
+                error = %e,
+                "open URL failed"
+            );
             self.pending_notification = Some(Notification::error(e.to_string()));
             cx.notify();
         }
@@ -178,7 +199,12 @@ impl ClipboardView {
     /// 在系统文件管理器中显示文件
     pub(super) fn reveal_files(&mut self, paths: &[String], cx: &mut Context<Self>) {
         if let Err(e) = self.service.reveal_in_file_manager(paths) {
-            error!(error = %e, "reveal in file manager failed");
+            error!(
+                operation = "clipboard_reveal_files",
+                path_count = paths.len(),
+                error = %e,
+                "reveal in file manager failed"
+            );
             self.pending_notification = Some(Notification::error(e.to_string()));
             cx.notify();
         }
@@ -193,7 +219,12 @@ impl ClipboardView {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Err(e) => {
-                        error!(error = %e, "delete clipboard entry failed");
+                        error!(
+                            operation = "clipboard_delete",
+                            clip_id = %item_id,
+                            error = %e,
+                            "delete clipboard entry failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(format!("删除失败：{e}")));
                     }
@@ -240,7 +271,12 @@ impl ClipboardView {
                                             let r = svc.restore(item.as_ref().clone()).await;
                                             view.update(cx, |this, cx| {
                                                 if let Err(e) = r {
-                                                    error!(error = %e, "restore clipboard entry failed");
+                                                    error!(
+                                                        operation = "clipboard_restore",
+                                                        clip_id = %item.id,
+                                                        error = %e,
+                                                        "restore clipboard entry failed"
+                                                    );
                                                     this.pending_notification =
                                                         Some(Notification::error(format!(
                                                             "撤销失败：{e}"
@@ -260,7 +296,12 @@ impl ClipboardView {
             if let Some(token) = cleanup_token {
                 cx.background_executor().timer(DELETE_UNDO_GRACE).await;
                 if let Err(e) = svc.finalize_deleted_media(&item_id, token).await {
-                    error!(error = %e, "cleanup deleted clipboard media failed");
+                    error!(
+                        operation = "clipboard_media_cleanup",
+                        clip_id = %item_id,
+                        error = %e,
+                        "cleanup deleted clipboard media failed"
+                    );
                 }
             }
         })

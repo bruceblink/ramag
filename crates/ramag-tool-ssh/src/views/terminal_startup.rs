@@ -38,7 +38,14 @@ impl SshView {
         let input = match directory_change_input(&path, shell) {
             Ok(input) => input,
             Err(error) => {
-                tracing::warn!(error = %error, "reject invalid terminal startup directory");
+                tracing::warn!(
+                    operation = "ssh_terminal_startup_directory",
+                    profile_id = %workspace_id,
+                    terminal_id,
+                    path_bytes = path.len(),
+                    error = %error,
+                    "reject invalid terminal startup directory"
+                );
                 return;
             }
         };
@@ -110,6 +117,7 @@ impl SshView {
                 }
                 if Instant::now() >= deadline {
                     tracing::warn!(
+                        operation = "ssh_terminal_startup_directory",
                         profile_id = %workspace_id,
                         terminal_id,
                         "terminal startup prompt detection timed out"
@@ -207,6 +215,7 @@ impl SshView {
                                         workspace.sftp_error = None;
                                     }
                                     tracing::info!(
+                                        operation = "ssh_terminal_platform_detect",
                                         profile_id = %workspace_id,
                                         terminal_id,
                                         terminal_directory = %directory,
@@ -216,6 +225,7 @@ impl SshView {
                                 }
                                 Err(error) => {
                                     tracing::warn!(
+                                        operation = "ssh_terminal_platform_detect",
                                         profile_id = %workspace_id,
                                         terminal_id,
                                         error = %error,

@@ -81,11 +81,23 @@ impl VcsView {
                 let paused = this.status.as_ref().and_then(|s| s.operation);
                 match (&result, paused) {
                     (_, Some(operation)) => {
-                        info!(?operation, ?op, "branch operation paused");
+                        info!(
+                            operation = "git_branch_operation",
+                            repo_id = %repo,
+                            paused_operation = ?operation,
+                            branch_operation = ?op,
+                            "branch operation paused"
+                        );
                         this.handle_operation_paused(operation, cx);
                     }
                     (Err(e), None) => {
-                        error!(error = %e, ?op, "branch operation failed");
+                        error!(
+                            operation = "git_branch_operation",
+                            repo_id = %repo,
+                            branch_operation = ?op,
+                            error = %e,
+                            "branch operation failed"
+                        );
                         this.error = Some(format!("分支操作失败：{e}"));
                     }
                     (Ok(_), None) => {
@@ -197,7 +209,12 @@ impl VcsView {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        tracing::error!(error = %error, "load amend message failed");
+                        tracing::error!(
+                            operation = "git_commit_amend_message",
+                            repo_id = %repo,
+                            error = %error,
+                            "load amend message failed"
+                        );
                         this.error = Some(format!("加载上次提交消息失败：{error}"));
                     }
                 }
@@ -308,7 +325,13 @@ impl VcsView {
                         this.history_has_more = got >= HISTORY_PAGE_SIZE && !limit_reached;
                     }
                     Err(e) => {
-                        error!(error = %e, "load history failed");
+                        error!(
+                            operation = "git_history_load",
+                            repo_id = %repo,
+                            skip,
+                            error = %e,
+                            "load history failed"
+                        );
                         this.error = Some(format!("加载历史失败：{e}"));
                     }
                 }
@@ -377,7 +400,14 @@ impl VcsView {
                 }
                 match result {
                     Ok(commit_id) => {
-                        info!(commit = %commit_id, "commit completed");
+                        info!(
+                            operation = "git_commit",
+                            repo_id = %repo,
+                            commit = %commit_id,
+                            amend,
+                            sign,
+                            "commit completed"
+                        );
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
@@ -395,7 +425,11 @@ impl VcsView {
                                     let key =
                                         super::vcs_view_ops_repo::commit_draft_pref_key(&path);
                                     if let Err(e) = storage.set_preference(&key, "").await {
-                                        tracing::warn!(error = %e, "clear commit draft failed");
+                                        tracing::warn!(
+                                            operation = "git_commit_draft_clear",
+                                            error = %e,
+                                            "clear commit draft failed"
+                                        );
                                     }
                                 })
                                 .detach();
@@ -409,7 +443,14 @@ impl VcsView {
                         this.notify_success(format!("已提交 {short}"), cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "commit failed");
+                        error!(
+                            operation = "git_commit",
+                            repo_id = %repo,
+                            amend,
+                            sign,
+                            error = %e,
+                            "commit failed"
+                        );
                         this.error = Some(format!("提交失败：{e}"));
                     }
                 }
@@ -465,6 +506,13 @@ impl VcsView {
                 }
                 match result {
                     Ok(_) => {
+                        info!(
+                            operation = "git_file_operation",
+                            repo_id = %repo,
+                            file_operation = ?op,
+                            path_count = paths.len(),
+                            "file operation completed"
+                        );
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
@@ -480,7 +528,14 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, ?op, ?paths, "file operation failed");
+                        error!(
+                            operation = "git_file_operation",
+                            repo_id = %repo,
+                            file_operation = ?op,
+                            path_count = paths.len(),
+                            error = %e,
+                            "file operation failed"
+                        );
                         let action = match op {
                             FileOp::Stage => "暂存",
                             FileOp::Unstage => "取消暂存",

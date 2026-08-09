@@ -26,10 +26,21 @@ impl MongoService {
         let result = self.driver.test_connection(config).await;
         match &result {
             Ok(()) => {
-                tracing::info!(connection_id = %config.id, elapsed_ms = started.elapsed().as_millis(), "mongodb connection test succeeded")
+                tracing::info!(
+                    operation = "mongodb_connection_test",
+                    connection_id = %config.id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "mongodb connection test succeeded"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, elapsed_ms = started.elapsed().as_millis(), "mongodb connection test failed")
+                tracing::warn!(
+                    operation = "mongodb_connection_test",
+                    error = %error,
+                    connection_id = %config.id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "mongodb connection test failed"
+                )
             }
         }
         result
@@ -109,10 +120,27 @@ impl MongoService {
             .await;
         match &result {
             Ok(outcome) => {
-                tracing::info!(connection_id = %config.id, db, collection = coll, document_count, inserted = outcome.inserted, duplicates = outcome.duplicates, "mongodb insert many completed")
+                tracing::info!(
+                    operation = "mongodb_insert_many",
+                    connection_id = %config.id,
+                    db,
+                    collection = coll,
+                    document_count,
+                    inserted = outcome.inserted,
+                    duplicates = outcome.duplicates,
+                    "mongodb insert many completed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, collection = coll, document_count, "mongodb insert many failed")
+                tracing::warn!(
+                    operation = "mongodb_insert_many",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    collection = coll,
+                    document_count,
+                    "mongodb insert many failed"
+                )
             }
         }
         result
@@ -128,10 +156,23 @@ impl MongoService {
         let result = self.driver.insert_one(config, db, coll, document).await;
         match &result {
             Ok(_) => {
-                tracing::info!(connection_id = %config.id, db, collection = coll, "mongodb insert one completed")
+                tracing::info!(
+                    operation = "mongodb_insert_one",
+                    connection_id = %config.id,
+                    db,
+                    collection = coll,
+                    "mongodb insert one completed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, collection = coll, "mongodb insert one failed")
+                tracing::warn!(
+                    operation = "mongodb_insert_one",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    collection = coll,
+                    "mongodb insert one failed"
+                )
             }
         }
         result
@@ -175,10 +216,23 @@ impl MongoService {
         let result = self.driver.run_command(config, db, command).await;
         match &result {
             Ok(_) => {
-                tracing::info!(connection_id = %config.id, db, command = %command_name, "mongodb command completed")
+                tracing::info!(
+                    operation = "mongodb_command",
+                    connection_id = %config.id,
+                    db,
+                    command = %command_name,
+                    "mongodb command completed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, db, command = %command_name, "mongodb command failed")
+                tracing::warn!(
+                    operation = "mongodb_command",
+                    error = %error,
+                    connection_id = %config.id,
+                    db,
+                    command = %command_name,
+                    "mongodb command failed"
+                )
             }
         }
         result
@@ -215,7 +269,13 @@ impl MongoService {
             ),
         };
         if let Err(e) = self.storage.append_history(&record).await {
-            tracing::warn!(error = %e, connection_id = %config.id, command_bytes = command_text.len(), "append mongodb query history failed");
+            tracing::warn!(
+                operation = "mongodb_query_history_append",
+                error = %e,
+                connection_id = %config.id,
+                command_bytes = command_text.len(),
+                "append mongodb query history failed"
+            );
         }
     }
 

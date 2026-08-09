@@ -17,7 +17,10 @@ impl ClipboardService {
 
         match decide_capture(&captured, settings) {
             CaptureDecision::Skip(reason) => {
-                debug!(reason, "clipboard capture skipped");
+                debug!(
+                    operation = "clipboard_capture",
+                    reason, "clipboard capture skipped"
+                );
                 Ok(false)
             }
             CaptureDecision::Record { hash, kind } => {
@@ -51,6 +54,7 @@ impl ClipboardService {
             }
 
             warn!(
+                operation = "clipboard_capture",
                 clip_id = %existing.id,
                 hash = %content_hash,
                 "clipboard content hash collision detected"
@@ -80,7 +84,12 @@ impl ClipboardService {
                 let thumb = match make_thumbnail_off_thread(png.clone()).await {
                     Ok(thumb) => thumb,
                     Err(error) => {
-                        warn!(error = %error, "invalid clipboard image ignored");
+                        warn!(
+                            operation = "clipboard_capture",
+                            kind = ?kind,
+                            error = %error,
+                            "invalid clipboard image ignored"
+                        );
                         return Ok(false);
                     }
                 };
@@ -100,6 +109,7 @@ impl ClipboardService {
                         let rollback = self.unprotected_staged_media(vec![full.clone()]);
                         if let Err(cleanup_error) = self.cleanup_media(rollback).await {
                             warn!(
+                                operation = "clipboard_capture_rollback",
                                 error = %cleanup_error,
                                 path = %full,
                                 stage = "thumbnail",
@@ -154,6 +164,7 @@ impl ClipboardService {
             );
             if let Err(cleanup_error) = self.cleanup_media(staged_media).await {
                 warn!(
+                    operation = "clipboard_capture_rollback",
                     error = %cleanup_error,
                     clip_id = %item.id,
                     stage = "record_save",
@@ -193,7 +204,12 @@ impl ClipboardService {
             Ok(Some(actual)) => actual == expected,
             Ok(None) => false,
             Err(error) => {
-                warn!(error = %error, clip_id = %existing.id, "verify clipboard image hash failed");
+                warn!(
+                    operation = "clipboard_capture_verify",
+                    error = %error,
+                    clip_id = %existing.id,
+                    "verify clipboard image hash failed"
+                );
                 false
             }
         }

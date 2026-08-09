@@ -13,7 +13,12 @@ impl ClipboardService {
                     s
                 }
                 Err(e) => {
-                    warn!(error = %e, "clipboard settings corrupted; capture disabled");
+                    warn!(
+                        operation = "clipboard_settings_load",
+                        error = %e,
+                        reason = "corrupted",
+                        "clipboard settings corrupted; capture disabled"
+                    );
                     self.settings_degraded.store(true, Ordering::Relaxed);
                     ClipboardSettings {
                         enabled: false,
@@ -26,7 +31,12 @@ impl ClipboardService {
                 ClipboardSettings::default()
             }
             Err(e) => {
-                warn!(error = %e, "clipboard settings unreadable; capture disabled");
+                warn!(
+                    operation = "clipboard_settings_load",
+                    error = %e,
+                    reason = "unreadable",
+                    "clipboard settings unreadable; capture disabled"
+                );
                 self.settings_degraded.store(true, Ordering::Relaxed);
                 ClipboardSettings {
                     enabled: false,

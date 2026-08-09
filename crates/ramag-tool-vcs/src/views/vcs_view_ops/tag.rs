@@ -27,7 +27,12 @@ impl VcsView {
                 match result {
                     Ok(list) => this.tags = list,
                     Err(e) => {
-                        error!(error = %e, "load tags failed");
+                        error!(
+                            operation = "git_tag_list",
+                            repo_id = %repo,
+                            error = %e,
+                            "load tags failed"
+                        );
                         this.error = Some(format!("加载 Tag 列表失败：{e}"));
                     }
                 }
@@ -64,7 +69,6 @@ impl VcsView {
         cx.spawn(async move |this, cx| {
             let result = match &op {
                 TagOp::Create { name, message } => {
-                    // sign 暂未在 UI 暴露——release tag 通常不签名；future 加 toggle
                     driver
                         .create_tag(&repo, name, None, message.as_deref(), false)
                         .await
@@ -88,10 +92,21 @@ impl VcsView {
                     this.tags = tags.clone();
                 }
                 if let Err(e) = result {
-                    error!(error = %e, ?op, "tag operation failed");
+                    error!(
+                        operation = "git_tag_operation",
+                        repo_id = %repo,
+                        tag_operation = ?op,
+                        error = %e,
+                        "tag operation failed"
+                    );
                     this.error = Some(format!("Tag 操作失败：{e}"));
                 } else {
-                    info!(?op, "tag operation completed");
+                    info!(
+                        operation = "git_tag_operation",
+                        repo_id = %repo,
+                        tag_operation = ?op,
+                        "tag operation completed"
+                    );
                     if matches!(op, TagOp::Create { .. }) {
                         this.pending_clear_creation_inputs = true;
                     }

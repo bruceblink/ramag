@@ -165,7 +165,11 @@ impl ClipboardService {
                 *self.cache.write() = cache;
                 self.bump();
             }
-            Err(e) => warn!(error = %e, "clipboard cache preload failed"),
+            Err(e) => warn!(
+                operation = "clipboard_cache_preload",
+                error = %e,
+                "clipboard cache preload failed"
+            ),
         }
     }
 

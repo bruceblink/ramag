@@ -26,7 +26,13 @@ impl VcsView {
                 .run_if_latest(&ticket, || storage.save_repo(&repo))
                 .await;
             if let Some(Err(e)) = result {
-                tracing::warn!(error = %e, repo = %repo.name, "save repository failed");
+                tracing::warn!(
+                    operation = "git_repo_save",
+                    repo_id = %repo.id,
+                    repo = %repo.name,
+                    error = %e,
+                    "save repository failed"
+                );
                 let _ = this.update(cx, |this, cx| {
                     this.error = Some(format!("仓库记录未能保存（重启后设置可能丢失）：{e}"));
                     cx.notify();
@@ -47,7 +53,12 @@ impl VcsView {
                 .run_if_latest(&ticket, || storage.delete_repo(&id))
                 .await;
             if let Some(Err(e)) = result {
-                tracing::warn!(error = %e, repo_id = %id, "delete repository failed");
+                tracing::warn!(
+                    operation = "git_repo_delete",
+                    repo_id = %id,
+                    error = %e,
+                    "delete repository failed"
+                );
                 let _ = this.update(cx, |this, cx| {
                     this.error = Some(format!("移除记录未能持久化（重启后可能重新出现）：{e}"));
                     cx.notify();
@@ -147,12 +158,15 @@ impl VcsView {
         .detach();
         cx.spawn(async move |this, cx| {
             let destination = dest.clone();
-            let prepared = ramag_app::run_blocking(move || {
-                prepare_clone_destination(&destination)
-            })
-            .await;
+            let prepared =
+                ramag_app::run_blocking(move || prepare_clone_destination(&destination)).await;
             if let Err(error) = prepared {
-                tracing::error!(error = %error, dir = %dest.display(), "prepare clone destination failed");
+                tracing::error!(
+                    operation = "git_clone",
+                    error = %error,
+                    dir = %dest.display(),
+                    "prepare clone destination failed"
+                );
                 let _ = this.update(cx, |this, cx| {
                     if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
                         return;

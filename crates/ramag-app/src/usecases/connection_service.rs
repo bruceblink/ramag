@@ -48,11 +48,22 @@ impl ConnectionService {
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
         config.validate().map_err(DomainError::InvalidConfig)?;
         if let Err(error) = self.storage.save_connection(config).await {
-            tracing::error!(error = %error, connection_id = %config.id, driver = ?config.driver, "save connection failed");
+            tracing::error!(
+                operation = "connection_save",
+                error = %error,
+                connection_id = %config.id,
+                driver = ?config.driver,
+                "save connection failed"
+            );
             return Err(error);
         }
         self.bump_revision();
-        tracing::info!(connection_id = %config.id, driver = ?config.driver, "connection saved");
+        tracing::info!(
+            operation = "connection_save",
+            connection_id = %config.id,
+            driver = ?config.driver,
+            "connection saved"
+        );
         Ok(())
     }
 
@@ -65,33 +76,59 @@ impl ConnectionService {
             config.validate().map_err(DomainError::InvalidConfig)?;
         }
         if let Err(error) = self.storage.save_connections(configs).await {
-            tracing::error!(error = %error, count = configs.len(), "save imported connections failed");
+            tracing::error!(
+                operation = "connection_import",
+                error = %error,
+                count = configs.len(),
+                "save imported connections failed"
+            );
             return Err(error);
         }
         self.bump_revision();
-        tracing::info!(count = configs.len(), "imported connections saved");
+        tracing::info!(
+            operation = "connection_import",
+            count = configs.len(),
+            "imported connections saved"
+        );
         Ok(())
     }
 
     pub async fn delete(&self, id: &ConnectionId) -> Result<()> {
         if let Err(error) = self.storage.delete_connection(id).await {
-            tracing::error!(error = %error, connection_id = %id, "delete connection failed");
+            tracing::error!(
+                operation = "connection_delete",
+                error = %error,
+                connection_id = %id,
+                "delete connection failed"
+            );
             return Err(error);
         }
         // 连接删除已由用户确认；同步清理不可再访问的查询历史与本地草稿，避免敏感文本残留。
         if let Err(e) = self.storage.clear_history(Some(id)).await {
-            tracing::warn!(error = %e, connection_id = %id, "cleanup deleted connection history failed");
+            tracing::warn!(
+                operation = "connection_delete_cleanup",
+                error = %e,
+                connection_id = %id,
+                resource = "query_history",
+                "cleanup deleted connection history failed"
+            );
         }
         for key in [
             format!("sql_query_drafts_{id}"),
             format!("mongo_query_drafts_{id}"),
         ] {
             if let Err(e) = self.storage.delete_preference(&key).await {
-                tracing::warn!(error = %e, connection_id = %id, "cleanup deleted connection drafts failed");
+                tracing::warn!(
+                    operation = "connection_delete_cleanup",
+                    error = %e,
+                    connection_id = %id,
+                    resource = "query_draft",
+                    "cleanup deleted connection drafts failed"
+                );
             }
         }
         self.bump_revision();
-        tracing::info!(connection_id = %id, "connection deleted");
+        tracing::info!(operation = "connection_delete", connection_id = %id, "connection deleted");
         Ok(())
     }
 
@@ -112,10 +149,23 @@ impl ConnectionService {
         };
         match &result {
             Ok(()) => {
-                tracing::info!(connection_id = %config.id, driver = ?config.driver, elapsed_ms = started.elapsed().as_millis(), "connection test succeeded")
+                tracing::info!(
+                    operation = "connection_test",
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "connection test succeeded"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, driver = ?config.driver, elapsed_ms = started.elapsed().as_millis(), "connection test failed")
+                tracing::warn!(
+                    operation = "connection_test",
+                    error = %error,
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "connection test failed"
+                )
             }
         }
         result
@@ -212,10 +262,21 @@ impl ConnectionService {
             .await;
         match &result {
             Ok(()) => {
-                tracing::info!(connection_id = %config.id, thread_id, "query cancellation requested")
+                tracing::info!(
+                    operation = "sql_query_cancel",
+                    connection_id = %config.id,
+                    thread_id,
+                    "query cancellation requested"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, connection_id = %config.id, thread_id, "query cancellation failed")
+                tracing::warn!(
+                    operation = "sql_query_cancel",
+                    error = %error,
+                    connection_id = %config.id,
+                    thread_id,
+                    "query cancellation failed"
+                )
             }
         }
         result
@@ -280,7 +341,13 @@ impl ConnectionService {
             }
         };
         if let Err(e) = self.storage.append_history(&record).await {
-            tracing::warn!(error = %e, connection_id = %config.id, query_bytes = query.sql.len(), "append query history failed");
+            tracing::warn!(
+                operation = "sql_query_history_append",
+                error = %e,
+                connection_id = %config.id,
+                query_bytes = query.sql.len(),
+                "append query history failed"
+            );
         }
     }
 
@@ -312,6 +379,7 @@ fn log_query_result(
 ) {
     match result {
         Ok(output) => tracing::info!(
+            operation = "sql_query",
             connection_id = %config.id,
             driver = ?config.driver,
             query_bytes = query.sql.len(),
@@ -324,6 +392,7 @@ fn log_query_result(
             "query completed"
         ),
         Err(error) => tracing::warn!(
+            operation = "sql_query",
             error = %error,
             connection_id = %config.id,
             driver = ?config.driver,

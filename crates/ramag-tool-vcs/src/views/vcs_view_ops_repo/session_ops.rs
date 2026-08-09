@@ -53,7 +53,12 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, repo_id = %repo_id, "close repository failed");
+                        error!(
+                            operation = "git_repo_close",
+                            error = %e,
+                            repo_id = %repo_id,
+                            "close repository failed"
+                        );
                         this.error = Some(format!("关闭仓库失败：{e}"));
                         cx.notify();
                     }
@@ -96,7 +101,12 @@ impl VcsView {
                 // 不同仓库使用独立键，后续输入不能取消本次落盘。
                 let result = storage.set_preference(&key, &text).await;
                 if let Err(error) = &result {
-                    tracing::warn!(error = %error, "persist commit draft on switch failed");
+                    tracing::warn!(
+                        operation = "git_commit_draft_save",
+                        reason = "repo_switch",
+                        error = %error,
+                        "persist commit draft on switch failed"
+                    );
                 }
                 let _ = this.update(cx, |this, cx| {
                     if generation_ref.load(Ordering::Relaxed) != generation {
@@ -173,7 +183,12 @@ impl VcsView {
                 .set_preference(&commit_draft_pref_key(&path), &text)
                 .await;
             if let Err(error) = &result {
-                tracing::warn!(error = %error, "persist commit draft failed");
+                tracing::warn!(
+                    operation = "git_commit_draft_save",
+                    path = %path,
+                    error = %error,
+                    "persist commit draft failed"
+                );
             }
             let _ = this.update(cx, |this, cx| {
                 if generation_ref.load(Ordering::Relaxed) != generation {

@@ -49,7 +49,14 @@ impl KeyTreePanel {
             self.loading = false;
             self.truncated = true;
             self.rebuild_tree();
-            info!(count = self.keys.len(), "key scan stopped by user");
+            info!(
+                operation = "redis_key_scan",
+                connection_id = ?self.config.as_ref().map(|config| &config.id),
+                db = self.db,
+                count = self.keys.len(),
+                reason = "user_cancelled",
+                "key scan stopped by user"
+            );
         }
         cx.notify();
     }
@@ -165,6 +172,8 @@ impl KeyTreePanel {
                             this.resource_limited = true;
                             this.rebuild_tree();
                             info!(
+                                operation = "redis_key_scan",
+                                connection_id = %config.id,
                                 count = this.keys.len(),
                                 key_bytes = this.key_bytes,
                                 db,
@@ -174,7 +183,13 @@ impl KeyTreePanel {
                             this.loading = false;
                             this.truncated = false;
                             this.rebuild_tree();
-                            info!(count = this.keys.len(), db, "key scan completed");
+                            info!(
+                                operation = "redis_key_scan",
+                                connection_id = %config.id,
+                                count = this.keys.len(),
+                                db,
+                                "key scan completed"
+                            );
                         } else {
                             // 首批立即出树给首屏反馈，此后每积累 REBUILD_STEP 才重建一次
                             if this.last_rebuilt_count == 0
@@ -186,7 +201,14 @@ impl KeyTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, db, "key scan failed");
+                        error!(
+                            operation = "redis_key_scan",
+                            connection_id = %config.id,
+                            db,
+                            cursor,
+                            error = %e,
+                            "key scan failed"
+                        );
                         this.loading = false;
                         if this.keys.is_empty() {
                             this.error = Some(format!("加载失败：{e}"));

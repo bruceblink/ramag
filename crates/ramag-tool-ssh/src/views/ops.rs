@@ -303,6 +303,7 @@ impl SshView {
             }
         };
         tracing::info!(
+            operation = "ssh_terminal_close",
             profile_id = %workspace_id,
             terminal_id,
             "ssh terminal closed"
@@ -364,7 +365,12 @@ impl SshView {
         let service = self.service.clone();
         cx.spawn(async move |_, _| {
             if let Err(error) = service.disconnect(&id).await {
-                tracing::warn!(error = %error, profile_id = %id, "close ssh workspace failed");
+                tracing::warn!(
+                    operation = "ssh_workspace_close",
+                    error = %error,
+                    profile_id = %id,
+                    "close ssh workspace failed"
+                );
             }
         })
         .detach();
@@ -409,7 +415,12 @@ impl SshView {
                 .update(cx, |this, _| this.persist_generation == generation)
                 .unwrap_or(false);
             if current && let Err(error) = service.save_workspace_preference(&preference).await {
-                tracing::warn!(error = %error, "persist ssh workspaces failed");
+                tracing::warn!(
+                    operation = "ssh_workspace_persist",
+                    generation,
+                    error = %error,
+                    "persist ssh workspaces failed"
+                );
             }
         })
         .detach();

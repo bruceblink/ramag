@@ -82,14 +82,21 @@ impl UpdateService {
 
     pub async fn check(&self, force: bool) -> Result<UpdateCheckResult> {
         let _guard = self.check_lock.lock().await;
-        info!(force, current_version = %self.current_version, "update check started");
+        info!(
+            operation = "update_check",
+            force,
+            current_version = %self.current_version,
+            "update check started"
+        );
         if !force
             && !self.should_check().await
             && let Some(result) = self.load_cached_result().await
         {
             *self.last_result.write() = Some(result.clone());
             info!(
+                operation = "update_check",
                 result = update_result_kind(&result),
+                source = "cache",
                 "cached update check result restored"
             );
             return Ok(result);
@@ -99,21 +106,33 @@ impl UpdateService {
         let release = match self.driver.latest_stable_release().await {
             Ok(release) => release,
             Err(error) => {
-                warn!(error = %error, force, "update check failed");
+                warn!(
+                    operation = "update_check",
+                    error = %error,
+                    force,
+                    "update check failed"
+                );
                 return Err(error);
             }
         };
         let result = match evaluate_release(&self.current_version, release, current_platform()) {
             Ok(result) => result,
             Err(error) => {
-                warn!(error = %error, force, "update metadata validation failed");
+                warn!(
+                    operation = "update_check",
+                    error = %error,
+                    force,
+                    "update metadata validation failed"
+                );
                 return Err(error);
             }
         };
         self.persist_result(&result).await;
         *self.last_result.write() = Some(result.clone());
         info!(
+            operation = "update_check",
             result = update_result_kind(&result),
+            source = "network",
             "update check completed"
         );
         Ok(result)
@@ -145,17 +164,35 @@ impl UpdateService {
         if latest <= current {
             return Err(DomainError::Other("更新版本不高于当前版本".into()));
         }
-        info!(version = %update.release.version, asset = %asset.name, expected_bytes = asset.size, "update download started");
+        info!(
+            operation = "update_download",
+            version = %update.release.version,
+            asset = %asset.name,
+            expected_bytes = asset.size,
+            "update download started"
+        );
         let result = self
             .driver
             .download_asset(&update.release, asset, progress, cancellation)
             .await;
         match &result {
             Ok(path) => {
-                info!(version = %update.release.version, asset = %asset.name, path = %path.display(), "update download completed")
+                info!(
+                    operation = "update_download",
+                    version = %update.release.version,
+                    asset = %asset.name,
+                    path = %path.display(),
+                    "update download completed"
+                )
             }
             Err(download_error) => {
-                error!(error = %download_error, version = %update.release.version, asset = %asset.name, "update download failed")
+                error!(
+                    operation = "update_download",
+                    error = %download_error,
+                    version = %update.release.version,
+                    asset = %asset.name,
+                    "update download failed"
+                )
             }
         }
         result
@@ -169,7 +206,12 @@ impl UpdateService {
         let value = match self.storage.get_preference(UPDATE_CHECK_PREF_KEY).await {
             Ok(value) => value,
             Err(error) => {
-                warn!(error = %error, "load update check timestamp failed");
+                warn!(
+                    operation = "update_check_throttle",
+                    resource = "last_check_at",
+                    error = %error,
+                    "load update check timestamp failed"
+                );
                 return true;
             }
         };
@@ -187,7 +229,12 @@ impl UpdateService {
             .set_preference(UPDATE_CHECK_PREF_KEY, &unix_timestamp().to_string())
             .await
         {
-            warn!(error = %error, "persist update check timestamp failed");
+            warn!(
+                operation = "update_check_throttle",
+                resource = "last_check_at",
+                error = %error,
+                "persist update check timestamp failed"
+            );
         }
     }
 
@@ -195,14 +242,24 @@ impl UpdateService {
         let value = match self.storage.get_preference(UPDATE_RESULT_PREF_KEY).await {
             Ok(value) => value,
             Err(error) => {
-                warn!(error = %error, "load cached update result failed");
+                warn!(
+                    operation = "update_cache",
+                    resource = "result",
+                    error = %error,
+                    "load cached update result failed"
+                );
                 return None;
             }
         }?;
         match parse_cached_result(&self.current_version, &value) {
             Ok(result) => result,
             Err(error) => {
-                warn!(error = %error, "parse cached update result failed");
+                warn!(
+                    operation = "update_cache",
+                    resource = "result",
+                    error = %error,
+                    "parse cached update result failed"
+                );
                 None
             }
         }
@@ -213,7 +270,12 @@ impl UpdateService {
         let value = match serde_json::to_string(&notice) {
             Ok(value) => value,
             Err(error) => {
-                warn!(error = %error, "serialize update result failed");
+                warn!(
+                    operation = "update_cache",
+                    resource = "result",
+                    error = %error,
+                    "serialize update result failed"
+                );
                 return;
             }
         };
@@ -222,7 +284,12 @@ impl UpdateService {
             .set_preference(UPDATE_RESULT_PREF_KEY, &value)
             .await
         {
-            warn!(error = %error, "persist update result failed");
+            warn!(
+                operation = "update_cache",
+                resource = "result",
+                error = %error,
+                "persist update result failed"
+            );
         }
     }
 }

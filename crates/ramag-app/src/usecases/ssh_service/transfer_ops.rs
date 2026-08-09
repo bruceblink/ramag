@@ -106,6 +106,7 @@ impl SshService {
             }
         };
         tracing::info!(
+            operation = "ssh_transfer",
             task_id = %id,
             profile_id = %profile.id,
             direction = ?task.direction,
@@ -179,9 +180,15 @@ impl SshService {
             .finish(id, &result, cancellation.is_cancelled());
         match &result {
             Ok(()) => {
-                tracing::info!(task_id = %id, profile_id = %profile.id, "ssh transfer finished")
+                tracing::info!(
+                    operation = "ssh_transfer",
+                    task_id = %id,
+                    profile_id = %profile.id,
+                    "ssh transfer finished"
+                )
             }
             Err(error) => tracing::warn!(
+                operation = "ssh_transfer",
                 error = %error,
                 task_id = %id,
                 profile_id = %profile.id,

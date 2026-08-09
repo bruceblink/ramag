@@ -50,13 +50,19 @@ impl ClipboardService {
                 if referenced.binary_search(&path).is_err() {
                     if removed >= MAX_ORPHAN_REMOVALS_PER_RUN {
                         warn!(
+                            operation = "clipboard_media_orphan_cleanup",
                             limit = MAX_ORPHAN_REMOVALS_PER_RUN,
                             "orphan media cleanup budget reached"
                         );
                         break;
                     }
                     if let Err(e) = driver.remove_media(&path) {
-                        warn!(error = %e, path, "remove orphan media failed");
+                        warn!(
+                            operation = "clipboard_media_orphan_cleanup",
+                            error = %e,
+                            path,
+                            "remove orphan media failed"
+                        );
                     } else {
                         removed += 1;
                     }
@@ -66,7 +72,10 @@ impl ClipboardService {
         })
         .await?;
         if removed > 0 {
-            debug!(removed, "orphan media cleaned");
+            debug!(
+                operation = "clipboard_media_orphan_cleanup",
+                removed, "orphan media cleaned"
+            );
         }
         Ok(removed)
     }
@@ -168,10 +177,14 @@ impl ClipboardService {
         match self.storage.clip_prune(MAX_ITEMS, MAX_AGE_DAYS).await {
             Ok(images) => {
                 if let Err(e) = self.cleanup_media(images).await {
-                    warn!(error = %e, "remove pruned clipboard media failed");
+                    warn!(
+                        operation = "clipboard_prune",
+                        error = %e,
+                        "remove pruned clipboard media failed"
+                    );
                 }
             }
-            Err(e) => warn!(error = %e, "clipboard pruning failed"),
+            Err(e) => warn!(operation = "clipboard_prune", error = %e, "clipboard pruning failed"),
         }
     }
 
@@ -180,7 +193,12 @@ impl ClipboardService {
         crate::run_blocking(move || {
             for path in paths {
                 if let Err(e) = driver.remove_media(&path) {
-                    warn!(error = %e, path, "remove clipboard media failed");
+                    warn!(
+                        operation = "clipboard_media_cleanup",
+                        error = %e,
+                        path,
+                        "remove clipboard media failed"
+                    );
                 }
             }
             Ok(())

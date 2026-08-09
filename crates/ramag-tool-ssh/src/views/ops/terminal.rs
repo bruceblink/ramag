@@ -156,6 +156,7 @@ impl SshView {
                         };
                         workspace.active_terminal_id = Some(terminal_id);
                         tracing::info!(
+                            operation = "ssh_terminal_start",
                             profile_id = %id,
                             terminal_id,
                             reconnect = replaced,

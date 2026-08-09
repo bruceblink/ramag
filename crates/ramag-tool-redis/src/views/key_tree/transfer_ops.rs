@@ -274,7 +274,15 @@ async fn run_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(error = %e, file = %path.display(), scope = "database", "import failed");
+                error!(
+                    operation = "redis_import",
+                    connection_id = %config.id,
+                    db,
+                    file = %path.display(),
+                    scope = "database",
+                    error = %e,
+                    "import failed"
+                );
                 return Err(e);
             }
         };
@@ -318,7 +326,15 @@ async fn run_selection_import(
         {
             Ok(summary) => summary,
             Err(error) => {
-                error!(error = %error, file = %path.display(), scope = "selection", "import failed");
+                error!(
+                    operation = "redis_import",
+                    connection_id = %config.id,
+                    db,
+                    file = %path.display(),
+                    scope = "selection",
+                    error = %error,
+                    "import failed"
+                );
                 return Err(error);
             }
         };
