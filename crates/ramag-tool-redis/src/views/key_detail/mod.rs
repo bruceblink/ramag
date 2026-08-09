@@ -4,6 +4,7 @@ mod hash_block;
 mod header;
 mod helpers;
 mod list_block;
+mod list_delete;
 mod ops;
 #[cfg(test)]
 mod render_test;

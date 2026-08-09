@@ -6,15 +6,19 @@ use std::time::Instant;
 use gpui::Context;
 use ramag_domain::entities::{FileChangeKind, FileStatus};
 
-use super::helpers::{FileTab, FileTabSource, GroupKind};
+use super::helpers::{FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
-use super::vcs_view_ops_repo::PF_FILE_SELF_WRITE_TTL;
 use crate::watcher::RepoRefresh;
 
 mod merge;
+mod refresh_helpers;
 
 use self::merge::{
     merge_partial_project_files, merge_partial_status, path_matches_prefixes, status_changes,
+};
+use self::refresh_helpers::{
+    begin_workspace_refresh, enqueue_workspace_refresh, merge_pending_refresh, should_rerun,
+    take_pending_refresh, take_recent_project_file_self_writes,
 };
 
 enum WorkspaceStatusResult {
@@ -33,7 +37,12 @@ pub(super) fn best_effort_refresh<T>(
     match result {
         Ok(value) => Some(value),
         Err(error) => {
-            tracing::warn!(error = %error, resource, "post-operation refresh failed");
+            tracing::warn!(
+                operation = "vcs_post_operation_refresh",
+                resource,
+                error = %error,
+                "post-operation refresh failed"
+            );
             None
         }
     }
@@ -136,7 +145,13 @@ impl VcsView {
                             changes
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "workspace status refresh failed");
+                            tracing::warn!(
+                                operation = "vcs_workspace_refresh",
+                                repo_id = %repo,
+                                scope = "status",
+                                error = %error,
+                                "workspace status refresh failed"
+                            );
                             this.error = Some(format!("刷新工作区状态失败：{error}"));
                             (false, false)
                         }
@@ -151,7 +166,13 @@ impl VcsView {
                             }
                         },
                         Err(error) => {
-                            tracing::warn!(error = %error, "incremental workspace status refresh failed");
+                            tracing::warn!(
+                                operation = "vcs_workspace_refresh",
+                                repo_id = %repo,
+                                scope = "status_paths",
+                                error = %error,
+                                "incremental workspace status refresh failed"
+                            );
                             this.error = Some(format!("增量刷新工作区状态失败：{error}"));
                             (false, false)
                         }
@@ -169,7 +190,13 @@ impl VcsView {
                             }
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "incremental project files refresh failed");
+                            tracing::warn!(
+                                operation = "vcs_workspace_refresh",
+                                repo_id = %repo,
+                                scope = "project_files",
+                                error = %error,
+                                "incremental project files refresh failed"
+                            );
                             this.error = Some(format!("增量刷新 Project Files 失败：{error}"));
                             this.reload_project_files(cx);
                         }
@@ -182,7 +209,13 @@ impl VcsView {
                             this.remote_branches = remote;
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "branch refresh failed");
+                            tracing::warn!(
+                                operation = "vcs_workspace_refresh",
+                                repo_id = %repo,
+                                scope = "branches",
+                                error = %error,
+                                "branch refresh failed"
+                            );
                             this.error = Some(format!("刷新分支失败：{error}"));
                         }
                     }
@@ -198,23 +231,26 @@ impl VcsView {
                     let event_prefixes = event_paths
                         .as_ref()
                         .map(|paths| paths.iter().map(String::as_str).collect::<HashSet<_>>());
-                    let self_saved_paths = event_prefixes.as_ref().map_or_else(HashSet::new, |prefixes| {
-                        take_recent_project_file_self_writes(
-                            &mut this.project_file_self_writes,
-                            &this.file_tabs,
-                            prefixes,
-                            Instant::now(),
-                        )
-                    });
+                    let self_saved_paths =
+                        event_prefixes
+                            .as_ref()
+                            .map_or_else(HashSet::new, |prefixes| {
+                                take_recent_project_file_self_writes(
+                                    &mut this.project_file_self_writes,
+                                    &this.file_tabs,
+                                    prefixes,
+                                    Instant::now(),
+                                )
+                            });
                     // watcher 明确给出路径时只失效命中标签；全量 status 变化才失效全部。
                     for tab in &mut this.file_tabs {
                         if matches!(tab.source, FileTabSource::ProjectFiles)
                             && !tab.is_dirty()
                             && !self_saved_paths.contains(&tab.path)
                             && ((full_status_refresh && files_changed)
-                                || event_prefixes
-                                    .as_ref()
-                                    .is_some_and(|prefixes| path_matches_prefixes(&tab.path, prefixes)))
+                                || event_prefixes.as_ref().is_some_and(|prefixes| {
+                                    path_matches_prefixes(&tab.path, prefixes)
+                                }))
                         {
                             tab.cached_content = None;
                         }
@@ -241,9 +277,9 @@ impl VcsView {
                         && !tab.is_dirty()
                         && !self_saved_paths.contains(&tab.path)
                         && ((full_status_refresh && files_changed)
-                            || event_prefixes.as_ref().is_some_and(|prefixes| {
-                                path_matches_prefixes(&tab.path, prefixes)
-                            }))
+                            || event_prefixes
+                                .as_ref()
+                                .is_some_and(|prefixes| path_matches_prefixes(&tab.path, prefixes)))
                     {
                         this.select_pf_file(tab.path, cx);
                     }
@@ -308,7 +344,11 @@ impl VcsView {
             }
             Err(e) => {
                 // 监听失败不阻断使用：窗口激活刷新 + 手动刷新仍可用
-                tracing::warn!(error = %e, "fs watcher start failed");
+                tracing::warn!(
+                    operation = "vcs_filesystem_watcher_start",
+                    error = %e,
+                    "fs watcher start failed"
+                );
             }
         }
     }
@@ -436,95 +476,6 @@ impl VcsView {
             }
         }
         cx.notify();
-    }
-}
-
-fn begin_workspace_refresh(
-    in_flight: &mut bool,
-    pending: &mut RepoRefresh,
-    refresh: RepoRefresh,
-) -> bool {
-    if *in_flight {
-        pending.merge(refresh);
-        false
-    } else {
-        *in_flight = true;
-        true
-    }
-}
-
-fn should_rerun(this: &VcsView, pending: &RepoRefresh) -> bool {
-    this.repo.is_some() && !this.loading && !this.busy && !pending.is_empty()
-}
-
-/// watcher 命中本进程发起写入的同一代快照时，只刷新 Git 状态，不重载编辑器。
-fn take_recent_project_file_self_writes(
-    markers: &mut HashMap<String, (u64, Instant)>,
-    file_tabs: &[FileTab],
-    event_prefixes: &HashSet<&str>,
-    now: Instant,
-) -> HashSet<String> {
-    let mut consumed = HashSet::new();
-    markers.retain(|path, (revision, saved_at)| {
-        if now.saturating_duration_since(*saved_at) > PF_FILE_SELF_WRITE_TTL {
-            return false;
-        }
-        if !path_matches_prefixes(path, event_prefixes) {
-            return true;
-        }
-        let matches_revision = file_tabs.iter().any(|tab| {
-            tab.path == *path
-                && matches!(tab.source, FileTabSource::ProjectFiles)
-                && tab
-                    .cached_content
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.revision == *revision)
-        });
-        if matches_revision {
-            consumed.insert(path.clone());
-            false
-        } else {
-            true
-        }
-    });
-    consumed
-}
-
-fn merge_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>, refresh: RepoRefresh) {
-    match pending.lock() {
-        Ok(mut pending) => pending.merge(refresh),
-        Err(error) => {
-            tracing::warn!("workspace refresh state lock poisoned");
-            error.into_inner().merge(refresh);
-        }
-    }
-}
-
-fn take_pending_refresh(pending: &std::sync::Mutex<RepoRefresh>) -> RepoRefresh {
-    match pending.lock() {
-        Ok(mut pending) => std::mem::take(&mut *pending),
-        Err(error) => {
-            tracing::warn!("workspace refresh state lock poisoned");
-            let mut pending = error.into_inner();
-            std::mem::take(&mut *pending)
-        }
-    }
-}
-
-fn enqueue_workspace_refresh(sender: &std::sync::Mutex<futures::channel::mpsc::Sender<()>>) {
-    let mut sender = match sender.lock() {
-        Ok(sender) => sender,
-        Err(_) => {
-            tracing::warn!("workspace refresh channel lock poisoned");
-            return;
-        }
-    };
-    match sender.try_send(()) {
-        Ok(()) => {}
-        Err(error) if error.is_full() || error.is_disconnected() => {}
-        Err(error) => {
-            tracing::warn!(error = %error, "workspace refresh enqueue failed");
-        }
     }
 }
 

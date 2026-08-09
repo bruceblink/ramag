@@ -299,7 +299,12 @@ async fn write_header(
             let source_schema = match svc.list_schemas(config).await {
                 Ok(schemas) => schemas.into_iter().find(|item| item.name == schema),
                 Err(error) => {
-                    tracing::warn!(error = %error, schema, "load source schema options failed");
+                    tracing::warn!(
+                        operation = "sql_export_schema_options",
+                        error = %error,
+                        schema,
+                        "load source schema options failed"
+                    );
                     None
                 }
             };

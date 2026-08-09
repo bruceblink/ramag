@@ -74,12 +74,20 @@ impl ConnectionSession {
 
         let queries_clone = queries.clone();
         let driver_kind = config.driver;
+        let connection_id = config.id.clone();
         subs.push(cx.subscribe_in(
             &tree,
             window,
             move |this: &mut Self, _, e: &TreeEvent, window, cx| match e {
                 TreeEvent::TableSelected { schema, table } => {
-                    info!(schema = %schema, table = %table, "table query opened");
+                    info!(
+                        operation = "sql_table_query_open",
+                        connection_id = %connection_id,
+                        driver = ?driver_kind,
+                        schema = %schema,
+                        table = %table,
+                        "table query opened"
+                    );
                     queries_clone.update(cx, |q, cx| {
                         q.set_active_schema(Some(schema.clone()), cx);
                     });
@@ -93,7 +101,13 @@ impl ConnectionSession {
                     });
                 }
                 TreeEvent::SchemaActivated { schema } => {
-                    info!(schema = %schema, "schema activated");
+                    info!(
+                        operation = "sql_schema_activate",
+                        connection_id = %connection_id,
+                        driver = ?driver_kind,
+                        schema = %schema,
+                        "schema activated"
+                    );
                     queries_clone.update(cx, |q, cx| {
                         q.set_active_schema(Some(schema.clone()), cx);
                     });
@@ -103,7 +117,15 @@ impl ConnectionSession {
                     table,
                     is_view,
                 } => {
-                    info!(schema = %schema, table = %table, is_view, "show create");
+                    info!(
+                        operation = "sql_show_create",
+                        connection_id = %connection_id,
+                        driver = ?driver_kind,
+                        schema = %schema,
+                        table = %table,
+                        is_view,
+                        "show create"
+                    );
                     let sql = ramag_domain::entities::build_ddl_query(
                         driver_kind,
                         schema,
@@ -160,7 +182,13 @@ impl ConnectionSession {
     /// 切换编辑器并保持快捷键焦点链。
     fn toggle_sql_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let visible = self.queries.update(cx, |q, cx| q.toggle_editor(cx));
-        info!(visible, "toggle sql editor");
+        info!(
+            operation = "sql_editor_toggle",
+            connection_id = %self.config.id,
+            driver = ?self.config.driver,
+            visible,
+            "toggle sql editor"
+        );
         self.tree
             .update(cx, |t, cx| t.set_editor_visible(visible, cx));
         if visible {
@@ -306,7 +334,14 @@ async fn warm_once(
                 })
             }
             Err(e) => {
-                warn!(error = %e, stage = "schemas", "metadata cache warmup failed");
+                warn!(
+                    operation = "sql_metadata_cache_warmup",
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    stage = "schemas",
+                    error = %e,
+                    "metadata cache warmup failed"
+                );
                 return;
             }
         }
@@ -323,11 +358,16 @@ async fn warm_once(
                 .filter(|table| table.is_view)
                 .map(|table| table.name)
                 .collect();
-            let refreshed = cache
-                .write()
-                .finish_table_refresh(schema, generation, names, views);
+            let refreshed =
+                cache
+                    .write()
+                    .finish_table_refresh(schema.clone(), generation, names, views);
             if !refreshed {
                 warn!(
+                    operation = "sql_metadata_cache_warmup",
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    schema = %schema,
                     reason = "superseded_or_budget",
                     "metadata cache warmup discarded"
                 );
@@ -336,10 +376,22 @@ async fn warm_once(
         }
         Err(e) => {
             cache.write().cancel_table_refresh(&schema, generation);
-            warn!(error = %e, schema = %schema, stage = "tables", "metadata cache warmup failed");
+            warn!(
+                operation = "sql_metadata_cache_warmup",
+                connection_id = %config.id,
+                driver = ?config.driver,
+                schema = %schema,
+                stage = "tables",
+                error = %e,
+                "metadata cache warmup failed"
+            );
         }
     }
     info!(
+        operation = "sql_metadata_cache_warmup",
+        connection_id = %config.id,
+        driver = ?config.driver,
+        schema = %schema,
         schemas = cache.read().tables.len(),
         "schema cache refreshed"
     );

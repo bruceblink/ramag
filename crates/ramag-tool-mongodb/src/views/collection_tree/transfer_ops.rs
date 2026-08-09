@@ -322,7 +322,15 @@ async fn run_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(error = %e, file = %path.display(), scope = "database", "import failed");
+                error!(
+                    operation = "mongo_import_database",
+                    connection_id = %config.id,
+                    database = %db,
+                    file = %path.display(),
+                    scope = "database",
+                    error = %e,
+                    "import failed"
+                );
                 return Err(e);
             }
         };
@@ -366,7 +374,16 @@ async fn run_structured_collection_import(
         {
             Ok(summary) => summary,
             Err(error) => {
-                error!(error = %error, file = %path.display(), scope = "collection", format = "structured", "import failed");
+                error!(
+                    operation = "mongo_import_collection",
+                    connection_id = %config.id,
+                    database = %db,
+                    file = %path.display(),
+                    scope = "collection",
+                    format = "structured",
+                    error = %error,
+                    "import failed"
+                );
                 return Err(error);
             }
         };
@@ -418,7 +435,17 @@ async fn run_collection_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(error = %e, file = %path.display(), scope = "collection", format = "jsonl", "import failed");
+                error!(
+                    operation = "mongo_import_collection",
+                    connection_id = %config.id,
+                    database = %db,
+                    collection = %collection,
+                    file = %path.display(),
+                    scope = "collection",
+                    format = "jsonl",
+                    error = %e,
+                    "import failed"
+                );
                 return Err(e);
             }
         };

@@ -244,7 +244,13 @@ fn commit_export_temp(temp_path: &Path, target: &Path) -> Result<()> {
     match std::fs::rename(temp_path, target) {
         Ok(()) => {
             if let Err(error) = std::fs::remove_file(&backup) {
-                tracing::warn!(error = %error, path = %backup.display(), "remove export backup failed");
+                tracing::warn!(
+                    operation = "export_cleanup",
+                    error = %error,
+                    path = %backup.display(),
+                    stage = "backup",
+                    "remove export backup failed"
+                );
             }
             Ok(())
         }
@@ -266,7 +272,13 @@ fn remove_export_temp(path: &Path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            tracing::warn!(error = %error, path = %path.display(), "remove export temp failed")
+            tracing::warn!(
+                operation = "export_cleanup",
+                error = %error,
+                path = %path.display(),
+                stage = "temporary_file",
+                "remove export temp failed"
+            )
         }
     }
 }

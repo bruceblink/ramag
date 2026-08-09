@@ -104,11 +104,24 @@ impl ValueEditForm {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(key_bytes = key.len(), "string value saved");
+                    info!(
+                        operation = "redis_string_value_save",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        "string value saved"
+                    );
                     cx.emit(ValueEditEvent::Saved);
                 }
                 Err(e) => {
-                    error!(error = %e, "save string value failed");
+                    error!(
+                        operation = "redis_string_value_save",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        error = %e,
+                        "save string value failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("保存失败"));
                     cx.notify();
                 }

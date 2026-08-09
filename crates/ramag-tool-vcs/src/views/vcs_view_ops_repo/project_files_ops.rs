@@ -30,7 +30,12 @@ impl VcsView {
                 match result {
                     Ok(paths) => this.project_files = paths,
                     Err(e) => {
-                        error!(error = %e, "load project files failed");
+                        error!(
+                            operation = "vcs_project_files_load",
+                            repo_id = %repo,
+                            error = %e,
+                            "load project files failed"
+                        );
                         this.project_files = Vec::new();
                         this.error = Some(format!("加载 Project Files 失败: {e}"));
                     }
@@ -281,9 +286,7 @@ impl VcsView {
                     let snapshot = this
                         .file_tabs
                         .iter()
-                        .find(|tab| {
-                            tab.path == path && tab.source == FileTabSource::ProjectFiles
-                        })?
+                        .find(|tab| tab.path == path && tab.source == FileTabSource::ProjectFiles)?
                         .cached_content
                         .as_ref()?;
                     let text = (snapshot.dirty
@@ -294,10 +297,9 @@ impl VcsView {
                         .then(|| snapshot.text.as_ref().clone())?;
                     // 写入前登记，确保监听事件只消费一次。
                     let now = std::time::Instant::now();
-                    this.project_file_self_writes
-                        .retain(|_, (_, saved_at)| {
-                            now.saturating_duration_since(*saved_at) <= PF_FILE_SELF_WRITE_TTL
-                        });
+                    this.project_file_self_writes.retain(|_, (_, saved_at)| {
+                        now.saturating_duration_since(*saved_at) <= PF_FILE_SELF_WRITE_TTL
+                    });
                     this.project_file_self_writes
                         .insert(path.clone(), (revision, now));
                     Some(text)
@@ -329,11 +331,8 @@ impl VcsView {
                 match result {
                     Ok(()) => {
                         // 旧回包不得清除新一代编辑状态。
-                        let current = mark_project_file_revision_saved(
-                            &mut this.file_tabs,
-                            &path,
-                            revision,
-                        );
+                        let current =
+                            mark_project_file_revision_saved(&mut this.file_tabs, &path, revision);
                         if this.selected_pf_path.as_deref() == Some(path.as_str())
                             && let Some(snapshot) = current
                         {
@@ -342,7 +341,13 @@ impl VcsView {
                         }
                     }
                     Err(error) => {
-                        tracing::error!(error = %error, path = %path, "autosave project file failed");
+                        tracing::error!(
+                            operation = "vcs_project_file_autosave",
+                            repo_id = %repo_id,
+                            path = %path,
+                            error = %error,
+                            "autosave project file failed"
+                        );
                         this.pending_notification = Some(
                             gpui_component::notification::Notification::error(format!(
                                 "自动保存 {path} 失败：{error}；可按 {} 重试",

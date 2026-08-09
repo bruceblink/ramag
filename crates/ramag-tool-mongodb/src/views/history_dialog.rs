@@ -125,7 +125,12 @@ impl MongoHistoryList {
                         this.schedule_filter(false, cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "load query history failed");
+                        error!(
+                            operation = "mongo_history_load",
+                            connection_id = %this.connection_id,
+                            error = %e,
+                            "load query history failed"
+                        );
                         this.load_error = Some(e.to_string());
                     }
                 }
@@ -150,7 +155,12 @@ impl MongoHistoryList {
                         this.schedule_filter(false, cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "delete query history failed");
+                        error!(
+                            operation = "mongo_history_delete",
+                            connection_id = %this.connection_id,
+                            error = %e,
+                            "delete query history failed"
+                        );
                         this.mutation_error = Some(format!("删除失败：{e}"));
                     }
                 }
@@ -177,7 +187,12 @@ impl MongoHistoryList {
                         this.schedule_filter(false, cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "clear query history failed");
+                        error!(
+                            operation = "mongo_history_clear",
+                            connection_id = %this.connection_id,
+                            error = %e,
+                            "clear query history failed"
+                        );
                         this.mutation_error = Some(format!("清空失败：{e}"));
                     }
                 }

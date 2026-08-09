@@ -10,7 +10,14 @@ impl QueryTab {
         let counting_sql = match count_sql(&base_sql) {
             Ok(sql) => sql,
             Err(message) => {
-                warn!(error = %message, "build count sql failed");
+                warn!(
+                    operation = "sql_count",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    sql_bytes = base_sql.len(),
+                    error = %message,
+                    "build count sql failed"
+                );
                 if let Some(pager) = self.pager.as_mut() {
                     pager.total = TotalRows::Unavailable;
                 }

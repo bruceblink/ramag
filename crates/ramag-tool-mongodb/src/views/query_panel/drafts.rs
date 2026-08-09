@@ -112,7 +112,12 @@ impl MongoQueryPanel {
                 Err(error) => Err(error),
             };
             if let Err(error) = &result {
-                tracing::warn!(error = %error, driver = "mongodb", "persist query drafts failed");
+                tracing::warn!(
+                    operation = "mongo_query_draft_save",
+                    error = %error,
+                    driver = "mongodb",
+                    "persist query drafts failed"
+                );
             }
             let _ = this.update(cx, |this, cx| {
                 if generation_ref.load(Ordering::Relaxed) != generation {
@@ -150,13 +155,23 @@ impl MongoQueryPanel {
                     Ok(pref) if !pref.drafts.is_empty() => Some(pref),
                     Ok(_) => None,
                     Err(e) => {
-                        tracing::warn!(error = %e, "ignore invalid MongoDB drafts");
+                        tracing::warn!(
+                            operation = "mongo_query_draft_load",
+                            error = %e,
+                            driver = "mongodb",
+                            "ignore invalid MongoDB drafts"
+                        );
                         None
                     }
                 },
                 Ok(None) => None,
                 Err(e) => {
-                    tracing::warn!(error = %e, driver = "mongodb", "load query drafts failed");
+                    tracing::warn!(
+                        operation = "mongo_query_draft_load",
+                        error = %e,
+                        driver = "mongodb",
+                        "load query drafts failed"
+                    );
                     None
                 }
             };

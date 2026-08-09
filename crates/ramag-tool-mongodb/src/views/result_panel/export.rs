@@ -109,6 +109,16 @@ impl ResultPanel {
             true,
             "jsonl",
         );
+        let connection_id = self
+            .config
+            .as_ref()
+            .map(|config| config.id.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let database = self.database.clone();
+        let collection = self
+            .target_collection
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
         let scope_label = scope;
         // 用户选定路径后才占用工作池。
         self.exporting = true;
@@ -159,21 +169,35 @@ impl ResultPanel {
                 this.exporting = false;
                 this.pending_notification = match outcome {
                     ExportOutcome::Saved(path) => {
-                        info!(path = %path.display(), scope = %scope_label, "result export completed");
+                        info!(
+                            operation = "mongo_result_export",
+                            connection_id = %connection_id,
+                            database = %database,
+                            collection = %collection,
+                            path = %path.display(),
+                            scope = %scope_label,
+                            "result export completed"
+                        );
                         let file_name = path
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_else(|| path.display().to_string());
                         Some(
-                            Notification::success(format!(
-                                "已导出 {file_name}（{scope_label}）"
-                            ))
-                            .autohide(true),
+                            Notification::success(format!("已导出 {file_name}（{scope_label}）"))
+                                .autohide(true),
                         )
                     }
                     ExportOutcome::Cancelled => None,
                     ExportOutcome::Failed { path, error } => {
-                        error!(error = %error, path = %path.display(), "result export failed");
+                        error!(
+                            operation = "mongo_result_export",
+                            connection_id = %connection_id,
+                            database = %database,
+                            collection = %collection,
+                            error = %error,
+                            path = %path.display(),
+                            "result export failed"
+                        );
                         Some(
                             Notification::error(format!(
                                 "写入导出文件 {} 失败：{error}",

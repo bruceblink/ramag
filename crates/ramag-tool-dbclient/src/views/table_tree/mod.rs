@@ -277,7 +277,13 @@ impl TableTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "load schemas failed");
+                        error!(
+                            operation = "sql_metadata_schemas",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            error = %e,
+                            "load schemas failed"
+                        );
                         this.error = Some(e.to_string());
                     }
                 }

@@ -156,7 +156,14 @@ impl TableTreePanel {
                                 this.schema_cache
                                     .write()
                                     .cancel_table_refresh(&schema, cache_generation);
-                                error!(error = %err, schema = %schema, "load full-search tables failed");
+                                error!(
+                                    operation = "sql_metadata_search_tables",
+                                    connection_id = %conn.id,
+                                    driver = ?conn.driver,
+                                    schema = %schema,
+                                    error = %err,
+                                    "load full-search tables failed"
+                                );
                                 entry.error = Some(err.to_string());
                                 if let Some(progress) = this.full_search.as_mut() {
                                     progress.failed += 1;
@@ -276,7 +283,14 @@ impl TableTreePanel {
                         this.schema_cache
                             .write()
                             .cancel_table_refresh(&schema_for_async, cache_generation);
-                        error!(error = %e, schema = %schema_for_async, "load tables failed");
+                        error!(
+                            operation = "sql_metadata_tables",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %schema_for_async,
+                            error = %e,
+                            "load tables failed"
+                        );
                         let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
                             return;
                         };
@@ -375,9 +389,10 @@ impl TableTreePanel {
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id)
-                    && this.table_columns.get(&key).is_some_and(|entry| {
-                        entry.request_generation == request_generation
-                    });
+                    && this
+                        .table_columns
+                        .get(&key)
+                        .is_some_and(|entry| entry.request_generation == request_generation);
                 if !is_current {
                     return;
                 }
@@ -387,29 +402,51 @@ impl TableTreePanel {
                 entry.loading = false;
                 match cols_res {
                     Ok(cols) => {
-                        let col_names: Vec<String> =
-                            cols.iter().map(|c| c.name.clone()).collect();
-                        this.schema_cache.write().cache_columns(
-                            (schema_async.clone(), table_async.clone()),
-                            col_names,
-                        );
+                        let col_names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+                        this.schema_cache
+                            .write()
+                            .cache_columns((schema_async.clone(), table_async.clone()), col_names);
                         entry.columns = cols;
                     }
                     Err(e) => {
-                        error!(error = %e, schema = %schema_async, table = %table_async, "load columns failed");
+                        error!(
+                            operation = "sql_metadata_columns",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %schema_async,
+                            table = %table_async,
+                            error = %e,
+                            "load columns failed"
+                        );
                         entry.error = Some(e.to_string());
                     }
                 }
                 match idx_res {
                     Ok(ix) => entry.indexes = ix,
                     Err(e) => {
-                        tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "load indexes failed");
+                        tracing::warn!(
+                            operation = "sql_metadata_indexes",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %schema_async,
+                            table = %table_async,
+                            error = %e,
+                            "load indexes failed"
+                        );
                     }
                 }
                 match fk_res {
                     Ok(fk) => entry.foreign_keys = fk,
                     Err(e) => {
-                        tracing::warn!(error = %e, schema = %schema_async, table = %table_async, "load foreign keys failed");
+                        tracing::warn!(
+                            operation = "sql_metadata_foreign_keys",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %schema_async,
+                            table = %table_async,
+                            error = %e,
+                            "load foreign keys failed"
+                        );
                     }
                 }
                 this.invalidate_tree_rows();

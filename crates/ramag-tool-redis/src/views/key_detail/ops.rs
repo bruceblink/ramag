@@ -1,8 +1,5 @@
 //! Key 详情的数据加载、大小估算与删除操作。
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use gpui::{Context, ScrollStrategy};
 use gpui_component::notification::Notification;
 use ramag_domain::entities::RedisValue;
@@ -10,6 +7,9 @@ use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
 
 use super::helpers::futures_join;
+use super::list_delete::{
+    DELETE_LIST_INDEX_SCRIPT, ListDeleteStatus, list_delete_marker, list_delete_status,
+};
 use super::{KeyDetailEvent, KeyDetailPanel, MAX_COLLECTION_ITEMS};
 
 impl KeyDetailPanel {
@@ -68,7 +68,14 @@ impl KeyDetailPanel {
                         this.value_memory_warning = load.memory_warning;
                     }
                     Err(error) => {
-                        error!(error = %error, "load key value failed");
+                        error!(
+                            operation = "redis_key_value_load",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "load key value failed"
+                        );
                         this.error = Some(format!("加载值失败：{error}"));
                     }
                 }
@@ -78,7 +85,14 @@ impl KeyDetailPanel {
                         this.ttl_error = None;
                     }
                     Err(error) => {
-                        error!(error = %error, "load key TTL failed");
+                        error!(
+                            operation = "redis_key_ttl_load",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "load key TTL failed"
+                        );
                         this.ttl_error = Some(format!("PTTL 获取失败：{error}"));
                     }
                 }
@@ -118,7 +132,14 @@ impl KeyDetailPanel {
                         this.ttl_error = None;
                     }
                     Err(error) => {
-                        error!(error = %error, "retry key TTL failed");
+                        error!(
+                            operation = "redis_key_ttl_reload",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "retry key TTL failed"
+                        );
                         this.ttl_error = Some(format!("PTTL 获取失败：{error}"));
                     }
                 }
@@ -150,11 +171,26 @@ impl KeyDetailPanel {
                 }
                 match result {
                     Ok(_) => {
-                        info!(field_bytes = field.len(), "hash field deleted");
+                        info!(
+                            operation = "redis_hash_field_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key_for_reload.len(),
+                            field_bytes = field.len(),
+                            "hash field deleted"
+                        );
                         this.load_key_value(key_for_reload, cx);
                     }
                     Err(error) => {
-                        error!(error = %error, "delete hash field failed");
+                        error!(
+                            operation = "redis_hash_field_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key_for_reload.len(),
+                            field_bytes = field.len(),
+                            error = %error,
+                            "delete hash field failed"
+                        );
                         this.pending_notification = Some(
                             Notification::error(error.write_hint("删除字段失败")).autohide(true),
                         );
@@ -235,14 +271,30 @@ impl KeyDetailPanel {
                 match result {
                     Ok(RedisValue::Int(bytes)) if bytes >= 0 => {
                         this.key_size_bytes = Some(bytes as u64);
-                        tracing::debug!(key_bytes = key.len(), bytes, "memory usage loaded");
+                        tracing::debug!(
+                            operation = "redis_key_memory_usage",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            bytes,
+                            "memory usage loaded"
+                        );
                     }
                     Ok(RedisValue::Nil) => {
                         this.key_size_bytes = None;
-                        tracing::debug!(key_bytes = key.len(), "memory usage returned nil");
+                        tracing::debug!(
+                            operation = "redis_key_memory_usage",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            "memory usage returned nil"
+                        );
                     }
                     Ok(_) => {
                         error!(
+                            operation = "redis_key_memory_usage",
+                            connection_id = %config.id,
+                            db,
                             key_bytes = key.len(),
                             "memory usage returned an unexpected response"
                         );
@@ -250,7 +302,14 @@ impl KeyDetailPanel {
                             Some("MEMORY USAGE 应答异常（可能服务端不支持）".to_string());
                     }
                     Err(error) => {
-                        error!(error = %error, "memory usage failed");
+                        error!(
+                            operation = "redis_key_memory_usage",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "memory usage failed"
+                        );
                         this.size_error = Some(format!("MEMORY USAGE 失败：{error}"));
                     }
                 }
@@ -285,11 +344,26 @@ impl KeyDetailPanel {
                 }
                 match result {
                     Ok(_) => {
-                        info!(label = log_label, "element deleted");
+                        info!(
+                            operation = "redis_element_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            element = log_label,
+                            "element deleted"
+                        );
                         this.load_key_value(key, cx);
                     }
                     Err(error) => {
-                        error!(error = %error, label = log_label, "delete element failed");
+                        error!(
+                            operation = "redis_element_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            element = log_label,
+                            error = %error,
+                            "delete element failed"
+                        );
                         this.pending_notification = Some(
                             Notification::error(error.write_hint("删除元素失败")).autohide(true),
                         );
@@ -331,7 +405,14 @@ impl KeyDetailPanel {
                 match result {
                     Ok(response) => match list_delete_status(&response) {
                         ListDeleteStatus::Deleted => {
-                            info!(index, "list element deleted by index");
+                            info!(
+                                operation = "redis_list_element_delete",
+                                connection_id = %config.id,
+                                db,
+                                key_bytes = key.len(),
+                                index,
+                                "list element deleted by index"
+                            );
                             this.load_key_value(key, cx);
                         }
                         ListDeleteStatus::Missing => {
@@ -352,6 +433,10 @@ impl KeyDetailPanel {
                         }
                         ListDeleteStatus::Unexpected => {
                             error!(
+                                operation = "redis_list_element_delete",
+                                connection_id = %config.id,
+                                db,
+                                key_bytes = key.len(),
                                 ?response,
                                 "delete list element returned unexpected response"
                             );
@@ -363,7 +448,14 @@ impl KeyDetailPanel {
                         }
                     },
                     Err(error) => {
-                        error!(error = %error, "delete list element failed");
+                        error!(
+                            operation = "redis_list_element_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "delete list element failed"
+                        );
                         this.pending_notification = Some(
                             Notification::error(error.write_hint("删除 List 元素失败"))
                                 .autohide(true),
@@ -417,13 +509,26 @@ impl KeyDetailPanel {
                 }
                 match result {
                     Ok(_) => {
-                        info!(key_bytes = key.len(), "key deleted");
+                        info!(
+                            operation = "redis_key_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            "key deleted"
+                        );
                         let removed_key = key.clone();
                         this.clear_key(cx);
                         cx.emit(KeyDetailEvent::Deleted(removed_key));
                     }
                     Err(error) => {
-                        error!(error = %error, "delete key failed");
+                        error!(
+                            operation = "redis_key_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "delete key failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(error.write_hint("删除失败")).autohide(true));
                         cx.notify();
@@ -453,75 +558,5 @@ impl KeyDetailPanel {
         request_seq: u64,
     ) -> bool {
         self.request_seq == request_seq && self.request_is_current(config, db, key)
-    }
-}
-
-/// 在 Redis 服务器内原子校验“序号 + 旧值”后删除，避免 LREM 对重复值删错位置。
-/// 返回 1=已删除，0=序号不存在，-1=该位置内容已变化。
-const DELETE_LIST_INDEX_SCRIPT: &str = r#"
-local current = redis.call('LINDEX', KEYS[1], ARGV[1])
-if not current then return 0 end
-if current ~= ARGV[2] then return -1 end
-redis.call('LSET', KEYS[1], ARGV[1], ARGV[3])
-return redis.call('LREM', KEYS[1], 1, ARGV[3])
-"#;
-
-fn list_delete_marker() -> String {
-    static NONCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
-    format!("\0ramag-list-delete:{}:{nanos}:{nonce}", std::process::id())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ListDeleteStatus {
-    Deleted,
-    Missing,
-    Changed,
-    Unexpected,
-}
-
-fn list_delete_status(response: &RedisValue) -> ListDeleteStatus {
-    match response {
-        RedisValue::Int(1) => ListDeleteStatus::Deleted,
-        RedisValue::Int(0) => ListDeleteStatus::Missing,
-        RedisValue::Int(-1) => ListDeleteStatus::Changed,
-        _ => ListDeleteStatus::Unexpected,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn list_delete_response_is_classified_explicitly() {
-        assert_eq!(
-            list_delete_status(&RedisValue::Int(1)),
-            ListDeleteStatus::Deleted
-        );
-        assert_eq!(
-            list_delete_status(&RedisValue::Int(0)),
-            ListDeleteStatus::Missing
-        );
-        assert_eq!(
-            list_delete_status(&RedisValue::Int(-1)),
-            ListDeleteStatus::Changed
-        );
-        assert_eq!(
-            list_delete_status(&RedisValue::Text("1".into())),
-            ListDeleteStatus::Unexpected
-        );
-    }
-
-    #[test]
-    fn list_delete_markers_are_unique_and_binary_prefixed() {
-        let first = list_delete_marker();
-        let second = list_delete_marker();
-        assert_ne!(first, second);
-        assert!(first.starts_with('\0'));
     }
 }

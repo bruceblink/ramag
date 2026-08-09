@@ -101,14 +101,25 @@ impl TtlEditForm {
             let result = svc.set_ttl(&config, db, &key, ttl_secs).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(true) => {
-                    info!(key_bytes = key.len(), ?ttl_secs, "ttl updated");
+                    info!(
+                        operation = "redis_key_ttl_update",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        ?ttl_secs,
+                        "ttl updated"
+                    );
                     cx.emit(TtlEditEvent::Updated(label));
                 }
                 Ok(false) => {
                     this.picker
                         .update(cx, |picker, cx| picker.set_disabled(false, cx));
                     error!(
+                        operation = "redis_key_ttl_update",
+                        connection_id = %config.id,
+                        db,
                         key_bytes = key.len(),
+                        outcome = "key_missing_or_unchanged",
                         "ttl update returned false (key may be gone)"
                     );
                     this.state = SubmitState::Failed("Key 不存在或操作未生效".into());
@@ -117,7 +128,14 @@ impl TtlEditForm {
                 Err(e) => {
                     this.picker
                         .update(cx, |picker, cx| picker.set_disabled(false, cx));
-                    error!(error = %e, "ttl update failed");
+                    error!(
+                        operation = "redis_key_ttl_update",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        error = %e,
+                        "ttl update failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("更新失败"));
                     cx.notify();
                 }

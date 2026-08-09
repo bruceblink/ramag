@@ -97,10 +97,22 @@ impl SshService {
         let result = self.driver.list_directory(&effective_profile, &path).await;
         match &result {
             Ok(directory) => {
-                tracing::debug!(profile_id = %profile.id, path = ?path, entries = directory.entries.len(), "ssh directory listed")
+                tracing::debug!(
+                    operation = "ssh_directory_list",
+                    profile_id = %profile.id,
+                    path = ?path,
+                    entries = directory.entries.len(),
+                    "ssh directory listed"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, "list ssh directory failed")
+                tracing::warn!(
+                    operation = "ssh_directory_list",
+                    error = %error,
+                    profile_id = %profile.id,
+                    path = ?path,
+                    "list ssh directory failed"
+                )
             }
         }
         result
@@ -122,10 +134,24 @@ impl SshService {
             .await;
         match &result {
             Ok(preview) => {
-                tracing::debug!(profile_id = %profile.id, path = ?path, bytes = preview.bytes.len(), total_bytes = preview.total_bytes, truncated = preview.truncated, "ssh file preview loaded")
+                tracing::debug!(
+                    operation = "ssh_file_preview",
+                    profile_id = %profile.id,
+                    path = ?path,
+                    bytes = preview.bytes.len(),
+                    total_bytes = preview.total_bytes,
+                    truncated = preview.truncated,
+                    "ssh file preview loaded"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, "load ssh file preview failed")
+                tracing::warn!(
+                    operation = "ssh_file_preview",
+                    error = %error,
+                    profile_id = %profile.id,
+                    path = ?path,
+                    "load ssh file preview failed"
+                )
             }
         }
         result
@@ -148,10 +174,25 @@ impl SshService {
             .await;
         match &result {
             Ok(chunk) => {
-                tracing::debug!(profile_id = %profile.id, path = ?path, bytes = chunk.bytes.len(), offset = chunk.offset, total_bytes = chunk.total_bytes, "ssh file chunk loaded")
+                tracing::debug!(
+                    operation = "ssh_file_chunk",
+                    profile_id = %profile.id,
+                    path = ?path,
+                    bytes = chunk.bytes.len(),
+                    offset = chunk.offset,
+                    total_bytes = chunk.total_bytes,
+                    "ssh file chunk loaded"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, position = ?position, "load ssh file chunk failed")
+                tracing::warn!(
+                    operation = "ssh_file_chunk",
+                    error = %error,
+                    profile_id = %profile.id,
+                    path = ?path,
+                    position = ?position,
+                    "load ssh file chunk failed"
+                )
             }
         }
         result
@@ -185,10 +226,25 @@ impl SshService {
             .await;
         match &result {
             Ok(()) => {
-                tracing::info!(profile_id = %profile.id, path = ?path, previous_bytes = expected.len(), bytes = contents.len(), "ssh file saved")
+                tracing::info!(
+                    operation = "ssh_file_save",
+                    profile_id = %profile.id,
+                    path = ?path,
+                    previous_bytes = expected.len(),
+                    bytes = contents.len(),
+                    "ssh file saved"
+                )
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %profile.id, path = ?path, previous_bytes = expected.len(), bytes = contents.len(), "save ssh file failed")
+                tracing::warn!(
+                    operation = "ssh_file_save",
+                    error = %error,
+                    profile_id = %profile.id,
+                    path = ?path,
+                    previous_bytes = expected.len(),
+                    bytes = contents.len(),
+                    "save ssh file failed"
+                )
             }
         }
         result

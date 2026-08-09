@@ -224,7 +224,12 @@ impl ClipboardDrawer {
                         this.search_results = result.items.into_iter().map(Arc::new).collect();
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "drawer full search failed");
+                        tracing::warn!(
+                            operation = "clipboard_drawer_search",
+                            query_bytes = query.len(),
+                            error = %e,
+                            "drawer full search failed"
+                        );
                         this.search_results.clear();
                         this.search_truncated = false;
                         this.pending_notification = Some(Notification::warning(format!(
@@ -250,6 +255,7 @@ impl ClipboardDrawer {
         let svc = self.service.clone();
         let target = self.activation_target.clone();
         let auto = self.auto_paste;
+        let mode = if auto { "auto_paste" } else { "copy" };
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let result = if auto {
@@ -262,7 +268,13 @@ impl ClipboardDrawer {
                     let _ = handle.update(cx, |_, window, _| window.remove_window());
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "drawer paste failed");
+                    tracing::warn!(
+                        operation = "clipboard_drawer_paste",
+                        clip_id = %item.id,
+                        mode,
+                        error = %e,
+                        "drawer paste failed"
+                    );
                     let _ = this.update(cx, |this, cx| {
                         this.pasting = false;
                         this.pending_notification = Some(Notification::warning(e.to_string()));

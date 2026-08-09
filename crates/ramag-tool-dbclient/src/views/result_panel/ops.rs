@@ -284,7 +284,14 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "delete row failed");
+                        error!(
+                            operation = "sql_delete",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            table = %table_ref,
+                            error = %e,
+                            "delete row failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("删除失败")).autohide(true));
                     }
@@ -444,7 +451,15 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "apply cell update failed");
+                        error!(
+                            operation = "sql_update",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            table = %table_ref,
+                            column = %col_name,
+                            error = %e,
+                            "apply cell update failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("更新失败")).autohide(true));
                     }

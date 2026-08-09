@@ -251,7 +251,12 @@ impl DbClientView {
             }
             let _ = this.update(cx, |this, cx| {
                 if let Err(e) = result {
-                    error!(error = %e, "delete connection failed");
+                    error!(
+                        operation = "connection_delete",
+                        connection_id = %id_for_async,
+                        error = %e,
+                        "delete connection failed"
+                    );
                     this.pending_notification = Some(
                         gpui_component::notification::Notification::error(format!(
                             "删除连接失败：{e}"

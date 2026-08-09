@@ -252,7 +252,6 @@ impl KeyTreePanel {
                         this.rebuild_tree();
                         if this.selected.as_deref() == Some(old.as_str()) {
                             this.selected = Some(new.clone());
-                            // 让详情面板切到新 key
                             cx.emit(KeyTreeEvent::Selected(new.clone()));
                         }
                         this.pending_notification = Some(

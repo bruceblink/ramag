@@ -118,14 +118,22 @@ impl CollectionTreePanel {
                         if !search_is_current {
                             return false;
                         }
-                        if !this.expanded.get(&database).is_some_and(|state| {
-                            state.request_generation == request_generation
-                        }) {
+                        if this
+                            .expanded
+                            .get(&database)
+                            .is_none_or(|state| state.request_generation != request_generation)
+                        {
                             return true;
                         }
                         match result {
                             Ok(collections) => {
-                                info!(db = %database, count = collections.len(), "search collections loaded");
+                                info!(
+                                    operation = "mongo_metadata_search_collections",
+                                    connection_id = %conf.id,
+                                    database = %database,
+                                    count = collections.len(),
+                                    "search collections loaded"
+                                );
                                 if let Err(message) =
                                     this.store_collections(&database, collections, false)
                                     && let Some(state) = this.expanded.get_mut(&database)
@@ -135,7 +143,13 @@ impl CollectionTreePanel {
                                 }
                             }
                             Err(error) => {
-                                error!(error = %error, db = %database, "load search collections failed");
+                                error!(
+                                    operation = "mongo_metadata_search_collections",
+                                    connection_id = %conf.id,
+                                    database = %database,
+                                    error = %error,
+                                    "load search collections failed"
+                                );
                                 if let Some(state) = this.expanded.get_mut(&database) {
                                     state.loading = false;
                                     state.error = Some(error.to_string());
@@ -350,7 +364,13 @@ impl CollectionTreePanel {
                 }
                 match r {
                     Ok(cs) => {
-                        info!(db = %db_for_async, count = cs.len(), "collections loaded");
+                        info!(
+                            operation = "mongo_metadata_collections",
+                            connection_id = %conf.id,
+                            database = %db_for_async,
+                            count = cs.len(),
+                            "collections loaded"
+                        );
                         if let Err(message) = this.store_collections(&db_for_async, cs, true)
                             && let Some(state) = this.expanded.get_mut(&db_for_async)
                         {
@@ -359,7 +379,13 @@ impl CollectionTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, db = %db_for_async, "load collections failed");
+                        error!(
+                            operation = "mongo_metadata_collections",
+                            connection_id = %conf.id,
+                            database = %db_for_async,
+                            error = %e,
+                            "load collections failed"
+                        );
                         if let Some(state) = this.expanded.get_mut(&db_for_async) {
                             state.loading = false;
                             state.error = Some(e.to_string());

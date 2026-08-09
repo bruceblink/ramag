@@ -214,8 +214,10 @@ impl CollectionTreePanel {
                         }
                         Err(error) => {
                             tracing::error!(
+                                operation = "mongo_collection_clear",
+                                connection_id = %conf.id,
+                                connection_name = %conf.name,
                                 error = %error,
-                                connection = %conf.name,
                                 db = %db,
                                 coll = %coll,
                                 "clear collection failed after connection changed"
@@ -239,7 +241,15 @@ impl CollectionTreePanel {
                         );
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, db = %db, coll = %coll, "clear collection failed");
+                        tracing::error!(
+                            operation = "mongo_collection_clear",
+                            connection_id = %conf.id,
+                            connection_name = %conf.name,
+                            error = %e,
+                            db = %db,
+                            coll = %coll,
+                            "clear collection failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("清空失败")).autohide(true));
                     }
@@ -293,8 +303,10 @@ impl CollectionTreePanel {
                         .autohide(true),
                         Err(error) => {
                             tracing::error!(
+                                operation = "mongo_collection_rename",
+                                connection_id = %conf.id,
+                                connection_name = %conf.name,
                                 error = %error,
-                                connection = %conf.name,
                                 db = %db,
                                 coll = %old,
                                 "rename collection failed after connection changed"
@@ -324,7 +336,15 @@ impl CollectionTreePanel {
                         this.load_collections(db.clone(), cx);
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, db = %db, coll = %old, "rename collection failed");
+                        tracing::error!(
+                            operation = "mongo_collection_rename",
+                            connection_id = %conf.id,
+                            connection_name = %conf.name,
+                            error = %e,
+                            db = %db,
+                            coll = %old,
+                            "rename collection failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("重命名失败")).autohide(true));
                     }
@@ -346,12 +366,13 @@ impl CollectionTreePanel {
         let cmd = json!({"drop": coll.clone()});
         cx.spawn(async move |this, cx| {
             let r = svc.run_command(&conf, &db, cmd).await;
-            let _ = this.update(cx, |this, cx| {
-                let current_mutation = this.mutation_gate.finish(mutation_token);
-                let current_connection =
-                    this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
-                if !current_connection || !current_mutation {
-                    this.pending_notification = Some(match &r {
+            let _ =
+                this.update(cx, |this, cx| {
+                    let current_mutation = this.mutation_gate.finish(mutation_token);
+                    let current_connection =
+                        this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
+                    if !current_connection || !current_mutation {
+                        this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
                             "已在发起时的连接「{}」删除 {db}.{coll}；当前树状态已变化，未自动刷新",
                             conf.name
@@ -359,8 +380,10 @@ impl CollectionTreePanel {
                         .autohide(true),
                         Err(error) => {
                             tracing::error!(
+                                operation = "mongo_collection_drop",
+                                connection_id = %conf.id,
+                                connection_name = %conf.name,
                                 error = %error,
-                                connection = %conf.name,
                                 db = %db,
                                 coll = %coll,
                                 "drop collection failed after connection changed"
@@ -372,29 +395,37 @@ impl CollectionTreePanel {
                             .autohide(true)
                         }
                     });
+                        cx.notify();
+                        return;
+                    }
+                    match r {
+                        Ok(_) => {
+                            clear_selected_collection(&mut this.selected, &db, &coll);
+                            this.pending_notification = Some(
+                                Notification::success(format!("已删除 {db}.{coll}")).autohide(true),
+                            );
+                            cx.emit(super::TreeEvent::CollectionDropped {
+                                database: db.clone(),
+                                collection: coll.clone(),
+                            });
+                            this.load_collections(db.clone(), cx);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                operation = "mongo_collection_drop",
+                                connection_id = %conf.id,
+                                connection_name = %conf.name,
+                                error = %e,
+                                db = %db,
+                                coll = %coll,
+                                "drop collection failed"
+                            );
+                            this.pending_notification =
+                                Some(Notification::error(e.write_hint("删除失败")).autohide(true));
+                        }
+                    }
                     cx.notify();
-                    return;
-                }
-                match r {
-                    Ok(_) => {
-                        clear_selected_collection(&mut this.selected, &db, &coll);
-                        this.pending_notification = Some(
-                            Notification::success(format!("已删除 {db}.{coll}")).autohide(true),
-                        );
-                        cx.emit(super::TreeEvent::CollectionDropped {
-                            database: db.clone(),
-                            collection: coll.clone(),
-                        });
-                        this.load_collections(db.clone(), cx);
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, db = %db, coll = %coll, "drop collection failed");
-                        this.pending_notification =
-                            Some(Notification::error(e.write_hint("删除失败")).autohide(true));
-                    }
-                }
-                cx.notify();
-            });
+                });
         })
         .detach();
     }
@@ -423,8 +454,10 @@ impl CollectionTreePanel {
                         .autohide(true),
                         Err(error) => {
                             tracing::error!(
+                                operation = "mongo_database_drop",
+                                connection_id = %conf.id,
+                                connection_name = %conf.name,
                                 error = %error,
-                                connection = %conf.name,
                                 db = %db,
                                 "drop database failed after connection changed"
                             );
@@ -465,7 +498,14 @@ impl CollectionTreePanel {
                         this.refresh_databases(cx);
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, db = %db, "drop database failed");
+                        tracing::error!(
+                            operation = "mongo_database_drop",
+                            connection_id = %conf.id,
+                            connection_name = %conf.name,
+                            error = %e,
+                            db = %db,
+                            "drop database failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("删除失败")).autohide(true));
                     }

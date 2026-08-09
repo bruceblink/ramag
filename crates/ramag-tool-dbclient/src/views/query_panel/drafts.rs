@@ -115,7 +115,12 @@ impl QueryPanel {
                 Err(error) => Err(error),
             };
             if let Err(error) = &result {
-                tracing::warn!(error = %error, driver = "sql", "persist query drafts failed");
+                tracing::warn!(
+                    operation = "sql_query_draft_save",
+                    error = %error,
+                    driver = "sql",
+                    "persist query drafts failed"
+                );
             }
             let _ = this.update(cx, |this, cx| {
                 if generation_ref.load(Ordering::Relaxed) != generation {
@@ -153,13 +158,23 @@ impl QueryPanel {
                     Ok(pref) if !pref.drafts.is_empty() => Some(pref),
                     Ok(_) => None,
                     Err(e) => {
-                        tracing::warn!(error = %e, "ignore invalid SQL drafts");
+                        tracing::warn!(
+                            operation = "sql_query_draft_load",
+                            error = %e,
+                            driver = "sql",
+                            "ignore invalid SQL drafts"
+                        );
                         None
                     }
                 },
                 Ok(None) => None,
                 Err(e) => {
-                    tracing::warn!(error = %e, driver = "sql", "load query drafts failed");
+                    tracing::warn!(
+                        operation = "sql_query_draft_load",
+                        error = %e,
+                        driver = "sql",
+                        "load query drafts failed"
+                    );
                     None
                 }
             };

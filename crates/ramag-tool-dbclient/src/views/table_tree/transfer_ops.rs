@@ -340,7 +340,16 @@ async fn run_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(error = %e, file = %path.display(), scope = "database", "import failed");
+                error!(
+                    operation = "sql_import_database",
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    schema = %schema,
+                    file = %path.display(),
+                    scope = "database",
+                    error = %e,
+                    "import failed"
+                );
                 return Err(e);
             }
         };
@@ -385,7 +394,17 @@ async fn run_structured_table_import(
         {
             Ok(summary) => summary,
             Err(error) => {
-                error!(error = %error, file = %path.display(), scope = "table", format = "structured", "import failed");
+                error!(
+                    operation = "sql_import_table",
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    schema = %schema,
+                    file = %path.display(),
+                    scope = "table",
+                    format = "structured",
+                    error = %error,
+                    "import failed"
+                );
                 return Err(error);
             }
         };
@@ -437,7 +456,18 @@ async fn run_table_import(
         {
             Ok(summary) => summary,
             Err(e) => {
-                error!(error = %e, file = %path.display(), scope = "table", format = "jsonl", "import failed");
+                error!(
+                    operation = "sql_import_table",
+                    connection_id = %config.id,
+                    driver = ?config.driver,
+                    schema = %schema,
+                    table = %table,
+                    file = %path.display(),
+                    scope = "table",
+                    format = "jsonl",
+                    error = %e,
+                    "import failed"
+                );
                 return Err(e);
             }
         };

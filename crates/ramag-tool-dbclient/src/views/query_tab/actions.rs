@@ -489,7 +489,12 @@ impl QueryTab {
                             .write()
                             .finish_column_load(&(schema.clone(), table.clone()));
                         tracing::warn!(
-                            error = %e, schema = %schema, table = %table,
+                            operation = "sql_column_prefetch",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %schema,
+                            table = %table,
+                            error = %e,
                             "prefetch columns failed"
                         );
                     }

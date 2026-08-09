@@ -98,7 +98,15 @@ impl ResultPanel {
                     }
                     Ok(_) => not_matched += 1,
                     Err(e) => {
-                        error!(error = %e, mode = "batch", "delete row failed");
+                        error!(
+                            operation = "sql_delete",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            table = %table_ref,
+                            mode = "batch",
+                            error = %e,
+                            "delete row failed"
+                        );
                         last_err = Some(e);
                         break;
                     }
@@ -256,7 +264,14 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "insert row failed");
+                        error!(
+                            operation = "sql_insert",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            table = %table_ref,
+                            error = %e,
+                            "insert row failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("新增失败")).autohide(true));
                     }

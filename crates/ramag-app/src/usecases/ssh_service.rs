@@ -221,7 +221,12 @@ impl SshService {
             .validate()
             .map_err(DomainError::InvalidConfig)?;
         if let Err(error) = self.storage.save_ssh_profile(&stored_profile).await {
-            tracing::error!(error = %error, profile_id = %profile.id, "save ssh profile failed");
+            tracing::error!(
+                operation = "ssh_profile_save",
+                error = %error,
+                profile_id = %profile.id,
+                "save ssh profile failed"
+            );
             return Err(error);
         }
         self.advance_terminal_generation(&profile.id);
@@ -230,18 +235,28 @@ impl SshService {
         self.wait_for_profile_transfers(&profile.id).await;
         if let Err(error) = self.driver.disconnect(&profile.id).await {
             tracing::warn!(
+                operation = "ssh_profile_save_cleanup",
                 error = %error,
                 profile_id = %profile.id,
                 "disconnect stale ssh profile session failed"
             );
         }
-        tracing::info!(profile_id = %profile.id, "ssh profile saved and stale session cleared");
+        tracing::info!(
+            operation = "ssh_profile_save",
+            profile_id = %profile.id,
+            "ssh profile saved and stale session cleared"
+        );
         Ok(())
     }
 
     pub async fn delete_profile(&self, id: &SshProfileId) -> Result<()> {
         if let Err(error) = self.storage.delete_ssh_profile(id).await {
-            tracing::error!(error = %error, profile_id = %id, "delete ssh profile failed");
+            tracing::error!(
+                operation = "ssh_profile_delete",
+                error = %error,
+                profile_id = %id,
+                "delete ssh profile failed"
+            );
             return Err(error);
         }
         self.block_terminal_launches(id);
@@ -250,7 +265,12 @@ impl SshService {
         self.cancel_profile_transfers(id);
         self.wait_for_profile_transfers(id).await;
         if let Err(error) = self.driver.disconnect(id).await {
-            tracing::warn!(error = %error, profile_id = %id, "disconnect deleted ssh profile failed");
+            tracing::warn!(
+                operation = "ssh_profile_delete_cleanup",
+                error = %error,
+                profile_id = %id,
+                "disconnect deleted ssh profile failed"
+            );
         }
         match self.load_workspace_preference().await {
             Ok(mut preference) => {
@@ -264,14 +284,28 @@ impl SshService {
                     preference.active_profile_id = None;
                 }
                 if let Err(error) = self.save_workspace_preference(&preference).await {
-                    tracing::warn!(error = %error, profile_id = %id, "cleanup ssh workspace preference failed");
+                    tracing::warn!(
+                        operation = "ssh_profile_delete_cleanup",
+                        error = %error,
+                        profile_id = %id,
+                        "cleanup ssh workspace preference failed"
+                    );
                 }
             }
             Err(error) => {
-                tracing::warn!(error = %error, profile_id = %id, "load ssh workspace preference for cleanup failed");
+                tracing::warn!(
+                    operation = "ssh_profile_delete_cleanup",
+                    error = %error,
+                    profile_id = %id,
+                    "load ssh workspace preference for cleanup failed"
+                );
             }
         }
-        tracing::info!(profile_id = %id, "ssh profile deleted");
+        tracing::info!(
+            operation = "ssh_profile_delete",
+            profile_id = %id,
+            "ssh profile deleted"
+        );
         Ok(())
     }
 
@@ -328,7 +362,11 @@ impl SshService {
                 favorites = preference.path_favorites.len(),
                 "ssh workspace preference saved"
             ),
-            Err(error) => tracing::warn!(error = %error, "save ssh workspace preference failed"),
+            Err(error) => tracing::warn!(
+                operation = "ssh_workspace_preference_save",
+                error = %error,
+                "save ssh workspace preference failed"
+            ),
         }
         result
     }
@@ -373,7 +411,12 @@ impl SshService {
                 return;
             }
             if Instant::now() >= deadline {
-                tracing::warn!(profile_id = %profile_id, "ssh transfers did not stop before disconnect deadline");
+                tracing::warn!(
+                    operation = "ssh_profile_disconnect",
+                    profile_id = %profile_id,
+                    reason = "transfer_deadline_exceeded",
+                    "ssh transfers did not stop before disconnect deadline"
+                );
                 return;
             }
             smol::Timer::after(TRANSFER_STOP_POLL).await;
@@ -394,7 +437,11 @@ impl SshService {
                 return;
             }
             if Instant::now() >= deadline {
-                tracing::warn!("ssh transfers did not stop before shutdown deadline");
+                tracing::warn!(
+                    operation = "ssh_shutdown",
+                    reason = "transfer_deadline_exceeded",
+                    "ssh transfers did not stop before shutdown deadline"
+                );
                 return;
             }
             smol::Timer::after(TRANSFER_STOP_POLL).await;

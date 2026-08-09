@@ -125,16 +125,32 @@ impl HashFieldForm {
         let config = self.config.clone();
         let db = self.db;
         let key = self.key.clone();
+        let key_bytes = key.len();
         let argv = vec!["HSET".to_string(), key, field.clone(), value];
         cx.spawn(async move |this, cx| {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(field_bytes = field.len(), "hash field saved");
+                    info!(
+                        operation = "redis_hash_field_save",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        field_bytes = field.len(),
+                        "hash field saved"
+                    );
                     cx.emit(HashFieldFormEvent::Saved { field });
                 }
                 Err(e) => {
-                    error!(error = %e, "save hash field failed");
+                    error!(
+                        operation = "redis_hash_field_save",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        field_bytes = field.len(),
+                        error = %e,
+                        "save hash field failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("保存失败"));
                     cx.notify();
                 }

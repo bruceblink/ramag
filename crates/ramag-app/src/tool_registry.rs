@@ -23,10 +23,20 @@ impl ToolRegistry {
     pub fn register(&self, tool: Arc<dyn Tool>) {
         let mut tools = self.tools.write();
         if tools.iter().any(|t| t.tool.meta().id == tool.meta().id) {
-            tracing::warn!(tool_id = %tool.meta().id, "duplicate tool registration ignored");
+            tracing::warn!(
+                operation = "tool_register",
+                tool_id = %tool.meta().id,
+                reason = "duplicate",
+                "duplicate tool registration ignored"
+            );
             return;
         }
-        tracing::info!(tool_id = %tool.meta().id, name = %tool.meta().name, "tool registered");
+        tracing::info!(
+            operation = "tool_register",
+            tool_id = %tool.meta().id,
+            name = %tool.meta().name,
+            "tool registered"
+        );
         tools.push(ToolEntry {
             tool,
             enabled: true,
@@ -43,7 +53,12 @@ impl ToolRegistry {
             return false;
         }
         entry.enabled = enabled;
-        tracing::info!(tool_id = %id, enabled, "tool visibility changed");
+        tracing::info!(
+            operation = "tool_visibility_update",
+            tool_id = %id,
+            enabled,
+            "tool visibility changed"
+        );
         true
     }
 

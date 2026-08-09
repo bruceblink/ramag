@@ -41,7 +41,12 @@ impl VcsView {
                         this.reflog_rows_cache.get_mut().take();
                     }
                     Err(e) => {
-                        error!(error = %e, "load reflog failed");
+                        error!(
+                            operation = "vcs_reflog_load",
+                            repo_id = %repo,
+                            error = %e,
+                            "load reflog failed"
+                        );
                         this.error = Some(format!("加载 reflog 失败：{e}"));
                         this.showing_reflog = false;
                     }
@@ -91,10 +96,22 @@ impl VcsView {
                     this.local_branches = branches;
                 }
                 if let Err(e) = result {
-                    error!(error = %e, %commit, "reflog checkout failed");
+                    error!(
+                        operation = "vcs_reflog_checkout",
+                        repo_id = %repo,
+                        commit_id = %commit,
+                        error = %e,
+                        "reflog checkout failed"
+                    );
                     this.error = Some(format!("Checkout 到 {commit} 失败：{e}"));
                 } else {
-                    info!(%commit, "reflog checkout completed");
+                    info!(
+                        operation = "vcs_reflog_checkout",
+                        repo_id = %repo,
+                        commit_id = %commit,
+                        status = "completed",
+                        "reflog checkout completed"
+                    );
                     this.showing_reflog = false;
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);

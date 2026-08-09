@@ -80,7 +80,7 @@ impl LatestWriteCoordinator {
         let mut latest = match self.latest_by_key.lock() {
             Ok(latest) => latest,
             Err(error) => {
-                tracing::warn!("latest write coordinator lock poisoned");
+                tracing::warn!(operation = "vcs_latest_write", reason = "lock_poisoned");
                 error.into_inner()
             }
         };

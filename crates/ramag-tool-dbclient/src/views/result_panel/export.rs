@@ -75,10 +75,17 @@ impl ResultPanel {
                     .as_ref()
                     .and_then(|config| config.database.as_deref())
             })
-            .unwrap_or("query");
+            .unwrap_or("query")
+            .to_string();
         let object = self.pinned_target.as_ref().map(|(_, table)| table.as_str());
         let default_name =
-            export::suggested_export_file_name(database_type, database, object, true, "jsonl");
+            export::suggested_export_file_name(database_type, &database, object, true, "jsonl");
+        let connection_id = self
+            .connection
+            .as_ref()
+            .map(|config| config.id.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let object_name = object.unwrap_or("-").to_string();
         let ext = "jsonl";
 
         // 用户选定路径后才占用工作池，避免文件对话框阻塞其他任务。
@@ -114,7 +121,16 @@ impl ResultPanel {
                 this.exporting = false;
                 this.pending_notification = match outcome {
                     ExportOutcome::Saved(p) => {
-                        info!(path = %p.display(), scope = %scope_label, "result export completed");
+                        info!(
+                            operation = "sql_result_export",
+                            connection_id = %connection_id,
+                            driver = database_type,
+                            database,
+                            object = %object_name,
+                            path = %p.display(),
+                            scope = %scope_label,
+                            "result export completed"
+                        );
                         let file_name = p
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
@@ -126,7 +142,16 @@ impl ResultPanel {
                     }
                     ExportOutcome::Cancelled => None,
                     ExportOutcome::Failed { path, error } => {
-                        error!(error = %error, path = %path.display(), "result export failed");
+                        error!(
+                            operation = "sql_result_export",
+                            connection_id = %connection_id,
+                            driver = database_type,
+                            database,
+                            object = %object_name,
+                            error = %error,
+                            path = %path.display(),
+                            "result export failed"
+                        );
                         let message = format!("写入导出文件 {} 失败：{error}", path.display());
                         let short = message.char_indices().nth(80).map_or_else(
                             || message.clone(),

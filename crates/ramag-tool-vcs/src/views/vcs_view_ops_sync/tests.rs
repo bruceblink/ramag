@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::views::helpers::FileTab;
+use std::collections::HashMap;
+
 #[test]
 #[ignore = "手动观察十万文件增量成员合并耗时"]
 fn reports_large_project_patch_merge_latency() {

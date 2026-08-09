@@ -32,6 +32,7 @@ impl VcsView {
         let Some(diff) = self.current_diff.clone() else {
             return;
         };
+        let path_for_log = diff.path.clone();
         // 仅 Changes 文件的 hunk 可回滚；其他来源（Commit detail / ProjectFiles）UI 不应渲染该按钮
         let Some(kind) = self.active_changes_kind() else {
             self.error = Some("当前不是 Changes diff，无法回滚".into());
@@ -80,7 +81,15 @@ impl VcsView {
                 }
                 match result {
                     Ok(()) => {
-                        info!(hunk_idx, ?kind, "hunk revert completed");
+                        info!(
+                            operation = "vcs_hunk_revert",
+                            repo_id = %repo,
+                            path = %path_for_log,
+                            hunk_idx,
+                            ?kind,
+                            status = "completed",
+                            "hunk revert completed"
+                        );
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
@@ -88,7 +97,15 @@ impl VcsView {
                         this.sync_changes_tabs_with_status(cx);
                     }
                     Err(e) => {
-                        error!(error = %e, hunk_idx, ?kind, "hunk revert failed");
+                        error!(
+                            operation = "vcs_hunk_revert",
+                            repo_id = %repo,
+                            path = %path_for_log,
+                            hunk_idx,
+                            ?kind,
+                            error = %e,
+                            "hunk revert failed"
+                        );
                         let action = match kind {
                             GroupKind::Staged => "撤回 hunk 到工作区",
                             GroupKind::Unstaged => "回滚 hunk 到 index",
@@ -111,6 +128,7 @@ impl VcsView {
         let Some(diff) = self.current_diff.clone() else {
             return;
         };
+        let path_for_log = diff.path.clone();
         if !matches!(self.active_changes_kind(), Some(GroupKind::Unstaged)) {
             self.error = Some("仅未暂存改动支持按 hunk 暂存".into());
             cx.notify();
@@ -143,14 +161,28 @@ impl VcsView {
                 }
                 match result {
                     Ok(()) => {
-                        info!(hunk_idx, "hunk stage completed");
+                        info!(
+                            operation = "vcs_hunk_stage",
+                            repo_id = %repo,
+                            path = %path_for_log,
+                            hunk_idx,
+                            status = "completed",
+                            "hunk stage completed"
+                        );
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
                         this.sync_changes_tabs_with_status(cx);
                     }
                     Err(e) => {
-                        error!(error = %e, hunk_idx, "hunk stage failed");
+                        error!(
+                            operation = "vcs_hunk_stage",
+                            repo_id = %repo,
+                            path = %path_for_log,
+                            hunk_idx,
+                            error = %e,
+                            "hunk stage failed"
+                        );
                         this.error = Some(format!("暂存 hunk 失败：{e}"));
                     }
                 }

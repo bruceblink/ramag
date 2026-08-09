@@ -165,7 +165,7 @@ impl ConnectionListPanel {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "load connections failed");
+                        error!(operation = "connection_list_load", error = %e, "load connections failed");
                         // 保留旧列表（若有）而非清空成假空态，并记错误供顶部提示
                         this.load_error = Some(format!("加载连接列表失败：{e}"));
                     }
@@ -237,7 +237,14 @@ impl ConnectionListPanel {
                             cx.notify();
                         }
                         Err(error) => {
-                            debug!(error = %error, conn = %conn.name, "fetch server version failed");
+                            debug!(
+                                operation = "server_version_prefetch",
+                                connection_id = %conn.id,
+                                driver = ?conn.driver,
+                                host = %conn.host,
+                                error = %error,
+                                "fetch server version failed"
+                            );
                         }
                     }
                 }

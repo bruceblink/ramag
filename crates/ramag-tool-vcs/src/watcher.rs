@@ -88,7 +88,10 @@ impl Drop for RepoWatcher {
         if let Some(thread) = self.debounce_thread.take()
             && thread.join().is_err()
         {
-            tracing::warn!("filesystem debounce thread panicked");
+            tracing::warn!(
+                operation = "vcs_filesystem_watcher",
+                reason = "debounce_thread_panicked"
+            );
         }
     }
 }
@@ -111,7 +114,11 @@ impl RepoWatcher {
                 let event = match result {
                     Ok(event) => event,
                     Err(error) => {
-                        tracing::warn!(error = %error, "filesystem watcher event failed");
+                        tracing::warn!(
+                            operation = "vcs_filesystem_watcher",
+                            error = %error,
+                            "filesystem watcher event failed"
+                        );
                         return;
                     }
                 };
@@ -265,7 +272,11 @@ fn resolve_git_metadata_roots(repo_root: &Path) -> Vec<PathBuf> {
             return Vec::new();
         };
         let Some(path) = value.trim().strip_prefix("gitdir:") else {
-            tracing::warn!(path = %dot_git.display(), "gitdir pointer is malformed");
+            tracing::warn!(
+                operation = "vcs_filesystem_watcher",
+                path = %dot_git.display(),
+                "gitdir pointer is malformed"
+            );
             return Vec::new();
         };
         resolve_relative_path(repo_root, path.trim())
@@ -289,7 +300,12 @@ fn read_small_text(path: &Path) -> Option<String> {
     match std::fs::read_to_string(path) {
         Ok(value) => Some(value),
         Err(error) => {
-            tracing::warn!(error = %error, path = %path.display(), "git metadata pointer read failed");
+            tracing::warn!(
+                operation = "vcs_filesystem_watcher",
+                error = %error,
+                path = %path.display(),
+                "git metadata pointer read failed"
+            );
             None
         }
     }
@@ -327,7 +343,10 @@ fn merge_pending(pending: &Mutex<RepoRefresh>, change: RepoRefresh) {
     match pending.lock() {
         Ok(mut pending) => pending.merge(change),
         Err(error) => {
-            tracing::warn!("pending filesystem change lock poisoned");
+            tracing::warn!(
+                operation = "vcs_filesystem_watcher",
+                reason = "lock_poisoned"
+            );
             error.into_inner().merge(change);
         }
     }
@@ -337,7 +356,10 @@ fn take_pending(pending: &Mutex<RepoRefresh>) -> RepoRefresh {
     match pending.lock() {
         Ok(mut pending) => std::mem::take(&mut *pending),
         Err(error) => {
-            tracing::warn!("pending filesystem change lock poisoned");
+            tracing::warn!(
+                operation = "vcs_filesystem_watcher",
+                reason = "lock_poisoned"
+            );
             let mut pending = error.into_inner();
             std::mem::take(&mut *pending)
         }

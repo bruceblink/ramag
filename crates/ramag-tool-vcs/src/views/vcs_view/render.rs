@@ -133,7 +133,7 @@ impl Render for VcsView {
                     Ok(text) => Some(text.clone()),
                     Err(std::sync::TryLockError::WouldBlock) => None,
                     Err(std::sync::TryLockError::Poisoned(error)) => {
-                        tracing::warn!("clone progress lock poisoned");
+                        tracing::warn!(operation = "vcs_clone_progress", reason = "lock_poisoned");
                         Some(error.into_inner().clone())
                     }
                 })

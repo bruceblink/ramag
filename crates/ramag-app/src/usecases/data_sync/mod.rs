@@ -8,6 +8,7 @@ mod service;
 mod sql_ddl;
 mod sql_preflight;
 mod sql_sync;
+mod validation;
 
 pub use gate::{
     DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase, DataSyncGateSnapshot, DataSyncPermit,

@@ -274,14 +274,24 @@ impl VcsView {
             let _ = this.update(cx, |this, cx| {
                 this.pending_notification = Some(match result {
                     Ok(()) => {
-                        tracing::info!(dir = %dir.display(), "partial clone directory removed");
+                        tracing::info!(
+                            operation = "vcs_clone_cleanup",
+                            path = %dir.display(),
+                            status = "completed",
+                            "partial clone directory removed"
+                        );
                         gpui_component::notification::Notification::success(format!(
                             "已删除未完成的 Clone 目录：{display}"
                         ))
                         .autohide(true)
                     }
                     Err(error) => {
-                        tracing::warn!(error = %error, dir = %dir.display(), "partial clone cleanup failed");
+                        tracing::warn!(
+                            operation = "vcs_clone_cleanup",
+                            error = %error,
+                            path = %dir.display(),
+                            "partial clone cleanup failed"
+                        );
                         gpui_component::notification::Notification::error(format!(
                             "删除未完成的 Clone 目录失败：{error}"
                         ))
@@ -319,7 +329,12 @@ impl VcsView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             if let Err(e) = driver.init_repo(&path).await {
-                tracing::error!(error = %e, path = %path.display(), "repository initialization failed");
+                tracing::error!(
+                    operation = "vcs_repository_init",
+                    path = %path.display(),
+                    error = %e,
+                    "repository initialization failed"
+                );
                 let _ = this.update(cx, |this, cx| {
                     this.loading = false;
                     this.loading_label = None;
@@ -350,7 +365,12 @@ impl VcsView {
                 Ok(Some(json)) => match parse_open_repo_paths(&json) {
                     Ok((paths, adjusted)) => (paths, None, adjusted),
                     Err(error) => {
-                        tracing::warn!(error = %error, "parse open repos preference failed");
+                        tracing::warn!(
+                            operation = "vcs_repository_session_load",
+                            stage = "parse",
+                            error = %error,
+                            "parse open repos preference failed"
+                        );
                         (
                             Vec::new(),
                             Some("已忽略损坏的仓库标签恢复数据".into()),
@@ -360,7 +380,12 @@ impl VcsView {
                 },
                 Ok(None) => (Vec::new(), None, false),
                 Err(error) => {
-                    tracing::warn!(error = %error, "load open repos preference failed");
+                    tracing::warn!(
+                        operation = "vcs_repository_session_load",
+                        stage = "read_preference",
+                        error = %error,
+                        "load open repos preference failed"
+                    );
                     (
                         Vec::new(),
                         Some(format!("无法恢复上次打开的仓库标签：{error}")),
@@ -407,7 +432,11 @@ impl VcsView {
                         cx.notify();
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "load repositories failed");
+                        tracing::warn!(
+                            operation = "vcs_repository_session_load",
+                            error = %e,
+                            "load repositories failed"
+                        );
                         if restore_allowed {
                             this.error = Some(format!("加载最近仓库失败：{e}"));
                             cx.notify();
@@ -425,7 +454,11 @@ impl VcsView {
         let json = match serde_json::to_string(&paths) {
             Ok(j) => j,
             Err(e) => {
-                tracing::warn!(error = %e, "serialize repository session failed");
+                tracing::warn!(
+                    operation = "vcs_repository_session_save",
+                    error = %e,
+                    "serialize repository session failed"
+                );
                 return;
             }
         };

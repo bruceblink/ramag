@@ -119,16 +119,32 @@ impl ZSetElementForm {
         let config = self.config.clone();
         let db = self.db;
         let key = self.key.clone();
+        let key_bytes = key.len();
         let argv = vec!["ZADD".to_string(), key, score_raw, member.clone()];
         cx.spawn(async move |this, cx| {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!(member_bytes = member.len(), "zset member saved");
+                    info!(
+                        operation = "redis_zset_member_save",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        member_bytes = member.len(),
+                        "zset member saved"
+                    );
                     cx.emit(ZSetElementFormEvent::Saved);
                 }
                 Err(e) => {
-                    error!(error = %e, "save zset member failed");
+                    error!(
+                        operation = "redis_zset_member_save",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        member_bytes = member.len(),
+                        error = %e,
+                        "save zset member failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

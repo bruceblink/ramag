@@ -54,6 +54,7 @@ impl MongoSessionPanel {
         let mut subs = Vec::new();
         let queries_handle = queries.clone();
         let tree_handle = tree.clone();
+        let connection_id = config.id.clone();
         subs.push(cx.subscribe_in(
             &tree,
             window,
@@ -62,7 +63,13 @@ impl MongoSessionPanel {
                     database,
                     collection,
                 } => {
-                    info!(db = %database, coll = %collection, "collection opened");
+                    info!(
+                        operation = "mongo_collection_open",
+                        connection_id = %connection_id,
+                        database = %database,
+                        collection = %collection,
+                        "collection opened"
+                    );
                     queries_handle.update(cx, |q, cx| {
                         q.prefill_collection(database.clone(), collection.clone(), window, cx);
                     });
@@ -84,7 +91,12 @@ impl MongoSessionPanel {
                     queries_handle.update(cx, |q, cx| q.database_dropped(database, cx));
                 }
                 TreeEvent::DatabaseActivated { database } => {
-                    info!(db = %database, "database activated");
+                    info!(
+                        operation = "mongo_database_activate",
+                        connection_id = %connection_id,
+                        database = %database,
+                        "database activated"
+                    );
                     queries_handle.update(cx, |q, cx| q.set_database(database.clone(), cx));
                 }
                 TreeEvent::ToggleEditor => {

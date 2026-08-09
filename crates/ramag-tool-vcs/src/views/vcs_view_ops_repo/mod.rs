@@ -273,7 +273,12 @@ impl VcsView {
                 Ok(s) => Some(s),
                 Err(e) => {
                     // 后台刷新失败时保留旧状态。
-                    tracing::warn!(error = %e, "background status refresh failed");
+                    tracing::warn!(
+                        operation = "vcs_status_refresh",
+                        repo_id = %repo,
+                        error = %e,
+                        "background status refresh failed"
+                    );
                     None
                 }
             };

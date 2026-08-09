@@ -148,7 +148,13 @@ impl VcsView {
                             this.prune_file_tab_payloads();
                         }
                         Err(e) => {
-                            error!(error = %e, path = %path_for_diff, "diff failed");
+                            error!(
+                                operation = "vcs_diff_load",
+                                repo_id = %repo,
+                                path = %path_for_diff,
+                                error = %e,
+                                "diff failed"
+                            );
                             if this.selected_file.as_ref() == Some(&(path_for_diff.clone(), kind)) {
                                 this.error = Some(format!("拉取 diff 失败：{e}"));
                             }
@@ -266,7 +272,13 @@ impl VcsView {
                         }
                     }
                     Err(msg) => {
-                        error!(error = %msg, path = %path, "read untracked file failed");
+                        error!(
+                            operation = "vcs_untracked_file_load",
+                            repo_id = %repo_id,
+                            path = %path,
+                            error = %msg,
+                            "read untracked file failed"
+                        );
                         if this.selected_file.as_ref()
                             == Some(&(path.clone(), GroupKind::Untracked))
                         {

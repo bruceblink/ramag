@@ -63,7 +63,11 @@ impl ConnectionFormPanel {
             s.set_value(parts.auth_source.unwrap_or_default(), window, cx)
         });
         self.tls = parts.tls;
-        info!("connection uri applied to form");
+        info!(
+            operation = "connection_uri_apply",
+            driver = self.driver_id,
+            "connection URI applied to form"
+        );
         self.invalidate_test(cx);
         cx.notify();
     }

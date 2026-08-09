@@ -280,7 +280,12 @@ impl CollectionTreePanel {
                 this.loading = false;
                 match r {
                     Ok(mut dbs) => {
-                        info!(count = dbs.len(), "databases loaded");
+                        info!(
+                            operation = "mongo_metadata_databases",
+                            connection_id = %conf.id,
+                            count = dbs.len(),
+                            "databases loaded"
+                        );
                         // 空库可能不在服务端列表中，仍展示连接配置里的库。
                         insert_configured_database(&mut dbs, conf.database.clone());
                         this.databases = dbs;
@@ -298,7 +303,12 @@ impl CollectionTreePanel {
                         this.ensure_search_coverage(cx);
                     }
                     Err(e) => {
-                        error!(error = %e, "load databases failed");
+                        error!(
+                            operation = "mongo_metadata_databases",
+                            connection_id = %conf.id,
+                            error = %e,
+                            "load databases failed"
+                        );
                         this.error = Some(e.to_string());
                     }
                 }

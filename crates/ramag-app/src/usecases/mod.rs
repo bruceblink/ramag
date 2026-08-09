@@ -17,7 +17,12 @@ macro_rules! retry_idempotent_read {
             ::std::result::Result::Err(::ramag_domain::error::DomainError::ConnectionFailed(
                 msg,
             )) => {
-                ::tracing::warn!(connection_id = %$conn_id, error = %msg, "connection read retrying after cache eviction");
+                ::tracing::warn!(
+                    operation = "connection_read_retry",
+                    connection_id = %$conn_id,
+                    error = %msg,
+                    "connection read retrying after cache eviction"
+                );
                 $evict;
                 $op
             }
