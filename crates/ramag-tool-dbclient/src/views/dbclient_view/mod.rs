@@ -221,7 +221,6 @@ impl DbClientView {
         }
         match event {
             ListEvent::Selected(conn) => {
-                // 选中已保存连接 → 打开为新 Session
                 self.open_session(conn.clone(), window, cx);
             }
             ListEvent::RequestNew => {

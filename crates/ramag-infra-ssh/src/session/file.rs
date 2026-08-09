@@ -52,7 +52,11 @@ pub async fn read_file_chunk(
         if result.is_ok() || matches!(close_error, DomainError::ConnectionFailed(_)) {
             return Err(close_error);
         }
-        tracing::warn!(error = %close_error, "close ssh sftp file handle failed");
+        tracing::warn!(
+            operation = "ssh_sftp_file_close",
+            error = %close_error,
+            "close ssh sftp file handle failed"
+        );
     }
     result
 }

@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use super::find_command_template;
 
 #[test]

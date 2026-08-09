@@ -136,7 +136,6 @@ impl VcsView {
     }
 
     /// 「新建 tag」按钮：读 input → 调 run_tag_op
-    ///
     /// message 非空时走 annotated tag；空则走 lightweight。
     pub(in crate::views) fn handle_create_tag(&mut self, cx: &mut Context<Self>) {
         if self

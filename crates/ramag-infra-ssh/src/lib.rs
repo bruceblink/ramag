@@ -321,7 +321,7 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let first = list_once(&locator, &sessions, &profile, &path).await;
-            // 兼容通道完全由配置决定；标准通道这里只重建同类连接，不自动切换实现。
+            // 兼容通道完全由配置决定；标准通道只重建同类连接，不自动切换实现。
             if uses_windows_remote_sftp(&profile)
                 || !matches!(first, Err(DomainError::ConnectionFailed(_)))
             {

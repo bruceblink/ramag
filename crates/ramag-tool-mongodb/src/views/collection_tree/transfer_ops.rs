@@ -1,5 +1,5 @@
 //! 集合树的库级传输与单集合完整导出入口。编排在 `ramag_app::usecases::transfer::mongo`，
-//! 这里负责文件选择、进度槽 / 取消位、完成通知与树刷新
+//! 文件选择、进度槽 / 取消位、完成通知与树刷新。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

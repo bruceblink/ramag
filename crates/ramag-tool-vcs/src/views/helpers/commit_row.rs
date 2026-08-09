@@ -37,7 +37,6 @@ pub(in crate::views) fn render_commit_row(
     let entity = cx.entity().clone();
     let cid = c.id.0.clone();
 
-    // refs chips（紧贴 subject 后）
     let mut refs_row = h_flex().gap(px(4.0)).flex_none();
     for r in c.refs.iter().take(MAX_VISIBLE_REF_CHIPS) {
         refs_row = refs_row.child(ref_chip(r, accent));
@@ -52,7 +51,6 @@ pub(in crate::views) fn render_commit_row(
     let row_key: String = cid.chars().take(12).collect();
     let row_id = SharedString::from(format!("vcs-commit-row-{row_key}"));
 
-    // 左键：打开 commit 详情（右侧面板）
     let cid_click = cid.clone();
     let on_click_handler = cx.listener(move |this, _: &ClickEvent, _, cx| {
         this.load_commit_detail(cid_click.clone(), cx);
@@ -67,9 +65,7 @@ pub(in crate::views) fn render_commit_row(
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
         .on_click(on_click_handler)
-        // 列 1：lane gutter
         .child(render_lane_gutter(graph))
-        // 列 2：subject + refs（flex_1 撑开）
         .child(
             h_flex()
                 .flex_1()
@@ -88,7 +84,6 @@ pub(in crate::views) fn render_commit_row(
                 )
                 .child(refs_row),
         )
-        // 列 3：author
         .child(
             div()
                 .flex_none()
@@ -100,7 +95,6 @@ pub(in crate::views) fn render_commit_row(
                 .text_ellipsis()
                 .child(author_short),
         )
-        // 列 4：date
         .child(
             div()
                 .flex_none()
@@ -110,7 +104,6 @@ pub(in crate::views) fn render_commit_row(
                 .text_color(muted_fg)
                 .child(time_str),
         )
-        // 列 5：hash
         .child(
             div()
                 .flex_none()
@@ -130,7 +123,6 @@ pub(in crate::views) fn render_commit_row(
         row = row.bg(sel_bg);
     }
 
-    // 右键菜单：复制 / cherry-pick / revert / reset
     row.context_menu({
         let entity = entity.clone();
         let cid = cid.clone();

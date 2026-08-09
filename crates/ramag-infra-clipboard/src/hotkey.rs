@@ -113,7 +113,10 @@ impl HotkeyListener {
             let status =
                 InstallEventHandler(target, hotkey_handler, 1, &spec, tx_ptr, &mut handler_ref);
             if status != 0 {
-                warn!(status, "install clipboard hotkey event handler failed");
+                warn!(
+                    operation = "clipboard_hotkey_install",
+                    status, "install clipboard hotkey event handler failed"
+                );
                 drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
                 return None;
             }
@@ -125,20 +128,27 @@ impl HotkeyListener {
             let mut hotkey_ref: EventHotKeyRef = std::ptr::null_mut();
             let status = RegisterEventHotKey(KEY_V, modifiers, hot_id, target, 0, &mut hotkey_ref);
             if status != 0 {
-                warn!(status, combo, "register clipboard hotkey failed");
+                warn!(
+                    operation = "clipboard_hotkey_register",
+                    status, combo, "register clipboard hotkey failed"
+                );
                 // 注册失败后须先移除 handler；若移除失败，保留 Sender 避免回调悬空。
                 let remove_status = RemoveEventHandler(handler_ref);
                 if remove_status == 0 {
                     drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
                 } else {
                     warn!(
+                        operation = "clipboard_hotkey_cleanup",
                         status = remove_status,
                         "RemoveEventHandler failed after hotkey registration failure; leaking callback sender for safety"
                     );
                 }
                 return None;
             }
-            info!(combo, "global clipboard hotkey registered");
+            info!(
+                operation = "clipboard_hotkey_register",
+                combo, "global clipboard hotkey registered"
+            );
             Some(Self {
                 rx,
                 handler_ref: handler_ref as usize,
@@ -167,6 +177,7 @@ impl Drop for HotkeyListener {
             let unregister_status = UnregisterEventHotKey(self.hotkey_ref as EventHotKeyRef);
             if unregister_status != 0 {
                 warn!(
+                    operation = "clipboard_hotkey_unregister",
                     status = unregister_status,
                     "unregister clipboard hotkey failed"
                 );
@@ -177,6 +188,7 @@ impl Drop for HotkeyListener {
             } else {
                 // handler 仍可能被 Carbon 调用，不能释放其借用的 Sender。
                 warn!(
+                    operation = "clipboard_hotkey_cleanup",
                     status = remove_status,
                     "RemoveEventHandler failed; leaking callback sender for safety"
                 );
@@ -184,7 +196,11 @@ impl Drop for HotkeyListener {
             unregister_status == 0 && remove_status == 0
         };
         if cleaned {
-            info!(combo = self.combo, "global clipboard hotkey unregistered");
+            info!(
+                operation = "clipboard_hotkey_unregister",
+                combo = self.combo,
+                "global clipboard hotkey unregistered"
+            );
         }
     }
 }

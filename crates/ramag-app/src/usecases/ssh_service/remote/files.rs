@@ -23,8 +23,10 @@ impl SshService {
                     if conclusive {
                         self.remember_bootstrapped_sftp(&profile, &directory)?;
                         tracing::info!(
+                            operation = "ssh_directory_bootstrap",
                             profile_id = %profile.id,
                             entries = directory.entries.len(),
+                            stage = "conclusive",
                             "ssh sftp bootstrap directory loaded"
                         );
                         return Ok(directory);
@@ -37,8 +39,10 @@ impl SshService {
         if let Some(directory) = fallback {
             self.remember_bootstrapped_sftp(&profile, &directory)?;
             tracing::info!(
+                operation = "ssh_directory_bootstrap",
                 profile_id = %profile.id,
                 entries = directory.entries.len(),
+                stage = "empty_root_fallback",
                 "ssh sftp bootstrap directory loaded as empty root"
             );
             return Ok(directory);

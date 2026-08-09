@@ -109,7 +109,6 @@ fn stream_row(
                     .items_center()
                     .gap(px(8.0))
                     .px(px(8.0))
-                    // 顶边线分隔相邻条目
                     .border_t_1()
                     .border_color(border)
                     .child(

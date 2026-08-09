@@ -485,12 +485,18 @@ async fn stop_probe(
     stderr_reader: &JoinHandle<io::Result<Vec<u8>>>,
 ) {
     if let Err(error) = child.start_kill() {
-        tracing::warn!(error = %error, "kill openssh probe failed");
+        tracing::warn!(operation = "ssh_probe_cleanup", stage = "kill", error = %error, "kill openssh probe failed");
     }
     match timeout(PROBE_READER_TIMEOUT, child.wait()).await {
         Ok(Ok(_)) => {}
-        Ok(Err(error)) => tracing::warn!(error = %error, "wait killed openssh probe failed"),
-        Err(_) => tracing::warn!("killed openssh probe did not exit before timeout"),
+        Ok(Err(error)) => {
+            tracing::warn!(operation = "ssh_probe_cleanup", stage = "wait", error = %error, "wait killed openssh probe failed")
+        }
+        Err(_) => tracing::warn!(
+            operation = "ssh_probe_cleanup",
+            stage = "wait_timeout",
+            "killed openssh probe did not exit before timeout"
+        ),
     }
     stdout_reader.abort();
     stderr_reader.abort();

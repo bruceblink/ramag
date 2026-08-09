@@ -157,19 +157,28 @@ pub(crate) fn read() -> Result<Option<CapturedClip>> {
         if plist != nil {
             let count = NSArray::count(plist);
             if count > MAX_FILE_PATHS as u64 {
-                warn!(count, "clipboard file list exceeds safety limit");
+                warn!(
+                    operation = "clipboard_file_list_parse",
+                    count, "clipboard file list exceeds safety limit"
+                );
                 return Ok(None);
             }
             let mut total_path_bytes = 0usize;
             for i in 0..count {
                 let item = NSArray::objectAtIndex(plist, i);
                 let Some(path) = to_rust_string(item) else {
-                    warn!("clipboard file path exceeds safety limit");
+                    warn!(
+                        operation = "clipboard_file_list_parse",
+                        "clipboard file path exceeds safety limit"
+                    );
                     return Ok(None);
                 };
                 total_path_bytes = total_path_bytes.saturating_add(path.len());
                 if total_path_bytes > MAX_PASTEBOARD_BYTES {
-                    warn!("clipboard file paths exceed safety limit");
+                    warn!(
+                        operation = "clipboard_file_list_parse",
+                        "clipboard file paths exceed safety limit"
+                    );
                     return Ok(None);
                 }
                 cap.files.push(path);
@@ -224,7 +233,10 @@ pub(crate) fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
         if let Some(bytes) = rtf {
             let ok: bool = msg_send![pb, setData: ns_data(bytes) forType: ns_string(RTF_TYPE)];
             if !ok {
-                warn!("write optional RTF clipboard format failed");
+                warn!(
+                    operation = "clipboard_write_optional_format",
+                    "write optional RTF clipboard format failed"
+                );
             }
         }
         Ok(pb.changeCount())

@@ -7,7 +7,6 @@ use serde_json::Value;
 
 /// BSON Bson → serde_json::Value。整体走 relaxed Extended JSON，**但 Int64 显式包成
 /// `{"$numberLong":"N"}`**（其余类型仍 relaxed，可读性不变）。
-///
 /// 为何特化 Int64：relaxed 下 Int32/Int64 都输出裸数字、无法区分，导致单元格编辑一个
 /// Int64 正小值（≤ i32::MAX）时经 serde 反序列化被窄化成 Int32（静默改 BSON 类型）。
 /// 包装后 cell 层可标 "long" kind、编辑时按 $numberLong 还原写回，保住 64 位类型。

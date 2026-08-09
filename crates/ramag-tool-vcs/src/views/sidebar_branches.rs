@@ -111,7 +111,6 @@ pub(super) fn branch_row(
     };
     row = row.child(div().flex_none().child(more_btn));
 
-    // 右键菜单：checkout / merge / rebase / interactive-rebase / delete
     row.context_menu({
         let ent = entity.clone();
         let n = name.clone();

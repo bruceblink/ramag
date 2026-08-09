@@ -101,8 +101,10 @@ pub(super) fn reveal_in_explorer(paths: &[String]) -> Result<()> {
         .sum();
     if shown < paths.len() {
         warn!(
+            operation = "clipboard_explorer_selection_limit",
             count = paths.len(),
-            shown, "limit explorer selection for clipboard file list"
+            shown,
+            "limit explorer selection for clipboard file list"
         );
         Err(DomainError::Other(format!(
             "文件较多，已在资源管理器中显示前 {shown} 个（最多 {MAX_EXPLORER_WINDOWS} 个目录、{MAX_SELECTED_ITEMS} 个项目）"

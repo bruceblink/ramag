@@ -63,24 +63,28 @@ impl Tunnel {
         match self.child.try_wait() {
             Ok(None) => {
                 if let Err(error) = self.child.kill() {
-                    warn!(error = %error, "ssh tunnel kill failed");
+                    warn!(operation = "ssh_tunnel_stop", stage = "kill", error = %error, "ssh tunnel kill failed");
                 }
             }
             Ok(Some(_)) => {}
             Err(error) => {
-                warn!(error = %error, "ssh tunnel status check failed");
+                warn!(operation = "ssh_tunnel_stop", stage = "status", error = %error, "ssh tunnel status check failed");
                 if let Err(kill_error) = self.child.kill() {
-                    warn!(error = %kill_error, "ssh tunnel kill after status error failed");
+                    warn!(operation = "ssh_tunnel_stop", stage = "kill_after_status_error", error = %kill_error, "ssh tunnel kill after status error failed");
                 }
             }
         }
         if let Err(error) = self.child.wait() {
-            warn!(error = %error, "ssh tunnel wait failed");
+            warn!(operation = "ssh_tunnel_stop", stage = "wait", error = %error, "ssh tunnel wait failed");
         }
         if let Some(drain) = self.stderr_drain.take()
             && drain.join().is_err()
         {
-            warn!("ssh stderr drain thread panicked");
+            warn!(
+                operation = "ssh_tunnel_stop",
+                stage = "stderr_drain",
+                "ssh stderr drain thread panicked"
+            );
         }
     }
 }
@@ -152,7 +156,7 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
     if let Some(mut stale) = current.take() {
         // 参数变了或进程已死：拆掉重建
         stale.stop();
-        info!(connection_id = %config.id, "ssh tunnel rebuilt (stale or dead)");
+        info!(operation = "ssh_tunnel_ensure", stage = "rebuild", connection_id = %config.id, "ssh tunnel rebuilt (stale or dead)");
     }
 
     let tunnel = match build_tunnel(config, target, want) {
@@ -165,13 +169,13 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
     };
     let local_port = tunnel.local_port;
     *current = Some(tunnel);
-    info!(connection_id = %config.id, target, local_port, "ssh tunnel established");
+    info!(operation = "ssh_tunnel_ensure", stage = "established", connection_id = %config.id, target, local_port, "ssh tunnel established");
     Ok(Some(("127.0.0.1".into(), local_port)))
 }
 
 fn remove_unused_slot(id: &ConnectionId, slot: &TunnelSlot) {
     let Ok(mut map) = registry().lock() else {
-        warn!(connection_id = %id, "ssh tunnel registry lock poisoned during failed setup cleanup");
+        warn!(operation = "ssh_tunnel_cleanup", stage = "registry_lock", connection_id = %id, "ssh tunnel registry lock poisoned during failed setup cleanup");
         return;
     };
     let is_current = map
@@ -262,7 +266,7 @@ pub fn evict(id: &ConnectionId) {
     let slot = match registry().lock() {
         Ok(mut map) => map.remove(id),
         Err(_) => {
-            warn!(connection_id = %id, "ssh tunnel registry lock poisoned during evict");
+            warn!(operation = "ssh_tunnel_evict", stage = "registry_lock", connection_id = %id, "ssh tunnel registry lock poisoned during evict");
             return;
         }
     };
@@ -271,10 +275,12 @@ pub fn evict(id: &ConnectionId) {
             Ok(mut current) => {
                 if let Some(mut tunnel) = current.take() {
                     tunnel.stop();
-                    info!(connection_id = %id, "ssh tunnel closed");
+                    info!(operation = "ssh_tunnel_evict", connection_id = %id, "ssh tunnel closed");
                 }
             }
-            Err(_) => warn!(connection_id = %id, "ssh tunnel slot lock poisoned during evict"),
+            Err(_) => {
+                warn!(operation = "ssh_tunnel_evict", stage = "slot_lock", connection_id = %id, "ssh tunnel slot lock poisoned during evict")
+            }
         }
     }
 }
@@ -284,7 +290,11 @@ pub fn shutdown_all() {
     let slots: Vec<TunnelSlot> = match registry().lock() {
         Ok(mut map) => map.drain().map(|(_, slot)| slot).collect(),
         Err(_) => {
-            warn!("ssh tunnel registry lock poisoned during shutdown");
+            warn!(
+                operation = "ssh_tunnel_shutdown",
+                stage = "registry_lock",
+                "ssh tunnel registry lock poisoned during shutdown"
+            );
             return;
         }
     };
@@ -297,11 +307,19 @@ pub fn shutdown_all() {
                     closed += 1;
                 }
             }
-            Err(_) => warn!("ssh tunnel slot lock poisoned during shutdown"),
+            Err(_) => warn!(
+                operation = "ssh_tunnel_shutdown",
+                stage = "slot_lock",
+                "ssh tunnel slot lock poisoned during shutdown"
+            ),
         }
     }
     if closed > 0 {
-        info!(count = closed, "all ssh tunnels closed");
+        info!(
+            operation = "ssh_tunnel_shutdown",
+            count = closed,
+            "all ssh tunnels closed"
+        );
     }
 }
 
@@ -325,7 +343,7 @@ fn start_stderr_drain(child: &mut Child, local_port: u16) -> Result<JoinHandle<(
         .name(format!("ramag-ssh-stderr-{local_port}"))
         .spawn(move || {
             if let Err(error) = std::io::copy(&mut stderr, &mut std::io::sink()) {
-                warn!(error = %error, local_port, "ssh stderr drain failed");
+                warn!(operation = "ssh_tunnel_stderr_drain", error = %error, local_port, "ssh stderr drain failed");
             }
         })
         .map_err(|error| DomainError::QueryFailed(format!("启动 SSH 输出排空线程失败：{error}")))
@@ -333,10 +351,10 @@ fn start_stderr_drain(child: &mut Child, local_port: u16) -> Result<JoinHandle<(
 
 fn terminate_child(child: &mut Child) {
     if let Err(error) = child.kill() {
-        warn!(error = %error, "ssh tunnel kill failed during setup");
+        warn!(operation = "ssh_tunnel_setup_cleanup", stage = "kill", error = %error, "ssh tunnel kill failed during setup");
     }
     if let Err(error) = child.wait() {
-        warn!(error = %error, "ssh tunnel wait failed during setup");
+        warn!(operation = "ssh_tunnel_setup_cleanup", stage = "wait", error = %error, "ssh tunnel wait failed during setup");
     }
 }
 

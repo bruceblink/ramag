@@ -1,5 +1,5 @@
 //! 侧栏「远程仓库」：名称、fetch URL 与操作菜单。
-//! 与「远程分支」区分：这里管 remote 配置（origin 等），非远端分支引用。
+//! 与「远程分支」区分：本模块管理 remote 配置（origin 等），非远端分支引用。
 //! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
 
 use gpui::{

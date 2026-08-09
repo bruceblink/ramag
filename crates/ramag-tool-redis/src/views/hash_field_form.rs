@@ -173,7 +173,6 @@ impl Render for HashFieldForm {
         let is_edit = matches!(self.mode, HashFieldFormMode::Edit { .. });
         let submitting = self.state.is_submitting();
 
-        // 编辑模式下 field input 禁用（视觉上灰显）
         let field_block = if is_edit {
             v_flex()
                 .gap(px(6.0))

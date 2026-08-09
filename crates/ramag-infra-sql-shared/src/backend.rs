@@ -53,8 +53,6 @@ where
     /// 按 ConnectionId 缓存的连接池
     fn cache(&self) -> &PoolCache<Self::Db>;
 
-    // 方言
-
     /// MySQL 反引号 / PG 双引号
     fn quote_identifier(&self, ident: &str) -> String;
 
@@ -67,11 +65,7 @@ where
     /// PG 需识别 dollar-quoted
     fn split_options(&self) -> SplitOptions;
 
-    // 连接 / 池
-
     async fn build_pool(&self, config: &ConnectionConfig) -> Result<Pool<Self::Db>>;
-
-    // 行解码
 
     fn decode_row(&self, row: &<Self::Db as Database>::Row) -> Result<Vec<Value>>;
 
@@ -107,8 +101,6 @@ where
     fn map_database_error(&self, _err: &sqlx::Error) -> Option<DomainError> {
         None
     }
-
-    // 元数据 SQL（per-DB 实现，签名通用）
 
     async fn server_version_impl(&self, pool: &Pool<Self::Db>) -> Result<String>;
 
@@ -360,7 +352,10 @@ where
     if let Some(schema) = query.default_schema.as_deref().filter(|s| !s.is_empty())
         && let Some(use_sql) = b.use_database_sql(schema)
     {
-        debug!(schema, "switching default schema before query");
+        debug!(
+            operation = "sql_query_switch_schema",
+            schema, "switching default schema before query"
+        );
         // MySQL `USE <db>` 在 prepared statement 协议不支持，必须走 COM_QUERY 简单查询
         conn.execute(use_sql.as_str())
             .await
@@ -386,6 +381,7 @@ where
         && let Some(stmt) = statements.iter().find(|s| is_write_statement(s))
     {
         warn!(
+            operation = "sql_query_read_only_guard",
             conn = %config.name,
             keyword = first_keyword(stmt).as_deref().unwrap_or("?"),
             "read-only write blocked"
@@ -447,6 +443,7 @@ where
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
     info!(
+        operation = "sql_query",
         elapsed_ms,
         rows = last_result.rows.len(),
         affected = last_result.affected_rows,

@@ -1,5 +1,5 @@
 //! Key 树的 DB / 单 Key / 前缀导出与 DB 导入入口。
-//! 这里负责文件选择、进度槽 / 取消位、完成通知与重扫
+//! 文件选择、进度槽 / 取消位、完成通知与重扫。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

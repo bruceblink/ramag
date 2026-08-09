@@ -64,7 +64,7 @@ pub fn persist_preference_latest_with_storage(
                 return;
             }
             if let Err(error) = storage.set_preference(key, &value).await {
-                tracing::warn!(error = %error, preference = key, "persist preference failed");
+                tracing::warn!(operation = "ui_preference_persist", error = %error, preference = key, "persist preference failed");
             }
         })
         .detach();

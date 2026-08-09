@@ -231,7 +231,7 @@ pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipIte
             .map_err(store_err)?;
     }
     write_txn.commit().map_err(store_err)?;
-    debug!(clip_id = %uuid, "clipboard entry saved");
+    debug!(operation = "clipboard_entry_save", clip_id = %uuid, "clipboard entry saved");
     Ok(())
 }
 
@@ -354,7 +354,7 @@ pub(crate) fn delete(db: Arc<Database>, id: String) -> Result<()> {
         clips.remove(id.as_str()).map_err(store_err)?;
     }
     write_txn.commit().map_err(store_err)?;
-    debug!(clip_id = %id, "clipboard entry deleted");
+    debug!(operation = "clipboard_entry_delete", clip_id = %id, "clipboard entry deleted");
     Ok(())
 }
 
@@ -488,6 +488,7 @@ pub(crate) fn prune(
     }
     write_txn.commit().map_err(store_err)?;
     info!(
+        operation = "clipboard_prune",
         removed = doomed.len(),
         batch_full = prune_batch_full,
         scanned,
@@ -582,7 +583,11 @@ pub(crate) fn migrate_indexes(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) ->
     }
     search::mark_ready(&write_txn)?;
     write_txn.commit().map_err(store_err)?;
-    info!(count = migrated, "clipboard indexes migrated");
+    info!(
+        operation = "clipboard_index_migrate",
+        count = migrated,
+        "clipboard indexes migrated"
+    );
     Ok(())
 }
 

@@ -454,7 +454,6 @@ impl CliConsole {
 
     fn rebuild_transcript_rows(&mut self) {
         let mut rows = Vec::new();
-        // 最新结果紧邻输入框。
         for entry in self.history.iter().rev() {
             let meta = if matches!(entry.outcome, Outcome::Pending) {
                 format!("DB {}", entry.db)

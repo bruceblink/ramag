@@ -182,7 +182,6 @@ impl QueryPanel {
         self.draft_subscriptions.push(sub);
         self.active = self.tabs.len() - 1;
         self.sync_result_activity(cx);
-        // 聚焦编辑器，cmd-t 后立即可输入
         self.focus_active_editor(window, cx);
         // 大负 offset 让 tab bar 滚末尾，GPUI 自动 clamp 到 max_offset
         self.tabs_scroll
@@ -233,7 +232,6 @@ impl QueryPanel {
         if index < self.draft_subscriptions.len() {
             let _ = self.draft_subscriptions.remove(index);
         }
-        // 调整 active
         if self.tabs.is_empty() {
             self.add_tab(window, cx); // 总保持至少一个 Tab（add_tab 内部会 focus）
             return;

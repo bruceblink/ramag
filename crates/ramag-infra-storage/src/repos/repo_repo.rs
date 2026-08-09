@@ -55,7 +55,11 @@ pub(crate) fn list(db: Arc<Database>) -> Result<Vec<RepoConfig>> {
     }
     // 按 name 字母序，顺序稳定不漂移
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    debug!(count = out.len(), "repository listing completed");
+    debug!(
+        operation = "vcs_repository_list",
+        count = out.len(),
+        "repository listing completed"
+    );
     Ok(out)
 }
 
@@ -135,7 +139,7 @@ pub(crate) fn save(db: Arc<Database>, config: RepoConfig) -> Result<()> {
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
-    info!(repo_id = %config.id, name = %config.name, "repository saved");
+    info!(operation = "vcs_repository_save", repo_id = %config.id, name = %config.name, "repository saved");
     Ok(())
 }
 
@@ -156,7 +160,7 @@ pub(crate) fn delete(db: Arc<Database>, id: RepoId) -> Result<()> {
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
-    info!(repo_id = %id_str, "repository deleted");
+    info!(operation = "vcs_repository_delete", repo_id = %id_str, "repository deleted");
     Ok(())
 }
 

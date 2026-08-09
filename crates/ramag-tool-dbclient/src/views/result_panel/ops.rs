@@ -79,7 +79,7 @@ impl ResultPanel {
         Some((svc, conn))
     }
 
-    /// 行内修改 / 删除的总闸门（按钮已禁用，这里兜底弹框期间条件变化）：
+    /// 行内修改 / 删除的总闸门（按钮已禁用，兜底处理弹框期间的条件变化）：
     /// 过闸返回行定位键，未过弹 toast 返回 None
     fn guard_modify(&mut self, action: &str, cx: &mut Context<Self>) -> Option<RowIdentity> {
         if let Some(reason) = self.modify_block_reason() {

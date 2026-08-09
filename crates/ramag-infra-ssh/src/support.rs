@@ -23,6 +23,7 @@ pub(super) async fn connect(
         Ok(connection) => Ok(connection),
         Err(error) => {
             tracing::warn!(
+                operation = "ssh_sftp_connect",
                 profile_id = %profile.id,
                 transport = ?transport,
                 error = %error,
@@ -129,6 +130,7 @@ pub(super) async fn list_once(
                 Ok(_) => {}
                 Err(_) => {
                     tracing::warn!(
+                        operation = "ssh_sftp_drive_discovery",
                         profile_id = %profile.id,
                         "windows sftp drive discovery timed out"
                     );
@@ -142,6 +144,7 @@ pub(super) async fn list_once(
         Ok(directory) => directory,
         Err(_) => {
             tracing::warn!(
+                operation = "ssh_sftp_directory_list",
                 profile_id = %profile.id,
                 path,
                 timeout_seconds = DIRECTORY_REQUEST_TIMEOUT.as_secs(),

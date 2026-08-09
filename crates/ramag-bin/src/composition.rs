@@ -13,7 +13,7 @@ pub(super) fn build_connection_service()
 
     let storage_impl =
         RedbStorage::open_default().map_err(|e| anyhow::anyhow!("初始化 redb 存储失败: {e}"))?;
-    info!(path = %storage_impl.path().display(), "storage opened");
+    info!(operation = "storage_open", path = %storage_impl.path().display(), "storage opened");
     let storage: Arc<dyn Storage> = Arc::new(storage_impl);
 
     let svc = Arc::new(ConnectionService::new(drivers, storage.clone()));
@@ -31,7 +31,7 @@ pub(super) fn read_preferences(
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            warn!(error = %error, key_count = keys.len(), "preference runtime creation failed");
+            warn!(operation = "preference_runtime_init", error = %error, key_count = keys.len(), "preference runtime creation failed");
             return HashMap::new();
         }
     };
@@ -43,7 +43,7 @@ pub(super) fn read_preferences(
             }
             Ok(None) => {}
             Err(error) => {
-                warn!(error = %error, key, "load preference failed");
+                warn!(operation = "preference_load", error = %error, key, "load preference failed");
             }
         }
     }
@@ -85,7 +85,7 @@ pub(super) fn build_ssh_service(storage: Arc<dyn Storage>) -> Arc<SshService> {
             Arc::new(service.with_jumpserver_driver(driver))
         }
         Err(error) => {
-            warn!(error = %error, "initialize JumpServer client failed");
+            warn!(operation = "jumpserver_client_init", error = %error, "initialize JumpServer client failed");
             Arc::new(service)
         }
     }
@@ -99,7 +99,7 @@ pub(super) fn build_update_service(storage: Arc<dyn Storage>) -> Option<Arc<Upda
             env!("CARGO_PKG_VERSION"),
         ))),
         Err(error) => {
-            warn!(error = %error, "initialize update service failed");
+            warn!(operation = "application_update_service_init", error = %error, "initialize update service failed");
             None
         }
     }

@@ -183,7 +183,6 @@ impl ConnectionService {
     }
 
     /// 按连接 ID 清理全部 SQL 驱动池。
-    ///
     /// 编辑连接时允许切换数据库类型；此时仅按新类型清理会遗留旧驱动池，
     /// 后续关闭标签也无法再从新配置推断旧类型。
     pub fn evict_all_pools(&self, id: &ConnectionId) {

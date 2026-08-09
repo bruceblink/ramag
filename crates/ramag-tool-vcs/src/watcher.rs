@@ -136,6 +136,7 @@ impl RepoWatcher {
             }
             if let Err(error) = watcher.watch(&metadata_root, RecursiveMode::Recursive) {
                 tracing::warn!(
+                    operation = "vcs_filesystem_watcher",
                     error = %error,
                     path = %metadata_root.display(),
                     "linked-worktree metadata watch failed"

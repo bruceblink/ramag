@@ -164,7 +164,7 @@ impl MediaStore {
                     let file_type = match entry.file_type() {
                         Ok(file_type) => file_type,
                         Err(error) => {
-                            warn!(error = %error, path = %path.display(), "read media cache file type failed");
+                            warn!(operation = "clipboard_media_read", error = %error, path = %path.display(), "read media cache file type failed");
                             continue;
                         }
                     };
@@ -183,7 +183,9 @@ impl MediaStore {
                     }
                     out.push(path.to_string_lossy().into_owned());
                 }
-                Err(error) => warn!(error = %error, "read media cache entry failed"),
+                Err(error) => {
+                    warn!(operation = "clipboard_media_read", error = %error, "read media cache entry failed")
+                }
             }
         }
         Ok(out)
@@ -201,7 +203,10 @@ impl MediaStore {
             }
         }
         let Some(p) = self.managed_path(path) else {
-            warn!(path, "refuse to remove file outside media dir");
+            warn!(
+                operation = "clipboard_media_remove_guard",
+                path, "refuse to remove file outside media dir"
+            );
             return Ok(());
         };
         match fs::remove_file(&p) {
@@ -244,7 +249,7 @@ impl MediaStore {
                 fs::remove_file(entry.path())
             })();
             if let Err(error) = result {
-                warn!(error = %error, "clear media cache entry failed");
+                warn!(operation = "clipboard_media_clear", error = %error, "clear media cache entry failed");
                 first_error.get_or_insert(error);
             }
         }
@@ -294,7 +299,7 @@ fn remove_temp_file(path: &std::path::Path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            warn!(error = %error, path = %path.display(), "remove media temp file failed")
+            warn!(operation = "clipboard_media_temp_cleanup", error = %error, path = %path.display(), "remove media temp file failed")
         }
     }
 }
@@ -320,7 +325,7 @@ fn cleanup_stale_temp_file(path: &std::path::Path) {
     let modified = match fs::metadata(path).and_then(|metadata| metadata.modified()) {
         Ok(modified) => modified,
         Err(error) => {
-            warn!(error = %error, path = %path.display(), "read media temp file metadata failed");
+            warn!(operation = "clipboard_media_temp_read", error = %error, path = %path.display(), "read media temp file metadata failed");
             return;
         }
     };
@@ -328,7 +333,7 @@ fn cleanup_stale_temp_file(path: &std::path::Path) {
         Ok(age) if age >= STALE_TEMP_FILE_AGE => remove_temp_file(path),
         Ok(_) => {}
         Err(error) => {
-            warn!(error = %error, path = %path.display(), "media temp file timestamp is in the future")
+            warn!(operation = "clipboard_media_temp_read", error = %error, path = %path.display(), "media temp file timestamp is in the future")
         }
     }
 }

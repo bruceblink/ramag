@@ -22,7 +22,10 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
         .and_then(|json| match ramag_ui::WindowBoundsPref::parse(json) {
             Ok(pref) => Some(pref),
             Err(error) => {
-                warn!(error, "ignore invalid saved window bounds");
+                warn!(
+                    operation = "window_bounds_load",
+                    error, "ignore invalid saved window bounds"
+                );
                 None
             }
         });
@@ -51,7 +54,11 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
             let title_pt = gpui::point(b.origin.x + b.size.width / 2.0, b.origin.y + px(16.0));
             let on_screen = cx.displays().iter().any(|d| d.bounds().contains(&title_pt));
             if !on_screen {
-                info!("saved window position is off-screen; falling back to centered");
+                info!(
+                    operation = "window_bounds_load",
+                    reason = "off_screen",
+                    "saved window position is off-screen; falling back to centered"
+                );
                 WindowBounds::Maximized(fallback)
             } else if p.maximized {
                 WindowBounds::Maximized(b)
@@ -159,7 +166,7 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
             }
             Err(err) => {
                 cx.update(finish_main_window_open);
-                error!(error = %err, "open application window failed");
+                error!(operation = "application_window_open", error = %err, "open application window failed");
             }
         }
     })

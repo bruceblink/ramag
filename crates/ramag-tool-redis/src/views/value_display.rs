@@ -402,7 +402,6 @@ fn to_hex_dump(bytes: &[u8]) -> String {
                 out.push(' ');
             }
         }
-        // ASCII 部分
         out.push_str(" |");
         for b in chunk {
             let c = if (0x20..0x7f).contains(b) {
@@ -423,7 +422,6 @@ mod tests {
 
     #[test]
     fn gzip_detect_and_decompress() {
-        // gzip 编码 "hello world"
         use flate2::Compression;
         use flate2::write::GzEncoder;
         use std::io::Write;

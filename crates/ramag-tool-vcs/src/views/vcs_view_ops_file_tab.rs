@@ -54,7 +54,6 @@ impl VcsView {
             self.selected_pf_path = None;
             self.current_file_content = None;
             if let Some(cached) = self.file_tabs[idx].cached_diff.clone() {
-                // 命中缓存，直接展示
                 self.current_diff = Some(cached);
                 self.current_diff_syntax = self.file_tabs[idx].cached_diff_syntax.clone();
                 self.loading_diff = false;
@@ -66,7 +65,6 @@ impl VcsView {
             self.current_diff_syntax = None;
             self.loading_diff = true;
         } else {
-            // 新 tab
             self.file_tabs.push(FileTab {
                 path: path.clone(),
                 source: FileTabSource::Changes(kind),

@@ -23,6 +23,10 @@ use ramag_domain::error::{DomainError, Result};
 use crate::askpass::AskPassBroker;
 use crate::command::configure_no_window;
 
+use self::child::stop_child;
+
+mod child;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 const STDERR_LIMIT: usize = 16 * 1024;
@@ -246,6 +250,7 @@ impl SftpConnection {
             }
         };
         tracing::info!(
+            operation = "ssh_sftp_connect",
             profile_id = %profile.id,
             transport = ?transport,
             "ssh sftp session connected"
@@ -279,13 +284,13 @@ impl SftpConnection {
 
     pub async fn close(&self) {
         if let Err(error) = self.session.close() {
-            tracing::warn!(error = %error, "close ssh sftp protocol failed");
+            tracing::warn!(operation = "ssh_sftp_close", stage = "protocol", error = %error, "close ssh sftp protocol failed");
         }
         if let Some(mut child) = self.child.lock().await.take() {
             match timeout(CLOSE_TIMEOUT, child.wait()).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
-                    tracing::warn!(error = %error, "wait ssh sftp child failed");
+                    tracing::warn!(operation = "ssh_sftp_close", stage = "child_wait", error = %error, "wait ssh sftp child failed");
                 }
                 Err(_) => stop_child(&mut child).await,
             }
@@ -293,14 +298,22 @@ impl SftpConnection {
         if let Some(task) = self.protocol_task.lock().await.take()
             && timeout(Duration::from_secs(1), task).await.is_err()
         {
-            tracing::warn!("ssh sftp protocol relay did not stop in time");
+            tracing::warn!(
+                operation = "ssh_sftp_close",
+                stage = "protocol_relay",
+                "ssh sftp protocol relay did not stop in time"
+            );
         }
         if let Some(task) = self.stderr_task.lock().await.take()
             && timeout(Duration::from_secs(1), task).await.is_err()
         {
-            tracing::warn!("ssh sftp stderr drain did not stop in time");
+            tracing::warn!(
+                operation = "ssh_sftp_close",
+                stage = "stderr_drain",
+                "ssh sftp stderr drain did not stop in time"
+            );
         }
-        tracing::info!(profile_id = %self.profile.id, "ssh sftp session closed");
+        tracing::info!(operation = "ssh_sftp_close", profile_id = %self.profile.id, "ssh sftp session closed");
     }
 
     pub fn contextualize<T>(&self, result: Result<T>) -> Result<T> {
@@ -369,7 +382,7 @@ async fn wait_cleanup_task(task: tokio::task::JoinHandle<()>, task_name: &'stati
     match timeout(Duration::from_secs(1), task).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            tracing::warn!(error = %error, task = task_name, "ssh sftp cleanup task failed")
+            tracing::warn!(operation = "ssh_sftp_cleanup_task", error = %error, task = task_name, "ssh sftp cleanup task failed")
         }
         Err(_) => tracing::warn!(
             task = task_name,
@@ -387,7 +400,7 @@ where
         read_first_packet_header(&mut stdout, allow_text_preamble).await
     else {
         if let Err(error) = destination.shutdown().await {
-            tracing::warn!(error = %error, "shutdown ssh sftp relay after missing packet failed");
+            tracing::warn!(operation = "ssh_sftp_relay_shutdown", stage = "missing_packet", error = %error, "shutdown ssh sftp relay after missing packet failed");
         }
         return;
     };
@@ -401,9 +414,9 @@ where
     )
     .await
     {
-        tracing::warn!(error = %error, "relay ssh sftp first packet failed");
+        tracing::warn!(operation = "ssh_sftp_relay", stage = "first_packet", error = %error, "relay ssh sftp first packet failed");
         if let Err(shutdown_error) = destination.shutdown().await {
-            tracing::warn!(error = %shutdown_error, "shutdown ssh sftp relay after packet failure failed");
+            tracing::warn!(operation = "ssh_sftp_relay_shutdown", stage = "packet_failure", error = %shutdown_error, "shutdown ssh sftp relay after packet failure failed");
         }
         return;
     }
@@ -413,19 +426,19 @@ where
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(error) => {
-                tracing::warn!(error = %error, "read ssh sftp packet header failed");
+                tracing::warn!(operation = "ssh_sftp_relay", stage = "packet_header", error = %error, "read ssh sftp packet header failed");
                 break;
             }
         }
         if let Err(error) =
             relay_packet(&mut stdout, &mut destination, header, None, &mut buffer).await
         {
-            tracing::warn!(error = %error, "relay ssh sftp packet failed");
+            tracing::warn!(operation = "ssh_sftp_relay", stage = "packet", error = %error, "relay ssh sftp packet failed");
             break;
         }
     }
     if let Err(error) = destination.shutdown().await {
-        tracing::warn!(error = %error, "shutdown ssh sftp protocol relay failed");
+        tracing::warn!(operation = "ssh_sftp_relay_shutdown", error = %error, "shutdown ssh sftp protocol relay failed");
     }
 }
 
@@ -449,7 +462,7 @@ where
     while scanned.len() < TEXT_PREAMBLE_LIMIT {
         if let Err(error) = stdout.read_exact(&mut byte).await {
             if error.kind() != std::io::ErrorKind::UnexpectedEof {
-                tracing::warn!(error = %error, "read ssh sftp first packet failed");
+                tracing::warn!(operation = "ssh_sftp_relay", stage = "first_packet", error = %error, "read ssh sftp first packet failed");
             }
             return None;
         }
@@ -463,12 +476,21 @@ where
         // 首包必须是 SSH_FXP_VERSION（类型 2），且至少含类型和版本号。
         if (5..=MAX_SFTP_PACKET_BYTES).contains(&packet_bytes) && scanned[start + 4] == 2 {
             if start > 0 {
-                tracing::info!(bytes = start, "ignored jumpserver sftp text preamble");
+                tracing::info!(
+                    operation = "ssh_sftp_relay",
+                    stage = "jumpserver_preamble",
+                    bytes = start,
+                    "ignored jumpserver sftp text preamble"
+                );
             }
             return Some((header, Some(2)));
         }
     }
-    tracing::warn!("jumpserver sftp text preamble exceeded safety limit");
+    tracing::warn!(
+        operation = "ssh_sftp_relay",
+        stage = "jumpserver_preamble_limit",
+        "jumpserver sftp text preamble exceeded safety limit"
+    );
     None
 }
 
@@ -485,7 +507,12 @@ where
 {
     let packet_bytes = u32::from_be_bytes(header);
     if packet_bytes == 0 || packet_bytes > MAX_SFTP_PACKET_BYTES {
-        tracing::warn!(packet_bytes, "ssh sftp packet exceeded safety limit");
+        tracing::warn!(
+            operation = "ssh_sftp_relay",
+            stage = "packet_limit",
+            packet_bytes,
+            "ssh sftp packet exceeded safety limit"
+        );
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid sftp packet size",
@@ -516,7 +543,7 @@ async fn drain_stderr(
             Ok(0) => break,
             Ok(read) => append_tail(&mut tail.lock(), &buffer[..read]),
             Err(error) => {
-                tracing::warn!(error = %error, "drain ssh sftp stderr failed");
+                tracing::warn!(operation = "ssh_sftp_stderr_drain", error = %error, "drain ssh sftp stderr failed");
                 break;
             }
         }
@@ -563,15 +590,6 @@ fn connection_error(protocol_error: String, stderr: &VecDeque<u8>) -> DomainErro
         format!("{protocol_error}；OpenSSH：{detail}")
     };
     DomainError::ConnectionFailed(hint)
-}
-
-async fn stop_child(child: &mut Child) {
-    if let Err(error) = child.start_kill() {
-        tracing::warn!(error = %error, "kill ssh sftp child failed");
-    }
-    if timeout(CLOSE_TIMEOUT, child.wait()).await.is_err() {
-        tracing::warn!("ssh sftp child did not exit after kill");
-    }
 }
 
 #[cfg(test)]

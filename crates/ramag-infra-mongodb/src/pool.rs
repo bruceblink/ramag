@@ -54,7 +54,7 @@ impl PoolCache {
 
         let generation = self.generation_for_request(&config.id);
         if let Some(client) = self.get_cached(&config.id, generation) {
-            debug!(connection_id = %config.id, "client cache hit");
+            debug!(operation = "mongo_pool_cache_lookup", connection_id = %config.id, "client cache hit");
             return Ok(client);
         }
 
@@ -65,11 +65,11 @@ impl PoolCache {
             return build_client(config).await;
         }
         if let Some(client) = self.get_cached(&config.id, generation) {
-            debug!(connection_id = %config.id, after_lock = true, "client cache hit");
+            debug!(operation = "mongo_pool_cache_lookup", connection_id = %config.id, after_lock = true, "client cache hit");
             return Ok(client);
         }
 
-        info!(connection_id = %config.id, name = %config.name, host = %config.host, "creating client");
+        info!(operation = "mongo_pool_create", connection_id = %config.id, name = %config.name, host = %config.host, "creating client");
         let client = build_client(config).await?;
         self.cache_if_current(config.id.clone(), generation, client.clone());
         Ok(client)
@@ -160,7 +160,7 @@ impl PoolCache {
             false
         };
         if removed {
-            info!(connection_id = %conn_id, "client evicted");
+            info!(operation = "mongo_pool_evict", connection_id = %conn_id, "client evicted");
         }
     }
 
@@ -234,7 +234,7 @@ async fn build_client(config: &ConnectionConfig) -> Result<Client> {
         .build();
 
     let client = Client::with_options(opts).map_err(|e| {
-        warn!(error = %e, host = %config.host, "build client failed");
+        warn!(operation = "mongo_pool_create", error = %e, host = %config.host, "build client failed");
         map_mongo_error(e)
     })?;
     Ok(client)
@@ -257,7 +257,7 @@ fn mongo_tls_options(config: &ConnectionConfig) -> Option<mongodb::options::Tls>
         || config.ssh_target.is_some();
     if disable_verification {
         if config.ssh_target.is_some() {
-            warn!(host = %config.host, "tls verification disabled over ssh tunnel");
+            warn!(operation = "mongo_pool_tls_policy", host = %config.host, "tls verification disabled over ssh tunnel");
         }
         options.allow_invalid_certificates = Some(true);
     }

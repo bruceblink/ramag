@@ -93,7 +93,6 @@ struct Segment {
 }
 
 /// 仅接收 Ramag 生成的单表文件，并恢复到文件所属的同名库。
-///
 /// SQL 文件包含可执行 DDL，不能把任意整库文件伪装成“导入表”；先校验范围头，
 /// 再复用完整 SQL 导入器执行结构、约束、索引和数据恢复。
 pub async fn import_sql_table(

@@ -141,7 +141,11 @@ impl TerminalView {
         if let Some(bytes) = encode_key(&key, modifiers, term_mode) {
             self.core.scroll_to_bottom();
             if let Err(error) = self.core.send(bytes) {
-                tracing::warn!(error = %error, "send terminal key failed");
+                tracing::warn!(
+                    operation = "terminal_key_send",
+                    error = %error,
+                    "send terminal key failed"
+                );
             }
             cx.stop_propagation();
         }
@@ -160,7 +164,7 @@ impl TerminalView {
             return;
         };
         if let Err(error) = self.core.paste(&text) {
-            tracing::warn!(error = %error, "paste terminal clipboard failed");
+            tracing::warn!(operation = "terminal_clipboard_paste", error = %error, "paste terminal clipboard failed");
         }
     }
 
@@ -176,7 +180,7 @@ impl TerminalView {
                         .and_then(|item| item.text())
                         .unwrap_or_default();
                     if let Err(error) = self.core.send(formatter(&text).into_bytes()) {
-                        tracing::warn!(error = %error, "reply terminal clipboard request failed");
+                        tracing::warn!(operation = "terminal_clipboard_reply", error = %error, "reply terminal clipboard request failed");
                     }
                 }
             }
@@ -264,7 +268,7 @@ impl Render for TerminalView {
                         cell_width.as_f32().ceil().clamp(1.0, u16::MAX as f32) as u16,
                         LINE_HEIGHT.as_f32().ceil() as u16,
                     ) {
-                        tracing::warn!(error = %error, "resize terminal view failed");
+            tracing::warn!(operation = "terminal_resize", error = %error, "resize terminal view failed");
                     }
                     paint::prepare(
                         view.core.snapshot(),
@@ -360,7 +364,11 @@ impl EntityInputHandler for TerminalView {
         if !self.marked_text.is_empty()
             && let Err(error) = self.core.send(self.marked_text.clone().into_bytes())
         {
-            tracing::warn!(error = %error, "commit terminal marked text failed");
+            tracing::warn!(
+                operation = "terminal_marked_text_commit",
+                error = %error,
+                "commit terminal marked text failed"
+            );
         }
         self.marked_text.clear();
         self.marked_selection_utf16 = 0..0;
@@ -377,7 +385,7 @@ impl EntityInputHandler for TerminalView {
         if !text.is_empty()
             && let Err(error) = self.core.send(text.as_bytes().to_vec())
         {
-            tracing::warn!(error = %error, "commit terminal text input failed");
+            tracing::warn!(operation = "terminal_text_input_commit", error = %error, "commit terminal text input failed");
         }
         self.marked_text.clear();
         self.marked_selection_utf16 = 0..0;

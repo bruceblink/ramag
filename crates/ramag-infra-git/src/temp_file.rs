@@ -59,6 +59,7 @@ impl Drop for TempFile {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 tracing::warn!(
+                    operation = "vcs_temp_file_cleanup",
                     error = %error,
                     path = %self.path.display(),
                     "cleanup git temporary file failed"

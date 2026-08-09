@@ -13,7 +13,7 @@ use crate::types::map_column_kind;
 
 /// 返回全部模式，包括系统模式；展示层负责过滤。
 pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
-    debug!("listing schemas");
+    debug!(operation = "sql_metadata_list_schemas", "listing schemas");
 
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         r#"
@@ -44,7 +44,11 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<Schema>> {
 
 /// 列出普通表、视图和物化视图。
 pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
-    debug!(?schema, "listing tables");
+    debug!(
+        operation = "sql_metadata_list_tables",
+        ?schema,
+        "listing tables"
+    );
 
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         r#"
@@ -107,7 +111,12 @@ type PgColumnRow = (
 
 /// 列注释走 pg_catalog.col_description，其他走 information_schema.columns
 pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<Column>> {
-    debug!(?schema, ?table, "listing columns");
+    debug!(
+        operation = "sql_metadata_list_columns",
+        ?schema,
+        ?table,
+        "listing columns"
+    );
 
     let rows: Vec<PgColumnRow> = sqlx::query_as(
         r#"
@@ -214,7 +223,12 @@ fn compose_full_type(data_type: &str, udt: &str, char_max: Option<i32>) -> Strin
 
 /// 列出所有索引方法创建的索引，包括表达式索引。
 pub async fn list_indexes(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<Index>> {
-    debug!(?schema, ?table, "listing indexes");
+    debug!(
+        operation = "sql_metadata_list_indexes",
+        ?schema,
+        ?table,
+        "listing indexes"
+    );
 
     let rows: Vec<(String, bool, bool, Vec<String>)> = sqlx::query_as(
         r#"
@@ -264,7 +278,12 @@ pub async fn list_foreign_keys(
     schema: &str,
     table: &str,
 ) -> Result<Vec<ForeignKey>> {
-    debug!(?schema, ?table, "listing foreign keys");
+    debug!(
+        operation = "sql_metadata_list_foreign_keys",
+        ?schema,
+        ?table,
+        "listing foreign keys"
+    );
 
     let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
         r#"

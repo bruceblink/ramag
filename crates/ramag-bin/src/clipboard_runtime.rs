@@ -35,6 +35,7 @@ pub(super) fn spawn_clipboard_capture(service: Arc<ClipboardService>, cx: &mut A
                     // 读取失败时保留旧序列号，下个周期重试同一份内容，避免 Windows 剪贴板占用导致漏采。
                     poll_interval = next_capture_retry_interval(poll_interval);
                     tracing::warn!(
+                        operation = "clipboard_capture_loop",
                         error = %e,
                         retry_ms = poll_interval.as_millis(),
                         "clipboard capture tick failed"
@@ -73,6 +74,7 @@ pub(super) fn spawn_clipboard_hotkey(
             let l = HotkeyListener::register_clipboard_hotkey(alternate);
             if l.is_none() {
                 error!(
+                    operation = "clipboard_hotkey_register",
                     impact = "clipboard_drawer_disabled",
                     "global hotkey registration failed"
                 );
@@ -107,7 +109,11 @@ pub(super) fn spawn_clipboard_hotkey(
                 if enabled {
                     listener = HotkeyListener::register_clipboard_hotkey(alternate);
                     if listener.is_none() {
-                        error!("global hotkey re-registration failed");
+                        error!(
+                            operation = "clipboard_hotkey_register",
+                            stage = "re_register",
+                            "global hotkey re-registration failed"
+                        );
                     }
                     service.set_hotkey_state(if listener.is_some() {
                         ramag_app::HotkeyState::Registered
@@ -206,7 +212,7 @@ pub(super) fn open_drawer_window(
     match result {
         Ok(handle) => Some(handle.into()),
         Err(e) => {
-            error!(error = %e, "open clipboard drawer failed");
+            error!(operation = "clipboard_drawer_open", error = %e, "open clipboard drawer failed");
             None
         }
     }

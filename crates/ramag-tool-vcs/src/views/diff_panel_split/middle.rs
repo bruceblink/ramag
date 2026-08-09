@@ -1,7 +1,6 @@
 use super::*;
 
 /// 构建中间列 uniform_list（与左右栏共享 scroll_v 做垂直同步）
-///
 /// Header 行承载「回滚此 hunk」按钮（enable_discard 时）；Pair 行展示该行 blame author（has_blame 时）
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_middle_list(

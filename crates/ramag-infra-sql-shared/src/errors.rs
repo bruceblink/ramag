@@ -1,4 +1,4 @@
-//! sqlx::Error 通用大类映射。driver 先识别 SQLSTATE/errno，再 fallback 到这里
+//! sqlx::Error 通用大类映射。driver 先识别 SQLSTATE/errno，再 fallback 到本模块。
 
 use ramag_domain::error::DomainError;
 

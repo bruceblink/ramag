@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use serde_json::json;
 
 use super::{delete_id_batches, mongo_response_u64};

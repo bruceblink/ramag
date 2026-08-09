@@ -226,8 +226,6 @@ fn placeholders(kind: PairsKind) -> (&'static str, &'static str) {
 mod tests {
     use super::*;
 
-    // collect 的纯函数性质：不依赖 GPUI runtime；
-    // 行级校验逻辑放主对话框单测会更顺，这里仅留 placeholder 静态校验
     #[test]
     fn placeholders_distinct_per_kind() {
         let h = placeholders(PairsKind::Hash);

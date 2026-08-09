@@ -136,7 +136,10 @@ impl Drop for BrokerServer {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            tracing::warn!("ssh askpass broker thread did not stop cleanly");
+            tracing::warn!(
+                operation = "ssh_askpass_shutdown",
+                "ssh askpass broker thread did not stop cleanly"
+            );
         }
         self.shared.secrets.lock().clear();
     }
@@ -163,7 +166,11 @@ fn serve(listener: TcpListener, shared: &BrokerShared) {
         let (mut stream, peer) = match listener.accept() {
             Ok(connection) => connection,
             Err(error) => {
-                tracing::warn!(error = %error, "accept ssh askpass request failed");
+                tracing::warn!(
+                    operation = "ssh_askpass_accept",
+                    error = %error,
+                    "accept ssh askpass request failed"
+                );
                 break;
             }
         };
@@ -176,7 +183,11 @@ fn serve(listener: TcpListener, shared: &BrokerShared) {
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         if let Err(error) = serve_one(&mut stream, shared) {
-            tracing::warn!(error = %error, "serve ssh askpass request failed");
+            tracing::warn!(
+                operation = "ssh_askpass_request",
+                error = %error,
+                "serve ssh askpass request failed"
+            );
         }
     }
 }
@@ -220,7 +231,7 @@ pub(crate) fn run_helper(confirm: impl FnOnce(&str) -> bool) -> Option<i32> {
                 result
             });
             if let Err(error) = result {
-                eprintln!("Ramag SSH AskPass 读取一次性密码失败：{error}");
+                eprintln!("operation=ssh_askpass_secret_read error={error}");
                 Some(1)
             } else {
                 Some(0)

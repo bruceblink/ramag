@@ -145,7 +145,7 @@ async fn terminate_child(child: &mut tokio::process::Child) -> Result<()> {
         DomainError::ConnectionFailed(format!("终止安全诊断 SSH 失败：{error}"))
     })?;
     if let Err(error) = child.wait().await {
-        tracing::warn!(error = %error, "wait terminated ssh diagnostic process failed");
+        tracing::warn!(operation = "ssh_diagnostic_cleanup", error = %error, "wait terminated ssh diagnostic process failed");
     }
     Ok(())
 }

@@ -226,7 +226,7 @@ pub(super) fn render_hunk_header_common(
                 .overflow_hidden()
                 .child(header_text),
         );
-    // unified 回滚按钮在 split 中间分隔条，这里不渲染
+    // unified 回滚按钮在 split 中间分隔条，此处不渲染。
     let _ = enable_discard;
     let _ = hunk_idx;
     let _ = cx;
@@ -261,7 +261,6 @@ pub(super) fn render_diff_empty(diff: &FileDiff, muted_fg: gpui::Hsla) -> Option
 }
 
 /// Unified 单行 diff：[old_no][new_no][marker][content (flex_1 + nowrap)]
-///
 /// 整个 list 外层 overflow_x_scroll 包住 → 行不再有自己的横滚 cell；点行号 = inline blame
 #[allow(clippy::too_many_arguments)]
 fn render_diff_line(
@@ -337,7 +336,6 @@ pub(super) fn line_no_cell(label: String, muted_fg: gpui::Hsla) -> impl IntoElem
 }
 
 /// 可点击的行号单元格：点击 → 顶部 banner 显示该行的 inline blame
-///
 /// `line_no=None` 时退化为静态单元格（空配对侧无 line_no）；is_old 用于区分 blame 取 old/new 行号
 pub(super) fn line_no_cell_clickable(
     line_no: Option<u32>,

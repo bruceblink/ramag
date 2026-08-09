@@ -59,19 +59,26 @@ impl Drop for PrimaryGuard {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            warn!("single-instance listener thread panicked");
+            warn!(
+                operation = "single_instance_shutdown",
+                "single-instance listener thread panicked"
+            );
         }
         if let Some(path) = &self.path
             && let Err(error) = remove_socket(path)
         {
-            warn!(error = %error, path = %path.display(), "remove single-instance socket failed");
+            warn!(operation = "single_instance_shutdown", error = %error, path = %path.display(), "remove single-instance socket failed");
         }
     }
 }
 
 pub(crate) fn acquire() -> InstanceRole {
     let Some(path) = runtime_socket_path() else {
-        warn!("XDG_RUNTIME_DIR unavailable; single-instance protection disabled");
+        warn!(
+            operation = "single_instance_init",
+            reason = "runtime_directory_unavailable",
+            "XDG_RUNTIME_DIR unavailable; single-instance protection disabled"
+        );
         return InstanceRole::Primary(PrimaryGuard::degraded());
     };
     acquire_at(path)
@@ -93,6 +100,7 @@ fn acquire_at(path: PathBuf) -> InstanceRole {
                 Ok(listener) => start_primary(path, listener),
                 Err(retry_error) => {
                     warn!(
+                        operation = "single_instance_init",
                         error = %retry_error,
                         path = %path.display(),
                         "recover stale single-instance socket failed; protection disabled"
@@ -102,7 +110,7 @@ fn acquire_at(path: PathBuf) -> InstanceRole {
             }
         }
         Err(error) => {
-            warn!(error = %error, path = %path.display(), "bind single-instance socket failed; protection disabled");
+            warn!(operation = "single_instance_init", stage = "bind", error = %error, path = %path.display(), "bind single-instance socket failed; protection disabled");
             InstanceRole::Primary(PrimaryGuard::degraded())
         }
     }
@@ -122,12 +130,12 @@ fn start_primary(path: PathBuf, listener: UnixListener) -> InstanceRole {
                 let mut stream = match connection {
                     Ok(stream) => stream,
                     Err(error) => {
-                        warn!(error = %error, "accept single-instance activation failed");
+                        warn!(operation = "single_instance_listener", stage = "accept", error = %error, "accept single-instance activation failed");
                         break;
                     }
                 };
                 if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(1))) {
-                    warn!(error = %error, "set single-instance socket timeout failed");
+                    warn!(operation = "single_instance_listener", stage = "timeout", error = %error, "set single-instance socket timeout failed");
                     continue;
                 }
                 let mut message = [0_u8; ACTIVATE_MESSAGE.len()];
@@ -148,9 +156,9 @@ fn start_primary(path: PathBuf, listener: UnixListener) -> InstanceRole {
             rx: Some(rx),
         }),
         Err(error) => {
-            warn!(error = %error, "start single-instance listener failed; protection disabled");
+            warn!(operation = "single_instance_listener", stage = "start", error = %error, "start single-instance listener failed; protection disabled");
             if let Err(remove_error) = remove_socket(&path) {
-                warn!(error = %remove_error, path = %path.display(), "remove unused single-instance socket failed");
+                warn!(operation = "single_instance_init", stage = "cleanup", error = %remove_error, path = %path.display(), "remove unused single-instance socket failed");
             }
             InstanceRole::Primary(PrimaryGuard::degraded())
         }
@@ -160,11 +168,14 @@ fn start_primary(path: PathBuf, listener: UnixListener) -> InstanceRole {
 fn notify_primary(path: &Path) -> bool {
     match UnixStream::connect(path).and_then(|mut stream| stream.write_all(ACTIVATE_MESSAGE)) {
         Ok(()) => {
-            info!("existing instance notified to reveal its window");
+            info!(
+                operation = "single_instance_notify",
+                "existing instance notified to reveal its window"
+            );
             true
         }
         Err(error) => {
-            warn!(error = %error, path = %path.display(), "notify existing instance failed");
+            warn!(operation = "single_instance_notify", error = %error, path = %path.display(), "notify existing instance failed");
             false
         }
     }

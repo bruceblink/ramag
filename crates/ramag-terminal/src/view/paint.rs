@@ -284,7 +284,11 @@ fn paint_fragment(
         .text_system()
         .shape_line(text.to_string().into(), FONT_SIZE, &[run], None);
     if let Err(error) = line.paint(origin, LINE_HEIGHT, TextAlign::Left, None, window, cx) {
-        tracing::warn!(error = %error, "paint terminal text failed");
+        tracing::warn!(
+            operation = "terminal_text_paint",
+            error = %error,
+            "paint terminal text failed"
+        );
     }
 }
 

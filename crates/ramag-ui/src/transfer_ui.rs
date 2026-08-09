@@ -58,7 +58,10 @@ impl TransferState {
     pub fn request_cancel(&self) {
         if let Some(cancel) = &self.cancel {
             cancel.store(true, Ordering::Relaxed);
-            info!("database transfer cancellation requested");
+            info!(
+                operation = "database_transfer_cancel",
+                "database transfer cancellation requested"
+            );
         }
     }
 
@@ -85,7 +88,11 @@ pub fn progress_sink(
     move |progress| match slot.lock() {
         Ok(mut guard) => *guard = progress,
         Err(_) if !poison_reported.swap(true, Ordering::Relaxed) => {
-            warn!("database transfer progress lock poisoned");
+            warn!(
+                operation = "database_transfer_progress",
+                reason = "lock_poisoned",
+                "database transfer progress lock poisoned"
+            );
         }
         Err(_) => {}
     }
@@ -101,7 +108,7 @@ pub fn transfer_notification(
         Ok(None) => None,
         Ok(Some((summary, target))) => {
             for warning in &summary.warnings {
-                warn!(detail = %warning, "transfer warning");
+                warn!(operation = "database_transfer_progress", detail = %warning, "transfer warning");
             }
             info!(
                 objects = summary.objects,

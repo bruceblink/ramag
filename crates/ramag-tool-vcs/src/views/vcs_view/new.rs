@@ -146,7 +146,7 @@ impl VcsView {
             },
         )
         .detach();
-        // Code Editor 的 set_value 不发 Change；这里收到的均是用户编辑。
+        // Code Editor 的 set_value 不发 Change；收到的均是用户编辑。
         let pf_editor_for_sub = pf_editor.clone();
         cx.subscribe_in(
             &pf_editor,

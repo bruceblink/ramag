@@ -59,7 +59,7 @@ pub(crate) fn acquire() -> InstanceRole {
         Ok(mutex) => mutex,
         Err(error) => {
             // 互斥体创建失败极罕见；宁可放行双开也不拒绝启动
-            warn!(error = %error, "create single-instance mutex failed; continuing without it");
+            warn!(operation = "single_instance_init", stage = "mutex", error = %error, "create single-instance mutex failed; continuing without it");
             return InstanceRole::Primary(PrimaryGuard {
                 mutex: HANDLE::default(),
                 rx: None,
@@ -82,7 +82,7 @@ fn spawn_activation_listener() -> Option<Receiver<()>> {
     let event = match unsafe { CreateEventW(None, false, false, w!("Local\\RamagActivateEvent")) } {
         Ok(event) => event,
         Err(error) => {
-            warn!(error = %error, "create activation event failed; reveal-on-relaunch disabled");
+            warn!(operation = "single_instance_init", stage = "activation_event", error = %error, "create activation event failed; reveal-on-relaunch disabled");
             return None;
         }
     };
@@ -95,7 +95,11 @@ fn spawn_activation_listener() -> Option<Receiver<()>> {
             let event = HANDLE(raw_event);
             loop {
                 if unsafe { WaitForSingleObject(event, INFINITE) } != WAIT_OBJECT_0 {
-                    warn!("wait activation event failed; listener stopped");
+                    warn!(
+                        operation = "single_instance_listener",
+                        stage = "wait",
+                        "wait activation event failed; listener stopped"
+                    );
                     break;
                 }
                 match tx.try_send(()) {
@@ -108,7 +112,7 @@ fn spawn_activation_listener() -> Option<Receiver<()>> {
     match spawned {
         Ok(_) => Some(rx),
         Err(error) => {
-            warn!(error = %error, "start activation listener thread failed");
+            warn!(operation = "single_instance_listener", stage = "start", error = %error, "start activation listener thread failed");
             close_handle(event, "close unused activation event failed");
             None
         }
@@ -120,20 +124,23 @@ fn notify_primary() {
     match unsafe { OpenEventW(EVENT_MODIFY_STATE, false, w!("Local\\RamagActivateEvent")) } {
         Ok(event) => {
             if let Err(error) = unsafe { SetEvent(event) } {
-                warn!(error = %error, "signal activation event failed");
+                warn!(operation = "single_instance_notify", stage = "signal", error = %error, "signal activation event failed");
             } else {
-                info!("existing instance notified to reveal its window");
+                info!(
+                    operation = "single_instance_notify",
+                    "existing instance notified to reveal its window"
+                );
             }
             close_handle(event, "close activation notification event failed");
         }
         Err(error) => {
-            warn!(error = %error, "open activation event failed; exiting without notify");
+            warn!(operation = "single_instance_notify", stage = "open", error = %error, "open activation event failed; exiting without notify");
         }
     }
 }
 
 fn close_handle(handle: HANDLE, message: &'static str) {
     if let Err(error) = unsafe { CloseHandle(handle) } {
-        warn!(error = %error, "{message}");
+        warn!(operation = "single_instance_handle_close", error = %error, "{message}");
     }
 }

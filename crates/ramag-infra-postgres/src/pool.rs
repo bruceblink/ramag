@@ -67,7 +67,7 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
     } else {
         let mut verify = config.tls_verify;
         if config.ssh_target.is_some() && verify == ramag_domain::entities::TlsVerify::Full {
-            warn!(host = %config.host, "tls verify downgraded Full->Ca over ssh tunnel");
+            warn!(operation = "sql_pool_tls_policy", host = %config.host, "tls verify downgraded Full->Ca over ssh tunnel");
             verify = ramag_domain::entities::TlsVerify::Ca;
         }
         let opts = match verify {
@@ -90,7 +90,7 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<PgPool> {
         .connect_with(opts)
         .await
         .map_err(|e| {
-            warn!(error = %e, host = %config.host, "build postgres pool failed");
+            warn!(operation = "sql_pool_create", error = %e, host = %config.host, "build postgres pool failed");
             map_postgres_error(&e)
         })
 }

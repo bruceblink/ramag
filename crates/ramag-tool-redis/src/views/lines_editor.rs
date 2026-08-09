@@ -212,12 +212,10 @@ impl Render for LinesEditor {
                 );
         }
 
-        // 行列表
         let mut list = v_flex().w_full().gap(px(6.0));
         for (idx, row) in self.rows.iter().enumerate() {
             let id = row.id;
             let mut line = h_flex().w_full().items_center().gap(px(8.0));
-            // List 显示行号
             if matches!(self.kind, LinesKind::List) {
                 line = line.child(
                     div()

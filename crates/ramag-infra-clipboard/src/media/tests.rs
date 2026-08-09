@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 

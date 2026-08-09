@@ -148,7 +148,11 @@ pub(crate) fn list(
         out.push(decode_connection(key.value(), value.value(), &cipher)?);
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    debug!(count = out.len(), "connection listing completed");
+    debug!(
+        operation = "connection_list",
+        count = out.len(),
+        "connection listing completed"
+    );
     Ok(out)
 }
 
@@ -286,9 +290,13 @@ pub(crate) fn save_many(
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
     if let [(id, name, _, _)] = prepared.as_slice() {
-        info!(connection_id = %id, name = %name, "connection saved");
+        info!(operation = "connection_save", connection_id = %id, name = %name, "connection saved");
     } else {
-        info!(count = prepared.len(), "connections saved atomically");
+        info!(
+            operation = "connection_save_many",
+            count = prepared.len(),
+            "connections saved atomically"
+        );
     }
     Ok(())
 }
@@ -309,7 +317,7 @@ pub(crate) fn delete(db: Arc<Database>, id: String) -> Result<()> {
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
 
-    info!(connection_id = %id, "connection deleted");
+    info!(operation = "connection_delete", connection_id = %id, "connection deleted");
     Ok(())
 }
 

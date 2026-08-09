@@ -213,7 +213,7 @@ impl TerminalCore {
         *self.shared.sender.lock() = None;
         self.input_enabled.store(false, Ordering::Release);
         if let Err(error) = self.sender.send(Msg::Shutdown) {
-            tracing::warn!(error = %error, "shutdown terminal event loop failed");
+            tracing::warn!(operation = "terminal_runtime_shutdown", stage = "event_loop", error = %error, "shutdown terminal event loop failed");
         }
         let Some(thread) = self.thread.take() else {
             self.shutdown_complete.store(true, Ordering::Release);
@@ -232,7 +232,7 @@ impl TerminalCore {
                 shutdown_complete.store(true, Ordering::Release);
             })
         {
-            tracing::warn!(error = %error, "spawn terminal reaper failed");
+            tracing::warn!(operation = "terminal_runtime_reaper", error = %error, "spawn terminal reaper failed");
             // 线程资源耗尽时退回同步回收；这是罕见失败路径，不能把 PTY 子进程留成孤儿。
             if let Some(thread) = thread.lock().take() {
                 join_terminal_thread(thread);
@@ -245,7 +245,11 @@ impl TerminalCore {
 fn join_terminal_thread(thread: TerminalThread) {
     match thread.join() {
         Ok((event_loop, state)) => drop((event_loop, state)),
-        Err(_) => tracing::warn!("terminal event loop panicked during shutdown"),
+        Err(_) => tracing::warn!(
+            operation = "terminal_runtime_shutdown",
+            stage = "panic",
+            "terminal event loop panicked during shutdown"
+        ),
     }
 }
 

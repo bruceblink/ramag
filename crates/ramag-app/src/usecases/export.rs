@@ -15,8 +15,7 @@ const MAX_EXPORT_FILE_SEGMENT_BYTES: usize = 64;
 const MAX_EXPORT_FILE_EXTENSION_BYTES: usize = 10;
 
 /// 统一生成用户可见的导出文件名：ramag-数据库类型-库[-对象][-data]-时间.扩展名。
-///
-/// 数据库名、表名、集合名与 Key 均来自外部系统，因此在这里统一处理跨平台非法字符
+/// 数据库名、表名、集合名与 Key 均来自外部系统，统一处理跨平台非法字符。
 /// 和长度边界，避免保存框拿到不可用文件名。
 pub fn suggested_export_file_name(
     database_type: &str,

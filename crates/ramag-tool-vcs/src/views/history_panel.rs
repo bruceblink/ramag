@@ -309,7 +309,6 @@ impl VcsView {
 
         let mut rows: Vec<LeftRow> = Vec::new();
 
-        // 本地分支段：创建入口位于表头。
         rows.push(LeftRow::Header {
             title: "本地分支",
             count: self.local_branches.len(),
@@ -325,7 +324,6 @@ impl VcsView {
             }
         }
 
-        // 远程分支段：表头 + 行（空则占位）
         rows.push(LeftRow::Header {
             title: "远程分支",
             count: self.remote_branches.len(),
@@ -345,7 +343,6 @@ impl VcsView {
             }
         }
 
-        // 远程仓库段：创建入口位于表头（管 remote 配置，区别于「远程分支」）。
         rows.push(LeftRow::Header {
             title: "远程仓库",
             count: self.remotes.len(),
@@ -362,7 +359,6 @@ impl VcsView {
             }
         }
 
-        // Tag 段：创建入口位于表头。
         rows.push(LeftRow::Header {
             title: "Tag",
             count: self.tags.len(),
@@ -429,7 +425,6 @@ impl VcsView {
         let count = self.history_commits.len();
         let has_more = self.history_has_more;
         let is_loading = self.loading_history;
-        // 有更多时加一行哨兵行：滚到底自动触发下一页加载
         let total_rows = count + usize::from(has_more);
         // Rc 共享：commits + graph_rows 喂给 uniform_list 闭包（不每帧 clone 整个 Vec）
         let commits_rc: Rc<Vec<Rc<Commit>>> = self.history_commits.clone();
@@ -451,7 +446,6 @@ impl VcsView {
                     range
                         .map(|i| {
                             if i == count && has_more {
-                                // 哨兵行：滚到底时自动加载下一页
                                 if !is_loading {
                                     cx.defer_in(window, move |this, _, cx| {
                                         this.load_history_page(count, cx);

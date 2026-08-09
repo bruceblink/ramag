@@ -75,7 +75,11 @@ pub(crate) fn list(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Vec
         profiles.push(decode_profile(key.value(), value.value(), &cipher)?);
     }
     profiles.sort_by(|left, right| left.name.cmp(&right.name));
-    debug!(count = profiles.len(), "ssh profile listing completed");
+    debug!(
+        operation = "ssh_profile_list",
+        count = profiles.len(),
+        "ssh profile listing completed"
+    );
     Ok(profiles)
 }
 
@@ -152,7 +156,7 @@ pub(crate) fn save(
     write_txn
         .commit()
         .map_err(|error| DomainError::Storage(format!("提交事务失败：{error}")))?;
-    info!(profile_id = %profile.id, "ssh profile saved");
+    info!(operation = "ssh_profile_save", profile_id = %profile.id, "ssh profile saved");
     Ok(())
 }
 
@@ -172,7 +176,7 @@ pub(crate) fn delete(db: Arc<Database>, id: SshProfileId) -> Result<()> {
     write_txn
         .commit()
         .map_err(|error| DomainError::Storage(format!("提交事务失败：{error}")))?;
-    info!(profile_id = %id, "ssh profile deleted");
+    info!(operation = "ssh_profile_delete", profile_id = %id, "ssh profile deleted");
     Ok(())
 }
 

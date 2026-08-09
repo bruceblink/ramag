@@ -138,7 +138,6 @@ pub(super) fn connection_row(
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             this.handle_click(conn_for_open.clone(), cx);
         }))
-        // 行首只放品牌彩色 logo（固定窄槽）：各行图标与名称起点整列对齐
         .child(
             div()
                 .flex_none()
@@ -149,7 +148,6 @@ pub(super) fn connection_row(
                     slot.child(img(icon).size(px(18.0)).flex_none())
                 }),
         )
-        // 名称（占主空间）
         .child(
             div()
                 .flex_1()
@@ -161,7 +159,6 @@ pub(super) fn connection_row(
                 .text_ellipsis()
                 .child(primary_label),
         )
-        // 环境徽章槽（固定宽；dev/test/prod 一档一色、自定义灰，空白占位 → 整列对齐）
         .child({
             let slot = div().flex_none().w(px(64.0)).flex().justify_center();
             if environment.trim().is_empty() {

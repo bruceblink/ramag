@@ -15,7 +15,6 @@ use ramag_domain::entities::{DiffLineKind, FileDiff};
 use ropey::Rope;
 
 /// 文件路径 → tree-sitter 语言名（均为 gpui-component `tree-sitter-languages` 内置）。
-///
 /// 先按完整文件名匹配（Makefile / CMakeLists.txt 等无后缀），再按扩展名；
 /// 都不在表内（Cargo.lock、.gitignore 等）→ None，调用方走纯文本渲染。
 pub(super) fn lang_for_path(path: &str) -> Option<&'static str> {

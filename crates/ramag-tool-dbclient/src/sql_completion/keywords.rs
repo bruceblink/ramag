@@ -175,7 +175,6 @@ pub const SYSTEM_SCHEMAS: &[&str] = &[
 ];
 
 /// 大小写无关地判断库名是否系统内置
-///
 /// PG 的 `pg_temp_*` / `pg_toast_temp_*` 是动态会话临时 schema，按前缀过滤
 pub fn is_system_schema(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();

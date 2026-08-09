@@ -58,7 +58,7 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
     } else {
         let mut verify = config.tls_verify;
         if config.ssh_target.is_some() && verify == ramag_domain::entities::TlsVerify::Full {
-            warn!(host = %config.host, from = "full", to = "ca", "TLS verification downgraded over SSH tunnel");
+            warn!(operation = "sql_pool_tls_policy", host = %config.host, from = "full", to = "ca", "TLS verification downgraded over SSH tunnel");
             verify = ramag_domain::entities::TlsVerify::Ca;
         }
         let opts = match verify {
@@ -87,7 +87,7 @@ pub async fn build_pool(config: &ConnectionConfig) -> Result<MySqlPool> {
         .connect_with(opts)
         .await
         .map_err(|e| {
-            warn!(error = %e, host = %config.host, "build mysql pool failed");
+            warn!(operation = "sql_pool_create", error = %e, host = %config.host, "build mysql pool failed");
             map_mysql_error(&e)
         })
 }

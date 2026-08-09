@@ -88,7 +88,7 @@ impl VcsView {
                 };
                 (remote, local_branch.clone())
             }
-            // Fetch 拉所有 remote，不使用这里的名字。
+            // Fetch 拉所有 remote，不使用参数中的名字。
             None => (String::new(), local_branch.clone()),
         };
         // PushForce → 走 --force-with-lease；其他 op 忽略

@@ -70,7 +70,7 @@ impl Clipboard {
 impl Drop for Clipboard {
     fn drop(&mut self) {
         if let Err(error) = unsafe { CloseClipboard() } {
-            warn!(error = %error, "close clipboard failed");
+            warn!(operation = "clipboard_close", error = %error, "close clipboard failed");
         }
     }
 }
@@ -221,7 +221,10 @@ fn read_file_list(handle: HANDLE) -> Option<Vec<String>> {
     let hdrop = HDROP(handle.0);
     let count = unsafe { DragQueryFileW(hdrop, u32::MAX, None) };
     if count > MAX_CLIPBOARD_FILES {
-        warn!(count, "ignore clipboard file list with too many entries");
+        warn!(
+            operation = "clipboard_file_list_parse",
+            count, "ignore clipboard file list with too many entries"
+        );
         return None;
     }
 
@@ -233,13 +236,19 @@ fn read_file_list(handle: HANDLE) -> Option<Vec<String>> {
             continue;
         }
         let Some(next_total) = checked_file_units(total_units, len) else {
-            warn!(index, len, "ignore oversized clipboard file list");
+            warn!(
+                operation = "clipboard_file_list_parse",
+                index, len, "ignore oversized clipboard file list"
+            );
             return None;
         };
         let mut buffer = vec![0u16; len + 1];
         let copied = unsafe { DragQueryFileW(hdrop, index, Some(&mut buffer)) } as usize;
         if copied > len {
-            warn!(index, copied, len, "ignore malformed clipboard file path");
+            warn!(
+                operation = "clipboard_file_list_parse",
+                index, copied, len, "ignore malformed clipboard file path"
+            );
             return None;
         }
         if copied > 0 {
@@ -292,7 +301,10 @@ pub fn read() -> Result<Option<ClipboardRead>> {
             cap.image_png = Some(bytes);
             return Ok(Some(finish(cap)));
         }
-        warn!("ignore malformed or oversized PNG clipboard format");
+        warn!(
+            operation = "clipboard_image_parse",
+            "ignore malformed or oversized PNG clipboard format"
+        );
     }
 
     // 先复制候选格式，再关闭系统剪贴板；图片解码不能长时间占用全局锁。
@@ -387,7 +399,7 @@ pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
             }
             let format = rtf_format();
             if let Err(error) = set_clipboard_bytes(format, &terminated) {
-                warn!(error = %error, "write optional RTF clipboard format failed");
+                warn!(operation = "clipboard_write_optional_format", error = %error, "write optional RTF clipboard format failed");
             }
         }
         set_clipboard_bytes(CF_UNICODETEXT.0 as u32, bytes)?;
@@ -418,7 +430,7 @@ pub fn write_image_png(png: &[u8]) -> Result<i64> {
         if let Some(dib) = dib
             && let Err(error) = set_clipboard_bytes(CF_DIB.0 as u32, &dib)
         {
-            warn!(error = %error, "write optional CF_DIB clipboard format failed");
+            warn!(operation = "clipboard_write_optional_format", error = %error, "write optional CF_DIB clipboard format failed");
         }
         Ok(sequence_number())
     }

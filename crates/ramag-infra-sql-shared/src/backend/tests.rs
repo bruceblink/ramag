@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use super::{
     MAX_QUERY_RESULT_BYTES, MAX_QUERY_WARNINGS, QUERY_RESULT_MEMORY_WARNING_BYTES,
     QueryResultLimit, append_warnings_bounded, query_result_memory_warning, try_push_query_row,

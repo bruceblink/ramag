@@ -119,7 +119,6 @@ impl KeyTreePanel {
             div().w(px(12.0)).into_any_element()
         };
 
-        // 类型 badge（叶子或同时叶子+命名空间）
         let type_badge: Option<gpui::AnyElement> = row.leaf_type.map(|t| {
             let path = path_for_load.clone();
             div()
@@ -308,7 +307,6 @@ fn joined_path(parent: &str, label: &str) -> String {
 }
 
 /// 不同类型用不同色块（与 RedisInsight / zedis 配色靠拢）
-///
 /// 接受一个 fallback（None 类型 / theme.muted 等场景）避免依赖完整 theme 引用
 fn type_color_solid(kind: RedisType, fallback: gpui::Hsla) -> gpui::Hsla {
     use gpui::hsla;

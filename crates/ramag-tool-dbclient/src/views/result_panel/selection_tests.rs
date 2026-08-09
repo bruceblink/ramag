@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use super::{toggle_visible_selection, visible_selection_count};
 use std::collections::BTreeSet;
 

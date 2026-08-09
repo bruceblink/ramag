@@ -50,7 +50,7 @@ impl ClipboardOwner {
 impl Drop for ClipboardOwner {
     fn drop(&mut self) {
         if let Err(error) = unsafe { DestroyWindow(self.0) } {
-            warn!(error = %error, "destroy clipboard owner window failed");
+            warn!(operation = "clipboard_owner_destroy", error = %error, "destroy clipboard owner window failed");
         }
     }
 }

@@ -194,7 +194,7 @@ impl SshView {
                     WindowsDirectoryProbe::Finished => break,
                     WindowsDirectoryProbe::Load(directory) => {
                         // 先用 CMD 提示符修正 Auto 平台，再从虚拟根重建 Windows 文件通道。
-                        // 这里必须请求“/”，用户目录由盘符列表继续导航。
+                        // 必须请求“/”，用户目录由盘符列表继续导航。
                         let workspace_id = workspace_id.clone();
                         let _ = this.update_in(async_cx, move |this, _window, cx| {
                             let Some(profile) = this

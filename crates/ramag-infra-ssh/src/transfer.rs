@@ -254,7 +254,7 @@ impl TransferEngine {
             if transfer_result.is_ok() || matches!(error, DomainError::ConnectionFailed(_)) {
                 transfer_result = Err(error);
             } else {
-                tracing::warn!(error = %error, "close SSH upload handle failed");
+                tracing::warn!(operation = "ssh_upload_cleanup", error = %error, "close SSH upload handle failed");
             }
         }
         let transferred = match transfer_result {
@@ -349,7 +349,7 @@ impl TransferEngine {
             Ok(metadata) if metadata.attrs.is_regular() => metadata.attrs,
             Ok(_) => {
                 if let Err(error) = session.raw.close(handle).await {
-                    tracing::warn!(error = %error, "close changed ssh download source failed");
+                    tracing::warn!(operation = "ssh_download_cleanup", stage = "changed_source", error = %error, "close changed ssh download source failed");
                 }
                 drop(destination);
                 cleanup_local(&temporary).await;
@@ -359,7 +359,7 @@ impl TransferEngine {
             }
             Err(error) => {
                 if let Err(close_error) = session.raw.close(handle).await {
-                    tracing::warn!(error = %close_error, "close ssh download source after metadata failure failed");
+                    tracing::warn!(operation = "ssh_download_cleanup", stage = "metadata_failure", error = %close_error, "close ssh download source after metadata failure failed");
                 }
                 drop(destination);
                 cleanup_local(&temporary).await;
@@ -368,7 +368,7 @@ impl TransferEngine {
         };
         let Some(total) = opened_metadata.size else {
             if let Err(error) = session.raw.close(handle).await {
-                tracing::warn!(error = %error, "close ssh download source without size failed");
+                tracing::warn!(operation = "ssh_download_cleanup", stage = "missing_size", error = %error, "close ssh download source without size failed");
             }
             drop(destination);
             cleanup_local(&temporary).await;
@@ -378,7 +378,7 @@ impl TransferEngine {
         };
         if production && let Err(error) = ensure_production_download_size(Some(total)) {
             if let Err(close_error) = session.raw.close(handle).await {
-                tracing::warn!(error = %close_error, "close oversized production ssh download failed");
+                tracing::warn!(operation = "ssh_download_cleanup", stage = "oversized", error = %close_error, "close oversized production ssh download failed");
             }
             drop(destination);
             cleanup_local(&temporary).await;
@@ -405,7 +405,7 @@ impl TransferEngine {
             if transfer_result.is_ok() || matches!(error, DomainError::ConnectionFailed(_)) {
                 transfer_result = Err(error);
             } else {
-                tracing::warn!(error = %error, "close SSH download handle failed");
+                tracing::warn!(operation = "ssh_download_cleanup", error = %error, "close SSH download handle failed");
             }
         }
         let transferred = match transfer_result {

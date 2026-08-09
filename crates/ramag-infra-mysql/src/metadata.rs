@@ -14,7 +14,7 @@ use crate::types::map_column_type;
 
 /// 列出包括系统库在内的所有数据库。
 pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
-    debug!("listing schemas");
+    debug!(operation = "sql_metadata_list_schemas", "listing schemas");
 
     let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
         r#"
@@ -47,7 +47,11 @@ pub async fn list_schemas(pool: &MySqlPool) -> Result<Vec<Schema>> {
 
 /// 列出普通表和视图。
 pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
-    debug!(?schema, "listing tables");
+    debug!(
+        operation = "sql_metadata_list_tables",
+        ?schema,
+        "listing tables"
+    );
 
     let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
         r#"
@@ -95,7 +99,12 @@ type ColumnRow = (
 );
 
 pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Column>> {
-    debug!(?schema, ?table, "listing columns");
+    debug!(
+        operation = "sql_metadata_list_columns",
+        ?schema,
+        ?table,
+        "listing columns"
+    );
 
     let rows: Vec<ColumnRow> = sqlx::query_as(
         r#"
@@ -142,7 +151,12 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
 
 /// 列出主键、唯一索引和普通索引。
 pub async fn list_indexes(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Index>> {
-    debug!(?schema, ?table, "listing indexes");
+    debug!(
+        operation = "sql_metadata_list_indexes",
+        ?schema,
+        ?table,
+        "listing indexes"
+    );
 
     let rows: Vec<(String, i64, i64, String)> = sqlx::query_as(
         r#"
@@ -193,7 +207,12 @@ pub async fn list_foreign_keys(
     schema: &str,
     table: &str,
 ) -> Result<Vec<ForeignKey>> {
-    debug!(?schema, ?table, "listing foreign keys");
+    debug!(
+        operation = "sql_metadata_list_foreign_keys",
+        ?schema,
+        ?table,
+        "listing foreign keys"
+    );
 
     let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
         r#"

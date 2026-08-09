@@ -198,7 +198,7 @@ impl SettingsView {
                 this.pending_notification = Some(match result {
                     Ok(()) => Notification::success("剪贴历史已清空"),
                     Err(error) => {
-                        error!(error = %error, "clear clipboard history from settings failed");
+                        error!(operation = "clipboard_history_clear", error = %error, "clear clipboard history from settings failed");
                         Notification::error(format!("清空未完全完成：{error}"))
                     }
                 });

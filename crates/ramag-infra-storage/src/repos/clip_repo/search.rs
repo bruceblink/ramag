@@ -137,8 +137,8 @@ pub(crate) fn initialize_index(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -
     std::thread::Builder::new()
         .name("ramag-clip-search-index".into())
         .spawn(move || match rebuild_index(&db, &cipher) {
-            Ok(count) => tracing::info!(count, "clipboard search index migrated"),
-            Err(error) => tracing::warn!(error = %error, "clipboard search index migration failed"),
+            Ok(count) => tracing::info!(operation = "clipboard_search_index_migrate", count, "clipboard search index migrated"),
+            Err(error) => tracing::warn!(operation = "clipboard_search_index_migrate", error = %error, "clipboard search index migration failed"),
         })
         .map_err(|error| DomainError::Storage(format!("启动剪贴搜索索引迁移失败：{error}")))?;
     Ok(())
@@ -480,7 +480,11 @@ where
             let probes = match deep_search_pool() {
                 Ok(pool) => pool.install(parallel),
                 Err(error) => {
-                    tracing::warn!(error, "clipboard deep-search pool unavailable");
+                    tracing::warn!(
+                        operation = "clipboard_deep_search",
+                        error,
+                        "clipboard deep-search pool unavailable"
+                    );
                     batch
                         .iter()
                         .map(|(rk, uuid)| {
@@ -571,7 +575,11 @@ pub(crate) fn search_cancellable_bounded(
             {
                 return Ok(result);
             }
-            tracing::warn!("clipboard search index is inconsistent; using encrypted scan");
+            tracing::warn!(
+                operation = "clipboard_search_index",
+                reason = "inconsistent",
+                "clipboard search index is inconsistent; using encrypted scan"
+            );
         }
     }
 

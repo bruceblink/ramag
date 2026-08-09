@@ -122,7 +122,6 @@ impl DbClientView {
             result_memory: ramag_ui::ResultMemoryBudget::default(),
             sessions: Vec::new(),
             active_session: None,
-            // 启动时显示连接管理（用户挑选打开哪个）
             center: CenterMode::ConnectionPicker,
             picker,
             sessions_scroll: ScrollHandle::new(),

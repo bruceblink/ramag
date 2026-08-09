@@ -45,7 +45,7 @@ pub fn apply_theme(mode: Mode, cx: &mut App) {
     normalize_editor_highlight_theme(mode, cx);
 }
 
-/// 编辑器背景对齐主背景；浅色默认主题把注释设成亮蓝色，这里改为更常见的绿色注释。
+/// 编辑器背景对齐主背景；浅色默认主题的亮蓝色注释改为更常见的绿色。
 fn normalize_editor_highlight_theme(mode: Mode, cx: &mut App) {
     let theme = Theme::global_mut(cx);
     let bg = theme.background;

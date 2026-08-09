@@ -80,12 +80,20 @@ impl SettingsView {
                 match outcome {
                     Ok(None) => {}
                     Ok(Some(path)) => {
-                        info!(path = %path, "database connection export completed");
+                        info!(
+                            operation = "connection_export",
+                            path = %path,
+                            "database connection export completed"
+                        );
                         this.pending_notification =
                             Some(Notification::success(format!("已加密导出到 {path}")));
                     }
                     Err(message) => {
-                        error!(error = %message, "database connection export failed");
+                        error!(
+                            operation = "connection_export",
+                            error = %message,
+                            "database connection export failed"
+                        );
                         this.pending_notification = Some(Notification::error(message));
                     }
                 }
@@ -157,7 +165,7 @@ impl SettingsView {
                 Err(message) => {
                     let _ = this.update(cx, |this, cx| {
                         this.database_transferring = false;
-                        error!(error = %message, "database connection import failed");
+                        error!(operation = "connection_import", stage = "decrypt_or_parse", error = %message, "database connection import failed");
                         this.pending_notification = Some(Notification::error(message));
                         cx.notify();
                     });
@@ -227,7 +235,12 @@ impl SettingsView {
                         );
                     }
                     Err(error) => {
-                        error!(error = %error, "load existing database connections failed");
+                        error!(
+                            operation = "connection_import",
+                            stage = "existing_load",
+                            error = %error,
+                            "load existing database connections failed"
+                        );
                         this.pending_notification = Some(Notification::error(format!(
                             "导入前读取现有连接失败：{error}"
                         )));
@@ -260,7 +273,7 @@ impl SettingsView {
                 Ok((valid, skipped)) => this.prepare_import_save(valid, skipped, window, cx),
                 Err(error) => {
                     this.database_transferring = false;
-                    error!(error = %error, "decrypt database connection import failed");
+                        error!(operation = "connection_import", stage = "decrypt", error = %error, "decrypt database connection import failed");
                     this.pending_notification =
                         Some(Notification::error(format!("解密失败：{error}")));
                     cx.notify();
@@ -309,7 +322,12 @@ impl SettingsView {
                 }
                 Err(error) => {
                     this.database_transferring = false;
-                    error!(error = %error, "load existing database connections failed");
+                    error!(
+                        operation = "connection_import",
+                        stage = "existing_load",
+                        error = %error,
+                        "load existing database connections failed"
+                    );
                     this.pending_notification = Some(Notification::error(format!(
                         "导入前读取现有连接失败：{error}"
                     )));
@@ -334,11 +352,16 @@ impl SettingsView {
             let _ = this.update(cx, move |this, cx| {
                 this.database_transferring = false;
                 for entry in &skipped {
-                    warn!(entry = %entry, "database connection import entry skipped");
+                    warn!(
+                        operation = "connection_import",
+                        entry = %entry,
+                        "database connection import entry skipped"
+                    );
                 }
                 match result {
                     Ok(()) => {
                         info!(
+                            operation = "connection_import",
                             imported = valid.len(),
                             skipped = skipped.len(),
                             "database connections imported"
@@ -359,7 +382,12 @@ impl SettingsView {
                         });
                     }
                     Err(error) => {
-                        error!(error = %error, "save imported database connections failed");
+                        error!(
+                            operation = "connection_import",
+                            stage = "save",
+                            error = %error,
+                            "save imported database connections failed"
+                        );
                         this.pending_notification = Some(Notification::error(format!(
                             "导入失败，未写入任何连接：{error}"
                         )));

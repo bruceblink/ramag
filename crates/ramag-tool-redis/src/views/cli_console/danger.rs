@@ -1,5 +1,5 @@
 //! CLI 高危命令识别（命令 + 子命令粒度）：命中即弹确认（展示连接名 + DB）再执行。
-//! 与 driver 层生产只读拦截互补——这里管的是「非生产连接上一 Enter 就毁库」的误操作
+//! 与 driver 层生产只读拦截互补——本模块处理「非生产连接上一 Enter 就毁库」的误操作。
 
 /// 返回该命令的危险说明（中文，用于确认弹窗）；None = 无需确认直接执行
 pub(super) fn dangerous_reason(argv: &[String]) -> Option<&'static str> {

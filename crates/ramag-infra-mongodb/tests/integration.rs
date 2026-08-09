@@ -72,7 +72,6 @@ async fn test_crud_roundtrip() {
     let driver = MongoDriver::new();
     let coll = "ramag_test_integration";
 
-    // 插入
     let id = driver
         .insert_one(&cfg, &db, coll, json!({"name": "alice", "age": 30}))
         .await
@@ -80,14 +79,12 @@ async fn test_crud_roundtrip() {
     eprintln!("inserted id={id}");
     assert!(!id.is_empty());
 
-    // 统计
     let n = driver
         .count(&cfg, &db, coll, &json!({"name": "alice"}))
         .await
         .expect("count failed");
     assert!(n >= 1);
 
-    // 查找
     use ramag_domain::entities::MongoQuerySpec;
     let spec = MongoQuerySpec {
         filter: json!({"name": "alice"}),
@@ -100,7 +97,6 @@ async fn test_crud_roundtrip() {
         .expect("find failed");
     assert!(!result.documents.is_empty());
 
-    // 清理
     let _ = driver
         .delete_one(&cfg, &db, coll, &json!({"name": "alice"}))
         .await;
@@ -123,7 +119,6 @@ async fn test_demo_data_full_queries() {
     }
     let driver = MongoDriver::new();
 
-    // 集合列表
     let colls = driver
         .list_collections(&cfg, &db)
         .await
@@ -134,7 +129,6 @@ async fn test_demo_data_full_queries() {
     assert!(names.contains(&"products"));
     assert!(names.contains(&"orders"));
 
-    // users 索引
     let idxs = driver
         .list_indexes(&cfg, &db, "users")
         .await
@@ -146,7 +140,6 @@ async fn test_demo_data_full_queries() {
     assert!(idx_names.contains(&"idx_email_uniq"));
     assert!(idxs.iter().any(|i| i.name == "idx_email_uniq" && i.unique));
 
-    // 集合统计
     let stats = driver
         .collection_stats(&cfg, &db, "users")
         .await
@@ -248,19 +241,16 @@ async fn test_update_one_reproduce() {
     let driver = MongoDriver::new();
     let coll = "ramag_update_probe";
 
-    // 清场（避免上次残留）
     let _ = driver
         .delete_one(&cfg, &db, coll, &json!({"name": "probe"}))
         .await;
 
-    // 1) 插入文档（_id 由 mongo 生成 ObjectId）
     let inserted = driver
         .insert_one(&cfg, &db, coll, json!({"name": "probe", "age": 30}))
         .await
         .expect("insert failed");
     eprintln!("inserted _id(raw) = {inserted}");
 
-    // 2) find 取回结果集，模拟 UI 拿到的文档（_id 为 Extended JSON 形式）
     use ramag_domain::entities::MongoQuerySpec;
     let spec = MongoQuerySpec {
         filter: json!({"name": "probe"}),
@@ -275,7 +265,6 @@ async fn test_update_one_reproduce() {
     let id = doc.get("_id").cloned().expect("doc has no _id");
     eprintln!("find returned _id(extjson) = {id}");
 
-    // 3) 模拟单元格编辑：filter={_id}, update={$set:{age:31}}
     let filter = json!({ "_id": id });
     let update = json!({ "$set": { "age": 31 } });
     let res = driver
@@ -284,7 +273,6 @@ async fn test_update_one_reproduce() {
         .expect("update_one failed");
     eprintln!("update_one affected(modified_count) = {}", res.affected);
 
-    // 4) 回查确认 age 真的变成 31（绕过 affected 直接看数据）
     let r2 = driver
         .find(&cfg, &db, coll, &spec)
         .await
@@ -297,7 +285,6 @@ async fn test_update_one_reproduce() {
         "age 应被更新为 31（若失败=filter 没匹配上 → 更新不生效）"
     );
 
-    // 5) 改成相同值：affected 取 matched_count，应为 1（回归：改相同值不再误判「未匹配」）
     let same = driver
         .update_one(&cfg, &db, coll, &filter, &json!({ "$set": { "age": 31 } }))
         .await
@@ -311,7 +298,6 @@ async fn test_update_one_reproduce() {
         "改相同值应仍 matched=1（affected 取 matched_count），否则 UI 会误报「未匹配」"
     );
 
-    // 清理
     let _ = driver
         .delete_one(&cfg, &db, coll, &json!({"name": "probe"}))
         .await;
@@ -506,7 +492,6 @@ async fn test_insert_many_skips_duplicate_ids() {
     let coll = "ramag_test_insert_many";
     let _ = driver.run_command(&cfg, &db, json!({"drop": coll})).await;
 
-    // 首次批量：全部插入
     let docs: Vec<_> = (0..5).map(|i| json!({"_id": i, "n": i})).collect();
     let outcome = driver
         .insert_many(&cfg, &db, coll, docs, true)
@@ -530,7 +515,6 @@ async fn test_insert_many_skips_duplicate_ids() {
         .expect("count failed");
     assert_eq!(count, 8);
 
-    // 有序模式重复 _id 直接报错
     let dup = vec![json!({"_id": 0})];
     assert!(
         driver
@@ -539,7 +523,6 @@ async fn test_insert_many_skips_duplicate_ids() {
             .is_err()
     );
 
-    // 生产（只读）模式拦截
     let mut readonly = cfg.clone();
     readonly.production = true;
     assert!(

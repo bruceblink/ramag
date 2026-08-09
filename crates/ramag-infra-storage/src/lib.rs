@@ -77,7 +77,7 @@ impl RedbStorage {
         repos::clip_repo::validate_key(db.clone(), cipher.clone())?;
         repos::clip_repo::initialize_search_index(db.clone(), cipher.clone())?;
 
-        info!(path = %path.display(), "redb storage opened");
+        info!(operation = "storage_open", path = %path.display(), "redb storage opened");
 
         Ok(Self {
             db,
@@ -299,7 +299,7 @@ impl Storage for RedbStorage {
         let key_owned = key.to_string();
         let result = run_blocking(move || repos::prefs_repo::get(db, key_owned)).await;
         if let Err(error) = &result {
-            warn!(error = %error, preference = key, "load preference failed");
+            warn!(operation = "storage_preference_load", error = %error, preference = key, "load preference failed");
         }
         result
     }
@@ -310,8 +310,14 @@ impl Storage for RedbStorage {
         let value = value.to_string();
         let result = run_blocking(move || repos::prefs_repo::set(db, key_owned, value)).await;
         match &result {
-            Ok(()) => debug!(preference = key, "preference saved"),
-            Err(error) => warn!(error = %error, preference = key, "save preference failed"),
+            Ok(()) => debug!(
+                operation = "storage_preference_save",
+                preference = key,
+                "preference saved"
+            ),
+            Err(error) => {
+                warn!(operation = "storage_preference_save", error = %error, preference = key, "save preference failed")
+            }
         }
         result
     }
@@ -321,8 +327,14 @@ impl Storage for RedbStorage {
         let key_owned = key.to_string();
         let result = run_blocking(move || repos::prefs_repo::delete(db, key_owned)).await;
         match &result {
-            Ok(()) => debug!(preference = key, "preference deleted"),
-            Err(error) => warn!(error = %error, preference = key, "delete preference failed"),
+            Ok(()) => debug!(
+                operation = "storage_preference_delete",
+                preference = key,
+                "preference deleted"
+            ),
+            Err(error) => {
+                warn!(operation = "storage_preference_delete", error = %error, preference = key, "delete preference failed")
+            }
         }
         result
     }

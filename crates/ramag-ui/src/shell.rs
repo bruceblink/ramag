@@ -148,15 +148,19 @@ impl Shell {
             let pref = if maximized {
                 let existing = match storage.get_preference(WindowBoundsPref::PREF_KEY).await {
                     Ok(Some(json)) => match WindowBoundsPref::parse(&json) {
-                        Ok(pref) => Some(pref),
-                        Err(error) => {
-                            tracing::warn!(error, "ignore invalid saved window bounds");
+                    Ok(pref) => Some(pref),
+                    Err(error) => {
+                        tracing::warn!(
+                            operation = "window_bounds_load",
+                            error,
+                            "ignore invalid saved window bounds"
+                        );
                             None
                         }
                     },
                     Ok(None) => None,
                     Err(error) => {
-                        tracing::warn!(error = %error, "load window bounds before maximize failed");
+                        tracing::warn!(operation = "window_bounds_save", stage = "load_before_maximize", error = %error, "load window bounds before maximize failed");
                         None
                     }
                 };
@@ -185,7 +189,7 @@ impl Shell {
             let json = match serde_json::to_string(&pref) {
                 Ok(json) => json,
                 Err(error) => {
-                    tracing::warn!(error = %error, "serialize window bounds failed");
+                    tracing::warn!(operation = "window_bounds_save", stage = "serialize", error = %error, "serialize window bounds failed");
                     return;
                 }
             };

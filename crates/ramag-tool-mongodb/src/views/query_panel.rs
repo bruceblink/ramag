@@ -45,7 +45,7 @@ pub struct MongoQueryPanel {
     session_active: bool,
     tabs_scroll: ScrollHandle,
     show_editor: bool,
-    /// 面板根焦点：隐藏编辑器后焦点收回这里，保证 cmd-e 仍能再次触发
+    /// 面板根焦点：隐藏编辑器后焦点回到面板，保证 cmd-e 仍能再次触发
     focus_handle: FocusHandle,
     history_sub: Option<Subscription>,
     draft_subscriptions: Vec<Subscription>,

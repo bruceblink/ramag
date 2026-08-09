@@ -137,7 +137,6 @@ pub fn ellipsis() -> Icon {
 }
 
 /// 数据库官方品牌彩色 logo 的内嵌资源路径。
-///
 /// 与上面单色 `Icon` 工厂不同：品牌 logo 是多色 SVG，必须经 `gpui::img()` 光栅化渲染以
 /// 保留原色；不能走 `Icon`（会被 `text_color` 压成单色）。未知 driver 返回 `None`，调用方
 /// 回退到通用 `database()` 图标。driver_id 取值与 dbclient 的 `DRIVERS` 常量一致。

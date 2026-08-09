@@ -120,17 +120,24 @@ pub(crate) fn init() -> Option<PathBuf> {
     install_panic_hook();
 
     if let Some(error) = fallback_error {
-        error!(%error, "preferred log file unavailable");
+        error!(
+            operation = "logging_file_init",
+            error = %error,
+            "preferred log file unavailable"
+        );
     }
     if let Some(error) = filter_error {
-        error!(%error, "invalid RUST_LOG filter; using info");
+        error!(operation = "logging_filter_init", error = %error, "invalid RUST_LOG filter; using info");
     }
     if has_log_file {
-        eprintln!("ramag log file: {}", log_path.display());
-        info!(log = %log_path.display(), "log file ready");
+        info!(operation = "logging_file_init", log = %log_path.display(), "log file ready");
         Some(log_path)
     } else {
-        error!("no writable log file available");
+        error!(
+            operation = "logging_file_init",
+            reason = "unavailable",
+            "no writable log file available"
+        );
         None
     }
 }
@@ -141,6 +148,7 @@ fn install_panic_hook() {
     std::panic::set_hook(Box::new(move |panic| {
         let location = panic.location();
         error!(
+            operation = "application_panic",
             panic = %panic,
             file = location.map_or("unknown", std::panic::Location::file),
             line = location.map_or(0, std::panic::Location::line),

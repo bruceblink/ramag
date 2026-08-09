@@ -36,7 +36,6 @@ const NON_ALIAS: &[&str] = &[
 
 /// 提取所有表引用（含别名）。例：`FROM users u JOIN orders AS o`
 /// 示例：`[{users, alias:u}, {orders, alias:o}]`。
-///
 /// 局限：仅解析 FROM/JOIN/INTO/UPDATE 紧跟的表；逗号分隔的非首表（`FROM a, b`）暂不解析
 pub(super) fn extract_table_refs(sql: &str) -> Vec<TableRef> {
     let orig: Vec<&str> = sql.split_ascii_whitespace().collect();

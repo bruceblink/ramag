@@ -16,7 +16,9 @@ pub async fn record_backend_id(conn: &mut MySqlConnection, handle: &CancelHandle
         .await
     {
         Ok((tid,)) => handle.store(tid, Ordering::SeqCst),
-        Err(e) => warn!(error = %e, "query cancellation id lookup failed"),
+        Err(e) => {
+            warn!(operation = "sql_query_cancel", stage = "connection_id", error = %e, "query cancellation id lookup failed")
+        }
     }
 }
 
@@ -46,7 +48,7 @@ pub async fn fetch_warnings(conn: &mut MySqlConnection) -> Vec<Warning> {
                 .and_then(|error| error.try_downcast_ref::<MySqlDatabaseError>())
                 .is_some_and(|error| error.number() == 1295);
             if !is_unsupported {
-                warn!(error = %e, "query warning lookup failed");
+                warn!(operation = "sql_query_warnings", error = %e, "query warning lookup failed");
             }
             Vec::new()
         }
@@ -66,7 +68,7 @@ pub async fn extract_columns_fallback(
                 .unzip(),
         ),
         Err(e) => {
-            warn!(error = %e, "empty-result SQL description failed");
+            warn!(operation = "sql_query_empty_result_description", error = %e, "empty-result SQL description failed");
             None
         }
     }

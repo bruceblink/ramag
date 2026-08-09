@@ -61,8 +61,8 @@ pub(crate) fn post_cmd_v_delayed(delay_ms: u64, expected_pid: i32) -> Result<()>
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             if frontmost_pid() != Some(expected_pid) {
                 warn!(
-                    expected_pid,
-                    "skip cmd-v because target app is no longer foreground"
+                    operation = "clipboard_paste_foreground_guard",
+                    expected_pid, "skip cmd-v because target app is no longer foreground"
                 );
                 return;
             }
@@ -92,7 +92,10 @@ fn frontmost_pid() -> Option<i32> {
 fn post_cmd_v() {
     // V 键码为 9。
     let Ok(src) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else {
-        warn!("create CGEventSource failed");
+        warn!(
+            operation = "clipboard_paste_event_source",
+            "create CGEventSource failed"
+        );
         return;
     };
     for down in [true, false] {
@@ -101,7 +104,10 @@ fn post_cmd_v() {
                 ev.set_flags(CGEventFlags::CGEventFlagCommand);
                 ev.post(CGEventTapLocation::HID);
             }
-            Err(()) => warn!(down, "create cmd-v keyboard event failed"),
+            Err(()) => warn!(
+                operation = "clipboard_paste_event",
+                down, "create cmd-v keyboard event failed"
+            ),
         }
     }
 }

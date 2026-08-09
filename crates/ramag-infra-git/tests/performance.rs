@@ -206,7 +206,7 @@ fn reports_workspace_refresh_latency() -> Result<()> {
     })
 }
 
-/// 并发执行 status 与三种 numstat；这里只计进程与输出，不计解析，作为富状态保守下界。
+/// 并发执行 status 与三种 numstat；仅计进程与输出，不计解析，作为富状态保守下界。
 fn run_rich_reference_status(repo_path: &std::path::Path, path: &str) -> Result<usize> {
     let commands = [
         vec![

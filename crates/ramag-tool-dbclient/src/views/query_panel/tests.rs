@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use super::active_index_after_close;
 
 #[test]

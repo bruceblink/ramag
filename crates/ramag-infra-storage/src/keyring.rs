@@ -30,7 +30,7 @@ pub fn get_or_create_master_key(allow_create: bool) -> Result<[u8; KEY_LEN]> {
             Ok(key)
         }
         Err(keyring::Error::NoEntry) if allow_create => {
-            info!("master key not found, generating new one");
+        info!(operation = "storage_keyring_init", stage = "generate", "master key not found, generating new one");
             generate_and_save(&entry)
         }
         Err(keyring::Error::NoEntry) => Err(DomainError::Storage(
@@ -48,7 +48,11 @@ fn generate_and_save(entry: &keyring::Entry) -> Result<[u8; KEY_LEN]> {
     entry
         .set_password(&hex::encode(key))
         .map_err(|e| DomainError::Storage(format!("写入系统凭据库失败：{e}")))?;
-    info!("master key created and stored in credential store");
+    info!(
+        operation = "storage_keyring_init",
+        stage = "stored",
+        "master key created and stored in credential store"
+    );
     Ok(key)
 }
 

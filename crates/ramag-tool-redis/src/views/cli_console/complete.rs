@@ -26,7 +26,6 @@ struct CmdMeta {
 /// 常用 Redis 命令表（按类别）。覆盖高频命令，非穷尽 240+ 全集。
 #[rustfmt::skip]
 const COMMANDS: &[CmdMeta] = &[
-    // 通用 / Key
     CmdMeta { name: "DEL", syntax: "DEL key [key ...]", summary: "删除 key" },
     CmdMeta { name: "EXISTS", syntax: "EXISTS key [key ...]", summary: "key 是否存在" },
     CmdMeta { name: "EXPIRE", syntax: "EXPIRE key seconds", summary: "设置过期秒数" },
@@ -41,7 +40,6 @@ const COMMANDS: &[CmdMeta] = &[
     CmdMeta { name: "RANDOMKEY", syntax: "RANDOMKEY", summary: "随机返回一个 key" },
     CmdMeta { name: "DUMP", syntax: "DUMP key", summary: "序列化 key" },
     CmdMeta { name: "OBJECT", syntax: "OBJECT ENCODING|IDLETIME|REFCOUNT key", summary: "查看 key 内部信息" },
-    // 字符串
     CmdMeta { name: "GET", syntax: "GET key", summary: "取 String 值" },
     CmdMeta { name: "SET", syntax: "SET key value [EX s|PX ms] [NX|XX]", summary: "设置 String 值" },
     CmdMeta { name: "SETEX", syntax: "SETEX key seconds value", summary: "设值 + 过期秒数" },
@@ -56,7 +54,6 @@ const COMMANDS: &[CmdMeta] = &[
     CmdMeta { name: "INCRBYFLOAT", syntax: "INCRBYFLOAT key increment", summary: "按浮点自增" },
     CmdMeta { name: "MGET", syntax: "MGET key [key ...]", summary: "批量取值" },
     CmdMeta { name: "MSET", syntax: "MSET key value [key value ...]", summary: "批量设值" },
-    // 哈希
     CmdMeta { name: "HGET", syntax: "HGET key field", summary: "取 Hash 字段值" },
     CmdMeta { name: "HSET", syntax: "HSET key field value [field value ...]", summary: "设 Hash 字段" },
     CmdMeta { name: "HMGET", syntax: "HMGET key field [field ...]", summary: "批量取字段" },
@@ -68,7 +65,6 @@ const COMMANDS: &[CmdMeta] = &[
     CmdMeta { name: "HLEN", syntax: "HLEN key", summary: "字段数量" },
     CmdMeta { name: "HINCRBY", syntax: "HINCRBY key field increment", summary: "字段整数自增" },
     CmdMeta { name: "HSCAN", syntax: "HSCAN key cursor [MATCH pat] [COUNT n]", summary: "游标遍历字段" },
-    // 列表
     CmdMeta { name: "LPUSH", syntax: "LPUSH key element [element ...]", summary: "左侧入列" },
     CmdMeta { name: "RPUSH", syntax: "RPUSH key element [element ...]", summary: "右侧入列" },
     CmdMeta { name: "LPOP", syntax: "LPOP key [count]", summary: "左侧出列" },
@@ -79,7 +75,6 @@ const COMMANDS: &[CmdMeta] = &[
     CmdMeta { name: "LSET", syntax: "LSET key index element", summary: "按下标设元素" },
     CmdMeta { name: "LREM", syntax: "LREM key count element", summary: "按值删元素" },
     CmdMeta { name: "LTRIM", syntax: "LTRIM key start stop", summary: "裁剪保留区间" },
-    // 集合
     CmdMeta { name: "SADD", syntax: "SADD key member [member ...]", summary: "加成员" },
     CmdMeta { name: "SREM", syntax: "SREM key member [member ...]", summary: "删成员" },
     CmdMeta { name: "SMEMBERS", syntax: "SMEMBERS key", summary: "全部成员" },
@@ -90,7 +85,6 @@ const COMMANDS: &[CmdMeta] = &[
     CmdMeta { name: "SUNION", syntax: "SUNION key [key ...]", summary: "并集" },
     CmdMeta { name: "SDIFF", syntax: "SDIFF key [key ...]", summary: "差集" },
     CmdMeta { name: "SSCAN", syntax: "SSCAN key cursor [MATCH pat] [COUNT n]", summary: "游标遍历成员" },
-    // 有序集合
     CmdMeta { name: "ZADD", syntax: "ZADD key [NX|XX] score member [score member ...]", summary: "加带分成员" },
     CmdMeta { name: "ZREM", syntax: "ZREM key member [member ...]", summary: "删成员" },
     CmdMeta { name: "ZSCORE", syntax: "ZSCORE key member", summary: "取成员分数" },
@@ -101,14 +95,12 @@ const COMMANDS: &[CmdMeta] = &[
     CmdMeta { name: "ZCARD", syntax: "ZCARD key", summary: "成员数量" },
     CmdMeta { name: "ZINCRBY", syntax: "ZINCRBY key increment member", summary: "成员分数自增" },
     CmdMeta { name: "ZSCAN", syntax: "ZSCAN key cursor [MATCH pat] [COUNT n]", summary: "游标遍历成员" },
-    // 流
     CmdMeta { name: "XADD", syntax: "XADD key ID field value [field value ...]", summary: "追加流条目" },
     CmdMeta { name: "XLEN", syntax: "XLEN key", summary: "流长度" },
     CmdMeta { name: "XRANGE", syntax: "XRANGE key start end [COUNT n]", summary: "区间取条目" },
     CmdMeta { name: "XREVRANGE", syntax: "XREVRANGE key end start [COUNT n]", summary: "倒序取条目" },
     CmdMeta { name: "XDEL", syntax: "XDEL key ID [ID ...]", summary: "删条目" },
     CmdMeta { name: "XREAD", syntax: "XREAD [COUNT n] STREAMS key ID", summary: "读取流" },
-    // 服务器与连接
     CmdMeta { name: "PING", syntax: "PING [message]", summary: "心跳探测" },
     CmdMeta { name: "ECHO", syntax: "ECHO message", summary: "回显消息" },
     // 不提供 SELECT 补全：命令行内切库会破坏连接池上下文，改用顶部 DB 选择器

@@ -109,6 +109,7 @@ fn limited_finder_paths(paths: &[String]) -> Result<&[String]> {
     }
     if selected.len() < paths.len() {
         warn!(
+            operation = "clipboard_finder_selection_limit",
             count = paths.len(),
             shown = selected.len(),
             "limit finder selection for clipboard file list"

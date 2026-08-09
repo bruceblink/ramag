@@ -22,7 +22,7 @@ const ROW_H: f32 = 20.0;
 use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 
 /// 纯计算：字节流 → (生效 mode, 按行切好的显示文本, gzip 提示)。解压 + JSON 解析 +
-/// pretty + 切行都在这里，结果由 panel.scalar_cache 缓存，避免每帧重算
+/// 负责 pretty 与切行，结果由 panel.scalar_cache 缓存，避免每帧重算。
 fn compute_scalar_display(
     v: &RedisValue,
     view_mode: Option<ViewMode>,
@@ -220,7 +220,6 @@ pub(super) fn render_scalar(
                     )),
             )
         })
-        // Gzip 自动解压提示
         .when_some(gzip_hint, |this, hint| {
             this.child(
                 div()

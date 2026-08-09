@@ -226,7 +226,6 @@ impl VcsView {
                 .into_any_element();
         }
 
-        // 仅渲染可见行。
         let status_kinds = self.project_status_kinds();
         let body = uniform_list(
             "vcs-project-files",

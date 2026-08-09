@@ -276,6 +276,7 @@ impl DataSyncService {
 
     pub async fn preflight(&self, request: DataSyncRequest) -> Result<PreparedDataSync> {
         tracing::info!(
+            operation = "data_sync_preflight",
             task_id = %request.task_id,
             engine = ?request.engine,
             source_connection_id = %request.source_connection_id,

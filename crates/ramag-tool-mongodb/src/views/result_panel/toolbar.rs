@@ -36,7 +36,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .gap_2()
                 .child({
                     // 单行 InputState 仅在多行模式注册 up/down 的 on_action，单行下补全菜单无法用方向键导航；
-                    // 这里把 MoveUp/MoveDown 转发给补全菜单（与 dbclient 过滤列同款 workaround）
+                    // 将 MoveUp/MoveDown 转发给补全菜单（与 dbclient 过滤列一致）。
                     let col_for_up = panel.column_filter.clone();
                     let col_for_down = panel.column_filter.clone();
                     div()

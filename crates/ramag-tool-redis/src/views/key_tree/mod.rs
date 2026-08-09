@@ -221,7 +221,7 @@ impl KeyTreePanel {
         self.resource_limited = false;
         self.resume_cursor = None;
         self.search_pending = false;
-        // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，这里清 loading
+        // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，此处清 loading。
         // 让新目标的 refresh 不被防重入拒绝
         self.loading = false;
         self.has_loaded = false;

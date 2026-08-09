@@ -53,7 +53,11 @@ fn worker_loop(receiver: Arc<Mutex<mpsc::Receiver<Job>>>) {
         let job = match receiver.lock() {
             Ok(receiver) => receiver.recv(),
             Err(_) => {
-                tracing::warn!("storage worker queue lock poisoned");
+                tracing::warn!(
+                    operation = "storage_worker_queue",
+                    reason = "lock_poisoned",
+                    "storage worker queue lock poisoned"
+                );
                 return;
             }
         };

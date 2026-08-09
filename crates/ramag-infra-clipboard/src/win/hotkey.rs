@@ -45,14 +45,17 @@ impl HotkeyListener {
         {
             Ok(handle) => handle,
             Err(error) => {
-                warn!(error = %error, "start hotkey thread failed");
+                warn!(operation = "clipboard_hotkey_thread_start", error = %error, "start hotkey thread failed");
                 return None;
             }
         };
 
         match ready_rx.recv() {
             Ok(Some(thread_id)) => {
-                info!(combo, "global clipboard hotkey registered");
+                info!(
+                    operation = "clipboard_hotkey_register",
+                    combo, "global clipboard hotkey registered"
+                );
                 Some(Self {
                     rx,
                     thread_id,
@@ -65,7 +68,7 @@ impl HotkeyListener {
                 None
             }
             Err(error) => {
-                warn!(error = %error, "hotkey initialization channel closed");
+                warn!(operation = "clipboard_hotkey_register", stage = "initialization_channel", error = %error, "hotkey initialization channel closed");
                 join_thread(handle);
                 None
             }
@@ -92,16 +95,24 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
         let second = if alternate { MOD_ALT } else { MOD_SHIFT };
         let modifiers = MOD_CONTROL | second | MOD_NOREPEAT;
         if let Err(error) = RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32) {
-            warn!(error = %error, "register clipboard hotkey failed");
+            warn!(operation = "clipboard_hotkey_register", error = %error, "register clipboard hotkey failed");
             if ready_tx.send(None).is_err() {
-                warn!("hotkey initialization receiver dropped after registration failure");
+                warn!(
+                    operation = "clipboard_hotkey_register",
+                    stage = "receiver_dropped",
+                    "hotkey initialization receiver dropped after registration failure"
+                );
             }
             return;
         }
         if ready_tx.send(Some(thread_id)).is_err() {
-            warn!("hotkey initialization receiver dropped");
+            warn!(
+                operation = "clipboard_hotkey_register",
+                stage = "receiver_dropped",
+                "hotkey initialization receiver dropped"
+            );
             if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
-                warn!(error = %error, "unregister cancelled clipboard hotkey failed");
+                warn!(operation = "clipboard_hotkey_unregister", error = %error, "unregister cancelled clipboard hotkey failed");
             }
             return;
         }
@@ -113,7 +124,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
             if status <= 0 {
                 if status < 0 {
                     let error = windows::core::Error::from_win32();
-                    warn!(error = %error, "read clipboard hotkey message failed");
+                    warn!(operation = "clipboard_hotkey_poll", error = %error, "read clipboard hotkey message failed");
                 }
                 break;
             }
@@ -126,14 +137,17 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
             }
         }
         if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
-            warn!(error = %error, "unregister clipboard hotkey failed");
+            warn!(operation = "clipboard_hotkey_unregister", error = %error, "unregister clipboard hotkey failed");
         }
     }
 }
 
 fn join_thread(handle: JoinHandle<()>) {
     if handle.join().is_err() {
-        warn!("hotkey thread panicked");
+        warn!(
+            operation = "clipboard_hotkey_thread_shutdown",
+            "hotkey thread panicked"
+        );
     }
 }
 
@@ -149,18 +163,22 @@ impl Drop for HotkeyListener {
                     stopped = true;
                 }
                 Err(error) if handle.is_finished() => {
-                    warn!(error = %error, "post hotkey shutdown message failed after thread exit");
+                    warn!(operation = "clipboard_hotkey_thread_shutdown", stage = "post_exit_signal", error = %error, "post hotkey shutdown message failed after thread exit");
                     join_thread(handle);
                     stopped = true;
                 }
                 Err(error) => {
                     // 无法唤醒时不能阻塞 join；进程退出会回收已分离的线程。
-                    warn!(error = %error, "post hotkey shutdown message failed; detaching thread");
+                    warn!(operation = "clipboard_hotkey_thread_shutdown", stage = "detach_signal", error = %error, "post hotkey shutdown message failed; detaching thread");
                 }
             }
         }
         if stopped {
-            info!(combo = self.combo, "global clipboard hotkey unregistered");
+            info!(
+                operation = "clipboard_hotkey_unregister",
+                combo = self.combo,
+                "global clipboard hotkey unregistered"
+            );
         }
     }
 }

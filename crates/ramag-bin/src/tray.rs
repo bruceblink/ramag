@@ -61,13 +61,13 @@ impl TrayIcon {
         {
             Ok(thread) => thread,
             Err(error) => {
-                warn!(error = %error, "start tray thread failed");
+                warn!(operation = "tray_install", error = %error, "start tray thread failed");
                 return None;
             }
         };
         match ready_rx.recv() {
             Ok(Some(hwnd)) => {
-                info!("tray icon installed");
+                info!(operation = "tray_install", "tray icon installed");
                 Some(Self {
                     events,
                     hwnd,
@@ -79,7 +79,7 @@ impl TrayIcon {
                 None
             }
             Err(error) => {
-                warn!(error = %error, "tray initialization channel closed");
+                warn!(operation = "tray_install", stage = "initialization_channel", error = %error, "tray initialization channel closed");
                 join_thread(thread);
                 None
             }
@@ -106,22 +106,26 @@ impl Drop for TrayIcon {
             match posted {
                 Ok(()) => join_thread(thread),
                 Err(error) if thread.is_finished() => {
-                    warn!(error = %error, "post tray shutdown failed after thread exit");
+                    warn!(operation = "tray_shutdown", stage = "post_exit_signal", error = %error, "post tray shutdown failed after thread exit");
                     join_thread(thread);
                 }
                 Err(error) => {
                     // 无法唤醒时不能阻塞 join；进程退出由系统回收线程与图标
-                    warn!(error = %error, "post tray shutdown failed; detaching thread");
+                    warn!(operation = "tray_shutdown", stage = "detach_signal", error = %error, "post tray shutdown failed; detaching thread");
                 }
             }
         }
-        info!("tray icon removed");
+        info!(operation = "tray_shutdown", "tray icon removed");
     }
 }
 
 fn join_thread(thread: JoinHandle<()>) {
     if thread.join().is_err() {
-        warn!("tray thread panicked");
+        warn!(
+            operation = "tray_shutdown",
+            stage = "thread_join",
+            "tray thread panicked"
+        );
     }
 }
 
@@ -130,7 +134,12 @@ fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
     let hwnd = match create_tray_window(events) {
         Ok(hwnd) => hwnd,
         Err(reason) => {
-            warn!(reason, "create tray window failed");
+            warn!(
+                operation = "tray_install",
+                stage = "window_create",
+                reason,
+                "create tray window failed"
+            );
             let _ = ready_tx.send(None);
             return;
         }
@@ -145,7 +154,11 @@ fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
         return;
     }
     if ready_tx.send(Some(hwnd.0)).is_err() {
-        warn!("tray initialization receiver dropped");
+        warn!(
+            operation = "tray_install",
+            stage = "initialization_receiver",
+            "tray initialization receiver dropped"
+        );
         unsafe {
             let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
         }
@@ -163,7 +176,7 @@ fn pump_messages() {
         if status <= 0 {
             if status < 0 {
                 let error = windows::core::Error::from_win32();
-                warn!(error = %error, "tray GetMessageW failed");
+                warn!(operation = "tray_message_loop", error = %error, "tray GetMessageW failed");
             }
             break;
         }
@@ -224,7 +237,7 @@ fn add_tray_icon(hwnd: HWND) -> bool {
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
     if !added {
-        warn!("add system tray icon failed");
+        warn!(operation = "tray_icon_add", "add system tray icon failed");
     }
     added
 }
@@ -271,7 +284,7 @@ fn show_tray_menu(hwnd: HWND) -> Option<u32> {
             (cmd.0 != 0).then_some(cmd.0 as u32)
         })();
         if let Err(error) = DestroyMenu(menu) {
-            warn!(error = %error, "destroy tray menu failed");
+            warn!(operation = "tray_shutdown", stage = "menu_destroy", error = %error, "destroy tray menu failed");
         }
         result
     }

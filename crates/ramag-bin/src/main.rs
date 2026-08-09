@@ -178,6 +178,7 @@ fn main() {
 
     let log_path = logging::init();
     info!(
+        operation = "application_start",
         version = env!("CARGO_PKG_VERSION"),
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
@@ -191,7 +192,11 @@ fn main() {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let instance_guard = match single_instance::acquire() {
         single_instance::InstanceRole::Secondary => {
-            info!("another instance is running; asked it to reveal and exiting");
+            info!(
+                operation = "application_single_instance",
+                role = "secondary",
+                "another instance is running; asked it to reveal and exiting"
+            );
             return;
         }
         single_instance::InstanceRole::Primary(guard) => guard,
@@ -200,7 +205,11 @@ fn main() {
     let (conn_service, storage) = match build_connection_service() {
         Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "data layer initialization failed");
+            error!(
+                operation = "application_data_layer_init",
+                error = %e,
+                "data layer initialization failed"
+            );
             let log_hint = log_path.as_ref().map_or_else(
                 || "\n\n日志文件也无法创建，请检查用户目录权限。".to_string(),
                 |path| format!("\n\n日志：{}", path.display()),
@@ -248,14 +257,23 @@ fn main() {
             {
                 Ok(runtime) => runtime.block_on(service.prime_capture_enabled()),
                 Err(error) => {
-                    warn!(error = %error, fallback = "tool_hidden", "load clipboard settings failed");
+                    warn!(
+                        operation = "clipboard_settings_load",
+                        error = %error,
+                        fallback = "tool_hidden",
+                        "load clipboard settings failed"
+                    );
                     false
                 }
             }
         });
         registry.set_enabled(ClipboardTool::ID, clipboard_enabled);
     }
-    info!(tool_count = registry.count(), "tools registered");
+    info!(
+        operation = "tool_registry_init",
+        tool_count = registry.count(),
+        "tools registered"
+    );
 
     let deps = AppDeps {
         registry,
@@ -287,7 +305,7 @@ fn main() {
         if let Err(error) =
             init_database_search_settings(initial_database_search_pref.as_deref(), cx)
         {
-            warn!(error, "ignore invalid database search settings");
+            warn!(operation = "database_search_settings_load", error, "ignore invalid database search settings");
         }
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
@@ -305,7 +323,7 @@ fn main() {
             let ssh_service = ssh_service_for_quit.clone();
             async move {
                 if let Err(error) = ssh_service.shutdown().await {
-                    warn!(error = %error, "shutdown ssh tool resources failed");
+                    warn!(operation = "ssh_shutdown", error = %error, "shutdown ssh tool resources failed");
                 }
                 ramag_infra_tunnel::shutdown_all();
             }
@@ -322,7 +340,7 @@ fn main() {
             if tray_resident {
                 spawn_tray_loop(tray.clone(), deps.clone(), cx);
             } else {
-                warn!("tray unavailable; app quits when the last window closes");
+                warn!(operation = "tray_install", reason = "unavailable", "tray unavailable; app quits when the last window closes");
             }
             // 任何退出路径（cmd-Q / 托盘退出）先删托盘图标，避免任务栏残影
             cx.on_app_quit(move |_| {
@@ -365,7 +383,7 @@ fn main() {
                 return;
             };
             // 主窗口不因 cmd-w 关闭（IDEA 语义）：视图层有 tab 可关时已消费不冒泡，
-            // 冒到这里说明无 tab 可关；误关主窗会丢弃全部会话 / 查询稿，代价过高。
+            // 无 tab 可关时不退出，避免误关主窗丢弃会话和查询稿。
             // 主窗关闭走 cmd-q 或系统关闭按钮；非主窗（抽屉等浮层）照常关闭
             if cx
                 .try_global::<MainWindowGlobal>()
@@ -427,7 +445,7 @@ fn main() {
             let cleanup_service = svc.clone();
             cx.spawn(async move |_| {
                 if let Err(e) = cleanup_service.cleanup_orphans().await {
-                    tracing::warn!(error = %e, "clipboard orphan cleanup failed");
+                    tracing::warn!(operation = "clipboard_media_orphan_cleanup", error = %e, "clipboard orphan cleanup failed");
                 }
             })
             .detach();
@@ -445,7 +463,7 @@ fn main() {
                 .and_then(|path| path.parent())
                 .map(std::path::Path::to_path_buf)
             else {
-                warn!("log file unavailable");
+                warn!(operation = "logging_file_open", reason = "unavailable", "log file unavailable");
                 return;
             };
             cx.spawn(async move |_| {
@@ -458,7 +476,7 @@ fn main() {
                 })
                 .await;
                 if let Err(error) = result {
-                    warn!(error = %error, "open log directory failed");
+                    warn!(operation = "logging_directory_open", error = %error, "open log directory failed");
                 }
             })
             .detach();
@@ -491,7 +509,7 @@ fn main() {
             spawn_update_check(service, cx);
         }
     });
-    info!("application stopped");
+    info!(operation = "application_stop", "application stopped");
 }
 
 fn spawn_update_check(service: Arc<UpdateService>, cx: &mut App) {
@@ -503,7 +521,7 @@ fn spawn_update_check(service: Arc<UpdateService>, cx: &mut App) {
         cx.update(|cx| match result {
             Ok(result) => sync_update_indicator(&result, cx),
             Err(error) => {
-                warn!(error = %error, "automatic update check failed");
+                warn!(operation = "application_update_check", error = %error, "automatic update check failed");
             }
         });
     })
@@ -528,60 +546,5 @@ fn confirm_ssh_host(prompt: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{MainWindowOpenGate, build_tool_registry};
-
-    #[test]
-    fn main_window_open_gate_coalesces_repeated_requests() {
-        let mut gate = MainWindowOpenGate::default();
-
-        assert!(gate.try_begin());
-        assert!(!gate.try_begin());
-        gate.finish();
-        assert!(gate.try_begin());
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    #[test]
-    fn clipboard_capture_retry_backoff_is_bounded() {
-        use super::{CAPTURE_INTERVAL, CAPTURE_MAX_RETRY_INTERVAL, next_capture_retry_interval};
-
-        let mut interval = CAPTURE_INTERVAL;
-        assert_eq!(
-            next_capture_retry_interval(interval),
-            CAPTURE_INTERVAL.saturating_mul(2)
-        );
-        for _ in 0..16 {
-            interval = next_capture_retry_interval(interval);
-        }
-        assert_eq!(interval, CAPTURE_MAX_RETRY_INTERVAL);
-        assert_eq!(
-            next_capture_retry_interval(interval),
-            CAPTURE_MAX_RETRY_INTERVAL
-        );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    #[test]
-    fn clipboard_tool_is_registered_last() {
-        let ids = build_tool_registry()
-            .list()
-            .into_iter()
-            .map(|tool| tool.meta().id.clone())
-            .collect::<Vec<_>>();
-
-        assert_eq!(ids, ["dbclient", "vcs", "ssh", "clipboard"]);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn clipboard_tool_is_not_registered_on_linux() {
-        let ids = build_tool_registry()
-            .list()
-            .into_iter()
-            .map(|tool| tool.meta().id.clone())
-            .collect::<Vec<_>>();
-
-        assert_eq!(ids, ["dbclient", "vcs", "ssh"]);
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

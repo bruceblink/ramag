@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use super::{
     MAX_GIT_MESSAGE_BYTES, MAX_GIT_RECORD_BYTES, MAX_PARSED_GIT_ITEMS, PROGRESS_LINE_MAX_BYTES,
     command, encode_pathspecs, ensure_git_list_room, ensure_git_message_size,

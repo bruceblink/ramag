@@ -41,7 +41,7 @@ impl VcsView {
         };
         if !matches!(kind, GroupKind::Staged | GroupKind::Unstaged) {
             // Untracked / Conflict diff 在 render_diff_body 里就被替换为 placeholder，
-            // 不会渲染 hunk header，所以理论到不了这里；保险起见兜底
+            // 不会渲染 hunk header，仍保留兜底处理。
             self.error = Some("此类文件不支持 hunk 回滚".into());
             cx.notify();
             return;

@@ -35,7 +35,6 @@ pub(super) fn render_header(
     let value_ref = panel.value.as_ref();
     let read_only = panel.is_read_only();
 
-    // 元信息行（第二行）
     let mut info_row = h_flex()
         .gap(px(10.0))
         .text_xs()
@@ -137,7 +136,6 @@ pub(super) fn render_header(
         cx,
     ));
 
-    // 新增按钮（按容器类型）+ 删除 Key 按钮
     let mut header = h_flex()
         .w_full()
         .px(px(14.0))

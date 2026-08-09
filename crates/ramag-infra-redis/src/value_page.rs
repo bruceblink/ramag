@@ -1,5 +1,5 @@
 //! 导出 / 导入的全量分段读写（`KvDriver::read_value_page` / `write_value_items` 实现体）。
-//! 与 driver.rs 的受限预览路径（`get_value_limited`）互不影响：这里逐页覆盖完整内容，
+//! 与 driver.rs 的受限预览路径（`get_value_limited`）互不影响：逐页覆盖完整内容，
 //! 二进制成员经 `RedisValue::Bytes` 保真；仅实体无法表达的条目（二进制 hash field /
 //! stream field）跳过并计数
 mod value_ops;

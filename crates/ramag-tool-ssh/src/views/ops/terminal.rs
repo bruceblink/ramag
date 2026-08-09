@@ -192,6 +192,14 @@ impl SshView {
                         }
                     }
                     Err(error) => {
+                        tracing::error!(
+                            operation = "ssh_terminal_start",
+                            profile_id = %id,
+                            terminal_id = reconnect_terminal_id.unwrap_or(new_terminal_id),
+                            reconnect = reconnect_terminal_id.is_some(),
+                            error = %error,
+                            "ssh terminal session failed to start"
+                        );
                         this.notice = Some(Notice::error(format!("终端启动失败：{error}")));
                     }
                 }

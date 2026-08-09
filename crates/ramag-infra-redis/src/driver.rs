@@ -54,7 +54,7 @@ impl Default for RedisDriver {
 /// `op` 标识被拦截的操作（DEL / TTL change / 具体命令名），用于日志定位。
 fn ensure_writable(config: &ConnectionConfig, op: &str) -> Result<()> {
     if config.production {
-        warn!(conn = %config.name, op, "read-only write blocked");
+        warn!(operation = op, connection = %config.name, "read-only write blocked");
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
     Ok(())
@@ -218,7 +218,12 @@ impl KvDriver for RedisDriver {
                 .await
                 .map_err(map_redis_error)?;
             let kind = RedisType::parse(&t);
-            debug!(key_bytes = key.len(), ?kind, "value load dispatched");
+            debug!(
+                operation = "redis_value_load",
+                key_bytes = key.len(),
+                ?kind,
+                "value load dispatched"
+            );
             let total = fetch_value_len(&mut mgr, &key, kind).await?;
             let (value, byte_limited) = match kind {
                 RedisType::None => Ok((RedisValue::Nil, false)),

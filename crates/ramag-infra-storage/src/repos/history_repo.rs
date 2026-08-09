@@ -125,7 +125,7 @@ fn append_with_budget(
     write_txn
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
-    debug!(record_id = %record.id, "history appended");
+    debug!(operation = "query_history_append", record_id = %record.id, "history appended");
     Ok(())
 }
 

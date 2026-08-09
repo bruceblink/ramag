@@ -37,7 +37,6 @@ const SPLIT_SPACER_THRESHOLD: usize = 6;
 const SPLIT_SPACER_KEEP: usize = 2;
 
 /// 把 FileDiff 扁平化成 UnifiedKey 序列（hunk header + 每行）
-///
 /// `changes_only=true` 时跳过 Context 行；hunk 内全是 context（无变更）也不渲染该 hunk header
 pub(super) fn build_unified_keys(diff: &FileDiff, changes_only: bool) -> Vec<UnifiedKey> {
     let mut out = Vec::new();

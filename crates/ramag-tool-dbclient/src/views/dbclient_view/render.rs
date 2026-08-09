@@ -110,7 +110,6 @@ impl Render for DbClientView {
             .border_color(border)
             .bg(secondary_bg);
 
-        // 固定 tab：数据源管理
         let picker_btn_active = on_picker_active;
         let mut picker_tab = h_flex()
             .id("picker-tab")
@@ -166,7 +165,7 @@ impl Render for DbClientView {
             let tab_id = SharedString::from(format!("conn-tab-{idx}"));
             let close_id = SharedString::from(format!("conn-tab-close-{idx}"));
 
-            // 这里只掌握元数据树状态，不冒充实时连接健康：黄=加载中、红=失败、灰=已加载/未知。
+            // 仅掌握元数据树状态，不冒充实时连接健康：黄=加载中、红=失败、灰=已加载/未知。
             let dot_color = if h_loading {
                 gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
             } else if h_error {

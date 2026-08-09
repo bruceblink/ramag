@@ -92,7 +92,7 @@ pub(super) async fn cleanup_remote(session: &StructuredSftpSession, path: &str) 
                 if status.status_code == russh_sftp::protocol::StatusCode::NoSuchFile
         )
     {
-        tracing::warn!(error = %error, "cleanup ssh remote temporary file failed");
+        tracing::warn!(operation = "ssh_transfer_commit_cleanup", stage = "remote", error = %error, "cleanup ssh remote temporary file failed");
     }
 }
 
@@ -100,7 +100,7 @@ pub(super) async fn cleanup_local(path: &Path) {
     if let Err(error) = tokio::fs::remove_file(path).await
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        tracing::warn!(error = %error, "cleanup ssh local temporary file failed");
+        tracing::warn!(operation = "ssh_transfer_commit_cleanup", stage = "local", error = %error, "cleanup ssh local temporary file failed");
     }
 }
 

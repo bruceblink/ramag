@@ -261,7 +261,6 @@ impl HistoryList {
             .border_b_1()
             .border_color(border)
             .hover(move |s| s.bg(muted_bg))
-            // 状态点：成功绿 / 失败红
             .child(
                 div()
                     .w(px(8.0))
@@ -270,7 +269,6 @@ impl HistoryList {
                     .bg(status_color)
                     .flex_none(),
             )
-            // 文本块：SQL 预览 + 元信息，各自单行截断
             .child(
                 v_flex()
                     .flex_1()
@@ -293,7 +291,6 @@ impl HistoryList {
                             .child(meta),
                     ),
             )
-            // 行操作
             .child(
                 h_flex()
                     .flex_none()

@@ -1,15 +1,11 @@
 //! 业务用例编排。
 
 /// 连接失败时清除缓存并重试一次幂等读操作。
-///
 /// 必须用宏而非 async 闭包助手：闭包捕获 &self / &config 后，在 `background_spawn` 等 Send
 /// 上下文会触发「Send is not general enough」（async 闭包 + HRTB 的编译器限制）；宏直接把
 /// 操作内联进 async fn，无此问题。
-///
 /// 仅限幂等读；写操作重试可能导致重复执行。
-///
 /// 用法：`retry_idempotent_read!(config.id, self.evict_pool(config), self.driver.xxx(..).await)`
-///
 /// 定义在子模块之前，使各服务可按 `macro_rules!` 文本作用域直接调用。
 macro_rules! retry_idempotent_read {
     ($conn_id:expr, $evict:expr, $op:expr) => {{

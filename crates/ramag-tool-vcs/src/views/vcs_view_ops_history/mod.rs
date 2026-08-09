@@ -118,7 +118,6 @@ impl VcsView {
                 }
                 match files {
                     Ok(files) => {
-                        // 默认不选中任何文件，等用户主动点击
                         this.commit_files = std::rc::Rc::new(files);
                         this.commit_files_rows_cache.get_mut().take();
                     }

@@ -198,7 +198,7 @@ async fn download_verified_asset(
         if let Err(cleanup_error) = tokio::fs::remove_file(&partial).await
             && cleanup_error.kind() != std::io::ErrorKind::NotFound
         {
-            tracing::warn!(error = %cleanup_error, path = %partial.display(), "cleanup partial update failed");
+            tracing::warn!(operation = "application_update_cleanup", error = %cleanup_error, path = %partial.display(), "cleanup partial update failed");
         }
         return Err(error);
     }

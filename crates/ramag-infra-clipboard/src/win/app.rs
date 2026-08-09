@@ -256,6 +256,7 @@ fn send_ctrl_v() -> Result<()> {
             let released = unsafe { SendInput(&releases, size_of::<INPUT>() as i32) } as usize;
             if released != releases.len() {
                 warn!(
+                    operation = "clipboard_paste_partial_release",
                     released,
                     expected = releases.len(),
                     "release partial paste keys failed"
@@ -291,15 +292,21 @@ pub fn post_ctrl_v_delayed(delay_ms: u64, target: &str) -> Result<()> {
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             if !wait_for_modifier_release() {
-                warn!("skip ctrl-v because a modifier key is still pressed");
+                warn!(
+                    operation = "clipboard_paste_modifier_guard",
+                    "skip ctrl-v because a modifier key is still pressed"
+                );
                 return;
             }
             if !target_is_foreground(window, pid) {
-                warn!("skip ctrl-v because original window is no longer foreground");
+                warn!(
+                    operation = "clipboard_paste_foreground_guard",
+                    "skip ctrl-v because original window is no longer foreground"
+                );
                 return;
             }
             if let Err(e) = send_ctrl_v() {
-                warn!(error = %e, "send ctrl-v failed");
+                warn!(operation = "clipboard_paste_send", error = %e, "send ctrl-v failed");
             }
         })
         .map(|_| ())

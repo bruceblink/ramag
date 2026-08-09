@@ -327,7 +327,11 @@ impl Drop for LogPager {
         if let Some(reader) = self.stderr_reader.take()
             && reader.join().is_err()
         {
-            tracing::warn!("git log stderr reader panicked during cleanup");
+            tracing::warn!(
+                operation = "vcs_git_log_cleanup",
+                stage = "stderr_reader",
+                "git log stderr reader panicked during cleanup"
+            );
         }
     }
 }

@@ -361,7 +361,7 @@ pub(crate) async fn read_directory_files(
         if result.is_ok() || matches!(close_error, DomainError::ConnectionFailed(_)) {
             return Err(close_error);
         }
-        tracing::warn!(error = %close_error, "close ssh sftp directory handle failed");
+        tracing::warn!(operation = "ssh_sftp_directory_close", error = %close_error, "close ssh sftp directory handle failed");
     }
     result
 }

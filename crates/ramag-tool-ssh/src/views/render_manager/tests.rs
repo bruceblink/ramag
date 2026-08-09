@@ -1,5 +1,3 @@
-//! 拆分后的测试模块。
-
 use ramag_domain::entities::{RemotePlatformPreference, SshAuthMode, SshProfile, SshProfileOrigin};
 
 use super::{

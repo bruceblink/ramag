@@ -263,6 +263,7 @@ pub async fn update_one(
         .await
         .map_err(map_mongo_error)?;
     tracing::info!(
+        operation = "mongo_update",
         db = db,
         coll = coll,
         matched = r.matched_count,

@@ -447,7 +447,6 @@ fn repo_row(
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             this.open_recent_repo(path_for_open.clone(), cx);
         }))
-        // 类型 badge（76px 与 dbclient 对齐）
         .child(
             div().flex_none().w(px(76.0)).flex().justify_center().child(
                 div()
@@ -460,7 +459,6 @@ fn repo_row(
                     .child("Git"),
             ),
         )
-        // 名称（最重要，flex_1 占主空间，加粗）
         .child(
             div()
                 .flex_1()

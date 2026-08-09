@@ -186,7 +186,7 @@ impl SharedState {
         if let Some(sender) = self.sender.lock().as_ref()
             && let Err(error) = sender.send(Msg::Input(Cow::Owned(input.into_bytes())))
         {
-            tracing::warn!(error = %error, "send terminal protocol response failed");
+            tracing::warn!(operation = "terminal_protocol_response", error = %error, "send terminal protocol response failed");
         }
     }
 

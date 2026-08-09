@@ -141,7 +141,7 @@ impl<Db: Database> PoolCache<Db> {
             false
         };
         if removed {
-            info!(connection_id = %id, "pool evicted");
+            info!(operation = "sql_pool_evict", connection_id = %id, "pool evicted");
         }
     }
 }

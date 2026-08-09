@@ -43,7 +43,6 @@ pub const MAX_SSH_FAVORITE_PATHS_PER_PROFILE: usize = 16;
 pub const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 
 /// SSH 模块级通用配置。
-///
 /// 该配置不属于单个连接，修改后对所有 SSH/SFTP 连接生效。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SshModuleSettings {

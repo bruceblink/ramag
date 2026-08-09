@@ -75,7 +75,7 @@ impl DatabaseSearchSettings {
         serde_json::to_string(self).map_err(|error| format!("序列化数据库搜索设置失败：{error}"))
     }
 
-    /// 这里只校验可持久化契约；文件存在性在用户保存时放到后台检查。
+    /// 仅校验可持久化契约；文件存在性在用户保存时放到后台检查。
     pub fn validate(&self) -> Result<(), String> {
         self.converter.validate_storable()?;
         if self.id_conversion_enabled {

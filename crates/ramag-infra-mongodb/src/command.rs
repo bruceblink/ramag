@@ -1,6 +1,6 @@
 //! MongoDB 命令分类，用于生产模式的只读保护。
 //! 命令是 runCommand 风格 JSON（顶层第一个 key 即命令名）。为避开 serde_json 无 preserve_order
-//! 时 Object 的 key 顺序问题，这里遍历全部顶层 key 匹配写命令名（命令参数是 value，不会误判）。
+//! 时 Object 的 key 顺序问题，遍历全部顶层 key 匹配写命令名（命令参数是 value，不会误判）。
 //! 特例：`aggregate` 本身只读，但 pipeline 含 `$out` / `$merge` 会写出集合，需单独识别
 
 use serde_json::Value;

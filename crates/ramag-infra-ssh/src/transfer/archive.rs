@@ -400,20 +400,25 @@ where
         Ok(Ok(metadata)) => metadata.attrs,
         Ok(Err(error)) => {
             if let Err(close_error) = session.raw.close(handle).await {
-                tracing::warn!(error = %close_error, "close ssh archive source after metadata failure failed");
+                tracing::warn!(
+                    operation = "ssh_archive_file_append",
+                    stage = "metadata_close",
+                    error = %close_error,
+                    "close ssh archive source after metadata failure failed"
+                );
             }
             return Err(map_sftp_error("确认远程归档文件", error));
         }
         Err(error) => {
             if let Err(close_error) = session.raw.close(handle).await {
-                tracing::warn!(error = %close_error, "close cancelled ssh archive source failed");
+                tracing::warn!(operation = "ssh_archive_file_append", stage = "cancelled", error = %close_error, "close cancelled ssh archive source failed");
             }
             return Err(error);
         }
     };
     if !opened.is_regular() || opened.len() != entry.attributes.len() {
         if let Err(error) = session.raw.close(handle).await {
-            tracing::warn!(error = %error, "close changed ssh archive source failed");
+            tracing::warn!(operation = "ssh_archive_file_append", stage = "changed_source", error = %error, "close changed ssh archive source failed");
         }
         return Err(DomainError::Forbidden("目录内容已变化，请重新下载".into()));
     }
@@ -574,23 +579,5 @@ fn map_archive_io(context: &str, error: io::Error) -> DomainError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn archive_links_cannot_escape_target_directory() {
-        for target in ["/etc/passwd", "../secret", "a/../../secret", "a\\secret"] {
-            assert!(validate_link_target(target).is_err(), "{target}");
-        }
-        assert!(validate_link_target("config/current.yml").is_ok());
-    }
-
-    #[test]
-    fn archive_path_budget_is_bounded() {
-        let mut retained = 0;
-        let path = async_std::path::Path::new("root/file");
-        assert!(charge_path_bytes(&mut retained, "/root/file", path, 1024).is_ok());
-        let limit = retained;
-        assert!(charge_path_bytes(&mut retained, "/root/file", path, limit).is_err());
-    }
-}
+#[path = "archive/tests.rs"]
+mod tests;

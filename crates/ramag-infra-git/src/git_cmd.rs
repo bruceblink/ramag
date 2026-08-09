@@ -483,7 +483,11 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
             .err()
             .map_or_else(String::new, |error| format!("；清理失败：{error}"));
         if stderr_reader.join().is_err() {
-            tracing::warn!("git stderr reader panicked during cleanup");
+            tracing::warn!(
+                operation = "vcs_git_process_cleanup",
+                stage = "stderr_reader",
+                "git stderr reader panicked during cleanup"
+            );
         }
         return Err(DomainError::QueryFailed(format!(
             "写入 git stdin 失败: {e}{cleanup}"
@@ -536,7 +540,11 @@ fn record_progress_line(
     }
     match progress.lock() {
         Ok(mut slot) => *slot = text.clone(),
-        Err(_) => tracing::warn!("git progress lock poisoned"),
+        Err(_) => tracing::warn!(
+            operation = "vcs_git_progress",
+            reason = "lock_poisoned",
+            "git progress lock poisoned"
+        ),
     }
     if last_lines.len() == 8 {
         last_lines.pop_front();
