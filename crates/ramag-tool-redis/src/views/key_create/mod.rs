@@ -260,7 +260,14 @@ impl KeyCreateForm {
                 Err(error) => {
                     let _ = this.update(cx, |this, cx| {
                         this.set_child_editors_disabled(false, cx);
-                        error!(error = %error, key_bytes = key.len(), "create key precheck failed");
+                        error!(
+                            operation = "redis_key_create",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "create key precheck failed"
+                        );
                         this.state =
                             SubmitState::Failed(error.write_hint("创建前检查 Key 类型失败"));
                         cx.notify();
@@ -277,6 +284,9 @@ impl KeyCreateForm {
                 let _ = this.update(cx, |this, cx| {
                     this.set_child_editors_disabled(false, cx);
                     error!(
+                        operation = "redis_key_create",
+                        connection_id = %config.id,
+                        db,
                         existing_type = existing.label(),
                         intended_type = intended_type.label(),
                         key_bytes = key.len(),
@@ -318,14 +328,27 @@ impl KeyCreateForm {
             };
             let _ = this.update(cx, |this, cx| match outcome {
                 CreateOutcome::Created => {
-                    info!(key_bytes = key.len(), ?ttl, "key created");
+                    info!(
+                        operation = "redis_key_create",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        ?ttl,
+                        "key created"
+                    );
                     cx.emit(KeyCreateEvent::Created {
                         key: key.clone(),
                         ttl_warning: None,
                     });
                 }
                 CreateOutcome::CreatedWithTtlWarning(warning) => {
-                    tracing::warn!(key_bytes = key.len(), "key created with TTL warning");
+                    tracing::warn!(
+                        operation = "redis_key_create",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        "key created with TTL warning"
+                    );
                     cx.emit(KeyCreateEvent::Created {
                         key: key.clone(),
                         ttl_warning: Some(warning),
@@ -333,7 +356,14 @@ impl KeyCreateForm {
                 }
                 CreateOutcome::Failed(msg) => {
                     this.set_child_editors_disabled(false, cx);
-                    error!(error = %msg, "create key failed");
+                    error!(
+                        operation = "redis_key_create",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes = key.len(),
+                        error = %msg,
+                        "create key failed"
+                    );
                     this.state = SubmitState::Failed(msg);
                     cx.notify();
                 }

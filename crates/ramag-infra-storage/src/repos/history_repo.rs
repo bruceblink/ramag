@@ -228,6 +228,10 @@ pub(crate) fn delete(db: Arc<Database>, id: QueryRecordId) -> Result<()> {
 }
 
 pub(crate) fn clear(db: Arc<Database>, conn_filter: Option<ConnectionId>) -> Result<()> {
+    let scope = conn_filter
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "all".into());
     let write_txn = db
         .begin_write()
         .map_err(|e| DomainError::Storage(format!("启动写事务失败：{e}")))?;
@@ -304,7 +308,7 @@ pub(crate) fn clear(db: Arc<Database>, conn_filter: Option<ConnectionId>) -> Res
     write_txn
         .commit()
         .map_err(|e| DomainError::Storage(format!("提交事务失败：{e}")))?;
-    info!("history cleared");
+    info!(operation = "query_history_clear", scope = %scope, "history cleared");
     Ok(())
 }
 

@@ -440,7 +440,11 @@ impl VcsView {
         }
         match result {
             Ok(()) => {
-                info!("remote configuration updated");
+                info!(
+                    operation = "git_remote_update",
+                    repo_id = %repo,
+                    "remote configuration updated"
+                );
                 if clear_inputs {
                     self.pending_clear_creation_inputs = true;
                 }
@@ -448,7 +452,12 @@ impl VcsView {
                 self.reload_remotes(cx);
             }
             Err(e) => {
-                error!(error = %e, "remote configuration update failed");
+                error!(
+                    operation = "git_remote_update",
+                    repo_id = %repo,
+                    error = %e,
+                    "remote configuration update failed"
+                );
                 self.error = Some(format!("远程操作失败：{e}"));
             }
         }

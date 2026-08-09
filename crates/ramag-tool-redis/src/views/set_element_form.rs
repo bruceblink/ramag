@@ -83,19 +83,36 @@ impl SetElementForm {
         let config = self.config.clone();
         let db = self.db;
         let key = self.key.clone();
+        let key_bytes = key.len();
+        let element_count = dedup.len();
         let mut argv = vec!["SADD".to_string(), key];
         argv.extend(dedup);
         cx.spawn(async move |this, cx| {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!("set elements added");
+                    info!(
+                        operation = "redis_set_add",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        element_count,
+                        "set elements added"
+                    );
                     cx.emit(SetElementFormEvent::Saved);
                 }
                 Err(e) => {
                     this.editor
                         .update(cx, |editor, cx| editor.set_disabled(false, cx));
-                    error!(error = %e, "add set element failed");
+                    error!(
+                        operation = "redis_set_add",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        element_count,
+                        error = %e,
+                        "add set element failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

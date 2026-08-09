@@ -66,6 +66,7 @@ pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
         return Err(error);
     }
     debug!(
+        repo = %repo_path.display(),
         operation = args.first().copied().unwrap_or("unknown"),
         bytes = output.stdout.len(),
         elapsed_ms = started.elapsed().as_millis(),
@@ -88,6 +89,7 @@ pub(crate) fn run_git_probe(repo_path: &Path, args: &[&str]) -> Result<bool> {
 
 fn run_git_output(repo_path: &Path, args: &[&str]) -> Result<Output> {
     debug!(
+        repo = %repo_path.display(),
         operation = args.first().copied().unwrap_or("unknown"),
         arg_count = args.len(),
         "git subprocess"

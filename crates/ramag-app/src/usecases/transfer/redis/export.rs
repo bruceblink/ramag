@@ -1,4 +1,5 @@
 use super::*;
+use tracing::{info, warn};
 
 impl RedisExportScope {
     pub(super) fn contains(&self, key: &str) -> bool {
@@ -40,8 +41,16 @@ pub async fn export_redis_db(
     let start = Instant::now();
     ensure_redis(config)?;
     let total_keys = svc.db_size(config, db).await?;
+    info!(
+        operation = "redis_export",
+        connection_id = %config.id,
+        db,
+        path = %path.display(),
+        total_keys,
+        "transfer started"
+    );
 
-    with_export_sink(path, |mut sink| async move {
+    let result = with_export_sink(path, |mut sink| async move {
         let mut summary = TransferSummary::default();
         let mut reporter = Reporter::new(progress);
         reporter.snapshot.objects_total = Some(total_keys);
@@ -77,7 +86,30 @@ pub async fn export_redis_db(
         sink.finish()?;
         Ok(finish_summary(summary, start))
     })
-    .await
+    .await;
+    match &result {
+        Ok(summary) => info!(
+            operation = "redis_export",
+            connection_id = %config.id,
+            db,
+            path = %path.display(),
+            objects = summary.objects,
+            items = summary.items,
+            failed = summary.failed,
+            cancelled = summary.cancelled,
+            elapsed_ms = summary.elapsed_ms,
+            "transfer finished"
+        ),
+        Err(error) => warn!(
+            operation = "redis_export",
+            connection_id = %config.id,
+            db,
+            path = %path.display(),
+            error = %error,
+            "transfer failed"
+        ),
+    }
+    result
 }
 
 pub(crate) enum KeyOutcome {

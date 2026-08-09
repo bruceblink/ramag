@@ -18,6 +18,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use std::collections::{HashMap, HashSet};
+use tracing::{info, warn};
 
 use super::sql_catalog::parse_marker;
 use super::{MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, read_line_bounded};
@@ -244,6 +245,13 @@ async fn import_sql(
 ) -> Result<TransferSummary> {
     let start = Instant::now();
     if config.production {
+        warn!(
+            operation = "sql_import",
+            connection_id = %config.id,
+            driver = ?config.driver,
+            path = %path.display(),
+            "read-only import blocked"
+        );
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
     if !matches!(config.driver, DriverKind::Mysql | DriverKind::Postgres) {
@@ -251,6 +259,16 @@ async fn import_sql(
             ".sql 导入仅支持 MySQL / PostgreSQL 连接".into(),
         ));
     }
+    info!(
+        operation = "sql_import",
+        connection_id = %config.id,
+        driver = ?config.driver,
+        target_schema = fallback_schema.unwrap_or("-"),
+        target_table = expected_table.unwrap_or("*"),
+        policy = ?policy,
+        path = %path.display(),
+        "transfer started"
+    );
     let file = std::fs::File::open(path)
         .map_err(|error| DomainError::Storage(format!("打开导入文件失败：{error}")))?;
     let mut reader = BufReader::with_capacity(256 * 1024, file);
@@ -447,7 +465,18 @@ async fn import_sql(
         }
         if is_cancelled(cancel) {
             summary.cancelled = true;
-            return Ok(finish_summary(summary, start));
+            let summary = finish_summary(summary, start);
+            info!(
+                operation = "sql_import",
+                connection_id = %config.id,
+                objects = summary.objects,
+                items = summary.items,
+                failed = summary.failed,
+                cancelled = true,
+                elapsed_ms = summary.elapsed_ms,
+                "transfer finished"
+            );
+            return Ok(summary);
         }
     }
 
@@ -459,7 +488,18 @@ async fn import_sql(
 
     reporter.snapshot.items_done = summary.items;
     reporter.emit();
-    Ok(finish_summary(summary, start))
+    let summary = finish_summary(summary, start);
+    info!(
+        operation = "sql_import",
+        connection_id = %config.id,
+        objects = summary.objects,
+        items = summary.items,
+        failed = summary.failed,
+        cancelled = summary.cancelled,
+        elapsed_ms = summary.elapsed_ms,
+        "transfer finished"
+    );
+    Ok(summary)
 }
 
 #[cfg(test)]

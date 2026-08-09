@@ -185,7 +185,12 @@ impl VcsView {
                 .await
             {
                 Ok(rc) => {
-                    tracing::info!("clone completed");
+                    tracing::info!(
+                        operation = "git_clone",
+                        repo_id = %rc.id,
+                        path = %rc.path,
+                        "clone completed"
+                    );
                     let current = this
                         .update(cx, |this, cx| {
                             if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
@@ -205,9 +210,18 @@ impl VcsView {
                 Err(e) => {
                     let cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
                     if cancelled {
-                        tracing::info!("clone cancelled by user");
+                        tracing::info!(
+                            operation = "git_clone",
+                            destination = %dest.display(),
+                            "clone cancelled by user"
+                        );
                     } else {
-                        tracing::error!(error = %e, "clone failed");
+                        tracing::error!(
+                            operation = "git_clone",
+                            destination = %dest.display(),
+                            error = %e,
+                            "clone failed"
+                        );
                     }
                     let _ = this.update(cx, |this, cx| {
                         if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {

@@ -1,4 +1,5 @@
 use super::*;
+use tracing::{info, warn};
 
 pub async fn export_mongo_database(
     svc: &MongoService,
@@ -35,6 +36,14 @@ async fn export_mongo(
 ) -> Result<TransferSummary> {
     let start = Instant::now();
     ensure_mongo(config)?;
+    info!(
+        operation = "mongo_export",
+        connection_id = %config.id,
+        db,
+        target = target_collection.unwrap_or("*"),
+        path = %path.display(),
+        "transfer started"
+    );
     // 集合清单与完整创建选项并发读取；整库场景只发一次 listCollections，避免逐集合往返。
     let (collections, collection_options) = futures::try_join!(
         svc.list_collections(config, db),
@@ -67,7 +76,7 @@ async fn export_mongo(
         ),
     };
 
-    with_export_sink(path, |mut sink| async move {
+    let result = with_export_sink(path, |mut sink| async move {
         let mut summary = TransferSummary::default();
         let mut reporter = Reporter::new(progress);
         reporter.snapshot.objects_total = Some(collection_names.len() as u64);
@@ -159,5 +168,30 @@ async fn export_mongo(
         sink.finish()?;
         Ok(finish_summary(summary, start))
     })
-    .await
+    .await;
+    match &result {
+        Ok(summary) => info!(
+            operation = "mongo_export",
+            connection_id = %config.id,
+            db,
+            target = target_collection.unwrap_or("*"),
+            path = %path.display(),
+            objects = summary.objects,
+            items = summary.items,
+            failed = summary.failed,
+            cancelled = summary.cancelled,
+            elapsed_ms = summary.elapsed_ms,
+            "transfer finished"
+        ),
+        Err(error) => warn!(
+            operation = "mongo_export",
+            connection_id = %config.id,
+            db,
+            target = target_collection.unwrap_or("*"),
+            path = %path.display(),
+            error = %error,
+            "transfer failed"
+        ),
+    }
+    result
 }

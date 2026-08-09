@@ -396,7 +396,11 @@ pub(crate) fn clear(db: Arc<Database>) -> Result<()> {
     ensure_table(&write_txn)?;
     search::mark_ready(&write_txn)?;
     write_txn.commit().map_err(store_err)?;
-    info!("clipboard entries cleared");
+    info!(
+        operation = "clipboard_history_clear",
+        scope = "all",
+        "clipboard entries cleared"
+    );
     Ok(())
 }
 

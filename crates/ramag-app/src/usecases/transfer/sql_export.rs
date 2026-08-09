@@ -13,12 +13,6 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use ramag_domain::entities::{
-    Column, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
-    TRANSFER_BATCH_ITEMS, Table, TransferSummary, Value, build_ddl_query,
-};
-use ramag_domain::error::{DomainError, Result};
-
 use super::sql_catalog::{
     PgSequenceInfo, begin_marker, first_column_strings, generated_columns_query,
     parse_pg_sequences, parse_show_create, pg_comments_query, pg_enum_types_query,
@@ -29,6 +23,12 @@ use super::{
     ExportSink, MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, with_export_sink,
 };
 use crate::usecases::ConnectionService;
+use ramag_domain::entities::{
+    Column, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
+    TRANSFER_BATCH_ITEMS, Table, TransferSummary, Value, build_ddl_query,
+};
+use ramag_domain::error::{DomainError, Result};
+use tracing::info;
 
 const PAGE_ROWS: u32 = TRANSFER_BATCH_ITEMS as u32;
 const INSERT_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
@@ -98,6 +98,15 @@ async fn export_sql(
             "按库导出仅支持 MySQL / PostgreSQL 连接".into(),
         ));
     }
+    info!(
+        operation = "sql_export",
+        connection_id = %config.id,
+        driver = ?driver,
+        schema,
+        target = target_table.unwrap_or("*"),
+        path = %path.display(),
+        "transfer started"
+    );
     let all = svc.list_tables(config, schema).await?;
     let (tables, views): (Vec<Table>, Vec<Table>) = match target_table {
         Some(name) => {

@@ -81,6 +81,8 @@ impl StreamEntryForm {
         let config = self.config.clone();
         let db = self.db;
         let key = self.key.clone();
+        let key_bytes = key.len();
+        let pair_count = pairs.len();
         // 命令格式：XADD key * field1 value1 field2 value2 ...
         let mut argv = vec!["XADD".to_string(), key, "*".to_string()];
         for (f, v) in pairs {
@@ -91,13 +93,28 @@ impl StreamEntryForm {
             let result = svc.execute_command(&config, db, argv).await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(_) => {
-                    info!("stream entry added");
+                    info!(
+                        operation = "redis_stream_add",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        pair_count,
+                        "stream entry added"
+                    );
                     cx.emit(StreamEntryFormEvent::Saved);
                 }
                 Err(e) => {
                     this.editor
                         .update(cx, |editor, cx| editor.set_disabled(false, cx));
-                    error!(error = %e, "add stream entry failed");
+                    error!(
+                        operation = "redis_stream_add",
+                        connection_id = %config.id,
+                        db,
+                        key_bytes,
+                        pair_count,
+                        error = %e,
+                        "add stream entry failed"
+                    );
                     this.state = SubmitState::Failed(e.write_hint("写入失败"));
                     cx.notify();
                 }

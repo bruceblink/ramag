@@ -375,8 +375,21 @@ impl QueryTab {
                     cx.notify();
                 });
                 match outcome {
-                    Ok(()) => info!(thread_id = tid, "server query cancellation confirmed"),
-                    Err(e) => tracing::warn!(error = %e, thread_id = tid, "server query cancellation failed"),
+                    Ok(()) => info!(
+                        operation = "sql_query_cancel",
+                        connection_id = %conn.id,
+                        driver = ?conn.driver,
+                        thread_id = tid,
+                        "server query cancellation confirmed"
+                    ),
+                    Err(e) => tracing::warn!(
+                        operation = "sql_query_cancel",
+                        connection_id = %conn.id,
+                        driver = ?conn.driver,
+                        thread_id = tid,
+                        error = %e,
+                        "server query cancellation failed"
+                    ),
                 }
             })
             .detach();
@@ -393,7 +406,10 @@ impl QueryTab {
         self.result.update(cx, |r, cx| {
             r.set_state(ResultState::Empty, cx);
         });
-        info!("client query wait cancelled");
+        info!(
+            operation = "sql_query_cancel",
+            "client query wait cancelled"
+        );
         cx.notify();
     }
 

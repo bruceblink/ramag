@@ -1,4 +1,5 @@
 use super::*;
+use tracing::{info, warn};
 
 /// 集合级裸 JSONL 导入：每行一个文档（兼容 Extended JSON），与结果区导出配对。
 /// Skip=重复 _id 跳过、Overwrite=先清空集合文档（保留索引）再导入、Fail=遇重复即停；
@@ -16,8 +17,24 @@ pub async fn import_jsonl_into_collection(
     let (db, coll) = target;
     ensure_mongo(config)?;
     if config.production {
+        warn!(
+            operation = "mongo_jsonl_import",
+            connection_id = %config.id,
+            database = %db,
+            collection = %coll,
+            "read-only import blocked"
+        );
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
+    info!(
+        operation = "mongo_jsonl_import",
+        connection_id = %config.id,
+        database = %db,
+        collection = %coll,
+        policy = ?policy,
+        path = %path.display(),
+        "transfer started"
+    );
     let file = std::fs::File::open(path)
         .map_err(|error| DomainError::Storage(format!("打开导入文件失败：{error}")))?;
     let mut reader = std::io::BufReader::with_capacity(256 * 1024, file);
@@ -144,7 +161,20 @@ pub async fn import_jsonl_into_collection(
         summary.skipped += duplicates;
         summary.push_warning(format!("{duplicates} 条重复 _id 已跳过"));
     }
-    Ok(finish_summary(summary, start))
+    let summary = finish_summary(summary, start);
+    info!(
+        operation = "mongo_jsonl_import",
+        connection_id = %config.id,
+        database = %db,
+        collection = %coll,
+        objects = summary.objects,
+        items = summary.items,
+        failed = summary.failed,
+        cancelled = summary.cancelled,
+        elapsed_ms = summary.elapsed_ms,
+        "transfer finished"
+    );
+    Ok(summary)
 }
 
 /// 提交集合导入批次；`Fail` 遇错即停，其他策略记录警告后继续。

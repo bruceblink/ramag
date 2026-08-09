@@ -24,6 +24,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
+use tracing::{info, warn};
 
 use super::{
     Reporter, finish_summary, is_cancelled, read_line_bounded, with_export_sink, write_json_line,
@@ -66,6 +67,12 @@ pub async fn import_mongo_database(
     let start = Instant::now();
     ensure_mongo(config)?;
     if config.production {
+        warn!(
+            operation = "mongo_import",
+            connection_id = %config.id,
+            path = %path.display(),
+            "read-only import blocked"
+        );
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
     let file = std::fs::File::open(path)
@@ -98,6 +105,14 @@ pub async fn import_mongo_database(
         .ok_or_else(|| DomainError::InvalidConfig("文件头缺少 database 字段".into()))?
         .to_string();
     let db = target_db.unwrap_or(&file_db).to_string();
+    info!(
+        operation = "mongo_import",
+        connection_id = %config.id,
+        database = %db,
+        policy = ?policy,
+        path = %path.display(),
+        "transfer started"
+    );
 
     let existing: std::collections::HashSet<String> = svc
         .list_collections(config, &db)
@@ -135,7 +150,19 @@ pub async fn import_mongo_database(
             }
             if is_cancelled(cancel) {
                 summary.cancelled = true;
-                return Ok(finish_summary(summary, start));
+                let summary = finish_summary(summary, start);
+                info!(
+                    operation = "mongo_import",
+                    connection_id = %config.id,
+                    database = %db,
+                    objects = summary.objects,
+                    items = summary.items,
+                    failed = summary.failed,
+                    cancelled = true,
+                    elapsed_ms = summary.elapsed_ms,
+                    "transfer finished"
+                );
+                return Ok(summary);
             }
             validate_mongo_collection_name(name)?;
             if !seen_collections.insert(name.to_string()) {
@@ -228,7 +255,19 @@ pub async fn import_mongo_database(
                 reporter.emit();
                 if is_cancelled(cancel) {
                     summary.cancelled = true;
-                    return Ok(finish_summary(summary, start));
+                    let summary = finish_summary(summary, start);
+                    info!(
+                        operation = "mongo_import",
+                        connection_id = %config.id,
+                        database = %db,
+                        objects = summary.objects,
+                        items = summary.items,
+                        failed = summary.failed,
+                        cancelled = true,
+                        elapsed_ms = summary.elapsed_ms,
+                        "transfer finished"
+                    );
+                    return Ok(summary);
                 }
             }
             ctx.batch_bytes = ctx.batch_bytes.saturating_add(trimmed.len());
@@ -239,7 +278,19 @@ pub async fn import_mongo_database(
                 reporter.emit();
                 if is_cancelled(cancel) {
                     summary.cancelled = true;
-                    return Ok(finish_summary(summary, start));
+                    let summary = finish_summary(summary, start);
+                    info!(
+                        operation = "mongo_import",
+                        connection_id = %config.id,
+                        database = %db,
+                        objects = summary.objects,
+                        items = summary.items,
+                        failed = summary.failed,
+                        cancelled = true,
+                        elapsed_ms = summary.elapsed_ms,
+                        "transfer finished"
+                    );
+                    return Ok(summary);
                 }
             }
             continue;
@@ -260,7 +311,19 @@ pub async fn import_mongo_database(
         )));
     }
     reporter.emit();
-    Ok(finish_summary(summary, start))
+    let summary = finish_summary(summary, start);
+    info!(
+        operation = "mongo_import",
+        connection_id = %config.id,
+        database = %db,
+        objects = summary.objects,
+        items = summary.items,
+        failed = summary.failed,
+        cancelled = summary.cancelled,
+        elapsed_ms = summary.elapsed_ms,
+        "transfer finished"
+    );
+    Ok(summary)
 }
 
 fn read_export_header(path: &Path) -> Result<Value> {

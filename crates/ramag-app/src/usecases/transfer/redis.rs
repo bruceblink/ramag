@@ -26,6 +26,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use serde_json::{Value, json};
+use tracing::{info, warn};
 
 use super::{
     Reporter, finish_summary, is_cancelled, read_line_bounded, with_export_sink, write_json_line,
@@ -57,6 +58,12 @@ pub async fn import_redis_db(
     let start = Instant::now();
     ensure_redis(config)?;
     if config.production {
+        warn!(
+            operation = "redis_import",
+            connection_id = %config.id,
+            path = %path.display(),
+            "read-only import blocked"
+        );
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
     if policy == ConflictPolicy::Merge {
@@ -92,6 +99,14 @@ pub async fn import_redis_db(
     let file_db = u8::try_from(file_db)
         .map_err(|_| DomainError::InvalidConfig("Redis 导出文件头的 db 超出 0–255 范围".into()))?;
     let db = target_db.unwrap_or(file_db);
+    info!(
+        operation = "redis_import",
+        connection_id = %config.id,
+        db,
+        policy = ?policy,
+        path = %path.display(),
+        "transfer started"
+    );
 
     let mut summary = TransferSummary::default();
     let mut reporter = Reporter::new(progress);
@@ -134,7 +149,19 @@ pub async fn import_redis_db(
             }
             if is_cancelled(cancel) {
                 summary.cancelled = true;
-                return Ok(finish_summary(summary, start));
+                let summary = finish_summary(summary, start);
+                info!(
+                    operation = "redis_import",
+                    connection_id = %config.id,
+                    db,
+                    objects = summary.objects,
+                    items = summary.items,
+                    failed = summary.failed,
+                    cancelled = true,
+                    elapsed_ms = summary.elapsed_ms,
+                    "transfer finished"
+                );
+                return Ok(summary);
             }
             let mut ctx = KeyCtx {
                 key: key.to_string(),
@@ -207,7 +234,19 @@ pub async fn import_redis_db(
         }
         if is_cancelled(cancel) {
             summary.cancelled = true;
-            return Ok(finish_summary(summary, start));
+            let summary = finish_summary(summary, start);
+            info!(
+                operation = "redis_import",
+                connection_id = %config.id,
+                db,
+                objects = summary.objects,
+                items = summary.items,
+                failed = summary.failed,
+                cancelled = true,
+                elapsed_ms = summary.elapsed_ms,
+                "transfer finished"
+            );
+            return Ok(summary);
         }
     }
     if let Some(ctx) = current.take() {
@@ -215,7 +254,19 @@ pub async fn import_redis_db(
     }
     reporter.snapshot.items_done = summary.items;
     reporter.emit();
-    Ok(finish_summary(summary, start))
+    let summary = finish_summary(summary, start);
+    info!(
+        operation = "redis_import",
+        connection_id = %config.id,
+        db,
+        objects = summary.objects,
+        items = summary.items,
+        failed = summary.failed,
+        cancelled = summary.cancelled,
+        elapsed_ms = summary.elapsed_ms,
+        "transfer finished"
+    );
+    Ok(summary)
 }
 
 struct KeyCtx {

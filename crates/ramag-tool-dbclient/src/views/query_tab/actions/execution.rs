@@ -32,7 +32,15 @@ impl QueryTab {
                     .map(TotalRows::Known)
                     .unwrap_or(TotalRows::Unavailable),
                 Err(e) => {
-                    warn!(error = %e, "count query failed");
+                    warn!(
+                        operation = "sql_count",
+                        connection_id = %conn.id,
+                        driver = ?conn.driver,
+                        schema = query.default_schema.as_deref().unwrap_or("-"),
+                        sql_bytes = query.sql.len(),
+                        error = %e,
+                        "count query failed"
+                    );
                     TotalRows::Unavailable
                 }
             };
@@ -184,6 +192,11 @@ impl QueryTab {
                             None
                         };
                         info!(
+                            operation = "sql_query",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = query.default_schema.as_deref().unwrap_or("-"),
+                            sql_bytes = query.sql.len(),
                             rows = qr.rows.len(),
                             elapsed_ms = qr.elapsed_ms,
                             "query completed"
@@ -208,7 +221,15 @@ impl QueryTab {
                         }
                     }
                     Err(e) => {
-                        error!(error = %e, "query failed");
+                        error!(
+                            operation = "sql_query",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = query.default_schema.as_deref().unwrap_or("-"),
+                            sql_bytes = query.sql.len(),
+                            error = %e,
+                            "query failed"
+                        );
                         let err_msg = e.to_string();
                         // 只读拦截恢复执行前快照，其余错误保留在结果区。
                         if matches!(e, DomainError::Forbidden(_)) {
@@ -248,7 +269,15 @@ impl QueryTab {
                         match svc.list_indexes(&conn, &schema, &table).await {
                             Ok(idx) => idx,
                             Err(e) => {
-                                tracing::warn!(error = %e, table = %table, "fetch indexes for row identity failed");
+                                tracing::warn!(
+                                    operation = "sql_row_identity",
+                                    connection_id = %conn.id,
+                                    driver = ?conn.driver,
+                                    schema = %schema,
+                                    table = %table,
+                                    error = %e,
+                                    "fetch indexes for row identity failed"
+                                );
                                 Vec::new()
                             }
                         }
@@ -256,7 +285,15 @@ impl QueryTab {
                     crate::views::result_panel::derive_row_identity(&cols, &indexes)
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, table = %table, "fetch columns for row identity failed");
+                    tracing::warn!(
+                        operation = "sql_row_identity",
+                        connection_id = %conn.id,
+                        driver = ?conn.driver,
+                        schema = %schema,
+                        table = %table,
+                        error = %e,
+                        "fetch columns for row identity failed"
+                    );
                     None
                 }
             };
@@ -291,6 +328,7 @@ impl QueryTab {
         };
         let svc = self.service.clone();
         let cache = self.schema_cache.clone();
+        let log_schema = schema.clone();
         let cache_generation = {
             let mut cache = cache.write();
             cache.invalidate_schema(&schema);
@@ -310,9 +348,19 @@ impl QueryTab {
                             .write()
                             .finish_table_refresh(schema, cache_generation, names, views);
                     if refreshed {
-                        info!("schema cache refreshed after DDL");
+                        info!(
+                            operation = "sql_ddl_cache_refresh",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %log_schema,
+                            "schema cache refreshed after DDL"
+                        );
                     } else {
                         tracing::debug!(
+                            operation = "sql_ddl_cache_refresh",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            schema = %log_schema,
                             reason = "superseded_or_budget",
                             "DDL schema refresh discarded"
                         );
@@ -322,7 +370,14 @@ impl QueryTab {
                     cache
                         .write()
                         .cancel_table_refresh(&schema, cache_generation);
-                    error!(error = %e, "refresh schema after DDL failed");
+                    error!(
+                        operation = "sql_ddl_cache_refresh",
+                        connection_id = %conn.id,
+                        driver = ?conn.driver,
+                        schema = %schema,
+                        error = %e,
+                        "refresh schema after DDL failed"
+                    );
                 }
             }
         })

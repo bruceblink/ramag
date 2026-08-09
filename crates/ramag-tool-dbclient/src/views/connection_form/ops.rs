@@ -324,11 +324,24 @@ impl ConnectionFormPanel {
                 }
                 this.test_state = match result {
                     Ok(_) => {
-                        info!("connection test completed");
+                        info!(
+                            operation = "connection_test",
+                            connection_id = %config.id,
+                            driver = ?config.driver,
+                            host = %config.host,
+                            "connection test completed"
+                        );
                         TestState::Success
                     }
                     Err(e) => {
-                        error!(error = %e, "connection test failed");
+                        error!(
+                            operation = "connection_test",
+                            connection_id = %config.id,
+                            driver = ?config.driver,
+                            host = %config.host,
+                            error = %e,
+                            "connection test failed"
+                        );
                         TestState::Failed(e.to_string())
                     }
                 };
@@ -360,11 +373,24 @@ impl ConnectionFormPanel {
                 this.saving = false;
                 match result {
                     Ok(_) => {
-                        info!(name = %config.name, "connection saved");
+                        info!(
+                            operation = "connection_save",
+                            connection_id = %config.id,
+                            driver = ?config.driver,
+                            name = %config.name,
+                            "connection saved"
+                        );
                         cx.emit(FormEvent::Saved(Box::new(config)));
                     }
                     Err(e) => {
-                        error!(error = %e, "save connection failed");
+                        error!(
+                            operation = "connection_save",
+                            connection_id = %config.id,
+                            driver = ?config.driver,
+                            name = %config.name,
+                            error = %e,
+                            "save connection failed"
+                        );
                         this.test_state = TestState::Failed(format!("保存失败：{e}"));
                         cx.notify();
                     }

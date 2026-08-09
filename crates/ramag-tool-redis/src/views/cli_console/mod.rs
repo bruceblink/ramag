@@ -330,6 +330,11 @@ impl CliConsole {
         if self.reject_if_command_queue_full(&raw, cx) {
             return;
         }
+        let command_name = argv
+            .first()
+            .map(|value| value.to_ascii_uppercase())
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+        let command_bytes = raw.len();
         let entry_id = self.push_entry(raw, Outcome::Pending, 0);
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
@@ -346,7 +351,15 @@ impl CliConsole {
                     entry.elapsed_ms = elapsed;
                     let outcome = match result {
                         Ok(v) => {
-                            info!(elapsed_ms = elapsed, "command completed");
+                            info!(
+                                operation = "redis_command",
+                                connection_id = %config.id,
+                                db,
+                                command = %command_name,
+                                command_bytes,
+                                elapsed_ms = elapsed,
+                                "command completed"
+                            );
                             // 保留游标，按需展开超限应答。
                             let chunk = format::lines_of_first(&v);
                             entry.cursor = chunk.cursor;
@@ -354,7 +367,15 @@ impl CliConsole {
                             Outcome::Ok(Arc::new(wrap_display_lines(chunk.lines)))
                         }
                         Err(e) => {
-                            error!(error = %e, "command failed");
+                            error!(
+                                operation = "redis_command",
+                                connection_id = %config.id,
+                                db,
+                                command = %command_name,
+                                command_bytes,
+                                error = %e,
+                                "command failed"
+                            );
                             Outcome::Err(format!("(error) {}", e.message()))
                         }
                     };

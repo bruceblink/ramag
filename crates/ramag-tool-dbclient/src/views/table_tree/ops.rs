@@ -373,6 +373,9 @@ impl TableTreePanel {
                         .autohide(true),
                         Err(error) => {
                             tracing::error!(
+                                operation = "sql_ddl",
+                                connection_id = %conn.id,
+                                driver = ?conn.driver,
                                 error = %error,
                                 connection = %conn.name,
                                 sql_bytes = sql.len(),
@@ -426,7 +429,14 @@ impl TableTreePanel {
                         }
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, sql_bytes = sql.len(), "tree DDL failed");
+                        tracing::error!(
+                            operation = "sql_ddl",
+                            connection_id = %conn.id,
+                            driver = ?conn.driver,
+                            error = %e,
+                            sql_bytes = sql.len(),
+                            "tree DDL failed"
+                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("执行失败")).autohide(true));
                     }
