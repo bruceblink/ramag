@@ -172,9 +172,12 @@ fn unstage_and_discard() {
 #[test]
 fn pathspec_stdin_treats_special_file_names_literally() {
     let (driver, id, tmp) = setup();
-    let mut names = vec!["-leading.txt", "!literal.txt"];
+    let names = vec!["-leading.txt", "!literal.txt"];
     #[cfg(unix)]
-    names.extend([":(glob)*.txt", "line\nbreak.txt"]);
+    let names = names
+        .into_iter()
+        .chain([":(glob)*.txt", "line\nbreak.txt"])
+        .collect::<Vec<_>>();
 
     for name in &names {
         write(tmp.path(), name, "base\n");
