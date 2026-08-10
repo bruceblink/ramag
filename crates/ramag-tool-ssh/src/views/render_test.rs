@@ -7,9 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(unix)]
+use gpui::Focusable as _;
 use gpui::{
-    AppContext as _, Entity, Focusable as _, Modifiers, MouseButton, TestAppContext,
-    VisualTestContext, point, px, size,
+    AppContext as _, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px,
+    size,
 };
 use ramag_app::SshService;
 use ramag_domain::entities::{
@@ -30,7 +32,9 @@ use ramag_terminal::{TerminalCommand, TerminalCore, TerminalView};
 
 use super::SshView;
 use super::jumpserver_dialog::JumpServerPanel;
-use super::model::{Notice, TerminalTab, ViewMode};
+#[cfg(unix)]
+use super::model::TerminalTab;
+use super::model::{Notice, ViewMode};
 use super::profile_dialog::SshProfileFormPanel;
 use super::remote_session_dialog::RemoteSessionPanel;
 

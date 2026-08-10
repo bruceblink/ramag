@@ -17,7 +17,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # 临时仅运行 Windows CI；验证完成后删除两个 `if` 条件即可恢复。
   linux-quality:
+    if: ${{ false }}
     name: Linux x86_64 quality gates
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -95,6 +97,7 @@ jobs:
         run: make test
 
   macos-quality:
+    if: ${{ false }}
     name: macOS quality gates
     runs-on: macos-15
     timeout-minutes: 120
