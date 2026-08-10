@@ -22,7 +22,7 @@ fn git_config(dir: &Path, key: &str, val: &str) {
     assert!(ok, "git config {key} 失败");
 }
 
-/// 建临时仓库 + 配置 user，返回 (driver, repo_id, 临时目录守卫)
+/// 建临时仓库 + 固定用户与换行配置，返回 (driver, repo_id, 临时目录守卫)
 fn setup() -> (GitDriverImpl, RepoId, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();
     let driver = GitDriverImpl::new();
@@ -30,6 +30,7 @@ fn setup() -> (GitDriverImpl, RepoId, tempfile::TempDir) {
     git_config(tmp.path(), "user.email", "test@ramag.dev");
     git_config(tmp.path(), "user.name", "Ramag Test");
     git_config(tmp.path(), "commit.gpgsign", "false");
+    git_config(tmp.path(), "core.autocrlf", "false");
     // open_repo 确保句柄注册（status 等按 RepoId 取句柄）
     let rc = block_on(driver.open_repo(tmp.path())).expect("open_repo");
     (driver, rc.id, tmp)
