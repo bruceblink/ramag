@@ -1,5 +1,3 @@
-//! 剪贴板历史主视图。
-
 mod card;
 mod detail;
 mod ops;

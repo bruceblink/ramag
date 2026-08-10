@@ -1,5 +1,3 @@
-//! 剪贴板模块设置页。
-
 use super::{SettingsView, pages::settings_card};
 use crate::platform::{auto_paste_description, clipboard_hotkey};
 use gpui::{

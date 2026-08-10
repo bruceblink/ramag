@@ -1,5 +1,3 @@
-//! 仓库标签栏。
-
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px,

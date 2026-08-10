@@ -1,5 +1,3 @@
-//! SQL 导入导出集成测试。
-
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -181,8 +179,6 @@ async fn mysql_export_import_roundtrip() {
     exec(&svc, &config, format!("DROP DATABASE `{db}`;")).await;
     let _ = std::fs::remove_file(&path);
 }
-
-// PostgreSQL 测试
 
 #[tokio::test(flavor = "multi_thread")]
 async fn postgres_export_import_roundtrip() {
@@ -409,5 +405,3 @@ async fn postgres_export_import_roundtrip() {
     exec(&svc, &config, format!("DROP SCHEMA \"{schema}\" CASCADE;")).await;
     let _ = std::fs::remove_file(&path);
 }
-
-// Redis 测试

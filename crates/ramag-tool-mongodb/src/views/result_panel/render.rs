@@ -1,5 +1,3 @@
-//! MongoDB 结果面板渲染。
-
 use super::*;
 
 impl Render for ResultPanel {

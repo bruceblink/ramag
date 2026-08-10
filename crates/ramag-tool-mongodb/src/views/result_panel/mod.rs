@@ -1,5 +1,3 @@
-//! MongoDB 查询结果面板。
-
 mod cell;
 mod drill;
 mod edit;

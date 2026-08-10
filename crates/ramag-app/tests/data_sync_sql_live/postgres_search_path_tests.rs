@@ -1,5 +1,3 @@
-//! SQL 数据同步集成测试分组。
-
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]

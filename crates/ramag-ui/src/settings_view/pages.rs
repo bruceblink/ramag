@@ -1,5 +1,3 @@
-//! 设置导航与各独立页面的渲染。
-
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
     hsla, prelude::*, px,

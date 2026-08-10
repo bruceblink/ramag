@@ -1,5 +1,3 @@
-//! SSH 渲染测试夹具。
-
 use super::*;
 
 pub(super) fn profile() -> SshProfile {

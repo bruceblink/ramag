@@ -1,5 +1,3 @@
-//! JumpServer 导入弹窗主布局。
-
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
     prelude::*, px,

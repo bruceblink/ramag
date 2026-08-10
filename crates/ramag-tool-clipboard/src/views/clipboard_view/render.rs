@@ -1,5 +1,3 @@
-//! 剪贴板主视图布局。
-
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
     prelude::*, px, uniform_list,

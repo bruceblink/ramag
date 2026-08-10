@@ -1,5 +1,3 @@
-//! 数据库连接表单。
-
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
     prelude::*, px,

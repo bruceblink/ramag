@@ -1,5 +1,3 @@
-//! Redis 与 MongoDB 导入导出集成测试。
-
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]

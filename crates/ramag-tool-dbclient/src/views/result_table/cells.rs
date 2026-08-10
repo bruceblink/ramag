@@ -1,5 +1,3 @@
-//! SQL 结果表格单元格。
-
 use gpui::{
     AnyElement, ClickEvent, ClipboardItem, Context, InteractiveElement as _, IntoElement,
     MouseButton, ParentElement, SharedString, Styled, div, prelude::*, px,

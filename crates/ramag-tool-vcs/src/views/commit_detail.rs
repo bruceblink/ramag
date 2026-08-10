@@ -1,5 +1,3 @@
-//! 提交详情与文件树。
-
 use std::ops::Range;
 use std::rc::Rc;
 

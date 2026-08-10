@@ -1,5 +1,3 @@
-//! Git 领域实体。
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

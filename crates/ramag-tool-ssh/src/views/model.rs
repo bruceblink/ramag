@@ -1,5 +1,3 @@
-//! SSH 工具纯 UI 状态。
-
 use std::sync::Arc;
 
 use gpui::{Entity, SharedString};

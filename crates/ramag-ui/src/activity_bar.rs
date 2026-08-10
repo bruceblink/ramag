@@ -1,5 +1,3 @@
-//! 左侧工具导航栏。
-
 use std::sync::Arc;
 
 use gpui::{

@@ -1,5 +1,3 @@
-//! 远程文件编辑器渲染。
-
 use gpui::{ClickEvent, Context, ParentElement, Render, Styled, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable as _, Selectable as _, Sizable as _, WindowExt as _,

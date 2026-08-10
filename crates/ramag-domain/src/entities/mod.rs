@@ -1,5 +1,3 @@
-//! 领域实体。
-
 pub mod clipboard;
 pub mod connection;
 pub mod data_sync;

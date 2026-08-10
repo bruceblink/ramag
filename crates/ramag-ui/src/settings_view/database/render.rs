@@ -1,5 +1,3 @@
-//! 数据库搜索设置页渲染。
-
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::FluentBuilder as _, px,
 };

@@ -1,5 +1,3 @@
-//! OpenSSH 驱动门面测试。
-
 use super::*;
 
 #[test]

@@ -1,5 +1,3 @@
-//! VCS 仓库管理与克隆清理测试。
-
 use super::{
     MAX_OPEN_REPOS, MAX_OPEN_REPOS_PREF_BYTES, parse_open_repo_paths, prepare_clone_destination,
     remove_cancelled_clone_directory,

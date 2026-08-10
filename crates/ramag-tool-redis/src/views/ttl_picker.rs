@@ -1,5 +1,3 @@
-//! Redis TTL 选择器。
-
 use gpui::{
     App, ClickEvent, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
     Window, div, prelude::*, px,

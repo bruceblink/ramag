@@ -309,6 +309,7 @@ impl DataSyncService {
         .await;
         match &result {
             Ok(prepared) => tracing::info!(
+                operation = "data_sync_preflight",
                 task_id = %prepared.report.task_id,
                 engine = ?prepared.report.engine,
                 objects = prepared.report.objects.len(),
@@ -319,6 +320,7 @@ impl DataSyncService {
                 "data sync preflight completed"
             ),
             Err(error) => tracing::warn!(
+                operation = "data_sync_preflight",
                 error = %error,
                 task_id = %request.task_id,
                 engine = ?request.engine,

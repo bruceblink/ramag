@@ -1,5 +1,3 @@
-//! SFTP 上传、下载与传输队列操作。
-
 use std::path::PathBuf;
 
 use gpui::{Context, Window};

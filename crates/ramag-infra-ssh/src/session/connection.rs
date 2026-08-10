@@ -385,6 +385,7 @@ async fn wait_cleanup_task(task: tokio::task::JoinHandle<()>, task_name: &'stati
             tracing::warn!(operation = "ssh_sftp_cleanup_task", error = %error, task = task_name, "ssh sftp cleanup task failed")
         }
         Err(_) => tracing::warn!(
+            operation = "ssh_sftp_cleanup_task",
             task = task_name,
             "ssh sftp cleanup task did not stop in time"
         ),

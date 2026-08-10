@@ -1,5 +1,3 @@
-//! 数据库连接会话。
-
 use std::sync::Arc;
 use std::time::Duration;
 

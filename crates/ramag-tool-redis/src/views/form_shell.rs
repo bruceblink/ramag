@@ -1,5 +1,3 @@
-//! Redis 表单共享状态与操作栏。
-
 use std::collections::HashSet;
 
 use gpui::{

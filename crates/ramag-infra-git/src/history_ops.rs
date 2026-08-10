@@ -1,5 +1,3 @@
-//! Reset / Revert 操作
-
 use std::path::Path;
 
 use ramag_domain::entities::ResetKind;

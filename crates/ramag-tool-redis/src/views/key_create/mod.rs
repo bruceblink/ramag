@@ -1,5 +1,3 @@
-//! Redis Key 新建表单。
-
 use std::sync::Arc;
 
 use gpui::{

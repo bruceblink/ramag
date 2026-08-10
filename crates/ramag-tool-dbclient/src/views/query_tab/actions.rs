@@ -1,5 +1,3 @@
-//! SQL 查询标签行为。
-
 mod execution;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

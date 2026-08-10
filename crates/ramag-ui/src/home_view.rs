@@ -1,5 +1,3 @@
-//! 首页与工具入口。
-
 use std::sync::Arc;
 
 use gpui::{

@@ -1,5 +1,3 @@
-//! 关于页面。
-
 use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,

@@ -1,5 +1,3 @@
-//! Schema 与数据表树。
-
 mod load;
 mod ops;
 mod render;

@@ -1,5 +1,3 @@
-//! 项目文件树。
-
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;

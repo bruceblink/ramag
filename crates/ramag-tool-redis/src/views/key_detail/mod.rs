@@ -1,5 +1,3 @@
-//! Redis Key 详情面板。
-
 mod hash_block;
 mod header;
 mod helpers;

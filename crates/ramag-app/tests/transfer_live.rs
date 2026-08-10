@@ -171,15 +171,11 @@ async fn scalar_value(
         .unwrap_or_else(|| panic!("无结果（SQL: {sql}）"))
 }
 
-// MySQL 测试
-
 async fn flush_db(svc: &RedisService, config: &ConnectionConfig, db: u8) {
     let _ = svc
         .execute_command(config, db, vec!["FLUSHDB".into()])
         .await;
 }
-
-// MongoDB 测试
 
 #[path = "transfer_live/database_roundtrip_tests.rs"]
 mod database_roundtrip_tests;

@@ -1,5 +1,3 @@
-//! MongoDB 视图模块树
-
 pub mod collection_tree;
 pub mod examples;
 pub mod history_dialog;

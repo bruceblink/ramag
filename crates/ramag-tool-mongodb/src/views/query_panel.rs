@@ -1,5 +1,3 @@
-//! MongoDB 多标签查询面板。
-
 mod drafts;
 mod render;
 

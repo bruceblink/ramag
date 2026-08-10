@@ -1,5 +1,3 @@
-//! Redis 驱动协议与边界测试。
-
 use super::*;
 
 #[test]

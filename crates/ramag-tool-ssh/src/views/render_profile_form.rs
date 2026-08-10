@@ -1,5 +1,3 @@
-//! SSH 连接表单；字段密度与数据库连接弹窗保持一致。
-
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
     prelude::*, px,

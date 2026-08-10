@@ -1,5 +1,3 @@
-//! Redis CLI 控制台渲染。
-
 use super::*;
 
 impl Render for CliConsole {

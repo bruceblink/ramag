@@ -1,5 +1,3 @@
-//! 应用更新领域实体。
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

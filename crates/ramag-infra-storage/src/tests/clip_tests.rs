@@ -1,5 +1,3 @@
-//! 剪贴板存储测试。
-
 use super::*;
 
 fn sample_clip(text: &str, age_days: i64) -> ramag_domain::entities::ClipItem {

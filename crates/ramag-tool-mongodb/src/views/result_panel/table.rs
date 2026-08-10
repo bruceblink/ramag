@@ -1,5 +1,3 @@
-//! MongoDB 结果表格。
-
 use std::ops::Range;
 use std::sync::Arc;
 

@@ -1,5 +1,3 @@
-//! SSH 工作区界面测试。
-
 use super::*;
 
 #[test]

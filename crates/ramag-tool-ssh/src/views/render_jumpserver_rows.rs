@@ -1,5 +1,3 @@
-//! JumpServer 资源行与行内账号操作。
-
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px,

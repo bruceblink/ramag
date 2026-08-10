@@ -110,12 +110,10 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
         return Err("URI 缺少主机地址".into());
     }
 
-    // 切出 query
     let (main, query) = match rest.split_once('?') {
         Some((m, q)) => (m, Some(q)),
         None => (rest, None),
     };
-    // 切出 path（database / Redis 库号）
     let (authority, database) = match main.split_once('/') {
         Some((a, d)) => (a, {
             let d = percent_decode(d)?;
@@ -123,7 +121,6 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
         }),
         None => (main, None),
     };
-    // 切出 userinfo
     let (userinfo, hostport) = match authority.rsplit_once('@') {
         Some((u, h)) => (Some(u), h),
         None => (None, authority),

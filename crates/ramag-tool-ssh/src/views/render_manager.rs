@@ -1,5 +1,3 @@
-//! SSH 连接管理页；复用数据库连接页的限宽工具栏与紧凑行布局。
-
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, img,
     prelude::*, px,

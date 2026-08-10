@@ -1,5 +1,3 @@
-//! MongoDB 数据库与集合树。
-
 mod load;
 mod ops;
 mod render;

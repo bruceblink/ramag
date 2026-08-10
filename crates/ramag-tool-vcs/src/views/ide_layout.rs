@@ -1,5 +1,3 @@
-//! VCS 工作区布局。
-
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
 };

@@ -1,5 +1,3 @@
-//! Git 驱动入口。
-
 mod open;
 mod remote_ops;
 mod repository_ops;

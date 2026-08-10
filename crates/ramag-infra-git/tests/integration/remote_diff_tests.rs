@@ -1,5 +1,3 @@
-//! Git 集成测试分组。
-
 use super::*;
 
 #[test]

@@ -1,5 +1,3 @@
-//! VCS 视图共享类型与辅助函数。
-
 mod commit_row;
 
 pub(super) use commit_row::render_commit_row;

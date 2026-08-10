@@ -1,5 +1,3 @@
-//! SQL 查询结果表格渲染与交互。
-
 use super::*;
 
 #[allow(clippy::too_many_arguments)]

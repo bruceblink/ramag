@@ -1,5 +1,3 @@
-//! SFTP 导航与远程文件操作。
-
 use gpui::{Context, Window};
 use ramag_domain::entities::{
     MAX_SSH_PATH_BYTES, RemoteEntry, RemoteEntryKind, RemoteOperatingSystem, RemotePath,

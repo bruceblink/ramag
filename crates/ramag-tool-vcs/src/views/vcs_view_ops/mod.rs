@@ -1,5 +1,3 @@
-//! 版本管理异步操作。
-
 mod remote;
 mod stash;
 mod tag;

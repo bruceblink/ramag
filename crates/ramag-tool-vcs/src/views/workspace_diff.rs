@@ -1,5 +1,3 @@
-//! 工作区差异视图。
-
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px,

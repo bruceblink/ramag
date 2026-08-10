@@ -1,5 +1,3 @@
-//! 剪贴记录卡片。
-
 use std::sync::Arc;
 
 use chrono::Utc;

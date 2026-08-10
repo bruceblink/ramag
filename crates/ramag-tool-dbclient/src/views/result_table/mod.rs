@@ -1,5 +1,3 @@
-//! SQL 结果表格。
-
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{

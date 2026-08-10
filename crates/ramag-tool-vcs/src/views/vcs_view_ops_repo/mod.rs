@@ -1,5 +1,3 @@
-//! 仓库与会话操作。
-
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 

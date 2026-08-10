@@ -1,5 +1,3 @@
-//! MongoDB 数据同步集成测试。
-
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]

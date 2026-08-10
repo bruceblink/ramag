@@ -1,5 +1,3 @@
-//! 数据库对象树布局。
-
 use std::ops::Range;
 
 use gpui::{

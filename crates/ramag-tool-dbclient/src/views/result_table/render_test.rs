@@ -1,4 +1,3 @@
-//! 结果表 headless 交互回归测试。
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;

@@ -1,5 +1,3 @@
-//! `parse_search_query` 单元测试
-
 #![allow(clippy::unwrap_used)]
 
 use super::parse_search_query;

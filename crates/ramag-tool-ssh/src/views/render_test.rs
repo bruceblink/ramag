@@ -1,4 +1,3 @@
-//! SSH 工具 headless 渲染回归测试。
 #![allow(clippy::expect_used)]
 
 use std::collections::HashMap;

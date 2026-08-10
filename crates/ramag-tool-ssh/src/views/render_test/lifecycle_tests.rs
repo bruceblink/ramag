@@ -1,5 +1,3 @@
-//! SSH 工作区生命周期测试。
-
 use super::*;
 
 #[gpui::test]

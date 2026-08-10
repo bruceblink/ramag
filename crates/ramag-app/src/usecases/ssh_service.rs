@@ -358,6 +358,7 @@ impl SshService {
             .await;
         match &result {
             Ok(()) => tracing::debug!(
+                operation = "ssh_workspace_preference_save",
                 workspaces = preference.workspaces.len(),
                 favorites = preference.path_favorites.len(),
                 "ssh workspace preference saved"

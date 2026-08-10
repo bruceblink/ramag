@@ -1,5 +1,3 @@
-//! SSH 模块级设置页。
-
 use super::SettingsView;
 use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, Window, div, prelude::*, px};
 use gpui_component::{ActiveTheme, Disableable as _, h_flex, v_flex};

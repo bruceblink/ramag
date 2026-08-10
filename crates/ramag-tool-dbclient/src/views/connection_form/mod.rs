@@ -1,5 +1,3 @@
-//! 数据库连接表单。
-
 use std::sync::Arc;
 
 use gpui::{

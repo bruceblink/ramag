@@ -1,5 +1,3 @@
-//! 业务用例编排。
-
 /// 连接失败时清除缓存并重试一次幂等读操作。
 /// 必须用宏而非 async 闭包助手：闭包捕获 &self / &config 后，在 `background_spawn` 等 Send
 /// 上下文会触发「Send is not general enough」（async 闭包 + HRTB 的编译器限制）；宏直接把

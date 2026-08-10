@@ -1,5 +1,3 @@
-//! JumpServer 资产节点树。
-
 use std::collections::HashMap;
 
 use gpui::{

@@ -1,5 +1,3 @@
-//! 剪贴板抽屉卡片。
-
 use std::sync::Arc;
 
 use chrono::Utc;

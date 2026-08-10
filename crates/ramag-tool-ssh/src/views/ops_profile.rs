@@ -1,5 +1,3 @@
-//! SSH 连接列表、配置弹窗与删除操作。
-
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};

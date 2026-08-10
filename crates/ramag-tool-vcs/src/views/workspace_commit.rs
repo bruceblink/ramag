@@ -1,5 +1,3 @@
-//! 工作区提交面板。
-
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
 };

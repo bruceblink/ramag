@@ -1,5 +1,3 @@
-//! 数据库导入、导出的共享 UI。
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -111,6 +109,7 @@ pub fn transfer_notification(
                 warn!(operation = "database_transfer_progress", detail = %warning, "transfer warning");
             }
             info!(
+                operation = "database_transfer_finished",
                 objects = summary.objects,
                 items = summary.items,
                 skipped = summary.skipped,

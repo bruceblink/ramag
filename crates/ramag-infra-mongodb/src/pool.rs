@@ -279,7 +279,6 @@ mod tests {
     fn evict_nonexistent_safe() {
         let cache = PoolCache::new();
         let id = ConnectionId::new();
-        // 应不报错
         cache.evict(&id);
     }
 

@@ -1,5 +1,3 @@
-//! 跨工具共用 Action
-
 use gpui::Action;
 use schemars::JsonSchema;
 use serde::Deserialize;

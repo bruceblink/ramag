@@ -1,5 +1,3 @@
-//! JumpServer 界面测试。
-
 use super::*;
 
 #[gpui::test]

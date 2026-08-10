@@ -1,5 +1,3 @@
-//! JumpServer 服务测试。
-
 use super::*;
 
 #[test]

@@ -1,5 +1,3 @@
-//! Redis CLI 控制台状态与资源预算测试。
-
 use super::{
     Entry, MAX_TRANSCRIPT_ENTRIES, MAX_TRANSCRIPT_LINES, Outcome, clear_completed_entries,
     command_preview, next_cursor, outcome_line_count, pending_command_count, prev_cursor,

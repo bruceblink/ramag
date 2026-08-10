@@ -1,5 +1,3 @@
-//! 剪贴板快捷抽屉。
-
 mod card;
 
 use std::sync::Arc;
