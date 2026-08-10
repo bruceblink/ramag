@@ -339,7 +339,9 @@ mod tests {
     use std::io::Write as _;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{rotate_if_oversized_at, try_open_log_file, try_open_log_file_at};
+    #[cfg(unix)]
+    use super::try_open_log_file;
+    use super::{rotate_if_oversized_at, try_open_log_file_at};
 
     #[test]
     fn oversized_log_backup_keeps_bounded_tail() -> std::io::Result<()> {

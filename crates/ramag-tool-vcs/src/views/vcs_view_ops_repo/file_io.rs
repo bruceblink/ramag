@@ -222,9 +222,10 @@ fn read_first_bytes(path: &std::path::Path, limit: usize) -> std::io::Result<Vec
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::read_raw_file_content;
     use super::{
-        decode_preview_text, prepare_file_snapshot, read_raw_file_content, resolve_repo_file,
-        write_project_file,
+        decode_preview_text, prepare_file_snapshot, resolve_repo_file, write_project_file,
     };
 
     #[test]
