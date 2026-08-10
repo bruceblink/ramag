@@ -100,6 +100,7 @@ fn production_profile_allows_terminal_and_blocks_sftp_writes() {
     let mut profile = SshProfile::new("production", "server.example");
     profile.production = true;
     let service = SshService::new(Arc::new(TerminalDriver), Arc::new(NoopStorage::default()));
+    let local_path = std::env::temp_dir().join("ramag-production-transfer-test-readme.txt");
 
     futures::executor::block_on(service.save_profile(&profile)).unwrap();
     let command = futures::executor::block_on(service.terminal_command(&profile.id, None)).unwrap();
@@ -117,7 +118,7 @@ fn production_profile_allows_terminal_and_blocks_sftp_writes() {
     assert_eq!(chunk.bytes, b"preview");
     futures::executor::block_on(service.list_directory(&profile, "/")).unwrap();
     service
-        .enqueue_download(&profile, "/readme.txt", Path::new("/tmp/readme.txt"))
+        .enqueue_download(&profile, "/readme.txt", &local_path)
         .unwrap();
 
     assert!(matches!(
@@ -152,7 +153,7 @@ fn production_profile_allows_terminal_and_blocks_sftp_writes() {
     assert!(matches!(
         service.enqueue_upload(
             &profile,
-            Path::new("/tmp/readme.txt"),
+            &local_path,
             "/readme.txt"
         ),
         Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
@@ -161,11 +162,7 @@ fn production_profile_allows_terminal_and_blocks_sftp_writes() {
     let mut writable_profile = profile.clone();
     writable_profile.production = false;
     let queued = service
-        .enqueue_upload(
-            &writable_profile,
-            Path::new("/tmp/readme.txt"),
-            "/readme.txt",
-        )
+        .enqueue_upload(&writable_profile, &local_path, "/readme.txt")
         .unwrap();
     assert!(matches!(
         futures::executor::block_on(service.execute_transfer(&queued, OverwritePolicy::Refuse)),
