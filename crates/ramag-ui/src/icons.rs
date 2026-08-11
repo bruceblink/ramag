@@ -150,3 +150,13 @@ pub fn db_brand_icon(driver_id: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// 云对象存储服务商的彩色标识；用于与数据库驱动选择器一致的图标卡片。
+#[inline]
+pub fn object_storage_brand_icon(provider_id: &str) -> Option<&'static str> {
+    Some(match provider_id {
+        "tencent-cos" => "icons/cloud-tencent-cos.svg",
+        "aliyun-oss" => "icons/cloud-aliyun-oss.svg",
+        _ => return None,
+    })
+}

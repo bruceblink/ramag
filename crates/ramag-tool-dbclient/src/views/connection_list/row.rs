@@ -193,7 +193,7 @@ pub(super) fn connection_row(
                     .child(kind_label),
             ),
         )
-        // 只读徽章槽（固定宽，生产连接显示红色「只读」，否则空白占位 → 整列对齐）
+        // 生产徽章槽（固定宽，未开启时保留空白占位以维持整列对齐）。
         .child(div().flex_none().w(px(44.0)).flex().justify_center().when(
             is_production,
             move |slot| {
@@ -205,7 +205,7 @@ pub(super) fn connection_row(
                         .text_xs()
                         .text_color(danger)
                         .bg(prod_bg)
-                        .child("只读"),
+                        .child(ramag_ui::PRODUCTION_BADGE_LABEL),
                 )
             },
         ))

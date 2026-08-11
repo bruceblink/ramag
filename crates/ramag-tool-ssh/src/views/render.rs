@@ -108,7 +108,7 @@ impl SshView {
                             muted
                         })
                         .child(if workspace.profile.production {
-                            "生产"
+                            ramag_ui::PRODUCTION_BADGE_LABEL
                         } else {
                             "SSH"
                         }),

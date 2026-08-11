@@ -2,8 +2,8 @@
 
 ## 文档状态
 
-- 状态：已确认设计，尚未实现
-- 核对日期：2026-07-30
+- 状态：已实现并通过全工作区质量门禁
+- 核对日期：2026-08-11
 - 用户可见名称：云存储
 - 代码命名：`object_storage`
 - 首次交付服务商：腾讯云 COS、阿里云 OSS
@@ -14,32 +14,32 @@
 
 ## 结论先行
 
-云存储工具采用“账号级 Bucket 发现 + Bucket 内统一对象访问”的两层架构：
+云存储工具采用“显式 Bucket 挂载 + Bucket 内统一对象访问”的架构：
 
 ```text
-永久 AK/SK
+永久 AK/SK + Bucket + Region
     │
-    ├── Bucket 发现层
-    │     ├── COS：GET Service（List Buckets）
-    │     └── OSS：ListBuckets（GetService）
-    │
-    └── 选中 Bucket
-          └── Apache OpenDAL Operator
-                ├── 列举对象
-                ├── 查看元数据和预览
-                ├── 上传、下载
-                └── 单对象删除
+    └── 官方 Endpoint + Apache OpenDAL Operator
+          ├── 列举对象
+          ├── 查看元数据
+          ├── 上传、下载
+          └── 单对象删除
 ```
 
 确定的关键决策如下：
 
 1. 使用 Apache OpenDAL 处理 Bucket 内的数据访问，不分别接入两套非官方 Rust SDK。
-2. OpenDAL 不负责账号级 Bucket 列举；由两个小型厂商适配器调用官方 REST API。
-3. 一次交付即支持自动列出账号通过官方列桶 API 可见的全部 Bucket。
+2. 不请求账号级列桶 API；用户必须显式配置至少一个 Bucket 和 Region。
+3. 保存账号时通过已配置 Bucket 的对象列举接口验证凭据与访问权限。
 4. 持久化模型从一开始就分离“云账号”和“Bucket”，不能把一个账号复制成多个 Bucket 连接。
 5. 唯一支持永久 AK/SK；除非以后重新作出明确产品决策，否则不支持其他认证方式，也不为其他方式提前设计入口。
-6. 默认只读；写权限需要用户明确开启，删除和覆盖必须再次确认。
+6. 生产模式默认关闭；用户开启后实施只读保护，删除和覆盖始终必须再次确认。
 7. 界面复用数据库工具的会话骨架和 SSH 工具的文件操作习惯，但对象模型保持独立。
+8. 只操作 OpenDAL 能无损表示的安全 Key；其他远端 Key 仍显示，但禁用下载、覆盖和删除。
+9. Endpoint 只允许程序根据服务商和 Region 生成的官方 HTTPS 地址，不提供自定义 Endpoint 输入。
+10. 同一 Bucket 可通过不同 Root Prefix 建立多个独立挂载点。
+11. 上传和下载默认拒绝覆盖；目标已存在时先返回 Conflict，UI 只有在用户再次确认并看到竞态提示后才执行覆盖。
+12. OpenDAL 数据面关闭默认配置加载；OSS 请求通过自定义 Reqwest transport 显式改签 V4，地域来自已校验的官方挂载点。
 
 ## 背景
 
@@ -62,14 +62,14 @@ Ramag 已有数据库、Redis、MongoDB、Git、剪贴板和 SSH/SFTP 工具。�
 ### 功能目标
 
 1. 管理多个 COS、OSS 云账号配置。
-2. 保存账号后自动列出该身份通过列桶 API 可见的全部 Bucket。
-3. 支持 Bucket 按地域分组、搜索和手动刷新。
-4. 支持手动添加未被列桶 API 返回但用户已知且有权访问的 Bucket。
+2. 新建或编辑账号时必须配置至少一个已知 Bucket 和 Region。
+3. 支持已配置 Bucket 按地域分组、搜索和刷新。
+4. 同一账号可配置多个 Bucket，也可对同一 Bucket 配置不同 Root Prefix。
 5. 支持按前缀浏览对象和虚拟目录。
-6. 支持查看对象元数据、文本预览和图片预览。
+6. 支持查看对象元数据。
 7. 支持流式上传、下载、取消和进度展示。
 8. 支持经过确认的单对象删除。
-9. 支持只读账号，并在 UI、应用层、基础设施层实施写入门禁。
+9. 支持生产模式，并在 UI、应用层、基础设施层实施只读写入门禁。
 10. COS、OSS 的 Bucket 内操作通过同一个领域接口完成。
 
 ### 质量目标
@@ -87,14 +87,13 @@ Ramag 已有数据库、Redis、MongoDB、Git、剪贴板和 SSH/SFTP 工具。�
 
 - COS、OSS 账号的新建、编辑、删除和连接测试。
 - 永久 AK/SK 认证。
-- 自动列出账号通过官方 API 可见的 Bucket。
-- Bucket 搜索、地域分组、刷新和手动补充。
+- 必填 Bucket、Region 与可选 Root Prefix 配置。
+- 已配置 Bucket 的搜索、地域分组和刷新。
 - Bucket 内前缀浏览和分页加载。
 - 对象名称、大小、修改时间、ETag、内容类型、存储类型等可用元数据。
-- 文本和图片安全预览。
 - 文件上传、下载、覆盖策略、进度和取消。
 - 单对象删除及确认。
-- 只读模式。
+- 生产模式（只读保护）。
 - 连接会话和工作区恢复。
 - 亮色、暗色主题和响应式布局。
 
@@ -120,11 +119,11 @@ Ramag 已有数据库、Redis、MongoDB、Git、剪贴板和 SSH/SFTP 工具。�
 
 ### 云账号
 
-一组服务商和永久 AK/SK 的持久化配置。一个云账号可以发现多个 Bucket。
+一组服务商、永久 AK/SK 和至少一个 Bucket 挂载的持久化配置。
 
 ### Bucket
 
-COS 或 OSS 的存储空间。Bucket 信息来自官方列桶 API或用户手动补充。
+COS 或 OSS 的存储空间。Bucket 名称和 Region 由用户显式配置。
 
 ### Object
 
@@ -138,19 +137,9 @@ Object Key 的前缀。以 `/` 分隔后可模拟目录层级，但不是必须�
 
 一个已打开的云账号会话，包含选中的 Bucket、当前 Prefix、选择项、加载游标和传输队列显示状态。
 
-### “列出全部 Bucket”的准确含义
+### 为什么不自动列出 Bucket
 
-产品承诺应表述为：
-
-> 列出当前身份通过服务商官方列桶 API 可见的、账号拥有的全部 Bucket。
-
-不能表述为“列出该密钥能够访问的所有 Bucket”，原因包括：
-
-- 跨账号通过 Bucket Policy 授权的 Bucket 不一定出现在所有者列表。
-- 子账号可能只有某个 Bucket 或 Prefix 权限，没有账号级列桶权限。
-- 服务商控制台可能使用额外内部能力展示资源，公开 API 的结果不一定完全相同。
-
-因此必须保留手动添加 Bucket 入口。手动添加不是自动发现的替代实现，而是处理受限权限和跨账号授权的必要兜底。
+账号级列桶权限与 Bucket 数据访问权限彼此独立。子账号或跨账号授权常常只能访问指定 Bucket/Prefix；强制请求 `ListBuckets` 会制造无意义的权限错误，也无法保证发现全部可访问资源。因此 Ramag 只使用用户明确配置的 Bucket，不申请或依赖账号级列桶权限。
 
 ## 认证方式
 
@@ -169,7 +158,7 @@ Object Key 的前缀。以 `/` 分隔后可模拟目录层级，但不是必须�
 
 实现必须使用显式静态凭据：
 
-- 创建列桶签名器和 OpenDAL Operator 时始终传入当前账号保存的 AK/SK。
+- 创建 OpenDAL Operator 时始终传入当前账号保存的 AK/SK。
 - 不读取环境变量、用户目录中的云 CLI Profile、ECS/CVM 元数据或其他默认凭据链。
 - OpenDAL 服务支持关闭默认配置加载时必须显式关闭。
 - AK/SK 为空或不完整时本地报错，不能静默回退到机器上的其他身份。
@@ -179,30 +168,25 @@ Object Key 的前缀。以 `/` 分隔后可模拟目录层级，但不是必须�
 - 优先使用 CAM 子账号或 RAM 用户的 AK。
 - 不建议使用主账号 AK。
 - 权限按最小权限配置。
-- 定期轮换密钥；保存新密钥后立即失效该账号的 Operator 和 Bucket 缓存。
+- 定期轮换密钥；保存新密钥后立即失效该账号的 Operator 和游标缓存。
 
 ### 明确不支持的方式
 
-| 方式 | 凭据形态 | 能否自动列桶 | 产品状态 |
-|---|---|---:|---|
-| STS 临时凭据 | AK、SK、Security Token | 取决于临时策略 | 不支持 |
-| RAM/CAM 角色 | 自动换取临时凭据 | 取决于角色权限 | 不支持 |
-| ECS/CVM 实例角色 | 元数据服务临时凭据 | 取决于角色权限 | 不支持 |
-| OIDC 工作负载身份 | OIDC Token 换取临时凭据 | 取决于角色权限 | 不支持 |
-| 环境变量或 CLI Profile | 本地凭据提供链 | 取决于实际凭据 | 不支持 |
-| 云账号网页登录 | 浏览器授权会话 | 通常可以 | 不支持 |
-| 授权码、共享链接 | 限定资源的临时授权 | 通常不能 | 不支持 |
-| 预签名 URL | 单次对象请求 URL | 不能 | 不支持 |
-| 匿名访问 | 无凭据 | 不能 | 不支持 |
+| 方式 | 凭据形态 | 产品状态 |
+|---|---|---|
+| STS 临时凭据 | AK、SK、Security Token | 不支持 |
+| RAM/CAM 角色 | 自动换取临时凭据 | 不支持 |
+| ECS/CVM 实例角色 | 元数据服务临时凭据 | 不支持 |
+| OIDC 工作负载身份 | OIDC Token 换取临时凭据 | 不支持 |
+| 环境变量或 CLI Profile | 本地凭据提供链 | 不支持 |
+| 云账号网页登录 | 浏览器授权会话 | 不支持 |
+| 授权码、共享链接 | 限定资源的临时授权 | 不支持 |
+| 预签名 URL | 单次对象请求 URL | 不支持 |
+| 匿名访问 | 无凭据 | 不支持 |
 
 Ramag 不为以上方式显示禁用占位选项，也不实现自动探测或隐式降级。Ramag 永远不能要求用户输入并保存云账号密码。
 
 ## 权限要求
-
-### 自动列桶
-
-- COS：身份必须拥有 `cos:GetService`。
-- OSS：身份必须拥有 `oss:ListBuckets`。
 
 ### Bucket 内操作
 
@@ -214,71 +198,19 @@ Ramag 不为以上方式显示禁用占位选项，也不实现自动探测或�
 
 1. AK/SK 格式无效：本地拒绝，不发送请求。
 2. 签名或身份无效：显示“访问密钥无效或签名失败”。
-3. 缺少列桶权限：显示缺少的 `cos:GetService` 或 `oss:ListBuckets`，允许保存账号并手动添加 Bucket。
-4. 列桶成功但结果为空：连接成功，显示空状态。
-5. Bucket 可见但无对象读取权限：Bucket 保留在列表，打开时显示权限错误。
-6. 网络、DNS、TLS、超时、限流和服务端错误：分别映射，不误报为密钥错误。
+3. 已配置 Bucket 无列举权限：阻止保存并显示该 Bucket 的访问错误。
+4. 已配置 Bucket 可列举但结果为空：连接成功，显示空状态。
+5. 网络、DNS、TLS、超时、限流和服务端错误：分别映射，不误报为密钥错误。
 
-## Bucket 自动发现
+保存规则与验证结果保持分离：无效凭据或已配置 Bucket 的权限错误阻止保存；网络、DNS、TLS、超时、限流或服务端临时错误允许保存并标记为“未验证”，由用户稍后重试。
 
-### COS
+## Bucket 配置与验证
 
-调用官方 `GET Service (List Buckets)`：
-
-- 请求：`GET /`
-- Host：`service.cos.myqcloud.com`
-- 鉴权：COS 请求签名
-- 返回：Owner，以及 Bucket 的 Name、Location、CreationDate
-- 权限：`cos:GetService`
-
-COS 返回的 `Location` 用于生成 Bucket 数据面 Endpoint，再创建 OpenDAL COS Operator。
-
-### OSS
-
-调用官方 `ListBuckets (GetService)`：
-
-- 请求：`GET /`
-- 默认 Host：`oss-cn-hangzhou.aliyuncs.com`
-- 默认签名地域：`cn-hangzhou`
-- 签名版本：OSS V4
-- 鉴权：OSS 请求签名
-- 参数：首个请求使用 `max-keys=1000`，后续请求携带 `marker`
-- 返回：Name、Location、Region、ExtranetEndpoint、IntranetEndpoint、StorageClass 等
-- 权限：`oss:ListBuckets`
-
-官方说明列桶结果与发起请求所选的地域 Endpoint 无关，可以返回账号下所有地域的 Bucket，因此用户不需要先填写一个 Bucket 地域。实现不得携带资源组过滤头，必须按 `IsTruncated` 和 `NextMarker` 拉取全部分页，不能只显示第一页。桌面客户端访问 Bucket 时默认使用响应中的 `ExtranetEndpoint`。
-
-### 统一结果
-
-两个适配器都转换为领域对象：
-
-```rust
-pub struct BucketSummary {
-    pub name: String,
-    pub region: String,
-    pub endpoint: String,
-    pub created_at: Option<DateTime<Utc>>,
-    pub storage_class: Option<String>,
-    pub source: BucketSource,
-}
-
-pub enum BucketSource {
-    Discovered,
-    Manual,
-}
-```
-
-结果按“地域、Bucket 名称”稳定排序。以服务商、账号 ID、Bucket 名称和地域去重，不能仅按显示名称去重。
-
-### 刷新和缓存
-
-- 打开账号工作区时自动加载。
-- 五分钟内复用内存缓存。
-- 用户点击刷新时绕过缓存。
-- 同一账号的并发刷新必须合并为一个请求。
-- 使用 generation 标识，旧请求晚返回时不能覆盖新结果。
-- 不进行持续后台轮询。
-- 自动发现结果默认不落盘；手动 Bucket 和收藏路径需要加密持久化。
+- 每个账号至少配置一个 Bucket 和 Region，Root Prefix 可选。
+- Endpoint 不接受用户输入；COS 生成 `https://cos.{region}.myqcloud.com`，OSS 生成 `https://oss-{region}.aliyuncs.com`，并再次通过官方域名白名单校验。
+- 保存时对每个挂载执行根 Prefix 的对象列举，以验证签名、Bucket、Region 和最小读取权限。
+- 打开工作区只读取加密保存的挂载配置，不调用账号级 Bucket API。
+- 挂载结果按“Bucket、Region、Root Prefix”稳定排序；同一 Bucket 可通过不同 Root Prefix 独立挂载。
 
 ## 数据模型
 
@@ -288,10 +220,11 @@ pub enum BucketSource {
 pub struct ObjectStorageAccount {
     pub schema_version: u16,
     pub id: ObjectStorageAccountId,
+    pub revision: u64,
     pub name: String,
     pub provider: CloudProvider,
-    pub access_key_id: String,
-    pub access_key_secret: String,
+    pub access_key_id: SecretString,
+    pub access_key_secret: SecretString,
     pub read_only: bool,
     pub manual_buckets: Vec<ManualBucket>,
 }
@@ -304,18 +237,18 @@ pub enum CloudProvider {
 
 不增加未使用的 STS、Role 等枚举变体。`schema_version` 只用于账号记录自身的兼容迁移，不代表预留其他认证方式。
 
-### 手动 Bucket
+### 配置 Bucket
 
 ```rust
 pub struct ManualBucket {
+    pub id: ObjectStorageMountId,
     pub name: String,
     pub region: String,
-    pub endpoint: Option<String>,
     pub root_prefix: Option<String>,
 }
 ```
 
-自动发现 Bucket 不复制进账号记录。手动 Bucket 作为账号配置的一部分整体加密。
+`manual_buckets` 是已落库字段的兼容名称，产品语义为账号必填的 Bucket 挂载。它作为账号配置的一部分整体加密，不接受 Endpoint；程序根据服务商和 Region 生成严格校验过的官方地址。
 
 ### 对象条目
 
@@ -346,9 +279,10 @@ pub enum ObjectEntryKind {
 - 已打开的账号 ID。
 - 当前账号。
 - 每个账号最后选中的 Bucket。
-- 每个 Bucket 最后访问的 Prefix。
-- 收藏的 Bucket 和 Prefix。
-- 分栏宽度和详情面板状态。
+- 每个挂载点的收藏 Prefix。
+- 窄窗口下 Bucket 导航的显示状态。
+
+浏览 Prefix、分栏宽度和详情面板均为窗口内临时状态，不持久化；重新进入账号时从最后选中的 Bucket 根目录开始。
 
 Bucket 名称和 Prefix 可能包含业务信息，必须使用 `Storage::seal` 加密后再写偏好 KV，不能明文保存。
 
@@ -362,16 +296,13 @@ Bucket 名称和 Prefix 可能包含业务信息，必须使用 `Storage::seal` 
 | 账号名称 | 128 bytes |
 | AccessKey ID / SecretId | 256 bytes |
 | AccessKey Secret / SecretKey | 512 bytes |
-| 手动 Bucket 数量/账号 | 128 |
-| Bucket 名称 | 255 bytes |
+| Bucket 挂载数量/账号 | 128 |
+| Bucket 名称 | 领域绝对上限 255 bytes；同时应用服务商规则，OSS 最多 63 bytes |
 | Region | 128 bytes |
 | Endpoint | 2 KiB |
 | Object Key / Prefix | 4 KiB |
 | 单页对象条目 | 500 |
 | 工作区累计对象条目 | 20,000 |
-| 文本预览 | 2 MiB |
-| 图片预览源文件 | 16 MiB |
-| 图片解码像素 | 40 MP |
 | 并发传输 | 3 |
 | 等待中传输 | 64 |
 | 传输历史 | 100 |
@@ -380,9 +311,9 @@ Bucket 名称和 Prefix 可能包含业务信息，必须使用 `Storage::seal` 
 
 - 所有输入按 UTF-8 字节长度检查。
 - Bucket、Region 按服务商规则校验，错误说明具体字段。
-- Endpoint 只接受有效 HTTPS URL；官方 Endpoint 由程序生成或使用 API 返回值。
-- Object Key 禁止 NUL，但不能套用本地路径或 SFTP 绝对路径规则。
-- `..` 在 Object Key 中只是字符，不能擅自按文件系统父目录解释。
+- Endpoint 不作为用户输入；仅接受程序根据服务商和 Region 生成、且通过官方域名白名单校验的 HTTPS 地址。
+- Object Key 是字符串而非文件路径，但 OpenDAL 会规范化路径。为避免操作错对象，只允许无首尾空白、无前导/尾随 `/`、无 `//`、无 `.`/`..` 独立分段、无控制字符和双向文本控制符的安全 Key。
+- 不满足安全规则的远端 Key 仍可见并标记“仅查看”，不得传给 OpenDAL 执行读写删。
 - Root Prefix 规范化为相对 Key，不能以协议或 Bucket 名开头。
 - 服务端返回数据也必须执行长度和集合上限校验。
 
@@ -404,9 +335,9 @@ ramag-bin
 | Crate | 职责 |
 |---|---|
 | `ramag-domain` | 账号、Bucket、对象、传输实体及 Driver trait |
-| `ramag-app` | `ObjectStorageService`，编排缓存、权限、传输和持久化 |
-| `ramag-infra-object-storage` | OpenDAL、COS/OSS 列桶适配器、HTTP 签名、Runtime |
-| `ramag-infra-storage` | 加密保存云账号和手动 Bucket |
+| `ramag-app` | `ObjectStorageService`，编排挂载验证、权限、传输和持久化 |
+| `ramag-infra-object-storage` | OpenDAL COS/OSS 数据面、HTTP 传输、Runtime |
+| `ramag-infra-storage` | 加密保存云账号和 Bucket 挂载 |
 | `ramag-tool-object-storage` | GPUI 连接管理、Bucket 导航、对象列表、详情和传输 UI |
 | `ramag-bin` | 依赖注入、工具注册、视图注册和快捷键 |
 
@@ -414,44 +345,47 @@ ramag-bin
 
 ### Domain trait
 
-账号控制面与 Bucket 数据面方法集不同，保持两个 trait：
+领域层只暴露 Bucket 数据面的 `ObjectStorageDriver`：
 
 ```rust
 #[async_trait]
-pub trait BucketCatalog: Send + Sync {
-    async fn list_buckets(
-        &self,
-        account: &ObjectStorageAccount,
-        refresh: bool,
-    ) -> Result<Vec<BucketSummary>>;
-}
-
-#[async_trait]
 pub trait ObjectStorageDriver: Send + Sync {
+    async fn capabilities(
+        &self,
+        account: &ObjectStorageAccountSnapshot,
+        mount: &ObjectStorageMount,
+    ) -> ObjectStorageResult<ObjectCapabilities>;
+
     async fn list_page(
         &self,
-        location: &ObjectLocation,
-        prefix: &str,
+        account: &ObjectStorageAccountSnapshot,
+        mount: &ObjectStorageMount,
+        query: &ObjectListQuery,
         cursor: Option<&ObjectListCursor>,
-    ) -> Result<ObjectPage>;
+        request_generation: u64,
+    ) -> ObjectStorageResult<ObjectPage>;
 
     async fn stat(
         &self,
-        location: &ObjectLocation,
+        account: &ObjectStorageAccountSnapshot,
+        mount: &ObjectStorageMount,
         key: &str,
-    ) -> Result<ObjectMetadata>;
+    ) -> ObjectStorageResult<ObjectMetadata>;
 
-    async fn read_preview(
+    async fn upload(&self, request: ObjectUploadRequest) -> ObjectStorageResult<()>;
+    async fn download(&self, request: ObjectDownloadRequest) -> ObjectStorageResult<()>;
+    async fn delete(
         &self,
-        location: &ObjectLocation,
+        account: &ObjectStorageAccountSnapshot,
+        mount: &ObjectStorageMount,
         key: &str,
-    ) -> Result<ObjectPreview>;
-
-    async fn upload(&self, request: ObjectUploadRequest) -> Result<()>;
-    async fn download(&self, request: ObjectDownloadRequest) -> Result<()>;
-    async fn delete(&self, location: &ObjectLocation, key: &str) -> Result<()>;
-    async fn disconnect_account(&self, account_id: &ObjectStorageAccountId) -> Result<()>;
-    async fn shutdown(&self) -> Result<()>;
+    ) -> ObjectStorageResult<()>;
+    async fn invalidate_account(
+        &self,
+        account_id: &ObjectStorageAccountId,
+        minimum_revision: u64,
+    ) -> ObjectStorageResult<()>;
+    async fn shutdown(&self) -> ObjectStorageResult<()>;
 }
 ```
 
@@ -467,13 +401,13 @@ pub trait ObjectStorageDriver: Send + Sync {
 `ObjectStorageService` 负责：
 
 - 账号 CRUD 和校验。
-- Bucket 自动发现与手动 Bucket 合并。
-- Bucket 缓存和刷新合并。
+- 必填 Bucket 挂载转换和保存前访问验证。
 - 工作区偏好加密和恢复。
+- 全局加密保存已打开账号和当前账号；启动时过滤已删除账号后恢复会话。
 - 当前 Prefix、分页和选择状态的业务规则。
 - 只读门禁。
 - 上传、下载任务队列、取消和历史。
-- 保存、删除账号时失效 Operator、游标、Bucket 缓存和传输。
+- 保存、删除账号时失效 Operator、游标和传输。
 
 ### Infra
 
@@ -486,11 +420,6 @@ src/
   errors.rs
   operator_cache.rs
   cursor_store.rs
-  discovery/
-    mod.rs
-    cos.rs
-    oss.rs
-    xml.rs
   objects/
     mod.rs
     list.rs
@@ -512,9 +441,10 @@ OpenDAL 是 Apache 开源的 Rust 数据访问层，不是腾讯云或阿里云�
 
 - 每个“账号 ID + Bucket + Region + Endpoint + Root Prefix”创建一个 Operator。
 - Operator 在内存中缓存并跨任务共享。
-- 保存账号、轮换 AK/SK、修改只读状态或删除账号时立即清理相关 Operator。
+- 保存账号、轮换 AK/SK、修改生产模式或删除账号时立即清理相关 Operator。
 - Operator 不持久化。
-- 使用 `full_capability` 判断可用能力；不支持的按钮不显示或禁用。
+- 使用 `operator.info().capability()` 判断可用能力；不支持的按钮不显示或禁用。
+- 缓存键包含账号 `revision`，失效时同时记录最小可接受 revision，防止并发中的旧 Operator 构建完成后重新写回缓存。
 
 ### Runtime
 
@@ -522,9 +452,10 @@ GPUI 使用 smol，而 OpenDAL 默认 HTTP 路径依赖 Tokio 生态。基础设
 
 - 初始 worker 数为 2。
 - 所有账号和 Operator 共享，不能每个 Bucket 新建 Runtime。
-- 网络 Future 通过 oneshot 与 GPUI/smol 桥接。
+- 网络 Future 通过 Tokio `JoinHandle` 与 GPUI/smol 桥接。
 - 大文件传输不得在 UI 线程执行。
 - Runtime 创建失败必须使云存储服务初始化失败，不能回退到同步阻塞 UI。
+- Runtime 可显式停止；应用退出时停止接收新任务，并在独立停止线程中执行有界 `shutdown_timeout`。
 
 ### 列举分页
 
@@ -555,11 +486,10 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 | 依赖 | 理由 |
 |---|---|
 | `opendal` | 统一 COS、OSS 的对象数据面 |
-| `reqsign-tencent-cos`、`reqsign-aliyun-oss` | 官方列桶 API 需要签名，禁止自行实现安全敏感算法 |
-| `reqwest` | OpenDAL 不暴露账号级列桶操作，需要独立调用官方 REST API |
-| `quick-xml` | COS、OSS 列桶 API 返回 XML |
+| `reqsign-aliyun-oss` | OSS 数据面受限 transport 需要显式 V4 改签 |
+| `reqwest` | 为 OpenDAL 提供关闭默认凭据链的 rustls HTTP transport |
 
-签名实现采用 `reqsign-tencent-cos` 和 `reqsign-aliyun-oss`。选择具体版本时必须确认：
+OSS 改签采用 `reqsign-aliyun-oss`。选择具体版本时必须确认：
 
 - 与选定 OpenDAL 版本的依赖兼容。
 - 支持当前 COS 和 OSS 签名版本。
@@ -567,7 +497,7 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 - 支持 rustls，不引入 OpenSSL。
 - 错误不会输出密钥。
 
-如果依赖树已有兼容实现，仍应声明直接依赖，不能依赖不可控的传递依赖。不得为了一个列桶接口引入两套完整的非官方厂商 SDK。
+如果依赖树已有兼容实现，仍应声明直接依赖，不能依赖不可控的传递依赖。不得为了未使用的账号级资源发现保留签名或 XML 依赖。
 
 ## 对象浏览语义
 
@@ -581,13 +511,15 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 
 ### 搜索
 
-对象存储原生只高效支持 Key 前缀列举。本次搜索定义为：
+对象存储原生只高效支持 Key 前缀列举。本次筛选定义为：
 
 - Bucket 列表：对已加载 Bucket 做本地名称过滤。
-- 对象列表：按当前 Prefix 下的名称前缀查询。
+- 对象列表：对当前已加载目录条目做本地、不区分大小写的名称包含筛选。
 - 不提供全 Bucket 子串模糊搜索。
 - 不扫描全部对象来模拟搜索。
-- UI 文案使用“前缀筛选”，避免误导用户。
+- 搜索不会额外请求云端；加载更多后，新条目自动参与筛选。
+
+对象浏览仍按当前 Prefix 分页列举；本地筛选只处理已经加载到工作区的条目，不能描述为全 Bucket 搜索。
 
 ### 元数据
 
@@ -595,26 +527,12 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 
 原始 ETag、版本、存储类型和自定义元数据按服务端返回展示，不把 ETag 描述为可靠的内容哈希。
 
-## 预览
+## 对象详情
 
-### 文本
-
-- 最多读取 2 MiB。
-- 自动识别 UTF-8；非法 UTF-8 显示十六进制摘要或不支持提示。
-- HTML、SVG、Markdown 只显示源码，不执行脚本或主动加载远程资源。
-- 超过上限显示截断提示和下载入口。
-
-### 图片
-
-- 仅支持项目 `image` 依赖已启用的 PNG、JPEG、TIFF。
-- 源文件最大 16 MiB。
-- 解码前读取尺寸，超过 40 MP 拒绝预览。
-- 解码和缩放在后台执行。
-- 解码失败明确提示，不影响下载。
-
-### 其他文件
-
-显示元数据和下载入口，不尝试执行、解压或调用外部应用。
+- 双击对象后按需调用 `stat`，右侧抽屉只展示基本信息和自定义元数据。
+- 单击只选择列表行，不发起远程请求，也不打开详情。
+- 点击抽屉外关闭详情；抽屉自身必须使用不透明背景并阻止鼠标事件穿透。
+- 不读取对象正文，不提供文本、图片或十六进制预览；需要内容时使用下载。
 
 ## 上传、下载与删除
 
@@ -624,13 +542,15 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 - 默认禁止覆盖。
 - 目标 Key 已存在时展示 Bucket、完整 Key、现有大小和修改时间。
 - 用户确认后才允许覆盖。
-- 只读账号在 UI、App、Infra 三处拒绝。
+- 覆盖确认必须提示“检查目标”和“实际写入”之间仍存在远端竞态；产品不把确认描述为条件更新保证。
+- 开启生产模式的账号在 UI、App、Infra 三处拒绝写操作。
 - 应用层不对结果不明确的上传自动重试。
 
 ### 下载
 
 - 流式写入同目录的 Ramag 临时文件。
 - 完成并校验预期长度后再原子替换最终文件。
+- Unix 使用同目录原子提交；Windows 使用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` 原子替换已有目标，不能先删除旧文件再重命名。
 - 本地目标已存在时沿用明确的覆盖策略。
 - 取消或失败后删除临时文件。
 - 不承诺跨进程断点续传。
@@ -640,7 +560,7 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 - 只支持单对象删除。
 - 对 Prefix 的“删除目录”入口不提供。
 - 确认框展示账号、Bucket 和完整 Object Key。
-- 只读账号不得出现可执行删除入口。
+- 开启生产模式的账号不得出现可执行删除入口。
 - 不进行应用层自动重试。
 - Bucket 开启版本控制时，删除可能产生 Delete Marker；UI 不能宣称数据已永久清除。
 
@@ -688,16 +608,15 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 | 操作 | 超时/策略 |
 |---|---|
 | DNS、TCP、TLS 建连 | 10 秒 |
-| 列 Bucket | 单页 30 秒，OSS 按页继续 |
-| 列对象、stat | 30 秒 |
-| 预览首字节 | 15 秒 |
-| 传输无进度 | 30 秒触发失败 |
+| 保存前挂载验证 | 每个挂载执行一次有界对象列举 |
+| OpenDAL 对象操作 | HTTP 单次读取 30 秒无数据则失败 |
+| 传输无进度 | HTTP 单次读取 30 秒无数据则失败 |
 | 大文件总时长 | 不设固定总时长，受取消和无进度超时约束 |
 
 重试规则：
 
-- 列 Bucket、列对象、stat、预览和下载读取属于幂等读，可对临时网络错误、429、部分 5xx 最多重试两次。
-- 使用指数退避和抖动。
+- 保存前的挂载验证不在应用层盲目重试；临时网络错误允许保存为“未验证”。
+- 列对象使用有状态 Lister，流中失败时废弃游标并由 UI 重新加载；上传、下载流中失败不从中间盲目重放。
 - 鉴权、权限、校验、404 和响应解析错误不重试。
 - 上传、覆盖和删除不在 App 层自动重试。
 
@@ -710,8 +629,8 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 - 账号名称。
 - 服务商。
 - AK、SK。
-- 只读状态。
-- 手动 Bucket。
+- 生产模式状态（底层字段为 `read_only`，整体随账号密文保存）。
+- Bucket 挂载。
 
 不能只加密 SK 而明文保存其他字段，因为账号名、Bucket 和 Endpoint 也可能泄露基础设施信息。
 
@@ -742,12 +661,12 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 ### 顶部会话
 
 ```text
-连接管理 | COS·生产 [只读] × | OSS·测试 ×
+云存储 | COS·生产 [生产] × | OSS·测试 ×
 ```
 
 - “连接管理”为固定页。
 - 每个已打开云账号是一个可关闭会话。
-- 会话显示服务商、账号名称、连接状态和只读标识。
+- 会话显示服务商、账号名称、连接状态和生产模式标识。
 - 同一账号只打开一个会话。
 
 ### 账号管理页
@@ -757,56 +676,64 @@ OpenDAL 的 `Lister` 由 Infra 持有并有界消费。领域层获得不透明�
 - 搜索框。
 - 新建账号按钮。
 - COS/OSS 服务商标识。
-- 账号名称、认证方式和只读状态。
+- 账号名称、认证方式和生产模式状态。
 - 编辑、连接、删除操作。
 - 删除账号前显示会关闭的会话和取消的传输数量。
 
 账号表单字段：
 
-1. 账号名称。
-2. 服务商。
-3. SecretId/AccessKey ID。
-4. SecretKey/AccessKey Secret。
-5. 只读开关，默认开启。
-6. 测试并列举 Bucket。
+1. 服务商图标选择；腾讯云 COS 默认选中。
+2. 账号名称。
+3. 凭据字段随服务商显示：COS 使用 SecretId/SecretKey，OSS 使用 AccessKey ID/AccessKey Secret。
+4. 生产模式（只读保护），新账号默认关闭。
+5. 至少一个必填 Bucket 和 Region，可选 Root Prefix；Region 默认上海，COS 为 `ap-shanghai`，OSS 为 `cn-shanghai`。
+6. 保存时逐个验证已配置 Bucket 的对象列举权限；任一挂载配置或权限错误都阻止保存。
 
 ### 工作区
 
 ```text
-┌ 连接管理 | COS·生产 [只读] × ─────────────────────────────┐
-├──────────────┬─────────────────────────────┬─────────────┤
-│ Bucket 导航   │ Bucket / Prefix             │ 详情 / 预览 │
-│              │ [前缀筛选] [刷新] [上传]     │             │
-│ 华南         │ 名称  大小  类型  修改时间   │ 元数据      │
-│  bucket-a    │ ...                         │ 图片/文本   │
-│ 华东         │                             │ 操作入口    │
-│  bucket-b    │                             │             │
-├──────────────┴─────────────────────────────┴─────────────┤
-│ 对象数量 / 加载更多                           传输任务 3 │
-└──────────────────────────────────────────────────────────┘
+┌ 云存储 | COS·生产 [生产] × ───────────────────────────────┐
+├──────────────┬──────────────────────────────────────────┤
+│ Bucket 导航   │ 路径 / 可点击面包屑                       │
+│              ├──────────────────────────────────────────┤
+│ 华南         │ [当前目录名称筛选] [刷新] [传输] [上传]     │
+│  bucket-a    │ 图标 名称 类型 大小 创建时间 修改时间       │
+│ 华东         │ ...                                      │
+│  bucket-b    │                              ┌──────────┐ │
+│              │                              │对象详情  │ │
+│              │                              └──────────┘ │
+└──────────────┴──────────────────────────────────────────┘
 ```
 
-- 左侧：Bucket 按地域分组，包含刷新和手动添加。
-- 中间：对象列表为主体，占最大宽度。
-- 右侧：选中对象后的详情和预览，可收起。
-- 底部：加载状态、对象数量和传输入口。
-- 分栏可拖动并加密保存宽度。
+- 顶部：与数据库、SSH 相同的“连接管理 + 已打开会话”标签栏。
+- 连接管理：与 SSH 相同的居中列表、搜索、新建入口和弹层表单骨架。
+- 左侧：Bucket 按地域分组，包含搜索和刷新；与主内容区之间可拖动调整宽度，宽度只作为当前窗口临时状态，不持久化。
+- 主区：对象列表为主体，始终占最大宽度。
+- 路径：采用与 SSH 相同的可点击面包屑；点击“路径”打开直达窗口，可输入绝对对象路径并管理当前挂载点的常用路径。
+- 重新进入账号时恢复上次使用的 Bucket，但不恢复临时浏览 Prefix，始终从挂载根目录开始。
+- 对象列表由应用明确保证目录优先、同类按名称升序；分页追加后重新维持整体顺序。
+- 对象列表固定显示“名称、类型、大小、创建时间、修改时间”表头；虚拟目录类型显示“文件夹”。
+- COS/OSS 的对象列举响应不提供创建时间；创建时间统一显示 `—`。虚拟目录也没有可靠的修改时间，显示 `—`，不得伪造日期。
+- 对象修改时间显示到秒，格式为 `YYYY-MM-DD HH:mm:ss`。
+- 对象列表使用固定行高虚拟滚动，只渲染可见区间；分页累计上限仍为 20,000 条。
+- 详情：双击对象后按需从右侧覆盖打开；单击只选择。点击详情外自动关闭，不跨会话恢复。
+- 详情只按“基本信息、自定义元数据”分区；下载和删除使用图标按钮，并提供明确的悬浮提示。
+- 上传或下载开始后自动打开与 SSH 一致的悬浮传输面板；入口紧跟刷新按钮。面板显示方向、本地路径、对象键、百分比、已传输/总量和取消入口，完成历史可清理。
+- 通知、账号表单及删除/覆盖确认复用其他工具的通知与居中遮罩弹层样式。
 
 ### 响应式
 
-- 宽屏：Bucket、对象列表、详情三栏。
-- 中等宽度：Bucket + 对象列表，详情以抽屉打开。
-- 小窗口：Bucket 导航可折叠，详情使用覆盖面板。
+- 常规窗口（≥ 820 px）：Bucket + 对象列表两栏，详情按需从右侧覆盖打开。
+- 小窗口（< 820 px）：对象列表优先，Bucket 导航按需切换，详情使用全屏覆盖面板。
 - 对象列表始终优先获得宽度，不能照搬 SSH 的“窄文件区 + 宽终端区”。
 
 ### 状态
 
 Bucket 区必须有独立状态：
 
-- 正在鉴权并加载。
+- 正在加载配置。
 - 加载成功。
-- 账号没有 Bucket。
-- 缺少列桶权限，可手动添加。
+- 旧账号没有 Bucket，需要编辑后补充。
 - AK/SK 无效。
 - 网络、限流或服务错误，可刷新。
 
@@ -821,12 +748,12 @@ Bucket 区必须有独立状态：
 
 ## 并发与生命周期
 
-- Bucket 刷新、对象刷新、预览和传输分别使用 generation，防止旧任务覆盖新状态。
+- 对象刷新、详情和传输分别使用 generation 或任务 ID，防止旧任务覆盖新状态。
 - 切换 Bucket 不立即销毁同账号其他 Bucket 的 Operator，但受缓存上限约束。
 - Operator 缓存最多 32 个，使用最近最少使用策略淘汰。
-- 删除或编辑账号时先禁止新任务，再取消传输、等待有界退出、清理 Operator，最后修改持久化。
+- 删除或编辑账号时先禁止新任务，再取消传输（包括等待并发槽的任务）、最多等待 35 秒退出，清理 Operator，最后修改持久化；超时则不修改账号。
 - 应用退出时调用 `ObjectStorageDriver::shutdown`。
-- 任何锁都不能跨 `.await` 持有。
+- 账号读写闸门会跨数据面 `.await` 持有，以保证编辑/删除与正在执行的账号操作之间没有竞态；闸门本身是异步 RwLock，不持有同步 Mutex 跨 `.await`。
 - 传输进度更新需节流，避免每个数据块触发 GPUI 重绘。
 
 ## 测试策略
@@ -835,33 +762,29 @@ Bucket 区必须有独立状态：
 
 - 账号、AK/SK、Bucket、Region、Endpoint、Key 和 Prefix 校验。
 - Provider 字段名称映射。
-- 自动 Bucket 与手动 Bucket 合并、排序、去重。
-- 只读策略。
+- Bucket 必填、排序和重复挂载校验。
+- 生产模式只读策略。
 - Object Entry 和分页边界。
-- 预览大小、图片像素和传输数量上限。
+- 传输数量和对象列表资源上限。
 
 ### App 单元测试
 
-使用 Fake Catalog、Fake Driver 和 Fake Storage：
+使用 Fake Driver 和 Fake Storage：
 
-- 空账号也视为列桶成功。
-- 列桶权限不足允许保存并手动添加。
-- 并发刷新合并。
-- 旧 generation 结果不会覆盖新状态。
-- 编辑账号清理 Bucket、Operator 和游标缓存。
-- 只读账号的上传和删除在 Driver 调用前被拒绝。
+- 未配置 Bucket 的账号拒绝保存。
+- 保存时验证每个已配置 Bucket；无效凭据和权限错误拒绝保存。
+- 读取挂载只访问本地加密配置，不调用远端账号级列桶接口。
+- 编辑账号清理 Operator 和游标缓存。
+- 生产模式账号的上传和删除在 Driver 调用前被拒绝。
 - 写操作失败不自动重试。
 - 工作区偏好加密保存和恢复。
 - 传输排队、取消、进度和历史裁剪。
 
 ### Infra 单元测试
 
-- 使用官方示例 XML 作为固定 Fixture。
-- COS 列桶响应解析。
-- OSS 单页、多页、空页和缺失 NextMarker。
-- 超大 XML、重复 Bucket、非法字段和未知枚举。
+- 官方 Endpoint 和 Operator 配置。
 - 错误码和 RequestId 映射。
-- 签名请求不泄露凭据到 Debug/Error。
+- 数据面请求不泄露凭据到 Debug/Error。
 - Operator Cache 和 Cursor Store 的失效、过期和上限。
 - 下载临时文件提交及失败清理。
 - 取消上传、下载和应用退出。
@@ -883,19 +806,21 @@ Bucket 区必须有独立状态：
 RAMAG_TEST_COS_SECRET_ID
 RAMAG_TEST_COS_SECRET_KEY
 RAMAG_TEST_COS_BUCKET
+RAMAG_TEST_COS_REGION
 RAMAG_TEST_COS_PREFIX
 
 RAMAG_TEST_OSS_ACCESS_KEY_ID
 RAMAG_TEST_OSS_ACCESS_KEY_SECRET
 RAMAG_TEST_OSS_BUCKET
+RAMAG_TEST_OSS_REGION
 RAMAG_TEST_OSS_PREFIX
 ```
 
 测试账号必须是专用、最小权限账号；写测试只能在显式的测试 Bucket 和 Prefix 下进行。测试覆盖：
 
-- 自动列桶能找到目标 Bucket。
+- 显式配置的 Bucket 能通过对象列举验证。
 - 根 Prefix 和子 Prefix 列举。
-- stat、文本预览。
+- stat。
 - 上传、下载、覆盖拒绝和删除测试对象。
 - 只读身份无法写入。
 - 清理失败时报告残留 Key，不能静默忽略。
@@ -904,10 +829,12 @@ RAMAG_TEST_OSS_PREFIX
 
 - 亮色、暗色。
 - 最小窗口、常用窗口、宽屏。
-- 空账号、多个地域、大量 Bucket。
+- 未配置 Bucket 的旧账号、多个地域、大量 Bucket。
 - 大量对象虚拟滚动和加载更多。
 - 长 Bucket 名、长 Key、中文和特殊字符。
-- 详情抽屉、预览和传输面板。
+- 详情抽屉和传输面板。
+- 当前目录名称包含筛选、秒级时间显示和空目录标记过滤。
+- 单击选择、双击打开、点击抽屉外关闭及鼠标事件不穿透。
 - 只读按钮、删除确认和覆盖确认。
 - 错误提示可读且不包含密钥。
 
@@ -916,14 +843,14 @@ RAMAG_TEST_OSS_PREFIX
 以下条件全部满足才算交付完成：
 
 1. COS 和 OSS 都能使用永久 AK/SK 创建账号。
-2. 连接后自动列出列桶 API 可见的全部 Bucket，而非只取第一页。
-3. 缺少列桶权限时准确提示 Action，并能手动添加已知 Bucket。
-4. Bucket 按地域稳定展示，刷新不会重复或丢失手动 Bucket。
+2. 新建或编辑账号必须配置至少一个 Bucket 和 Region。
+3. 保存时只验证显式配置的 Bucket，不依赖 `ListBuckets`/`GetService` 权限。
+4. Bucket 按地域稳定展示，刷新不会重复或丢失配置。
 5. 两家服务都能浏览 Prefix、分页加载和查看元数据。
-6. 文本、图片预览满足大小和安全限制。
-7. 上传、下载流式执行，支持进度、取消和覆盖保护。
+6. 双击对象可查看完整元数据，单击不会打开详情，点击详情外可关闭。
+7. 上传、下载流式执行，支持进度、取消、去重和覆盖保护。
 8. 单对象删除有完整确认，Prefix 不能被误当成目录递归删除。
-9. 只读账号在 UI、App、Infra 三层都无法写入。
+9. 开启生产模式的账号在 UI、App、Infra 三层都无法写入。
 10. AK/SK、账号名和 Bucket 信息加密落盘，日志不泄露凭据。
 11. 大量对象、大文件传输和网络异常不会阻塞 UI。
 12. 账号修改、删除、关闭会话和应用退出能正确清理任务与缓存。
@@ -935,31 +862,28 @@ RAMAG_TEST_OSS_PREFIX
 
 本文不按阶段交付，以下清单全部属于同一次实现：
 
-- [ ] 新增 Domain 实体、校验常量、`BucketCatalog` 和 `ObjectStorageDriver`。
-- [ ] 扩展 `Storage` trait 的云账号 CRUD，默认方法保持旧测试 Mock 兼容。
-- [ ] 新增 redb 加密表、Schema 初始化和密钥恢复保护。
-- [ ] 新建 `ramag-infra-object-storage`。
-- [ ] 接入 OpenDAL COS、OSS。
-- [ ] 实现 COS `GET Service` 自动列桶。
-- [ ] 实现 OSS `ListBuckets` 全量分页。
-- [ ] 实现 Operator Cache、Cursor Store 和专用 Runtime。
-- [ ] 实现浏览、元数据、预览、上传、下载和单对象删除。
-- [ ] 实现 `ObjectStorageService`、只读门禁、缓存、传输和偏好。
-- [ ] 新建 `ramag-tool-object-storage` 和完整 UI。
-- [ ] 在 `ramag-bin` 完成依赖注入、工具及视图注册。
-- [ ] 增加单元、存储、集成和 UI 验证。
-- [ ] 更新架构文档并运行全部质量门禁。
+- [x] 新增 Domain 实体、校验常量和 `ObjectStorageDriver`。
+- [x] 扩展 `Storage` trait 的云账号 CRUD，默认方法保持旧测试 Mock 兼容。
+- [x] 新增 redb 加密表、Schema 初始化和密钥恢复保护。
+- [x] 新建 `ramag-infra-object-storage`。
+- [x] 接入 OpenDAL COS、OSS。
+- [x] 实现必填 Bucket 挂载和官方 Endpoint 生成。
+- [x] 保存时通过数据面列举验证全部配置挂载。
+- [x] 实现 Operator Cache、Cursor Store 和专用 Runtime。
+- [x] 实现浏览、元数据、上传、下载和单对象删除。
+- [x] 实现 `ObjectStorageService`、只读门禁、缓存、传输和偏好。
+- [x] 新建 `ramag-tool-object-storage` 和完整 UI。
+- [x] 在 `ramag-bin` 完成依赖注入、工具及视图注册。
+- [x] 增加 Domain、App、Infra、Storage 单元测试和 COS/OSS `#[ignore]` 集成测试。
+- [x] 更新架构文档，并通过 `make fmt-check`、`make check`、`make clippy`、`make test`、`make win-debug`。
 
 ## 官方参考
 
 - [Apache OpenDAL Rust 文档](https://opendal.apache.org/docs/rust/opendal/)
 - [Apache OpenDAL COS 配置](https://opendal.apache.org/services/cos/)
 - [Apache OpenDAL OSS 配置](https://opendal.apache.org/services/oss/)
-- [腾讯云 COS：GET Service 查询存储桶列表](https://cloud.tencent.com/document/product/436/113845)
 - [腾讯云 COS：授权与身份认证流程](https://cloud.tencent.com/document/product/436/68279)
 - [腾讯云 COSBrowser：桌面端登录方式](https://cloud.tencent.com/document/product/436/38103)
-- [阿里云 OSS：ListBuckets](https://help.aliyun.com/zh/oss/developer-reference/listbuckets)
-- [阿里云 OSS：列出账号所有地域的 Bucket](https://help.aliyun.com/en/oss/developer-reference/list-buckets)
 - [阿里云 OSS：用户签名验证](https://help.aliyun.com/zh/oss/verify-user-signatures)
 - [阿里云 SDK：访问凭据配置方式](https://help.aliyun.com/zh/sdk/developer-reference/configure-credentials-2)
 - [阿里云 ossbrowser：登录认证方式](https://help.aliyun.com/zh/oss/developer-reference/login-to-ossbrowser-2-0)

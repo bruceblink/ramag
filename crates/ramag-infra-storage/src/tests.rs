@@ -111,6 +111,7 @@ fn fresh_storage_initializes_complete_schema() {
         "clip_uuid_meta".to_string(),
         "clips".to_string(),
         "connections".to_string(),
+        "object_storage_accounts".to_string(),
         "preferences".to_string(),
         "query_history".to_string(),
         "query_history_meta".to_string(),
@@ -280,6 +281,127 @@ async fn ssh_profiles_are_encrypted_and_round_trip() {
     assert!(storage.list_ssh_profiles().await.unwrap().is_empty());
 }
 
+fn sample_object_storage_account(name: &str) -> ObjectStorageAccount {
+    let mut account = ObjectStorageAccount::new(name, CloudProvider::TencentCos);
+    account.access_key_id = SecretString::new("secret-id");
+    account.access_key_secret = SecretString::new("secret-key");
+    account
+        .manual_buckets
+        .push(ManualBucket::new("storage-test-bucket", "ap-shanghai"));
+    account
+}
+
+#[tokio::test]
+async fn object_storage_accounts_are_encrypted_and_round_trip() {
+    let (storage, _tmp) = make_test_storage();
+    let account = sample_object_storage_account("production");
+    storage.save_object_storage_account(&account).await.unwrap();
+
+    assert_eq!(
+        storage.list_object_storage_accounts().await.unwrap(),
+        vec![account.clone()]
+    );
+    assert_eq!(
+        storage
+            .get_object_storage_account(&account.id)
+            .await
+            .unwrap(),
+        Some(account.clone())
+    );
+
+    let read_txn = storage.db.begin_read().unwrap();
+    let table = read_txn
+        .open_table(repos::object_storage_account_repo::OBJECT_STORAGE_ACCOUNTS_TABLE)
+        .unwrap();
+    let raw = table.get(account.id.to_string().as_str()).unwrap().unwrap();
+    assert!(!raw.value().contains("production"));
+    assert!(!raw.value().contains("secret-id"));
+    assert!(!raw.value().contains("secret-key"));
+}
+
+#[tokio::test]
+async fn object_storage_record_rejects_a_different_master_key() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("object-storage.redb");
+    {
+        let storage = RedbStorage::open_with_key(&path, &[0x11; 32]).unwrap();
+        storage
+            .save_object_storage_account(&sample_object_storage_account("encrypted"))
+            .await
+            .unwrap();
+        assert!(database_has_encrypted_records(&storage.db).unwrap());
+    }
+
+    assert!(RedbStorage::open_with_key(&path, &[0x22; 32]).is_err());
+}
+
+#[tokio::test]
+async fn deleting_one_object_storage_account_preserves_others() {
+    let (storage, _tmp) = make_test_storage();
+    let deleted = sample_object_storage_account("deleted");
+    let preserved = sample_object_storage_account("preserved");
+    storage.save_object_storage_account(&deleted).await.unwrap();
+    storage
+        .save_object_storage_account(&preserved)
+        .await
+        .unwrap();
+
+    storage
+        .delete_object_storage_account(
+            &deleted.id,
+            &format!("object_storage.workspace.{}", deleted.id),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        storage
+            .get_object_storage_account(&deleted.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        storage
+            .get_object_storage_account(&preserved.id)
+            .await
+            .unwrap(),
+        Some(preserved)
+    );
+}
+
+#[tokio::test]
+async fn deleting_object_storage_account_also_deletes_its_preference() {
+    let (storage, _tmp) = make_test_storage();
+    let account = sample_object_storage_account("deleted");
+    let preference_key = format!("object_storage.workspace.{}", account.id);
+    storage.save_object_storage_account(&account).await.unwrap();
+    storage
+        .set_preference(&preference_key, "encrypted-placeholder")
+        .await
+        .unwrap();
+
+    storage
+        .delete_object_storage_account(&account.id, &preference_key)
+        .await
+        .unwrap();
+
+    assert!(
+        storage
+            .list_object_storage_accounts()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        storage
+            .get_preference(&preference_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn batch_save_inserts_and_updates_atomically() {
     let (storage, _tmp) = make_test_storage();
@@ -443,6 +565,8 @@ async fn corrupted_repo_record_blocks_unsafe_deduplication() {
 }
 
 use chrono::{Duration, Utc};
-use ramag_domain::entities::{ClipId, ClipKind};
+use ramag_domain::entities::{
+    ClipId, ClipKind, CloudProvider, ManualBucket, ObjectStorageAccount, SecretString,
+};
 
 mod clip_tests;

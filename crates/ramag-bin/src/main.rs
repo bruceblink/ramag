@@ -29,8 +29,8 @@ use gpui::{
 };
 use gpui_component::Root;
 use ramag_app::{
-    ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService, RedisService,
-    SshService, ToolRegistry, UpdateService,
+    ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService,
+    ObjectStorageService, RedisService, SshService, ToolRegistry, UpdateService,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_domain::traits::ClipboardDriver;
@@ -57,6 +57,9 @@ use ramag_tool_dbclient::{
     RunStatementAtCursor, ToggleRedisConsole, ToggleSqlEditor, create_dbclient_view,
 };
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
+use ramag_tool_object_storage::{
+    ObjectStorageTool, RefreshObjectStorage, create_object_storage_view,
+};
 use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, RefreshSftp, SshTool, create_ssh_view};
 use ramag_tool_vcs::{
     CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
@@ -116,6 +119,7 @@ struct AppDeps {
     data_sync_gate: Arc<DataSyncGate>,
     clipboard_service: Option<Arc<ClipboardService>>,
     ssh_service: Arc<SshService>,
+    object_storage_service: Arc<ObjectStorageService>,
     update_service: Option<Arc<UpdateService>>,
     storage: Arc<dyn Storage>,
 }
@@ -187,6 +191,16 @@ fn main() {
         "application starting"
     );
 
+    if let Err(error) = install_tls_crypto_provider() {
+        error!(operation = "tls_provider_init", error = %error, "TLS crypto provider initialization failed");
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Ramag 启动失败")
+            .set_description(format!("无法初始化安全网络组件：{error}"))
+            .show();
+        std::process::exit(1);
+    }
+
     // 单实例：已有实例在跑则通知其唤起主窗口后静默退出（避免 redb 文件锁报错）；
     // macOS 由系统 LaunchServices 保证 .app 单实例，无需自建
     #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -236,6 +250,18 @@ fn main() {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let clipboard_service: Option<Arc<ClipboardService>> = None;
     let ssh_service: Arc<SshService> = build_ssh_service(storage.clone());
+    let object_storage_service = match build_object_storage_service(storage.clone()) {
+        Ok(service) => service,
+        Err(error) => {
+            error!(operation = "object_storage_init", error = %error, "object storage initialization failed");
+            let _ = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Ramag 启动失败")
+                .set_description(format!("无法初始化对象存储模块：{error}"))
+                .show();
+            std::process::exit(1);
+        }
+    };
     let update_service = build_update_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
@@ -284,6 +310,7 @@ fn main() {
         data_sync_gate,
         clipboard_service,
         ssh_service,
+        object_storage_service,
         update_service,
         storage,
     };
@@ -317,13 +344,18 @@ fn main() {
             }
         });
 
-        // 退出时关闭全部 SSH 隧道子进程，避免残留孤儿 ssh 占用端口
+        // 退出时关闭 SSH 与对象存储运行时，避免残留后台任务。
         let ssh_service_for_quit = deps.ssh_service.clone();
+        let object_storage_for_quit = deps.object_storage_service.clone();
         cx.on_app_quit(move |_| {
             let ssh_service = ssh_service_for_quit.clone();
+            let object_storage = object_storage_for_quit.clone();
             async move {
                 if let Err(error) = ssh_service.shutdown().await {
                     warn!(operation = "ssh_shutdown", error = %error, "shutdown ssh tool resources failed");
+                }
+                if let Err(error) = object_storage.shutdown().await {
+                    warn!(operation = "object_storage_shutdown", error = %error, "shutdown object storage resources failed");
                 }
                 ramag_infra_tunnel::shutdown_all();
             }
@@ -428,6 +460,11 @@ fn main() {
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("Terminal")),
             KeyBinding::new("secondary-r", RefreshSftp, Some("SshWorkspace")),
+            KeyBinding::new(
+                "secondary-r",
+                RefreshObjectStorage,
+                Some("ObjectStorageView"),
+            ),
         ]);
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]

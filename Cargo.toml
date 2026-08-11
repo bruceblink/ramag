@@ -13,6 +13,7 @@ members = [
     "crates/ramag-infra-clipboard",
     "crates/ramag-infra-tunnel",
     "crates/ramag-infra-ssh",
+    "crates/ramag-infra-object-storage",
     "crates/ramag-infra-update",
     "crates/ramag-terminal",
     "crates/ramag-tool-dbclient",
@@ -21,6 +22,7 @@ members = [
     "crates/ramag-tool-vcs",
     "crates/ramag-tool-clipboard",
     "crates/ramag-tool-ssh",
+    "crates/ramag-tool-object-storage",
     "crates/ramag-ui",
     "crates/ramag-bin",
 ]
@@ -30,7 +32,7 @@ version = "0.0.2"
 edition = "2024"
 authors = ["axemc"]
 license = "Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.91"
 repository = "https://github.com/tools-rs/ramag"
 
 [workspace.dependencies]
@@ -47,6 +49,7 @@ ramag-infra-git = { path = "crates/ramag-infra-git" }
 ramag-infra-clipboard = { path = "crates/ramag-infra-clipboard" }
 ramag-infra-tunnel = { path = "crates/ramag-infra-tunnel" }
 ramag-infra-ssh = { path = "crates/ramag-infra-ssh" }
+ramag-infra-object-storage = { path = "crates/ramag-infra-object-storage" }
 ramag-infra-update = { path = "crates/ramag-infra-update" }
 ramag-terminal = { path = "crates/ramag-terminal" }
 ramag-tool-dbclient = { path = "crates/ramag-tool-dbclient" }
@@ -55,6 +58,7 @@ ramag-tool-mongodb = { path = "crates/ramag-tool-mongodb" }
 ramag-tool-vcs = { path = "crates/ramag-tool-vcs" }
 ramag-tool-clipboard = { path = "crates/ramag-tool-clipboard" }
 ramag-tool-ssh = { path = "crates/ramag-tool-ssh" }
+ramag-tool-object-storage = { path = "crates/ramag-tool-object-storage" }
 ramag-ui = { path = "crates/ramag-ui" }
 
 # macOS FFI（剪贴板驱动；与 gpui_macos 同款绑定与版本，依赖树内已有零新增编译单元）
@@ -148,7 +152,27 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 # JumpServer REST API；使用 rustls，并读取系统证书库以兼容企业与内网证书链。
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-no-provider",
+    "system-proxy",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+http = "1"
+bytes = "1"
+
+# 云对象存储：只启用 COS / OSS、Tokio executor 与 rustls HTTP transport。
+opendal = { version = "0.58.1", default-features = false, features = [
+    "auto-register-services",
+    "executors-tokio",
+    "http-transport-reqwest-rustls-no-provider",
+    "services-cos",
+    "services-oss",
+] }
+opendal-http-transport-reqwest = { version = "0.58.1", default-features = false, features = ["rustls-no-provider"] }
+reqsign-core = "3.3.0"
+reqsign-aliyun-oss = "3.1.4"
 
 # GPUI Action 派生
 schemars = "1"
@@ -169,7 +193,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] 
 
 # 工具
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 parking_lot = "0.12"
 # 加密剪贴历史深度搜索：并行兜底扫描 + 带密钥 Bloom token；均已存在于依赖树。
 rayon = "1"

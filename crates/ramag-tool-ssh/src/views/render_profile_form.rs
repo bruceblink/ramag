@@ -211,7 +211,7 @@ impl SshProfileFormPanel {
                     .id("ssh-production-label")
                     .debug_selector(|| "ssh-production-label".into())
                     .text_sm()
-                    .child("生产"),
+                    .child(ramag_ui::PRODUCTION_MODE_LABEL),
             )
             .child(
                 ramag_ui::clickable_switch("ssh-production")

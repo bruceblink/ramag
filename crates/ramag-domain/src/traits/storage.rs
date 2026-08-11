@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 
 use crate::entities::{
-    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, QueryHistoryPage,
-    QueryRecord, QueryRecordId, RepoConfig, RepoId, SshProfile, SshProfileId,
+    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, ObjectStorageAccount,
+    ObjectStorageAccountId, QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId,
+    SshProfile, SshProfileId,
 };
 use crate::error::Result;
 
@@ -47,6 +48,40 @@ pub trait Storage: Send + Sync {
     async fn delete_ssh_profile(&self, _id: &SshProfileId) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "delete_ssh_profile".into(),
+        ))
+    }
+
+    // 默认实现用于兼容未实现云对象存储的测试替身。
+
+    async fn list_object_storage_accounts(&self) -> Result<Vec<ObjectStorageAccount>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_object_storage_accounts".into(),
+        ))
+    }
+
+    async fn get_object_storage_account(
+        &self,
+        _id: &ObjectStorageAccountId,
+    ) -> Result<Option<ObjectStorageAccount>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "get_object_storage_account".into(),
+        ))
+    }
+
+    async fn save_object_storage_account(&self, _account: &ObjectStorageAccount) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "save_object_storage_account".into(),
+        ))
+    }
+
+    /// 原子删除账号及该账号的对象存储工作区偏好。
+    async fn delete_object_storage_account(
+        &self,
+        _id: &ObjectStorageAccountId,
+        _workspace_preference_key: &str,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "delete_object_storage_account".into(),
         ))
     }
 

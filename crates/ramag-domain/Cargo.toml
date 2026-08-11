@@ -25,3 +25,6 @@ chrono = { workspace = true }
 
 # 唯一标识
 uuid = { workspace = true }
+
+# AK/SK 内存生命周期保护
+zeroize = { workspace = true }

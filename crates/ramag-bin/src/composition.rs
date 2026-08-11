@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// Reqwest 选择 no-provider 模式后，进程组合根负责在构建任何客户端前安装 Provider。
+pub(super) fn install_tls_crypto_provider() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        anyhow::bail!("无法安装 TLS 加密 Provider");
+    }
+    Ok(())
+}
+
 pub(super) fn build_connection_service()
 -> anyhow::Result<(Arc<ConnectionService>, Arc<dyn Storage>)> {
     use ramag_domain::entities::DriverKind;
@@ -55,6 +64,7 @@ pub(super) fn build_tool_registry() -> Arc<ToolRegistry> {
     registry.register(Arc::new(DbClientTool::new()));
     registry.register(Arc::new(VcsTool::new()));
     registry.register(Arc::new(SshTool::new()));
+    registry.register(Arc::new(ObjectStorageTool::new()));
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     registry.register(Arc::new(ClipboardTool::new()));
     registry
@@ -89,6 +99,20 @@ pub(super) fn build_ssh_service(storage: Arc<dyn Storage>) -> Arc<SshService> {
             Arc::new(service)
         }
     }
+}
+
+pub(super) fn build_object_storage_service(
+    storage: Arc<dyn Storage>,
+) -> anyhow::Result<Arc<ramag_app::ObjectStorageService>> {
+    let infra = Arc::new(
+        ramag_infra_object_storage::ObjectStorageInfra::new().map_err(|error| {
+            anyhow::anyhow!("初始化对象存储基础设施失败：{}", error.safe_message)
+        })?,
+    );
+    let driver: Arc<dyn ramag_domain::traits::ObjectStorageDriver> = infra;
+    Ok(Arc::new(ramag_app::ObjectStorageService::new(
+        driver, storage,
+    )))
 }
 
 pub(super) fn build_update_service(storage: Arc<dyn Storage>) -> Option<Arc<UpdateService>> {

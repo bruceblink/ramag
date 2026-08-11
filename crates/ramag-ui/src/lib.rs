@@ -60,6 +60,10 @@ pub use transfer_ui::{
 
 pub const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
 
+/// 数据库、SSH 与云存储共用的生产保护文案，避免同一语义在各工具中漂移。
+pub const PRODUCTION_MODE_LABEL: &str = "生产模式（只读保护）";
+pub const PRODUCTION_BADGE_LABEL: &str = "生产";
+
 /// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
 pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {
     use gpui::Styled as _;

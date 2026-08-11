@@ -2,7 +2,7 @@
 
 ## 设计目标
 
-1. **可扩展**：从一开始就支持多种数据源与工具（当前 MySQL / PostgreSQL / Redis / MongoDB / Git / SSH / SFTP）
+1. **可扩展**：从一开始就支持多种数据源与工具（当前 MySQL / PostgreSQL / Redis / MongoDB / Git / SSH / SFTP / COS / OSS）
 2. **可演化**：未来加入新工具（不只是数据库）不需要重构 domain / app 层
 3. **可测试**：核心业务逻辑能脱离 GUI 单独测试
 4. **可维护**：模块边界清晰，依赖方向单一
@@ -21,6 +21,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
   ├── ramag-tool-vcs                       ← VCS（Git）可视化视图
   ├── ramag-tool-ssh                       ← SSH 连接、内嵌终端、SFTP 与 JumpServer 导入
   ├── ramag-tool-clipboard                 ← 剪贴历史与详情视图
+  ├── ramag-tool-object-storage             ← COS/OSS 账号、Bucket、对象与传输视图
   ├── ramag-ui                             ← Shell + ActivityBar + 主题
   ├── ramag-infra-mysql       impl SqlBackend
   ├── ramag-infra-postgres    impl SqlBackend
@@ -31,6 +32,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
   ├── ramag-infra-ssh         impl SshDriver + JumpServerDriver
   ├── ramag-terminal                       ← GPUI 终端解析、输入编码与绘制
   ├── ramag-infra-clipboard   impl ClipboardDriver
+  ├── ramag-infra-object-storage             ← OpenDAL COS/OSS 数据面、专用 runtime
   ├── ramag-infra-tunnel                   ← 数据库系统 OpenSSH 隧道
   ├── ramag-infra-storage     impl Storage（redb + aes-gcm + 系统凭据库）
   └── ramag-app                            ← Use Cases + ToolRegistry
@@ -51,7 +53,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 
 **关键内容**：
 - `entities/`：数据库连接与结果、Redis / MongoDB 数据模型、Git 仓库模型、SSH 配置与传输、JumpServer 资源、剪贴条目、ID 转换配置等
-- `traits/`：`Driver`（SQL）、`KvDriver`（Redis）、`DocDriver`（MongoDB）、`GitDriver`（Git）、`SshDriver`、`JumpServerDriver`、`ClipboardDriver`、`Storage`、`Tool`
+- `traits/`：`Driver`（SQL）、`KvDriver`（Redis）、`DocDriver`（MongoDB）、`GitDriver`（Git）、`SshDriver`、`JumpServerDriver`、`ClipboardDriver`、`ObjectStorageDriver`、`Storage`、`Tool`
 - `error.rs`：统一错误 `DomainError`
 
 **为什么不让 `Driver` 涵盖一切**：SQL / KV / 文档 / Git / SSH 等后端的方法集差异大（`execute` vs `get_value` vs `find` vs `commit` vs `list_directory`），强合并会让一侧充斥 NotImplemented，破坏语义清晰度。
@@ -65,6 +67,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 - `RedisService`：Redis 侧 facade
 - `MongoService`：MongoDB 侧 facade（连接 CRUD + 文档操作 + 查询历史，与 SQL 共用同一张 history 表）
 - `SshService`：SSH 配置、连接测试、SFTP、传输队列与 JumpServer 导入编排
+- `ObjectStorageService`：COS/OSS 账号生命周期、必填 Bucket 挂载验证、对象分页、只读门禁、传输队列与加密工作区
 - `id_conversion`：结果搜索使用的双向 ID 转换，隔离内置算法和外部进程边界
 - `ToolRegistry`：管理已注册的 Tool
 
@@ -125,7 +128,19 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 
 ### `ramag-infra-storage`
 
-实现 `Storage` trait：数据库连接、SSH 配置、查询历史、偏好 KV、Git 仓库列表与剪贴历史。
+实现 `Storage` trait：数据库连接、SSH 配置、查询历史、偏好 KV、Git 仓库列表、云对象存储账号与剪贴历史。
+
+对象存储账号、每账号工作区偏好和全局会话偏好使用同一主密钥加密；账号删除通过单事务同时删除账号记录和对应的每账号工作区偏好，全局会话在 UI 保存或下次恢复时过滤已删除账号。
+
+### `ramag-infra-object-storage`
+
+对象存储基础设施只负责已配置 Bucket 的数据面操作，不请求账号级列桶 API。`OperatorCache` 使用 OpenDAL 访问 Bucket 内对象；Endpoint 根据服务商和用户填写的 Region 生成并经过官方 HTTPS 域名白名单校验。OSS 数据面通过受限 Reqwest transport 明确使用 V4 签名。HTTP 统一使用 `rustls-no-provider`，由 `ramag-bin` 组合根在创建任何 Reqwest Client 前安装进程级 `ring` Provider，不引入 OpenSSL 或 AWS-LC。
+
+该 Crate 持有 2 worker 的独立 Tokio runtime、最多 32 个 Operator 的 LRU 缓存和有 TTL 的 Ramag 游标缓存。传输使用临时文件提交；Windows 覆盖下载通过 `MoveFileExW` 原子替换，避免先删除旧文件形成数据丢失窗口。关闭应用时由 `ObjectStorageService::shutdown` 有界停止 runtime。
+
+### `ramag-tool-object-storage`
+
+GPUI 视图提供账号搜索、加密会话恢复、必填 Bucket 挂载、地域分组、当前目录名称筛选、加密收藏路径、对象元数据详情、悬浮传输进度、多任务取消和覆盖确认。对象列表通过 `uniform_list` 行级虚拟化；上传、下载和删除按 OpenDAL 实际能力门控。OpenDAL 不可无损表示的远端 Key 仍可见，但所有数据面操作按钮均禁用。
 
 **安全**：
 - 主密钥由 `keyring` crate 以 `ramag` / `master-key` 存入 macOS Keychain / Windows Credential Manager，首次启动自动生成
@@ -170,7 +185,7 @@ SSH 管理视图：连接列表与 SSH 命令解析、JumpServer 资源导入、
 1. `logging::init`：默认 `info`（可用 `RUST_LOG` 覆盖），stderr + 文件双路输出；日志超过 10 MiB 时保留一份滚动备份
 2. `build_connection_service`：装配 `MysqlDriver` + `PostgresDriver` 进 `HashMap<DriverKind, Arc<dyn Driver>>` + `RedbStorage`
 3. `build_redis_service` / `build_mongo_service`：分别装配 `RedisDriver` / `MongoDriver`，复用同一 Storage
-4. `build_tool_registry`：注册 `DbClientTool` + `VcsTool` + `SshTool` + `ClipboardTool`；剪贴板默认关闭时保留实例但隐藏入口
+4. `build_tool_registry`：注册 `DbClientTool` + `VcsTool` + `SshTool` + `ObjectStorageTool` + `ClipboardTool`；剪贴板默认关闭时保留实例但隐藏入口
 5. `app.on_reopen`：macOS 无窗口时从 Dock 重开；Windows 走系统托盘常驻（关窗采集不停，托盘唤回/退出；托盘安装失败回退关窗即退）+ 单实例（双开唤起已有实例）
 6. `cx.bind_keys`：使用 GPUI `secondary-*` 注册跨平台主修饰键（macOS Command / Windows Ctrl）
 
@@ -187,6 +202,7 @@ GPUI 内部用 smol，sqlx / redis-rs / mongodb / SSH 基础设施依赖 tokio�
 | tokio (Redis) | redis-rs 操作 | `ramag-infra-redis::runtime`（独立 2 worker） |
 | tokio (MongoDB) | mongodb 文档操作 | `ramag-infra-mongodb::runtime`（独立 2 worker） |
 | tokio (SSH) | SFTP、JumpServer 与传输任务 | `ramag-infra-ssh::runtime`（独立 3 worker） |
+| tokio (Object Storage) | COS/OSS 对象访问与传输 | `ramag-infra-object-storage::runtime`（独立 2 worker） |
 | std::thread | redb / 系统 Git 同步 API | `Storage` 与 `GitDriver` 各自的 `run_blocking` |
 
 **为什么分开**：Redis Pub/Sub、SSH 会话与传输是长生命周期任务，不应被 SQL 长查询挤占；MongoDB 同理独立一份。同种类型 driver（如多个 SQL）共享则合理。
@@ -261,6 +277,7 @@ features = ["rustls-tls", "bson-2", "compat-3-3-0"]
 | Domain | 单元测试 | 纯 Rust 逻辑 |
 | App | 单元测试 | 编排逻辑 |
 | Infra（SQL / Redis / MongoDB） | 集成测试连真实 DB | 缺环境变量自动 skip |
+| Infra（Object Storage） | XML/签名/缓存/传输单元测试 + 默认忽略的 COS/OSS 往返测试 | 真实测试要求专用 Bucket、Prefix 和显式环境变量 |
 | Infra（Storage / Git） | 单元测试 + tempdir | 不依赖外部服务 |
 | Infra（SSH） | 单元测试 + 可选 OpenSSH 集成测试 | 外部服务测试按环境跳过 |
 | UI | GPUI 无头渲染与状态回归测试 + 手动验收 | 覆盖关键布局、焦点和交互状态 |

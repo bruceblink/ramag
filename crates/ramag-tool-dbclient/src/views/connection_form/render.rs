@@ -38,7 +38,7 @@ impl ConnectionFormPanel {
                 div()
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("生产模式（只读保护）"),
+                    .child(ramag_ui::PRODUCTION_MODE_LABEL),
             )
             .child(
                 h_flex()
