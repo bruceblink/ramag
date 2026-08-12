@@ -497,7 +497,6 @@ fn repo_row(
                         .icon(ramag_ui::icons::trash())
                         .tooltip("移出列表")
                         .disabled(busy)
-                        // 弹确认对话框（与 dbclient 删除连接同款交互），用户确认后再真正移除
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.confirm_remove_recent_repo(path_for_remove.clone(), window, cx);
                         })),

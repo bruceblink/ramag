@@ -121,11 +121,7 @@ impl Render for VcsView {
         let bg = theme.background;
         let muted_fg = theme.muted_foreground;
 
-        // 两层结构（仿 dbclient）：tab bar（含右侧操作区） / body
-        // body 由 active_view 路由：RepoList → 仓库管理页；Session → IDE 布局
-        // 注意：error 不再独占 body —— 由 RepoList 顶部 banner 承载（不阻塞用户操作）
         let body: AnyElement = if self.loading {
-            // Clone 进行中：附加 git --progress 实时行 + 取消按钮（进度槽每帧读取）
             let clone_line = self
                 .clone_progress
                 .as_ref()

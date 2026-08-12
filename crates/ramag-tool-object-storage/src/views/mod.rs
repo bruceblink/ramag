@@ -2,6 +2,8 @@ mod account_form;
 mod account_ops;
 mod layout;
 mod model;
+mod object_helpers;
+mod object_list_helpers;
 mod ops;
 mod path_dialog;
 mod preview_dialog;

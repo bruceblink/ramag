@@ -263,7 +263,7 @@ impl DataSyncOverlay {
                                                     crate::clickable_button("sync-cancel-confirm")
                                                         .danger()
                                                         .small()
-                                                        .label("确认取消")
+                                                        .label("取消")
                                                         .on_click(cx.listener(
                                                             move |this, _: &ClickEvent, _, cx| {
                                                                 this.gate.request_cancel_current(
@@ -289,7 +289,7 @@ impl DataSyncOverlay {
                                         .label(if cancelling {
                                             "正在取消…"
                                         } else {
-                                            "取消同步"
+                                            "取消"
                                         })
                                         .disabled(cancelling)
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -307,7 +307,7 @@ impl DataSyncOverlay {
                                     crate::clickable_button("sync-result-ack")
                                         .primary()
                                         .small()
-                                        .label("确认并关闭")
+                                        .label("关闭")
                                         .on_click(cx.listener(
                                             move |this, _: &ClickEvent, _, cx| {
                                                 this.gate.acknowledge_current(&task_for_ack);

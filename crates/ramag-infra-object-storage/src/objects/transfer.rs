@@ -103,7 +103,7 @@ async fn cleanup_temporary_download(temporary: &Path) {
         tracing::warn!(
             operation = "download_cleanup",
             error_kind = ?error.kind(),
-            "Failed to remove temporary download"
+            "remove temporary download failed"
         );
     }
 }
@@ -257,8 +257,8 @@ fn ensure_absolute(path: &Path, operation: &'static str) -> ObjectStorageResult<
 }
 
 async fn abort_writer(writer: &mut opendal::Writer) {
-    if writer.abort().await.is_err() {
-        tracing::warn!(operation = "upload", "Failed to abort object writer");
+    if let Err(error) = writer.abort().await {
+        tracing::warn!(operation = "upload_abort", error = %error, "abort object writer failed");
     }
 }
 

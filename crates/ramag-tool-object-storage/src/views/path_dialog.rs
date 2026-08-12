@@ -15,7 +15,7 @@ use ramag_domain::entities::{
     MAX_OBJECT_STORAGE_KEY_BYTES, ObjectStorageFavorite, ObjectStorageMountId,
 };
 
-use super::{ObjectStorageView, ops::normalize_object_path};
+use super::{ObjectStorageView, object_helpers::normalize_object_path};
 
 pub(super) fn open_object_path_dialog(
     owner: Entity<ObjectStorageView>,

@@ -567,7 +567,7 @@ pub(super) fn open_checkout_dirty_dialog(
                         ramag_ui::clickable_button("vcs-co-discard")
                             .danger()
                             .small()
-                            .label("丢弃切换")
+                            .label("丢弃并切换")
                             .on_click({
                                 let v = view_discard.clone();
                                 move |_: &ClickEvent, w, app| {
@@ -583,7 +583,7 @@ pub(super) fn open_checkout_dirty_dialog(
                         ramag_ui::clickable_button("vcs-co-stash")
                             .primary()
                             .small()
-                            .label("储藏切换")
+                            .label("储藏并切换")
                             .on_click({
                                 let v = view_stash.clone();
                                 move |_: &ClickEvent, w, app| {

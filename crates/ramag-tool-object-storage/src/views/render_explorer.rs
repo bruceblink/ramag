@@ -10,13 +10,16 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
-use ramag_domain::entities::{
-    ObjectEntry, ObjectEntryKind, contains_case_insensitive, format_bytes,
+use ramag_domain::entities::ObjectEntryKind;
+
+use super::{
+    layout::ExplorerLayout,
+    model::ObjectStorageView,
+    object_list_helpers::{
+        OBJECT_ROW_HEIGHT, filtered_object_entry_indices, object_breadcrumbs, object_counts_at,
+        object_modified_label, object_size_label, object_type_label,
+    },
 };
-
-use super::{layout::ExplorerLayout, model::ObjectStorageView};
-
-const OBJECT_ROW_HEIGHT: f32 = 28.0;
 
 impl ObjectStorageView {
     pub(super) fn selected_read_only(&self) -> bool {
@@ -552,189 +555,6 @@ impl ObjectStorageView {
     }
 }
 
-pub(super) fn sort_object_entries(entries: &mut [ObjectEntry]) {
-    entries.sort_unstable_by(|left, right| {
-        object_kind_rank(left.kind)
-            .cmp(&object_kind_rank(right.kind))
-            .then_with(|| left.display_name.cmp(&right.display_name))
-            .then_with(|| left.key.cmp(&right.key))
-    });
-}
-
-fn object_kind_rank(kind: ObjectEntryKind) -> u8 {
-    match kind {
-        ObjectEntryKind::Prefix => 0,
-        ObjectEntryKind::Object => 1,
-    }
-}
-
-fn filtered_object_entry_indices(
-    entries: &[ObjectEntry],
-    query: &str,
-) -> Option<std::sync::Arc<Vec<usize>>> {
-    (!query.is_empty()).then(|| {
-        std::sync::Arc::new(
-            entries
-                .iter()
-                .enumerate()
-                .filter_map(|(index, entry)| {
-                    contains_case_insensitive(&entry.display_name, query).then_some(index)
-                })
-                .collect(),
-        )
-    })
-}
-
-fn object_counts_at(entries: &[ObjectEntry], indices: &[usize]) -> (usize, usize) {
-    indices.iter().filter_map(|index| entries.get(*index)).fold(
-        (0, 0),
-        |(directories, objects), entry| match entry.kind {
-            ObjectEntryKind::Prefix => (directories + 1, objects),
-            ObjectEntryKind::Object => (directories, objects + 1),
-        },
-    )
-}
-
-fn object_breadcrumbs(prefix: &str) -> Vec<(SharedString, String)> {
-    let mut parts = vec![(SharedString::from("/"), String::new())];
-    let mut target = String::new();
-    for component in prefix.trim_end_matches('/').split('/') {
-        if component.is_empty() {
-            continue;
-        }
-        target.push_str(component);
-        target.push('/');
-        parts.push((SharedString::from(component.to_string()), target.clone()));
-    }
-    parts
-}
-
-fn object_modified_label(kind: ObjectEntryKind, modified: Option<String>) -> String {
-    if kind == ObjectEntryKind::Prefix {
-        "—".into()
-    } else {
-        modified.unwrap_or_else(|| "—".into())
-    }
-}
-
-fn object_type_label(kind: ObjectEntryKind) -> &'static str {
-    match kind {
-        ObjectEntryKind::Prefix => "文件夹",
-        ObjectEntryKind::Object => "文件",
-    }
-}
-
-fn object_size_label(kind: ObjectEntryKind, size: Option<u64>, operable: bool) -> String {
-    if !operable {
-        "仅查看".into()
-    } else if kind == ObjectEntryKind::Prefix {
-        "—".into()
-    } else {
-        size.map(format_bytes).unwrap_or_default()
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry(name: &str, kind: ObjectEntryKind) -> ObjectEntry {
-        ObjectEntry {
-            key: if kind == ObjectEntryKind::Prefix {
-                format!("{name}/")
-            } else {
-                name.into()
-            },
-            display_name: name.into(),
-            kind,
-            operable: true,
-            size: None,
-            last_modified: None,
-            etag: None,
-            content_type: None,
-            storage_class: None,
-        }
-    }
-
-    #[test]
-    fn object_rows_match_shared_compact_density() {
-        assert_eq!(OBJECT_ROW_HEIGHT, 28.0);
-    }
-
-    #[test]
-    fn directories_display_their_type_instead_of_a_fake_size() {
-        assert_eq!(object_type_label(ObjectEntryKind::Prefix), "文件夹");
-        assert_eq!(
-            object_size_label(ObjectEntryKind::Prefix, Some(0), true),
-            "—"
-        );
-        assert_eq!(
-            object_size_label(ObjectEntryKind::Object, Some(0), true),
-            "0 B"
-        );
-    }
-
-    #[test]
-    fn unsafe_keys_use_status_instead_of_size() {
-        assert_eq!(
-            object_size_label(ObjectEntryKind::Object, Some(1024), false),
-            "仅查看"
-        );
-    }
-
-    #[test]
-    fn object_entries_sort_directories_first_then_by_name() {
-        let mut entries = vec![
-            entry("z.txt", ObjectEntryKind::Object),
-            entry("beta", ObjectEntryKind::Prefix),
-            entry("a.txt", ObjectEntryKind::Object),
-            entry("alpha", ObjectEntryKind::Prefix),
-        ];
-
-        sort_object_entries(&mut entries);
-
-        assert_eq!(
-            entries
-                .iter()
-                .map(|entry| entry.display_name.as_str())
-                .collect::<Vec<_>>(),
-            ["alpha", "beta", "a.txt", "z.txt"]
-        );
-    }
-
-    #[test]
-    fn virtual_directory_time_is_explicitly_unavailable() {
-        assert_eq!(object_modified_label(ObjectEntryKind::Prefix, None), "—");
-        assert_eq!(object_modified_label(ObjectEntryKind::Object, None), "—");
-    }
-
-    #[test]
-    fn current_directory_filter_is_case_insensitive_contains_search() {
-        let entries = vec![
-            entry("Report.JSON", ObjectEntryKind::Object),
-            entry("logs", ObjectEntryKind::Prefix),
-        ];
-
-        let indices = filtered_object_entry_indices(&entries, "port")
-            .expect("a non-empty query returns filtered indices");
-
-        assert_eq!(indices.as_slice(), [0]);
-    }
-
-    #[test]
-    fn object_prefix_builds_clickable_breadcrumb_targets() {
-        let parts = object_breadcrumbs("gewu/structure/model/");
-        assert_eq!(
-            parts
-                .iter()
-                .map(|(label, target)| (label.as_ref(), target.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                ("/", ""),
-                ("gewu", "gewu/"),
-                ("structure", "gewu/structure/"),
-                ("model", "gewu/structure/model/"),
-            ]
-        );
-    }
-}
+#[path = "render_explorer_tests.rs"]
+mod tests;

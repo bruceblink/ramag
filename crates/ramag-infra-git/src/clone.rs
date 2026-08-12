@@ -39,7 +39,6 @@ pub fn clone_repo_streaming(
         .to_str()
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
     validate_path_arg(dest_str, "Clone 目标路径")?;
-    // clone 在父目录内运行（目标目录由 git 创建）；共用流式执行器
     let dir = dest.parent().unwrap_or(Path::new("."));
     run_git_streaming(
         dir,
@@ -55,7 +54,6 @@ pub fn init_repo(path: &Path) -> Result<()> {
         .to_str()
         .ok_or_else(|| DomainError::InvalidConfig("目标路径含非 UTF-8 字符".into()))?;
     validate_path_arg(path_str, "初始化目标路径")?;
-    // git init 在目标目录内运行（不存在则自动创建）
     run_git_bytes(
         path.parent().unwrap_or(Path::new(".")),
         &["init", "--", path_str],

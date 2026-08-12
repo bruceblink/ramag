@@ -80,8 +80,7 @@ impl Render for AccountFormPanel {
         let secondary = cx.theme().secondary;
         let body_max_h = (window.viewport_size().height * 0.9 - px(210.0)).max(px(200.0));
         let editing = self.editing.is_some();
-        let (access_key_id_label, access_key_secret_label) =
-            credential_labels(self.provider, editing);
+        let (access_key_id_label, access_key_secret_label) = credential_labels(self.provider);
         let manual_rows = self
             .manual_buckets
             .iter()
@@ -193,23 +192,35 @@ impl Render for AccountFormPanel {
                                 v_flex()
                                     .gap(px(12.0))
                                     .child(section_title("认证", muted))
+                                    .when(editing, |section| {
+                                        section.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child("留空则保留原凭据。"),
+                                        )
+                                    })
                                     .child(
                                         h_flex()
                                             .w_full()
                                             .items_end()
                                             .gap(px(12.0))
-                                            .child(div().flex_1().min_w_0().child(field(
-                                                "object-access-key-id-field",
-                                                access_key_id_label,
-                                                Input::new(&self.access_key_id)
-                                                    .disabled(self.saving),
-                                            )))
-                                            .child(div().flex_1().min_w_0().child(field(
-                                                "object-access-key-secret-field",
-                                                access_key_secret_label,
-                                                Input::new(&self.access_key_secret)
-                                                    .disabled(self.saving),
-                                            ))),
+                                            .child(
+                                                div().flex_1().min_w_0().child(field(
+                                                    "object-access-key-id-field",
+                                                    access_key_id_label,
+                                                    Input::new(&self.access_key_id)
+                                                        .disabled(self.saving),
+                                                )),
+                                            )
+                                            .child(
+                                                div().flex_1().min_w_0().child(field(
+                                                    "object-access-key-secret-field",
+                                                    access_key_secret_label,
+                                                    Input::new(&self.access_key_secret)
+                                                        .disabled(self.saving),
+                                                )),
+                                            ),
                                     ),
                             )
                             .child(
@@ -217,9 +228,10 @@ impl Render for AccountFormPanel {
                                     .gap(px(12.0))
                                     .child(section_title("Bucket 挂载（必填）", muted))
                                     .child(
-                                        div().text_xs().text_color(muted).child(
-                                            "请至少添加一个 Bucket；Endpoint 由服务商和 Region 自动生成。",
-                                        ),
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child("Endpoint 根据服务商和 Region 生成。"),
                                     )
                                     .child(
                                         h_flex()
@@ -239,8 +251,7 @@ impl Render for AccountFormPanel {
                                             .child(div().flex_1().min_w_0().child(field(
                                                 "object-manual-prefix-field",
                                                 "Root Prefix",
-                                                Input::new(&self.root_prefix)
-                                                    .disabled(self.saving),
+                                                Input::new(&self.root_prefix).disabled(self.saving),
                                             )))
                                             .child(
                                                 div()
@@ -298,17 +309,19 @@ impl Render for AccountFormPanel {
                                     .small()
                                     .label("取消")
                                     .disabled(self.saving)
-                                    .on_click(cx.listener(
-                                        |this, _: &ClickEvent, window, cx| {
-                                            this.handle_cancel(window, cx);
-                                        },
-                                    )),
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.handle_cancel(window, cx);
+                                    })),
                             )
                             .child(
                                 ramag_ui::clickable_button("save-object-account")
                                     .primary()
                                     .small()
-                                    .label(if self.saving { "保存中…" } else { "保存" })
+                                    .label(if self.saving {
+                                        "保存中…"
+                                    } else {
+                                        "保存"
+                                    })
                                     .disabled(self.saving)
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.handle_save(cx);
@@ -333,15 +346,10 @@ fn section_title(label: &'static str, color: gpui::Hsla) -> impl IntoElement {
         .child(div().flex_1().h(px(1.0)).bg(color).opacity(0.12))
 }
 
-fn credential_labels(provider: CloudProvider, editing: bool) -> (&'static str, &'static str) {
-    match (provider, editing) {
-        (CloudProvider::TencentCos, false) => ("SecretId", "SecretKey"),
-        (CloudProvider::TencentCos, true) => ("SecretId（留空不修改）", "SecretKey（留空不修改）"),
-        (CloudProvider::AliyunOss, false) => ("AccessKey ID", "AccessKey Secret"),
-        (CloudProvider::AliyunOss, true) => (
-            "AccessKey ID（留空不修改）",
-            "AccessKey Secret（留空不修改）",
-        ),
+fn credential_labels(provider: CloudProvider) -> (&'static str, &'static str) {
+    match provider {
+        CloudProvider::TencentCos => ("SecretId", "SecretKey"),
+        CloudProvider::AliyunOss => ("AccessKey ID", "AccessKey Secret"),
     }
 }
 

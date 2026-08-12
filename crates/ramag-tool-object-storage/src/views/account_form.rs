@@ -304,6 +304,7 @@ impl AccountFormPanel {
                 match result {
                     Ok(saved) => cx.emit(AccountFormEvent::Saved(Box::new(saved))),
                     Err(error) => {
+                        tracing::error!(operation = "object_storage_account_save", error = %error, "save object storage account failed");
                         this.feedback = Some((format!("保存失败：{}", error.user_message()), true));
                         cx.notify();
                     }

@@ -118,7 +118,11 @@ impl ObjectStorageView {
                         }
                     }
                     Err(error) if is_cancelled(&error) => {}
-                    Err(error) => this.error(format!("上传失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_upload",
+                        &error,
+                        format!("上传失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });
@@ -210,7 +214,11 @@ impl ObjectStorageView {
                         }
                     }
                     Err(error) if is_cancelled(&error) => {}
-                    Err(error) => this.error(format!("下载失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_download",
+                        &error,
+                        format!("下载失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });

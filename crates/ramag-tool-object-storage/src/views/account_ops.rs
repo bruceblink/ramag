@@ -74,11 +74,16 @@ impl ObjectStorageView {
                             }
                         }
                         if let Some(Err(error)) = &session {
+                            tracing::error!(operation = "object_storage_session_load", error = %error, "load object storage session failed");
                             this.notice =
                                 Some((format!("会话偏好加载失败：{}", error.user_message()), true));
                         }
                     }
-                    Err(error) => this.error(format!("加载账号失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_account_list",
+                        &error,
+                        format!("加载账号失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });
@@ -168,6 +173,7 @@ impl ObjectStorageView {
                             }
                         }
                         if let Err(error) = &workspace {
+                            tracing::error!(operation = "object_storage_workspace_load", account_id = %account_id, error = %error, "load object storage workspace failed");
                             this.notice = Some((
                                 format!("工作区偏好加载失败：{}", error.user_message()),
                                 true,
@@ -179,7 +185,11 @@ impl ObjectStorageView {
                     Err(error) => {
                         this.account_session_states
                             .insert(account_id.clone(), AccountSessionState::Unverified);
-                        this.error(format!("加载挂载点失败：{}", error.user_message()));
+                        this.operation_error(
+                            "object_storage_mount_list",
+                            &error,
+                            format!("加载挂载点失败：{}", error.user_message()),
+                        );
                     }
                 }
                 cx.notify();
@@ -367,7 +377,11 @@ impl ObjectStorageView {
                         }
                     }
                     Ok(()) => {}
-                    Err(error) => this.error(format!("关闭会话失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_session_close",
+                        &error,
+                        format!("关闭会话失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });
@@ -400,7 +414,11 @@ impl ObjectStorageView {
                         this.notice = Some(("账号及其工作区偏好已删除".into(), false));
                         this.load_accounts(window, cx);
                     }
-                    Err(error) => this.error(format!("删除账号失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_account_delete",
+                        &error,
+                        format!("删除账号失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });

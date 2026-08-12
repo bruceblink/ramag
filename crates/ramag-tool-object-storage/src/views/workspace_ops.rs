@@ -38,6 +38,16 @@ impl ObjectStorageView {
         self.notice = Some((message.into(), true));
     }
 
+    pub(super) fn operation_error(
+        &mut self,
+        operation: &'static str,
+        error: &(impl std::fmt::Display + ?Sized),
+        message: impl Into<String>,
+    ) {
+        tracing::error!(operation, error = %error, "object storage operation failed");
+        self.error(message);
+    }
+
     pub(super) fn add_path_favorite(
         &mut self,
         mount_id: ramag_domain::entities::ObjectStorageMountId,

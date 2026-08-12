@@ -2,10 +2,14 @@ use gpui::{AppContext as _, Context, Window};
 use gpui_component::input::InputState;
 use ramag_domain::entities::{
     MAX_OBJECT_STORAGE_TEXT_PREVIEW_BYTES, ObjectEntryKind, ObjectStorageMount, OverwritePolicy,
-    format_bytes, is_opendal_safe_prefix,
+    format_bytes,
 };
 
-use super::{model::ObjectStorageView, render_explorer::sort_object_entries};
+use super::{
+    model::ObjectStorageView,
+    object_helpers::{format_object_preview, object_preview_language},
+    object_list_helpers::sort_object_entries,
+};
 
 impl ObjectStorageView {
     pub(super) fn select_mount(
@@ -162,7 +166,11 @@ impl ObjectStorageView {
                         );
                     }
                     Err(error) => {
-                        this.error(format!("查看内容失败：{}", error.user_message()));
+                        this.operation_error(
+                            "object_storage_object_preview",
+                            &error,
+                            format!("查看内容失败：{}", error.user_message()),
+                        );
                     }
                 }
                 cx.notify();
@@ -211,7 +219,11 @@ impl ObjectStorageView {
                     }
                     Err(error) => {
                         this.detail_message = "对象详情加载失败，请重试".into();
-                        this.error(format!("读取对象失败：{}", error.user_message()));
+                        this.operation_error(
+                            "object_storage_object_stat",
+                            &error,
+                            format!("读取对象失败：{}", error.user_message()),
+                        );
                     }
                 }
                 cx.notify();
@@ -259,7 +271,11 @@ impl ObjectStorageView {
                         }
                         Err(error) => {
                             this.capabilities = None;
-                            this.error(format!("读取存储能力失败：{}", error.user_message()));
+                            this.operation_error(
+                                "object_storage_capabilities",
+                                &error,
+                                format!("读取存储能力失败：{}", error.user_message()),
+                            );
                         }
                     }
                 }
@@ -274,7 +290,11 @@ impl ObjectStorageView {
                             this.notice = Some(("对象列表达到 20,000 条工作区上限".into(), true));
                         }
                     }
-                    Err(error) => this.error(format!("列出对象失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_object_list",
+                        &error,
+                        format!("列出对象失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });
@@ -311,7 +331,11 @@ impl ObjectStorageView {
                         sort_object_entries(entries.as_mut_slice());
                         this.next_cursor = result.page.next_cursor;
                     }
-                    Err(error) => this.error(format!("继续加载失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_object_list_next",
+                        &error,
+                        format!("继续加载失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });
@@ -544,104 +568,15 @@ impl ObjectStorageView {
                             this.load_first_page(window, cx);
                         }
                     }
-                    Err(error) => this.error(format!("删除对象失败：{}", error.user_message())),
+                    Err(error) => this.operation_error(
+                        "object_storage_object_delete",
+                        &error,
+                        format!("删除对象失败：{}", error.user_message()),
+                    ),
                 }
                 cx.notify();
             });
         })
         .detach();
-    }
-}
-
-fn format_object_preview(key: &str, content: &str) -> String {
-    if key
-        .rsplit_once('.')
-        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(content)
-        && let Ok(formatted) = serde_json::to_string_pretty(&value)
-    {
-        return formatted;
-    }
-    content.to_string()
-}
-
-fn object_preview_language(key: &str, content: &str) -> &'static str {
-    let extension = key
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase());
-    match extension.as_deref() {
-        Some("rs") => "rust",
-        Some("go") => "go",
-        Some("py") => "python",
-        Some("json") => "json",
-        Some("jsonl" | "log") if looks_like_json_lines(content) => "json",
-        Some("js" | "jsx") => "javascript",
-        Some("ts") => "typescript",
-        Some("tsx") => "tsx",
-        Some("toml") => "toml",
-        Some("yaml" | "yml") => "yaml",
-        Some("sql") => "sql",
-        Some("md") => "markdown",
-        Some("sh" | "bash" | "zsh") => "bash",
-        Some("c" | "h") => "c",
-        Some("cpp" | "hpp") => "cpp",
-        Some("java") => "java",
-        Some("html" | "htm") => "html",
-        Some("css") => "css",
-        _ => "text",
-    }
-}
-
-fn looks_like_json_lines(content: &str) -> bool {
-    let mut lines = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .take(8);
-    let Some(first) = lines.next() else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(first).is_ok()
-        && lines.all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
-}
-
-pub(super) fn normalize_object_path(path: &str) -> Result<String, String> {
-    if !path.starts_with('/') {
-        return Err("对象路径必须以 / 开头".into());
-    }
-    let relative = path.strip_prefix('/').unwrap_or_default();
-    if relative.is_empty() {
-        return Ok(String::new());
-    }
-    let prefix = if relative.ends_with('/') {
-        relative.to_string()
-    } else {
-        format!("{relative}/")
-    };
-    if !is_opendal_safe_prefix(&prefix) {
-        return Err("对象路径包含不安全或无法识别的路径段".into());
-    }
-    Ok(prefix)
-}
-
-#[cfg(test)]
-mod path_tests {
-    use super::{format_object_preview, normalize_object_path, object_preview_language};
-
-    #[test]
-    fn direct_object_path_is_absolute_safe_and_normalized() {
-        assert_eq!(normalize_object_path("/").as_deref(), Ok(""));
-        assert_eq!(
-            normalize_object_path("/gewu/structure").as_deref(),
-            Ok("gewu/structure/")
-        );
-        assert!(normalize_object_path("gewu/structure").is_err());
-        assert!(normalize_object_path("/gewu/../secret").is_err());
-    }
-
-    #[test]
-    fn json_preview_is_formatted_and_uses_json_language() {
-        let content = format_object_preview("config.json", "{\"enabled\":true}");
-        assert!(content.contains("\n"));
-        assert_eq!(object_preview_language("config.json", &content), "json");
     }
 }

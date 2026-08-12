@@ -280,7 +280,7 @@ impl Render for DataSyncDialog {
                             ramag_ui::clickable_button("sync-catalog-retry")
                                 .outline()
                                 .small()
-                                .label("重新读取")
+                                .label("重试")
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.reload_catalog_scopes(window, cx);
                                 })),

@@ -134,7 +134,7 @@ impl VcsView {
                     )
                     .separator()
                     .item(
-                        ramag_ui::menu_item_with_disabled("⚠ 强推", !has_head).on_click(
+                        ramag_ui::menu_item_with_disabled("强推", !has_head).on_click(
                             move |_, w, app| {
                                 entity4.update(app, |this, cx| {
                                     this.confirm_remote_op(RemoteOp::PushForce, w, cx);

@@ -66,7 +66,6 @@ pub(super) fn spawn_clipboard_hotkey(
     cx: &mut App,
 ) {
     cx.spawn(async move |cx| {
-        // 启动读持久化设置：总开关关闭则不注册，避免抢占平台全局热键
         let mut enabled = service.prime_capture_enabled().await;
         cx.update(|cx| sync_clipboard_tool_visibility(&registry, enabled, cx));
         let mut alternate = service.alternate_hotkey();
@@ -76,10 +75,11 @@ pub(super) fn spawn_clipboard_hotkey(
                 error!(
                     operation = "clipboard_hotkey_register",
                     impact = "clipboard_drawer_disabled",
+                    alternate,
+                    reason = "registration_rejected",
                     "global hotkey registration failed"
                 );
             }
-            // 状态上报给设置面板展示（失败常见原因：组合键被其它应用占用）
             service.set_hotkey_state(if l.is_some() {
                 ramag_app::HotkeyState::Registered
             } else {
@@ -97,7 +97,6 @@ pub(super) fn spawn_clipboard_hotkey(
         loop {
             cx.background_executor().timer(HOTKEY_POLL_INTERVAL).await;
 
-            // 总开关或热键组合变化 → 动态注册/注销热键 + 同步工具入口可见性
             let now_enabled = service.capture_enabled();
             let now_alternate = service.alternate_hotkey();
             if now_enabled != enabled || (now_enabled && now_alternate != alternate) {
@@ -112,6 +111,8 @@ pub(super) fn spawn_clipboard_hotkey(
                         error!(
                             operation = "clipboard_hotkey_register",
                             stage = "re_register",
+                            alternate,
+                            reason = "registration_rejected",
                             "global hotkey re-registration failed"
                         );
                     }
