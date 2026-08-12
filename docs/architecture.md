@@ -33,6 +33,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
   ├── ramag-terminal                       ← GPUI 终端解析、输入编码与绘制
   ├── ramag-infra-clipboard   impl ClipboardDriver
   ├── ramag-infra-object-storage             ← OpenDAL COS/OSS 数据面、专用 runtime
+  ├── ramag-infra-update                     ← GitHub Release 更新检查、下载与校验
   ├── ramag-infra-tunnel                   ← 数据库系统 OpenSSH 隧道
   ├── ramag-infra-storage     impl Storage（redb + aes-gcm + 系统凭据库）
   └── ramag-app                            ← Use Cases + ToolRegistry
@@ -68,6 +69,8 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 - `MongoService`：MongoDB 侧 facade（连接 CRUD + 文档操作 + 查询历史，与 SQL 共用同一张 history 表）
 - `SshService`：SSH 配置、连接测试、SFTP、传输队列与 JumpServer 导入编排
 - `ObjectStorageService`：COS/OSS 账号生命周期、必填 Bucket 挂载验证、对象分页、只读门禁、传输队列与加密工作区
+- `DataSyncService`：MySQL、PostgreSQL、Redis 与 MongoDB 同类型连接的数据同步、预检、范围门禁与结果汇总
+- `UpdateService`：版本比较、平台产物选择、更新下载状态与取消编排
 - `id_conversion`：结果搜索使用的双向 ID 转换，隔离内置算法和外部进程边界
 - `ToolRegistry`：管理已注册的 Tool
 
@@ -137,6 +140,10 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 对象存储基础设施只负责已配置 Bucket 的数据面操作，不请求账号级列桶 API。`OperatorCache` 使用 OpenDAL 访问 Bucket 内对象；Endpoint 根据服务商和用户填写的 Region 生成并经过官方 HTTPS 域名白名单校验。OSS 数据面通过受限 Reqwest transport 明确使用 V4 签名。HTTP 统一使用 `rustls-no-provider`，由 `ramag-bin` 组合根在创建任何 Reqwest Client 前安装进程级 `ring` Provider，不引入 OpenSSL 或 AWS-LC。
 
 该 Crate 持有 2 worker 的独立 Tokio runtime、最多 32 个 Operator 的 LRU 缓存和有 TTL 的 Ramag 游标缓存。传输使用临时文件提交；Windows 覆盖下载通过 `MoveFileExW` 原子替换，避免先删除旧文件形成数据丢失窗口。关闭应用时由 `ObjectStorageService::shutdown` 有界停止 runtime。
+
+### `ramag-infra-update`
+
+通过 GitHub Release 更新清单检查新版本，按当前平台选择产物并流式下载。更新清单、标签、资产名称、下载域名、文件大小和 SHA-256 均在进入安装流程前校验；下载写入专用缓存的临时文件，完成校验后再提交，取消或失败会清理不完整文件。
 
 ### `ramag-tool-object-storage`
 

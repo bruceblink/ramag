@@ -2,6 +2,39 @@
 
 本文件记录 Ramag 各公开版本的用户可见变化。尚未实现的设计方案不计入发布内容。
 
+## 0.0.3 - 2026-08-12
+
+### 新增
+
+- 新增 MySQL、PostgreSQL、Redis 与 MongoDB 四引擎数据同步：支持元数据选择、目标范围确认、同步前检查和结果反馈，并覆盖 PostgreSQL 自定义类型与枚举。
+- 新增腾讯云 COS 与阿里云 OSS 对象存储工作台：支持加密账号、必填 Bucket 挂载、目录导航、筛选、收藏、对象详情、常见文本预览和上传下载传输队列。
+- 新增 Linux x86_64 桌面支持，发布产物包含 Debian 安装包与 AppImage；桌面 CI 和 Release 已覆盖 Linux、macOS 与 Windows。
+- 新增应用内版本检查和更新入口，可读取 GitHub Release 更新清单并校验下载文件的 SHA-256。
+- 新增 JumpServer RDP 远程会话入口，并完善 Windows JumpServer 的 SSH、终端与兼容 SFTP 工作流。
+
+### 改进
+
+- SFTP 与对象存储的文本预览上限统一提升至 50 MiB，JSON 等常见格式按内容格式化展示。
+- 对象存储支持可点击和可输入的路径导航、名称模糊筛选、目录优先排序、秒级修改时间与当前会话内的传输进度。
+- 对象存储生产模式默认关闭；开启后隐藏上传、删除等不支持的写操作，账号保存不再自动打开工作区。
+- 剪贴板抽屉默认展示数量由 60 条提升至 300 条。
+- SSH 连接列表补充远端平台信息，统一 Windows 与 Unix 远端路径和文件传输行为。
+- macOS DMG 改用 LZMA 压缩；三平台 CI 全部启用。
+
+### 修复
+
+- 修复 Windows 兼容 SFTP 已成功连接却未确认远端平台，导致上传被写操作门禁错误拒绝的问题。
+- 修复 PostgreSQL 枚举和自定义类型跨库同步的幂等性与依赖顺序问题。
+- 修复 MySQL 同步错误映射、同步范围默认值和长文本反馈溢出问题。
+- 修复 Windows 下 SSH 传输路径、Git 集成测试换行符和跨平台编译告警。
+
+### 安全与边界
+
+- 云存储凭据与工作区状态使用本机主密钥加密保存，Endpoint 仅允许服务商官方 HTTPS 域名。
+- 云存储不请求账号级列桶权限，只访问用户明确配置的 Bucket；生产模式统一实施只读保护。
+- 对象存储与 SFTP 下载使用临时文件提交和覆盖确认，取消或失败不会先删除已有目标文件。
+- Windows、macOS 与 Linux 安装包仍未完成正式代码签名；macOS 安装包也未完成 Apple 公证。
+
 ## 0.0.2 - 2026-08-04
 
 ### 新增
@@ -43,5 +76,6 @@
 - 提供 MySQL、PostgreSQL、Redis、MongoDB 数据库工作台，Git 试验性工作台和可选剪贴板工作台。
 - 提供 macOS ARM64 / Intel DMG 与 Windows x64 安装包的统一标签发布流程。
 
+[0.0.3]: https://github.com/tools-rs/ramag/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/tools-rs/ramag/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tools-rs/ramag/releases/tag/v0.0.1
