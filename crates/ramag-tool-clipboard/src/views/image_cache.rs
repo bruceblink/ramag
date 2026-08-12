@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use gpui::Image;
 
-/// 抽屉最多同时展示 60 张卡片；留出余量给主视图详情，同时限制长时间运行的内存增长。
+/// 图片缓存独立于抽屉条目数设限，避免大量图片同时解码后长期占用内存。
 const MAX_ENTRIES: usize = 96;
 /// 按 PNG 编码字节 + RGBA 像素估算驻留内存，避免压缩率极高的大图绕过缓存上限。
 const MAX_RETAINED_BYTES: usize = 256 * 1024 * 1024;

@@ -19,11 +19,11 @@ use ramag_domain::entities::ClipItem;
 use crate::views::helpers::filter_items;
 
 /// 可见条目上限。
-const DRAWER_LIMIT: usize = 60;
+const DRAWER_LIMIT: usize = 300;
 
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 /// 后台搜索多取一段，供缓存结果去重。
-const DRAWER_SEARCH_LIMIT: usize = 200;
+const DRAWER_SEARCH_LIMIT: usize = DRAWER_LIMIT;
 
 pub struct ClipboardDrawer {
     service: Arc<ClipboardService>,
@@ -343,7 +343,7 @@ impl ClipboardDrawer {
                     .child(Input::new(&self.search).small()),
             )
             .when(truncated, |bar| {
-                bar.child(div().text_xs().child("仅显示前 60 条"))
+                bar.child(div().text_xs().child(format!("仅显示前 {DRAWER_LIMIT} 条")))
             })
     }
 }
