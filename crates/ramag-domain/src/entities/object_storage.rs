@@ -41,7 +41,7 @@ pub const MAX_OBJECT_STORAGE_SESSION_BYTES: usize = 16 * 1024;
 pub const MAX_OBJECT_STORAGE_CONCURRENT_TRANSFERS: usize = 3;
 pub const MAX_OBJECT_STORAGE_QUEUED_TRANSFERS: usize = 64;
 pub const MAX_OBJECT_STORAGE_TRANSFER_HISTORY: usize = 100;
-pub const MAX_OBJECT_STORAGE_TEXT_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_OBJECT_STORAGE_TEXT_PREVIEW_BYTES: usize = 50 * 1024 * 1024;
 pub const OBJECT_STORAGE_TRANSFER_BUFFER_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

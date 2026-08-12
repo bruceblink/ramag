@@ -248,7 +248,7 @@ fn remote_editor_rejects_content_above_preview_bound() {
             b"preview",
             &oversized
         )),
-        Err(DomainError::InvalidConfig(message)) if message.contains("2 MiB")
+        Err(DomainError::InvalidConfig(message)) if message.contains("50 MiB")
     ));
 }
 
