@@ -29,10 +29,10 @@ use ramag_domain::entities::{
     MAX_CONCURRENT_DIAGNOSTICS_PER_PROFILE, MAX_PRODUCTION_DIRECTORY_ENTRIES,
     MAX_REMOTE_DIRECTORY_ENTRIES, OverwritePolicy, RemoteCapabilityState, RemoteDirectory,
     RemoteEntryKind, RemoteFileChunk, RemoteFileChunkPosition, RemoteFilePreview,
-    RemoteOperatingSystem, RemotePath, RemotePlatformPreference, SftpNamespaceKind, SshCapability,
-    SshDiagnosticOperation, SshDiagnosticResult, SshLaunchCommand, SshProfile, SshProfileId,
-    SshProfileOrigin, SshProgressFn, SshRemoteCapabilities, TransferCancellation,
-    infer_sftp_namespace, validate_remote_path,
+    RemoteOperatingSystem, RemotePath, RemotePlatformPreference, SftpNamespaceKind,
+    SftpTransportKind, SshCapability, SshDiagnosticOperation, SshDiagnosticResult,
+    SshLaunchCommand, SshProfile, SshProfileId, SshProfileOrigin, SshProgressFn,
+    SshRemoteCapabilities, TransferCancellation, infer_sftp_namespace, validate_remote_path,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::SshDriver;
@@ -158,7 +158,9 @@ impl SshDriver for OpenSshDriver {
                 profile_with_detected_platform(&profile, capabilities.operating_system);
             match connect(&locator, &sessions, &sftp_profile).await {
                 Ok(connection) => {
-                    capabilities.sftp_transport = Some(connection.transport_kind());
+                    let transport = connection.transport_kind();
+                    capabilities.sftp_transport = Some(transport);
+                    apply_sftp_transport_evidence(&mut capabilities, transport);
                     let canonical = canonicalize_sftp_initial_directory(
                         &connection.session,
                         &sftp_profile,

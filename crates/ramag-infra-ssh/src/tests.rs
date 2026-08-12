@@ -76,3 +76,31 @@ fn auto_profile_uses_the_detected_platform_for_sftp_only() {
     assert_eq!(effective.username, profile.username);
     assert_eq!(profile.remote_platform, RemotePlatformPreference::Auto);
 }
+
+#[test]
+fn windows_compatibility_transport_confirms_unknown_platform() {
+    let mut capabilities = SshRemoteCapabilities {
+        sftp: RemoteCapabilityState::Available,
+        operating_system: RemoteOperatingSystem::Unknown,
+        ..SshRemoteCapabilities::default()
+    };
+
+    apply_sftp_transport_evidence(&mut capabilities, SftpTransportKind::WindowsCompatibility);
+
+    assert_eq!(
+        capabilities.operating_system,
+        RemoteOperatingSystem::Windows
+    );
+}
+
+#[test]
+fn standard_sftp_transport_does_not_guess_platform() {
+    let mut capabilities = SshRemoteCapabilities::default();
+
+    apply_sftp_transport_evidence(&mut capabilities, SftpTransportKind::StandardSubsystem);
+
+    assert_eq!(
+        capabilities.operating_system,
+        RemoteOperatingSystem::Unknown
+    );
+}

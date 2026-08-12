@@ -180,6 +180,16 @@ pub(super) fn profile_with_detected_platform(
     effective
 }
 
+/// Windows 专用 SFTP 服务成功启动后，传输通道本身即可确认远端平台。
+pub(super) fn apply_sftp_transport_evidence(
+    capabilities: &mut SshRemoteCapabilities,
+    transport: SftpTransportKind,
+) {
+    if transport == SftpTransportKind::WindowsCompatibility {
+        capabilities.operating_system = RemoteOperatingSystem::Windows;
+    }
+}
+
 pub(super) async fn execute_file_metadata(
     locator: &OpenSshLocator,
     sessions: &SessionCache,
