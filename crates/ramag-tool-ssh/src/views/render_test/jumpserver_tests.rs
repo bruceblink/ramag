@@ -47,16 +47,8 @@ fn connection_manager_renders_without_openssh_side_effects(cx: &mut TestAppConte
         "有可复用目标时应显示远程桌面图标"
     );
     assert!(
-        cx.debug_bounds("ssh-profile-rdp-copy-0").is_some(),
-        "有可复用目标时应显示一次性链接复制图标"
-    );
-    assert!(
         cx.debug_bounds("ssh-profile-rdp-1").is_none(),
         "未记录远程桌面目标时不应显示入口"
-    );
-    assert!(
-        cx.debug_bounds("ssh-profile-rdp-copy-1").is_none(),
-        "未记录远程桌面目标时不应显示一次性链接复制入口"
     );
     assert!(
         search.size.width > px(300.0),
@@ -97,34 +89,6 @@ fn connection_manager_opens_recorded_remote_desktop_from_icon(cx: &mut TestAppCo
         cx.opened_url().as_deref(),
         Some("https://jump.example.com/lion/connect?token=00000000-0000-0000-0000-000000000002")
     );
-}
-
-#[gpui::test]
-fn connection_manager_copies_fresh_remote_desktop_link_from_icon(cx: &mut TestAppContext) {
-    let mut imported = profile();
-    imported.origin = SshProfileOrigin::JumpServer;
-    imported.remote_platform = RemotePlatformPreference::Windows;
-    imported.rdp_web_enabled = Some(true);
-    imported.jumpserver_rdp_session = Some(rdp_session(1, "production"));
-    let (view, cx) = add_ssh_window(cx, service_with_profile_rdp(imported));
-    cx.run_until_parked();
-    view.update(cx, |_, cx| cx.notify());
-    cx.run_until_parked();
-
-    let button = cx
-        .debug_bounds("ssh-profile-rdp-copy-0")
-        .expect("一次性链接复制图标应参与布局");
-    cx.simulate_click(button.center(), Modifiers::default());
-    cx.run_until_parked();
-
-    assert_eq!(
-        cx.read_from_clipboard().and_then(|item| item.text()),
-        Some(
-            "https://jump.example.com/lion/connect?token=00000000-0000-0000-0000-000000000002"
-                .into()
-        )
-    );
-    assert_eq!(cx.opened_url(), None, "复制链接不应自动打开浏览器");
 }
 
 #[gpui::test]

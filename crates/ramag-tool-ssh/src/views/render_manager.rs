@@ -231,7 +231,6 @@ impl SshView {
         let connection_available = self.profile_connection_available(&profile);
         let rdp_busy = self.creating_rdp_web_session_profile.is_some();
         let id_for_rdp = id.clone();
-        let id_for_rdp_copy = id.clone();
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let accent = cx.theme().accent;
@@ -298,62 +297,31 @@ impl SshView {
             .child(environment_badge(environment, muted))
             .child(platform_badge(index, remote_platform, accent))
             .child({
-                let slot = div().flex_none().w(px(80.0)).flex().justify_center();
+                let slot = div().flex_none().w(px(40.0)).flex().justify_center();
                 if let Some(session) = rdp_session {
-                    let session_for_copy = session.clone();
                     slot.child(
-                        h_flex()
-                            .items_center()
-                            .gap(px(2.0))
+                        div()
+                            .id(SharedString::from(format!("ssh-profile-rdp-{index}")))
+                            .debug_selector(move || format!("ssh-profile-rdp-{index}"))
                             .child(
-                                div()
-                                    .id(SharedString::from(format!("ssh-profile-rdp-{index}")))
-                                    .debug_selector(move || format!("ssh-profile-rdp-{index}"))
-                                    .child(
-                                        ramag_ui::clickable_button(SharedString::from(format!(
-                                            "open-ssh-profile-rdp-{id_for_rdp}"
-                                        )))
-                                        .ghost()
-                                        .small()
-                                        .icon(ramag_ui::icons::remote_desktop())
-                                        .tooltip("打开远程桌面")
-                                        .disabled(rdp_busy)
-                                        .on_click(
-                                            cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                                cx.stop_propagation();
-                                                this.open_profile_rdp(
-                                                    id_for_rdp.clone(),
-                                                    session.clone(),
-                                                    cx,
-                                                );
-                                            }),
-                                        ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("ssh-profile-rdp-copy-{index}")))
-                                    .debug_selector(move || format!("ssh-profile-rdp-copy-{index}"))
-                                    .child(
-                                        ramag_ui::clickable_button(SharedString::from(format!(
-                                            "copy-ssh-profile-rdp-link-{id_for_rdp_copy}"
-                                        )))
-                                        .ghost()
-                                        .small()
-                                        .icon(ramag_ui::icons::copy())
-                                        .tooltip("复制一次性链接")
-                                        .disabled(rdp_busy)
-                                        .on_click(
-                                            cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                                cx.stop_propagation();
-                                                this.copy_profile_rdp_link(
-                                                    id_for_rdp_copy.clone(),
-                                                    session_for_copy.clone(),
-                                                    cx,
-                                                );
-                                            }),
-                                        ),
-                                    ),
+                                ramag_ui::clickable_button(SharedString::from(format!(
+                                    "open-ssh-profile-rdp-{id_for_rdp}"
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(ramag_ui::icons::remote_desktop())
+                                .tooltip("打开远程桌面")
+                                .disabled(rdp_busy)
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.open_profile_rdp(
+                                            id_for_rdp.clone(),
+                                            session.clone(),
+                                            cx,
+                                        );
+                                    },
+                                )),
                             ),
                     )
                 } else {
