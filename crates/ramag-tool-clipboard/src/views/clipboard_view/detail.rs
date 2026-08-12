@@ -7,7 +7,7 @@ use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, Sizable as _, h_flex, v_flex};
-use ramag_domain::entities::{ClipItem, ClipKind};
+use ramag_domain::entities::{ClipItem, ClipKind, format_bytes};
 use ramag_ui::platform::file_manager_reveal_label;
 
 use super::ClipboardView;
@@ -63,10 +63,10 @@ impl ClipboardView {
             .map(|s| format!("来源：{}", s.name))
             .unwrap_or_default();
         let meta = format!(
-            "{} · {} · {} 字节",
+            "{} · {} · {}",
             item.kind.label(),
             relative_time(item.last_used_at, Utc::now()),
-            item.byte_size
+            format_bytes(item.byte_size)
         );
         v_flex()
             .gap(px(2.0))

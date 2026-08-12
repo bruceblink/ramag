@@ -1,7 +1,19 @@
 use super::{
-    GitHubUpdateDriver, JumpServerHttpDriver, MainWindowOpenGate, build_tool_registry,
-    install_tls_crypto_provider,
+    AUTO_CHECK_INTERVAL, GitHubUpdateDriver, INITIAL_UPDATE_CHECK_DELAY, JumpServerHttpDriver,
+    MainWindowOpenGate, build_tool_registry, install_tls_crypto_provider,
 };
+
+#[test]
+fn automatic_update_checks_start_quickly_and_repeat_daily() {
+    assert_eq!(
+        INITIAL_UPDATE_CHECK_DELAY,
+        std::time::Duration::from_secs(3)
+    );
+    assert_eq!(
+        AUTO_CHECK_INTERVAL,
+        std::time::Duration::from_secs(24 * 60 * 60)
+    );
+}
 
 #[test]
 fn tls_provider_is_ready_before_http_clients_are_built() {

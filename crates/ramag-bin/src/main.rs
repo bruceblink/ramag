@@ -29,8 +29,8 @@ use gpui::{
 };
 use gpui_component::Root;
 use ramag_app::{
-    ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService,
-    ObjectStorageService, RedisService, SshService, ToolRegistry, UpdateService,
+    AUTO_CHECK_INTERVAL, ClipboardService, ConnectionService, DataSyncGate, DataSyncService,
+    MongoService, ObjectStorageService, RedisService, SshService, ToolRegistry, UpdateService,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_domain::traits::ClipboardDriver;
@@ -543,24 +543,30 @@ fn main() {
         if !cfg!(debug_assertions)
             && let Some(service) = deps.update_service.clone()
         {
-            spawn_update_check(service, cx);
+            spawn_update_checks(service, cx);
         }
     });
     info!(operation = "application_stop", "application stopped");
 }
 
-fn spawn_update_check(service: Arc<UpdateService>, cx: &mut App) {
+const INITIAL_UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn spawn_update_checks(service: Arc<UpdateService>, cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor()
-            .timer(std::time::Duration::from_secs(3))
+            .timer(INITIAL_UPDATE_CHECK_DELAY)
             .await;
-        let result = service.check(false).await;
-        cx.update(|cx| match result {
-            Ok(result) => sync_update_indicator(&result, cx),
-            Err(error) => {
-                warn!(operation = "application_update_check", error = %error, "automatic update check failed");
-            }
-        });
+        loop {
+            // 每次启动和每个周期都访问远端，避免跨进程缓存延迟新版本提示。
+            let result = service.check(true).await;
+            cx.update(|cx| match result {
+                Ok(result) => sync_update_indicator(&result, cx),
+                Err(error) => {
+                    warn!(operation = "application_update_check", error = %error, "automatic update check failed");
+                }
+            });
+            cx.background_executor().timer(AUTO_CHECK_INTERVAL).await;
+        }
     })
     .detach();
 }
