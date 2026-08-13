@@ -310,6 +310,21 @@ Ramag 支持 Linux x86_64、macOS 12+（Apple Silicon / Intel）和 Windows 10/1
 
 发现问题时，请在 [GitHub Issues](https://github.com/tools-rs/ramag/issues) 中附上操作系统、Ramag 版本、复现步骤和必要日志；提交前请移除连接地址、用户名、密码和业务数据。
 
+## 交流群
+
+欢迎加入 Ramag 官方交流群，交流使用体验、功能建议和问题反馈。群二维码有效期有限，过期后可扫码添加个人微信，再获取最新群二维码。
+
+<table>
+  <tr>
+    <td align="center">官方交流群（二维码有效期有限）</td>
+    <td align="center">个人中转二维码（群二维码过期后使用）</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/community/group-qr.png" width="320" alt="Ramag 官方交流群二维码"></td>
+    <td align="center"><img src="docs/community/personal-qr.png" width="320" alt="Ramag 个人中转二维码"></td>
+  </tr>
+</table>
+
 ## License
 
 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
