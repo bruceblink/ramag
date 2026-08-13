@@ -134,6 +134,11 @@ impl ConnectionSession {
                         q.open_in_new_tab_and_run(sql, window, cx);
                     });
                 }
+                TreeEvent::ModifyTable { schema, table } => {
+                    this.tree.update(cx, |tree, cx| {
+                        tree.open_modify_table_dialog(schema.clone(), table.clone(), window, cx);
+                    });
+                }
                 TreeEvent::ToggleSqlEditor => {
                     this.toggle_sql_editor(window, cx);
                 }

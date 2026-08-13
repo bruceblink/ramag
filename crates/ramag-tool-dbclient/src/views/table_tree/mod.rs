@@ -107,6 +107,10 @@ pub enum TreeEvent {
         table: String,
         is_view: bool,
     },
+    ModifyTable {
+        schema: String,
+        table: String,
+    },
     ToggleSqlEditor,
 }
 

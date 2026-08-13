@@ -11,6 +11,7 @@ pub mod query_panel;
 pub mod query_tab;
 pub mod result_panel;
 pub mod result_table;
+mod table_designer;
 pub mod table_tree;
 pub mod tree_helpers;
 
