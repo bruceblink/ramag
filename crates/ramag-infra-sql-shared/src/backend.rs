@@ -93,7 +93,7 @@ where
     }
 
     /// MySQL SHOW WARNINGS；其他 DB 默认空
-    async fn fetch_warnings(&self, _conn: &mut PoolConnection<Self::Db>) -> Vec<Warning> {
+    async fn fetch_warnings(&self, _conn: &mut <Self::Db as Database>::Connection) -> Vec<Warning> {
         Vec::new()
     }
 
@@ -431,7 +431,6 @@ where
             &mut last_result,
         )
         .await?;
-        append_warnings_bounded(&mut accumulated_warnings, b.fetch_warnings(&mut conn).await);
     }
 
     if last_result.rows.is_empty() && last_result.columns.is_empty() {
@@ -499,6 +498,7 @@ where
             *total_affected = total_affected.saturating_add(result.affected_rows);
         }
         append_warnings_bounded(accumulated_warnings, std::mem::take(&mut result.warnings));
+        append_warnings_bounded(accumulated_warnings, b.fetch_warnings(conn).await);
         if i == last_idx {
             *last_result = result;
         }
