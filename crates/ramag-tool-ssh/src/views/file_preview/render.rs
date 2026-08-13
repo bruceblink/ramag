@@ -1,7 +1,7 @@
 use gpui::{ClickEvent, Context, ParentElement, Render, Styled, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable as _, Selectable as _, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _, h_flex, input::Input, v_flex,
+    button::ButtonVariants as _, clipboard::Clipboard, h_flex, input::Input, v_flex,
 };
 use ramag_domain::entities::{RemoteFileChunkPosition, format_bytes};
 
@@ -54,6 +54,7 @@ impl Render for RemoteFileEditor {
             .style
             .editor_background
             .unwrap_or_else(|| cx.theme().input_background());
+        let input_for_copy = self.input.clone();
         v_flex()
             .id("ssh-file-editor")
             .debug_selector(|| "ssh-file-editor".into())
@@ -163,6 +164,17 @@ impl Render for RemoteFileEditor {
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.search(window, cx);
                                     })),
+                            )
+                            .child(
+                                Clipboard::new("ssh-file-copy")
+                                    .tooltip(if windowed {
+                                        "复制当前片段"
+                                    } else {
+                                        "复制文件内容"
+                                    })
+                                    .value_fn(move |_, app| {
+                                        input_for_copy.read(app).value().into()
+                                    }),
                             )
                             .when(dirty, |actions| {
                                 actions.child(

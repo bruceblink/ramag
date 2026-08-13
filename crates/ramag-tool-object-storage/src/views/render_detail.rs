@@ -1,5 +1,6 @@
 use gpui::{
-    AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, IconName, Sizable as _, StyledExt as _, button::ButtonVariants as _, h_flex,
@@ -203,6 +204,9 @@ fn metadata_row(
     muted: gpui::Hsla,
     mono_font: SharedString,
 ) -> AnyElement {
+    let label: SharedString = label.into();
+    let value: SharedString = value.into();
+    let value_for_copy = value.clone();
     h_flex()
         .w_full()
         .min_w_0()
@@ -214,15 +218,24 @@ fn metadata_row(
                 .w(px(64.0))
                 .flex_none()
                 .text_color(muted)
-                .child(label.into()),
+                .child(label.clone()),
         )
         .child(
             div()
+                .id(SharedString::from(format!(
+                    "object-metadata-value-{}",
+                    label.as_str()
+                )))
                 .flex_1()
                 .min_w_0()
                 .whitespace_normal()
                 .when(mono, |value| value.font_family(mono_font))
-                .child(value.into()),
+                .on_click(move |event: &ClickEvent, _, app| {
+                    if ramag_ui::is_primary_modifier_double_click(event) {
+                        ramag_ui::copy_text(value_for_copy.to_string(), app);
+                    }
+                })
+                .child(value),
         )
         .into_any_element()
 }

@@ -5,6 +5,7 @@ pub mod activity_bar;
 pub mod assets;
 pub mod axis_scroll;
 pub mod confirm_dialog;
+pub mod copy_support;
 pub mod data_sync_overlay;
 pub mod database_search;
 pub mod editor_workspace;
@@ -26,6 +27,7 @@ pub mod transfer_ui;
 pub use actions::{CloseTab, OpenRecentItems};
 pub use assets::RamagAssets;
 pub use confirm_dialog::{open_confirm, open_confirm_with_cancel};
+pub use copy_support::{SelectableText, copy_text, is_primary_modifier_double_click};
 pub use data_sync_overlay::DataSyncOverlay;
 pub use database_search::{
     DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, DatabaseSearchSettingsGlobal,
@@ -242,6 +244,9 @@ fn byte_prefix(value: &str, max_bytes: usize) -> &str {
     }
     &value[..end]
 }
+
+#[cfg(test)]
+mod copy_support_tests;
 
 #[cfg(test)]
 mod input_limit_tests {

@@ -5,8 +5,8 @@ use gpui::{
     div, px,
 };
 use gpui_component::{
-    IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex, input::Input,
-    input::InputState, v_flex,
+    IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, clipboard::Clipboard,
+    h_flex, input::Input, input::InputState, v_flex,
 };
 
 use super::model::ObjectStorageView;
@@ -36,6 +36,7 @@ pub(super) fn open_object_preview_dialog(
             ((line_count.saturating_add(3).max(3) as f32 * 22.0) + 12.0).min(max_editor_height);
         let margin_top = ((f32::from(viewport.height) - editor_height - 112.0) / 2.0).max(24.0);
         let content_editor = editor.clone();
+        let editor_for_copy = editor.clone();
         let summary = summary.clone();
         dialog
             .title(
@@ -50,6 +51,11 @@ pub(super) fn open_object_preview_dialog(
                             .overflow_hidden()
                             .text_ellipsis()
                             .child(title.clone()),
+                    )
+                    .child(
+                        Clipboard::new("object-preview-copy")
+                            .tooltip("复制完整内容")
+                            .value_fn(move |_, app| editor_for_copy.read(app).value().into()),
                     )
                     .child(
                         ramag_ui::clickable_button("object-preview-close")

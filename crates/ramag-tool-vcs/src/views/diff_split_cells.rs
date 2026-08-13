@@ -89,6 +89,7 @@ pub(super) fn render_content_cell(
     fg: gpui::Hsla,
     mono: SharedString,
     content_w: f32,
+    cx: &mut Context<VcsView>,
 ) -> AnyElement {
     let Some((line_idx, line)) = line else {
         return h_flex()
@@ -99,12 +100,21 @@ pub(super) fn render_content_cell(
     };
     let (bg, _, _) = line_palette(line.kind);
     let row_id = SharedString::from(format!("vcs-diff-cnt-{side}-{hunk_idx}-{line_idx}"));
+    let line_for_copy = line.text.clone();
     let code_line = code_line.unwrap_or_else(|| super::syntax::plain_code_line(&line.text));
 
     let text_div = div()
+        .id(SharedString::from(format!(
+            "vcs-diff-cnt-text-{side}-{hunk_idx}-{line_idx}"
+        )))
         .flex_1()
         .min_w(px(content_w))
         .px(px(4.0))
+        .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
+            if ramag_ui::is_primary_modifier_double_click(event) {
+                ramag_ui::copy_text(line_for_copy.clone(), cx);
+            }
+        }))
         .child(super::syntax::render_code_line(code_line, fg, mono));
 
     let mut row = h_flex()

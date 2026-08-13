@@ -146,6 +146,10 @@ pub(super) fn render_data_row(
                 .when(is_selected, |this| this.bg(accent.opacity(0.22)))
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.set_selected_cell(Some((row_idx, ci)));
+                    if ramag_ui::is_primary_modifier_double_click(e) {
+                        this.copy_selected_cell(cx);
+                        return;
+                    }
                     if e.click_count() >= 2 {
                         open_cell_editor(this, row_idx, ci, window, cx);
                     }

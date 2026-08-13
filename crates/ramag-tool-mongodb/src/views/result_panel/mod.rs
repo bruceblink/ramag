@@ -24,14 +24,12 @@ use std::sync::{
 
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement, Point, Render,
-    ScrollHandle, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, UniformListScrollHandle,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _,
-    h_flex,
-    input::{Input, InputState},
-    v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    h_flex, input::InputState, v_flex,
 };
 use parking_lot::RwLock;
 use ramag_app::MongoService;
@@ -509,14 +507,10 @@ impl ResultPanel {
             "{}  ({kind})",
             inline_text_preview(&column_path, 96)
         ));
-        let input: Entity<InputState> = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner)
-                .multi_line(true)
-                .default_value(display)
-        });
+        let display: SharedString = display.into();
         window.open_dialog(cx, move |dialog, _w, _app| {
-            let input = input.clone();
             let title = title.clone();
+            let display = display.clone();
             dialog
                 .title(ramag_ui::closable_dialog_title(
                     "mongo-value-detail-close",
@@ -529,9 +523,18 @@ impl ResultPanel {
                 .content(move |content, _, _| {
                     content.child(
                         div()
+                            .id("mongo-value-detail-scroll")
                             .w_full()
                             .h(px(400.0))
-                            .child(Input::new(&input).small().h_full().disabled(true)),
+                            .overflow_y_scroll()
+                            .child(
+                                ramag_ui::SelectableText::new(
+                                    "mongo-value-detail",
+                                    display.clone(),
+                                )
+                                .w_full()
+                                .text_sm(),
+                            ),
                     )
                 })
         });

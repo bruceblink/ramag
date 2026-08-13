@@ -233,7 +233,7 @@ impl ResultPanel {
     }
 
     /// 复制选中单元格完整值
-    pub(super) fn copy_selected_cell(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn copy_selected_cell(&mut self, cx: &mut Context<Self>) {
         let Some((ri, ci)) = self.selected_cell else {
             return;
         };

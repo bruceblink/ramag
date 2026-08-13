@@ -77,7 +77,7 @@ pub struct KeyDetailPanel {
     pub(super) value_byte_limited: bool,
     pub(super) value_memory_warning: bool,
     value_view_mode: Option<ViewMode>,
-    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 按行切好的内容, gzip 提示)。
+    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 当前视图完整文本, 按行切好的内容, gzip 提示)。
     /// 行数组供 uniform_list 行级虚拟化（大值单文本节点渲染会卡死滚动）；
     /// 解压 + JSON 解析 + 切行只算一次，key/value/view_mode 变化失效
     #[allow(clippy::type_complexity)]
@@ -85,6 +85,7 @@ pub struct KeyDetailPanel {
         Option<(
             Option<ViewMode>,
             ViewMode,
+            SharedString,
             std::sync::Arc<Vec<SharedString>>,
             Option<SharedString>,
         )>,

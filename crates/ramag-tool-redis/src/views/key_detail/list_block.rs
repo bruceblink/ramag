@@ -3,8 +3,8 @@
 use std::ops::Range;
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, UniformListScrollHandle,
-    div, prelude::*, px, uniform_list,
+    ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled,
+    UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
@@ -68,6 +68,7 @@ fn list_row(
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
     let preview = item.display_preview(256);
+    let value_for_copy = item.to_clipboard_string();
     let value_is_text = matches!(item, RedisValue::Text(_));
     let raw_value = match item {
         RedisValue::Text(text) if text.len() <= MAX_REDIS_COMMAND_ARG_BYTES => Some(text.clone()),
@@ -77,6 +78,7 @@ fn list_row(
     let key_for_emit = key.to_string();
     let del_id = SharedString::from(format!("list-del-{i}"));
     h_flex()
+        .id(SharedString::from(format!("list-row-{i}")))
         .h(px(ROW_H))
         .flex_none()
         .w_full()
@@ -85,6 +87,11 @@ fn list_row(
         .border_color(border)
         .gap(px(8.0))
         .items_center()
+        .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+            if ramag_ui::is_primary_modifier_double_click(event) {
+                ramag_ui::copy_text(value_for_copy.clone(), cx);
+            }
+        }))
         .child(
             div()
                 .w(px(40.0))

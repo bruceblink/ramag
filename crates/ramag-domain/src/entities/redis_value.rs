@@ -123,6 +123,83 @@ impl RedisValue {
             RedisValue::Array(v) => format!("Array({} elems)", v.len()),
         }
     }
+
+    /// 生成复制用的完整值；集合 / 数组不会退化成 `List(N elems)` 等预览摘要。
+    ///
+    /// 根标量保留 Redis 客户端常见的原始文本语义；复合值使用 JSON 形态，二进制叶子
+    /// 用 `$bytes` 包装并编码为十六进制，保证不同数据类型嵌套时仍然不会丢失类型边界。
+    pub fn to_clipboard_string(&self) -> String {
+        match self {
+            Self::Nil => String::new(),
+            Self::Text(value) => value.clone(),
+            Self::Bytes(value) => bytes_to_hex(value),
+            Self::Int(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
+            Self::Bool(value) => value.to_string(),
+            Self::List(_)
+            | Self::Hash(_)
+            | Self::Set(_)
+            | Self::ZSet(_)
+            | Self::Stream(_)
+            | Self::Array(_) => serde_json::to_string_pretty(&to_json_value(self))
+                .unwrap_or_else(|_| self.display_preview(256)),
+        }
+    }
+}
+
+fn to_json_value(value: &RedisValue) -> serde_json::Value {
+    use serde_json::{Map, Value, json};
+
+    match value {
+        RedisValue::Nil => Value::Null,
+        RedisValue::Text(value) => Value::String(value.clone()),
+        RedisValue::Bytes(value) => json!({"$bytes": bytes_to_hex(value)}),
+        RedisValue::Int(value) => Value::Number((*value).into()),
+        RedisValue::Float(value) => serde_json::Number::from_f64(*value)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(value.to_string())),
+        RedisValue::Bool(value) => Value::Bool(*value),
+        RedisValue::List(values) | RedisValue::Set(values) | RedisValue::Array(values) => {
+            Value::Array(values.iter().map(to_json_value).collect())
+        }
+        RedisValue::Hash(values) => {
+            let mut object = Map::new();
+            for (field, value) in values {
+                object.insert(field.clone(), to_json_value(value));
+            }
+            Value::Object(object)
+        }
+        RedisValue::ZSet(values) => Value::Array(
+            values
+                .iter()
+                .map(|(member, score)| {
+                    json!({
+                        "member": to_json_value(member),
+                        "score": serde_json::Number::from_f64(*score)
+                            .map(Value::Number)
+                            .unwrap_or_else(|| Value::String(score.to_string())),
+                    })
+                })
+                .collect(),
+        ),
+        RedisValue::Stream(entries) => Value::Array(
+            entries
+                .iter()
+                .map(|entry| {
+                    let fields = entry
+                        .fields
+                        .iter()
+                        .map(|(field, value)| (field.clone(), Value::String(value.clone())))
+                        .collect();
+                    json!({"id": entry.id, "fields": Value::Object(fields)})
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn bytes_to_hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
@@ -185,6 +262,42 @@ mod tests {
         let v = RedisValue::Text("line1\nline2\r\nline3".to_string());
         let p = v.display_preview(80);
         assert!(!p.contains('\n') && !p.contains('\r'));
+    }
+
+    #[test]
+    fn clipboard_string_keeps_root_scalar_semantics() {
+        assert_eq!(
+            RedisValue::Text("hello".into()).to_clipboard_string(),
+            "hello"
+        );
+        assert_eq!(
+            RedisValue::Bytes(vec![0, 15, 255]).to_clipboard_string(),
+            "000fff"
+        );
+        assert_eq!(RedisValue::Nil.to_clipboard_string(), "");
+    }
+
+    #[test]
+    fn clipboard_string_preserves_nested_types() {
+        let value = RedisValue::Hash(vec![
+            (
+                "items".into(),
+                RedisValue::List(vec![
+                    RedisValue::Text("alice".into()),
+                    RedisValue::Bytes(vec![0xaa]),
+                ]),
+            ),
+            (
+                "scores".into(),
+                RedisValue::ZSet(vec![(RedisValue::Text("alice".into()), 1.5)]),
+            ),
+        ]);
+
+        let copied = value.to_clipboard_string();
+        assert!(copied.contains("\"items\""));
+        assert!(copied.contains("\"alice\""));
+        assert!(copied.contains("\"$bytes\": \"aa\""));
+        assert!(copied.contains("\"score\": 1.5"));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
-    Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
+    Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard,
+    h_flex, v_flex,
 };
 use ramag_domain::entities::{MAX_REDIS_COLLECTION_BYTES, RedisValue};
 
@@ -136,6 +137,19 @@ pub(super) fn render_header(
         cx,
     ));
 
+    let panel_for_copy = cx.entity();
+    let copy_button = Clipboard::new(format!("redis-copy-{key}"))
+        .tooltip("复制完整值")
+        .value_fn(move |_, app| {
+            panel_for_copy
+                .read(app)
+                .value
+                .as_ref()
+                .map(RedisValue::to_clipboard_string)
+                .unwrap_or_default()
+                .into()
+        });
+
     let mut header = h_flex()
         .w_full()
         .px(px(14.0))
@@ -160,6 +174,8 @@ pub(super) fn render_header(
                 )
                 .child(info_row),
         );
+
+    header = header.child(copy_button);
 
     let key_owned = key.to_string();
     if let Some(value) = value_ref {

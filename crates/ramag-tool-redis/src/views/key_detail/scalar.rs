@@ -9,7 +9,10 @@ use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, ScrollWheelEvent, SharedString, Styled,
     UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
-use gpui_component::{Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_component::{
+    Selectable as _, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard, h_flex,
+    v_flex,
+};
 use ramag_domain::entities::RedisValue;
 use ramag_ui::RestrictScrollToAxisExt as _;
 
@@ -21,13 +24,18 @@ const ROW_H: f32 = 20.0;
 
 use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 
-/// 纯计算：字节流 → (生效 mode, 按行切好的显示文本, gzip 提示)。解压 + JSON 解析 +
+/// 纯计算：字节流 → (生效 mode, 完整显示文本, 按行切好的显示文本, gzip 提示)。解压 + JSON 解析 +
 /// 负责 pretty 与切行，结果由 panel.scalar_cache 缓存，避免每帧重算。
 fn compute_scalar_display(
     v: &RedisValue,
     view_mode: Option<ViewMode>,
     allow_gzip: bool,
-) -> (ViewMode, Arc<Vec<SharedString>>, Option<SharedString>) {
+) -> (
+    ViewMode,
+    SharedString,
+    Arc<Vec<SharedString>>,
+    Option<SharedString>,
+) {
     let raw_bytes: &[u8] = match v {
         RedisValue::Text(s) => s.as_bytes(),
         RedisValue::Bytes(b) => b,
@@ -60,11 +68,9 @@ fn compute_scalar_display(
         },
         _ => value_display::render_bytes(&display_bytes, mode),
     };
-    (
-        mode,
-        Arc::new(split_display_lines(&content_text)),
-        gzip_hint,
-    )
+    let display_text: SharedString = content_text.into();
+    let lines = Arc::new(split_display_lines(display_text.as_str()));
+    (mode, display_text, lines, gzip_hint)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -83,16 +89,23 @@ pub(super) fn render_scalar(
     let scalar_truncated = panel.scalar_is_truncated();
     // 缓存命中（同 view_mode）直接取；否则计算一次并写回缓存。
     // 缓存随 load_key / 切 view_mode 清空，此处仅比对 view_mode 兜底
-    let (mode, lines, gzip_hint) = {
+    let (mode, display_text, lines, gzip_hint) = {
         let mut cache = panel.scalar_cache.borrow_mut();
-        if let Some((cached_req, eff_mode, lines, hint)) = cache.as_ref()
+        if let Some((cached_req, eff_mode, display_text, lines, hint)) = cache.as_ref()
             && *cached_req == view_mode
         {
-            (*eff_mode, lines.clone(), hint.clone())
+            (*eff_mode, display_text.clone(), lines.clone(), hint.clone())
         } else {
-            let (eff_mode, lines, hint) = compute_scalar_display(v, view_mode, !scalar_truncated);
-            *cache = Some((view_mode, eff_mode, lines.clone(), hint.clone()));
-            (eff_mode, lines, hint)
+            let (eff_mode, display_text, lines, hint) =
+                compute_scalar_display(v, view_mode, !scalar_truncated);
+            *cache = Some((
+                view_mode,
+                eff_mode,
+                display_text.clone(),
+                lines.clone(),
+                hint.clone(),
+            ));
+            (eff_mode, display_text, lines, hint)
         }
     };
     let line_count = lines.len();
@@ -105,6 +118,7 @@ pub(super) fn render_scalar(
     };
 
     // uniform_list 行级虚拟化：只渲染可见行，大值滚动不再整体排版
+    let edit_target_for_click = edit_target.clone();
     let content_div = div()
         .id("redis-scalar-content")
         .flex_1()
@@ -114,15 +128,27 @@ pub(super) fn render_scalar(
         .border_1()
         .border_color(border)
         .rounded(px(4.0))
+        .on_click(cx.listener(move |panel, event: &ClickEvent, _, cx| {
+            if ramag_ui::is_primary_modifier_double_click(event) {
+                let text = panel
+                    .scalar_cache
+                    .borrow()
+                    .as_ref()
+                    .map(|(_, _, display_text, _, _)| display_text.clone())
+                    .unwrap_or_default();
+                ramag_ui::copy_text(text.to_string(), cx);
+                return;
+            }
+            if event.click_count() >= 2
+                && let Some(key) = edit_target_for_click.clone()
+                && let Some(RedisValue::Text(value)) = &panel.value
+            {
+                cx.emit(KeyDetailEvent::RequestEditValue(key, value.clone()));
+            }
+        }))
         .when_some(edit_target, |this, key| {
+            let _ = key;
             this.cursor_pointer()
-                .on_click(cx.listener(move |panel, e: &ClickEvent, _, cx| {
-                    if e.click_count() >= 2
-                        && let Some(RedisValue::Text(value)) = &panel.value
-                    {
-                        cx.emit(KeyDetailEvent::RequestEditValue(key.clone(), value.clone()));
-                    }
-                }))
         })
         .child(
             // 透明输入层统一分流横纵手势；不渲染滚动条。
@@ -143,7 +169,7 @@ pub(super) fn render_scalar(
                                 line_count,
                                 cx.processor(move |this, range: Range<usize>, _w, _cx| {
                                     let cache = this.scalar_cache.borrow();
-                                    let Some((_, _, lines, _)) = cache.as_ref() else {
+                                    let Some((_, _, _, lines, _)) = cache.as_ref() else {
                                         return Vec::new();
                                     };
                                     range
@@ -178,25 +204,32 @@ pub(super) fn render_scalar(
         );
 
     // 视图模式切换：Raw / JSON / Hex / base64，高亮当前生效模式；点击即固定为手动模式
-    let mode_row = h_flex().gap(px(4.0)).children(
-        [
-            (ViewMode::Raw, "Raw"),
-            (ViewMode::Json, "JSON"),
-            (ViewMode::Hex, "Hex"),
-            (ViewMode::Base64, "base64"),
-        ]
-        .into_iter()
-        .map(|(m, label)| {
-            ramag_ui::clickable_button(label)
-                .xsmall()
-                .ghost()
-                .selected(m == mode)
-                .label(label)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.set_value_view_mode(m, cx);
-                }))
-        }),
-    );
+    let mode_row = h_flex()
+        .gap(px(4.0))
+        .children(
+            [
+                (ViewMode::Raw, "Raw"),
+                (ViewMode::Json, "JSON"),
+                (ViewMode::Hex, "Hex"),
+                (ViewMode::Base64, "base64"),
+            ]
+            .into_iter()
+            .map(|(m, label)| {
+                ramag_ui::clickable_button(label)
+                    .xsmall()
+                    .ghost()
+                    .selected(m == mode)
+                    .label(label)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_value_view_mode(m, cx);
+                    }))
+            }),
+        )
+        .child(
+            Clipboard::new("redis-scalar-copy")
+                .tooltip("复制当前视图")
+                .value(display_text),
+        );
 
     v_flex()
         .size_full()

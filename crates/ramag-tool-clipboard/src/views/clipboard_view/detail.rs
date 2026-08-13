@@ -152,13 +152,17 @@ impl ClipboardView {
                 None => div().child("加载中…").into_any_element(),
             },
             ClipKind::Files => {
-                let mut body = v_flex().gap(px(4.0)).children(
-                    item.files.iter().take(MAX_DETAIL_FILE_ROWS).map(|path| {
-                        div()
-                            .text_sm()
-                            .child(bounded_path_text(path))
-                            .into_any_element()
-                    }),
+                let paths = item
+                    .files
+                    .iter()
+                    .take(MAX_DETAIL_FILE_ROWS)
+                    .map(|path| bounded_path_text(path))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut body = v_flex().gap(px(4.0)).child(
+                    ramag_ui::SelectableText::new("clip-detail-files", paths)
+                        .w_full()
+                        .text_sm(),
                 );
                 if item.files.len() > MAX_DETAIL_FILE_ROWS {
                     body = body.child(
@@ -172,10 +176,9 @@ impl ClipboardView {
             }
             _ => {
                 let display = self.detail_text(item.as_ref());
-                div()
+                ramag_ui::SelectableText::new("clip-detail-text", display)
+                    .w_full()
                     .text_sm()
-                    .whitespace_normal()
-                    .child(display)
                     .into_any_element()
             }
         }

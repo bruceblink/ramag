@@ -3,7 +3,7 @@
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px,
 };
-use gpui_component::{h_flex, v_flex};
+use gpui_component::{clipboard::Clipboard, h_flex, v_flex};
 use ramag_domain::entities::RedisValue;
 
 use super::KeyDetailPanel;
@@ -175,6 +175,11 @@ fn array_block(
                         .text_color(fg)
                         .font_family("monospace")
                         .child(item.display_preview(256)),
+                )
+                .child(
+                    Clipboard::new(format!("redis-array-copy-{i}"))
+                        .tooltip("复制完整值")
+                        .value(item.to_clipboard_string()),
                 ),
         );
     }

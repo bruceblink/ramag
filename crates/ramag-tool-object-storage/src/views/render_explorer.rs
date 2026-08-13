@@ -341,6 +341,7 @@ impl ObjectStorageView {
         let size = object_size_label(kind, entry.size, entry.operable);
         let selector = format!("object-entry-{key}");
         let key_for_right_click = key.clone();
+        let key_for_copy = key.clone();
         let row = h_flex()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector.clone())
@@ -359,6 +360,10 @@ impl ObjectStorageView {
             })
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.select_entry(key.clone(), cx);
+                if ramag_ui::is_primary_modifier_double_click(event) {
+                    ramag_ui::copy_text(key_for_copy.clone(), cx);
+                    return;
+                }
                 if event.click_count() >= 2 {
                     this.open_entry(key.clone(), kind, operable, window, cx);
                 }

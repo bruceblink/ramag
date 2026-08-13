@@ -162,3 +162,78 @@ pub(super) fn scalar_to_cell(v: &Value) -> Option<Cell> {
         _ => None,
     }
 }
+
+/// 生成单元格复制值；对象和数组复制完整 JSON，不能使用表格中的摘要文本。
+pub(super) fn clipboard_text_for_value(value: &Value) -> String {
+    // 常见 Extended JSON 标量复制用户实际看到的值；binary 例外，因为表格文本只是摘要，
+    // 必须保留完整的 base64 / subtype JSON。
+    if let Value::Object(map) = value
+        && let Some(cell) = extjson_cell(map)
+        && cell.kind != "binary"
+    {
+        return cell.text;
+    }
+
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+    }
+}
+
+/// 按 Mongo 点分路径读取值；先尝试完整字段名，兼容字段名本身包含点的历史数据。
+pub(super) fn value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    if let Value::Object(map) = value
+        && let Some(direct) = map.get(path)
+    {
+        return Some(direct);
+    }
+    if path.is_empty() {
+        return Some(value);
+    }
+    path.split('.')
+        .try_fold(value, |current, segment| match current {
+            Value::Object(map) => map.get(segment),
+            _ => None,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clipboard_text_for_value, value_at_path};
+    use serde_json::json;
+
+    #[test]
+    fn clipboard_value_does_not_copy_nested_summary() {
+        let value = json!({"profile": {"name": "Alice", "roles": ["admin"]}});
+        let copied = clipboard_text_for_value(&value);
+
+        assert!(copied.contains("\"name\": \"Alice\""));
+        assert!(copied.contains("\"roles\": ["));
+        assert!(!copied.contains("字段"));
+    }
+
+    #[test]
+    fn clipboard_value_preserves_extended_binary_json() {
+        let value = json!({
+            "$binary": {"base64": "AQID", "subType": "00"}
+        });
+
+        assert_eq!(
+            clipboard_text_for_value(&value),
+            "{\n  \"$binary\": {\n    \"base64\": \"AQID\",\n    \"subType\": \"00\"\n  }\n}"
+        );
+    }
+
+    #[test]
+    fn value_at_path_supports_nested_objects_and_direct_fields() {
+        let value = json!({"profile": {"name": "Alice"}, "a.b": 7});
+
+        assert_eq!(value_at_path(&value, "profile.name"), Some(&json!("Alice")));
+        assert_eq!(value_at_path(&value, "a.b"), Some(&json!(7)));
+    }
+}

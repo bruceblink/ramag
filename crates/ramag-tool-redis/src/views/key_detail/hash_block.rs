@@ -71,6 +71,7 @@ fn hash_row(
 ) -> impl IntoElement + use<> {
     let field_preview = inline_text_preview(field, 128);
     let value_preview = value.display_preview(256);
+    let value_for_copy = value.to_clipboard_string();
     // HSCAN 的字段名目前以 UTF-8 字符串展示；出现替换字符表明原始字节已无法
     // 安全往返，禁用编辑/删除以避免将损坏后的文本当作真实字段名。
     let field_is_lossy = field.contains('\u{fffd}');
@@ -108,6 +109,10 @@ fn hash_row(
         .when(editable, |row| row.cursor_pointer())
         // 双击该行打开编辑窗口（仅文本值可编辑，二进制只读）
         .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+            if ramag_ui::is_primary_modifier_double_click(e) {
+                ramag_ui::copy_text(value_for_copy.clone(), cx);
+                return;
+            }
             if editable
                 && e.click_count() >= 2
                 && let (Some(field), Some(value)) =
