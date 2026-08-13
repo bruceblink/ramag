@@ -53,6 +53,17 @@ const SHORTCUTS: &[ShortcutSpec] = &[
         "⌘P",
         "Ctrl+P"
     ),
+    ShortcutSpec {
+        id: "wake-main-window",
+        group: "全局",
+        label: "全局唤醒 Ramag",
+        action: None,
+        context: None,
+        default_key: "secondary-alt-shift-v",
+        macos: "⌘⌥⇧V",
+        windows: "Ctrl+Alt+Shift+V",
+        linux: "暂不支持",
+    },
     shortcut!(
         "close-tab",
         "全局",
@@ -529,5 +540,18 @@ mod tests {
         assert!(!description.contains("macOS "));
         assert!(!description.contains("Windows "));
         assert!(!description.contains("Linux "));
+    }
+
+    #[test]
+    fn global_wake_shortcut_is_visible_and_system_managed() {
+        let shortcut = SHORTCUTS
+            .iter()
+            .find(|shortcut| shortcut.id == "wake-main-window");
+        assert!(shortcut.is_some_and(|shortcut| {
+            shortcut.group == "全局"
+                && shortcut.action.is_none()
+                && shortcut.macos == "⌘⌥⇧V"
+                && shortcut.windows == "Ctrl+Alt+Shift+V"
+        }));
     }
 }

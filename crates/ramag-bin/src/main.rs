@@ -38,7 +38,9 @@ use ramag_domain::traits::{
     DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use ramag_infra_clipboard::{HotkeyListener, PlatformClipboardDriver, foreground_display_index};
+use ramag_infra_clipboard::{
+    HotkeyEvent, HotkeyListener, PlatformClipboardDriver, foreground_display_index,
+};
 use ramag_infra_git::GitDriverImpl;
 use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
@@ -158,6 +160,7 @@ fn finish_main_window_open(cx: &mut App) {
 }
 
 fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
+    cx.activate(true);
     if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|g| g.0)
         && handle
             .update(cx, |_, window, _| window.activate_window())
@@ -480,7 +483,7 @@ fn main() {
             cx.spawn(async move |_| preload_service.preload().await)
                 .detach();
             spawn_clipboard_capture(svc.clone(), cx);
-            spawn_clipboard_hotkey(svc, deps.registry.clone(), cx);
+            spawn_clipboard_hotkey(svc, deps.registry.clone(), deps.clone(), cx);
         }
 
         let log_path_for_open = log_path.clone();

@@ -59,19 +59,23 @@ pub(super) fn sync_clipboard_tool_visibility(
     }
 }
 
-/// 热键随剪贴板总开关注册或释放；注册失败不影响其他功能。
+/// 主窗口唤醒热键始终注册；剪贴板抽屉热键随剪贴板总开关启停。
 pub(super) fn spawn_clipboard_hotkey(
     service: Arc<ClipboardService>,
     registry: Arc<ToolRegistry>,
+    deps: AppDeps,
     cx: &mut App,
 ) {
     cx.spawn(async move |cx| {
         let mut enabled = service.prime_capture_enabled().await;
         cx.update(|cx| sync_clipboard_tool_visibility(&registry, enabled, cx));
         let mut alternate = service.alternate_hotkey();
-        let mut listener = if enabled {
-            let l = HotkeyListener::register_clipboard_hotkey(alternate);
-            if l.is_none() {
+        let mut listener = HotkeyListener::register_clipboard_hotkey(alternate, enabled);
+        if enabled {
+            if !listener
+                .as_ref()
+                .is_some_and(HotkeyListener::clipboard_registered)
+            {
                 error!(
                     operation = "clipboard_hotkey_register",
                     impact = "clipboard_drawer_disabled",
@@ -80,16 +84,19 @@ pub(super) fn spawn_clipboard_hotkey(
                     "global hotkey registration failed"
                 );
             }
-            service.set_hotkey_state(if l.is_some() {
-                ramag_app::HotkeyState::Registered
-            } else {
-                ramag_app::HotkeyState::Failed
-            });
-            l
+            service.set_hotkey_state(
+                if listener
+                    .as_ref()
+                    .is_some_and(HotkeyListener::clipboard_registered)
+                {
+                    ramag_app::HotkeyState::Registered
+                } else {
+                    ramag_app::HotkeyState::Failed
+                },
+            );
         } else {
             service.set_hotkey_state(ramag_app::HotkeyState::Disabled);
-            None
-        };
+        }
 
         let mut drawer: Option<gpui::AnyWindowHandle> = None;
         // 抽屉是否曾真正激活过：避免刚打开（尚未激活）就被失焦逻辑误关
@@ -99,15 +106,18 @@ pub(super) fn spawn_clipboard_hotkey(
 
             let now_enabled = service.capture_enabled();
             let now_alternate = service.alternate_hotkey();
-            if now_enabled != enabled || (now_enabled && now_alternate != alternate) {
+            if now_enabled != enabled || now_alternate != alternate {
                 enabled = now_enabled;
                 alternate = now_alternate;
                 cx.update(|cx| sync_clipboard_tool_visibility(&registry, enabled, cx));
-                // 先置 None 触发 Drop 注销旧热键（切换组合时避免新旧并存）
-                listener = None;
+                // 先注销旧组合，避免切换时新旧热键短暂并存。
+                drop(listener.take());
+                listener = HotkeyListener::register_clipboard_hotkey(alternate, enabled);
                 if enabled {
-                    listener = HotkeyListener::register_clipboard_hotkey(alternate);
-                    if listener.is_none() {
+                    if !listener
+                        .as_ref()
+                        .is_some_and(HotkeyListener::clipboard_registered)
+                    {
                         error!(
                             operation = "clipboard_hotkey_register",
                             stage = "re_register",
@@ -116,11 +126,16 @@ pub(super) fn spawn_clipboard_hotkey(
                             "global hotkey re-registration failed"
                         );
                     }
-                    service.set_hotkey_state(if listener.is_some() {
-                        ramag_app::HotkeyState::Registered
-                    } else {
-                        ramag_app::HotkeyState::Failed
-                    });
+                    service.set_hotkey_state(
+                        if listener
+                            .as_ref()
+                            .is_some_and(HotkeyListener::clipboard_registered)
+                        {
+                            ramag_app::HotkeyState::Registered
+                        } else {
+                            ramag_app::HotkeyState::Failed
+                        },
+                    );
                 } else {
                     service.set_hotkey_state(ramag_app::HotkeyState::Disabled);
                     // 关闭残留抽屉：热键已注销，否则无法再 toggle 关闭
@@ -157,18 +172,33 @@ pub(super) fn spawn_clipboard_hotkey(
             let Some(listener) = &listener else {
                 continue;
             };
-            if !listener.poll() {
-                continue;
+            while let Some(event) = listener.poll() {
+                match event {
+                    HotkeyEvent::WakeMainWindow => {
+                        if let Some(handle) = drawer.take() {
+                            let _ = cx.update(|cx| {
+                                handle.update(cx, |_, window, _| window.remove_window())
+                            });
+                        }
+                        was_active = false;
+                        cx.update(|cx| reveal_main_window(&deps, cx));
+                    }
+                    HotkeyEvent::ClipboardDrawer if enabled => {
+                        if let Some(handle) = drawer.take() {
+                            let _ = cx.update(|cx| {
+                                handle.update(cx, |_, window, _| window.remove_window())
+                            });
+                            was_active = false;
+                            continue;
+                        }
+                        // 未打开 → 唤起：记录前台应用后开抽屉
+                        let svc = service.clone();
+                        drawer = cx.update(|cx| open_drawer_window(svc, cx));
+                        was_active = false;
+                    }
+                    HotkeyEvent::ClipboardDrawer => {}
+                }
             }
-            if let Some(handle) = drawer.take() {
-                let _ = cx.update(|cx| handle.update(cx, |_, window, _| window.remove_window()));
-                was_active = false;
-                continue;
-            }
-            // 未打开 → 唤起：记录前台应用后开抽屉
-            let svc = service.clone();
-            drawer = cx.update(|cx| open_drawer_window(svc, cx));
-            was_active = false;
         }
     })
     .detach();

@@ -27,7 +27,7 @@ mod pasteboard;
 mod workspace_app;
 
 #[cfg(target_os = "macos")]
-pub use hotkey::HotkeyListener;
+pub use hotkey::{HotkeyEvent, HotkeyListener};
 #[cfg(target_os = "macos")]
 pub use macos::MacClipboardDriver as PlatformClipboardDriver;
 #[cfg(target_os = "macos")]
@@ -39,5 +39,6 @@ pub fn foreground_display_index() -> Option<usize> {
 mod win;
 #[cfg(target_os = "windows")]
 pub use win::{
-    HotkeyListener, WinClipboardDriver as PlatformClipboardDriver, foreground_display_index,
+    HotkeyEvent, HotkeyListener, WinClipboardDriver as PlatformClipboardDriver,
+    foreground_display_index,
 };

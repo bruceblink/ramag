@@ -1,4 +1,4 @@
-//! 全局热键：Carbon `RegisterEventHotKey` 注册系统级快捷键（cmd-shift-V / 备用 cmd-alt-V）。
+//! 全局热键：Carbon 注册剪贴板抽屉与 Ramag 主窗口唤醒组合键。
 //! 事件回调在主线程触发，经 mpsc channel 转出，由 main.rs 的计时器轮询消费——
 //! 与采集循环同款模式，不引入第三方 global-hotkey 依赖
 
@@ -50,11 +50,22 @@ unsafe extern "C" {
     ) -> OsStatus;
     fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OsStatus;
     fn RemoveEventHandler(handler: EventHandlerRef) -> OsStatus;
+    fn GetEventParameter(
+        event: EventRef,
+        name: u32,
+        desired_type: u32,
+        actual_type: *mut u32,
+        buffer_size: u32,
+        actual_size: *mut u32,
+        data: *mut c_void,
+    ) -> OsStatus;
 }
 
 // Carbon 常量：kEventClassKeyboard = 'keyb'，kEventHotKeyPressed = 5。
 const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
 const EVENT_HOTKEY_PRESSED: u32 = 5;
+const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+const TYPE_EVENT_HOTKEY_ID: u32 = u32::from_be_bytes(*b"hkid");
 // Carbon 修饰键掩码
 const CMD_KEY: u32 = 0x0100;
 const SHIFT_KEY: u32 = 0x0200;
@@ -62,18 +73,51 @@ const OPTION_KEY: u32 = 0x0800;
 // V 键码为 9。
 const KEY_V: u32 = 9;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeyEvent {
+    ClipboardDrawer,
+    WakeMainWindow,
+}
+
+fn send_event(tx: &SyncSender<HotkeyEvent>, event: HotkeyEvent) {
+    match tx.try_send(event) {
+        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
 /// 热键事件回调：经 user_data 还原 Sender 并发信号。回调全程不 panic（跨 FFI 边界）
 extern "C" fn hotkey_handler(
     _next: EventHandlerCallRef,
-    _event: EventRef,
+    event: EventRef,
     user_data: *mut c_void,
 ) -> OsStatus {
-    if !user_data.is_null() {
-        // user_data 指向 SyncSender 裸指针，仅借用不接管（注销时由 Drop 回收）
-        let tx = unsafe { &*(user_data as *const SyncSender<()>) };
-        // 容量为 1：已有待处理信号时合并重复按键，避免主线程繁忙期间无界积压。
-        match tx.try_send(()) {
-            Ok(()) | Err(TrySendError::Full(())) | Err(TrySendError::Disconnected(())) => {}
+    if user_data.is_null() || event.is_null() {
+        return 0;
+    }
+    let mut hotkey_id = EventHotKeyId {
+        signature: 0,
+        id: 0,
+    };
+    let status = unsafe {
+        GetEventParameter(
+            event,
+            EVENT_PARAM_DIRECT_OBJECT,
+            TYPE_EVENT_HOTKEY_ID,
+            std::ptr::null_mut(),
+            std::mem::size_of::<EventHotKeyId>() as u32,
+            std::ptr::null_mut(),
+            (&mut hotkey_id as *mut EventHotKeyId).cast(),
+        )
+    };
+    if status == 0 {
+        let event = match hotkey_id.id {
+            1 => Some(HotkeyEvent::ClipboardDrawer),
+            2 => Some(HotkeyEvent::WakeMainWindow),
+            _ => None,
+        };
+        if let Some(event) = event {
+            let tx = unsafe { &*(user_data as *const SyncSender<HotkeyEvent>) };
+            send_event(tx, event);
         }
     }
     0
@@ -82,24 +126,23 @@ extern "C" fn hotkey_handler(
 /// 热键句柄：持有 Receiver 与 Carbon ref；Drop 时注销热键、移除 handler、回收 Sender。
 /// ref 以 usize 存（裸指针非 Send，须能随句柄移入异步轮询任务）
 pub struct HotkeyListener {
-    rx: Receiver<()>,
+    rx: Receiver<HotkeyEvent>,
     handler_ref: usize,
-    hotkey_ref: usize,
+    clipboard_ref: Option<usize>,
+    wake_ref: Option<usize>,
     tx_ptr: usize,
-    /// 已注册组合名，注销日志用
-    combo: &'static str,
 }
 
 impl HotkeyListener {
-    /// 注册用户设置的抽屉热键。
+    /// 固定注册主窗口唤醒键；剪贴板启用时再注册抽屉键。
     /// 须在主线程、NSApplication 事件循环就绪后调用
-    pub fn register_clipboard_hotkey(alternate: bool) -> Option<Self> {
+    pub fn register_clipboard_hotkey(alternate: bool, clipboard_enabled: bool) -> Option<Self> {
         let (modifiers, combo) = if alternate {
             (CMD_KEY | OPTION_KEY, "cmd-alt-v")
         } else {
             (CMD_KEY | SHIFT_KEY, "cmd-shift-v")
         };
-        let (tx, rx) = sync_channel::<()>(1);
+        let (tx, rx) = sync_channel::<HotkeyEvent>(8);
         // Sender 转裸指针交给 Carbon 回调；句柄存活期间常驻，注销时由 Drop 回收
         let tx_ptr = Box::into_raw(Box::new(tx)) as *mut c_void;
 
@@ -117,55 +160,84 @@ impl HotkeyListener {
                     operation = "clipboard_hotkey_install",
                     status, "install clipboard hotkey event handler failed"
                 );
-                drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
+                drop(Box::from_raw(tx_ptr as *mut SyncSender<HotkeyEvent>));
                 return None;
             }
 
-            let hot_id = EventHotKeyId {
-                signature: u32::from_be_bytes(*b"rmag"),
-                id: 1,
+            let mut clipboard_ref: EventHotKeyRef = std::ptr::null_mut();
+            let clipboard_status = if clipboard_enabled {
+                RegisterEventHotKey(
+                    KEY_V,
+                    modifiers,
+                    EventHotKeyId {
+                        signature: u32::from_be_bytes(*b"rmag"),
+                        id: 1,
+                    },
+                    target,
+                    0,
+                    &mut clipboard_ref,
+                )
+            } else {
+                -1
             };
-            let mut hotkey_ref: EventHotKeyRef = std::ptr::null_mut();
-            let status = RegisterEventHotKey(KEY_V, modifiers, hot_id, target, 0, &mut hotkey_ref);
-            if status != 0 {
+            if clipboard_enabled && clipboard_status != 0 {
                 warn!(
                     operation = "clipboard_hotkey_register",
-                    status, combo, "register clipboard hotkey failed"
+                    status = clipboard_status,
+                    combo,
+                    "register clipboard hotkey failed"
                 );
-                // 注册失败后须先移除 handler；若移除失败，保留 Sender 避免回调悬空。
+            }
+
+            let mut wake_ref: EventHotKeyRef = std::ptr::null_mut();
+            let wake_status = RegisterEventHotKey(
+                KEY_V,
+                CMD_KEY | OPTION_KEY | SHIFT_KEY,
+                EventHotKeyId {
+                    signature: u32::from_be_bytes(*b"rmag"),
+                    id: 2,
+                },
+                target,
+                0,
+                &mut wake_ref,
+            );
+            if wake_status != 0 {
+                warn!(
+                    operation = "main_window_hotkey_register",
+                    status = wake_status,
+                    "register main window hotkey failed"
+                );
+            }
+
+            let clipboard_ref = (clipboard_status == 0).then_some(clipboard_ref as usize);
+            let wake_ref = (wake_status == 0).then_some(wake_ref as usize);
+            if clipboard_ref.is_none() && wake_ref.is_none() {
                 let remove_status = RemoveEventHandler(handler_ref);
                 if remove_status == 0 {
-                    drop(Box::from_raw(tx_ptr as *mut SyncSender<()>));
-                } else {
-                    warn!(
-                        operation = "clipboard_hotkey_cleanup",
-                        status = remove_status,
-                        "RemoveEventHandler failed after hotkey registration failure; leaking callback sender for safety"
-                    );
+                    drop(Box::from_raw(tx_ptr as *mut SyncSender<HotkeyEvent>));
                 }
                 return None;
             }
             info!(
-                operation = "clipboard_hotkey_register",
-                combo, "global clipboard hotkey registered"
+                operation = "global_hotkey_register",
+                clipboard_enabled, combo, "global hotkeys registered"
             );
             Some(Self {
                 rx,
                 handler_ref: handler_ref as usize,
-                hotkey_ref: hotkey_ref as usize,
+                clipboard_ref,
+                wake_ref,
                 tx_ptr: tx_ptr as usize,
-                combo,
             })
         }
     }
 
-    /// 非阻塞取一次热键事件（多次触发只需知道是否发生过，故 drain 后返回是否有）
-    pub fn poll(&self) -> bool {
-        let mut fired = false;
-        while self.rx.try_recv().is_ok() {
-            fired = true;
-        }
-        fired
+    pub fn clipboard_registered(&self) -> bool {
+        self.clipboard_ref.is_some()
+    }
+
+    pub fn poll(&self) -> Option<HotkeyEvent> {
+        self.rx.try_recv().ok()
     }
 }
 
@@ -174,17 +246,15 @@ impl Drop for HotkeyListener {
     /// 先移除 handler 阻断后续回调，再释放其借用的 Sender
     fn drop(&mut self) {
         let cleaned = unsafe {
-            let unregister_status = UnregisterEventHotKey(self.hotkey_ref as EventHotKeyRef);
-            if unregister_status != 0 {
-                warn!(
-                    operation = "clipboard_hotkey_unregister",
-                    status = unregister_status,
-                    "unregister clipboard hotkey failed"
-                );
+            let mut unregister_ok = true;
+            for hotkey_ref in [self.clipboard_ref, self.wake_ref].into_iter().flatten() {
+                if UnregisterEventHotKey(hotkey_ref as EventHotKeyRef) != 0 {
+                    unregister_ok = false;
+                }
             }
             let remove_status = RemoveEventHandler(self.handler_ref as EventHandlerRef);
             if remove_status == 0 {
-                drop(Box::from_raw(self.tx_ptr as *mut SyncSender<()>));
+                drop(Box::from_raw(self.tx_ptr as *mut SyncSender<HotkeyEvent>));
             } else {
                 // handler 仍可能被 Carbon 调用，不能释放其借用的 Sender。
                 warn!(
@@ -193,13 +263,12 @@ impl Drop for HotkeyListener {
                     "RemoveEventHandler failed; leaking callback sender for safety"
                 );
             }
-            unregister_status == 0 && remove_status == 0
+            unregister_ok && remove_status == 0
         };
         if cleaned {
             info!(
-                operation = "clipboard_hotkey_unregister",
-                combo = self.combo,
-                "global clipboard hotkey unregistered"
+                operation = "global_hotkey_unregister",
+                "global hotkeys unregistered"
             );
         }
     }
@@ -212,24 +281,16 @@ mod tests {
     #[test]
     fn repeated_hotkey_events_are_coalesced() {
         let (tx, rx) = sync_channel(1);
-        let user_data = (&tx as *const SyncSender<()>).cast_mut().cast::<c_void>();
-
-        hotkey_handler(std::ptr::null_mut(), std::ptr::null_mut(), user_data);
-        hotkey_handler(std::ptr::null_mut(), std::ptr::null_mut(), user_data);
-
-        assert_eq!(rx.try_recv(), Ok(()));
+        send_event(&tx, HotkeyEvent::WakeMainWindow);
+        send_event(&tx, HotkeyEvent::WakeMainWindow);
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::WakeMainWindow));
         assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn disconnected_hotkey_receiver_is_safe() {
-        let (tx, rx) = sync_channel(1);
+        let (tx, rx) = sync_channel::<HotkeyEvent>(1);
         drop(rx);
-        let user_data = (&tx as *const SyncSender<()>).cast_mut().cast::<c_void>();
-
-        assert_eq!(
-            hotkey_handler(std::ptr::null_mut(), std::ptr::null_mut(), user_data),
-            0
-        );
+        send_event(&tx, HotkeyEvent::ClipboardDrawer);
     }
 }
