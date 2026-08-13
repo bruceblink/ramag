@@ -91,7 +91,7 @@ pub struct HotkeyListener {
 }
 
 impl HotkeyListener {
-    /// 注册剪贴板热键（默认 cmd-shift-V，alternate 为 cmd-alt-V）。
+    /// 注册用户设置的抽屉热键。
     /// 须在主线程、NSApplication 事件循环就绪后调用
     pub fn register_clipboard_hotkey(alternate: bool) -> Option<Self> {
         let (modifiers, combo) = if alternate {

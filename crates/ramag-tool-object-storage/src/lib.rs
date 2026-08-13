@@ -2,7 +2,6 @@
 
 //! 云对象存储工具 UI。
 
-mod actions;
 mod views;
 
 use std::sync::Arc;
@@ -11,7 +10,6 @@ use gpui::{App, AppContext as _, Entity, Window};
 use ramag_app::ObjectStorageService;
 use ramag_domain::traits::{Tool, ToolMeta};
 
-pub use actions::RefreshObjectStorage;
 pub use views::ObjectStorageView;
 
 pub fn create_object_storage_view(

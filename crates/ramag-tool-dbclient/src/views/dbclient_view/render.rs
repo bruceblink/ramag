@@ -285,6 +285,18 @@ impl Render for DbClientView {
         };
 
         v_flex()
+            .key_context("DbClientView")
+            .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &ramag_ui::OpenRecentItems, window, cx| {
+                    if matches!(this.center, CenterMode::Session) && !this.sessions.is_empty() {
+                        this.open_connection_picker_dialog(window, cx);
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .size_full()
             .bg(bg)
             .text_color(fg)

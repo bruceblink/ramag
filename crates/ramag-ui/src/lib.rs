@@ -15,15 +15,15 @@ pub mod platform;
 pub mod pointer_menu;
 pub mod preferences;
 pub mod prompt_dialog;
+pub mod recent_items_dialog;
 pub mod result_memory;
 pub mod settings_view;
 pub mod shell;
+pub mod shortcuts_dialog;
 pub mod theme;
 pub mod transfer_ui;
 
-pub use actions::{
-    CloseTab, CycleSection, CycleSectionReverse, SelectTool1, SelectTool2, SelectTool3, SelectTool4,
-};
+pub use actions::{CloseTab, OpenRecentItems};
 pub use assets::RamagAssets;
 pub use confirm_dialog::{open_confirm, open_confirm_with_cancel};
 pub use data_sync_overlay::DataSyncOverlay;
@@ -52,6 +52,7 @@ pub use result_memory::{
 };
 pub use settings_view::SettingsView;
 pub use shell::{Shell, WindowBoundsPref};
+pub use shortcuts_dialog::open_shortcuts;
 pub use theme::{Mode, StorageGlobal, apply_theme, current_mode, init_theme};
 pub use transfer_ui::{
     TransferState, open_import_options_dialog, progress_sink, spawn_transfer_ticker,

@@ -2,7 +2,6 @@ use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, pre
 use gpui_component::{ActiveTheme, WindowExt as _, notification::Notification, v_flex};
 
 use super::model::ObjectStorageView;
-use crate::RefreshObjectStorage;
 
 impl Render for ObjectStorageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -22,15 +21,59 @@ impl Render for ObjectStorageView {
         v_flex()
             .key_context("ObjectStorageView")
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &RefreshObjectStorage, window, cx| {
-                if this.selected_mount.is_some() {
-                    this.load_first_page(window, cx);
-                } else if let Some(id) = this.selected_account_id.clone() {
-                    this.load_mounts(id, window, cx);
-                } else {
-                    this.load_accounts(window, cx);
-                }
-            }))
+            .on_action(
+                cx.listener(|this, _: &ramag_ui::OpenRecentItems, window, cx| {
+                    if !this.management_visible {
+                        let items = this
+                            .accounts
+                            .iter()
+                            .map(|account| {
+                                let bucket_count = account.manual_buckets.len();
+                                let mut item = ramag_ui::recent_items_dialog::RecentItem::new(
+                                    account.id.to_string(),
+                                    account.name.clone(),
+                                    format!(
+                                        "{} · {bucket_count} 个 Bucket",
+                                        account.provider.display_name()
+                                    ),
+                                    gpui_component::IconName::HardDrive,
+                                )
+                                .secondary(format!("账号 ID：{}", account.id))
+                                .current(this.selected_account_id.as_ref() == Some(&account.id));
+                                if account.read_only {
+                                    item = item.badge("只读");
+                                }
+                                item
+                            })
+                            .collect();
+                        let view = cx.entity().clone();
+                        ramag_ui::recent_items_dialog::open_recent_item_picker(
+                            window,
+                            cx,
+                            "最近打开的对象存储账号",
+                            "搜索账号名称、云厂商或账号 ID",
+                            "object_storage_recent_picker_favorites",
+                            items,
+                            std::sync::Arc::new(move |id, window, app| {
+                                let account_id = view
+                                    .read(app)
+                                    .accounts
+                                    .iter()
+                                    .find(|account| account.id.to_string() == id)
+                                    .map(|account| account.id.clone());
+                                if let Some(id) = account_id {
+                                    view.update(app, |this, cx| {
+                                        this.select_account(id, window, cx)
+                                    });
+                                }
+                            }),
+                        );
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)

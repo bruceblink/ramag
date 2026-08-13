@@ -15,8 +15,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_HOTKEY, WM_QUIT, WM_USER,
 };
 
-const HOTKEY_ID: i32 = 1;
-
 /// 热键监听句柄：持有消息线程 id（Drop 时投 WM_QUIT 令其退出）与事件 Receiver
 pub struct HotkeyListener {
     rx: Receiver<()>,
@@ -27,7 +25,7 @@ pub struct HotkeyListener {
 }
 
 impl HotkeyListener {
-    /// 注册剪贴板热键（默认 Ctrl-Shift-V，alternate 为 Ctrl-Alt-V）。
+    /// 注册用户设置的抽屉热键。
     /// 启一条线程注册热键并跑消息泵；注册失败返回 None（不影响其余功能）
     pub fn register_clipboard_hotkey(alternate: bool) -> Option<Self> {
         let combo = if alternate {
@@ -94,7 +92,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
         let _ = PeekMessageW(&mut queue_probe, None, WM_USER, WM_USER, PM_NOREMOVE);
         let second = if alternate { MOD_ALT } else { MOD_SHIFT };
         let modifiers = MOD_CONTROL | second | MOD_NOREPEAT;
-        if let Err(error) = RegisterHotKey(None, HOTKEY_ID, modifiers, VK_V.0 as u32) {
+        if let Err(error) = RegisterHotKey(None, 1, modifiers, VK_V.0 as u32) {
             warn!(operation = "clipboard_hotkey_register", error = %error, "register clipboard hotkey failed");
             if ready_tx.send(None).is_err() {
                 warn!(
@@ -111,7 +109,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
                 stage = "receiver_dropped",
                 "hotkey initialization receiver dropped"
             );
-            if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
+            if let Err(error) = UnregisterHotKey(None, 1) {
                 warn!(operation = "clipboard_hotkey_unregister", error = %error, "unregister cancelled clipboard hotkey failed");
             }
             return;
@@ -136,7 +134,7 @@ fn hotkey_thread(alternate: bool, tx: SyncSender<()>, ready_tx: SyncSender<Optio
                 }
             }
         }
-        if let Err(error) = UnregisterHotKey(None, HOTKEY_ID) {
+        if let Err(error) = UnregisterHotKey(None, 1) {
             warn!(operation = "clipboard_hotkey_unregister", error = %error, "unregister clipboard hotkey failed");
         }
     }

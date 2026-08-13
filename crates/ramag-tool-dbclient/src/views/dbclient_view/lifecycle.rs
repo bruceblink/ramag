@@ -114,6 +114,8 @@ impl DbClientView {
             .detach();
         }
 
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
         Self {
             service,
             redis_service,
@@ -129,6 +131,7 @@ impl DbClientView {
             pending_restore: None,
             restore_allowed: true,
             form_subscription: None,
+            focus_handle,
             _subscriptions: subs,
         }
     }

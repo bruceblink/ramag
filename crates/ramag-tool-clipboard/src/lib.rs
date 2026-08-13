@@ -4,9 +4,7 @@
 pub mod actions;
 pub mod views;
 
-pub use actions::{
-    CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip, SelectPrevClip,
-};
+pub use actions::{SelectNextClip, SelectPrevClip};
 pub use views::{ClipboardDrawer, ClipboardView};
 
 use std::sync::Arc;

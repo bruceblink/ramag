@@ -9,9 +9,7 @@ use gpui_component::{
 use ramag_domain::entities::{ClipKind, format_bytes};
 
 use super::ClipboardView;
-use crate::actions::{
-    CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip, SelectPrevClip,
-};
+use crate::actions::{SelectNextClip, SelectPrevClip};
 
 impl Render for ClipboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -39,9 +37,6 @@ impl Render for ClipboardView {
         v_flex()
             .key_context("ClipboardView")
             .track_focus(&focus)
-            .on_action(cx.listener(Self::on_focus_search))
-            .on_action(cx.listener(Self::on_copy_selected))
-            .on_action(cx.listener(Self::on_delete_selected))
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_select_prev))
             .size_full()
@@ -209,28 +204,6 @@ impl ClipboardView {
 }
 
 impl ClipboardView {
-    fn on_focus_search(
-        &mut self,
-        _: &FocusClipSearch,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.search.update(cx, |s, cx| s.focus(window, cx));
-    }
-
-    fn on_copy_selected(&mut self, _: &CopySelectedClip, _: &mut Window, cx: &mut Context<Self>) {
-        self.copy_selected(cx);
-    }
-
-    fn on_delete_selected(
-        &mut self,
-        _: &DeleteSelectedClip,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.delete_selected(window, cx);
-    }
-
     fn on_select_next(&mut self, _: &SelectNextClip, _: &mut Window, cx: &mut Context<Self>) {
         self.move_selection(1, cx);
     }

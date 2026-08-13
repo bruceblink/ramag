@@ -154,14 +154,12 @@ pub(super) fn spawn_clipboard_hotkey(
                 }
             }
 
-            // 采集关闭（无 listener）→ 跳过热键轮询
             let Some(listener) = &listener else {
                 continue;
             };
             if !listener.poll() {
                 continue;
             }
-            // 已打开 → 关闭（toggle）
             if let Some(handle) = drawer.take() {
                 let _ = cx.update(|cx| handle.update(cx, |_, window, _| window.remove_window()));
                 was_active = false;

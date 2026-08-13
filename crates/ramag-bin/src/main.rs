@@ -49,27 +49,20 @@ use ramag_infra_storage::RedbStorage;
 use ramag_infra_update::GitHubUpdateDriver;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_tool_clipboard::{
-    ClipboardTool, CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip,
-    SelectPrevClip, create_clipboard_drawer, create_clipboard_view,
+    ClipboardTool, SelectNextClip, SelectPrevClip, create_clipboard_drawer, create_clipboard_view,
 };
 use ramag_tool_dbclient::{
     DbClientTool, ExplainQuery, FindInResults, FormatSql, NewQueryTab, RunQuery,
     RunStatementAtCursor, ToggleRedisConsole, ToggleSqlEditor, create_dbclient_view,
 };
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
-use ramag_tool_object_storage::{
-    ObjectStorageTool, RefreshObjectStorage, create_object_storage_view,
-};
-use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, RefreshSftp, SshTool, create_ssh_view};
-use ramag_tool_vcs::{
-    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
-    ToggleHistoryPane, VcsTool, create_vcs_view,
-};
+use ramag_tool_object_storage::{ObjectStorageTool, create_object_storage_view};
+use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, SshTool, create_ssh_view};
+use ramag_tool_vcs::{CommitNow, PullNow, PushNow, ToggleHistoryPane, VcsTool, create_vcs_view};
 use ramag_ui::{
-    CloseTab, CycleSection, CycleSectionReverse, DATABASE_SEARCH_SETTINGS_PREF_KEY,
-    FEEDBACK_ISSUE_URL, HomeEvent, HomeView, NavTarget, RamagAssets, SelectTool1, SelectTool2,
-    SelectTool3, SelectTool4, SettingsView, Shell, StorageGlobal, init_database_search_settings,
-    init_theme, sync_update_indicator,
+    CloseTab, DATABASE_SEARCH_SETTINGS_PREF_KEY, FEEDBACK_ISSUE_URL, HomeEvent, HomeView,
+    NavTarget, OpenRecentItems, RamagAssets, SettingsView, Shell, StorageGlobal,
+    init_database_search_settings, init_theme, sync_update_indicator,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -265,11 +258,20 @@ fn main() {
     let update_service = build_update_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
-    let startup_preferences =
-        read_preferences(&storage, &["theme_mode", DATABASE_SEARCH_SETTINGS_PREF_KEY]);
+    let startup_preferences = read_preferences(
+        &storage,
+        &[
+            "theme_mode",
+            DATABASE_SEARCH_SETTINGS_PREF_KEY,
+            ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY,
+        ],
+    );
     let initial_pref = startup_preferences.get("theme_mode").cloned();
     let initial_database_search_pref = startup_preferences
         .get(DATABASE_SEARCH_SETTINGS_PREF_KEY)
+        .cloned();
+    let initial_shortcut_overrides = startup_preferences
+        .get(ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY)
         .cloned();
 
     // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
@@ -430,12 +432,7 @@ fn main() {
 
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
-            KeyBinding::new("secondary-1", SelectTool1, None),
-            KeyBinding::new("secondary-2", SelectTool2, None),
-            KeyBinding::new("secondary-3", SelectTool3, None),
-            KeyBinding::new("secondary-4", SelectTool4, None),
-            KeyBinding::new("ctrl-tab", CycleSection, None),
-            KeyBinding::new("ctrl-shift-tab", CycleSectionReverse, None),
+            KeyBinding::new("secondary-p", OpenRecentItems, None),
             KeyBinding::new("secondary-enter", RunQuery, None),
             KeyBinding::new("secondary-shift-enter", RunStatementAtCursor, None),
             KeyBinding::new("secondary-t", NewQueryTab, None),
@@ -449,30 +446,23 @@ fn main() {
             KeyBinding::new("secondary-shift-f", FormatMongoJson, Some("MongoQueryTab")),
             KeyBinding::new("secondary-e", ToggleMongoEditor, Some("MongoQueryPanel")),
             KeyBinding::new("secondary-e", ToggleRedisConsole, Some("RedisSession")),
-            KeyBinding::new("secondary-k", FocusCommitMessage, Some("VcsView")),
             KeyBinding::new("secondary-enter", CommitNow, Some("VcsView")),
             KeyBinding::new("secondary-shift-k", PushNow, Some("VcsView")),
             KeyBinding::new("secondary-t", PullNow, Some("VcsView")),
-            KeyBinding::new("secondary-r", RefreshWorkspace, Some("VcsView")),
-            KeyBinding::new("secondary-s", SaveProjectFile, Some("VcsView")),
             KeyBinding::new("secondary-shift-h", ToggleHistoryPane, Some("VcsView")),
             KeyBinding::new("secondary-t", NewSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("Terminal")),
-            KeyBinding::new("secondary-r", RefreshSftp, Some("SshWorkspace")),
-            KeyBinding::new(
-                "secondary-r",
-                RefreshObjectStorage,
-                Some("ObjectStorageView"),
-            ),
         ]);
+
+        ramag_ui::shortcuts_dialog::init_shortcut_overrides(
+            initial_shortcut_overrides.as_deref(),
+            cx,
+        );
+        ramag_ui::shortcuts_dialog::apply_saved_shortcut_overrides(cx);
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         cx.bind_keys([
-            KeyBinding::new("secondary-f", FocusClipSearch, Some("ClipboardView")),
-            KeyBinding::new("enter", CopySelectedClip, Some("ClipboardView")),
-            KeyBinding::new("delete", DeleteSelectedClip, Some("ClipboardView")),
-            KeyBinding::new("backspace", DeleteSelectedClip, Some("ClipboardView")),
             KeyBinding::new("down", SelectNextClip, Some("ClipboardView")),
             KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
         ]);

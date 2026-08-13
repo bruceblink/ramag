@@ -4,10 +4,7 @@ pub mod actions;
 pub mod views;
 mod watcher;
 
-pub use actions::{
-    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
-    ToggleHistoryPane,
-};
+pub use actions::{CommitNow, PullNow, PushNow, ToggleHistoryPane};
 pub use views::vcs_view::VcsView;
 
 use std::sync::Arc;

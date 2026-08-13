@@ -58,7 +58,7 @@ impl SettingsView {
                         "settings-clip-enabled",
                         "启用剪贴板",
                         format!(
-                            "显示工具入口、后台记录剪贴历史并注册全局热键 {}",
+                            "显示工具入口、后台记录剪贴历史；抽屉热键 {}",
                             clipboard_hotkey(settings.alternate_hotkey)
                         ),
                         settings.enabled,

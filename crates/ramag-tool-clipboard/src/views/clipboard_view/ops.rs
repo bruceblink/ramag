@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use gpui::{Context, ScrollStrategy, Window};
+use gpui::{Context, ScrollStrategy};
 use gpui_component::{Disableable as _, notification::Notification};
 use ramag_domain::entities::{ClipId, ClipItem};
 use tracing::error;
@@ -336,19 +336,6 @@ impl ClipboardView {
         self.selected = Some(visible[next].id.clone());
         self.list_scroll.scroll_to_item(next, ScrollStrategy::Top);
         cx.notify();
-    }
-
-    /// 复制当前选中项（快捷键入口）
-    pub(super) fn copy_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(item) = self.selected_item(cx) {
-            self.copy_clip(item, cx);
-        }
-    }
-
-    pub(super) fn delete_selected(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(item) = self.selected_item(cx) {
-            self.delete_clip(item, cx);
-        }
     }
 
     pub(super) fn selected_item(&self, _cx: &gpui::App) -> Option<Arc<ClipItem>> {

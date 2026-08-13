@@ -4,21 +4,6 @@ use gpui::Action;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// 聚焦搜索框（默认主修饰键+F）
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag_clipboard)]
-pub struct FocusClipSearch;
-
-/// 复制选中条目回剪贴板（默认 enter）
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag_clipboard)]
-pub struct CopySelectedClip;
-
-/// 删除选中条目（默认 delete / backspace）
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = ramag_clipboard)]
-pub struct DeleteSelectedClip;
-
 /// 选中项下移（默认 down）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_clipboard)]

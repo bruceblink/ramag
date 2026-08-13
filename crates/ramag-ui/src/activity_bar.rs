@@ -173,6 +173,15 @@ impl Render for ActivityBar {
         }
 
         container = container.child(div().flex_1());
+        container = container.child(activity_item(
+            "shortcuts",
+            crate::shortcuts_dialog::shortcut_icon(),
+            false,
+            accent,
+            transparent,
+            ActivityItemDecoration::new("快捷键", false),
+            |_: &ClickEvent, window, app| crate::shortcuts_dialog::open_shortcuts(window, app),
+        ));
         let (theme_icon, theme_tip) =
             if matches!(crate::theme::current_mode(cx), crate::theme::Mode::Light) {
                 (IconName::Sun, "切换外观")
