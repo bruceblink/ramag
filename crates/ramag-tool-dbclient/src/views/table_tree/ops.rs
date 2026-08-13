@@ -29,6 +29,9 @@ enum AfterDdl {
 
 pub(super) struct TableDdlNotification;
 
+type DdlCompletion =
+    Box<dyn FnOnce(bool, &mut TableTreePanel, &mut Context<TableTreePanel>) + 'static>;
+
 /// 表 / 视图行右键菜单：表设计能力统一进入“修改表”，视图仍保留定义查看。
 pub(super) fn table_context_menu(
     menu: PopupMenu,
@@ -267,6 +270,7 @@ impl TableTreePanel {
             .filter(|value| !value.loading && value.error.is_none())
             .map(|value| value.columns.clone());
         let Some(columns) = columns else {
+            let tree = cx.entity().clone();
             let designer = self.open_modify_table_with_columns(
                 crate::views::table_designer::TableDesignerConfig {
                     driver,
@@ -275,11 +279,8 @@ impl TableTreePanel {
                     columns: Vec::new(),
                     loading: true,
                     ddl_loading,
-                    on_execute: Self::modify_table_execute_handler(
-                        &schema,
-                        &table,
-                        cx.entity().clone(),
-                    ),
+                    on_execute: Self::modify_table_execute_handler(&schema, tree.clone()),
+                    on_rename: Self::rename_table_execute_handler(&schema, tree),
                 },
                 window,
                 cx,
@@ -299,7 +300,9 @@ impl TableTreePanel {
             .detach();
             return;
         };
-        let on_execute = Self::modify_table_execute_handler(&schema, &table, cx.entity().clone());
+        let tree = cx.entity().clone();
+        let on_execute = Self::modify_table_execute_handler(&schema, tree.clone());
+        let on_rename = Self::rename_table_execute_handler(&schema, tree);
         self.open_modify_table_with_columns(
             crate::views::table_designer::TableDesignerConfig {
                 driver,
@@ -309,6 +312,7 @@ impl TableTreePanel {
                 loading: false,
                 ddl_loading,
                 on_execute,
+                on_rename,
             },
             window,
             cx,
@@ -317,14 +321,31 @@ impl TableTreePanel {
 
     fn modify_table_execute_handler(
         schema: &str,
-        table: &str,
         tree: Entity<Self>,
     ) -> crate::views::table_designer::ExecuteHandler {
         let schema = schema.to_string();
-        let table = table.to_string();
-        Rc::new(move |sql, new_table, _, app| {
+        Rc::new(move |sql, table, _, app| {
             tree.update(app, |tree, cx| {
-                tree.execute_modify_table(sql, schema.clone(), table.clone(), new_table, cx)
+                tree.execute_modify_table(sql, schema.clone(), table, cx)
+            })
+        })
+    }
+
+    fn rename_table_execute_handler(
+        schema: &str,
+        tree: Entity<Self>,
+    ) -> crate::views::table_designer::RenameHandler {
+        let schema = schema.to_string();
+        Rc::new(move |sql, old_table, new_table, designer, _, app| {
+            tree.update(app, |tree, cx| {
+                tree.execute_designer_rename(
+                    sql,
+                    schema.clone(),
+                    old_table,
+                    new_table,
+                    designer,
+                    cx,
+                )
             })
         })
     }
@@ -376,8 +397,7 @@ impl TableTreePanel {
         &mut self,
         sql: String,
         schema: String,
-        old_table: String,
-        new_table: String,
+        table: String,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(config) = self.connection.as_ref() else {
@@ -392,11 +412,71 @@ impl TableTreePanel {
         }
         self.exec_ddl(
             sql,
-            format!("已修改表 {schema}.{new_table}"),
+            format!("已修改表 {schema}.{table}"),
+            AfterDdl::ReloadSchema {
+                schema,
+                invalidated_table: table,
+            },
+            cx,
+        )
+    }
+
+    fn execute_designer_rename(
+        &mut self,
+        sql: String,
+        schema: String,
+        old_table: String,
+        new_table: String,
+        designer: Entity<crate::views::table_designer::TableDesigner>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(config) = self.connection.as_ref() else {
+            return false;
+        };
+        if config.production {
+            self.pending_notification = Some(
+                Notification::warning("生产连接已启用只读保护，不能修改表结构").autohide(true),
+            );
+            cx.notify();
+            return false;
+        }
+        let schema_for_reload = schema.clone();
+        let new_table_for_reload = new_table.clone();
+        self.exec_ddl_with_completion(
+            sql,
+            format!("已重命名表 {schema}.{new_table}"),
             AfterDdl::ReloadSchema {
                 schema,
                 invalidated_table: old_table,
             },
+            Some(Box::new(move |success, tree, cx| {
+                let _ = designer.update(cx, |designer, cx| {
+                    designer.finish_rename(success, new_table.clone(), cx)
+                });
+                if !success {
+                    return;
+                }
+                let Some(connection) = tree.connection.clone() else {
+                    return;
+                };
+                let service = tree.service.clone();
+                cx.spawn(async move |_, cx| {
+                    let result = load_table_ddl(
+                        &service,
+                        &connection,
+                        &schema_for_reload,
+                        &new_table_for_reload,
+                    )
+                    .await;
+                    let _ = designer.update(cx, |designer, cx| match result {
+                        Ok(ddl) => designer.set_ddl(ddl, cx),
+                        Err(error) => {
+                            designer.set_ddl_error(format!("加载建表语句失败：{error:#}"), cx)
+                        }
+                    });
+                })
+                .detach();
+            })),
             cx,
         )
     }
@@ -518,6 +598,17 @@ impl TableTreePanel {
         after: AfterDdl,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.exec_ddl_with_completion(sql, success_msg, after, None, cx)
+    }
+
+    fn exec_ddl_with_completion(
+        &mut self,
+        sql: String,
+        success_msg: String,
+        after: AfterDdl,
+        completion: Option<DdlCompletion>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(conn) = self.connection.clone() else {
             return false;
         };
@@ -536,6 +627,7 @@ impl TableTreePanel {
         cx.notify();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
+            let mut completion = completion;
             let started_at = Instant::now();
             let query = if conn.driver == DriverKind::Postgres {
                 Query::new(sql.clone()).transactional()
@@ -572,9 +664,13 @@ impl TableTreePanel {
                             .autohide(true)
                         }
                     });
+                    if let Some(completion) = completion.take() {
+                        completion(false, this, cx);
+                    }
                     cx.notify();
                     return;
                 }
+                let success = result.is_ok();
                 match &result {
                     Ok(_) => {
                         let database_ms = result
@@ -630,6 +726,9 @@ impl TableTreePanel {
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("执行失败")).autohide(true));
                     }
+                }
+                if let Some(completion) = completion.take() {
+                    completion(success, this, cx);
                 }
                 cx.notify();
             });

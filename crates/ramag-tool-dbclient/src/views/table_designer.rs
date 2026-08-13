@@ -38,6 +38,8 @@ fn visible_field_rows(active_fields: usize, reviewing: bool) -> usize {
 }
 
 pub(super) type ExecuteHandler = Rc<dyn Fn(String, String, &mut Window, &mut App) -> bool>;
+pub(super) type RenameHandler =
+    Rc<dyn Fn(String, String, String, Entity<TableDesigner>, &mut Window, &mut App) -> bool>;
 
 pub(super) struct TableDesignerConfig {
     pub(super) driver: DriverKind,
@@ -47,6 +49,7 @@ pub(super) struct TableDesignerConfig {
     pub(super) loading: bool,
     pub(super) ddl_loading: bool,
     pub(super) on_execute: ExecuteHandler,
+    pub(super) on_rename: RenameHandler,
 }
 
 struct FieldSql<'a> {
@@ -85,6 +88,7 @@ pub(super) struct TableDesigner {
     discard_confirming: bool,
     executing: bool,
     on_execute: ExecuteHandler,
+    on_rename: RenameHandler,
     _table_name_subscription: Subscription,
 }
 
@@ -119,6 +123,7 @@ impl TableDesigner {
             discard_confirming: false,
             executing: false,
             on_execute: config.on_execute,
+            on_rename: config.on_rename,
             _table_name_subscription: table_name_subscription,
         }
     }
@@ -258,6 +263,44 @@ impl TableDesigner {
         Ok(())
     }
 
+    fn save_table_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.executing {
+            return;
+        }
+        let sql = match self.rename_sql(cx) {
+            Ok(sql) => sql,
+            Err(error) => {
+                window.push_notification(Notification::warning(error).autohide(true), cx);
+                return;
+            }
+        };
+        let old_table = self.original_table.clone();
+        let new_table = self.table_name.read(cx).value().trim().to_string();
+        self.executing = true;
+        cx.notify();
+        if !(self.on_rename)(sql, old_table, new_table, cx.entity(), window, cx) {
+            self.executing = false;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn finish_rename(
+        &mut self,
+        success: bool,
+        new_table: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.executing = false;
+        if success {
+            self.original_table = new_table;
+            self.preview_sql = None;
+            self.ddl_loading = true;
+            self.ddl_text = None;
+            self.ddl_error = None;
+        }
+        cx.notify();
+    }
+
     /// 返回 true 时调用方可直接关闭；有未执行变更时改为显示弹窗内确认区。
     pub(super) fn allow_dialog_close(&mut self, cx: &mut Context<Self>) -> bool {
         if self.executing {
@@ -291,8 +334,7 @@ impl TableDesigner {
         };
         self.executing = true;
         cx.notify();
-        let table = self.table_name.read(cx).value().trim().to_string();
-        if (self.on_execute)(sql, table, window, cx) {
+        if (self.on_execute)(sql, self.original_table.clone(), window, cx) {
             window.close_dialog(cx);
         } else {
             self.executing = false;
@@ -301,8 +343,6 @@ impl TableDesigner {
     }
 
     pub(super) fn change_sql(&self, cx: &gpui::App) -> Result<String, String> {
-        let table = self.table_name.read(cx).value().trim().to_string();
-        validate_identifier("表名", &table)?;
         let qualified = format!(
             "{}.{}",
             self.driver.quote_identifier(&self.schema),
@@ -360,19 +400,6 @@ impl TableDesigner {
                 mysql_alter_clauses.join(",\n    ")
             ));
         }
-        if self.original_table != table {
-            let old = self.driver.quote_identifier(&self.original_table);
-            let new = self.driver.quote_identifier(&table);
-            statements.push(match self.driver {
-                DriverKind::Mysql => format!(
-                    "RENAME TABLE {}.{old} TO {}.{new};",
-                    self.driver.quote_identifier(&self.schema),
-                    self.driver.quote_identifier(&self.schema)
-                ),
-                DriverKind::Postgres => format!("ALTER TABLE {qualified} RENAME TO {new};"),
-                _ => return Err("当前数据库不支持表结构设计器".into()),
-            });
-        }
         if statements.is_empty() {
             Err(NO_CHANGES.into())
         } else {
@@ -380,10 +407,31 @@ impl TableDesigner {
         }
     }
 
-    fn has_changes(&self, cx: &gpui::App) -> bool {
-        if self.original_table != self.table_name.read(cx).value().trim() {
-            return true;
+    fn rename_sql(&self, cx: &gpui::App) -> Result<String, String> {
+        let table = self.table_name.read(cx).value().trim().to_string();
+        validate_identifier("表名", &table)?;
+        if self.original_table == table {
+            return Err(NO_CHANGES.into());
         }
+        let schema = self.driver.quote_identifier(&self.schema);
+        let old = self.driver.quote_identifier(&self.original_table);
+        let new = self.driver.quote_identifier(&table);
+        match self.driver {
+            DriverKind::Mysql => Ok(format!("RENAME TABLE {schema}.{old} TO {schema}.{new};")),
+            DriverKind::Postgres => Ok(format!("ALTER TABLE {schema}.{old} RENAME TO {new};")),
+            _ => Err("当前数据库不支持表结构设计器".into()),
+        }
+    }
+
+    fn has_changes(&self, cx: &gpui::App) -> bool {
+        self.has_table_name_change(cx) || self.has_field_changes(cx)
+    }
+
+    fn has_table_name_change(&self, cx: &gpui::App) -> bool {
+        self.original_table != self.table_name.read(cx).value().trim()
+    }
+
+    fn has_field_changes(&self, cx: &gpui::App) -> bool {
         self.fields.iter().any(|field| match &field.original {
             None => !field.deleted,
             Some(_) if field.deleted => true,
@@ -643,12 +691,14 @@ impl Render for TableDesigner {
         let add = entity.clone();
         let preview = entity.clone();
         let execute = entity.clone();
+        let rename = entity.clone();
         let toggle_ddl = entity.clone();
         let preview_cancel = entity.clone();
         let edit_cancel = entity.clone();
         let continue_editing = entity.clone();
         let executing = self.executing;
-        let has_changes = self.has_changes(cx);
+        let has_field_changes = self.has_field_changes(cx);
+        let has_table_name_change = self.has_table_name_change(cx);
         let show_ddl = self.show_ddl;
         let discard_confirming = self.discard_confirming;
         let preview_sql = if discard_confirming {
@@ -669,9 +719,33 @@ impl Render for TableDesigner {
                             .gap_1()
                             .child(div().text_xs().text_color(muted_fg).child("表名"))
                             .child(
-                                Input::new(&self.table_name)
-                                    .w(px(320.0))
-                                    .disabled(reviewing || executing || show_ddl),
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Input::new(&self.table_name)
+                                            .w(px(320.0))
+                                            .disabled(reviewing || executing || show_ddl),
+                                    )
+                                    .when(has_table_name_change, |name| {
+                                        name.child(
+                                            ramag_ui::clickable_button("table-designer-save-name")
+                                                .primary()
+                                                .small()
+                                                .label(if executing {
+                                                    "保存中…"
+                                                } else {
+                                                    "保存"
+                                                })
+                                                .loading(executing)
+                                                .disabled(reviewing || executing || show_ddl)
+                                                .on_click(move |_: &ClickEvent, window, app| {
+                                                    rename.update(app, |this, cx| {
+                                                        this.save_table_name(window, cx)
+                                                    });
+                                                }),
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -919,13 +993,16 @@ impl Render for TableDesigner {
                                                 });
                                             }),
                                     )
-                                    .when(has_changes && !show_ddl, |actions| {
+                                    .when(has_field_changes && !show_ddl, |actions| {
                                         actions.child(
                                             ramag_ui::clickable_button("modify-table-preview")
                                                 .primary()
                                                 .small()
                                                 .label("预览变更")
-                                                .disabled(executing)
+                                                .disabled(executing || has_table_name_change)
+                                                .when(has_table_name_change, |button| {
+                                                    button.tooltip("请先保存表名")
+                                                })
                                                 .on_click(move |_: &ClickEvent, window, app| {
                                                     preview.update(app, |this, cx| {
                                                         match this.build_preview(cx) {
@@ -1200,6 +1277,7 @@ mod tests {
                         loading: false,
                         ddl_loading: false,
                         on_execute: Rc::new(|_, _, _, _| true),
+                        on_rename: Rc::new(|_, _, _, _, _, _| true),
                     },
                     window,
                     cx,
@@ -1320,10 +1398,36 @@ mod tests {
             });
 
             let sql = visual_cx
-                .update(|_, app| designer.read(app).change_sql(app))
+                .update(|_, app| designer.read(app).rename_sql(app))
                 .expect("改表名应生成 SQL");
             assert_eq!(sql, expected);
         }
+    }
+
+    #[gpui::test]
+    fn table_name_change_is_not_included_in_field_sql(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (designer, cx) = designer(DriverKind::Mysql, Vec::new(), cx);
+        cx.update(|window, app| {
+            designer.update(app, |designer, cx| {
+                designer
+                    .table_name
+                    .update(cx, |input, cx| input.set_value("members", window, cx));
+            });
+        });
+
+        let (field_sql, table_changed, fields_changed) = cx.update(|_, app| {
+            let designer = designer.read(app);
+            (
+                designer.change_sql(app),
+                designer.has_table_name_change(app),
+                designer.has_field_changes(app),
+            )
+        });
+
+        assert_eq!(field_sql, Err(NO_CHANGES.into()));
+        assert!(table_changed);
+        assert!(!fields_changed);
     }
 
     #[gpui::test]
