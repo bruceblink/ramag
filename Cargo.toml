@@ -73,6 +73,9 @@ core-foundation = "0.10"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "font-kit",
+    # Linux 同时支持 X11 与 Wayland，避免打包程序只能在单一合成器下启动
+    "x11",
+    "wayland",
     # runtime_shaders：shader 改运行时编译，免依赖 Xcode 完整版（首启慢 100-300ms）
     "runtime_shaders",
 ] }
