@@ -51,7 +51,8 @@ use ramag_infra_storage::RedbStorage;
 use ramag_infra_update::GitHubUpdateDriver;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_tool_clipboard::{
-    ClipboardTool, SelectNextClip, SelectPrevClip, create_clipboard_drawer, create_clipboard_view,
+    ClipboardImageCache, ClipboardTool, SelectNextClip, SelectPrevClip,
+    create_clipboard_drawer_with_cache, create_clipboard_view,
 };
 use ramag_tool_dbclient::{
     DbClientTool, ExplainQuery, FindInResults, FormatSql, NewQueryTab, RunQuery,

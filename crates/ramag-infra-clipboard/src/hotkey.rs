@@ -1,9 +1,10 @@
 //! 全局热键：Carbon 注册剪贴板抽屉与 Ramag 主窗口唤醒组合键。
-//! 事件回调在主线程触发，经 mpsc channel 转出，由 main.rs 的计时器轮询消费——
-//! 与采集循环同款模式，不引入第三方 global-hotkey 依赖
+//! 事件回调在主线程触发，经有界异步 channel 转出；接收端可直接 await，避免后台轮询
+//! 在应用长期不活跃后被系统降频。
 
 use std::ffi::c_void;
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+
+use async_channel::{Receiver, Sender, TrySendError, bounded};
 
 use tracing::{info, warn};
 
@@ -79,9 +80,9 @@ pub enum HotkeyEvent {
     WakeMainWindow,
 }
 
-fn send_event(tx: &SyncSender<HotkeyEvent>, event: HotkeyEvent) {
+fn send_event(tx: &Sender<HotkeyEvent>, event: HotkeyEvent) {
     match tx.try_send(event) {
-        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+        Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Closed(_)) => {}
     }
 }
 
@@ -116,7 +117,7 @@ extern "C" fn hotkey_handler(
             _ => None,
         };
         if let Some(event) = event {
-            let tx = unsafe { &*(user_data as *const SyncSender<HotkeyEvent>) };
+            let tx = unsafe { &*(user_data as *const Sender<HotkeyEvent>) };
             send_event(tx, event);
         }
     }
@@ -142,7 +143,7 @@ impl HotkeyListener {
         } else {
             (CMD_KEY | SHIFT_KEY, "cmd-shift-v")
         };
-        let (tx, rx) = sync_channel::<HotkeyEvent>(8);
+        let (tx, rx) = bounded::<HotkeyEvent>(8);
         // Sender 转裸指针交给 Carbon 回调；句柄存活期间常驻，注销时由 Drop 回收
         let tx_ptr = Box::into_raw(Box::new(tx)) as *mut c_void;
 
@@ -160,7 +161,7 @@ impl HotkeyListener {
                     operation = "clipboard_hotkey_install",
                     status, "install clipboard hotkey event handler failed"
                 );
-                drop(Box::from_raw(tx_ptr as *mut SyncSender<HotkeyEvent>));
+                drop(Box::from_raw(tx_ptr as *mut Sender<HotkeyEvent>));
                 return None;
             }
 
@@ -214,7 +215,7 @@ impl HotkeyListener {
             if clipboard_ref.is_none() && wake_ref.is_none() {
                 let remove_status = RemoveEventHandler(handler_ref);
                 if remove_status == 0 {
-                    drop(Box::from_raw(tx_ptr as *mut SyncSender<HotkeyEvent>));
+                    drop(Box::from_raw(tx_ptr as *mut Sender<HotkeyEvent>));
                 }
                 return None;
             }
@@ -239,6 +240,11 @@ impl HotkeyListener {
     pub fn poll(&self) -> Option<HotkeyEvent> {
         self.rx.try_recv().ok()
     }
+
+    /// 等待下一个热键事件；事件到达会直接唤醒接收任务。
+    pub async fn recv(&self) -> Option<HotkeyEvent> {
+        self.rx.recv().await.ok()
+    }
 }
 
 impl Drop for HotkeyListener {
@@ -254,7 +260,7 @@ impl Drop for HotkeyListener {
             }
             let remove_status = RemoveEventHandler(self.handler_ref as EventHandlerRef);
             if remove_status == 0 {
-                drop(Box::from_raw(self.tx_ptr as *mut SyncSender<HotkeyEvent>));
+                drop(Box::from_raw(self.tx_ptr as *mut Sender<HotkeyEvent>));
             } else {
                 // handler 仍可能被 Carbon 调用，不能释放其借用的 Sender。
                 warn!(
@@ -280,7 +286,7 @@ mod tests {
 
     #[test]
     fn repeated_hotkey_events_are_coalesced() {
-        let (tx, rx) = sync_channel(1);
+        let (tx, rx) = bounded(1);
         send_event(&tx, HotkeyEvent::WakeMainWindow);
         send_event(&tx, HotkeyEvent::WakeMainWindow);
         assert_eq!(rx.try_recv(), Ok(HotkeyEvent::WakeMainWindow));
@@ -289,7 +295,7 @@ mod tests {
 
     #[test]
     fn disconnected_hotkey_receiver_is_safe() {
-        let (tx, rx) = sync_channel::<HotkeyEvent>(1);
+        let (tx, rx) = bounded::<HotkeyEvent>(1);
         drop(rx);
         send_event(&tx, HotkeyEvent::ClipboardDrawer);
     }

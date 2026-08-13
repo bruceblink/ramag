@@ -1,10 +1,11 @@
 //! 全局热键：Win32 注册剪贴板抽屉与 Ramag 主窗口唤醒组合键。
 //! RegisterHotKey 的 WM_HOTKEY 投递到注册线程的消息队列，故需一条专属线程跑消息泵，
-//! 事件经 mpsc channel 转出，由 main.rs 计时器轮询消费（与 macOS 侧同款模式）。
+//! 事件经有界异步 channel 转出，接收端直接 await，不依赖固定间隔轮询。
 
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
+use async_channel::{Receiver, Sender, TrySendError, bounded};
 use tracing::{info, warn};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -40,7 +41,7 @@ impl HotkeyListener {
         } else {
             "ctrl-shift-v"
         };
-        let (tx, rx) = sync_channel::<HotkeyEvent>(4);
+        let (tx, rx) = bounded::<HotkeyEvent>(4);
         // 用于把线程 id / 注册结果回传主线程
         let (ready_tx, ready_rx) = sync_channel::<Option<(u32, bool)>>(1);
 
@@ -87,13 +88,18 @@ impl HotkeyListener {
     pub fn poll(&self) -> Option<HotkeyEvent> {
         self.rx.try_recv().ok()
     }
+
+    /// 等待下一个热键事件；事件到达会直接唤醒接收任务。
+    pub async fn recv(&self) -> Option<HotkeyEvent> {
+        self.rx.recv().await.ok()
+    }
 }
 
 /// 热键线程：注册 → 回传结果 → 消息泵；收到 WM_HOTKEY 转发信号，收到 WM_QUIT 退出并注销
 fn hotkey_thread(
     alternate: bool,
     clipboard_enabled: bool,
-    tx: SyncSender<HotkeyEvent>,
+    tx: Sender<HotkeyEvent>,
     ready_tx: SyncSender<Option<(u32, bool)>>,
 ) {
     unsafe {
@@ -168,7 +174,7 @@ fn hotkey_thread(
                 if let Some(event) = event {
                     match tx.try_send(event) {
                         Ok(()) | Err(TrySendError::Full(_)) => {}
-                        Err(TrySendError::Disconnected(_)) => break,
+                        Err(TrySendError::Closed(_)) => break,
                     }
                 }
             }

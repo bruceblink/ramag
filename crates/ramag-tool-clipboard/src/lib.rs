@@ -5,7 +5,7 @@ pub mod actions;
 pub mod views;
 
 pub use actions::{SelectNextClip, SelectPrevClip};
-pub use views::{ClipboardDrawer, ClipboardView};
+pub use views::{ClipboardDrawer, ClipboardImageCache, ClipboardView};
 
 use std::sync::Arc;
 
@@ -31,6 +31,19 @@ pub fn create_clipboard_drawer(
     cx: &mut App,
 ) -> Entity<ClipboardDrawer> {
     cx.new(|cx| ClipboardDrawer::new(service, activation_target, window, cx))
+}
+
+/// 使用跨窗口缓存创建底部悬浮抽屉，避免每次唤醒重新解码缩略图与应用图标。
+pub fn create_clipboard_drawer_with_cache(
+    service: Arc<ClipboardService>,
+    activation_target: Option<String>,
+    image_cache: ClipboardImageCache,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ClipboardDrawer> {
+    cx.new(|cx| {
+        ClipboardDrawer::with_image_cache(service, activation_target, image_cache, window, cx)
+    })
 }
 
 pub struct ClipboardTool {

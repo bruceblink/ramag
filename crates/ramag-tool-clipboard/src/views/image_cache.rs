@@ -4,6 +4,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::Image;
@@ -32,18 +33,23 @@ struct CacheState {
     retained_bytes: usize,
 }
 
-#[derive(Default)]
-pub(crate) struct ImageCache {
-    cache: RefCell<CacheState>,
-    loading: RefCell<HashSet<String>>,
+#[derive(Clone, Default)]
+pub struct ImageCache {
+    cache: Rc<RefCell<CacheState>>,
+    loading: Rc<RefCell<HashSet<String>>>,
     /// 解密 / 解码失败的路径：显示失败占位，不再每帧无限重试
-    failed: RefCell<HashSet<String>>,
-    failed_order: RefCell<VecDeque<String>>,
+    failed: Rc<RefCell<HashSet<String>>>,
+    failed_order: Rc<RefCell<VecDeque<String>>>,
 }
 
 impl ImageCache {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 抽屉关闭时释放未完成任务占用的槽位；已解码内容继续跨窗口复用。
+    pub(crate) fn clear_in_flight(&self) {
+        self.loading.borrow_mut().clear();
     }
 
     /// 同步取已解密图片
@@ -258,5 +264,18 @@ mod tests {
 
         cache.fail("0.png");
         assert!(cache.begin_load("replacement.png"));
+    }
+
+    #[test]
+    fn cloned_cache_reuses_images_and_releases_abandoned_loads() {
+        let first_window = ImageCache::new();
+        first_window.insert("icon.png".into(), image(), 1);
+        assert!(first_window.begin_load("thumb.png"));
+
+        let next_window = first_window.clone();
+        first_window.clear_in_flight();
+
+        assert!(next_window.peek("icon.png").is_some());
+        assert!(next_window.begin_load("thumb.png"));
     }
 }

@@ -99,10 +99,35 @@ pub(super) fn spawn_clipboard_hotkey(
         }
 
         let mut drawer: Option<gpui::AnyWindowHandle> = None;
+        // 图片与应用图标跨抽屉窗口复用；缓存内部有条目数和字节数双重上限。
+        let image_cache = ClipboardImageCache::new();
         // 抽屉是否曾真正激活过：避免刚打开（尚未激活）就被失焦逻辑误关
         let mut was_active = false;
         loop {
-            cx.background_executor().timer(HOTKEY_POLL_INTERVAL).await;
+            // 热键走事件唤醒；短定时器仅承担设置同步与失焦关窗，不再增加唤醒延迟。
+            let (pending_event, listener_closed) = if let Some(listener) = listener.as_ref() {
+                let receive = Box::pin(listener.recv());
+                let housekeeping = Box::pin(cx.background_executor().timer(HOTKEY_POLL_INTERVAL));
+                match futures::future::select(receive, housekeeping).await {
+                    futures::future::Either::Left((Some(event), _)) => (Some(event), false),
+                    futures::future::Either::Left((None, _)) => (None, true),
+                    futures::future::Either::Right(_) => (None, false),
+                }
+            } else {
+                cx.background_executor().timer(HOTKEY_POLL_INTERVAL).await;
+                (None, false)
+            };
+
+            if listener_closed {
+                warn!(
+                    operation = "global_hotkey_receive",
+                    "global hotkey event channel closed"
+                );
+                drop(listener.take());
+                if enabled {
+                    service.set_hotkey_state(ramag_app::HotkeyState::Failed);
+                }
+            }
 
             let now_enabled = service.capture_enabled();
             let now_alternate = service.alternate_hotkey();
@@ -169,10 +194,13 @@ pub(super) fn spawn_clipboard_hotkey(
                 }
             }
 
-            let Some(listener) = &listener else {
-                continue;
-            };
-            while let Some(event) = listener.poll() {
+            let mut events = pending_event.into_iter().collect::<Vec<_>>();
+            if let Some(listener) = &listener {
+                while let Some(event) = listener.poll() {
+                    events.push(event);
+                }
+            }
+            for event in events {
                 match event {
                     HotkeyEvent::WakeMainWindow => {
                         if let Some(handle) = drawer.take() {
@@ -193,7 +221,8 @@ pub(super) fn spawn_clipboard_hotkey(
                         }
                         // 未打开 → 唤起：记录前台应用后开抽屉
                         let svc = service.clone();
-                        drawer = cx.update(|cx| open_drawer_window(svc, cx));
+                        let cache = image_cache.clone();
+                        drawer = cx.update(|cx| open_drawer_window(svc, cache, cx));
                         was_active = false;
                     }
                     HotkeyEvent::ClipboardDrawer => {}
@@ -207,8 +236,10 @@ pub(super) fn spawn_clipboard_hotkey(
 /// 在前台应用所在显示器底部打开抽屉。
 pub(super) fn open_drawer_window(
     service: Arc<ClipboardService>,
+    image_cache: ClipboardImageCache,
     cx: &mut App,
 ) -> Option<gpui::AnyWindowHandle> {
+    let started = std::time::Instant::now();
     let display_index = foreground_display_index();
     let activation_target = service.driver().activation_target();
 
@@ -229,7 +260,13 @@ pub(super) fn open_drawer_window(
             ..Default::default()
         },
         move |window, cx| {
-            let drawer = create_clipboard_drawer(service, activation_target, window, cx);
+            let drawer = create_clipboard_drawer_with_cache(
+                service,
+                activation_target,
+                image_cache,
+                window,
+                cx,
+            );
             let root = cx.new(|cx| Root::new(drawer, window, cx));
             // Windows：cx.activate(true) 是 no-op，须窗口级 activate_window（内部 SetForegroundWindow）
             // 抽屉才能抢到前台，搜索框中文输入法 / 粘贴才正常；macOS 同样受益
@@ -239,7 +276,14 @@ pub(super) fn open_drawer_window(
     );
     cx.activate(true);
     match result {
-        Ok(handle) => Some(handle.into()),
+        Ok(handle) => {
+            tracing::debug!(
+                operation = "clipboard_drawer_open",
+                elapsed_ms = started.elapsed().as_millis(),
+                "clipboard drawer opened"
+            );
+            Some(handle.into())
+        }
         Err(e) => {
             error!(operation = "clipboard_drawer_open", error = %e, "open clipboard drawer failed");
             None

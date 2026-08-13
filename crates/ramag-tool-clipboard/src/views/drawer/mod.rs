@@ -1,14 +1,15 @@
 mod card;
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
     Context, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent, ParentElement, Render,
-    ScrollHandle, Styled, Subscription, Window, div, prelude::*, px,
+    ScrollStrategy, Styled, Subscription, Window, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _, h_flex,
+    ActiveTheme, Sizable as _, VirtualListScrollHandle, WindowExt as _, h_flex, h_virtual_list,
     input::{Input, InputEvent, InputState},
     notification::Notification,
     v_flex,
@@ -20,6 +21,9 @@ use crate::views::helpers::filter_items;
 
 /// 可见条目上限。
 const DRAWER_LIMIT: usize = 300;
+/// 卡片宽度与卡片间距也作为虚拟列表的列宽。
+const CARD_WIDTH: f32 = 232.0;
+const CARD_GAP: f32 = 12.0;
 
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 /// 后台搜索多取一段，供缓存结果去重。
@@ -42,9 +46,9 @@ pub struct ClipboardDrawer {
     pending_notification: Option<Notification>,
     /// 防止异步关窗前重复触发粘贴。
     pasting: bool,
-    scroll: ScrollHandle,
+    scroll: VirtualListScrollHandle,
     focus_handle: FocusHandle,
-    pub(super) img_cache: crate::views::image_cache::ImageCache,
+    pub(super) img_cache: crate::views::ClipboardImageCache,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -57,6 +61,7 @@ impl Focusable for ClipboardDrawer {
 impl Drop for ClipboardDrawer {
     fn drop(&mut self) {
         self.search_cancel.store(true, Ordering::Relaxed);
+        self.img_cache.clear_in_flight();
     }
 }
 
@@ -64,6 +69,22 @@ impl ClipboardDrawer {
     pub fn new(
         service: Arc<ClipboardService>,
         activation_target: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_image_cache(
+            service,
+            activation_target,
+            crate::views::ClipboardImageCache::new(),
+            window,
+            cx,
+        )
+    }
+
+    pub fn with_image_cache(
+        service: Arc<ClipboardService>,
+        activation_target: Option<String>,
+        img_cache: crate::views::ClipboardImageCache,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -99,9 +120,9 @@ impl ClipboardDrawer {
             auto_paste: service.auto_paste(),
             pending_notification: None,
             pasting: false,
-            scroll: ScrollHandle::new(),
+            scroll: VirtualListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
-            img_cache: crate::views::image_cache::ImageCache::new(),
+            img_cache,
             _subscriptions: subs,
         }
     }
@@ -293,7 +314,7 @@ impl ClipboardDrawer {
         let next = (cur + delta).clamp(0, n as i32 - 1) as usize;
         if next != self.selected {
             self.selected = next;
-            self.scroll.scroll_to_item(next);
+            self.scroll.scroll_to_item(next, ScrollStrategy::Nearest);
             cx.notify();
         }
     }
@@ -367,11 +388,30 @@ impl Render for ClipboardDrawer {
         let empty = visible.is_empty();
 
         let topbar = self.render_topbar(truncated).into_any_element();
-        // 闭包会让 render_card 的可变借用逃逸。
-        let mut cards = Vec::with_capacity(visible.len());
-        for (ix, item) in visible.iter().enumerate() {
-            cards.push(self.render_card(ix, item.clone(), cx).into_any_element());
-        }
+        // 只构造视口附近卡片；历史上限为 300，但通常首帧仅需渲染约 8 张。
+        let visible = Rc::new(visible);
+        let item_sizes = Rc::new(vec![
+            size(px(CARD_WIDTH + CARD_GAP), px(0.0));
+            visible.len()
+        ]);
+        let view = cx.entity().clone();
+        let cards = h_virtual_list(
+            view,
+            "drawer-strip",
+            item_sizes,
+            move |this, range, _, cx| {
+                range
+                    .map(|ix| {
+                        this.render_card(ix, visible[ix].clone(), cx)
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            },
+        )
+        .track_scroll(&self.scroll)
+        .size_full()
+        .px(px(16.0))
+        .pb(px(12.0));
 
         v_flex()
             .key_context("ClipboardDrawer")
@@ -386,15 +426,9 @@ impl Render for ClipboardDrawer {
             .child(topbar)
             .child(
                 h_flex()
-                    .id("drawer-strip")
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .gap(px(12.0))
-                    .px(px(16.0))
-                    .pb(px(12.0))
-                    .overflow_x_scroll()
-                    .track_scroll(&self.scroll)
                     .when(empty, |this| {
                         this.child(
                             div()
@@ -407,7 +441,7 @@ impl Render for ClipboardDrawer {
                                 .child("暂无剪贴历史"),
                         )
                     })
-                    .children(cards),
+                    .when(!empty, |this| this.child(cards)),
             )
     }
 }

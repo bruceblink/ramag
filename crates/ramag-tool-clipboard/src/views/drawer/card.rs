@@ -9,10 +9,8 @@ use gpui::{Image, ImageFormat, ImageSource};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
 use ramag_domain::entities::{ClipItem, ClipKind};
 
-use super::ClipboardDrawer;
+use super::{CARD_WIDTH, ClipboardDrawer};
 use crate::views::helpers::relative_time;
-
-const CARD_W: f32 = 232.0;
 
 impl ClipboardDrawer {
     pub(super) fn render_card(
@@ -40,7 +38,7 @@ impl ClipboardDrawer {
 
         v_flex()
             .id(SharedString::from(format!("drawer-card-{}", item.id)))
-            .w(px(CARD_W))
+            .w(px(CARD_WIDTH))
             .h_full()
             .flex_none()
             .rounded(px(10.0))

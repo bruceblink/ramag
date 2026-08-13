@@ -43,6 +43,7 @@ gpui-component = { workspace = true }
 
 # 异步
 tokio = { workspace = true }
+futures = { workspace = true }
 
 # 错误处理
 anyhow = { workspace = true }

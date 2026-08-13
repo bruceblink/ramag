@@ -6720,6 +6720,7 @@ version = "0.0.3"
 dependencies = [
  "anyhow",
  "directories",
+ "futures",
  "gpui",
  "gpui-component",
  "gpui_platform",
@@ -6771,6 +6772,7 @@ dependencies = [
 name = "ramag-infra-clipboard"
 version = "0.0.3"
 dependencies = [
+ "async-channel 2.5.0",
  "cocoa 0.26.0",
  "core-foundation 0.10.0",
  "core-graphics 0.24.0",
