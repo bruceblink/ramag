@@ -515,12 +515,17 @@ mod tests {
 
     #[test]
     fn bare_letters_are_rejected_but_navigation_keys_are_allowed() {
-        assert!(!valid_recorded_keystroke(&Keystroke::parse("a").unwrap()));
-        assert!(valid_recorded_keystroke(
-            &Keystroke::parse("enter").unwrap()
+        assert!(matches!(
+            Keystroke::parse("a"),
+            Ok(keystroke) if !valid_recorded_keystroke(&keystroke)
         ));
-        assert!(valid_recorded_keystroke(
-            &Keystroke::parse("ctrl-a").unwrap()
+        assert!(matches!(
+            Keystroke::parse("enter"),
+            Ok(keystroke) if valid_recorded_keystroke(&keystroke)
+        ));
+        assert!(matches!(
+            Keystroke::parse("ctrl-a"),
+            Ok(keystroke) if valid_recorded_keystroke(&keystroke)
         ));
     }
 
