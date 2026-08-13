@@ -450,7 +450,7 @@ impl TableTreePanel {
                 invalidated_table: old_table,
             },
             Some(Box::new(move |success, tree, cx| {
-                let _ = designer.update(cx, |designer, cx| {
+                designer.update(cx, |designer, cx| {
                     designer.finish_rename(success, new_table.clone(), cx)
                 });
                 if !success {
@@ -468,7 +468,7 @@ impl TableTreePanel {
                         &new_table_for_reload,
                     )
                     .await;
-                    let _ = designer.update(cx, |designer, cx| match result {
+                    designer.update(cx, |designer, cx| match result {
                         Ok(ddl) => designer.set_ddl(ddl, cx),
                         Err(error) => {
                             designer.set_ddl_error(format!("加载建表语句失败：{error:#}"), cx)
