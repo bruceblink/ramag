@@ -61,6 +61,8 @@ pub struct TableTreePanel {
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
+    /// DDL 完成后由 render 持有 Window 主动移除常驻执行提示。
+    pub(super) clear_ddl_notification: bool,
     /// 旧连接的 DDL 回包不得解锁新连接。
     pub(super) ddl_gate: AsyncMutationGate,
     pub(super) transfer: ramag_ui::TransferState,
@@ -172,6 +174,7 @@ impl TableTreePanel {
             tree_revision: 0,
             tree_rows_cache: RefCell::new(None),
             pending_notification: None,
+            clear_ddl_notification: false,
             ddl_gate: AsyncMutationGate::default(),
             transfer: ramag_ui::TransferState::default(),
             _subscriptions: subs,

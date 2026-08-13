@@ -10,11 +10,14 @@ use gpui_component::{
 use ramag_domain::entities::DriverKind;
 use ramag_ui::PointerDropdownMenu as _;
 
-use super::{TableTreePanel, TreeEvent};
+use super::{TableTreePanel, TreeEvent, ops::TableDdlNotification};
 use crate::sql_completion::is_system_schema;
 
 impl Render for TableTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.clear_ddl_notification) {
+            window.remove_notification::<TableDdlNotification>(cx);
+        }
         if let Some(n) = self.pending_notification.take() {
             window.push_notification(n, cx);
         }

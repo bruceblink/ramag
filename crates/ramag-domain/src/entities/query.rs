@@ -13,6 +13,9 @@ pub const MAX_SQL_QUERY_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
     pub sql: String,
+    /// 将多条语句作为一个事务执行；仅用于后端确实支持事务化 DDL 的场景。
+    #[serde(default)]
+    pub transactional: bool,
     /// 会话默认库，driver 执行前发 USE 切换
     #[serde(default)]
     pub default_schema: Option<String>,
@@ -28,6 +31,7 @@ impl Query {
     pub fn new(sql: impl Into<String>) -> Self {
         Self {
             sql: sql.into(),
+            transactional: false,
             default_schema: None,
             auto_limit: None,
             result_byte_limit: None,
@@ -36,6 +40,11 @@ impl Query {
 
     pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
         self.default_schema = Some(schema.into());
+        self
+    }
+
+    pub fn transactional(mut self) -> Self {
+        self.transactional = true;
         self
     }
 

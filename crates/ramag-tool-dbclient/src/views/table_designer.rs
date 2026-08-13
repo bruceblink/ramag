@@ -23,6 +23,10 @@ use ropey::Rope;
 const NO_CHANGES: &str = "没有检测到表结构变更";
 const FIELD_ROW_HEIGHT: f32 = 46.0;
 const MAX_VISIBLE_FIELD_ROWS: usize = 8;
+const SQL_PREVIEW_LINE_HEIGHT: f32 = 20.0;
+const SQL_PREVIEW_VISIBLE_LINES: f32 = 6.0;
+const SQL_PREVIEW_VERTICAL_PADDING: f32 = 24.0;
+const TABLE_DDL_PANEL_HEIGHT: f32 = 420.0;
 
 fn visible_field_rows(active_fields: usize, reviewing: bool) -> usize {
     let max_visible_rows = if reviewing {
@@ -305,6 +309,7 @@ impl TableDesigner {
             self.driver.quote_identifier(&self.original_table)
         );
         let mut statements = Vec::new();
+        let mut mysql_alter_clauses = Vec::new();
         let mut names = HashSet::new();
         for field in &self.fields {
             let name = field.name.read(cx).value().trim().to_string();
@@ -313,10 +318,12 @@ impl TableDesigner {
             let comment = field.comment.read(cx).value().trim().to_string();
             if field.deleted {
                 if let Some(original) = &field.original {
-                    statements.push(format!(
-                        "ALTER TABLE {qualified} DROP COLUMN {};",
-                        self.driver.quote_identifier(&original.name)
-                    ));
+                    let column = self.driver.quote_identifier(&original.name);
+                    if self.driver == DriverKind::Mysql {
+                        mysql_alter_clauses.push(format!("DROP COLUMN {column}"));
+                    } else {
+                        statements.push(format!("ALTER TABLE {qualified} DROP COLUMN {column};"));
+                    }
                 }
                 continue;
             }
@@ -340,12 +347,18 @@ impl TableDesigner {
                 comment: &comment,
             };
             match self.driver {
-                DriverKind::Mysql => self.mysql_field_sql(field, &qualified, &sql, &mut statements),
+                DriverKind::Mysql => self.mysql_field_sql(field, &sql, &mut mysql_alter_clauses),
                 DriverKind::Postgres => {
                     self.postgres_field_sql(field, &qualified, &sql, &mut statements)
                 }
                 _ => return Err("当前数据库不支持表结构设计器".into()),
             }
+        }
+        if !mysql_alter_clauses.is_empty() {
+            statements.push(format!(
+                "ALTER TABLE {qualified} {};",
+                mysql_alter_clauses.join(",\n    ")
+            ));
         }
         if self.original_table != table {
             let old = self.driver.quote_identifier(&self.original_table);
@@ -385,13 +398,7 @@ impl TableDesigner {
         })
     }
 
-    fn mysql_field_sql(
-        &self,
-        field: &FieldDraft,
-        table: &str,
-        sql: &FieldSql<'_>,
-        out: &mut Vec<String>,
-    ) {
+    fn mysql_field_sql(&self, field: &FieldDraft, sql: &FieldSql<'_>, out: &mut Vec<String>) {
         let definition = mysql_definition(
             self.driver,
             sql.name,
@@ -401,7 +408,7 @@ impl TableDesigner {
             sql.comment,
         );
         match &field.original {
-            None => out.push(format!("ALTER TABLE {table} ADD COLUMN {definition};")),
+            None => out.push(format!("ADD COLUMN {definition}")),
             Some(original)
                 if field_changed(
                     field,
@@ -413,7 +420,7 @@ impl TableDesigner {
                 ) =>
             {
                 out.push(format!(
-                    "ALTER TABLE {table} CHANGE COLUMN {} {definition};",
+                    "CHANGE COLUMN {} {definition}",
                     self.driver.quote_identifier(&original.name)
                 ))
             }
@@ -797,7 +804,8 @@ impl Render for TableDesigner {
                                 .child(
                                     div()
                                         .w_full()
-                                        .h(px(260.0))
+                                        .h(px(SQL_PREVIEW_LINE_HEIGHT * SQL_PREVIEW_VISIBLE_LINES
+                                            + SQL_PREVIEW_VERTICAL_PADDING))
                                         .id("table-designer-sql-preview-scroll")
                                         .overflow_y_scroll()
                                         .track_scroll(&self.sql_scroll)
@@ -807,6 +815,7 @@ impl Render for TableDesigner {
                                         .border_color(border)
                                         .bg(theme.background)
                                         .text_xs()
+                                        .line_height(px(SQL_PREVIEW_LINE_HEIGHT))
                                         .font_family(mono)
                                         .whitespace_normal()
                                         .child(highlighted_sql),
@@ -1034,7 +1043,7 @@ fn render_ddl_panel(
     let content = if loading {
         v_flex()
             .w_full()
-            .h(px(320.0))
+            .h(px(TABLE_DDL_PANEL_HEIGHT))
             .items_center()
             .justify_center()
             .gap_2()
@@ -1044,7 +1053,7 @@ fn render_ddl_panel(
     } else if let Some(error) = error {
         v_flex()
             .w_full()
-            .h(px(320.0))
+            .h(px(TABLE_DDL_PANEL_HEIGHT))
             .items_center()
             .justify_center()
             .gap_2()
@@ -1061,7 +1070,7 @@ fn render_ddl_panel(
         let highlighted_ddl = highlight_sql(ddl, &theme.highlight_theme);
         div()
             .w_full()
-            .h(px(320.0))
+            .h(px(TABLE_DDL_PANEL_HEIGHT))
             .id("table-designer-ddl-scroll")
             .overflow_y_scroll()
             .track_scroll(scroll)
@@ -1333,6 +1342,26 @@ mod tests {
             sql,
             "ALTER TABLE `public`.`users` ADD COLUMN `new_column` VARCHAR(255) NULL;"
         );
+    }
+
+    #[gpui::test]
+    fn mysql_batches_multiple_column_changes_into_one_alter(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (designer, cx) = designer(DriverKind::Mysql, Vec::new(), cx);
+        cx.update(|window, app| {
+            designer.update(app, |designer, cx| {
+                designer.add_field(window, cx);
+                designer.add_field(window, cx);
+            });
+        });
+
+        let sql = cx
+            .update(|_, app| designer.read(app).change_sql(app))
+            .expect("多个字段应生成 SQL");
+
+        assert_eq!(sql.matches("ALTER TABLE").count(), 1);
+        assert_eq!(sql.matches("ADD COLUMN").count(), 2);
+        assert!(sql.contains(",\n    ADD COLUMN"));
     }
 
     #[gpui::test]

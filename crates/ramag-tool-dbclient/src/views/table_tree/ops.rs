@@ -1,7 +1,7 @@
 //! 树节点破坏性操作：清空表 / 删除表（视图）/ 删除库。
 //! 右键菜单 → open_confirm 二次确认 → 异步 DDL（走 execute_with_history 留痕）→ 刷新 + toast
 
-use std::rc::Rc;
+use std::{rc::Rc, time::Instant};
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Window, px};
 use gpui_component::WindowExt as _;
@@ -27,7 +27,7 @@ enum AfterDdl {
     FullRefresh { invalidated_schema: String },
 }
 
-struct TableDdlNotification;
+pub(super) struct TableDdlNotification;
 
 /// 表 / 视图行右键菜单：表设计能力统一进入“修改表”，视图仍保留定义查看。
 pub(super) fn table_context_menu(
@@ -532,23 +532,29 @@ impl TableTreePanel {
                 .id::<TableDdlNotification>()
                 .autohide(false),
         );
+        self.clear_ddl_notification = false;
         cx.notify();
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let result = svc
-                .execute_with_history(&conn, &Query::new(sql.clone()))
-                .await;
+            let started_at = Instant::now();
+            let query = if conn.driver == DriverKind::Postgres {
+                Query::new(sql.clone()).transactional()
+            } else {
+                Query::new(sql.clone())
+            };
+            let result = svc.execute(&conn, &query).await;
+            let completion_ms = started_at.elapsed().as_millis() as u64;
             let _ = this.update(cx, |this, cx| {
                 let current_mutation = this.ddl_gate.finish(mutation_token);
                 let current_connection =
                     this.connection.as_ref().map(|current| &current.id) == Some(&conn.id);
+                this.clear_ddl_notification = true;
                 if !current_connection || !current_mutation {
                     this.pending_notification = Some(match &result {
                         Ok(_) => Notification::success(format!(
                             "{success_msg}（发起时的连接「{}」；当前树状态已变化，未自动刷新）",
                             conn.name
                         ))
-                        .id::<TableDdlNotification>()
                         .autohide(true),
                         Err(error) => {
                             tracing::error!(
@@ -563,18 +569,19 @@ impl TableTreePanel {
                             Notification::error(
                                 error.write_hint(&format!("发起时的连接「{}」执行失败", conn.name)),
                             )
-                            .id::<TableDdlNotification>()
                             .autohide(true)
                         }
                     });
                     cx.notify();
                     return;
                 }
-                match result {
+                match &result {
                     Ok(_) => {
+                        let database_ms = result
+                            .as_ref()
+                            .map_or(completion_ms, |output| output.elapsed_ms);
                         this.pending_notification = Some(
-                            Notification::success(success_msg)
-                                .id::<TableDdlNotification>()
+                            Notification::success(success_message(&success_msg, database_ms))
                                 .autohide(true),
                         );
                         match after {
@@ -620,19 +627,27 @@ impl TableTreePanel {
                             sql_bytes = sql.len(),
                             "tree DDL failed"
                         );
-                        this.pending_notification = Some(
-                            Notification::error(e.write_hint("执行失败"))
-                                .id::<TableDdlNotification>()
-                                .autohide(true),
-                        );
+                        this.pending_notification =
+                            Some(Notification::error(e.write_hint("执行失败")).autohide(true));
                     }
                 }
                 cx.notify();
             });
+            svc.append_history(&conn, &query, &result, false).await;
         })
         .detach();
         true
     }
+}
+
+fn success_message(message: &str, elapsed_ms: u64) -> String {
+    if elapsed_ms < 1_000 {
+        return message.to_string();
+    }
+    format!(
+        "{message}（数据库耗时 {:.1} 秒）",
+        elapsed_ms as f64 / 1_000.0
+    )
 }
 
 fn clear_invalidated_table_state(
@@ -807,5 +822,14 @@ mod tests {
         assert!(selected.is_none());
         assert!(!columns.contains_key(&("public".into(), "users".into())));
         assert!(columns.contains_key(&("public".into(), "posts".into())));
+    }
+
+    #[test]
+    fn slow_ddl_success_message_reports_database_time() {
+        assert_eq!(success_message("已修改表", 999), "已修改表");
+        assert_eq!(
+            success_message("已修改表", 9_050),
+            "已修改表（数据库耗时 9.1 秒）"
+        );
     }
 }
