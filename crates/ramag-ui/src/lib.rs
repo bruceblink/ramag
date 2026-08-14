@@ -62,6 +62,8 @@ pub use transfer_ui::{
 };
 
 pub const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
+pub const COMMUNITY_URL: &str =
+    "https://github.com/tools-rs/ramag/blob/main/README.md#%E4%BA%A4%E6%B5%81%E7%BE%A4";
 
 /// 数据库、SSH 与云存储共用的生产保护文案，避免同一语义在各工具中漂移。
 pub const PRODUCTION_MODE_LABEL: &str = "生产模式（只读保护）";
