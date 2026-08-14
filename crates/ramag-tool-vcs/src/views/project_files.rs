@@ -402,6 +402,16 @@ impl VcsView {
 
         let letter = code_to_letter(status_kind);
         let letter_color = code_letter_color(letter, muted_fg);
+        let status_element = status_kind.map(|_| {
+            div()
+                .flex_none()
+                .w(px(12.0))
+                .text_xs()
+                .font_family(theme.mono_font_family.clone())
+                .text_color(letter_color)
+                .child(letter)
+                .into_any_element()
+        });
 
         let is_selected = self.selected_pf_path.as_deref() == Some(full_path.as_str());
 
@@ -422,15 +432,7 @@ impl VcsView {
                 this.select_pf_file(path_for_open.clone(), cx);
             }))
             .child(Icon::new(IconName::File).xsmall().text_color(muted_fg))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(12.0))
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(letter_color)
-                    .child(letter),
-            )
+            .children(status_element)
             .child(
                 div()
                     .flex_1()
