@@ -421,7 +421,7 @@ impl Render for QueryTab {
                     .ghost()
                     .small()
                     .icon(ramag_ui::icons::upload())
-                    .tooltip("导出结果")
+                    .tooltip("导出")
                     .disabled(!has_result)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.result.update(cx, |r, cx| r.export(cx));
@@ -433,7 +433,7 @@ impl Render for QueryTab {
                     .danger()
                     .small()
                     .icon(IconName::Close)
-                    .tooltip("取消查询")
+                    .tooltip("取消")
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_cancel(window, cx);
                                 })),
@@ -445,7 +445,7 @@ impl Render for QueryTab {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .tooltip("运行查询")
+                    .tooltip("运行")
                     .disabled(!has_connection)
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_run(window, cx);
@@ -517,7 +517,7 @@ fn row_search_input_suffix(
                 .xsmall()
                 .tab_stop(false)
                 .text_color(muted)
-                .tooltip("清除筛选")
+                .tooltip("清除")
                 .on_click(move |_, window, cx| {
                     input.update(cx, |state, cx| {
                         state.set_value("", window, cx);

@@ -200,7 +200,7 @@ impl Render for PairsEditor {
                         .ghost()
                         .small()
                         .icon(IconName::Close)
-                        .tooltip("删除此行")
+                        .tooltip("删除")
                         .disabled(self.disabled)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_row(id, cx);

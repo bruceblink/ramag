@@ -1,4 +1,4 @@
-//! 仓库管理页：1080px 居中、整行点击=打开、行内按钮独立 emit。空态主按钮「选择本地仓库」
+//! 仓库管理页。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use gpui_component::{
 };
 
 impl VcsView {
-    /// self.error 为空时返回 None；不阻塞下方交互
+    /// 渲染当前错误。
     pub(super) fn render_error_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let err = self.error.as_ref()?;
         let theme = cx.theme();
@@ -44,7 +44,6 @@ impl VcsView {
                         .child(err.clone()),
                 )
                 .child({
-                    // 长诊断（网络 / git stderr）单行难读全，支持一键复制出去排查
                     let err_for_copy = err.clone();
                     ramag_ui::clickable_button("vcs-error-copy")
                         .ghost()
@@ -74,7 +73,7 @@ use ramag_domain::entities::{RepoConfig, contains_case_insensitive};
 
 use super::vcs_view::VcsView;
 
-/// 内容区最大宽度（与 dbclient connection_list 保持一致）
+/// 内容区最大宽度。
 const CONTENT_MAX_W: f32 = 1080.0;
 
 pub(super) struct RepoListRowsCacheEntry {
@@ -91,7 +90,7 @@ impl RepoListRowsCacheEntry {
 }
 
 impl VcsView {
-    /// 仓库管理页主入口（active_view == RepoList 时由 Render 路由调用）
+    /// 渲染仓库管理页。
     pub(super) fn render_repo_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -100,10 +99,8 @@ impl VcsView {
         let border = theme.border;
         let row_hover = theme.muted;
         let bg = theme.background;
-        // clone/init/add 走 self.loading（见 admin.rs），工作区操作走 self.busy——都要挡
         let busy = self.busy || self.loading || self.directory_picker_busy;
 
-        // 当前搜索关键字（小写）；空 = 不过滤
         let query = self
             .repo_search_input
             .read(cx)
@@ -149,7 +146,7 @@ impl VcsView {
                     .ghost()
                     .small()
                     .icon(ramag_ui::icons::git_clone())
-                    .tooltip("克隆远程仓库")
+                    .tooltip("克隆")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.open_clone_dialog(window, cx);

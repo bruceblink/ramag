@@ -2,7 +2,7 @@
 
 > 状态：已实施 Linux x86_64、Windows x64、macOS ARM64/Intel 安装包和统一 GitHub Actions 发布工作流；首次真实 Runner 打包需在提交后通过手动工作流确认。
 >
-> 更新日期：2026-08-12。
+> 更新日期：2026-08-14。
 >
 > 原则：本地负责开发与复现，对外桌面 Release 统一由 GitHub Actions 汇总并发布。
 
@@ -44,13 +44,13 @@ SHA256SUMS.txt
 
 ```toml
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 ```
 
 发布标签必须完全一致：
 
 ```text
-Cargo version 0.0.3  →  tag v0.0.3
+Cargo version 0.0.4  →  tag v0.0.4
 ```
 
 三个平台的脚本都通过 `cargo metadata --locked --no-deps` 读取唯一的 `ramag-bin` 版本。标签、应用版本或产物版本不一致时，发布会在上传前失败。
@@ -150,10 +150,20 @@ Actions → Desktop Release → Run workflow
 
 1. 修改根 `Cargo.toml` 的 workspace 版本，并通过项目检查同步 `Cargo.lock`。
 2. 完成本地质量门禁、手动 Action 和真实桌面验收。
-3. 创建与 Cargo 版本一致的带注释标签，例如 `v0.0.3`；标签注释会作为 GitHub Release 说明。
+3. 创建与 Cargo 版本一致的带注释标签，例如 `v0.0.4`；标签注释会作为 GitHub Release 说明。
 4. 推送标签，等待三个平台均通过后自动发布。
 
-如果标签已经存在，但发布任务因工作流自身问题失败，不要强制移动标签。在包含修复后的默认分支上手动运行 `Desktop Release`，将 `release_tag` 填为原标签（例如 `v0.0.3`）。工作流会检出并重新构建该标签，核对产物版本，从 GitHub API 读取标签注释后继续发布。
+如果标签已经存在，但发布任务因工作流自身问题失败，不要强制移动标签。在包含修复后的默认分支上手动运行 `Desktop Release`，将 `release_tag` 填为原标签（例如 `v0.0.4`）。工作流会检出并重新构建该标签，核对产物版本，从 GitHub API 读取标签注释后继续发布。
+
+### 0.0.4 发布记录
+
+根 `Cargo.toml` 已更新为 `0.0.4`；在创建 `v0.0.4` 前必须完成以下事项：
+
+1. workspace 与锁文件版本均为 `0.0.4`，`cargo metadata --locked --no-deps` 返回相同版本。
+2. `CHANGELOG.md` 已记录 `0.0.4 - 2026-08-14` 的用户可见变化。
+3. `docs/rustcc-announcement.md` 可作为 GitHub Release 和社区公告正文；发布内容需与标签注释保持一致。
+4. 发布前已完成格式、版本元数据和应用编译校验；三平台安装产物仍由 `Desktop Release` 工作流生成并复核。
+5. 正式标签为带注释的 `v0.0.4`，Release 应包含 Windows、macOS、Linux 五个安装产物和 `SHA256SUMS.txt`。
 
 正式使用前必须在 GitHub 设置中完成：
 

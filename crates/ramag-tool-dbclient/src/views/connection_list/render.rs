@@ -75,7 +75,7 @@ impl Render for ConnectionListPanel {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("新建连接")
+                    .tooltip("新建")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(ListEvent::RequestNew);
                     })),

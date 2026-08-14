@@ -93,7 +93,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("清除路径")
+                        .tooltip("清除")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.clear_history_path_filter(cx);
@@ -162,7 +162,7 @@ impl VcsView {
                         .ghost()
                         .small()
                         .icon(IconName::ArrowRight)
-                        .tooltip("搜索提交")
+                        .tooltip("搜索")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.apply_history_search(cx);

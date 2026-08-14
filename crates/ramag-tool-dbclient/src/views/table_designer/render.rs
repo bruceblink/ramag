@@ -118,7 +118,7 @@ impl Render for TableDesigner {
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Delete)
-                                .tooltip("删除字段")
+                                .tooltip("删除")
                                 .text_color(theme.danger)
                                 .disabled(reviewing || self.executing)
                                 .on_click(move |_: &ClickEvent, _, app| {

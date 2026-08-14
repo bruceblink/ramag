@@ -15,11 +15,11 @@ use std::sync::Arc;
 
 use gpui::{
     Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    ScrollStrategy, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled, UniformListScrollHandle,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _, notification::Notification,
-    scroll::ScrollableElement as _, v_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, notification::Notification, v_flex,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COLLECTION_ITEMS, RedisValue};
@@ -323,14 +323,15 @@ impl Render for KeyDetailPanel {
         };
 
         // 滚动区：外层 flex_1 + min_h_0 给出「减去 header 后的确定高度」。
-        // 容器类型的 uniform_list 自带虚拟滚动，只需内边距；其余套 overflow_y_scrollbar。
+        // 容器类型的 uniform_list 自带虚拟滚动，只需内边距；其余内容保留滚动但隐藏滚动条。
         let content = if self_scrolls {
             div().flex_col().flex_1().min_h_0().p(px(14.0)).child(body)
         } else {
             div().flex_1().min_h_0().child(
                 div()
+                    .id("redis-key-value-scroll")
                     .size_full()
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
                     .child(div().w_full().p(px(14.0)).child(body)),
             )
         };

@@ -9,6 +9,7 @@ use ramag_domain::entities::{
     SshWorkspacePreference, SshWorkspaceState,
 };
 use ramag_terminal::{TerminalCommand, TerminalCore, TerminalView};
+use tracing::error;
 
 use super::SshView;
 use super::model::{
@@ -26,6 +27,19 @@ impl SshView {
             let profiles = service.list_profiles().await;
             let preference = service.load_workspace_preference().await;
             let capability = service.probe(None).await.map_err(|error| error.to_string());
+            if let Err(error) = &profiles {
+                error!(operation = "ssh_profile_list", error = %error, "load SSH profiles failed");
+            }
+            if let Err(error) = &preference {
+                error!(
+                    operation = "ssh_workspace_preference_load",
+                    error = %error,
+                    "load SSH workspace preference failed"
+                );
+            }
+            if let Err(error) = &capability {
+                error!(operation = "ssh_client_probe", error = %error, "probe OpenSSH failed");
+            }
             let _ = this.update_in(async_cx, |this, window, cx| {
                 if this.load_generation != generation {
                     return;

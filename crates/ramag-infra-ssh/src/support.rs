@@ -2,6 +2,9 @@
 
 use super::*;
 
+const DIRECTORY_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+const WINDOWS_DRIVE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub(super) async fn connect(
     locator: &OpenSshLocator,
     sessions: &SessionCache,
@@ -114,8 +117,10 @@ pub(super) async fn list_once(
         MAX_REMOTE_DIRECTORY_ENTRIES
     };
     let result = timeout(DIRECTORY_REQUEST_TIMEOUT, async {
-        let mut directory = connection
-            .contextualize(session::list_directory(&connection.session, path, max_entries).await)?;
+        let mut directory = connection.contextualize(
+            "ssh_sftp_directory_list",
+            session::list_directory(&connection.session, path, max_entries).await,
+        )?;
         if should_list_windows_drives(profile, path) {
             match timeout(
                 WINDOWS_DRIVE_DISCOVERY_TIMEOUT,

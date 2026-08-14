@@ -4,6 +4,7 @@ use gpui::{Context, Window};
 use ramag_domain::entities::{
     RemoteCapabilityState, RemoteOperatingSystem, RemotePath, SshProfileId, SshRemoteCapabilities,
 };
+use tracing::error;
 
 use super::SshView;
 
@@ -46,6 +47,14 @@ impl SshView {
                 .probe_remote_capabilities(&id)
                 .await
                 .map_err(|error| error.to_string());
+            if let Err(error) = &result {
+                error!(
+                    operation = "ssh_capabilities_probe",
+                    profile_id = %id,
+                    error = %error,
+                    "probe SSH remote capabilities failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let refresh_path = {
                     let Some(workspace) = this.workspace_mut(&id) else {
@@ -79,6 +88,12 @@ impl SshView {
                                         .then_some(path)
                                 }
                                 Err(error) => {
+                                    error!(
+                                        operation = "ssh_directory_path_resolve",
+                                        profile_id = %id,
+                                        error = %error,
+                                        "resolve directory after capability probe failed"
+                                    );
                                     if !workspace.directory_loaded && !workspace.sftp_loading {
                                         workspace.sftp_error = Some(error);
                                     }

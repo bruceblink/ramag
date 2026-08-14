@@ -1,7 +1,5 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-//! 系统 OpenSSH + 结构化 SFTP 基础设施实现。
-
 mod askpass;
 mod command;
 mod diagnostic;
@@ -14,6 +12,7 @@ mod transfer;
 
 use support::*;
 
+pub use askpass::run_askpass_helper;
 pub use driver::OpenSshDriver;
 
 use std::collections::HashMap;
@@ -45,9 +44,6 @@ use crate::session::SessionCache;
 use crate::transfer::TransferEngine;
 
 pub use jumpserver::JumpServerHttpDriver;
-
-const DIRECTORY_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
-const WINDOWS_DRIVE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[async_trait]
 impl SshDriver for OpenSshDriver {
@@ -83,7 +79,6 @@ impl SshDriver for OpenSshDriver {
 
     async fn test_connection(&self, profile: &SshProfile) -> Result<()> {
         profile.validate().map_err(DomainError::InvalidConfig)?;
-        // 连接测试使用独立缓存键，并在返回前关闭，避免干扰已打开工作区或累积草稿会话。
         let mut profile = profile.clone();
         profile.id = SshProfileId::new();
         let locator = self.locator.clone();
@@ -96,7 +91,7 @@ impl SshDriver for OpenSshDriver {
                 .await
                 .map(|_| ())
                 .map_err(|error| session::map_sftp_error("验证 SFTP 初始目录", error));
-            let result = connection.contextualize(result);
+            let result = connection.contextualize("ssh_sftp_test_connection", result);
             sessions.invalidate(&profile.id).await;
             result
         })
@@ -323,7 +318,6 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let first = list_once(&locator, &sessions, &profile, &path).await;
-            // 兼容通道完全由配置决定；标准通道只重建同类连接，不自动切换实现。
             if uses_windows_remote_sftp(&profile)
                 || !matches!(first, Err(DomainError::ConnectionFailed(_)))
             {
@@ -347,8 +341,10 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection
-                .contextualize(session::read_file_preview(&connection.session, &path).await);
+            let result = connection.contextualize(
+                "ssh_sftp_file_preview",
+                session::read_file_preview(&connection.session, &path).await,
+            );
             invalidate_broken(&sessions, &profile.id, &result).await;
             result
         })
@@ -369,6 +365,7 @@ impl SshDriver for OpenSshDriver {
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
             let result = connection.contextualize(
+                "ssh_sftp_file_chunk",
                 session::read_file_chunk(&connection.session, &path, position).await,
             );
             invalidate_broken(&sessions, &profile.id, &result).await;
@@ -395,6 +392,7 @@ impl SshDriver for OpenSshDriver {
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
             let result = connection.contextualize(
+                "ssh_sftp_file_save",
                 transfers
                     .save_file(connection.session.clone(), path, expected, contents)
                     .await,
@@ -413,8 +411,10 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection
-                .contextualize(session::create_directory(&connection.session, &path).await);
+            let result = connection.contextualize(
+                "ssh_sftp_directory_create",
+                session::create_directory(&connection.session, &path).await,
+            );
             invalidate_broken(&sessions, &profile.id, &result).await;
             result
         })
@@ -431,8 +431,10 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection
-                .contextualize(session::rename(&connection.session, &old_path, &new_path).await);
+            let result = connection.contextualize(
+                "ssh_sftp_entry_rename",
+                session::rename(&connection.session, &old_path, &new_path).await,
+            );
             invalidate_broken(&sessions, &profile.id, &result).await;
             result
         })
@@ -447,8 +449,10 @@ impl SshDriver for OpenSshDriver {
         let sessions = self.sessions.clone();
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
-            let result =
-                connection.contextualize(session::remove(&connection.session, &path, kind).await);
+            let result = connection.contextualize(
+                "ssh_sftp_entry_remove",
+                session::remove(&connection.session, &path, kind).await,
+            );
             invalidate_broken(&sessions, &profile.id, &result).await;
             result
         })
@@ -474,6 +478,7 @@ impl SshDriver for OpenSshDriver {
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
             let result = connection.contextualize(
+                "ssh_sftp_upload",
                 transfers
                     .upload(
                         connection.session.clone(),
@@ -510,6 +515,7 @@ impl SshDriver for OpenSshDriver {
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
             let result = connection.contextualize(
+                "ssh_sftp_download",
                 transfers
                     .download(
                         connection.session.clone(),
@@ -547,6 +553,7 @@ impl SshDriver for OpenSshDriver {
         run_in_tokio(async move {
             let connection = connect(&locator, &sessions, &profile).await?;
             let result = connection.contextualize(
+                "ssh_sftp_directory_download",
                 transfers
                     .download_directory(
                         connection.session.clone(),
@@ -586,11 +593,5 @@ impl SshDriver for OpenSshDriver {
         .await
     }
 }
-
-/// 在主程序初始化前处理 OpenSSH AskPass 子进程请求。
-pub fn run_askpass_helper(confirm: impl FnOnce(&str) -> bool) -> Option<i32> {
-    askpass::run_helper(confirm)
-}
-
 #[cfg(test)]
 mod tests;

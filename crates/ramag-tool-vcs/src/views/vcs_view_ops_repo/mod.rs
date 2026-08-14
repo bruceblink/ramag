@@ -12,9 +12,9 @@ use super::helpers::{
 use super::vcs_view::{RepoSessionState, VcsView};
 
 pub(super) const PF_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
-/// 避免每次输入都同步磁盘。
+/// 编辑停止后的自动保存延迟。
 const PF_FILE_AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(300);
-/// 过期事件按外部修改处理。
+/// 自写文件事件的忽略时长。
 pub(super) const PF_FILE_SELF_WRITE_TTL: Duration = Duration::from_secs(2);
 pub(super) const MAX_OPEN_REPOS: usize = 32;
 const REPO_SESSION_CACHE_LIMIT: usize = 32;
@@ -199,7 +199,7 @@ impl VcsView {
         false
     }
 
-    /// 超限草稿不能进入有界缓存。
+    /// 检查提交草稿大小。
     pub(super) fn ensure_commit_draft_within_limit(&mut self, cx: &mut Context<Self>) -> bool {
         if self.repo.is_none()
             || self.commit_input.read(cx).value().len() <= MAX_COMMIT_MESSAGE_BYTES
@@ -215,7 +215,7 @@ impl VcsView {
         false
     }
 
-    /// 自动保存完成前禁止切仓，避免写入失去所属会话。
+    /// 确认项目文件草稿已保存。
     pub(super) fn ensure_project_file_drafts_saved(&mut self, cx: &mut Context<Self>) -> bool {
         self.capture_active_project_draft(cx);
         let dirty_paths = self
@@ -270,7 +270,6 @@ impl VcsView {
             let new_status = match driver.status(&repo).await {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    // 后台刷新失败时保留旧状态。
                     tracing::warn!(
                         operation = "vcs_status_refresh",
                         repo_id = %repo,
@@ -384,7 +383,6 @@ pub(super) async fn open_repo_async(
         this.loading = false;
         this.loading_label = None;
         let mut repo_config = repo_config;
-        // 运行时配置不得覆盖用户名称。
         if let Some(existing) = this
             .recent_repos
             .iter()
@@ -418,7 +416,6 @@ pub(super) async fn open_repo_async(
             *open = repo_config.clone();
         }
         this.persist_open_repos(cx);
-        // 状态与分支独立失败，保留成功部分。
         let mut load_errors = Vec::new();
         match status {
             Ok(s) => this.status = Some(s),
@@ -458,7 +455,6 @@ pub(super) async fn open_repo_async(
         this.active_view = ActiveView::Session;
 
         let session_hit = this.restore_session_from_cache(&repo_config.path, cx);
-        // 缓存未命中时恢复持久化草稿，但不覆盖新输入。
         if !session_hit {
             let storage = this.storage.clone();
             let path = repo_config.path.clone();
@@ -523,7 +519,6 @@ pub(super) async fn open_repo_async(
         this.reload_tags(cx);
         this.reload_remotes(cx);
         this.reload_project_files(cx);
-        // 历史面板可见时立即加载新仓库首页。
         if this.history_pane_visible && this.repo.is_some() {
             this.load_history_page(0, cx);
         }
@@ -542,7 +537,7 @@ fn strip_file_tab_payloads(file_tabs: &mut [FileTab]) {
     }
 }
 
-/// 仅完全匹配写盘代际时清除 dirty，避免较慢旧写覆盖后续编辑状态。
+/// 仅在写入版本匹配时清除草稿标记。
 fn mark_project_file_revision_saved(
     file_tabs: &mut [FileTab],
     path: &str,

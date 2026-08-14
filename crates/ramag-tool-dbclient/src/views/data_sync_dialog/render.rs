@@ -1,10 +1,10 @@
 use gpui::{
-    Anchor, ClickEvent, Context, IntoElement, ParentElement, Render, Styled, Window, div,
-    prelude::*, px,
+    Anchor, ClickEvent, Context, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement as _, Styled, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, input::Input,
-    scroll::ScrollableElement as _, spinner::Spinner, v_flex,
+    spinner::Spinner, v_flex,
 };
 use ramag_domain::entities::{DriverKind, SyncObjectState};
 use ramag_ui::PointerDropdownMenu as _;
@@ -230,7 +230,7 @@ impl Render for DataSyncDialog {
             .id("data-sync-dialog-scroll")
             .w_full()
             .max_h(content_max_height)
-            .overflow_y_scrollbar()
+            .overflow_y_scroll()
             .gap(px(10.0))
             .child(self.render_safety_warning(cx))
             .child(self.render_connection_section(busy, cx))

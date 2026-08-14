@@ -192,7 +192,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("关闭差异")
+                        .tooltip("关闭")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             // 阻止冒泡到 tab 的 select on_click（否则关了又被重新打开 = 关不掉）
                             cx.stop_propagation();
@@ -292,7 +292,7 @@ impl VcsView {
             .map(|diff| {
                 let diff = diff.clone();
                 Clipboard::new("vcs-diff-copy")
-                    .tooltip("复制完整 Diff")
+                    .tooltip("复制")
                     .value_fn(move |_, _| {
                         super::vcs_view_ops_patch::build_patch_for_diff(&diff)
                             .unwrap_or_default()
@@ -440,7 +440,7 @@ fn render_inline_blame_banner(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
-                .tooltip("关闭行追溯")
+                .tooltip("关闭")
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.clear_inline_blame(cx);
                 })),

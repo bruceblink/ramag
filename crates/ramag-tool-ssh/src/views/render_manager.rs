@@ -93,7 +93,7 @@ impl SshView {
                             .outline()
                             .small()
                             .icon(ramag_ui::icons::folder_plus())
-                            .tooltip("从 JumpServer 导入连接")
+                            .tooltip("导入连接")
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.open_jumpserver_assets(window, cx);
                             })),
@@ -104,7 +104,7 @@ impl SshView {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("新建连接")
+                    .tooltip("新建")
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.open_profile_create(window, cx);
                     })),
@@ -385,7 +385,7 @@ impl SshView {
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::pencil())
-                        .tooltip("编辑连接")
+                        .tooltip("编辑")
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
@@ -400,7 +400,7 @@ impl SshView {
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())
-                        .tooltip("删除连接")
+                        .tooltip("删除")
                         .disabled(self.deleting_profile)
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, window, cx| {

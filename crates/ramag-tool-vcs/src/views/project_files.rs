@@ -432,7 +432,6 @@ impl VcsView {
                 this.select_pf_file(path_for_open.clone(), cx);
             }))
             .child(Icon::new(IconName::File).xsmall().text_color(muted_fg))
-            .children(status_element)
             .child(
                 div()
                     .flex_1()
@@ -442,7 +441,8 @@ impl VcsView {
                     .overflow_hidden()
                     .text_ellipsis()
                     .child(super::inline_text_preview(&name, 160)),
-            );
+            )
+            .children(status_element);
         if is_selected {
             row = row.bg(accent_bg);
         }

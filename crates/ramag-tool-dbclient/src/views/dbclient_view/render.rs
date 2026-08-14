@@ -227,7 +227,7 @@ impl Render for DbClientView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("关闭工作区")
+                        .tooltip("关闭")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.close_session(idx, cx);

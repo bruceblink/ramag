@@ -148,7 +148,7 @@ impl VcsView {
         .track_scroll(&self.changes_scroll)
         .flex_1();
 
-        // size_full + min_h_0：在外层 overflow_y_scrollbar 容器内拿到确定高度（同 project_files）
+        // size_full + min_h_0：在外层滚动容器内拿到确定高度（同 project_files）
         v_flex()
             .size_full()
             .min_h_0()

@@ -233,7 +233,7 @@ impl Render for ConnectionFormPanel {
                         } else {
                             IconName::EyeOff
                         })
-                        .tooltip("显示或隐藏密码")
+                        .tooltip("显示/隐藏密码")
                         .disabled(self.saving)
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {

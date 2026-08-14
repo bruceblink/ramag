@@ -1,4 +1,4 @@
-//! 文件 tab：select_file / close_file_tab / activate_file_tab_state / untracked 预览
+//! 文件标签与未跟踪文件预览。
 
 use gpui::Context;
 use ramag_domain::entities::{DiffKind, DiffLine, DiffLineKind, FileChangeKind, FileDiff, Hunk};
@@ -12,7 +12,7 @@ use super::vcs_view_ops_repo::{RawFileContent, read_raw_file_content};
 const FILE_TAB_CACHE_BYTE_BUDGET: usize = 96 * 1024 * 1024;
 
 impl VcsView {
-    /// 选中文件查看 diff（Changes 模式）：tab 已存在则复用并优先展示缓存；否则新开 tab + 异步拉
+    /// 选中文件并加载 diff，优先复用已有标签缓存。
     pub(super) fn select_file(&mut self, path: String, kind: GroupKind, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
@@ -24,17 +24,13 @@ impl VcsView {
             .position(|t| t.path == path && t.source == FileTabSource::Changes(kind));
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         let request_seq = self.diff_request_seq;
-        // 视觉复位仅在真正换文件时执行：外部改动触发的静默刷新会对同一文件重走
-        // select_file，若无条件归零会打断用户正在进行的 diff 阅读（滚动/展开态丢失）
+        // 仅切换文件时复位视图，避免刷新打断阅读。
         let same_file = self.selected_file.as_ref() == Some(&(path.clone(), kind));
         if !same_file {
             self.reset_blame_context();
-            // 清 spacer 展开态（hunk_idx 随 diff 变化，跨文件保留无意义）
             self.expanded_diff_spacers.clear();
-            // 横滚归位，否则新文件停在上个文件的横滚位置、看不到行首
             self.diff_h_scroll
                 .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
-            // 纵向同样回顶：从长文件底部切到短文件时避免停在越界位置
             self.diff_scroll
                 .scroll_to_item(0, gpui::ScrollStrategy::Top);
             self.diff_scroll_gesture.reset();
@@ -60,7 +56,6 @@ impl VcsView {
                 cx.notify();
                 return;
             }
-            // Tab 存在但无缓存（如切换 ignore-whitespace 后清掉了）→ 继续拉取
             self.current_diff = None;
             self.current_diff_syntax = None;
             self.loading_diff = true;
@@ -323,7 +318,6 @@ impl VcsView {
                 self.selected_commit_file = None;
             }
             FileTabSource::Commit { .. } => {
-                // commit tab：复用 current_diff 渲染（与 Changes 同一路径）
                 self.selected_file = None;
                 self.current_diff = tab.cached_diff.clone();
                 self.current_diff_syntax = tab.cached_diff_syntax.clone();
@@ -447,8 +441,7 @@ fn file_content_payload_bytes(content: &FileContentSnapshot) -> usize {
         .saturating_add(content.error.as_ref().map_or(0, String::capacity))
 }
 
-/// 文件内容 → 「全新增」伪 diff：单 hunk，每行 Add；二进制走 FileDiff.binary 占位；
-/// 截断（>4MB）通过 hunk heading 提示
+/// 将未跟踪文件转换为全新增 diff，二进制和截断文件保留标记。
 fn build_untracked_diff(raw: RawFileContent) -> FileDiff {
     let lines: Vec<DiffLine> = raw
         .lines

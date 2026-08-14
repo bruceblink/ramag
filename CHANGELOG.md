@@ -2,6 +2,30 @@
 
 本文件记录 Ramag 各公开版本的用户可见变化。尚未实现的设计方案不计入发布内容。
 
+## 0.0.4 - 2026-08-14
+
+### 新增
+
+- 新增 MySQL 与 PostgreSQL 图形化表设计器：可创建或修改表名、字段结构，并在执行前预览 DDL 变更。
+- 新增快捷键中心和统一连接选择器；可查看、修改和重置应用快捷键，并在数据库、Git、SSH、云存储等工作台快速切换连接或仓库。
+- Redis Key 树新增“同名 Key 下沉展示”设置。路径节点同时也是实际 Key 时，可选择将实际 Key 作为末级叶子展示。
+- 新增跨工作台的完整值复制交互：macOS 使用 `⌘ + 双击`、Windows/Linux 使用 `Ctrl + 双击`，复制当前已加载的完整数据并提示结果。
+- Linux 桌面端启用 X11 与 Wayland 后端，补全现代 Linux 桌面环境支持。
+
+### 改进
+
+- Redis Key 树批量获取类型信息并显示紧凑类型标签；改进树引导线、同名节点层级、文件夹/文件图标和大 Keyspace 的展示性能。
+- SQL、MongoDB、Redis、Git Diff/项目文件、SSH/SFTP、对象存储和剪贴板的高频数据区域统一复制语义；普通双击继续保留打开、编辑或下钻行为。
+- Git 的 Changes 与 Project Files 树统一文件夹展开/收起图标和文件图标，普通文件行不再留下空的状态标记间距。
+- 全部可滚动界面保留鼠标滚轮与触控板滚动，但不再显示可见滚动条，减少内容区被滚动轴挤占。
+- 改进更新检查反馈、剪贴板容量展示、图标按钮提示，以及关于页的官方交流群入口。
+
+### 修复
+
+- 修复 MySQL 事务中的 `SHOW WARNINGS` 读取、MySQL/PostgreSQL 表结构修改执行和耗时反馈问题。
+- 修复全局唤醒快捷键失效、剪贴板悬浮框重复唤醒，以及 Git 项目文件树的文件行对齐问题。
+- 修复 Redis 树中路径节点与实际 Key 重叠时的展示歧义，并避免为每个 Key 单独请求类型造成的额外网络开销。
+
 ## 0.0.3 - 2026-08-12
 
 ### 新增
@@ -76,6 +100,7 @@
 - 提供 MySQL、PostgreSQL、Redis、MongoDB 数据库工作台，Git 试验性工作台和可选剪贴板工作台。
 - 提供 macOS ARM64 / Intel DMG 与 Windows x64 安装包的统一标签发布流程。
 
+[0.0.4]: https://github.com/tools-rs/ramag/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/tools-rs/ramag/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/tools-rs/ramag/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/tools-rs/ramag/releases/tag/v0.0.1

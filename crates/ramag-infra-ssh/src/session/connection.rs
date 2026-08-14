@@ -326,18 +326,23 @@ impl SftpConnection {
         tracing::info!(operation = "ssh_sftp_close", profile_id = %self.profile.id, "ssh sftp session closed");
     }
 
-    pub fn contextualize<T>(&self, result: Result<T>) -> Result<T> {
+    pub fn contextualize<T>(&self, operation: &'static str, result: Result<T>) -> Result<T> {
         let Err(DomainError::ConnectionFailed(message)) = result else {
             return result;
         };
         let hint = self.stderr_hint();
-        if hint.is_empty() {
-            Err(DomainError::ConnectionFailed(message))
+        let message = if hint.is_empty() {
+            message
         } else {
-            Err(DomainError::ConnectionFailed(format!(
-                "{message}；OpenSSH：{hint}"
-            )))
-        }
+            format!("{message}；OpenSSH：{hint}")
+        };
+        tracing::warn!(
+            operation,
+            profile_id = %self.profile.id,
+            error = %message,
+            "ssh sftp operation failed"
+        );
+        Err(DomainError::ConnectionFailed(message))
     }
 
     fn stderr_hint(&self) -> String {

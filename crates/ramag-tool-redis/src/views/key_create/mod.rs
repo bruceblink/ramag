@@ -24,7 +24,7 @@ use crate::views::ttl_picker::TtlPicker;
 
 #[derive(Debug, Clone)]
 pub enum KeyCreateEvent {
-    /// TTL 后处理失败时携带警告，避免用户重复写入。
+    /// TTL 后处理失败时返回警告。
     Created {
         key: String,
         ttl_warning: Option<String>,
@@ -95,7 +95,6 @@ impl KeyCreateForm {
         let key_name = cx.new(|cx| {
             bounded_input(MAX_REDIS_KEY_BYTES, window, cx).placeholder("如 user:1001:cache")
         });
-        // 多行输入高度必须设在 Input 上。
         let string_input = cx.new(|cx| {
             bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
@@ -312,9 +311,7 @@ impl KeyCreateForm {
                             "Key 已创建，但 TTL 设置失败：{e}"
                         )),
                     },
-                    // 同类型旧 Key 允许合并；用户选“永久”时要清掉它原有的 TTL。
                     PostWriteTtl::Persist => match svc.set_ttl(&config, db, &key, None).await {
-                        // false 也可能表示本来就没有 TTL，此时目标状态已经满足。
                         Ok(_) => CreateOutcome::Created,
                         Err(e) => CreateOutcome::CreatedWithTtlWarning(format!(
                             "Key 已创建，但清除原 TTL 失败：{e}"
@@ -345,6 +342,7 @@ impl KeyCreateForm {
                         connection_id = %config.id,
                         db,
                         key_bytes = key.len(),
+                        warning = %warning,
                         "key created with TTL warning"
                     );
                     cx.emit(KeyCreateEvent::Created {
@@ -558,7 +556,7 @@ fn section_title(text: &str, muted_fg: Hsla, dot_color: Option<Hsla>) -> impl In
     .child(div().flex_1().h(px(1.0)).bg(muted_fg).opacity(0.12))
 }
 
-/// Redis 类型标志色（与 `key_tree::type_color_solid` 同款，刻意不跨模块复用以避免破坏分层）
+/// Redis 类型颜色。
 fn redis_type_color(t: RedisType) -> Hsla {
     match t {
         RedisType::String => hsla(210.0 / 360.0, 0.6, 0.55, 1.0),

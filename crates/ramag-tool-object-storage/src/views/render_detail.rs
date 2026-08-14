@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, IconName, Sizable as _, StyledExt as _, button::ButtonVariants as _, h_flex,
-    scroll::ScrollableElement as _, v_flex,
+    v_flex,
 };
 use ramag_domain::entities::{ObjectMetadata, format_bytes};
 
@@ -62,7 +62,6 @@ impl ObjectStorageView {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.detail_scroll)
-                    .vertical_scrollbar(&self.detail_scroll)
                     .child(
                         v_flex()
                             .w_full()

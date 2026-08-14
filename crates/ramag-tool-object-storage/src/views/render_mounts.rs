@@ -1,11 +1,12 @@
 //! 对象存储工作区的 Bucket 导航。
 
 use gpui::{
-    AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, div, prelude::*, px,
+    AnyElement, Context, IntoElement, ParentElement, SharedString, StatefulInteractiveElement as _,
+    Styled, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
-    button::ButtonVariants as _, h_flex, scroll::ScrollableElement as _, v_flex,
+    button::ButtonVariants as _, h_flex, v_flex,
 };
 
 use super::model::ObjectStorageView;
@@ -175,7 +176,14 @@ impl ObjectStorageView {
                             ),
                     ),
             )
-            .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(rows))
+            .child(
+                div()
+                    .id("object-mounts-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(rows),
+            )
             .child(
                 h_flex()
                     .id("object-mount-summary")

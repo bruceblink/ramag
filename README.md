@@ -96,6 +96,7 @@ Ramag 把开发中频繁切换的上下文收进一个原生窗口：查数据�
 - Schema、表、视图、列、索引与 DDL 浏览。
 - SQL 补全、高亮、多语句执行、光标语句执行、格式化与 EXPLAIN。
 - 查询取消、结果分页、排序、筛选和单元格编辑。
+- MySQL 与 PostgreSQL 图形化表设计器：创建或修改表名、字段结构，预览 DDL 后再执行。
 - 大整数、高精度数值、JSON/JSONB、二进制、时间以及 PostgreSQL 原生类型保真展示。
 - 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
 
@@ -109,6 +110,7 @@ Ramag 把开发中频繁切换的上下文收进一个原生窗口：查数据�
 - 以 `:` 自动折叠 Key 命名空间，大型 Keyspace 使用游标 SCAN 和虚拟列表。
 - String、Hash、List、Set、ZSet、Stream 六种类型统一查看与编辑。
 - TTL 管理、大 String 有界加载、大集合自动分批继续加载。
+- Key 树批量识别类型并展示紧凑标签；同一路径既是命名空间又是实际 Key 时，可在设置中开启“同名 Key 下沉展示”。
 - 内置命令控制台；危险、阻塞和生产写命令在执行前识别。
 - 整库 JSONL 迁移保留类型、TTL、顺序、分数、Stream ID 与二进制内容。
 
@@ -128,6 +130,13 @@ Ramag 把开发中频繁切换的上下文收进一个原生窗口：查数据�
 - 结果搜索支持字符串 ID 与整数 ID 双向转换，内置 Base10、Base16、Base36、Base58 Bitcoin、Base58 Flickr 和自定义字符表，也可调用经过路径、超时与输出上限校验的外部转换器。
 - SQL、Redis、MongoDB 使用独立执行 runtime，某个慢查询不会直接挤占其他数据库的任务线程。
 
+### 统一操作与快捷键
+
+- 新增快捷键中心，可查看、修改和重置应用快捷键；各工作台也提供统一的连接或仓库快速切换入口。
+- 在支持的数据区域，macOS 使用 `⌘ + 双击`、Windows/Linux 使用 `Ctrl + 双击` 可复制当前已加载的完整值；普通双击仍用于打开、编辑或下钻。
+- SQL、MongoDB、Redis、Git Diff/项目文件、SSH/SFTP、对象存储和剪贴板的复制行为与成功提示已统一。
+- 所有可滚动区域保留鼠标滚轮和触控板滚动，但不显示可见滚动条，避免挤占内容空间。
+
 ### 四引擎数据同步
 
 - 支持 MySQL、PostgreSQL、Redis 与 MongoDB 之间同类型连接的数据同步。
@@ -146,7 +155,7 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 打开仓库 → 检查工作区 → 对照 Diff → Stage → Commit → Push / Pull
 ```
 
-- Changes、Project Files、Stash、历史日志、Commit 详情、Blame 与 Reflog。
+- Changes、Project Files、Stash、历史日志、Commit 详情、Blame 与 Reflog；文件树统一文件夹展开/收起和文件图标。
 - Unified / Split Diff、整文件上下文、35 种语法高亮和超大 Diff 虚拟化。
 - Stage / Unstage、Amend、Branch、Tag、Stash、Merge、Rebase、Cherry-pick。
 - 冲突三栏处理，可继续或中止 Merge / Rebase / Cherry-pick 流程。
@@ -300,13 +309,12 @@ make test
 
 ## 平台与文档
 
-Ramag 支持 Linux x86_64、macOS 12+（Apple Silicon / Intel）和 Windows 10/11 x64。Linux 提供 Debian 安装包与 AppImage；Windows on ARM 仅计划通过系统 x64 模拟运行，尚未列为已完成人工验收的平台。
+Ramag 支持 Linux x86_64、macOS 12+（Apple Silicon / Intel）和 Windows 10/11 x64。Linux 提供 Debian 安装包与 AppImage，并支持 X11 与 Wayland；Windows on ARM 仅计划通过系统 x64 模拟运行，尚未列为已完成人工验收的平台。
 
 - [性能报告：VCS、数据库与剪贴板](docs/performance.md)
 - [架构说明](docs/architecture.md)
 - [桌面端构建与发布](docs/desktop-release.md)
 - [版本变更记录](CHANGELOG.md)
-- [SSH + SFTP 生产低影响只读诊断模式（规划）](docs/ssh-sftp-design.md)
 
 发现问题时，请在 [GitHub Issues](https://github.com/tools-rs/ramag/issues) 中附上操作系统、Ramag 版本、复现步骤和必要日志；提交前请移除连接地址、用户名、密码和业务数据。
 

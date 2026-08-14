@@ -107,7 +107,7 @@ impl JumpServerPanel {
                             .ghost()
                             .xsmall()
                             .icon(ramag_ui::icons::refresh_cw())
-                            .tooltip("刷新资源")
+                            .tooltip("刷新")
                             .disabled(self.is_busy())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.load_assets(cx);
@@ -240,7 +240,7 @@ impl JumpServerPanel {
                         } else {
                             IconName::ChevronRight
                         })
-                        .tooltip("展开或折叠组织")
+                        .tooltip("展开/折叠")
                         .disabled(self.is_busy())
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
@@ -334,7 +334,7 @@ impl JumpServerPanel {
                         } else {
                             IconName::ChevronRight
                         })
-                        .tooltip("展开或折叠节点")
+                        .tooltip("展开/折叠")
                         .disabled(self.is_busy())
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {

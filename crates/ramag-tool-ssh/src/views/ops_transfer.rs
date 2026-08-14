@@ -5,6 +5,7 @@ use ramag_domain::entities::{
     OverwritePolicy, RemoteEntry, SshProfile, SshProfileId, TransferDirection, TransferId,
     join_remote_path,
 };
+use tracing::{error, warn};
 
 use super::SshView;
 use super::model::Notice;
@@ -167,6 +168,14 @@ impl SshView {
         {
             Ok(id) => self.execute_transfer(id, profile, TransferDirection::Upload, overwrite, cx),
             Err(error) => {
+                error!(
+                    operation = "ssh_transfer_enqueue_upload",
+                    profile_id = %profile.id,
+                    local_path = %local_path.display(),
+                    remote_path = %remote_path,
+                    error = %error,
+                    "enqueue SSH upload failed"
+                );
                 self.notice = Some(Notice::error(format!("上传失败：{error}")));
                 cx.notify();
             }
@@ -202,6 +211,18 @@ impl SshView {
                 self.execute_transfer(id, profile, direction, overwrite, cx)
             }
             Err(error) => {
+                error!(
+                    operation = if archive {
+                        "ssh_transfer_enqueue_directory_download"
+                    } else {
+                        "ssh_transfer_enqueue_download"
+                    },
+                    profile_id = %profile.id,
+                    remote_path = %remote_path,
+                    local_path = %local_path.display(),
+                    error = %error,
+                    "enqueue SSH download failed"
+                );
                 self.notice = Some(Notice::error(format!("下载失败：{error}")));
                 cx.notify();
             }
@@ -236,6 +257,16 @@ impl SshView {
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
             let result = service.execute_transfer(&id, overwrite).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "ssh_transfer_execute",
+                    transfer_id = %id,
+                    profile_id = %profile.id,
+                    direction = ?direction,
+                    error = %error,
+                    "execute SSH transfer failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
@@ -281,6 +312,12 @@ impl SshView {
             return;
         };
         let Some(profile) = self.profile_for_workspace(&task.profile_id) else {
+            warn!(
+                operation = "ssh_transfer_retry",
+                transfer_id = %id,
+                profile_id = %task.profile_id,
+                "retry SSH transfer rejected because profile is missing"
+            );
             self.notice = Some(Notice::error("SSH 配置已删除"));
             cx.notify();
             return;
@@ -288,6 +325,14 @@ impl SshView {
         match self.service.retry_transfer(&id) {
             Ok(new_id) => self.execute_transfer(new_id, profile, task.direction, overwrite, cx),
             Err(error) => {
+                error!(
+                    operation = "ssh_transfer_retry",
+                    transfer_id = %id,
+                    profile_id = %task.profile_id,
+                    direction = ?task.direction,
+                    error = %error,
+                    "retry SSH transfer failed"
+                );
                 self.notice = Some(Notice::error(format!("重试失败：{error}")));
                 cx.notify();
             }

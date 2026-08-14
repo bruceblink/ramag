@@ -4,6 +4,7 @@ use ramag_domain::entities::{
     SftpNamespaceKind, SshProfileId, infer_sftp_namespace, validate_remote_name_for_namespace,
     validate_remote_path,
 };
+use tracing::error;
 
 use super::SshView;
 use super::model::Notice;
@@ -98,6 +99,16 @@ impl SshView {
             } else {
                 service.list_directory(&profile, &path).await
             };
+            if let Err(error) = &result {
+                error!(
+                    operation = "ssh_directory_load",
+                    profile_id = %profile.id,
+                    path = %path,
+                    bootstrap,
+                    error = %error,
+                    "load remote directory failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let Some(workspace) = this.workspace_mut(&id) else {
                     return;
@@ -389,6 +400,13 @@ impl SshView {
         let profile = workspace.profile.clone();
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
+            let (operation, path_for_log, target_path) = match &mutation {
+                RemoteMutation::Create(path) => ("ssh_directory_create", path.clone(), None),
+                RemoteMutation::Rename { old, new } => {
+                    ("ssh_entry_rename", old.clone(), Some(new.clone()))
+                }
+                RemoteMutation::Remove { path, .. } => ("ssh_entry_remove", path.clone(), None),
+            };
             let result = match mutation {
                 RemoteMutation::Create(path) => service.create_directory(&profile, &path).await,
                 RemoteMutation::Rename { old, new } => service.rename(&profile, &old, &new).await,
@@ -396,6 +414,26 @@ impl SshView {
                     service.remove(&profile, &path, kind).await
                 }
             };
+            if let Err(error) = &result {
+                if let Some(target_path) = target_path {
+                    error!(
+                        operation,
+                        profile_id = %profile.id,
+                        source_path = %path_for_log,
+                        target_path = %target_path,
+                        error = %error,
+                        "remote file operation failed"
+                    );
+                } else {
+                    error!(
+                        operation,
+                        profile_id = %profile.id,
+                        path = %path_for_log,
+                        error = %error,
+                        "remote file operation failed"
+                    );
+                }
+            }
             let _ = this.update(cx, |this, cx| {
                 if let Some(workspace) = this.workspace_mut(&workspace_id) {
                     workspace.operation_busy = false;

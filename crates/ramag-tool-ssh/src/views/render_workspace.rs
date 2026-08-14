@@ -288,7 +288,7 @@ impl SshView {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
-                            .tooltip("关闭终端")
+                            .tooltip("关闭")
                             .on_click(cx.listener({
                                 let workspace_id = workspace_id.clone();
                                 move |this, _: &ClickEvent, window, cx| {

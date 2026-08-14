@@ -1,4 +1,4 @@
-//! 仓库 storage 管理 + Clone / Init / 确认弹窗
+//! 仓库记录、克隆与初始化。
 
 use std::collections::HashSet;
 
@@ -10,13 +10,13 @@ use super::super::helpers::is_current_arc_slot;
 use super::super::vcs_view::VcsView;
 use super::{MAX_OPEN_REPOS, open_repo_async};
 
-/// 打开中的仓库 Tab 路径列表的偏好 key（JSON 数组，跨重启恢复用）
+/// 已打开仓库标签的持久化键。
 const OPEN_REPOS_PREF: &str = "vcs_open_repos";
 const MAX_OPEN_REPOS_PREF_BYTES: usize = 256 * 1024;
 const MAX_OPEN_REPO_PATH_BYTES: usize = 32 * 1024;
 
 impl VcsView {
-    /// 保存单条 RepoConfig 到 storage；失败要可见，否则最近时间会在重启后悄悄丢失。
+    /// 异步保存仓库记录。
     pub(crate) fn save_repo_async(&self, repo: RepoConfig, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
         let coordinator = self.repo_write_coordinator.clone();
@@ -42,8 +42,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 从 storage 删除单条 RepoConfig。失败要提示：内存列表已移除，
-    /// 持久化没删掉会在下次启动"复活"，静默会让用户以为删除生效了
+    /// 异步删除仓库记录。
     pub(crate) fn delete_repo_async(&self, path: String, id: RepoId, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
         let coordinator = self.repo_write_coordinator.clone();
@@ -68,7 +67,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 弹确认对话框：从最近列表移除仓库（不删磁盘文件）
+    /// 确认后从最近列表移除仓库，不删除磁盘文件。
     pub(crate) fn confirm_remove_recent_repo(
         &self,
         path: String,
@@ -95,7 +94,7 @@ impl VcsView {
         );
     }
 
-    /// 异步 Clone 远程仓库到本地路径，完成后复用 open_repo_async 走 open + 拉数据流
+    /// 异步克隆仓库，完成后打开。
     pub(crate) fn clone_repo_async(
         &mut self,
         url: String,
@@ -127,14 +126,12 @@ impl VcsView {
             .trim_end_matches(".git");
         self.loading_label = Some(format!("正在 Clone {repo_hint} 到 {}…", dest.display()));
         self.error = None;
-        // 进度槽 + 取消位：infra 持续写进度，loading 屏每帧读；取消钮置位后 kill 子进程
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let progress = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         self.clone_cancel = Some(cancel.clone());
         self.clone_progress = Some(progress.clone());
         cx.notify();
-        // 进度刷新 ticker：进度槽由后台线程写入，须周期 notify 驱动 loading 屏重渲染；
-        // clone 结束（槽被清空）自动退出
+        // 定时刷新后台写入的克隆进度。
         let poll_cancel = cancel.clone();
         cx.spawn(async move |this, cx| {
             loop {
@@ -245,8 +242,7 @@ impl VcsView {
                         this.loading_label = None;
                         this.clone_cancel = None;
                         this.clone_progress = None;
-                        // 用户主动取消：静默回列表，不当错误弹横幅；
-                        // 半成品目录（本次任务独占创建）交用户决定删除或保留
+                        // 用户取消时保留残留目录，供用户决定是否删除。
                         if !cancelled {
                             this.error = Some(format!("Clone 失败: {e}"));
                         } else {
@@ -260,7 +256,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 用户确认后删除本次 Clone 独占创建的残留目录；文件 I/O 放共享受限工作池。
+    /// 删除本次克隆创建的残留目录。
     pub(crate) fn cleanup_cancelled_clone_dir_async(
         &mut self,
         dir: std::path::PathBuf,
@@ -304,8 +300,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 异步初始化空仓库（真正执行 git init），完成后打开 session。
-    /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
+    /// 异步初始化仓库，完成后打开。
     pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         self.startup_repo_restore_allowed = false;
         if self.loading {
@@ -348,8 +343,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 启动时从 storage 加载 recent_repos（跨重启保留），并按偏好恢复上次打开的仓库 Tab
-    /// （仅恢复 Tab 列表，不自动 open 任何仓库——停留在仓库管理页，点 Tab 才真正打开）
+    /// 加载最近仓库及上次打开的标签，不自动打开仓库。
     pub(crate) fn load_recent_repos_async(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let storage = match this.update(cx, |this, _| this.storage.clone()) {
@@ -399,13 +393,11 @@ impl VcsView {
                 match result {
                     Ok(mut list) => {
                         if restore_allowed {
-                            // 按保存顺序恢复 Tab；已从 recent 移除的仓库自动跳过
                             this.open_repos = open_paths
                                 .iter()
                                 .filter_map(|p| list.iter().find(|r| &r.path == p).cloned())
                                 .collect();
                         } else {
-                            // 用户已打开新仓库：保留内存中的较新记录，只补齐存储中的历史项。
                             for current in this.recent_repos.iter() {
                                 if let Some(loaded) =
                                     list.iter_mut().find(|loaded| loaded.path == current.path)
@@ -448,7 +440,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 把当前打开的仓库 Tab 路径列表落 prefs；同 key 串行且只保留最新快照。
+    /// 保存已打开仓库的标签列表。
     pub(crate) fn persist_open_repos(&self, cx: &mut Context<Self>) {
         let paths: Vec<String> = self.open_repos.iter().map(|r| r.path.clone()).collect();
         let json = match serde_json::to_string(&paths) {

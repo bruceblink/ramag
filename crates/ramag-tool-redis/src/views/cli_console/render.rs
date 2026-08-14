@@ -57,7 +57,7 @@ impl Render for CliConsole {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::trash())
-                    .tooltip("清空控制台")
+                    .tooltip("清空")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 

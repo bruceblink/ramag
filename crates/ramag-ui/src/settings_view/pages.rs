@@ -1,10 +1,8 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
-    hsla, prelude::*, px,
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, hsla, prelude::*, px,
 };
-use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _, h_flex, scroll::ScrollableElement as _, v_flex,
-};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::{SettingsPage, SettingsView};
 
@@ -92,7 +90,8 @@ impl SettingsView {
 
         v_flex()
             .size_full()
-            .overflow_y_scrollbar()
+            .id("settings-page-scroll")
+            .overflow_y_scroll()
             .child(
                 v_flex()
                     .w_full()
