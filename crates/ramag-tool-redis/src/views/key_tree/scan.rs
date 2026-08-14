@@ -3,7 +3,7 @@
 
 use gpui::Context;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::{KeyTreePanel, MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS};
 
@@ -137,6 +137,31 @@ impl KeyTreePanel {
             let result = svc
                 .scan_batch(&config, db, cursor, pattern.as_deref(), None, SCAN_BATCH)
                 .await;
+            let result = match result {
+                Ok(mut batch) => {
+                    let keys: Vec<String> =
+                        batch.keys.iter().map(|meta| meta.key.clone()).collect();
+                    match svc.key_types(&config, db, &keys).await {
+                        Ok(types) => {
+                            for (meta, key_type) in batch.keys.iter_mut().zip(types) {
+                                meta.key_type = Some(key_type);
+                            }
+                        }
+                        Err(error) => {
+                            warn!(
+                                operation = "redis_key_type_pipeline",
+                                connection_id = %config.id,
+                                db,
+                                key_count = keys.len(),
+                                error = %error,
+                                "batch key type lookup failed; keeping keys without type badges"
+                            );
+                        }
+                    }
+                    Ok(batch)
+                }
+                Err(error) => Err(error),
+            };
             let _ = this.update(cx, |this, cx| {
                 let stale = this.scan_generation != generation
                     || this.db != db

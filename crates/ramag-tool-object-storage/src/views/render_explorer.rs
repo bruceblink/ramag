@@ -197,7 +197,11 @@ impl ObjectStorageView {
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Folder)
-                                .tooltip("Bucket")
+                                .tooltip(if self.show_mounts {
+                                    "隐藏 Bucket"
+                                } else {
+                                    "显示 Bucket"
+                                })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.show_mounts = !this.show_mounts;
                                     if this.show_mounts {

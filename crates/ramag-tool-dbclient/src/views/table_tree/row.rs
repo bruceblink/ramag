@@ -17,7 +17,9 @@ use ramag_domain::entities::{Schema, contains_case_insensitive};
 
 use super::{SchemaTables, TableColumns, TableTreePanel};
 use crate::sql_completion::is_system_schema;
-use crate::views::tree_helpers::{render_column_row, render_columns_placeholder};
+use crate::views::tree_helpers::{
+    render_column_row, render_columns_placeholder, render_copyable_detail_line,
+};
 
 #[derive(Clone)]
 pub(super) enum TreeRow {
@@ -50,7 +52,9 @@ pub(super) enum TreeRow {
         text: String,
     },
     DetailLine {
+        element_id: SharedString,
         text: String,
+        copy_value: String,
     },
 }
 
@@ -127,6 +131,7 @@ impl TableTreePanel {
                 let arrow = if *is_expanded { "▾" } else { "▸" };
                 let id_str = SharedString::from(format!("schema-{name}"));
                 let name_for_click = name.clone();
+                let name_for_copy = name.clone();
                 let name_color = if *is_system { muted_fg } else { fg };
                 let name_for_menu = name.clone();
                 let entity_for_menu = cx.entity().clone();
@@ -142,7 +147,17 @@ impl TableTreePanel {
                     .rounded_md()
                     .cursor_pointer()
                     .hover(move |this| this.bg(muted_bg))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.modifiers().secondary() {
+                            if ramag_ui::is_primary_modifier_double_click(event) {
+                                ramag_ui::copy_text_with_notification(
+                                    name_for_copy.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            return;
+                        }
                         this.toggle_schema(name_for_click.clone(), cx);
                     }))
                     .child(
@@ -217,6 +232,7 @@ impl TableTreePanel {
                 let row_id = SharedString::from(format!("table-{}-{}", schema, name));
                 let s_for_click = schema.clone();
                 let t_for_click = name.clone();
+                let t_for_copy = name.clone();
 
                 let chevron_icon = if is_cols_expanded {
                     IconName::ChevronDown
@@ -241,7 +257,17 @@ impl TableTreePanel {
                     .rounded_md()
                     .cursor_pointer()
                     .hover(move |this| this.bg(muted_bg))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.modifiers().secondary() {
+                            if ramag_ui::is_primary_modifier_double_click(event) {
+                                ramag_ui::copy_text_with_notification(
+                                    t_for_copy.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            return;
+                        }
                         this.handle_table_click(s_for_click.clone(), t_for_click.clone(), cx);
                     }))
                     // 展开箭头不能触发表选择。
@@ -255,6 +281,11 @@ impl TableTreePanel {
                                     .ghost()
                                     .xsmall()
                                     .icon(chevron_icon)
+                                    .tooltip(if is_cols_expanded {
+                                        "收起字段"
+                                    } else {
+                                        "展开字段"
+                                    })
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.toggle_table_columns(
                                             s_for_chev.clone(),
@@ -307,10 +338,31 @@ impl TableTreePanel {
                 .and_then(|columns| columns.columns.get(*column_index))
                 .map_or_else(
                     || div().h(px(28.0)).into_any_element(),
-                    |column| render_column_row(column, fg, muted_fg),
+                    |column| {
+                        render_column_row(
+                            column,
+                            SharedString::from(format!(
+                                "tree-column-copy-{}-{}-{column_index}",
+                                key.0, key.1
+                            )),
+                            fg,
+                            muted_fg,
+                            cx,
+                        )
+                    },
                 ),
             TreeRow::SectionLabel { text } => render_columns_placeholder(text.clone(), muted_fg),
-            TreeRow::DetailLine { text } => render_columns_placeholder(text.clone(), fg),
+            TreeRow::DetailLine {
+                element_id,
+                text,
+                copy_value,
+            } => render_copyable_detail_line(
+                element_id.clone(),
+                text.clone(),
+                copy_value.clone(),
+                fg,
+                cx,
+            ),
         }
     }
 }
@@ -471,7 +523,12 @@ fn build_tree_rows(
                         "·"
                     };
                     rows.push(TreeRow::DetailLine {
+                        element_id: SharedString::from(format!(
+                            "tree-index-copy-{name}-{}-{}",
+                            table.name, index.name
+                        )),
                         text: format!("{prefix}  {}({})", index.name, index.columns.join(", ")),
+                        copy_value: index.name.clone(),
                     });
                 }
             }
@@ -481,6 +538,10 @@ fn build_tree_rows(
                 });
                 for foreign_key in &columns.foreign_keys {
                     rows.push(TreeRow::DetailLine {
+                        element_id: SharedString::from(format!(
+                            "tree-foreign-key-copy-{name}-{}-{}",
+                            table.name, foreign_key.name
+                        )),
                         text: format!(
                             "↗ {} ({}) → {}.{}({})",
                             foreign_key.name,
@@ -489,6 +550,7 @@ fn build_tree_rows(
                             foreign_key.ref_table,
                             foreign_key.ref_columns.join(", ")
                         ),
+                        copy_value: foreign_key.name.clone(),
                     });
                 }
             }
@@ -504,88 +566,4 @@ fn build_tree_rows(
 }
 
 #[cfg(test)]
-mod tests {
-    use ramag_domain::entities::Table;
-
-    use super::*;
-
-    #[test]
-    fn tree_rows_match_unicode_table_names_without_lowercase_copies() {
-        let schemas = vec![Schema {
-            name: "public".into(),
-            charset: None,
-            collation: None,
-        }];
-        let expanded = HashMap::from([(
-            "public".into(),
-            SchemaTables {
-                tables: vec![Table {
-                    name: "ÜBERblick".into(),
-                    schema: "public".into(),
-                    comment: None,
-                    is_view: false,
-                }],
-                ..Default::default()
-            },
-        )]);
-
-        let view = build_tree_rows(
-            &schemas,
-            &expanded,
-            &HashSet::new(),
-            &HashMap::new(),
-            false,
-            "über",
-        );
-
-        assert_eq!(view.visible_schemas, 1);
-        assert!(
-            view.rows
-                .iter()
-                .any(|row| { matches!(row, TreeRow::Table { key, .. } if key.1 == "ÜBERblick") })
-        );
-    }
-
-    #[test]
-    fn hidden_system_schemas_are_not_counted_in_search_progress() {
-        let schemas = vec![
-            Schema {
-                name: "public".into(),
-                charset: None,
-                collation: None,
-            },
-            Schema {
-                name: "pg_catalog".into(),
-                charset: None,
-                collation: None,
-            },
-        ];
-        let expanded = HashMap::from([(
-            "public".into(),
-            SchemaTables {
-                tables: Vec::new(),
-                ..Default::default()
-            },
-        )]);
-
-        let hidden = build_tree_rows(
-            &schemas,
-            &expanded,
-            &HashSet::new(),
-            &HashMap::new(),
-            false,
-            "users",
-        );
-        assert_eq!(hidden.searchable_schemas, 1);
-
-        let shown = build_tree_rows(
-            &schemas,
-            &expanded,
-            &HashSet::new(),
-            &HashMap::new(),
-            true,
-            "users",
-        );
-        assert_eq!(shown.searchable_schemas, 1);
-    }
-}
+mod tests;

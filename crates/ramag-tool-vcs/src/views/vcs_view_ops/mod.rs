@@ -57,10 +57,12 @@ impl VcsView {
             };
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.list_branches(&repo, BranchKind::Local).await,
+                &repo,
                 "local branches",
             );
             let _ = this.update(cx, |this, cx| {
@@ -384,6 +386,7 @@ impl VcsView {
             let new_status = if result.is_ok() {
                 crate::views::vcs_view_ops_sync::best_effort_refresh(
                     driver.status(&repo).await,
+                    &repo,
                     "workspace status",
                 )
             } else {
@@ -490,6 +493,7 @@ impl VcsView {
             let new_status = if result.is_ok() {
                 crate::views::vcs_view_ops_sync::best_effort_refresh(
                     driver.status(&repo).await,
+                    &repo,
                     "workspace status",
                 )
             } else {

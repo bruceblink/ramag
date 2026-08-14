@@ -3,8 +3,8 @@
 use std::ops::Range;
 
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, UniformListScrollHandle,
-    div, prelude::*, px, uniform_list,
+    ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, Styled,
+    UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue};
@@ -71,6 +71,7 @@ fn hash_row(
 ) -> impl IntoElement + use<> {
     let field_preview = inline_text_preview(field, 128);
     let value_preview = value.display_preview(256);
+    let field_for_copy = field.to_string();
     let value_for_copy = value.to_clipboard_string();
     // HSCAN 的字段名目前以 UTF-8 字符串展示；出现替换字符表明原始字节已无法
     // 安全往返，禁用编辑/删除以避免将损坏后的文本当作真实字段名。
@@ -110,7 +111,6 @@ fn hash_row(
         // 双击该行打开编辑窗口（仅文本值可编辑，二进制只读）
         .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
             if ramag_ui::is_primary_modifier_double_click(e) {
-                ramag_ui::copy_text(value_for_copy.clone(), cx);
                 return;
             }
             if editable
@@ -127,16 +127,24 @@ fn hash_row(
         }))
         .child(
             div()
+                .id(SharedString::from(format!("hash-field-{idx}")))
                 .w(px(160.0))
                 .text_xs()
                 .text_color(muted_fg)
                 .flex_none()
                 .overflow_hidden()
                 .text_ellipsis()
+                .cursor_pointer()
+                .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                    if ramag_ui::is_primary_modifier_double_click(event) {
+                        ramag_ui::copy_text_with_notification(field_for_copy.clone(), window, cx);
+                    }
+                }))
                 .child(field_preview),
         )
         .child(
             div()
+                .id(SharedString::from(format!("hash-value-{idx}")))
                 .flex_1()
                 .min_w_0()
                 .text_sm()
@@ -144,6 +152,12 @@ fn hash_row(
                 .font_family("monospace")
                 .overflow_hidden()
                 .text_ellipsis()
+                .cursor_pointer()
+                .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                    if ramag_ui::is_primary_modifier_double_click(event) {
+                        ramag_ui::copy_text_with_notification(value_for_copy.clone(), window, cx);
+                    }
+                }))
                 .child(value_preview),
         )
         .child(

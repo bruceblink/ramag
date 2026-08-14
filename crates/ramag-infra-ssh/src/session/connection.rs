@@ -11,7 +11,7 @@ use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::rawsession::Limits;
 use russh_sftp::client::{Config, RawSftpSession};
 use russh_sftp::extensions;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncReadExt as _;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -24,8 +24,10 @@ use crate::askpass::AskPassBroker;
 use crate::command::configure_no_window;
 
 use self::child::stop_child;
+use self::relay::relay_bounded_packets;
 
 mod child;
+mod relay;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -222,12 +224,18 @@ impl SftpConnection {
             DomainError::ConnectionFailed("OpenSSH SFTP 未创建 stderr 管道".into())
         })?;
         let stderr_tail = Arc::new(ParkingMutex::new(VecDeque::with_capacity(STDERR_LIMIT)));
-        let stderr_task = tokio::spawn(drain_stderr(stderr, stderr_tail.clone()));
+        let profile_id = profile.id.to_string();
+        let stderr_task = tokio::spawn(drain_stderr(
+            stderr,
+            stderr_tail.clone(),
+            profile_id.clone(),
+        ));
         let (protocol_reader, protocol_writer) = tokio::io::duplex(MAX_SFTP_PACKET_BYTES as usize);
         let protocol_task = tokio::spawn(relay_bounded_packets(
             stdout,
             protocol_writer,
             transport == SftpTransport::WindowsRemoteServer,
+            profile_id,
         ));
         let stream = tokio::io::join(protocol_reader, stdin);
 
@@ -235,14 +243,14 @@ impl SftpConnection {
             Ok(Ok(session)) => session,
             Ok(Err(error)) => {
                 stop_child(&mut child).await;
-                wait_cleanup_task(protocol_task, "protocol relay").await;
-                wait_cleanup_task(stderr_task, "stderr drain").await;
+                wait_cleanup_task(protocol_task, "protocol relay", &profile.id).await;
+                wait_cleanup_task(stderr_task, "stderr drain", &profile.id).await;
                 return Err(connection_error(error.to_string(), &stderr_tail.lock()));
             }
             Err(_) => {
                 stop_child(&mut child).await;
-                wait_cleanup_task(protocol_task, "protocol relay").await;
-                wait_cleanup_task(stderr_task, "stderr drain").await;
+                wait_cleanup_task(protocol_task, "protocol relay", &profile.id).await;
+                wait_cleanup_task(stderr_task, "stderr drain", &profile.id).await;
                 return Err(connection_error(
                     "SFTP 协议握手在 15 秒内未完成".into(),
                     &stderr_tail.lock(),
@@ -284,13 +292,13 @@ impl SftpConnection {
 
     pub async fn close(&self) {
         if let Err(error) = self.session.close() {
-            tracing::warn!(operation = "ssh_sftp_close", stage = "protocol", error = %error, "close ssh sftp protocol failed");
+            tracing::warn!(operation = "ssh_sftp_close", profile_id = %self.profile.id, stage = "protocol", error = %error, "close ssh sftp protocol failed");
         }
         if let Some(mut child) = self.child.lock().await.take() {
             match timeout(CLOSE_TIMEOUT, child.wait()).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
-                    tracing::warn!(operation = "ssh_sftp_close", stage = "child_wait", error = %error, "wait ssh sftp child failed");
+                    tracing::warn!(operation = "ssh_sftp_close", profile_id = %self.profile.id, stage = "child_wait", error = %error, "wait ssh sftp child failed");
                 }
                 Err(_) => stop_child(&mut child).await,
             }
@@ -300,6 +308,7 @@ impl SftpConnection {
         {
             tracing::warn!(
                 operation = "ssh_sftp_close",
+                profile_id = %self.profile.id,
                 stage = "protocol_relay",
                 "ssh sftp protocol relay did not stop in time"
             );
@@ -309,6 +318,7 @@ impl SftpConnection {
         {
             tracing::warn!(
                 operation = "ssh_sftp_close",
+                profile_id = %self.profile.id,
                 stage = "stderr_drain",
                 "ssh sftp stderr drain did not stop in time"
             );
@@ -378,165 +388,29 @@ fn bounded_chunk(server_limit: Option<u64>) -> u32 {
         .clamp(1, u64::from(u32::MAX)) as u32
 }
 
-async fn wait_cleanup_task(task: tokio::task::JoinHandle<()>, task_name: &'static str) {
+async fn wait_cleanup_task(
+    task: tokio::task::JoinHandle<()>,
+    task_name: &'static str,
+    profile_id: &SshProfileId,
+) {
     match timeout(Duration::from_secs(1), task).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            tracing::warn!(operation = "ssh_sftp_cleanup_task", error = %error, task = task_name, "ssh sftp cleanup task failed")
+            tracing::warn!(operation = "ssh_sftp_cleanup_task", profile_id = %profile_id, error = %error, task = task_name, "ssh sftp cleanup task failed")
         }
         Err(_) => tracing::warn!(
             operation = "ssh_sftp_cleanup_task",
+            profile_id = %profile_id,
             task = task_name,
             "ssh sftp cleanup task did not stop in time"
         ),
     }
 }
 
-async fn relay_bounded_packets<R, W>(mut stdout: R, mut destination: W, allow_text_preamble: bool)
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let Some((header, first_body_byte)) =
-        read_first_packet_header(&mut stdout, allow_text_preamble).await
-    else {
-        if let Err(error) = destination.shutdown().await {
-            tracing::warn!(operation = "ssh_sftp_relay_shutdown", stage = "missing_packet", error = %error, "shutdown ssh sftp relay after missing packet failed");
-        }
-        return;
-    };
-    let mut buffer = [0u8; 32 * 1024];
-    if let Err(error) = relay_packet(
-        &mut stdout,
-        &mut destination,
-        header,
-        first_body_byte,
-        &mut buffer,
-    )
-    .await
-    {
-        tracing::warn!(operation = "ssh_sftp_relay", stage = "first_packet", error = %error, "relay ssh sftp first packet failed");
-        if let Err(shutdown_error) = destination.shutdown().await {
-            tracing::warn!(operation = "ssh_sftp_relay_shutdown", stage = "packet_failure", error = %shutdown_error, "shutdown ssh sftp relay after packet failure failed");
-        }
-        return;
-    }
-    loop {
-        let mut header = [0u8; 4];
-        match stdout.read_exact(&mut header).await {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => {
-                tracing::warn!(operation = "ssh_sftp_relay", stage = "packet_header", error = %error, "read ssh sftp packet header failed");
-                break;
-            }
-        }
-        if let Err(error) =
-            relay_packet(&mut stdout, &mut destination, header, None, &mut buffer).await
-        {
-            tracing::warn!(operation = "ssh_sftp_relay", stage = "packet", error = %error, "relay ssh sftp packet failed");
-            break;
-        }
-    }
-    if let Err(error) = destination.shutdown().await {
-        tracing::warn!(operation = "ssh_sftp_relay_shutdown", error = %error, "shutdown ssh sftp protocol relay failed");
-    }
-}
-
-async fn read_first_packet_header<R>(
-    stdout: &mut R,
-    allow_text_preamble: bool,
-) -> Option<([u8; 4], Option<u8>)>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    if !allow_text_preamble {
-        let mut header = [0u8; 4];
-        return stdout
-            .read_exact(&mut header)
-            .await
-            .ok()
-            .map(|_| (header, None));
-    }
-    let mut scanned = Vec::with_capacity(256);
-    let mut byte = [0u8; 1];
-    while scanned.len() < TEXT_PREAMBLE_LIMIT {
-        if let Err(error) = stdout.read_exact(&mut byte).await {
-            if error.kind() != std::io::ErrorKind::UnexpectedEof {
-                tracing::warn!(operation = "ssh_sftp_relay", stage = "first_packet", error = %error, "read ssh sftp first packet failed");
-            }
-            return None;
-        }
-        scanned.push(byte[0]);
-        if scanned.len() < 5 {
-            continue;
-        }
-        let start = scanned.len() - 5;
-        let header: [u8; 4] = scanned[start..start + 4].try_into().ok()?;
-        let packet_bytes = u32::from_be_bytes(header);
-        // 首包必须是 SSH_FXP_VERSION（类型 2），且至少含类型和版本号。
-        if (5..=MAX_SFTP_PACKET_BYTES).contains(&packet_bytes) && scanned[start + 4] == 2 {
-            if start > 0 {
-                tracing::info!(
-                    operation = "ssh_sftp_relay",
-                    stage = "jumpserver_preamble",
-                    bytes = start,
-                    "ignored jumpserver sftp text preamble"
-                );
-            }
-            return Some((header, Some(2)));
-        }
-    }
-    tracing::warn!(
-        operation = "ssh_sftp_relay",
-        stage = "jumpserver_preamble_limit",
-        "jumpserver sftp text preamble exceeded safety limit"
-    );
-    None
-}
-
-async fn relay_packet<R, W>(
-    stdout: &mut R,
-    destination: &mut W,
-    header: [u8; 4],
-    first_body_byte: Option<u8>,
-    buffer: &mut [u8],
-) -> std::io::Result<()>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let packet_bytes = u32::from_be_bytes(header);
-    if packet_bytes == 0 || packet_bytes > MAX_SFTP_PACKET_BYTES {
-        tracing::warn!(
-            operation = "ssh_sftp_relay",
-            stage = "packet_limit",
-            packet_bytes,
-            "ssh sftp packet exceeded safety limit"
-        );
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid sftp packet size",
-        ));
-    }
-    destination.write_all(&header).await?;
-    let mut remaining = packet_bytes as usize;
-    if let Some(first) = first_body_byte {
-        destination.write_all(&[first]).await?;
-        remaining = remaining.saturating_sub(1);
-    }
-    while remaining > 0 {
-        let chunk = remaining.min(buffer.len());
-        stdout.read_exact(&mut buffer[..chunk]).await?;
-        destination.write_all(&buffer[..chunk]).await?;
-        remaining -= chunk;
-    }
-    Ok(())
-}
-
 async fn drain_stderr(
     mut stderr: tokio::process::ChildStderr,
     tail: Arc<ParkingMutex<VecDeque<u8>>>,
+    profile_id: String,
 ) {
     let mut buffer = [0u8; 4096];
     loop {
@@ -544,7 +418,7 @@ async fn drain_stderr(
             Ok(0) => break,
             Ok(read) => append_tail(&mut tail.lock(), &buffer[..read]),
             Err(error) => {
-                tracing::warn!(operation = "ssh_sftp_stderr_drain", error = %error, "drain ssh sftp stderr failed");
+                tracing::warn!(operation = "ssh_sftp_stderr_drain", profile_id, error = %error, "drain ssh sftp stderr failed");
                 break;
             }
         }

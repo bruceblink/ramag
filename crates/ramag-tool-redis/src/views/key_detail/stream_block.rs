@@ -113,9 +113,9 @@ fn stream_row(
                     .px(px(8.0))
                     .border_t_1()
                     .border_color(border)
-                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
                         if ramag_ui::is_primary_modifier_double_click(event) {
-                            ramag_ui::copy_text(id_for_copy.clone(), cx);
+                            ramag_ui::copy_text_with_notification(id_for_copy.clone(), window, cx);
                         }
                     }))
                     .child(
@@ -152,6 +152,7 @@ fn stream_row(
         }
         StreamRow::Field { entry, field } => {
             let (key, value) = entries.get(*entry)?.fields.get(*field)?;
+            let field_for_copy = key.to_string();
             let value_for_copy = value.to_string();
             Some(
                 h_flex()
@@ -163,23 +164,34 @@ fn stream_row(
                     .gap(px(8.0))
                     .pl(px(20.0))
                     .pr(px(8.0))
-                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                        if ramag_ui::is_primary_modifier_double_click(event) {
-                            ramag_ui::copy_text(value_for_copy.clone(), cx);
-                        }
-                    }))
                     .child(
                         div()
+                            .id(SharedString::from(format!(
+                                "stream-field-name-{entry}-{field}"
+                            )))
                             .w(px(140.0))
                             .text_xs()
                             .text_color(muted_fg)
                             .flex_none()
                             .overflow_hidden()
                             .text_ellipsis()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text_with_notification(
+                                        field_for_copy.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }))
                             .child(inline_text_preview(key, 128)),
                     )
                     .child(
                         div()
+                            .id(SharedString::from(format!(
+                                "stream-field-value-{entry}-{field}"
+                            )))
                             .flex_1()
                             .min_w_0()
                             .text_xs()
@@ -187,6 +199,16 @@ fn stream_row(
                             .font_family("monospace")
                             .overflow_hidden()
                             .text_ellipsis()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text_with_notification(
+                                        value_for_copy.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }))
                             .child(inline_text_preview(value, 256)),
                     )
                     .into_any_element(),

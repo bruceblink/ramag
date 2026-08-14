@@ -47,7 +47,7 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     shortcut!(
         "open-recent",
         "全局",
-        "打开连接选择器",
+        "选择连接",
         "ramag::OpenRecentItems",
         None,
         "secondary-p",
@@ -57,7 +57,7 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     ShortcutSpec {
         id: "wake-main-window",
         group: "全局",
-        label: "全局唤醒 Ramag",
+        label: "唤醒 Ramag",
         action: None,
         context: None,
         default_key: "secondary-alt-shift-v",
@@ -98,7 +98,7 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     shortcut!(
         "run-statement",
         "数据库",
-        "执行光标所在语句",
+        "执行当前语句",
         "ramag_dbclient::RunStatementAtCursor",
         None,
         "secondary-shift-enter",
@@ -108,7 +108,7 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     shortcut!(
         "new-query",
         "数据库",
-        "新建查询标签",
+        "新建查询",
         "ramag_dbclient::NewQueryTab",
         None,
         "secondary-t",
@@ -138,7 +138,7 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     shortcut!(
         "toggle-editor",
         "数据库",
-        "显示/隐藏编辑器",
+        "切换编辑器",
         "ramag_dbclient::ToggleSqlEditor",
         None,
         "secondary-e",
@@ -148,7 +148,7 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     shortcut!(
         "toggle-redis-console",
         "数据库",
-        "显示/隐藏 Redis 控制台",
+        "切换 Redis 控制台",
         "ramag_redis::ToggleRedisConsole",
         Some("RedisSession"),
         "secondary-e",
@@ -460,25 +460,17 @@ impl Render for ShortcutPanel {
                     .items_start()
                     .gap(px(16.0))
                     .child(
-                        v_flex()
+                        div()
                             .flex_1()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("快捷键中心"),
-                            )
-                            .child(div().text_sm().text_color(muted).child(format!(
-                                "当前系统：{} · 键盘快捷键可点击修改，常用操作为固定交互",
-                                platform_name()
-                            ))),
+                            .text_sm()
+                            .text_color(muted)
+                            .child(format!("当前系统：{} · 点击快捷键可修改", platform_name())),
                     )
                     .child(
                         crate::clickable_button("shortcut-reset-all")
                             .ghost()
                             .small()
-                            .label("全部恢复默认")
+                            .label("全部重置")
                             .disabled(!has_overrides)
                             .on_click(
                                 cx.listener(|this, _: &ClickEvent, _, cx| this.reset_all(cx)),

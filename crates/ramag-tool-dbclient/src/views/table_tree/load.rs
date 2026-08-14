@@ -86,7 +86,7 @@ impl TableTreePanel {
         if self.expanded.len().saturating_add(new_entries) > MAX_LOADED_SCHEMA_TABLES {
             self.pending_notification = Some(
                 gpui_component::notification::Notification::warning(format!(
-                    "全库搜索最多加载 {MAX_LOADED_SCHEMA_TABLES} 个 schema；请先选择具体 schema，或缩小数据库范围"
+                    "全库搜索最多加载 {MAX_LOADED_SCHEMA_TABLES} 个 schema，请选择具体 schema 后重试"
                 ))
                 .autohide(true),
             );
@@ -161,7 +161,8 @@ impl TableTreePanel {
                                     connection_id = %conn.id,
                                     driver = ?conn.driver,
                                     schema = %schema,
-                                    error = %err,
+                                    connection = %conn.name,
+                                    error = ?err,
                                     "load full-search tables failed"
                                 );
                                 entry.error = Some(err.to_string());
@@ -288,7 +289,8 @@ impl TableTreePanel {
                             connection_id = %conn.id,
                             driver = ?conn.driver,
                             schema = %schema_for_async,
-                            error = %e,
+                            connection = %conn.name,
+                            error = ?e,
                             "load tables failed"
                         );
                         let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
@@ -415,7 +417,8 @@ impl TableTreePanel {
                             driver = ?conn.driver,
                             schema = %schema_async,
                             table = %table_async,
-                            error = %e,
+                            connection = %conn.name,
+                            error = ?e,
                             "load columns failed"
                         );
                         entry.error = Some(e.to_string());
@@ -430,7 +433,8 @@ impl TableTreePanel {
                             driver = ?conn.driver,
                             schema = %schema_async,
                             table = %table_async,
-                            error = %e,
+                            connection = %conn.name,
+                            error = ?e,
                             "load indexes failed"
                         );
                     }
@@ -444,7 +448,8 @@ impl TableTreePanel {
                             driver = ?conn.driver,
                             schema = %schema_async,
                             table = %table_async,
-                            error = %e,
+                            connection = %conn.name,
+                            error = ?e,
                             "load foreign keys failed"
                         );
                     }

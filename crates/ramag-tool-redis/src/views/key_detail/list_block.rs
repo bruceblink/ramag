@@ -87,9 +87,9 @@ fn list_row(
         .border_color(border)
         .gap(px(8.0))
         .items_center()
-        .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+        .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
             if ramag_ui::is_primary_modifier_double_click(event) {
-                ramag_ui::copy_text(value_for_copy.clone(), cx);
+                ramag_ui::copy_text_with_notification(value_for_copy.clone(), window, cx);
             }
         }))
         .child(

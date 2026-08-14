@@ -4,7 +4,7 @@ use gpui::{
     App, ClickEvent, ClipboardItem, ElementId, IntoElement, RenderOnce, SharedString,
     StyleRefinement, Styled, Window,
 };
-use gpui_component::{StyledExt as _, text::TextView};
+use gpui_component::{StyledExt as _, WindowExt as _, notification::Notification, text::TextView};
 
 /// 判断是否为“主修饰键 + 左键双击”。
 ///
@@ -16,6 +16,12 @@ pub fn is_primary_modifier_double_click(event: &ClickEvent) -> bool {
 /// 将文本写入系统剪贴板。
 pub fn copy_text(text: impl Into<String>, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
+}
+
+/// 复制文本并给出统一、简短的成功反馈。
+pub fn copy_text_with_notification(text: impl Into<String>, window: &mut Window, cx: &mut App) {
+    copy_text(text, cx);
+    window.push_notification(Notification::success("复制成功").autohide(true), cx);
 }
 
 /// 可拖拽选中的只读文本。

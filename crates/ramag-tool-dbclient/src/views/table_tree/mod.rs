@@ -1,4 +1,6 @@
+mod ddl;
 mod load;
+mod menus;
 mod ops;
 mod render;
 mod row;
@@ -22,14 +24,10 @@ use crate::sql_completion::{SchemaCache, is_system_schema};
 const MAX_LOADED_SCHEMA_TABLES: usize = 64;
 const MAX_EXPANDED_TABLE_COLUMNS: usize = 32;
 
-/// 纯数据 JSONL 导入对话框文案；不会创建或修改表结构。
 pub(crate) fn jsonl_import_description(schema: &str, table: &str) -> String {
     format!(
-        "仅导入数据，不创建或修改表结构。选择冲突策略与 .jsonl 文件（可多选），\
-         每行一个 JSON 对象，\
-         按键名匹配 {schema}.{table} 的列插入；行内缺少的列走库默认值，\
-         未匹配的键忽略。「跳过」冲突行跳过，「覆盖」先清空表\
-         （不可恢复），「停止」遇冲突即报错。"
+        "选择 JSONL 文件，将每行对象按键名写入 {schema}.{table}。缺少列使用默认值，\
+         多余键忽略；冲突可跳过、覆盖（先清空表，不可恢复）或停止。只导入数据，不修改表结构。"
     )
 }
 
@@ -52,7 +50,7 @@ pub struct TableTreePanel {
     pub(super) selected: Option<(String, String)>,
     pub(super) show_system: bool,
     pub(super) search: gpui::Entity<InputState>,
-    /// 小写搜索词；与输入实体分开缓存，避免焦点变化触发元数据补拉。
+    /// 缓存小写搜索词，避免焦点变化触发元数据请求。
     pub(super) search_query: String,
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) editor_visible: bool,
@@ -61,7 +59,7 @@ pub struct TableTreePanel {
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// DDL 完成后由 render 持有 Window 主动移除常驻执行提示。
+    /// 通知渲染层移除常驻 DDL 提示。
     pub(super) clear_ddl_notification: bool,
     /// 旧连接的 DDL 回包不得解锁新连接。
     pub(super) ddl_gate: AsyncMutationGate,
@@ -286,7 +284,8 @@ impl TableTreePanel {
                             operation = "sql_metadata_schemas",
                             connection_id = %conn.id,
                             driver = ?conn.driver,
-                            error = %e,
+                            connection = %conn.name,
+                            error = ?e,
                             "load schemas failed"
                         );
                         this.error = Some(e.to_string());

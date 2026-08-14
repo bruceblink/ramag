@@ -44,7 +44,16 @@ impl ObjectStorageView {
         error: &(impl std::fmt::Display + ?Sized),
         message: impl Into<String>,
     ) {
-        tracing::error!(operation, error = %error, "object storage operation failed");
+        tracing::error!(
+            operation,
+            account_id = ?self.selected_account_id,
+            mount_id = ?self.selected_mount.as_ref().map(|mount| &mount.id),
+            bucket = ?self.selected_mount.as_ref().map(|mount| mount.bucket.as_str()),
+            prefix = %self.prefix,
+            key = ?self.selected_key,
+            error = %error,
+            "object storage operation failed"
+        );
         self.error(message);
     }
 

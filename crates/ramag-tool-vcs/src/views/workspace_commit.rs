@@ -22,7 +22,7 @@ impl VcsView {
             .as_ref()
             .map(|s| s.files.iter().filter(|f| f.staged.is_some()).count())
             .unwrap_or(0);
-        // 非 amend 必须有 commit message；amend 可沿用上一次 message 故不强制
+        // 修订可沿用原提交信息。
         let commit_value = self.commit_input.read(cx).value();
         let has_message = !commit_value.trim().is_empty();
         let message_too_large = commit_value.len() > MAX_COMMIT_MESSAGE_BYTES;
@@ -67,6 +67,7 @@ impl VcsView {
             .primary()
             .small()
             .icon(IconName::ChevronDown)
+            .tooltip("提交选项")
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let ent = entity.clone();
                 let label = if amend_on { "✓ 修订" } else { "修订" };
@@ -109,7 +110,7 @@ impl VcsView {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(accent)
-                            .child("Commit"),
+                            .child("提交"),
                     )
                     .child(
                         div()
@@ -121,9 +122,9 @@ impl VcsView {
                                     MAX_COMMIT_MESSAGE_BYTES / 1024 / 1024
                                 )
                             } else if staged_count == 0 && !self.commit_amend {
-                                "· 暂存区为空（先暂存文件）".to_string()
+                                "· 请先暂存文件".to_string()
                             } else if !has_message && !self.commit_amend {
-                                format!("· 已暂存 {staged_count} 个文件，填写提交信息后可提交")
+                                format!("· 已暂存 {staged_count} 个文件，请填写提交信息")
                             } else {
                                 format!("· 已暂存 {staged_count} 个文件")
                             }),

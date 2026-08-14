@@ -3,7 +3,9 @@
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px,
 };
-use gpui_component::{clipboard::Clipboard, h_flex, v_flex};
+use gpui_component::{
+    WindowExt as _, clipboard::Clipboard, h_flex, notification::Notification, v_flex,
+};
 use ramag_domain::entities::RedisValue;
 
 use super::KeyDetailPanel;
@@ -179,7 +181,13 @@ fn array_block(
                 .child(
                     Clipboard::new(format!("redis-array-copy-{i}"))
                         .tooltip("复制完整值")
-                        .value(item.to_clipboard_string()),
+                        .value(item.to_clipboard_string())
+                        .on_copied(|_, window, cx| {
+                            window.push_notification(
+                                Notification::success("复制成功").autohide(true),
+                                cx,
+                            );
+                        }),
                 ),
         );
     }

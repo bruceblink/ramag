@@ -1,4 +1,4 @@
-//! merge / cherry-pick 进行中横幅（继续 / 中止）+ 冲突文件行尾按钮（Use Ours / Theirs / 已解决）
+//! 进行中操作横幅与冲突处理按钮。
 
 use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
@@ -14,7 +14,6 @@ use super::helpers::{ConflictOp, OperationStep};
 use super::vcs_view::VcsView;
 
 impl VcsView {
-    /// `status.operation = Some(_)` 时显示。Merge/CherryPick/Revert 给「继续 / 中止」；Rebase 多「跳过」
     pub(super) fn render_op_banner(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(op) = self.status.as_ref().and_then(|s| s.operation) else {
             return div().into_any_element();
@@ -25,7 +24,6 @@ impl VcsView {
         bg.a = 0.15;
         let busy = self.busy;
 
-        // 剩余冲突数：>0 时「继续」必然失败，直接禁用并在标题给出下一步指引
         let conflicts = self
             .status
             .as_ref()
@@ -38,9 +36,9 @@ impl VcsView {
             RepoOperation::Revert => "Revert 进行中",
         };
         let title = if conflicts > 0 {
-            format!("{base_title}：剩余 {conflicts} 个冲突文件待解决")
+            format!("{base_title} · {conflicts} 个冲突待解决")
         } else {
-            format!("{base_title}：当前已暂停，可点「继续」推进或「中止」回滚")
+            base_title.to_string()
         };
         let supports_skip = matches!(op, RepoOperation::Rebase);
 
@@ -73,7 +71,7 @@ impl VcsView {
                     .small()
                     .icon(IconName::Check)
                     .label("继续")
-                    .when(conflicts > 0, |button| button.tooltip("仍有冲突"))
+                    .when(conflicts > 0, |button| button.tooltip("请先解决冲突"))
                     .disabled(busy || conflicts > 0)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.confirm_op_step(OperationStep::Continue, window, cx);
@@ -107,7 +105,6 @@ impl VcsView {
     }
 }
 
-/// 冲突文件行尾按钮：[查看冲突][Use Ours][Use Theirs][标记已解决]
 pub(super) fn conflict_buttons(
     idx: usize,
     path: &str,
@@ -121,7 +118,7 @@ pub(super) fn conflict_buttons(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::columns_2())
-            .tooltip("对比")
+            .tooltip("查看冲突")
             .disabled(busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.open_conflict_editor(path_for_view.clone(), cx);
@@ -154,7 +151,7 @@ pub(super) fn conflict_buttons(
             "mark-resolved",
             idx,
             path,
-            "解决".into(),
+            "标记已解决".into(),
             IconName::Check,
             ConflictOp::MarkResolved,
             busy,

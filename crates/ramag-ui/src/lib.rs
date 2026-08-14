@@ -28,7 +28,9 @@ pub mod transfer_ui;
 pub use actions::{CloseTab, OpenRecentItems};
 pub use assets::RamagAssets;
 pub use confirm_dialog::{open_confirm, open_confirm_with_cancel};
-pub use copy_support::{SelectableText, copy_text, is_primary_modifier_double_click};
+pub use copy_support::{
+    SelectableText, copy_text, copy_text_with_notification, is_primary_modifier_double_click,
+};
 pub use data_sync_overlay::DataSyncOverlay;
 pub use database_search::{
     DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, DatabaseSearchSettingsGlobal,

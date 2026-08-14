@@ -103,9 +103,9 @@ fn zset_row(
         .items_center()
         .when(editable, |row| row.cursor_pointer())
         // 双击该行打开「改 score」窗口（仅文本成员可编辑，二进制只读）
-        .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+        .on_click(cx.listener(move |_, e: &ClickEvent, window, cx| {
             if ramag_ui::is_primary_modifier_double_click(e) {
-                ramag_ui::copy_text(member_for_copy.clone(), cx);
+                ramag_ui::copy_text_with_notification(member_for_copy.clone(), window, cx);
                 return;
             }
             if editable && e.click_count() >= 2 {

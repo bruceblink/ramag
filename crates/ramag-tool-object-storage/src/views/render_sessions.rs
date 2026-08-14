@@ -110,6 +110,7 @@ impl ObjectStorageView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
+                    .tooltip("关闭会话")
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, window, cx| {
                             cx.stop_propagation();

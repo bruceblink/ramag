@@ -1,6 +1,8 @@
 //! `git` 子进程封装。机器可读查询与写操作统一走系统 Git；gix 只负责仓库发现。
+mod process;
 mod validation;
 
+pub(crate) use process::{LimitedBytes, read_limited};
 pub(crate) use validation::*;
 
 #[cfg(target_os = "windows")]
@@ -15,6 +17,7 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, Result};
 use tracing::{debug, info, warn};
 
+use self::process::{terminate_child, wait_child_or_cleanup};
 use crate::errors::friendly_git_error;
 
 #[cfg(target_os = "windows")]
@@ -58,6 +61,7 @@ pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
         let error = output_error(args, &output);
         warn!(
             error = %error,
+            repo = %repo_path.display(),
             operation = args.first().copied().unwrap_or("unknown"),
             exit_code = ?output.status.code(),
             elapsed_ms = started.elapsed().as_millis(),
@@ -84,7 +88,15 @@ pub(crate) fn run_git_probe(repo_path: &Path, args: &[&str]) -> Result<bool> {
     if output.status.code() == Some(1) {
         return Ok(false);
     }
-    Err(output_error(args, &output))
+    let error = output_error(args, &output);
+    warn!(
+        error = %error,
+        repo = %repo_path.display(),
+        operation = args.first().copied().unwrap_or("unknown"),
+        exit_code = ?output.status.code(),
+        "git probe failed"
+    );
+    Err(error)
 }
 
 fn run_git_output(repo_path: &Path, args: &[&str]) -> Result<Output> {
@@ -213,34 +225,6 @@ fn wait_with_output_limited(mut child: Child, operation: &str) -> Result<Output>
     })
 }
 
-pub(crate) struct LimitedBytes {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) truncated: bool,
-}
-
-pub(crate) fn read_limited(
-    mut reader: impl std::io::Read,
-    limit: usize,
-) -> std::io::Result<LimitedBytes> {
-    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
-    let mut buffer = [0u8; 16 * 1024];
-    let mut truncated = false;
-    loop {
-        let read = match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        let keep = read.min(limit.saturating_sub(bytes.len()));
-        bytes.extend_from_slice(&buffer[..keep]);
-        if keep < read {
-            truncated = true;
-        }
-    }
-    Ok(LimitedBytes { bytes, truncated })
-}
-
 fn output_error(args: &[&str], output: &Output) -> DomainError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     DomainError::QueryFailed(friendly_git_error(args, &stderr))
@@ -269,7 +253,7 @@ pub(crate) fn run_git_streaming(
 
     let operation = args.first().copied().unwrap_or("unknown");
     let started = std::time::Instant::now();
-    info!(operation, "git streaming command started");
+    info!(operation, repo = %dir.display(), "git streaming command started");
     let child = command()
         .env("LC_ALL", "C")
         .env("LANG", "C")
@@ -390,6 +374,7 @@ pub(crate) fn run_git_streaming(
     if cancel.load(Ordering::Relaxed) {
         info!(
             operation,
+            repo = %dir.display(),
             elapsed_ms = started.elapsed().as_millis(),
             "git streaming command cancelled"
         );
@@ -398,11 +383,19 @@ pub(crate) fn run_git_streaming(
     if !status.success() {
         let tail: Vec<String> = last_lines.into_iter().collect();
         let error = DomainError::QueryFailed(friendly_git_error(args, &tail.join("\n")));
-        warn!(error = %error, operation, exit_code = ?status.code(), elapsed_ms = started.elapsed().as_millis(), "git streaming command failed");
+        warn!(
+            error = %error,
+            operation,
+            repo = %dir.display(),
+            exit_code = ?status.code(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "git streaming command failed"
+        );
         return Err(error);
     }
     info!(
         operation,
+        repo = %dir.display(),
         elapsed_ms = started.elapsed().as_millis(),
         "git streaming command completed"
     );
@@ -419,6 +412,7 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
         )));
     }
     debug!(
+        repo = %repo_path.display(),
         operation = args.first().copied().unwrap_or("unknown"),
         arg_count = args.len(),
         stdin_len = stdin_text.len(),
@@ -512,8 +506,16 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
             .extend_from_slice(b"\n... git stderr truncated by Ramag");
     }
     if !status.success() {
-        let err = String::from_utf8_lossy(&stderr.bytes);
-        return Err(DomainError::QueryFailed(friendly_git_error(args, &err)));
+        let stderr = String::from_utf8_lossy(&stderr.bytes);
+        let error = DomainError::QueryFailed(friendly_git_error(args, &stderr));
+        warn!(
+            error = %error,
+            repo = %repo_path.display(),
+            operation,
+            exit_code = ?status.code(),
+            "git stdin command failed"
+        );
+        return Err(error);
     }
     Ok(())
 }
@@ -552,47 +554,6 @@ fn record_progress_line(
     last_lines.push_back(text);
     line.clear();
     *truncated = false;
-}
-
-fn terminate_child(child: &mut std::process::Child) -> Result<()> {
-    let running = child
-        .try_wait()
-        .map_err(|e| DomainError::QueryFailed(format!("检查 git 进程失败: {e}")))?
-        .is_none();
-    if running {
-        child
-            .kill()
-            .map_err(|e| DomainError::QueryFailed(format!("终止 git 进程失败: {e}")))?;
-    }
-    child
-        .wait()
-        .map_err(|e| DomainError::QueryFailed(format!("回收 git 进程失败: {e}")))?;
-    Ok(())
-}
-
-fn wait_child_or_cleanup(
-    child: &mut std::process::Child,
-    operation: &str,
-) -> Result<std::process::ExitStatus> {
-    match child.wait() {
-        Ok(status) => Ok(status),
-        Err(error) => {
-            // wait 异常时不能再假设子进程已退出；尽力终止并回收，且不覆盖原始错误。
-            let kill_error = child.kill().err();
-            let reap_error = child.wait().err();
-            let cleanup = match (kill_error, reap_error) {
-                (None, None) => String::new(),
-                (kill, reap) => format!(
-                    "；清理失败：kill={}，wait={}",
-                    kill.map_or_else(|| "ok".into(), |error| error.to_string()),
-                    reap.map_or_else(|| "ok".into(), |error| error.to_string())
-                ),
-            };
-            Err(DomainError::QueryFailed(format!(
-                "等待 git {operation} 进程失败：{error}{cleanup}"
-            )))
-        }
-    }
 }
 
 #[cfg(test)]

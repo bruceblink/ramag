@@ -42,7 +42,7 @@ impl Render for TableTreePanel {
                 .justify_center()
                 .text_color(muted_fg)
                 .text_xs()
-                .child("加载 schemas…")
+                .child("正在加载数据库…")
                 .into_any_element();
         }
 
@@ -196,7 +196,11 @@ impl Render for TableTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(toggle_icon)
-                    .tooltip("系统库")
+                    .tooltip(if show_system {
+                        "隐藏系统库"
+                    } else {
+                        "显示系统库"
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.toggle_show_system(cx);
                     })),
@@ -206,6 +210,7 @@ impl Render for TableTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
+                    .tooltip("刷新")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh(cx);
                     })),
@@ -216,7 +221,11 @@ impl Render for TableTreePanel {
                     .xsmall()
                     .icon(IconName::SquareTerminal)
                     .selected(qp_visible)
-                    .tooltip("编辑器")
+                    .tooltip(if qp_visible {
+                        "隐藏编辑器"
+                    } else {
+                        "显示编辑器"
+                    })
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(TreeEvent::ToggleSqlEditor);
                     })),
@@ -261,7 +270,6 @@ impl Render for TableTreePanel {
             cx,
         );
 
-        // 仅渲染可见行。
         let tree_rows_rc = tree_view.rows;
         let body = uniform_list(
             "mysql-tree-rows",

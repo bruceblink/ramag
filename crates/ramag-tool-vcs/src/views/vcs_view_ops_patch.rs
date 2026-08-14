@@ -70,6 +70,7 @@ impl VcsView {
             };
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let _ = this.update(cx, |this, cx| {
@@ -150,6 +151,7 @@ impl VcsView {
             let result = driver.stage_patch(&repo, &patch).await;
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let _ = this.update(cx, |this, cx| {

@@ -99,10 +99,11 @@ pub use query::{
 pub use redis_keyspace::{
     KeyMeta, MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_COMMAND_ARG_BYTES,
     MAX_REDIS_COMMAND_ARGS, MAX_REDIS_COMMAND_BYTES, MAX_REDIS_COMMAND_NAME_BYTES,
-    MAX_REDIS_KEY_BYTES, MAX_REDIS_LOADED_ITEMS, MAX_REDIS_MATCH_PATTERN_BYTES,
-    MAX_REDIS_SCAN_ALL_KEYS, MAX_REDIS_SCAN_COUNT, MAX_REDIS_VALUE_PAGE_BATCH, RedisType,
-    ScanResult, validate_redis_collection_limit, validate_redis_command, validate_redis_key,
-    validate_redis_match_pattern, validate_redis_scan_count,
+    MAX_REDIS_KEY_BYTES, MAX_REDIS_KEY_TYPE_BATCH, MAX_REDIS_LOADED_ITEMS,
+    MAX_REDIS_MATCH_PATTERN_BYTES, MAX_REDIS_SCAN_ALL_KEYS, MAX_REDIS_SCAN_COUNT,
+    MAX_REDIS_VALUE_PAGE_BATCH, RedisType, ScanResult, validate_redis_collection_limit,
+    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
+    validate_redis_scan_count,
 };
 pub use redis_value::{RedisValue, RedisValueLoad, RedisValuePage, StreamEntry, ValuePageCursor};
 pub use resource_limits::{

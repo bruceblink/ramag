@@ -153,10 +153,7 @@ pub(super) fn render_header(
                         .into()
                 })
                 .on_copied(|_, window, cx| {
-                    window.push_notification(
-                        Notification::success("完整值已复制").autohide(true),
-                        cx,
-                    );
+                    window.push_notification(Notification::success("复制成功").autohide(true), cx);
                 }),
         );
 
@@ -185,9 +182,9 @@ pub(super) fn render_header(
                         .cursor_pointer()
                         .on_click({
                             let key = key.to_string();
-                            move |event: &ClickEvent, _, cx| {
+                            move |event: &ClickEvent, window, cx| {
                                 if ramag_ui::is_primary_modifier_double_click(event) {
-                                    ramag_ui::copy_text(key.clone(), cx);
+                                    ramag_ui::copy_text_with_notification(key.clone(), window, cx);
                                 }
                             }
                         })
@@ -247,6 +244,7 @@ pub(super) fn render_header(
             .danger()
             .small()
             .icon(ramag_ui::icons::trash())
+            .tooltip("删除 Key")
             .when(read_only, |button| button.tooltip("只读"))
             .disabled(read_only)
             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {

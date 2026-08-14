@@ -4,6 +4,7 @@ mod edit;
 mod export;
 mod filter;
 mod flatten;
+mod helpers;
 mod ops;
 mod render;
 mod row;
@@ -33,16 +34,14 @@ use gpui_component::{
 };
 use parking_lot::RwLock;
 use ramag_app::MongoService;
-use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, MongoQueryResult, json_pretty_bounded,
-};
+use ramag_domain::entities::{ConflictPolicy, ConnectionConfig, MongoQueryResult};
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease, ResultMemoryUpdate};
-use serde_json::Value;
 
 pub use flatten::FlatTable;
 
 use crate::views::inline_text_preview;
 use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for_cancellable};
+use helpers::{bounded_cell_dialog_text, memory_notice, pretty_cell_value};
 use row_search::{RowFilter, RowSearchBlocker, RowSearchState};
 pub(crate) use row_search::{RowSearchConversionStatus, RowSearchMode};
 
@@ -492,16 +491,7 @@ impl ResultPanel {
         cx: &mut Context<Self>,
     ) {
         const MAX_DIALOG_PRETTY_BYTES: usize = 1024 * 1024;
-        let display = if text.len() <= MAX_DIALOG_PRETTY_BYTES
-            && (text.starts_with('{') || text.starts_with('['))
-        {
-            serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| json_pretty_bounded(&value, MAX_DIALOG_PRETTY_BYTES))
-                .unwrap_or(text)
-        } else {
-            text
-        };
+        let display = pretty_cell_value(text, MAX_DIALOG_PRETTY_BYTES);
         let display = bounded_cell_dialog_text(display, MAX_DIALOG_PRETTY_BYTES);
         let title: SharedString = SharedString::from(format!(
             "{}  ({kind})",
@@ -546,51 +536,6 @@ impl Drop for ResultPanel {
         self.cancel_table_build();
         self.cancel_row_view_build();
     }
-}
-
-fn bounded_cell_dialog_text(mut text: String, max_bytes: usize) -> String {
-    const TRUNCATED_NOTICE: &str = "\n\n[内容过大，仅显示开头部分]";
-    if text.len() <= max_bytes {
-        return text;
-    }
-
-    let mut end = max_bytes.saturating_sub(TRUNCATED_NOTICE.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-    text.push_str(TRUNCATED_NOTICE);
-    text
-}
-
-fn memory_notice(
-    result: &MongoQueryResult,
-    retained_bytes: usize,
-    outcome: ResultMemoryUpdate,
-) -> Option<String> {
-    let mut notices = Vec::new();
-    if result.memory_warning
-        || retained_bytes >= ramag_domain::entities::INTERACTIVE_RESULT_WARNING_BYTES
-    {
-        notices.push(
-            "单个结果及表格视图已达到 128 MiB 提示线，建议用 filter / projection 收窄查询"
-                .to_string(),
-        );
-    }
-    if outcome.warning {
-        if outcome.evicted_results > 0 {
-            notices.push(format!(
-                "全部查询标签结果达到全局预算，已按 LRU 释放 {} 个非活动标签的旧结果",
-                outcome.evicted_results
-            ));
-        } else {
-            notices.push(format!(
-                "全部查询标签结果已达到 384 MiB 提示线（当前约 {} MiB）",
-                outcome.total_bytes / 1024 / 1024
-            ));
-        }
-    }
-    (!notices.is_empty()).then(|| notices.join("；"))
 }
 
 #[cfg(test)]

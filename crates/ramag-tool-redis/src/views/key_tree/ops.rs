@@ -31,7 +31,9 @@ pub(super) fn node_context_menu(
     menu = menu.item(
         ramag_ui::menu_item(copy_label)
             .icon(IconName::Copy)
-            .on_click(move |_, _, app| ramag_ui::copy_text(path_for_copy.clone(), app)),
+            .on_click(move |_, window, app| {
+                ramag_ui::copy_text_with_notification(path_for_copy.clone(), window, app);
+            }),
     );
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());

@@ -1,4 +1,5 @@
 use super::*;
+use tokio::io::AsyncWriteExt as _;
 
 #[test]
 fn stderr_tail_is_bounded() {
@@ -35,7 +36,12 @@ fn transfer_chunks_respect_server_and_local_limits() {
 async fn packet_relay_forwards_valid_frame_and_rejects_oversized_frame() {
     let (mut input, input_reader) = tokio::io::duplex(64);
     let (mut output_reader, output) = tokio::io::duplex(64);
-    let relay = tokio::spawn(relay_bounded_packets(input_reader, output, false));
+    let relay = tokio::spawn(relay_bounded_packets(
+        input_reader,
+        output,
+        false,
+        "test".into(),
+    ));
     input.write_all(&3u32.to_be_bytes()).await.unwrap();
     input.write_all(&[1, 2, 3]).await.unwrap();
     input.shutdown().await.unwrap();
@@ -46,7 +52,12 @@ async fn packet_relay_forwards_valid_frame_and_rejects_oversized_frame() {
 
     let (mut input, input_reader) = tokio::io::duplex(64);
     let (mut output_reader, output) = tokio::io::duplex(64);
-    let relay = tokio::spawn(relay_bounded_packets(input_reader, output, false));
+    let relay = tokio::spawn(relay_bounded_packets(
+        input_reader,
+        output,
+        false,
+        "test".into(),
+    ));
     input
         .write_all(&(MAX_SFTP_PACKET_BYTES + 1).to_be_bytes())
         .await
@@ -62,7 +73,12 @@ async fn packet_relay_forwards_valid_frame_and_rejects_oversized_frame() {
 async fn packet_relay_skips_a_bounded_jumpserver_banner_before_version() {
     let (mut input, input_reader) = tokio::io::duplex(256);
     let (mut output_reader, output) = tokio::io::duplex(256);
-    let relay = tokio::spawn(relay_bounded_packets(input_reader, output, true));
+    let relay = tokio::spawn(relay_bounded_packets(
+        input_reader,
+        output,
+        true,
+        "test".into(),
+    ));
     input
         .write_all(b"Welcome to JumpServer SSH Server\r\n")
         .await

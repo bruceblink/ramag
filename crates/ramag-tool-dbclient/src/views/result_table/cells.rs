@@ -1,11 +1,8 @@
 use gpui::{
-    AnyElement, ClickEvent, ClipboardItem, Context, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement, SharedString, Styled, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement, SharedString, Styled, div, prelude::*, px,
 };
-use gpui_component::{
-    IconName, Sizable as _, h_flex, input::Input, menu::ContextMenuExt as _,
-    notification::Notification,
-};
+use gpui_component::{IconName, Sizable as _, h_flex, input::Input, menu::ContextMenuExt as _};
 use ramag_domain::entities::Value;
 
 use super::TableRowFrame;
@@ -48,16 +45,14 @@ pub(super) fn render_header_cell(
         .overflow_hidden()
         .cursor_pointer()
         .relative()
-        .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-            if e.click_count() >= 2 {
-                cx.write_to_clipboard(ClipboardItem::new_string(col_name.to_string()));
-                this.set_pending_notification(Some(
-                    Notification::success(format!("已复制列名 {col_name}")).autohide(true),
-                ));
-                cx.notify();
-            } else {
-                this.toggle_sort(ci, cx);
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            if e.modifiers().secondary() {
+                if ramag_ui::is_primary_modifier_double_click(e) {
+                    ramag_ui::copy_text_with_notification(col_name.to_string(), window, cx);
+                }
+                return;
             }
+            this.toggle_sort(ci, cx);
         }))
         .child(
             h_flex()

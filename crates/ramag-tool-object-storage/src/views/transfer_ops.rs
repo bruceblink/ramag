@@ -39,6 +39,7 @@ impl ObjectStorageView {
         }
         let service = self.service.clone();
         let local_path = path.display().to_string();
+        let local_path_for_log = local_path.clone();
         let retry_path = path.clone();
         let retry_key = key.clone();
         let cancellation = TransferCancellation::default();
@@ -77,10 +78,23 @@ impl ObjectStorageView {
                 )
                 .await;
             let existing = match &result {
-                Err(error) if is_conflict(error) && overwrite == OverwritePolicy::Refuse => service
-                    .stat_object(&account_id, &mount, &retry_key)
-                    .await
-                    .ok(),
+                Err(error) if is_conflict(error) && overwrite == OverwritePolicy::Refuse => {
+                    match service.stat_object(&account_id, &mount, &retry_key).await {
+                        Ok(metadata) => Some(metadata),
+                        Err(metadata_error) => {
+                            tracing::warn!(
+                                operation = "object_storage_upload_conflict_stat",
+                                account_id = %account_id,
+                                mount_id = %mount.id,
+                                bucket = %mount.bucket,
+                                key = %retry_key,
+                                error = %metadata_error,
+                                "load conflicting object metadata failed"
+                            );
+                            None
+                        }
+                    }
+                }
                 _ => None,
             };
             let _ = this.update_in(cx, |this, window, cx| {
@@ -118,11 +132,19 @@ impl ObjectStorageView {
                         }
                     }
                     Err(error) if is_cancelled(&error) => {}
-                    Err(error) => this.operation_error(
-                        "object_storage_upload",
-                        &error,
-                        format!("上传失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        tracing::error!(
+                            operation = "object_storage_upload",
+                            account_id = %account_id,
+                            mount_id = %mount.id,
+                            bucket = %mount.bucket,
+                            key = %retry_key,
+                            local_path = %local_path_for_log,
+                            error = %error,
+                            "upload object failed"
+                        );
+                        this.error(format!("上传失败：{}", error.user_message()));
+                    }
                 }
                 cx.notify();
             });
@@ -157,6 +179,7 @@ impl ObjectStorageView {
         }
         let service = self.service.clone();
         let local_path = path.display().to_string();
+        let local_path_for_log = local_path.clone();
         let retry_path = path.clone();
         let retry_key = key.clone();
         let cancellation = TransferCancellation::default();
@@ -214,11 +237,19 @@ impl ObjectStorageView {
                         }
                     }
                     Err(error) if is_cancelled(&error) => {}
-                    Err(error) => this.operation_error(
-                        "object_storage_download",
-                        &error,
-                        format!("下载失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        tracing::error!(
+                            operation = "object_storage_download",
+                            account_id = %account_id,
+                            mount_id = %mount.id,
+                            bucket = %mount.bucket,
+                            key = %retry_key,
+                            local_path = %local_path_for_log,
+                            error = %error,
+                            "download object failed"
+                        );
+                        this.error(format!("下载失败：{}", error.user_message()));
+                    }
                 }
                 cx.notify();
             });

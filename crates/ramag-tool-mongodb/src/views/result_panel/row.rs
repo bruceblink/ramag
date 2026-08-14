@@ -125,14 +125,7 @@ pub(super) fn render_row(
                                     .map(clipboard_text_for_value)
                                     .unwrap_or_else(|| fallback_for_copy.clone())
                             };
-                            ramag_ui::copy_text(text, cx);
-                            panel.pending_notification = Some(
-                                gpui_component::notification::Notification::success(
-                                    "已复制单元格完整值",
-                                )
-                                .autohide(true),
-                            );
-                            cx.notify();
+                            ramag_ui::copy_text_with_notification(text, window, cx);
                             return;
                         }
                         if e.click_count() < 2 {

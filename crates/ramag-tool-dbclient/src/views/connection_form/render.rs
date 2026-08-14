@@ -428,11 +428,11 @@ impl Render for ConnectionFormPanel {
                                             .flex_none()
                                             .label("复制")
                                             .on_click(cx.listener(
-                                                move |_, _: &ClickEvent, _, cx| {
-                                                    cx.write_to_clipboard(
-                                                        gpui::ClipboardItem::new_string(
-                                                            msg_for_copy.clone(),
-                                                        ),
+                                                move |_, _: &ClickEvent, window, cx| {
+                                                    ramag_ui::copy_text_with_notification(
+                                                        msg_for_copy.clone(),
+                                                        window,
+                                                        cx,
                                                     );
                                                 },
                                             )),

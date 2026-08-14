@@ -250,10 +250,6 @@ impl ResultPanel {
         self.selected_cell = cell;
     }
 
-    pub(crate) fn set_pending_notification(&mut self, n: Option<Notification>) {
-        self.pending_notification = n;
-    }
-
     /// 切换结果数据源时列结构会变化；内容搜索作为用户条件跨表保留。
     pub fn clear_column_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.column_filter_input

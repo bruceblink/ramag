@@ -1,5 +1,4 @@
-//! 侧栏 Tag：名字、详情与操作菜单。
-//! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
+//! 侧栏 Tag 行与操作菜单。
 
 use gpui::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
@@ -17,7 +16,6 @@ use super::helpers::TagOp;
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
 
-/// 单条 tag 行：[tag-icon] name + 详情（message / 短 hash）内联 + 行尾 [Push][Delete]（固定 28px 高）
 pub(super) fn tag_row(
     idx: usize,
     t: &Tag,
@@ -29,11 +27,9 @@ pub(super) fn tag_row(
     let muted_fg = theme.muted_foreground;
     let mono = theme.mono_font_family.clone();
     let hover_bg = theme.muted;
-    // 暖橙色：tag 与分支区分（与 commit row 内的 tag chip 同色系）
     let tag_color = gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0);
 
-    // 有 message 就显示（annotated = tag 自己的 message；lightweight = commit subject），
-    // 都没有时回退到 commit hash
+    // 无说明时显示提交哈希。
     let detail = match &t.message {
         Some(m) => m.clone(),
         None => t.commit.short().to_string(),
@@ -94,6 +90,7 @@ pub(super) fn tag_row(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::ellipsis())
+            .tooltip("Tag 操作")
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                 tag_actions_menu(menu, menu_entity.clone(), menu_name.clone(), busy)
             }),

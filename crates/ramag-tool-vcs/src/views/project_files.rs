@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px, uniform_list,
 };
-use gpui_component::{ActiveTheme, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 use ramag_domain::entities::{FileChangeKind, FileStatus, contains_case_insensitive};
 
 use super::helpers::{code_letter_color, code_to_letter};
@@ -362,6 +362,15 @@ impl VcsView {
                     .child(arrow),
             )
             .child(
+                Icon::new(if is_expanded {
+                    IconName::FolderOpen
+                } else {
+                    IconName::FolderClosed
+                })
+                .xsmall()
+                .text_color(fg),
+            )
+            .child(
                 div()
                     .flex_1()
                     .min_w_0()
@@ -412,6 +421,7 @@ impl VcsView {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.select_pf_file(path_for_open.clone(), cx);
             }))
+            .child(Icon::new(IconName::File).xsmall().text_color(muted_fg))
             .child(
                 div()
                     .flex_none()

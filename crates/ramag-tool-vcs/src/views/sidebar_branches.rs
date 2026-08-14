@@ -1,5 +1,4 @@
-//! 侧栏分支行：名字、上游同步与操作菜单。
-//! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
+//! 侧栏分支行与操作菜单。
 
 use gpui::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
@@ -18,7 +17,6 @@ use super::helpers::{BranchOp, checkout_remote_branch_op};
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
 
-/// 单条分支行：图标 + 名字 + 上游同步；操作通过右键菜单触发（固定 28px 高）
 pub(super) fn branch_row(
     idx: usize,
     b: &Branch,
@@ -89,13 +87,11 @@ pub(super) fn branch_row(
                 .child(sync_str.unwrap_or_default()),
         );
 
-    // 当前 HEAD 分支没有可用操作：不挂菜单，避免右键弹出空菜单
     if is_head {
         return row.into_any_element();
     }
     row = row.cursor_pointer();
 
-    // 行尾「⋯」：与右键菜单同一份操作，给不习惯右键的用户一个可见入口
     let more_btn = {
         let ent = entity.clone();
         let n = name.clone();
@@ -105,6 +101,7 @@ pub(super) fn branch_row(
         .ghost()
         .xsmall()
         .icon(ramag_ui::icons::ellipsis())
+        .tooltip("分支操作")
         .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
             branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
         })
@@ -181,9 +178,7 @@ fn branch_actions_menu(
             open_confirm_dialog(
                 view,
                 "删除分支？",
-                format!(
-                    "将删除本地分支「{branch_name}」（仅当已合并；未合并会报错）。\n确认继续吗？"
-                ),
+                format!("将删除已合并的本地分支「{branch_name}」；未合并时操作会失败。"),
                 "删除",
                 true,
                 move |this, cx| {

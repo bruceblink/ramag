@@ -13,20 +13,20 @@ struct CommonInteraction {
 
 const COMMON_INTERACTIONS: &[CommonInteraction] = &[
     CommonInteraction {
-        label: "执行主要操作",
-        description: "例如打开文件、编辑单元格或使用剪贴板内容",
+        label: "执行操作",
+        description: "打开、编辑或应用当前内容",
         macos_gesture: "双击",
         other_gesture: "双击",
     },
     CommonInteraction {
-        label: "复制完整内容",
-        description: "复制单元格、文件路径等未截断的完整值",
+        label: "复制完整值",
+        description: "复制未截断的单元格或文件路径",
         macos_gesture: "⌘ + 双击",
         other_gesture: "Ctrl + 双击",
     },
     CommonInteraction {
-        label: "打开更多操作",
-        description: "显示当前项目支持的操作菜单",
+        label: "更多操作",
+        description: "打开当前项目的操作菜单",
         macos_gesture: "右键",
         other_gesture: "右键",
     },
@@ -67,17 +67,7 @@ pub(super) fn render_common_group(theme: &gpui_component::Theme) -> impl IntoEle
                                 .child(interaction.description),
                         ),
                 )
-                .child(
-                    h_flex()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child("固定"),
-                        )
-                        .child(super::shortcut_pill(current_gesture(interaction), theme)),
-                ),
+                .child(super::shortcut_pill(current_gesture(interaction), theme)),
         );
     }
     v_flex()

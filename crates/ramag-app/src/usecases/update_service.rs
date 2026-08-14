@@ -1,4 +1,6 @@
-//! 应用更新用例：版本比较、检查节流与平台安装包选择。
+//! 应用更新用例：版本比较、检查节流与安装包选择。
+
+mod download;
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -110,6 +112,7 @@ impl UpdateService {
                     operation = "update_check",
                     error = %error,
                     force,
+                    current_version = %self.current_version,
                     "update check failed"
                 );
                 return Err(error);
@@ -122,6 +125,7 @@ impl UpdateService {
                     operation = "update_check",
                     error = %error,
                     force,
+                    current_version = %self.current_version,
                     "update metadata validation failed"
                 );
                 return Err(error);
@@ -136,66 +140,6 @@ impl UpdateService {
             "update check completed"
         );
         Ok(result)
-    }
-
-    pub async fn download(
-        &self,
-        update: &AvailableUpdate,
-        progress: UpdateProgressFn,
-        cancellation: UpdateCancellation,
-    ) -> Result<std::path::PathBuf> {
-        let asset = update
-            .asset
-            .as_ref()
-            .ok_or_else(|| DomainError::NotImplemented("当前平台没有可下载的安装包".into()))?;
-        let expected_name = current_platform()
-            .map(|platform| asset_name_for(platform, &update.release.version))
-            .ok_or_else(|| DomainError::NotImplemented("当前平台没有可下载的安装包".into()))?;
-        if asset.name != expected_name {
-            return Err(DomainError::InvalidConfig(format!(
-                "更新资产与当前平台不匹配：{}",
-                asset.name
-            )));
-        }
-        let current = Version::parse(&self.current_version)
-            .map_err(|error| DomainError::InvalidConfig(format!("当前应用版本无效：{error}")))?;
-        let latest = Version::parse(&update.release.version)
-            .map_err(|error| DomainError::InvalidConfig(format!("更新版本无效：{error}")))?;
-        if latest <= current {
-            return Err(DomainError::Other("更新版本不高于当前版本".into()));
-        }
-        info!(
-            operation = "update_download",
-            version = %update.release.version,
-            asset = %asset.name,
-            expected_bytes = asset.size,
-            "update download started"
-        );
-        let result = self
-            .driver
-            .download_asset(&update.release, asset, progress, cancellation)
-            .await;
-        match &result {
-            Ok(path) => {
-                info!(
-                    operation = "update_download",
-                    version = %update.release.version,
-                    asset = %asset.name,
-                    path = %path.display(),
-                    "update download completed"
-                )
-            }
-            Err(download_error) => {
-                error!(
-                    operation = "update_download",
-                    error = %download_error,
-                    version = %update.release.version,
-                    asset = %asset.name,
-                    "update download failed"
-                )
-            }
-        }
-        result
     }
 
     pub fn reveal_download(&self, path: &std::path::Path) -> Result<()> {

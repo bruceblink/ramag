@@ -244,7 +244,7 @@ impl ResultPanel {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(val.to_clipboard_string()));
-        self.pending_notification = Some(Notification::success("已复制单元格").autohide(true));
+        self.pending_notification = Some(Notification::success("复制成功").autohide(true));
         cx.notify();
     }
 
@@ -260,8 +260,7 @@ impl ResultPanel {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
-        self.pending_notification =
-            Some(Notification::success(format!("已复制列名 {name}")).autohide(true));
+        self.pending_notification = Some(Notification::success("复制成功").autohide(true));
         cx.notify();
     }
 }

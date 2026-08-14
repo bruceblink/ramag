@@ -184,10 +184,12 @@ impl VcsView {
             .await;
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 new_status,
+                &repo,
                 "workspace status",
             );
             let branches = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 branches,
+                &repo,
                 "branches",
             );
             let _ = this.update(cx, |this, cx| {

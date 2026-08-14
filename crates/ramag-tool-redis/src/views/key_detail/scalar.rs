@@ -10,8 +10,8 @@ use gpui::{
     UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    Selectable as _, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard, h_flex,
-    v_flex,
+    Selectable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    clipboard::Clipboard, h_flex, notification::Notification, v_flex,
 };
 use ramag_domain::entities::RedisValue;
 use ramag_ui::RestrictScrollToAxisExt as _;
@@ -128,7 +128,7 @@ pub(super) fn render_scalar(
         .border_1()
         .border_color(border)
         .rounded(px(4.0))
-        .on_click(cx.listener(move |panel, event: &ClickEvent, _, cx| {
+        .on_click(cx.listener(move |panel, event: &ClickEvent, window, cx| {
             if ramag_ui::is_primary_modifier_double_click(event) {
                 let text = panel
                     .scalar_cache
@@ -136,7 +136,7 @@ pub(super) fn render_scalar(
                     .as_ref()
                     .map(|(_, _, display_text, _, _)| display_text.clone())
                     .unwrap_or_default();
-                ramag_ui::copy_text(text.to_string(), cx);
+                ramag_ui::copy_text_with_notification(text.to_string(), window, cx);
                 return;
             }
             if event.click_count() >= 2
@@ -228,7 +228,10 @@ pub(super) fn render_scalar(
         .child(
             Clipboard::new("redis-scalar-copy")
                 .tooltip("复制当前视图")
-                .value(display_text),
+                .value(display_text)
+                .on_copied(|_, window, cx| {
+                    window.push_notification(Notification::success("复制成功").autohide(true), cx);
+                }),
         );
 
     v_flex()
