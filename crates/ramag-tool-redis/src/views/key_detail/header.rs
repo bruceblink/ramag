@@ -1,9 +1,9 @@
-//! 详情页 header：key 名 + 元信息（DB/类型/TTL/元素数/大小）+ 添加 / 删除按钮
+//! Key 详情头部。
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
     Disableable as _, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    clipboard::Clipboard, h_flex, notification::Notification, v_flex,
+    clipboard::Clipboard, h_flex, v_flex,
 };
 use ramag_domain::entities::{MAX_REDIS_COLLECTION_BYTES, RedisValue};
 
@@ -22,7 +22,7 @@ pub(super) fn render_header(
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
     let ttl_label = match panel.ttl_ms {
-        // PTTL 语义：-1=无过期时间（永久）；-2=key 不存在（非"已过期"）
+        // PTTL：-1 为永久，-2 为 Key 不存在。
         Some(-1) => "永久".to_string(),
         Some(-2) => "Key 不存在".to_string(),
         Some(ms) if ms >= 0 => format_ttl_ms(ms),
@@ -31,8 +31,7 @@ pub(super) fn render_header(
     let key_for_ttl = key.to_string();
     let ttl_ms_for_event = panel.ttl_ms;
     let db = panel.db;
-    // 借用而非 clone：header 只按 variant 判类型 / 取长度，不读容器内容。
-    // 原来每帧深拷贝整个 value（大 Hash/ZSet 可达数 MB / 十万级元素）
+    // 仅借用值，避免渲染时复制大集合。
     let value_ref = panel.value.as_ref();
     let read_only = panel.is_read_only();
 
@@ -42,7 +41,7 @@ pub(super) fn render_header(
         .text_color(muted_fg)
         .child(div().child(format!("DB {db}")));
 
-    // 类型 chip：色点 + 类型名，颜色与 Key 树徽标一致
+    // 类型标签。
     if let Some((label, color)) = value_ref.and_then(redis_type_label_color) {
         info_row = info_row.child(
             h_flex()
@@ -60,7 +59,7 @@ pub(super) fn render_header(
         );
     }
 
-    // TTL 读取失败与 key 内容分开呈现，并提供局部重试。
+    // TTL 失败时可单独重试。
     info_row = if panel.ttl_loading {
         info_row.child(
             ramag_ui::clickable_button("ttl-loading")
@@ -142,7 +141,7 @@ pub(super) fn render_header(
         .debug_selector(|| "redis-value-copy-button".into())
         .child(
             Clipboard::new("redis-value-copy")
-                .tooltip("复制完整值")
+                .tooltip("复制")
                 .value_fn(move |_, app| {
                     panel_for_copy
                         .read(app)
@@ -153,7 +152,7 @@ pub(super) fn render_header(
                         .into()
                 })
                 .on_copied(|_, window, cx| {
-                    window.push_notification(Notification::success("复制成功").autohide(true), cx);
+                    window.push_notification(ramag_ui::copy_success_notification(), cx);
                 }),
         );
 
@@ -244,7 +243,7 @@ pub(super) fn render_header(
             .danger()
             .small()
             .icon(ramag_ui::icons::trash())
-            .tooltip("删除 Key")
+            .tooltip("删除")
             .when(read_only, |button| button.tooltip("只读"))
             .disabled(read_only)
             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
@@ -274,8 +273,7 @@ where
         }))
 }
 
-/// MEMORY USAGE 显示 chip：未估算时显示 [字节数] 按钮 → 触发 estimate_size；
-/// 已估算时显示具体字节数（人类可读单位）
+/// 显示或估算 Key 内存占用。
 fn render_size_chip(
     bytes: Option<u64>,
     estimating: bool,
@@ -332,8 +330,7 @@ fn human_readable_bytes(n: u64) -> String {
     }
 }
 
-/// 由 RedisValue variant 推导（label, 类型色）
-/// 与 `key_tree::type_color_solid` / `key_create` 中色板保持一致
+/// 从值类型推导标签和颜色。
 pub(super) fn redis_type_label_color(v: &RedisValue) -> Option<(&'static str, gpui::Hsla)> {
     use gpui::hsla;
     match v {

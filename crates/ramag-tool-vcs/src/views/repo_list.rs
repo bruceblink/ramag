@@ -60,7 +60,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("清除错误")
+                        .tooltip("清除")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.clear_error(cx);
                         })),
@@ -493,7 +493,7 @@ fn repo_row(
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())
-                        .tooltip("移出列表")
+                        .tooltip("移除")
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.confirm_remove_recent_repo(path_for_remove.clone(), window, cx);
