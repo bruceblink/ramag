@@ -123,6 +123,7 @@ pub fn cleanable_input(
             .icon(Icon::new(IconName::CircleX))
             .ghost()
             .xsmall()
+            .tooltip("清空")
             .tab_stop(false)
             .text_color(cx.theme().muted_foreground)
             .on_click(move |_, window, cx| {
@@ -157,6 +158,7 @@ pub fn closable_dialog_title(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
+                .tooltip("关闭")
                 .on_click(move |_, window, cx| {
                     window.close_dialog(cx);
                     on_close(window, cx);

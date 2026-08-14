@@ -126,6 +126,7 @@ impl Render for CollectionTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
+                    .tooltip("刷新集合")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .child(

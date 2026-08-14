@@ -123,6 +123,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("关闭标签页")
                         .disabled(self.busy || self.loading)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_open_repo(path_close.clone(), cx);

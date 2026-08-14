@@ -185,6 +185,7 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
+                    .tooltip("刷新仓库")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_workspace_silent(cx);

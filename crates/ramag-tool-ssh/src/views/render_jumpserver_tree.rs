@@ -240,6 +240,7 @@ impl JumpServerPanel {
                         } else {
                             IconName::ChevronRight
                         })
+                        .tooltip("展开或折叠组织")
                         .disabled(self.is_busy())
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
@@ -333,6 +334,7 @@ impl JumpServerPanel {
                         } else {
                             IconName::ChevronRight
                         })
+                        .tooltip("展开或折叠节点")
                         .disabled(self.is_busy())
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {

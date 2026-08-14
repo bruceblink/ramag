@@ -61,6 +61,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("清除错误")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.clear_error(cx);
                         })),

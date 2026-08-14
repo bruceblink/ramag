@@ -243,6 +243,7 @@ impl Render for RemotePathDialog {
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Close)
+                                .tooltip("移除收藏")
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     this.remove_favorite(&path_for_remove, cx);
                                 })),

@@ -239,6 +239,7 @@ impl Render for LinesEditor {
                         .ghost()
                         .small()
                         .icon(IconName::Close)
+                        .tooltip("删除此行")
                         .disabled(self.disabled)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.remove_row(id, cx);

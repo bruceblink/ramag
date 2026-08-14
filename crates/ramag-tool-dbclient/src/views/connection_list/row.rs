@@ -244,6 +244,7 @@ pub(super) fn connection_row(
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::pencil())
+                        .tooltip("编辑连接")
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(ListEvent::RequestEdit(conn_for_edit.clone()));
                         })),
@@ -253,6 +254,7 @@ pub(super) fn connection_row(
                         .ghost()
                         .small()
                         .icon(ramag_ui::icons::trash())
+                        .tooltip("删除连接")
                         .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                             cx.emit(ListEvent::RequestDelete(conn_id_for_del.clone()));
                         })),

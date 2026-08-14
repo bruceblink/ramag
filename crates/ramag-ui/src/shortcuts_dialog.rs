@@ -5,11 +5,12 @@ mod common;
 
 use gpui::{
     App, AppContext as _, ClickEvent, Context, InteractiveElement as _, IntoElement, Keystroke,
-    ParentElement, Render, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px,
+    ParentElement, Render, StatefulInteractiveElement as _, Styled, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _, h_flex, scroll::ScrollableElement as _, v_flex,
+    button::ButtonVariants as _, h_flex, v_flex,
 };
 
 pub const SHORTCUT_OVERRIDES_PREF_KEY: &str = "shortcut_overrides_v1";
@@ -495,7 +496,7 @@ impl Render for ShortcutPanel {
                     .id("shortcut-center-scroll")
                     .w_full()
                     .h(list_height)
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
                     .pr(px(5.0))
                     .child(groups),
             )

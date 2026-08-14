@@ -228,12 +228,13 @@ impl Render for ConnectionFormPanel {
                                             .ghost()
                                             .xsmall()
                                             .tab_stop(false)
-                                            .icon(if self.password_masked {
-                                                IconName::Eye
-                                            } else {
-                                                IconName::EyeOff
-                                            })
-                                            .disabled(self.saving)
+                        .icon(if self.password_masked {
+                            IconName::Eye
+                        } else {
+                            IconName::EyeOff
+                        })
+                        .tooltip("显示或隐藏密码")
+                        .disabled(self.saving)
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {
                                                     if this.saving {

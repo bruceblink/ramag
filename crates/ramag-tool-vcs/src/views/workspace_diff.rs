@@ -192,6 +192,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("关闭差异")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             // 阻止冒泡到 tab 的 select on_click（否则关了又被重新打开 = 关不掉）
                             cx.stop_propagation();
@@ -271,6 +272,11 @@ impl VcsView {
                 IconName::Minimize
             } else {
                 IconName::Maximize
+            })
+            .tooltip(if self.diff_fullscreen {
+                "退出全屏"
+            } else {
+                "全屏查看"
             })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_diff_fullscreen(cx);
@@ -434,6 +440,7 @@ fn render_inline_blame_banner(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
+                .tooltip("关闭行追溯")
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.clear_inline_blame(cx);
                 })),

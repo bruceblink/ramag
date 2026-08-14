@@ -101,6 +101,7 @@ fn render_left_sidebar(
         .ghost()
         .xsmall()
         .icon(IconName::Close)
+        .tooltip("关闭详情")
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
             this.close_commit_detail(cx);
         }));
