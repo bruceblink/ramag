@@ -137,18 +137,30 @@ pub(super) fn render_header(
         cx,
     ));
 
+    let copy_key_button = div()
+        .debug_selector(|| "redis-key-copy-button".into())
+        .child(
+            Clipboard::new("redis-key-copy")
+                .tooltip("复制 Key")
+                .value(key.to_string()),
+        );
+
     let panel_for_copy = cx.entity();
-    let copy_button = Clipboard::new(format!("redis-copy-{key}"))
-        .tooltip("复制完整值")
-        .value_fn(move |_, app| {
-            panel_for_copy
-                .read(app)
-                .value
-                .as_ref()
-                .map(RedisValue::to_clipboard_string)
-                .unwrap_or_default()
-                .into()
-        });
+    let copy_value_button = div()
+        .debug_selector(|| "redis-value-copy-button".into())
+        .child(
+            Clipboard::new("redis-value-copy")
+                .tooltip("复制完整值")
+                .value_fn(move |_, app| {
+                    panel_for_copy
+                        .read(app)
+                        .value
+                        .as_ref()
+                        .map(RedisValue::to_clipboard_string)
+                        .unwrap_or_default()
+                        .into()
+                }),
+        );
 
     let mut header = h_flex()
         .w_full()
@@ -175,7 +187,7 @@ pub(super) fn render_header(
                 .child(info_row),
         );
 
-    header = header.child(copy_button);
+    header = header.child(copy_key_button).child(copy_value_button);
 
     let key_owned = key.to_string();
     if let Some(value) = value_ref {

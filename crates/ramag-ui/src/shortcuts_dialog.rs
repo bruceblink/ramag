@@ -1,6 +1,7 @@
 //! 快捷键中心与最近项目通用弹窗。
 
 mod bindings;
+mod common;
 
 use gpui::{
     App, AppContext as _, ClickEvent, Context, InteractiveElement as _, IntoElement, Keystroke,
@@ -206,11 +207,14 @@ const SHORTCUTS: &[ShortcutSpec] = &[
     ),
 ];
 
+const MODULE_GROUPS: &[&str] = &["数据库", "Git", "SSH", "对象存储", "剪贴板"];
+
 pub use bindings::{apply_saved_shortcut_overrides, init_shortcut_overrides};
 use bindings::{
     display_key, overrides, platform_defaults, platform_name, reset_override, reset_overrides,
     serialize_keystroke, set_override, valid_recorded_keystroke,
 };
+use common::{render_common_group, render_type_heading};
 
 pub fn open_shortcuts(window: &mut Window, cx: &mut App) {
     let panel = cx.new(ShortcutPanel::new);
@@ -307,7 +311,12 @@ impl ShortcutPanel {
         cx.notify();
     }
 
-    fn render_group(&self, group: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_group(
+        &self,
+        group: &'static str,
+        show_title: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let overrides = overrides(cx);
         let specs: Vec<_> = SHORTCUTS
@@ -401,12 +410,14 @@ impl ShortcutPanel {
         v_flex()
             .w_full()
             .gap(px(8.0))
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(group),
-            )
+            .when(show_title, |section| {
+                section.child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(group),
+                )
+            })
             .child(rows)
     }
 }
@@ -419,10 +430,27 @@ impl Render for ShortcutPanel {
             .max(px(280.0))
             .min(px(640.0));
         let has_overrides = !overrides(cx).is_empty();
-        let mut groups = v_flex().w_full().gap(px(20.0));
-        for group in ["全局", "数据库", "Git", "SSH", "对象存储", "剪贴板"] {
-            groups = groups.child(self.render_group(group, cx));
+        let global_group = v_flex()
+            .w_full()
+            .gap(px(10.0))
+            .child(render_type_heading("全局", cx.theme()))
+            .child(self.render_group("全局", false, cx));
+        let mut module_groups = v_flex()
+            .w_full()
+            .gap(px(20.0))
+            .child(render_type_heading("模块", cx.theme()));
+        for group in MODULE_GROUPS
+            .iter()
+            .filter(|group| SHORTCUTS.iter().any(|spec| spec.group == **group))
+        {
+            module_groups = module_groups.child(self.render_group(group, true, cx));
         }
+        let groups = v_flex()
+            .w_full()
+            .gap(px(28.0))
+            .child(global_group)
+            .child(module_groups)
+            .child(render_common_group(cx.theme()));
         v_flex()
             .w_full()
             .gap(px(14.0))
@@ -442,7 +470,7 @@ impl Render for ShortcutPanel {
                                     .child("快捷键中心"),
                             )
                             .child(div().text_sm().text_color(muted).child(format!(
-                                "当前系统：{} · 点击组合键即可修改，立即生效",
+                                "当前系统：{} · 键盘快捷键可点击修改，常用操作为固定交互",
                                 platform_name()
                             ))),
                     )
@@ -557,6 +585,13 @@ mod tests {
                 && shortcut.action.is_none()
                 && shortcut.macos == "⌘⌥⇧V"
                 && shortcut.windows == "Ctrl+Alt+Shift+V"
+        }));
+    }
+
+    #[test]
+    fn every_keyboard_shortcut_belongs_to_global_or_module_type() {
+        assert!(SHORTCUTS.iter().all(|shortcut| {
+            shortcut.group == "全局" || MODULE_GROUPS.contains(&shortcut.group)
         }));
     }
 }

@@ -55,7 +55,7 @@ pub(super) fn open_object_preview_dialog(
                     .child(
                         Clipboard::new("object-preview-copy")
                             .tooltip("复制完整内容")
-                            .value_fn(move |_, app| editor_for_copy.read(app).value().into()),
+                            .value_fn(move |_, app| editor_for_copy.read(app).value()),
                     )
                     .child(
                         ramag_ui::clickable_button("object-preview-close")

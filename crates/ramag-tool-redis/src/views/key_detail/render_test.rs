@@ -9,7 +9,8 @@ use std::sync::{
 
 use async_trait::async_trait;
 use gpui::{
-    AppContext as _, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
+    AppContext as _, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point,
+    px, size,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{
@@ -138,14 +139,14 @@ impl Storage for MockStorage {
     }
 }
 
-fn mock_service() -> Arc<RedisService> {
+pub(crate) fn mock_service() -> Arc<RedisService> {
     Arc::new(RedisService::new(
         Arc::new(MockKv::default()),
         Arc::new(MockStorage),
     ))
 }
 
-fn mock_config() -> ConnectionConfig {
+pub(crate) fn mock_config() -> ConnectionConfig {
     let mut config = ConnectionConfig::new_redis("test", "127.0.0.1", 6379);
     config.password = String::new();
     config
@@ -178,6 +179,41 @@ fn key_load_uses_global_limit_without_manual_pagination(cx: &mut TestAppContext)
         MAX_REDIS_LOADED_ITEMS
     );
     assert!(cx.debug_bounds("redis-load-more-members").is_none());
+}
+
+#[gpui::test]
+fn header_copies_key_and_value_as_distinct_payloads(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = KeyDetailPanel::new(mock_service(), cx);
+            panel.config = Some(mock_config());
+            panel.key = Some("17xxx27:code".into());
+            panel.value = Some(RedisValue::Text("value-content".into()));
+            panel.collection_total = Some(13);
+            panel
+        });
+        gpui_component::Root::new(panel, window, cx)
+    });
+    cx.run_until_parked();
+
+    let key_copy = cx
+        .debug_bounds("redis-key-copy-button")
+        .expect("复制 Key 按钮应参与布局");
+    cx.simulate_click(key_copy.center(), Modifiers::default());
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("17xxx27:code".into())
+    );
+
+    let value_copy = cx
+        .debug_bounds("redis-value-copy-button")
+        .expect("复制值按钮应参与布局");
+    cx.simulate_click(value_copy.center(), Modifiers::default());
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("value-content".into())
+    );
 }
 
 /// 五种容器类型逐一注入后渲染：类型块必须拿到非零高度布局（回归防护：

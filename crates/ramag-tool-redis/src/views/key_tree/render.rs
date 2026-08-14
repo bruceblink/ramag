@@ -7,7 +7,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    h_flex,
+    Icon, IconName, Sizable as _, h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
 use ramag_domain::entities::{RedisType, contains_case_insensitive};
@@ -101,26 +101,39 @@ impl KeyTreePanel {
         // 折叠/展开图标（命名空间专属）。既是 key 又是命名空间时，展开只由 chevron 负责，
         // 行点击留给"加载值"（否则该 key 的值永远点不开）
         let chevron: gpui::AnyElement = if is_namespace {
-            let glyph = if row.is_expanded { "▼" } else { "▶" };
             let path_for_chevron = row.full_path.clone();
+            let path_for_copy = row.full_path.clone();
             div()
                 .id(SharedString::from(format!("redis-tree-chev-{row_index}")))
-                .w(px(12.0))
-                .text_xs()
-                .text_color(muted_fg)
+                .w(px(14.0))
                 .cursor_pointer()
-                .child(glyph)
+                .child(
+                    Icon::new(if row.is_expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .xsmall()
+                    .text_color(muted_fg),
+                )
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                    if event.modifiers().secondary() {
+                        if ramag_ui::is_primary_modifier_double_click(event) {
+                            ramag_ui::copy_text(path_for_copy.as_ref().clone(), cx);
+                        }
+                        return;
+                    }
                     this.toggle_expanded(path_for_chevron.as_ref().clone(), cx);
                 }))
                 .into_any_element()
         } else {
-            div().w(px(12.0)).into_any_element()
+            div().w(px(14.0)).into_any_element()
         };
 
         let type_badge: Option<gpui::AnyElement> = row.leaf_type.map(|t| {
             let path = path_for_load.clone();
+            let path_for_copy = path_for_load.clone();
             div()
                 .id(SharedString::from(format!("redis-tree-badge-{row_index}")))
                 .text_xs()
@@ -133,7 +146,13 @@ impl KeyTreePanel {
                 .child(t.label())
                 // badge 单击：始终加载值（不冒泡到行 toggle）
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                    if event.modifiers().secondary() {
+                        if ramag_ui::is_primary_modifier_double_click(event) {
+                            ramag_ui::copy_text(path_for_copy.as_ref().clone(), cx);
+                        }
+                        return;
+                    }
                     this.select_key(path.as_ref().clone(), cx);
                 }))
                 .into_any_element()
@@ -142,7 +161,14 @@ impl KeyTreePanel {
         // 行点击：节点本身是 key 就加载值（既是 key 又是命名空间时，展开交给 chevron）；
         // 纯命名空间（非 key）才 toggle 展开。修复"user 与 user:1 共存时 user 点不开"
         let load_on_click = is_leaf;
-        let on_row_click = cx.listener(move |this, _: &ClickEvent, _, cx| {
+        let path_for_copy = row.full_path.clone();
+        let on_row_click = cx.listener(move |this, event: &ClickEvent, _, cx| {
+            if event.modifiers().secondary() {
+                if ramag_ui::is_primary_modifier_double_click(event) {
+                    ramag_ui::copy_text(path_for_copy.as_ref().clone(), cx);
+                }
+                return;
+            }
             if load_on_click {
                 this.select_key(path_for_click.as_ref().clone(), cx);
             } else {
@@ -155,19 +181,35 @@ impl KeyTreePanel {
         } else {
             fg
         };
+        let node_icon = if is_namespace {
+            if row.is_expanded {
+                IconName::FolderOpen
+            } else {
+                IconName::FolderClosed
+            }
+        } else {
+            IconName::File
+        };
 
         // 显式行高 28px：uniform_list 行级虚拟化要求等高
         let mut row_el = h_flex()
             .id(row_id)
+            .debug_selector(move || format!("redis-tree-row-{row_index}"))
             .w_full()
             .h(px(28.0))
             .flex_none()
             .items_center()
             .gap(px(6.0))
-            .pl(px(8.0 + row.depth as f32 * INDENT_PX))
+            .pl(px(8.0))
             .pr(px(10.0))
             .cursor_pointer()
+            .child(render_hierarchy_guides(row_index, row.depth, theme_muted))
             .child(chevron)
+            .child(Icon::new(node_icon).xsmall().text_color(if is_namespace {
+                accent
+            } else {
+                muted_fg
+            }))
             .when_some(type_badge, |this, b| this.child(b))
             .child(
                 div()
@@ -206,6 +248,43 @@ impl KeyTreePanel {
             })
             .into_any_element()
     }
+}
+
+/// 为虚拟树行绘制连续的层级引导线；每层固定宽度，不改变原有缩进总量。
+fn render_hierarchy_guides(row_index: usize, depth: usize, color: gpui::Hsla) -> AnyElement {
+    h_flex()
+        .id(SharedString::from(format!("redis-tree-guides-{row_index}")))
+        .debug_selector(move || format!("redis-tree-guides-{row_index}"))
+        .h_full()
+        .flex_none()
+        .children((0..depth).map(move |level| {
+            div()
+                .relative()
+                .h_full()
+                .w(px(INDENT_PX))
+                .flex_none()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(INDENT_PX / 2.0))
+                        .top_0()
+                        .bottom_0()
+                        .border_l_1()
+                        .border_color(color),
+                )
+                .when(level + 1 == depth, |slot| {
+                    slot.child(
+                        div()
+                            .absolute()
+                            .left(px(INDENT_PX / 2.0))
+                            .top(px(14.0))
+                            .w(px(INDENT_PX / 2.0))
+                            .border_t_1()
+                            .border_color(color),
+                    )
+                })
+        }))
+        .into_any_element()
 }
 
 /// 把 Trie 扁平化为可见行。搜索模式走单次后序判定，避免每层重复扫描整棵子树。

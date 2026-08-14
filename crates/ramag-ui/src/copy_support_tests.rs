@@ -34,10 +34,10 @@ fn selectable_text_copies_dragged_selection(cx: &mut TestAppContext) {
     });
     let cx: &mut VisualTestContext = cx;
     cx.run_until_parked();
-    let bounds = cx
-        .debug_bounds("copy-support-test")
-        .expect("selectable text should be rendered");
-    assert!(bounds.contains(&point(px(10.0), px(20.0))));
+    assert!(
+        cx.debug_bounds("copy-support-test")
+            .is_some_and(|bounds| bounds.contains(&point(px(10.0), px(20.0))))
+    );
     cx.simulate_mouse_down(
         point(px(0.0), px(20.0)),
         MouseButton::Left,

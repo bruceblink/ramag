@@ -3,6 +3,8 @@
 mod helpers;
 mod ops;
 mod render;
+#[cfg(test)]
+mod render_test;
 mod scan;
 mod transfer_ops;
 mod tree;

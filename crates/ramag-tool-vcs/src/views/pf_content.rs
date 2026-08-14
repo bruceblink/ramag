@@ -56,7 +56,7 @@ impl VcsView {
             .tooltip("复制当前文件内容")
             .value_fn(move |_, app| {
                 if editor_ready {
-                    editor_for_copy.read(app).value().into()
+                    editor_for_copy.read(app).value()
                 } else {
                     snapshot_text.as_str().to_string().into()
                 }

@@ -172,9 +172,7 @@ impl Render for RemoteFileEditor {
                                     } else {
                                         "复制文件内容"
                                     })
-                                    .value_fn(move |_, app| {
-                                        input_for_copy.read(app).value().into()
-                                    }),
+                                    .value_fn(move |_, app| input_for_copy.read(app).value()),
                             )
                             .when(dirty, |actions| {
                                 actions.child(

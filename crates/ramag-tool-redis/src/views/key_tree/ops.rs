@@ -4,8 +4,8 @@
 //! 删除完成 emit KeysDeleted，上层据此清理详情面板
 
 use gpui::{Context, Entity};
-use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
+use gpui_component::{IconName, menu::PopupMenu};
 use ramag_domain::entities::{MAX_REDIS_KEY_BYTES, RedisValue, validate_redis_key};
 use ramag_ui::{open_bounded_prompt, open_confirm};
 
@@ -22,6 +22,17 @@ pub(super) fn node_context_menu(
     allow_write: bool,
 ) -> PopupMenu {
     let mut menu = menu;
+    let path_for_copy = full_path.clone();
+    let copy_label = if is_leaf {
+        "复制 Key"
+    } else {
+        "复制前缀"
+    };
+    menu = menu.item(
+        ramag_ui::menu_item(copy_label)
+            .icon(IconName::Copy)
+            .on_click(move |_, _, app| ramag_ui::copy_text(path_for_copy.clone(), app)),
+    );
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {

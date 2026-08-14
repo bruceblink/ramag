@@ -5,7 +5,7 @@ mod list_block;
 mod list_delete;
 mod ops;
 #[cfg(test)]
-mod render_test;
+pub(crate) mod render_test;
 mod scalar;
 mod set_block;
 mod stream_block;
