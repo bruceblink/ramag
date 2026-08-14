@@ -2,8 +2,8 @@
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
-    Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard,
-    h_flex, v_flex,
+    Disableable as _, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    clipboard::Clipboard, h_flex, notification::Notification, v_flex,
 };
 use ramag_domain::entities::{MAX_REDIS_COLLECTION_BYTES, RedisValue};
 
@@ -137,14 +137,6 @@ pub(super) fn render_header(
         cx,
     ));
 
-    let copy_key_button = div()
-        .debug_selector(|| "redis-key-copy-button".into())
-        .child(
-            Clipboard::new("redis-key-copy")
-                .tooltip("复制 Key")
-                .value(key.to_string()),
-        );
-
     let panel_for_copy = cx.entity();
     let copy_value_button = div()
         .debug_selector(|| "redis-value-copy-button".into())
@@ -159,6 +151,12 @@ pub(super) fn render_header(
                         .map(RedisValue::to_clipboard_string)
                         .unwrap_or_default()
                         .into()
+                })
+                .on_copied(|_, window, cx| {
+                    window.push_notification(
+                        Notification::success("完整值已复制").autohide(true),
+                        cx,
+                    );
                 }),
         );
 
@@ -177,17 +175,28 @@ pub(super) fn render_header(
                 .gap(px(4.0))
                 .child(
                     div()
+                        .id("redis-key-title")
+                        .debug_selector(|| "redis-key-title".into())
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(fg)
                         .overflow_hidden()
                         .text_ellipsis()
+                        .cursor_pointer()
+                        .on_click({
+                            let key = key.to_string();
+                            move |event: &ClickEvent, _, cx| {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text(key.clone(), cx);
+                                }
+                            }
+                        })
                         .child(inline_text_preview(key, 256)),
                 )
                 .child(info_row),
         );
 
-    header = header.child(copy_key_button).child(copy_value_button);
+    header = header.child(copy_value_button);
 
     let key_owned = key.to_string();
     if let Some(value) = value_ref {

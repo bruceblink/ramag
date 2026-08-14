@@ -17,6 +17,7 @@ pub mod pointer_menu;
 pub mod preferences;
 pub mod prompt_dialog;
 pub mod recent_items_dialog;
+pub mod redis_tree_settings;
 pub mod result_memory;
 pub mod settings_view;
 pub mod shell;
@@ -37,6 +38,10 @@ pub use database_search::{
 pub use prompt_dialog::{
     open_bounded_masked_prompt, open_bounded_prompt, open_masked_prompt,
     open_optional_bounded_prompt, open_optional_prompt, open_prompt, open_reveal_masked_prompt,
+};
+pub use redis_tree_settings::{
+    REDIS_TREE_SETTINGS_PREF_KEY, RedisTreeSettings, init_redis_tree_settings, redis_tree_settings,
+    set_redis_tree_settings,
 };
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget, sync_update_indicator};

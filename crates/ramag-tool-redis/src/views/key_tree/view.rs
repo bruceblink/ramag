@@ -16,7 +16,8 @@ impl Render for KeyTreePanel {
 
         let total = self.keys.len();
         let in_search = !self.query.is_empty();
-        let (visible_rc, visible_leaf_count) = self.visible_rows();
+        let sink_same_name_keys = ramag_ui::redis_tree_settings(cx).sink_same_name_keys;
+        let (visible_rc, visible_leaf_count) = self.visible_rows(sink_same_name_keys);
         let selected = self.selected.clone();
         let read_only = self.is_read_only();
         let mutating = self.mutation_gate.is_busy();

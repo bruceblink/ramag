@@ -40,6 +40,10 @@ pub(super) struct VisibleRow {
     pub(super) leaf_type: Option<RedisType>,
     pub(super) is_namespace: bool,
     pub(super) is_expanded: bool,
+    /// 当前节点之后是否还有同一父节点下的可见兄弟，用于准确绘制 `├─` / `└─`。
+    pub(super) has_next_sibling: bool,
+    /// 每一祖先层是否需要继续向下绘制竖线；最多 16 层，用位图避免逐行分配 Vec。
+    pub(super) ancestor_guide_mask: u16,
 }
 
 #[derive(Default)]

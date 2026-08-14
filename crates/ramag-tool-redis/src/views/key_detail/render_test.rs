@@ -9,8 +9,8 @@ use std::sync::{
 
 use async_trait::async_trait;
 use gpui::{
-    AppContext as _, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point,
-    px, size,
+    AppContext as _, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Point, ScrollDelta,
+    ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext, point, px, size,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{
@@ -21,6 +21,38 @@ use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{KvDriver, Storage};
 
 use super::KeyDetailPanel;
+
+#[test]
+fn loaded_values_resolve_to_tree_badge_types() {
+    let text = RedisValue::Text(String::new());
+    let hash = RedisValue::Hash(Vec::new());
+    let zset = RedisValue::ZSet(Vec::new());
+
+    assert_eq!(super::ops::value_redis_type(&text), Some(RedisType::String));
+    assert_eq!(super::ops::value_redis_type(&hash), Some(RedisType::Hash));
+    assert_eq!(super::ops::value_redis_type(&zset), Some(RedisType::ZSet));
+}
+
+fn simulate_click_count(
+    cx: &mut VisualTestContext,
+    position: Point<gpui::Pixels>,
+    modifiers: Modifiers,
+    click_count: usize,
+) {
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position,
+        modifiers,
+        click_count,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position,
+        modifiers,
+        click_count,
+    });
+}
 
 /// 空壳 KvDriver：render 是纯展示、不调 driver
 #[derive(Default)]
@@ -182,7 +214,7 @@ fn key_load_uses_global_limit_without_manual_pagination(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn header_copies_key_and_value_as_distinct_payloads(cx: &mut TestAppContext) {
+fn header_uses_modifier_double_click_for_key_and_button_for_value(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
         let panel = cx.new(|cx| {
@@ -197,10 +229,14 @@ fn header_copies_key_and_value_as_distinct_payloads(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let key_copy = cx
-        .debug_bounds("redis-key-copy-button")
-        .expect("复制 Key 按钮应参与布局");
-    cx.simulate_click(key_copy.center(), Modifiers::default());
+    assert!(cx.debug_bounds("redis-key-copy-button").is_none());
+    let key_title = cx
+        .debug_bounds("redis-key-title")
+        .expect("Key 标题应参与布局");
+    let modifiers = Modifiers::secondary_key();
+    simulate_click_count(cx, key_title.center(), modifiers, 1);
+    assert!(cx.read_from_clipboard().is_none());
+    simulate_click_count(cx, key_title.center(), modifiers, 2);
     assert_eq!(
         cx.read_from_clipboard().and_then(|item| item.text()),
         Some("17xxx27:code".into())

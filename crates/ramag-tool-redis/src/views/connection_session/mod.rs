@@ -121,6 +121,10 @@ impl RedisSessionPanel {
                 KeyDetailEvent::Deleted(_) => {
                     this.tree.update(cx, |t, cx| t.refresh(cx));
                 }
+                KeyDetailEvent::TypeResolved(key, key_type) => {
+                    this.tree
+                        .update(cx, |tree, cx| tree.resolve_key_type(key, *key_type, cx));
+                }
                 KeyDetailEvent::RequestEditTtl(key, ttl_ms) => {
                     this.open_ttl_dialog(key.clone(), *ttl_ms, window, cx);
                 }

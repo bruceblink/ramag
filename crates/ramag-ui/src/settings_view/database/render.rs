@@ -224,6 +224,36 @@ impl SettingsView {
                 )
             })
             .child(
+                super::super::pages::settings_card("Redis Key 树", theme.border).child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(16.0))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(2.0))
+                                .child(div().text_sm().child("同名 Key 下沉展示"))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child("路径同时也是真实 Key 时，将真实 Key 单独放到子树末尾；默认关闭。"),
+                                ),
+                        )
+                        .child(
+                            crate::clickable_switch("settings-redis-key-sink")
+                                .flex_none()
+                                .checked(self.redis_sink_same_name_keys)
+                                .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                    this.toggle_redis_key_sink(cx);
+                                })),
+                        ),
+                ),
+            )
+            .child(
                 super::super::pages::settings_card("搜索配置", theme.border)
                     .child(
                     h_flex()

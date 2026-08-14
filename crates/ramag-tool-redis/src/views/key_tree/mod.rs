@@ -1,5 +1,6 @@
 //! 基于增量 SCAN 与命名空间折叠的 Redis Key 树。
 
+mod guides;
 mod helpers;
 mod ops;
 mod render;
@@ -42,6 +43,7 @@ struct VisibleRowsCacheKey {
     tree_revision: u64,
     expanded_revision: u64,
     query: String,
+    sink_same_name_keys: bool,
 }
 
 struct VisibleRowsCacheEntry {
@@ -283,6 +285,18 @@ impl KeyTreePanel {
         cx.notify();
     }
 
+    pub fn resolve_key_type(
+        &mut self,
+        key: &str,
+        key_type: ramag_domain::entities::RedisType,
+        cx: &mut Context<Self>,
+    ) {
+        if apply_resolved_key_type(&mut self.keys, key, key_type) {
+            self.rebuild_tree();
+            cx.notify();
+        }
+    }
+
     fn toggle_expanded(&mut self, path: String, cx: &mut Context<Self>) {
         let state = if self.query.is_empty() {
             &mut self.expanded
@@ -319,6 +333,21 @@ impl KeyTreePanel {
     pub(super) fn operation_context_matches(&self, config: &ConnectionConfig, db: u8) -> bool {
         self.db == db && self.config.as_ref().map(|current| &current.id) == Some(&config.id)
     }
+}
+
+fn apply_resolved_key_type(
+    keys: &mut [KeyMeta],
+    key: &str,
+    key_type: ramag_domain::entities::RedisType,
+) -> bool {
+    let Some(meta) = keys.iter_mut().find(|meta| meta.key == key) else {
+        return false;
+    };
+    if meta.key_type == Some(key_type) {
+        return false;
+    }
+    meta.key_type = Some(key_type);
+    true
 }
 
 fn prune_expanded_for_tree(tree: &[TreeNode], expanded: &mut HashSet<String>) -> bool {

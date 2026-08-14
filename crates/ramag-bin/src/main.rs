@@ -64,8 +64,9 @@ use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, SshTool, create_ssh_view}
 use ramag_tool_vcs::{CommitNow, PullNow, PushNow, ToggleHistoryPane, VcsTool, create_vcs_view};
 use ramag_ui::{
     CloseTab, DATABASE_SEARCH_SETTINGS_PREF_KEY, FEEDBACK_ISSUE_URL, HomeEvent, HomeView,
-    NavTarget, OpenRecentItems, RamagAssets, SettingsView, Shell, StorageGlobal,
-    init_database_search_settings, init_theme, sync_update_indicator,
+    NavTarget, OpenRecentItems, REDIS_TREE_SETTINGS_PREF_KEY, RamagAssets, SettingsView, Shell,
+    StorageGlobal, init_database_search_settings, init_redis_tree_settings, init_theme,
+    sync_update_indicator,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -267,12 +268,16 @@ fn main() {
         &[
             "theme_mode",
             DATABASE_SEARCH_SETTINGS_PREF_KEY,
+            REDIS_TREE_SETTINGS_PREF_KEY,
             ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY,
         ],
     );
     let initial_pref = startup_preferences.get("theme_mode").cloned();
     let initial_database_search_pref = startup_preferences
         .get(DATABASE_SEARCH_SETTINGS_PREF_KEY)
+        .cloned();
+    let initial_redis_tree_pref = startup_preferences
+        .get(REDIS_TREE_SETTINGS_PREF_KEY)
         .cloned();
     let initial_shortcut_overrides = startup_preferences
         .get(ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY)
@@ -339,6 +344,9 @@ fn main() {
             init_database_search_settings(initial_database_search_pref.as_deref(), cx)
         {
             warn!(operation = "database_search_settings_load", error, "ignore invalid database search settings");
+        }
+        if let Err(error) = init_redis_tree_settings(initial_redis_tree_pref.as_deref(), cx) {
+            warn!(operation = "redis_tree_settings_load", error, "ignore invalid Redis tree settings");
         }
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);

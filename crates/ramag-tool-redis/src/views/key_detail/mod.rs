@@ -34,6 +34,7 @@ const MAX_COLLECTION_ITEMS: usize = MAX_REDIS_COLLECTION_ITEMS;
 #[derive(Debug, Clone)]
 pub enum KeyDetailEvent {
     Deleted(String),
+    TypeResolved(String, ramag_domain::entities::RedisType),
     RequestEditTtl(String, Option<i64>),
     RequestEditValue(String, String),
     RequestAddHashField(String),

@@ -34,12 +34,20 @@ fn simulate_click_count(
 #[gpui::test]
 fn modifier_double_click_copies_full_key_without_selecting(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
+    cx.update(|cx| {
+        ramag_ui::set_redis_tree_settings(
+            ramag_ui::RedisTreeSettings {
+                sink_same_name_keys: true,
+            },
+            cx,
+        );
+    });
     let mut panel_entity = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
         let panel = cx.new(|cx| {
             let mut panel = KeyTreePanel::new(mock_service(), window, cx);
             panel.config = Some(mock_config());
-            panel.keys = vec![KeyMeta::bare("17xxx27:code")];
+            panel.keys = vec![KeyMeta::bare("17xxx27"), KeyMeta::bare("17xxx27:code")];
             panel.rebuild_tree();
             panel.expanded.insert("17xxx27".into());
             panel.expanded_revision = panel.expanded_revision.wrapping_add(1);
@@ -58,8 +66,16 @@ fn modifier_double_click_copies_full_key_without_selecting(cx: &mut TestAppConte
     let guides = cx
         .debug_bounds("redis-tree-guides-1")
         .expect("子 Key 行应包含层级引导");
+    let stem = cx
+        .debug_bounds("redis-tree-stem-0")
+        .expect("展开的父命名空间应连接子 Key");
+    let root_key_row = cx
+        .debug_bounds("redis-tree-row-2")
+        .expect("与命名空间同名的真实 Key 应单独显示");
     assert_eq!(guides.size.width, px(INDENT_PX));
     assert!(guides.size.height > px(0.0));
+    assert!(stem.size.height > px(0.0));
+    assert!(root_key_row.size.width > px(0.0));
 
     let modifiers = Modifiers::secondary_key();
     let position = child_row.center();
@@ -89,4 +105,10 @@ fn modifier_double_click_copies_full_key_without_selecting(cx: &mut TestAppConte
         Some("17xxx27".into())
     );
     assert!(panel.read_with(cx, |panel, _| panel.expanded.contains("17xxx27")));
+
+    cx.simulate_click(root_key_row.center(), Modifiers::default());
+    assert_eq!(
+        panel.read_with(cx, |panel, _| panel.selected.clone()),
+        Some("17xxx27".into())
+    );
 }

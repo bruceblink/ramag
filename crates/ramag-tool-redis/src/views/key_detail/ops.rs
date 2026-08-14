@@ -2,7 +2,7 @@
 
 use gpui::{Context, ScrollStrategy};
 use gpui_component::notification::Notification;
-use ramag_domain::entities::RedisValue;
+use ramag_domain::entities::{RedisType, RedisValue};
 use ramag_domain::error::READ_ONLY_MESSAGE;
 use tracing::{error, info};
 
@@ -62,6 +62,9 @@ impl KeyDetailPanel {
                 this.ttl_loading = false;
                 match value_result {
                     Ok(load) => {
+                        if let Some(key_type) = value_redis_type(&load.value) {
+                            cx.emit(KeyDetailEvent::TypeResolved(key.clone(), key_type));
+                        }
                         this.value = Some(load.value);
                         this.collection_total = load.total;
                         this.value_byte_limited = load.byte_limited;
@@ -558,5 +561,21 @@ impl KeyDetailPanel {
         request_seq: u64,
     ) -> bool {
         self.request_seq == request_seq && self.request_is_current(config, db, key)
+    }
+}
+
+pub(super) fn value_redis_type(value: &RedisValue) -> Option<RedisType> {
+    match value {
+        RedisValue::Text(_) | RedisValue::Bytes(_) => Some(RedisType::String),
+        RedisValue::List(_) => Some(RedisType::List),
+        RedisValue::Hash(_) => Some(RedisType::Hash),
+        RedisValue::Set(_) => Some(RedisType::Set),
+        RedisValue::ZSet(_) => Some(RedisType::ZSet),
+        RedisValue::Stream(_) => Some(RedisType::Stream),
+        RedisValue::Nil
+        | RedisValue::Int(_)
+        | RedisValue::Float(_)
+        | RedisValue::Bool(_)
+        | RedisValue::Array(_) => None,
     }
 }

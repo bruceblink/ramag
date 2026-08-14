@@ -128,6 +128,7 @@ pub struct SettingsView {
     ssh_module_settings: SshModuleSettings,
     saving_ssh_module_settings: bool,
     database_enabled_draft: bool,
+    redis_sink_same_name_keys: bool,
     database_converter_kind: IdConverterKind,
     database_custom_alphabet: Entity<InputState>,
     database_converter_program: Entity<InputState>,
@@ -159,6 +160,7 @@ impl SettingsView {
         let ssh_module_settings = ssh_service.module_settings_snapshot();
         let database = crate::database_search_settings(cx);
         let database_enabled_draft = database.id_conversion_enabled;
+        let redis_sink_same_name_keys = crate::redis_tree_settings(cx).sink_same_name_keys;
         let database_converter_kind = database.converter.kind;
         let custom_alphabet = database.converter.custom_alphabet.clone();
         let converter_program = database.converter.external_program.clone();
@@ -281,6 +283,7 @@ impl SettingsView {
             ssh_module_settings,
             saving_ssh_module_settings: false,
             database_enabled_draft,
+            redis_sink_same_name_keys,
             database_converter_kind,
             database_custom_alphabet,
             database_converter_program,
