@@ -183,10 +183,16 @@ impl SharedState {
         if input.is_empty() || input.len() > MAX_INPUT_BYTES {
             return;
         }
+        let bytes = input.len();
         if let Some(sender) = self.sender.lock().as_ref()
             && let Err(error) = sender.send(Msg::Input(Cow::Owned(input.into_bytes())))
         {
-            tracing::warn!(operation = "terminal_protocol_response", error = %error, "send terminal protocol response failed");
+            tracing::warn!(
+                operation = "terminal_protocol_response",
+                bytes,
+                error = %error,
+                "send terminal protocol response failed"
+            );
         }
     }
 
@@ -221,11 +227,23 @@ impl EventListener for TerminalEventProxy {
                 self.shared.changed();
             }
             Event::ChildExit(status) => {
-                *self.shared.exit.lock() = Some(exit_status(status));
+                let exit = exit_status(status);
+                if !exit.success {
+                    tracing::warn!(
+                        operation = "terminal_child_exit",
+                        exit_code = ?exit.code,
+                        "terminal child exited unsuccessfully"
+                    );
+                }
+                *self.shared.exit.lock() = Some(exit);
                 self.shared.changed();
             }
             Event::Exit => {
                 if self.shared.exit.lock().is_none() {
+                    tracing::warn!(
+                        operation = "terminal_event_exit",
+                        "terminal event loop exited without child status"
+                    );
                     *self.shared.exit.lock() = Some(TerminalExit {
                         code: None,
                         success: false,
@@ -309,7 +327,7 @@ impl Dimensions for TerminalDimensions {
 fn terminal_config(scrolling_history: usize) -> Config {
     Config {
         scrolling_history,
-        // 远端仍可通过用户主动选择复制；禁用 OSC 52，避免远端静默读写系统剪贴板。
+        // 禁用 OSC 52，禁止远端静默读写系统剪贴板。
         osc52: Osc52::Disabled,
         ..Config::default()
     }
@@ -320,7 +338,7 @@ fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     if !bracketed {
         return text.into_bytes();
     }
-    // 删除嵌入的边界序列，防止粘贴内容提前结束 bracketed paste。
+    // 移除内嵌边界序列，防止提前结束 bracketed paste。
     text = text.replace("\u{1b}[200~", "").replace("\u{1b}[201~", "");
     format!("\u{1b}[200~{text}\u{1b}[201~").into_bytes()
 }

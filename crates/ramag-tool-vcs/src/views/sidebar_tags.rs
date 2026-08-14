@@ -90,7 +90,7 @@ pub(super) fn tag_row(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::ellipsis())
-            .tooltip("Tag 操作")
+            .tooltip("标签")
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                 tag_actions_menu(menu, menu_entity.clone(), menu_name.clone(), busy)
             }),

@@ -1,4 +1,4 @@
-//! ClipboardView 异步操作：重载 / 复制 / 删除 / 清空 / 键盘导航
+//! 剪贴板视图操作。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,25 +7,25 @@ use std::time::{Duration, Instant};
 use gpui::{Context, ScrollStrategy};
 use gpui_component::{Disableable as _, notification::Notification};
 use ramag_domain::entities::{ClipId, ClipItem};
-use tracing::error;
+use tracing::{error, warn};
 
 use super::ClipboardView;
 use crate::views::helpers::filter_items;
 
-/// 图片删除的撤销宽限期；到期仅清理仍未被任何条目引用的媒体。
+/// 删除图片的撤销宽限期。
 const DELETE_UNDO_GRACE: Duration = Duration::from_secs(30);
 
-/// 全量搜索去抖：输入停顿此间隔后才触发后台扫描
+/// 全量搜索去抖时间。
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
-/// 全量搜索结果上限
+/// 全量搜索结果上限。
 const SEARCH_LIMIT: usize = 500;
 
 impl ClipboardView {
-    /// 同步从 service 缓存重载最近窗口快照（无 IO、无解密；旧版异步全表解密已废弃）
+    /// 从内存缓存刷新最近条目。
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.loaded_revision = self.service.revision();
         self.items = self.service.cached_snapshot();
-        // 选中项若已不在缓存窗口且也不在搜索结果中才清空——否则会误清"仅搜索命中"的选中
+        // 保留仅命中全量搜索的选中项。
         if let Some(sel) = &self.selected
             && !self.items.iter().any(|i| &i.id == sel)
             && !self.search_results.iter().any(|i| &i.id == sel)
@@ -49,7 +49,7 @@ impl ClipboardView {
         .detach();
     }
 
-    /// 当前过滤+排序后的可见条目（仅 clone Arc，正文由缓存共享）。
+    /// 返回筛选和排序后的条目。
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<Arc<ClipItem>> {
         let search = self.search.read(cx);
         let query = search.value();
@@ -59,7 +59,7 @@ impl ClipboardView {
                 .cloned()
                 .collect();
         }
-        // 即时层：缓存窗口匹配（输入即显示）；补充层：后台全量结果（去重，缓存优先）
+        // 缓存结果优先，后台结果仅补充缓存外匹配。
         let mut seen = std::collections::HashSet::new();
         let mut out: Vec<Arc<ClipItem>> = Vec::new();
         for it in filter_items(&self.items, &query, self.filter) {
@@ -74,13 +74,13 @@ impl ClipboardView {
         out
     }
 
-    /// 搜索框变化：去抖后台全量搜索，补充缓存窗口之外的匹配
+    /// 输入变化后延迟全量搜索，补充缓存外匹配。
     pub(super) fn schedule_search(&mut self, cx: &mut Context<Self>) {
         self.search_gen = self.search_gen.wrapping_add(1);
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
         self.search_cancel.store(true, Ordering::Relaxed);
-        // 新查询不能沿用上一关键词的后台结果，否则去抖期间会短暂展示错误命中。
+        // 清除旧结果，避免去抖期间显示错误命中。
         self.search_results.clear();
         self.search_truncated = false;
         if query.trim().is_empty() {
@@ -91,14 +91,13 @@ impl ClipboardView {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
-            // 去抖：期间又有输入则代号已变，放弃本次
+            // 输入已变化时放弃本次搜索。
             if this
                 .update(cx, |this, _| this.search_gen != generation)
                 .unwrap_or(true)
             {
                 return;
             }
-            // 搜索失败必须明示（解密 / 存储错误），不得伪装成「无结果」
             let result = svc
                 .search_cancellable(&query, SEARCH_LIMIT, cancelled)
                 .await;
@@ -182,7 +181,7 @@ impl ClipboardView {
         .detach();
     }
 
-    /// 浏览器打开链接（同步调用，失败弹通知）
+    /// 在浏览器打开链接。
     pub(super) fn open_link(&mut self, url: String, cx: &mut Context<Self>) {
         if let Err(e) = self.service.open_url(&url) {
             error!(
@@ -196,7 +195,7 @@ impl ClipboardView {
         }
     }
 
-    /// 在系统文件管理器中显示文件
+    /// 在文件管理器中显示文件。
     pub(super) fn reveal_files(&mut self, paths: &[String], cx: &mut Context<Self>) {
         if let Err(e) = self.service.reveal_in_file_manager(paths) {
             error!(
@@ -236,8 +235,7 @@ impl ClipboardView {
                         let expiry_scheduled = Arc::new(AtomicBool::new(false));
                         this.pending_notification = Some(
                             Notification::info("已删除该条目").action(move |_, window, cx| {
-                                // action 通知默认永不自动消失；统一按实际删除时刻收起，避免通知列表
-                                // 与其捕获的大正文长期驻留。延迟打开视图时也不能重新获得完整 30 秒。
+                                // 按原删除时间收起通知，避免长期持有正文。
                                 let remaining = undo_remaining(undo_deadline, Instant::now());
                                 if !expiry_scheduled.swap(true, Ordering::Relaxed) {
                                     let notification = cx.entity();
@@ -265,7 +263,7 @@ impl ClipboardView {
                                         let svc = svc.clone();
                                         let view = view.clone();
                                         let item = item.clone();
-                                        // 先收起 toast，再异步回存并刷新列表
+                                        // 先关闭通知，再异步恢复条目。
                                         notif.update(app, |n, cx| n.dismiss(window, cx));
                                         app.spawn(async move |cx| {
                                             let r = svc.restore(item.as_ref().clone()).await;
@@ -313,7 +311,7 @@ impl ClipboardView {
         cx.notify();
     }
 
-    /// 键盘上/下移动选中（基于可见列表）
+    /// 按可见列表上下移动选中项。
     pub(super) fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
         let visible = self.visible_items(cx);
         if visible.is_empty() {
@@ -340,8 +338,7 @@ impl ClipboardView {
 
     pub(super) fn selected_item(&self, _cx: &gpui::App) -> Option<Arc<ClipItem>> {
         let sel = self.selected.as_ref()?;
-        // 先查缓存窗口，再查搜索结果——选中的可能是"仅搜索命中"（窗口外）的旧记录，
-        // 否则详情空白、回车复制 / 删除静默失效
+        // 选中项可能只存在于全量搜索结果中。
         self.items
             .iter()
             .find(|i| &i.id == sel)
@@ -349,9 +346,7 @@ impl ClipboardView {
             .cloned()
     }
 
-    /// 取图片的解密内存图片（thumb=true 用缩略图，否则原图）。
-    /// 缓存命中同步返回；miss 异步解密填充后 notify，本帧返回 None（占位）
-    /// 该条目的图片是否已判定解密 / 解码失败（详情页显示失败文案而非永久「加载中」）
+    /// 图片是否已加载失败。
     pub(super) fn image_failed(&self, item: &ClipItem, thumb: bool) -> bool {
         let path = if thumb {
             item.thumb_path.clone().or_else(|| item.image_path.clone())
@@ -361,6 +356,7 @@ impl ClipboardView {
         path.is_some_and(|p| self.img_cache.is_failed(&p))
     }
 
+    /// 读取图片，缓存未命中时异步加载。
     pub(super) fn image_for(
         &self,
         item: Arc<ClipItem>,
@@ -390,6 +386,13 @@ impl ClipboardView {
                         let Some(retained_bytes) =
                             crate::views::image_cache::png_retained_bytes(&bytes)
                         else {
+                            warn!(
+                                operation = "clipboard_image_load",
+                                clip_id = %item.id,
+                                asset = if thumb { "thumbnail" } else { "image" },
+                                bytes = bytes.len(),
+                                "clipboard image data is not a usable PNG"
+                            );
                             this.img_cache.fail(&path);
                             cx.notify();
                             return;
@@ -401,7 +404,24 @@ impl ClipboardView {
                         this.img_cache.insert(path, image, retained_bytes);
                         cx.notify();
                     }
-                    _ => {
+                    Ok(None) => {
+                        warn!(
+                            operation = "clipboard_image_load",
+                            clip_id = %item.id,
+                            asset = if thumb { "thumbnail" } else { "image" },
+                            "clipboard image data is unavailable"
+                        );
+                        this.img_cache.fail(&path);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        error!(
+                            operation = "clipboard_image_load",
+                            clip_id = %item.id,
+                            asset = if thumb { "thumbnail" } else { "image" },
+                            error = %error,
+                            "load clipboard image failed"
+                        );
                         this.img_cache.fail(&path);
                         cx.notify();
                     }

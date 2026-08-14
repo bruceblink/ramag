@@ -1,4 +1,4 @@
-//! 详情面板：选中条目的完整内容 + 元信息 + 操作按钮
+//! 剪贴板详情。
 
 use std::sync::Arc;
 
@@ -76,7 +76,7 @@ impl ClipboardView {
             })
     }
 
-    /// 只展示卡片行没有的上下文操作。
+    /// 渲染与条目类型相关的操作。
     fn detail_actions(
         &self,
         item: Arc<ClipItem>,
@@ -144,7 +144,6 @@ impl ClipboardView {
         match item.kind {
             ClipKind::Image => match self.image_for(item.clone(), false, cx) {
                 Some(image) => img(image).max_w_full().into_any_element(),
-                // 失败明示（媒体缺失 / 损坏 / 尺寸过大），不再永久显示假「加载中」
                 None if self.image_failed(item.as_ref(), false) => div()
                     .text_sm()
                     .child("图片无法加载（文件可能缺失、损坏或尺寸过大）")

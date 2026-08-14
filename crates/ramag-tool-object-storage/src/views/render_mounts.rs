@@ -145,7 +145,7 @@ impl ObjectStorageView {
                             .ghost()
                             .xsmall()
                             .icon(ramag_ui::icons::refresh_cw())
-                            .tooltip("刷新 Bucket")
+                            .tooltip("刷新")
                             .disabled(self.selected_account_id.is_none() || self.loading)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(id) = this.selected_account_id.clone() {

@@ -1,5 +1,4 @@
-//! History：commit 列表分页 + 搜索（关键词 / `@作者` / `7d`/`1m`）+ 单文件历史 banner。
-//! viewing_commit.is_some() 时整区切到 commit_detail
+//! 提交历史、搜索和单文件过滤。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -17,8 +16,10 @@ use ramag_domain::entities::Commit;
 
 use super::commit_graph::CommitGraphRow;
 use super::helpers::render_commit_row;
-use super::sidebar::{LeftRow, SidebarSection};
+use super::sidebar::LeftRow;
 use super::vcs_view::VcsView;
+
+mod left_pane;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct HistoryLeftRowsCacheKey {
@@ -48,7 +49,7 @@ impl HistoryLeftRowsCacheEntry {
 }
 
 impl VcsView {
-    /// 历史视图：commit list / 详情视图（点击 commit 行后）/ reflog（搜索行按钮 toggle 后）
+    /// 渲染历史视图。
     pub(super) fn render_history_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let fg = theme.foreground;
@@ -104,8 +105,6 @@ impl VcsView {
             div().into_any_element()
         };
 
-        // 统一走三栏布局：reflog 与 commit 模式均保留左栏分支视图
-        // 中栏内容由 showing_reflog 切换；右栏 commit 详情仅 commit 模式可见
         let body: AnyElement =
             self.render_history_three_panel(border, fg, muted_fg, accent, mono, busy, cx);
 
@@ -119,7 +118,7 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// commit / reflog 列表共用搜索行
+    /// 渲染历史搜索栏。
     fn render_history_search_row(
         &self,
         busy: bool,
@@ -131,9 +130,9 @@ impl VcsView {
             .small()
             .icon(ramag_ui::icons::scroll_text())
             .tooltip(if self.showing_reflog {
-                "提交"
+                "提交历史"
             } else {
-                "Reflog"
+                "操作记录"
             })
             .disabled(busy)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -155,8 +154,7 @@ impl VcsView {
                 ),
             )
             .when(!self.showing_reflog, |row| {
-                // commit 模式：搜索走 git（grep/author/since），需显式应用；
-                // reflog 模式为客户端即时过滤，无需应用按钮
+                // 操作记录在本地即时过滤，无需提交搜索。
                 row.child(
                     ramag_ui::clickable_button("vcs-history-search")
                         .ghost()
@@ -174,8 +172,7 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 双栏：左分支 / 右半（含 commit graph + 内部 detail resizable）。
-    /// 左栏与上方文件区共享分栏状态；reflog 模式右栏 detail 隐藏。
+    /// 渲染分支、历史与详情三栏。
     #[allow(clippy::too_many_arguments)]
     fn render_history_three_panel(
         &self,
@@ -187,16 +184,14 @@ impl VcsView {
         busy: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let left = self.render_history_left_pane(border, cx);
+        let left = self.render_history_left_pane(cx);
         let middle = if self.showing_reflog {
             self.render_reflog_middle_pane(busy, muted_fg, cx)
         } else {
-            self.render_history_middle_pane(fg, muted_fg, accent, border, mono, busy, cx)
+            self.render_history_middle_pane(fg, muted_fg, accent, mono, busy, cx)
         };
-        // reflog 行没有完整 commit 元数据；detail 面板对其无意义，强制隐藏
         let show_detail = !self.showing_reflog && self.viewing_commit.is_some();
 
-        // 右半内容：默认仅 commit graph；进入详情时变成内部 h_resizable（middle | detail）
         let right_part: AnyElement = if show_detail {
             let detail = self.render_commit_detail_view(cx);
             gpui_component::resizable::h_resizable("vcs-history-detail-split")
@@ -216,7 +211,6 @@ impl VcsView {
             div().size_full().min_w_0().child(middle).into_any_element()
         };
 
-        // 上下区域直接绑定同一分栏状态，首次布局、窗口缩放和拖动都只使用一个宽度来源。
         gpui_component::resizable::h_resizable("vcs-history-bottom")
             .with_state(&self.ide_left_resize)
             .child(
@@ -240,8 +234,7 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 中栏（reflog 模式）：搜索行 + 现有 reflog 列表
-    /// 与 commit 中栏共用同一空间，左栏 / 整体三栏框架不变
+    /// 渲染操作记录列表。
     fn render_reflog_middle_pane(
         &self,
         busy: bool,
@@ -257,143 +250,12 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// 左栏：本地/远程分支 + Tag 三段合并为单个 uniform_list（段表头 + 行 + 新建输入，28px 等高）
-    fn render_history_left_pane(&self, _border: gpui::Hsla, cx: &mut Context<Self>) -> AnyElement {
-        let rows_rc = self.history_left_rows();
-        let total = rows_rc.len();
-        let body = uniform_list(
-            "vcs-history-left-rows",
-            total,
-            cx.processor({
-                let rows_rc = rows_rc.clone();
-                move |this, range: Range<usize>, _w, cx| {
-                    range
-                        .map(|i| this.render_left_row(&rows_rc[i], cx))
-                        .collect::<Vec<_>>()
-                }
-            }),
-        )
-        .track_scroll(&self.history_left_scroll)
-        .flex_1();
-
-        // size_full + min_h_0：在外层定高区内拿到确定高度，uniform_list 自带虚拟滚动
-        v_flex()
-            .id("vcs-history-left-pane")
-            .size_full()
-            .min_h_0()
-            .px(px(8.0))
-            .py(px(6.0))
-            .child(body)
-            .into_any_element()
-    }
-
-    fn history_left_rows(&self) -> Rc<Vec<LeftRow>> {
-        let key = HistoryLeftRowsCacheKey {
-            local_identity: self.local_branches.as_ptr() as usize,
-            local_len: self.local_branches.len(),
-            remote_identity: self.remote_branches.as_ptr() as usize,
-            remote_len: self.remote_branches.len(),
-            tags_identity: self.tags.as_ptr() as usize,
-            tags_len: self.tags.len(),
-            remotes_identity: self.remotes.as_ptr() as usize,
-            remotes_len: self.remotes.len(),
-            collapsed_local: self.collapsed_local,
-            collapsed_remote: self.collapsed_remote,
-            collapsed_tag: self.collapsed_tag,
-            collapsed_remote_repos: self.collapsed_remote_repos,
-        };
-        {
-            let cache = self.history_left_rows_cache.borrow();
-            if let Some(rows) = cache.as_ref().and_then(|entry| entry.get(&key)) {
-                return rows;
-            }
-        }
-
-        let mut rows: Vec<LeftRow> = Vec::new();
-
-        rows.push(LeftRow::Header {
-            title: "本地分支",
-            count: self.local_branches.len(),
-            collapsed: self.collapsed_local,
-            section: SidebarSection::Local,
-        });
-        if !self.collapsed_local {
-            for idx in 0..self.local_branches.len() {
-                rows.push(LeftRow::Branch {
-                    idx,
-                    is_remote: false,
-                });
-            }
-        }
-
-        rows.push(LeftRow::Header {
-            title: "远程分支",
-            count: self.remote_branches.len(),
-            collapsed: self.collapsed_remote,
-            section: SidebarSection::Remote,
-        });
-        if !self.collapsed_remote {
-            if self.remote_branches.is_empty() {
-                rows.push(LeftRow::Empty("暂无远程分支（Fetch 后显示）"));
-            } else {
-                for idx in 0..self.remote_branches.len() {
-                    rows.push(LeftRow::Branch {
-                        idx,
-                        is_remote: true,
-                    });
-                }
-            }
-        }
-
-        rows.push(LeftRow::Header {
-            title: "远程仓库",
-            count: self.remotes.len(),
-            collapsed: self.collapsed_remote_repos,
-            section: SidebarSection::RemoteRepo,
-        });
-        if !self.collapsed_remote_repos {
-            if self.remotes.is_empty() {
-                rows.push(LeftRow::Empty("暂无远程仓库"));
-            } else {
-                for idx in 0..self.remotes.len() {
-                    rows.push(LeftRow::Remote { idx });
-                }
-            }
-        }
-
-        rows.push(LeftRow::Header {
-            title: "Tag",
-            count: self.tags.len(),
-            collapsed: self.collapsed_tag,
-            section: SidebarSection::Tag,
-        });
-        if !self.collapsed_tag {
-            if self.tags.is_empty() {
-                rows.push(LeftRow::Empty("暂无 tag"));
-            } else {
-                for idx in 0..self.tags.len() {
-                    rows.push(LeftRow::Tag { idx });
-                }
-            }
-        }
-
-        let rows = Rc::new(rows);
-        self.history_left_rows_cache
-            .replace(Some(HistoryLeftRowsCacheEntry {
-                key,
-                rows: rows.clone(),
-            }));
-        rows
-    }
-
-    /// 中栏：计数 + 列头 + uniform_list 虚拟化 + 加载更多。列头 / count / footer 在外层非虚拟
-    #[allow(clippy::too_many_arguments)]
+    /// 渲染提交历史列表。
     fn render_history_middle_pane(
         &self,
         fg: gpui::Hsla,
         muted_fg: gpui::Hsla,
         accent: gpui::Hsla,
-        _border: gpui::Hsla,
         mono: gpui::SharedString,
         _busy: bool,
         cx: &mut Context<Self>,
@@ -408,7 +270,7 @@ impl VcsView {
                 .into_any_element();
         }
         if self.history_commits.is_empty() {
-            // 区分「过滤后无结果」与「仓库无提交」，避免误以为仓库是空的
+            // 区分空仓库和无匹配结果。
             let filtered = !self.history_search_input.read(cx).value().trim().is_empty()
                 || self.history_path_filter.is_some();
             let hint = if filtered {
@@ -428,7 +290,7 @@ impl VcsView {
         let has_more = self.history_has_more;
         let is_loading = self.loading_history;
         let total_rows = count + usize::from(has_more);
-        // Rc 共享：commits + graph_rows 喂给 uniform_list 闭包（不每帧 clone 整个 Vec）
+        // 共享列表，避免每帧复制。
         let commits_rc: Rc<Vec<Rc<Commit>>> = self.history_commits.clone();
         let graph_rc: Rc<Vec<CommitGraphRow>> = self.history_graph_rows.clone();
 
@@ -499,7 +361,7 @@ impl VcsView {
                 .justify_center()
                 .text_xs()
                 .text_color(muted_fg)
-                .child("— 已达到历史显示上限，请使用搜索或文件过滤缩小范围 —")
+                .child("已到历史上限，请用搜索或文件过滤缩小范围")
                 .into_any_element()
         } else {
             div().flex_none().into_any_element()

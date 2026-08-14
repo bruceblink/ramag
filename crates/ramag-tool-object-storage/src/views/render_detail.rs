@@ -46,7 +46,7 @@ impl ObjectStorageView {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
-                            .tooltip("关闭详情")
+                            .tooltip("关闭")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_detail = false;
                                 this.persist_workspace(cx);

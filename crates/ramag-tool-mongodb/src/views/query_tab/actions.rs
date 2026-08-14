@@ -1,7 +1,7 @@
 use super::*;
 
 impl MongoQueryTab {
-    /// 解析并校验命令；高危操作先展示目标与风险，确认后才进入真正执行路径。
+    /// 解析命令并确认高危操作。
     pub fn request_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             return;
@@ -81,7 +81,7 @@ impl MongoQueryTab {
         self.run_parsed(text, cmd, cx);
     }
 
-    /// 真正执行已解析、已确认（如需要）的命令。
+    /// 执行已解析的命令。
     pub(super) fn run_parsed(&mut self, text: String, cmd: Value, cx: &mut Context<Self>) {
         if self.running {
             return;
@@ -114,7 +114,7 @@ impl MongoQueryTab {
         );
     }
 
-    /// 加载相邻结果页，不改写编辑器或历史。
+    /// 加载相邻结果页。
     pub(super) fn handle_page(&mut self, requested_page: usize, cx: &mut Context<Self>) {
         if self.running {
             return;
@@ -147,7 +147,7 @@ impl MongoQueryTab {
         );
     }
 
-    /// 执行原始命令或分页命令。
+    /// 执行命令。
     pub(super) fn execute_command(
         &mut self,
         base_command: Value,
@@ -157,7 +157,7 @@ impl MongoQueryTab {
         page_request: Option<PageRequest>,
         cx: &mut Context<Self>,
     ) {
-        // 同步命令目标与当前库，避免写操作仍使用标签初始库。
+        // 同步命令目标和当前库。
         let target = extract_collection(&base_command);
         self.collection = target.clone();
         let db_now = self.database.clone();
@@ -170,11 +170,11 @@ impl MongoQueryTab {
         let conf = self.config.clone();
         let db = self.database.clone();
         self.running = true;
-        // 代际推进 + 记录本次运行的 db（回包时比对，防运行期间切库导致串台）
+        // 记录请求代际和数据库。
         self.run_seq = self.run_seq.wrapping_add(1);
         let request_seq = self.run_seq;
         let request_db = self.database.clone();
-        // 生产只读拦截（Forbidden）时恢复用：set_running 会清掉原错误文案
+        // 只读拦截时恢复原错误。
         let prev_error = self.result.read(cx).error.clone();
         self.result.update(cx, |p, cx| p.set_running(cx));
         let result_handle = self.result.clone();
@@ -194,16 +194,24 @@ impl MongoQueryTab {
                     }
                     Err(e) => (Err(e), None),
                 };
-            // 写历史在同 task 顺序执行，避免 DomainError 不实现 Clone 的借用难题
+            if let Err(error) = &qr {
+                warn!(
+                    operation = "mongo_command",
+                    connection_id = %conf.id,
+                    database = %request_db,
+                    error = %error,
+                    "command failed"
+                );
+            }
+            // 写入历史。
             if let Some(command_text) = history_text {
                 svc.append_history(&conf, command_text, &qr).await;
             }
 
             let _ = this.update(cx, |this, cx| {
-                // 请求身份校验：切库 / 重新运行后旧回包不得覆盖新上下文的结果
+                // 旧请求不能覆盖新上下文。
                 if this.run_seq != request_seq || this.database != request_db {
-                    // 仅当自己仍是最新在途请求时才复位忙碌态（含结果区，否则「执行中」
-                    // 永久卡在界面上）；已有更新请求在途则一概不动，避免误清新查询状态
+                    // 仅复位自己的忙碌状态。
                     if this.run_seq == request_seq {
                         this.running = false;
                         result_handle.update(cx, |p, cx| {
@@ -247,15 +255,7 @@ impl MongoQueryTab {
                         });
                     }
                     Err(e) => {
-                        warn!(
-                            operation = "mongo_command",
-                            connection_id = %conf.id,
-                            database = %request_db,
-                            error = %e,
-                            "command failed"
-                        );
-                        // 生产模式只读拦截：弹 toast 并复位忙碌态（旧结果 / 旧错误原样恢复，
-                        // 否则结果区永久停在"执行中"）；其余错误仍进结果区便于排查
+                        // 只读拦截恢复原结果，其余错误显示在结果区。
                         if matches!(e, DomainError::Forbidden(_)) {
                             this.pending_notification =
                                 Some(Notification::warning(e.to_string()).autohide(true));
@@ -271,8 +271,7 @@ impl MongoQueryTab {
         self.current_task = Some(task);
     }
 
-    /// 关闭标签前停止等待当前命令。MongoDB 暂无可靠 killOp 句柄，因此只保证客户端任务退出、
-    /// 结果不再回写；服务器端命令仍由服务端超时/完成机制收尾。
+    /// 停止等待当前命令。
     pub fn cancel_if_running(&mut self, cx: &mut Context<Self>) {
         if self.current_task.take().is_some() || self.running {
             self.run_seq = self.run_seq.wrapping_add(1);
@@ -329,6 +328,14 @@ impl MongoQueryTab {
                 })
             })
             .await;
+            if let Err(error) = &formatted {
+                warn!(
+                    operation = "mongo_command_format",
+                    command_bytes = source_text.len(),
+                    error = %error,
+                    "format MongoDB command failed"
+                );
+            }
             let _ = this.update_in(async_cx, move |this, window, cx| {
                 this.formatting = false;
                 if this.editor.read(cx).value() != source_text {

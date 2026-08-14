@@ -57,7 +57,7 @@ impl Render for CliConsole {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::trash())
-                    .tooltip("清空")
+                    .tooltip("清空记录")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 
@@ -66,9 +66,7 @@ impl Render for CliConsole {
                 .p(px(12.0))
                 .text_sm()
                 .text_color(muted_fg)
-                .child(
-                    "尚无命令；输入并 Enter 执行（PING / GET foo / KEYS * / CONFIG GET maxmemory）",
-                )
+                .child("暂无命令。输入命令后按 Enter 执行，例如 PING 或 GET foo")
                 .into_any_element()
         } else {
             div()
@@ -128,6 +126,7 @@ impl Render for CliConsole {
                     .primary()
                     .small()
                     .icon(IconName::Play)
+                    .tooltip("执行命令")
                     .disabled(read_only_write || command_queue_full)
                     .when(read_only_write || command_queue_full, |button| {
                         button.tooltip(if read_only_write {
@@ -145,7 +144,7 @@ impl Render for CliConsole {
             .size_full()
             .occlude()
             .bg(bg)
-            // 输入组件不直接处理上下键，先交给补全菜单。
+            // 先让补全菜单处理上下键。
             .on_action(cx.listener(|this, _: &MoveUp, window, cx| {
                 let handled = this.input.update(cx, |state, cx| {
                     state.handle_action_for_context_menu(Box::new(MoveUp), window, cx)

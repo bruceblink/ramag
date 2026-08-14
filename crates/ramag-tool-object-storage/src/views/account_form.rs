@@ -297,14 +297,26 @@ impl AccountFormPanel {
         self.saving = true;
         self.feedback = Some(("正在验证并保存…".into(), false));
         let service = self.service.clone();
+        let account_id = account.id.clone();
+        let account_name = account.name.clone();
+        let provider = account.provider.clone();
         cx.spawn(async move |this, cx| {
             let result = service.save_account(account).await;
+            if let Err(error) = &result {
+                tracing::error!(
+                    operation = "object_storage_account_save",
+                    account_id = %account_id,
+                    account_name = %account_name,
+                    provider = ?provider,
+                    error = %error,
+                    "save object storage account failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 this.saving = false;
                 match result {
                     Ok(saved) => cx.emit(AccountFormEvent::Saved(Box::new(saved))),
                     Err(error) => {
-                        tracing::error!(operation = "object_storage_account_save", error = %error, "save object storage account failed");
                         this.feedback = Some((format!("保存失败：{}", error.user_message()), true));
                         cx.notify();
                     }

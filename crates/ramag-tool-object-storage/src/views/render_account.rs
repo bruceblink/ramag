@@ -64,7 +64,7 @@ impl ObjectStorageView {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("新建云存储账号")
+                    .tooltip("新建")
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.show_new_account(window, cx);
                     })),

@@ -1,3 +1,4 @@
+use super::scan::validate_link_target;
 use super::*;
 
 #[test]

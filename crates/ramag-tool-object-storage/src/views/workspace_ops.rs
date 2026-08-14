@@ -1,7 +1,8 @@
 use gpui::{Context, Window};
 use ramag_domain::entities::{
-    MAX_OBJECT_STORAGE_WORKSPACE_ENTRIES, ObjectStorageFavorite, ObjectStorageSessionPreference,
-    ObjectStorageWorkspacePreference, ObjectStorageWorkspaceState,
+    MAX_OBJECT_STORAGE_WORKSPACE_ENTRIES, ObjectStorageAccountId, ObjectStorageFavorite,
+    ObjectStorageMount, ObjectStorageSessionPreference, ObjectStorageWorkspacePreference,
+    ObjectStorageWorkspaceState,
 };
 
 use super::model::ObjectStorageView;
@@ -16,9 +17,17 @@ impl ObjectStorageView {
                 .clone()
                 .filter(|id| self.open_account_ids.contains(id)),
         };
+        let active_account_id = preference.active_account_id.clone();
+        let open_account_count = preference.open_account_ids.len();
         cx.spawn(async move |_this, _cx| {
             if let Err(error) = service.save_session_preference(&preference).await {
-                tracing::warn!(operation = "object_storage_session_save", error = %error, "save object storage session failed");
+                tracing::warn!(
+                    operation = "object_storage_session_save",
+                    active_account_id = ?active_account_id,
+                    open_account_count,
+                    error = %error,
+                    "save object storage session failed"
+                );
             }
         })
         .detach();
@@ -38,22 +47,27 @@ impl ObjectStorageView {
         self.notice = Some((message.into(), true));
     }
 
-    pub(super) fn operation_error(
-        &mut self,
+    pub(super) fn log_operation_failure(
         operation: &'static str,
+        account_id: Option<&ObjectStorageAccountId>,
+        mount: Option<&ObjectStorageMount>,
+        prefix: &str,
+        key: Option<&str>,
         error: &(impl std::fmt::Display + ?Sized),
-        message: impl Into<String>,
     ) {
         tracing::error!(
             operation,
-            account_id = ?self.selected_account_id,
-            mount_id = ?self.selected_mount.as_ref().map(|mount| &mount.id),
-            bucket = ?self.selected_mount.as_ref().map(|mount| mount.bucket.as_str()),
-            prefix = %self.prefix,
-            key = ?self.selected_key,
+            account_id = ?account_id,
+            mount_id = ?mount.map(|mount| &mount.id),
+            bucket = ?mount.map(|mount| mount.bucket.as_str()),
+            prefix = %prefix,
+            key = ?key,
             error = %error,
             "object storage operation failed"
         );
+    }
+
+    pub(super) fn operation_notice(&mut self, message: impl Into<String>) {
         self.error(message);
     }
 
@@ -117,6 +131,8 @@ impl ObjectStorageView {
         ) else {
             return;
         };
+        let mount_id = mount.id.clone();
+        let bucket = mount.bucket.clone();
         if let Some(index) = self
             .workspace_states
             .iter()
@@ -128,8 +144,8 @@ impl ObjectStorageView {
             0,
             ObjectStorageWorkspaceState {
                 account_id: account_id.clone(),
-                mount_id: Some(mount.id),
-                // 浏览路径属于临时导航状态；重新进入账号时始终从挂载根目录开始。
+                mount_id: Some(mount_id.clone()),
+                // 浏览路径不跨会话恢复。
                 prefix: String::new(),
             },
         );
@@ -139,12 +155,19 @@ impl ObjectStorageView {
             workspaces: self.workspace_states.clone(),
             favorites: self.favorites.clone(),
             show_mounts: self.show_mounts,
-            // 详情随对象选择临时打开，不跨账号或会话恢复。
+            // 详情不跨会话恢复。
             show_detail: false,
         };
         cx.spawn(async move |_this, _cx| {
             if let Err(error) = service.save_workspace(&account_id, &preference).await {
-                tracing::warn!(operation = "object_storage_workspace_save", error = %error, "save object storage workspace failed");
+                tracing::warn!(
+                    operation = "object_storage_workspace_save",
+                    account_id = %account_id,
+                    mount_id = %mount_id,
+                    bucket = %bucket,
+                    error = %error,
+                    "save object storage workspace failed"
+                );
             }
         })
         .detach();

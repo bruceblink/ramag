@@ -126,7 +126,7 @@ impl QueryTab {
         self.run_seq = self.run_seq.wrapping_add(1);
         let request_seq = self.run_seq;
         self.query_start = Some(Instant::now());
-        // 生产只读拦截（Forbidden）时需要恢复的原结果快照：不能让结果区停留在"执行中"
+        // 只读拦截时恢复原结果，避免一直显示执行中。
         let prev_state = self.result.read(cx).state().clone();
         self.result.update(cx, |r, cx| {
             r.set_state(ResultState::Running, cx);
@@ -171,6 +171,17 @@ impl QueryTab {
             let outcome = svc
                 .execute_cancellable_with_history(&conn, &query, handle)
                 .await;
+            if let Err(error) = &outcome {
+                error!(
+                    operation = "sql_query",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    schema = query.default_schema.as_deref().unwrap_or("-"),
+                    sql_bytes = query.sql.len(),
+                    error = %error,
+                    "query failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 if this.run_seq != request_seq {
                     return;
@@ -228,17 +239,8 @@ impl QueryTab {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "sql_query",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            schema = query.default_schema.as_deref().unwrap_or("-"),
-                            sql_bytes = query.sql.len(),
-                            error = %e,
-                            "query failed"
-                        );
                         let err_msg = e.to_string();
-                        // 只读拦截恢复执行前快照，其余错误保留在结果区。
+                        // 只读拦截恢复执行前结果，其余错误显示在结果区。
                         if matches!(e, DomainError::Forbidden(_)) {
                             this.pending_notification =
                                 Some(Notification::warning(err_msg).autohide(true));
@@ -259,7 +261,7 @@ impl QueryTab {
         self.current_task = Some(task);
     }
 
-    /// 仅用主键或全非空唯一索引定位行，失败时保持禁用。
+    /// 仅使用主键或全非空唯一索引定位行。
     pub(super) fn fetch_row_identity(&self, schema: String, table: String, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;
@@ -311,7 +313,7 @@ impl QueryTab {
         .detach();
     }
 
-    /// DDL 后刷新默认 Schema 的表缓存。
+    /// DDL 后刷新表缓存。
     pub(super) fn maybe_refresh_cache_after_ddl(&self, sql: &str, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;

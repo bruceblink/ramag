@@ -1,4 +1,4 @@
-//! 不可修改的常用鼠标操作说明。
+//! 常用鼠标操作说明。
 
 use gpui::{IntoElement, ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px};
 use gpui_component::{h_flex, v_flex};
@@ -26,7 +26,7 @@ const COMMON_INTERACTIONS: &[CommonInteraction] = &[
     },
     CommonInteraction {
         label: "更多操作",
-        description: "打开当前项目的操作菜单",
+        description: "打开操作菜单",
         macos_gesture: "右键",
         other_gesture: "右键",
     },

@@ -1,3 +1,7 @@
+use super::parse::{
+    MAX_COMMIT_PARENTS, MAX_COMMIT_REFS, parse_log_list_output, parse_log_output, parse_record,
+    parse_refs,
+};
 use super::*;
 
 #[test]

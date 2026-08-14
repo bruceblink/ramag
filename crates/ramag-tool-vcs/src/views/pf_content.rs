@@ -53,7 +53,7 @@ impl VcsView {
         let snapshot_text = snapshot.text.clone();
         let editor_for_copy = self.pf_editor.clone();
         let copy_button = Clipboard::new("vcs-pf-copy")
-            .tooltip("复制当前文件内容")
+            .tooltip("复制")
             .value_fn(move |_, app| {
                 if editor_ready {
                     editor_for_copy.read(app).value()

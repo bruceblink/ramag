@@ -216,7 +216,7 @@ impl Render for ObjectPathDialog {
                             .outline()
                             .small()
                             .icon(IconName::Star)
-                            .tooltip("收藏当前路径")
+                            .tooltip("收藏")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.favorite_current(cx);
                             })),
@@ -270,7 +270,7 @@ impl Render for ObjectPathDialog {
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Close)
-                                .tooltip("移除收藏")
+                                .tooltip("移除")
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     this.remove_favorite(&prefix_for_remove, cx);
                                 })),

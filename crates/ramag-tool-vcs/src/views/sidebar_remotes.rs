@@ -85,7 +85,7 @@ pub(super) fn remote_row(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::ellipsis())
-            .tooltip("远程操作")
+            .tooltip("远程")
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                 remote_actions_menu(
                     menu,

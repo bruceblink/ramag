@@ -1,21 +1,19 @@
-use std::cell::RefCell;
-use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div, px,
-};
+use gpui::{AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, px};
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _, h_flex, notification::Notification, spinner::Spinner, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    notification::Notification, spinner::Spinner,
 };
-use ramag_domain::entities::{ConflictPolicy, TransferProgress, TransferSummary};
+use ramag_domain::entities::{TransferProgress, TransferSummary};
 use ramag_domain::error::DomainError;
 use tracing::{error, info, warn};
+
+mod import_options;
+
+pub use import_options::open_import_options_dialog;
 
 /// 单任务传输状态。
 #[derive(Default)]
@@ -29,8 +27,7 @@ impl TransferState {
         self.cancel.is_some()
     }
 
-    /// 开始一次传输，返回（取消位, 进度槽）。取消位同时充当任务代次 token：
-    /// 迟到的完成回调用 [`Self::finish`] 校验归属
+    /// 开始传输并返回取消位与进度槽。
     pub fn begin(&mut self) -> (Arc<AtomicBool>, Arc<Mutex<TransferProgress>>) {
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Mutex::new(TransferProgress::default()));
@@ -43,7 +40,7 @@ impl TransferState {
         self.cancel.as_ref().is_some_and(|c| Arc::ptr_eq(c, token))
     }
 
-    /// 仅允许当前任务清理状态，避免迟到回调覆盖新任务。
+    /// 仅当前任务可清理状态。
     pub fn finish(&mut self, token: &Arc<AtomicBool>) -> bool {
         if !self.is_current(token) {
             return false;
@@ -96,7 +93,7 @@ pub fn progress_sink(
     }
 }
 
-/// 汇总结果用于通知，警告明细写入日志；取消文件选择时不提示。
+/// 将传输结果转换为通知并记录结构化日志。
 pub fn transfer_notification(
     verb: &str,
     cancelled_note: &str,
@@ -106,10 +103,18 @@ pub fn transfer_notification(
         Ok(None) => None,
         Ok(Some((summary, target))) => {
             for warning in &summary.warnings {
-                warn!(operation = "database_transfer_progress", detail = %warning, "transfer warning");
+                warn!(
+                    operation = "database_transfer_warning",
+                    verb,
+                    target = %target,
+                    detail = %warning,
+                    "database transfer warning"
+                );
             }
             info!(
                 operation = "database_transfer_finished",
+                verb,
+                target = %target,
                 objects = summary.objects,
                 items = summary.items,
                 skipped = summary.skipped,
@@ -132,7 +137,12 @@ pub fn transfer_notification(
             })
         }
         Err(error) => {
-            error!(error = %error, operation = verb, "database transfer failed");
+            error!(
+                operation = "database_transfer",
+                verb,
+                error = %error,
+                "database transfer failed"
+            );
             Some(Notification::error(format!(
                 "{verb}失败：{}",
                 error.message()
@@ -141,8 +151,7 @@ pub fn transfer_notification(
     }
 }
 
-/// 进度轮询：任务进行期间每 120ms notify 一次让进度行刷新；
-/// `is_current` 返回 false（任务收尾清槽）后自动退出
+/// 每 120ms 刷新传输进度，任务结束后自动退出。
 pub fn spawn_transfer_ticker<V: 'static>(
     cx: &mut Context<V>,
     token: Arc<AtomicBool>,
@@ -170,8 +179,7 @@ pub fn spawn_transfer_ticker<V: 'static>(
     .detach();
 }
 
-/// 传输进行中的进度行（spinner + 单行进度 + 取消按钮）；空闲时返回 None。
-/// `state_of` 让取消按钮在回调里定位面板上的状态槽
+/// 渲染传输进度行；空闲时返回 `None`。
 pub fn transfer_progress_row<V: 'static>(
     id: &'static str,
     state: &TransferState,
@@ -223,265 +231,6 @@ pub fn transfer_progress_row<V: 'static>(
             )
             .into_any_element(),
     )
-}
-
-/// 导入确认回调：冲突策略 + 已选文件列表
-type ImportPickHandler = Box<dyn FnOnce(ConflictPolicy, Vec<PathBuf>, &mut Window, &mut App)>;
-
-/// 导入选项表单：冲突策略单选 + 系统框多选文件，点「导入」才回调开始。
-/// 表单自持状态（对话框 content 每帧重建，无法存选择），三个数据库工具共用
-struct ImportOptionsForm {
-    description: SharedString,
-    offer_merge: bool,
-    filter_label: &'static str,
-    extensions: &'static [&'static str],
-    policy: ConflictPolicy,
-    files: Vec<PathBuf>,
-    /// 系统文件框打开期间防重入
-    picking: bool,
-    on_pick: Rc<RefCell<Option<ImportPickHandler>>>,
-}
-
-impl ImportOptionsForm {
-    /// 打开系统多选文件框；取消选择时保留已选列表
-    fn pick_files(&mut self, cx: &mut Context<Self>) {
-        if self.picking {
-            return;
-        }
-        self.picking = true;
-        cx.notify();
-        let filter_label = self.filter_label;
-        let extensions = self.extensions;
-        cx.spawn(async move |this, cx| {
-            let picked = rfd::AsyncFileDialog::new()
-                .add_filter(filter_label, extensions)
-                .pick_files()
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.picking = false;
-                if let Some(handles) = picked
-                    && !handles.is_empty()
-                {
-                    this.files = handles
-                        .iter()
-                        .map(|handle| handle.path().to_path_buf())
-                        .collect();
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn files_summary(&self) -> String {
-        fn name_of(path: &std::path::Path) -> String {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string())
-        }
-        match self.files.as_slice() {
-            [] => "未选择文件".to_string(),
-            [only] => name_of(only),
-            [first, second] => format!("{}、{}", name_of(first), name_of(second)),
-            [first, ..] => format!("{} 等 {} 个文件", name_of(first), self.files.len()),
-        }
-    }
-}
-
-impl Render for ImportOptionsForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted_fg = cx.theme().muted_foreground;
-        let entity = cx.entity();
-
-        let policy_button = {
-            let entity = entity.clone();
-            move |id: &'static str,
-                  label: &'static str,
-                  hint: &'static str,
-                  value: ConflictPolicy,
-                  danger: bool,
-                  selected: bool| {
-                let entity = entity.clone();
-                let mut button = crate::clickable_button(id)
-                    .small()
-                    .flex_1()
-                    .label(label)
-                    .tooltip(hint);
-                button = match (selected, danger) {
-                    (true, true) => button.danger(),
-                    (true, false) => button.primary(),
-                    (false, _) => button.outline(),
-                };
-                button.on_click(move |_: &ClickEvent, _, app| {
-                    entity.update(app, |this, cx| {
-                        this.policy = value;
-                        cx.notify();
-                    });
-                })
-            }
-        };
-        let mut policy_row = h_flex().w_full().gap(px(8.0)).child(policy_button(
-            "ramag-import-skip",
-            "跳过",
-            "跳过同名对象（推荐）",
-            ConflictPolicy::Skip,
-            false,
-            self.policy == ConflictPolicy::Skip,
-        ));
-        if self.offer_merge {
-            policy_row = policy_row.child(policy_button(
-                "ramag-import-merge",
-                "合并",
-                "保留对象，补齐缺失条目",
-                ConflictPolicy::Merge,
-                false,
-                self.policy == ConflictPolicy::Merge,
-            ));
-        }
-        policy_row = policy_row
-            .child(policy_button(
-                "ramag-import-overwrite",
-                "覆盖",
-                "删除同名对象后导入，不可恢复",
-                ConflictPolicy::Overwrite,
-                true,
-                self.policy == ConflictPolicy::Overwrite,
-            ))
-            .child(policy_button(
-                "ramag-import-fail",
-                "停止",
-                "遇到同名对象即停止",
-                ConflictPolicy::Fail,
-                false,
-                self.policy == ConflictPolicy::Fail,
-            ));
-
-        let pick_button = {
-            let entity = entity.clone();
-            crate::clickable_button("ramag-import-pick")
-                .outline()
-                .small()
-                .label(if self.files.is_empty() {
-                    "选文件"
-                } else {
-                    "重选"
-                })
-                .disabled(self.picking)
-                .on_click(move |_: &ClickEvent, _, app| {
-                    entity.update(app, |this, cx| this.pick_files(cx));
-                })
-        };
-        let confirm_button = {
-            let entity = entity.clone();
-            crate::clickable_button("ramag-import-confirm")
-                .primary()
-                .small()
-                .label("导入")
-                .disabled(self.files.is_empty() || self.picking)
-                .on_click(move |_: &ClickEvent, window, app| {
-                    let taken = entity.update(app, |this, _| {
-                        if this.files.is_empty() {
-                            return None;
-                        }
-                        this.on_pick
-                            .borrow_mut()
-                            .take()
-                            .map(|handler| (handler, this.policy, std::mem::take(&mut this.files)))
-                    });
-                    if let Some((handler, policy, files)) = taken {
-                        window.close_dialog(app);
-                        handler(policy, files, window, app);
-                    }
-                })
-        };
-        let cancel_button = crate::clickable_button("ramag-import-cancel")
-            .ghost()
-            .small()
-            .label("取消")
-            .on_click(|_: &ClickEvent, window, app| window.close_dialog(app));
-
-        v_flex()
-            .w(px(560.0))
-            .gap(px(10.0))
-            .child(
-                div()
-                    .py(px(2.0))
-                    .text_sm()
-                    .text_color(muted_fg)
-                    .child(self.description.clone()),
-            )
-            .child(
-                v_flex()
-                    .gap(px(6.0))
-                    .child(div().text_xs().text_color(muted_fg).child("同名对象"))
-                    .child(policy_row),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(pick_button)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .text_color(muted_fg)
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(self.files_summary()),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .child(cancel_button)
-                    .child(confirm_button),
-            )
-    }
-}
-
-/// 导入选项对话框：冲突策略单选 + 文件多选，确认后回调 `(policy, files)`。
-/// `offer_merge` 控制是否提供条目级合并（Redis 语义不支持时隐藏）；
-/// `file_filter` 为系统文件框的（类型名, 扩展名列表）；关闭对话框 = 放弃导入
-pub fn open_import_options_dialog(
-    title: impl Into<SharedString>,
-    description: impl Into<SharedString>,
-    offer_merge: bool,
-    file_filter: (&'static str, &'static [&'static str]),
-    on_pick: impl FnOnce(ConflictPolicy, Vec<PathBuf>, &mut Window, &mut App) + 'static,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let title: SharedString = title.into();
-    let description: SharedString = description.into();
-    let (filter_label, extensions) = file_filter;
-    let form = cx.new(|_| ImportOptionsForm {
-        description,
-        offer_merge,
-        filter_label,
-        extensions,
-        policy: ConflictPolicy::Skip,
-        files: Vec::new(),
-        picking: false,
-        on_pick: Rc::new(RefCell::new(Some(Box::new(on_pick)))),
-    });
-    window.open_dialog(cx, move |dialog, _, _| {
-        let form = form.clone();
-        dialog
-            .title(crate::closable_dialog_title(
-                "ramag-import-close",
-                title.clone(),
-                |_, _| {},
-            ))
-            .close_button(false)
-            .margin_top(px(160.0))
-            .content(move |content, _, _| content.child(form.clone()))
-    });
 }
 
 #[cfg(test)]

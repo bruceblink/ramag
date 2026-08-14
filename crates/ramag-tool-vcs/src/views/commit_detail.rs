@@ -138,7 +138,7 @@ fn render_left_sidebar(
                 .ghost()
                 .xsmall()
                 .icon(ramag_ui::icons::copy())
-                .tooltip("复制哈希")
+                .tooltip("复制")
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(full_sha.clone()));
                     this.notify_success("已复制完整 SHA", cx);

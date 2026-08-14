@@ -51,7 +51,7 @@ impl Render for MongoQueryPanel {
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Close)
-                                    .tooltip("关闭查询")
+                                    .tooltip("关闭")
                                     .on_click(cx.listener(
                                         move |this, _: &ClickEvent, window, cx| {
                                             this.close_tab(i, window, cx);

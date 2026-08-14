@@ -26,21 +26,21 @@ pub struct ClipboardView {
     pub(super) search: Entity<InputState>,
     pub(super) filter: Option<ClipKind>,
     pub(super) selected: Option<ClipId>,
-    /// 当前详情文本的有界展示缓存；避免轮询重绘反复复制、排版大文本。
+    /// 有界详情文本缓存。
     pub(super) detail_text_cache: Option<(ClipId, SharedString)>,
     pub(super) loaded_revision: u64,
     pub(super) search_results: Vec<Arc<ClipItem>>,
-    /// 后台搜索命中超过 SEARCH_LIMIT；状态栏必须明确提示结果被截断。
+    /// 全量搜索结果被截断。
     pub(super) search_truncated: bool,
-    /// 用于丢弃过期搜索结果。
+    /// 当前搜索代次。
     pub(super) search_gen: u64,
-    /// 当前全量搜索的取消标记；输入变化或视图销毁时停止旧扫描。
+    /// 取消当前全量搜索。
     pub(super) search_cancel: Arc<AtomicBool>,
     pub(super) list_scroll: UniformListScrollHandle,
     pub(super) focus_handle: FocusHandle,
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     pub(super) img_cache: crate::views::image_cache::ImageCache,
-    /// 首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
+    /// 仅首次显示时聚焦搜索框。
     pub(super) focused_search_once: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -104,7 +104,7 @@ impl ClipboardView {
         view
     }
 
-    /// 仅在版本变化时同步缓存快照。
+    /// 定期同步服务缓存。
     fn start_polling(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {

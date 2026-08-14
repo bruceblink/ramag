@@ -16,17 +16,18 @@ use gpui_component::{
 };
 use ramag_app::ClipboardService;
 use ramag_domain::entities::ClipItem;
+use tracing::{error, warn};
 
 use crate::views::helpers::filter_items;
 
 /// 可见条目上限。
 const DRAWER_LIMIT: usize = 300;
-/// 卡片宽度与卡片间距也作为虚拟列表的列宽。
+/// 卡片宽度和间距决定虚拟列表列宽。
 const CARD_WIDTH: f32 = 232.0;
 const CARD_GAP: f32 = 12.0;
 
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
-/// 后台搜索多取一段，供缓存结果去重。
+/// 后台搜索结果上限。
 const DRAWER_SEARCH_LIMIT: usize = DRAWER_LIMIT;
 
 pub struct ClipboardDrawer {
@@ -34,17 +35,17 @@ pub struct ClipboardDrawer {
     items: Vec<Arc<ClipItem>>,
     search_results: Vec<Arc<ClipItem>>,
     search_truncated: bool,
-    /// 用于丢弃过期搜索结果。
+    /// 用于丢弃过期结果。
     search_gen: u64,
-    /// 新输入或关闭抽屉时终止旧搜索。
+    /// 新输入或关闭时终止旧搜索。
     search_cancel: Arc<AtomicBool>,
     selected: usize,
     search: Entity<InputState>,
-    /// 自动粘贴前恢复的原窗口。
+    /// 自动粘贴的目标窗口。
     activation_target: Option<String>,
     auto_paste: bool,
     pending_notification: Option<Notification>,
-    /// 防止异步关窗前重复触发粘贴。
+    /// 防止关窗前重复粘贴。
     pasting: bool,
     scroll: VirtualListScrollHandle,
     focus_handle: FocusHandle,
@@ -153,6 +154,12 @@ impl ClipboardDrawer {
                         let Some(retained_bytes) =
                             crate::views::image_cache::png_retained_bytes(&bytes)
                         else {
+                            warn!(
+                                operation = "clipboard_drawer_thumbnail_load",
+                                clip_id = %item.id,
+                                bytes = bytes.len(),
+                                "clipboard thumbnail is not a usable PNG"
+                            );
                             this.img_cache.fail(&path);
                             cx.notify();
                             return;
@@ -164,7 +171,22 @@ impl ClipboardDrawer {
                         this.img_cache.insert(path, image, retained_bytes);
                         cx.notify();
                     }
-                    _ => {
+                    Ok(None) => {
+                        warn!(
+                            operation = "clipboard_drawer_thumbnail_load",
+                            clip_id = %item.id,
+                            "clipboard thumbnail is unavailable"
+                        );
+                        this.img_cache.fail(&path);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        error!(
+                            operation = "clipboard_drawer_thumbnail_load",
+                            clip_id = %item.id,
+                            error = %error,
+                            "load clipboard thumbnail failed"
+                        );
                         this.img_cache.fail(&path);
                         cx.notify();
                     }
@@ -175,7 +197,7 @@ impl ClipboardDrawer {
         None
     }
 
-    /// 合并即时缓存与后台搜索结果。
+    /// 合并缓存和后台搜索结果。
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<Arc<ClipItem>> {
         self.visible_items_with_status(cx).0
     }
@@ -213,7 +235,7 @@ impl ClipboardDrawer {
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
         self.search_cancel.store(true, Ordering::Relaxed);
-        // 去抖期间不能混入上一轮结果。
+        // 清除上一轮搜索结果。
         self.search_results.clear();
         self.search_truncated = false;
         if query.trim().is_empty() {
@@ -243,7 +265,7 @@ impl ClipboardDrawer {
                         this.search_results = result.items.into_iter().map(Arc::new).collect();
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        warn!(
                             operation = "clipboard_drawer_search",
                             query_bytes = query.len(),
                             error = %e,
@@ -262,7 +284,7 @@ impl ClipboardDrawer {
         .detach();
     }
 
-    /// 保持抽屉在前台直至恢复原窗口，满足 Windows 激活限制。
+    /// 保持抽屉前台直至恢复目标窗口。
     pub(super) fn paste(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.pasting {
             return;
@@ -287,7 +309,7 @@ impl ClipboardDrawer {
                     let _ = handle.update(cx, |_, window, _| window.remove_window());
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    warn!(
                         operation = "clipboard_drawer_paste",
                         clip_id = %item.id,
                         mode,
@@ -319,7 +341,7 @@ impl ClipboardDrawer {
         }
     }
 
-    /// 左右键由输入框处理，因此上下键用于切换卡片。
+    /// 上下键切换卡片，左右键保留给输入框。
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         if key == "escape" {
@@ -375,7 +397,7 @@ impl Render for ClipboardDrawer {
             window.push_notification(n, cx);
         }
 
-        // 释放主题借用，避免与 render_card 的可变借用冲突。
+        // 先复制主题颜色，释放主题借用。
         let bg = cx.theme().background;
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
@@ -388,7 +410,7 @@ impl Render for ClipboardDrawer {
         let empty = visible.is_empty();
 
         let topbar = self.render_topbar(truncated).into_any_element();
-        // 只构造视口附近卡片；历史上限为 300，但通常首帧仅需渲染约 8 张。
+        // 虚拟列表仅构造视口附近卡片。
         let visible = Rc::new(visible);
         let item_sizes = Rc::new(vec![
             size(px(CARD_WIDTH + CARD_GAP), px(0.0));

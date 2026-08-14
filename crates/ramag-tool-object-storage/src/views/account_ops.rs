@@ -24,6 +24,26 @@ impl ObjectStorageView {
             } else {
                 None
             };
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_account_list",
+                    None,
+                    None,
+                    "",
+                    None,
+                    error,
+                );
+            }
+            if let Some(Err(error)) = &session {
+                Self::log_operation_failure(
+                    "object_storage_session_load",
+                    None,
+                    None,
+                    "",
+                    None,
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
@@ -74,16 +94,13 @@ impl ObjectStorageView {
                             }
                         }
                         if let Some(Err(error)) = &session {
-                            tracing::error!(operation = "object_storage_session_load", error = %error, "load object storage session failed");
                             this.notice =
                                 Some((format!("会话偏好加载失败：{}", error.user_message()), true));
                         }
                     }
-                    Err(error) => this.operation_error(
-                        "object_storage_account_list",
-                        &error,
-                        format!("加载账号失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        this.operation_notice(format!("加载账号失败：{}", error.user_message()))
+                    }
                 }
                 cx.notify();
             });
@@ -131,6 +148,26 @@ impl ObjectStorageView {
         cx.spawn_in(window, async move |this, cx| {
             let result = service.list_mounts(&account_id).await;
             let workspace = service.load_workspace(&account_id).await;
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_mount_list",
+                    Some(&account_id),
+                    None,
+                    "",
+                    None,
+                    error,
+                );
+            }
+            if let Err(error) = &workspace {
+                Self::log_operation_failure(
+                    "object_storage_workspace_load",
+                    Some(&account_id),
+                    None,
+                    "",
+                    None,
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.selected_account_id.as_ref() != Some(&account_id) {
                     return;
@@ -173,7 +210,6 @@ impl ObjectStorageView {
                             }
                         }
                         if let Err(error) = &workspace {
-                            tracing::error!(operation = "object_storage_workspace_load", account_id = %account_id, error = %error, "load object storage workspace failed");
                             this.notice = Some((
                                 format!("工作区偏好加载失败：{}", error.user_message()),
                                 true,
@@ -185,11 +221,7 @@ impl ObjectStorageView {
                     Err(error) => {
                         this.account_session_states
                             .insert(account_id.clone(), AccountSessionState::Unverified);
-                        this.operation_error(
-                            "object_storage_mount_list",
-                            &error,
-                            format!("加载挂载点失败：{}", error.user_message()),
-                        );
+                        this.operation_notice(format!("加载挂载点失败：{}", error.user_message()));
                     }
                 }
                 cx.notify();
@@ -367,6 +399,16 @@ impl ObjectStorageView {
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = service.close_account_session(&id).await;
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_session_close",
+                    Some(&id),
+                    None,
+                    "",
+                    None,
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(()) if was_selected => {
@@ -377,11 +419,9 @@ impl ObjectStorageView {
                         }
                     }
                     Ok(()) => {}
-                    Err(error) => this.operation_error(
-                        "object_storage_session_close",
-                        &error,
-                        format!("关闭会话失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        this.operation_notice(format!("关闭会话失败：{}", error.user_message()))
+                    }
                 }
                 cx.notify();
             });
@@ -399,6 +439,16 @@ impl ObjectStorageView {
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = service.delete_account(&id).await;
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_account_delete",
+                    Some(&id),
+                    None,
+                    "",
+                    None,
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
@@ -414,11 +464,9 @@ impl ObjectStorageView {
                         this.notice = Some(("账号及其工作区偏好已删除".into(), false));
                         this.load_accounts(window, cx);
                     }
-                    Err(error) => this.operation_error(
-                        "object_storage_account_delete",
-                        &error,
-                        format!("删除账号失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        this.operation_notice(format!("删除账号失败：{}", error.user_message()))
+                    }
                 }
                 cx.notify();
             });

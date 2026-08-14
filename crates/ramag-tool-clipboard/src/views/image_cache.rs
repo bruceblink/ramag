@@ -1,6 +1,4 @@
-//! 图片解密缓存：图片落盘是密文，UI 不能直接 img(path)。
-//! 渲染时同步查缓存；miss 则异步解密解码填充 + notify，下一帧显示。
-//! 内部 RefCell，故 render（&self）可填发起加载
+//! 图片解密缓存；未命中时由视图异步加载。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -9,15 +7,15 @@ use std::sync::Arc;
 
 use gpui::Image;
 
-/// 图片缓存独立于抽屉条目数设限，避免大量图片同时解码后长期占用内存。
+/// 图片缓存条目上限。
 const MAX_ENTRIES: usize = 96;
-/// 按 PNG 编码字节 + RGBA 像素估算驻留内存，避免压缩率极高的大图绕过缓存上限。
+/// 编码与解码图片的总驻留上限。
 const MAX_RETAINED_BYTES: usize = 256 * 1024 * 1024;
-/// 极端长宽即使总像素不大，也可能触发解码器或纹理后端的异常大尺寸路径。
+/// 图片单边上限。
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
-/// 失败记录也必须有界；旧失败被淘汰后允许未来重试（文件可能已被恢复或修复）。
+/// 失败记录上限，淘汰后允许重试。
 const MAX_FAILED_ENTRIES: usize = 256;
-/// 快速滚动时限制同时解密 / 解码的图片数，避免任务与临时字节堆积。
+/// 并发图片加载上限。
 const MAX_IN_FLIGHT_LOADS: usize = 4;
 
 struct CacheEntry {
@@ -28,7 +26,7 @@ struct CacheEntry {
 #[derive(Default)]
 struct CacheState {
     entries: HashMap<String, CacheEntry>,
-    /// 最近使用的 key 在队尾。
+    /// 最近使用的键在队尾。
     order: VecDeque<String>,
     retained_bytes: usize,
 }
@@ -37,7 +35,7 @@ struct CacheState {
 pub struct ImageCache {
     cache: Rc<RefCell<CacheState>>,
     loading: Rc<RefCell<HashSet<String>>>,
-    /// 解密 / 解码失败的路径：显示失败占位，不再每帧无限重试
+    /// 本次会话加载失败的路径。
     failed: Rc<RefCell<HashSet<String>>>,
     failed_order: Rc<RefCell<VecDeque<String>>>,
 }
@@ -47,12 +45,12 @@ impl ImageCache {
         Self::default()
     }
 
-    /// 抽屉关闭时释放未完成任务占用的槽位；已解码内容继续跨窗口复用。
+    /// 释放未完成任务占用的槽位。
     pub(crate) fn clear_in_flight(&self) {
         self.loading.borrow_mut().clear();
     }
 
-    /// 同步取已解密图片
+    /// 同步读取已加载图片。
     pub(crate) fn peek(&self, path: &str) -> Option<Arc<Image>> {
         let mut cache = self.cache.borrow_mut();
         let image = cache.entries.get(path).map(|entry| entry.image.clone())?;
@@ -60,12 +58,12 @@ impl ImageCache {
         Some(image)
     }
 
-    /// 该路径是否已判定失败（缺失、损坏或尺寸过大时不再每帧重试）
+    /// 该路径是否已判定加载失败。
     pub(crate) fn is_failed(&self, path: &str) -> bool {
         self.failed.borrow().contains(path)
     }
 
-    /// 抢加载权：未缓存、未在加载、未失败才返回 true（防同路径重复 spawn / 失败风暴）
+    /// 未缓存、未加载且未失败时取得加载权。
     pub(crate) fn begin_load(&self, path: &str) -> bool {
         if self.cache.borrow().entries.contains_key(path) || self.failed.borrow().contains(path) {
             return false;
@@ -104,7 +102,7 @@ impl ImageCache {
         evict_to_limits(&mut cache);
     }
 
-    /// 加载失败：记入失败集（本次会话内不再重试，显示失败占位）
+    /// 记录加载失败，避免当前会话重复重试。
     pub(crate) fn fail(&self, path: &str) {
         self.loading.borrow_mut().remove(path);
         let mut failed = self.failed.borrow_mut();
@@ -147,7 +145,7 @@ fn evict_to_limits(cache: &mut CacheState) {
     }
 }
 
-/// 读取 PNG signature + IHDR 尺寸，估算编码缓冲与 RGBA 解码后的共同驻留字节。
+/// 校验 PNG 尺寸并估算驻留字节。
 pub(crate) fn png_retained_bytes(bytes: &[u8]) -> Option<usize> {
     const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     if bytes.len() < 33

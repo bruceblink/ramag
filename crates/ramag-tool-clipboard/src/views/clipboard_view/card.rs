@@ -20,7 +20,7 @@ impl ClipboardView {
         item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // 释放主题借用，避免与 card_preview 的可变借用冲突。
+        // 先复制主题颜色，释放主题借用。
         let accent = cx.theme().accent;
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;

@@ -19,7 +19,7 @@ impl ClipboardDrawer {
         item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // 释放主题借用，避免与图片加载的可变借用冲突。
+        // 先复制主题颜色，释放主题借用。
         let border = cx.theme().border;
         let secondary = cx.theme().secondary;
         let muted = cx.theme().muted_foreground;

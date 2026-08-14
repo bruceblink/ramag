@@ -133,7 +133,7 @@ impl VcsView {
         .detach();
     }
 
-    /// HEAD 变化（checkout / merge / rebase / 建分支 / pull）：清缓存 + 重拉，避免显示旧分支内容
+    /// HEAD 变化后清理缓存并刷新。
     pub(in crate::views) fn refresh_after_head_change(&mut self, cx: &mut Context<Self>) {
         for tab in &mut self.file_tabs {
             tab.cached_diff = None;
@@ -147,7 +147,7 @@ impl VcsView {
         self.blame_lines = std::rc::Rc::new(Vec::new());
 
         self.refresh_current_files_view(cx);
-        // Changes tabs 对齐新 status（关已无变更的 / 重定向组别），active 是 Changes 时由它重拉
+        // 同步变更标签。
         self.sync_changes_tabs_with_status(cx);
 
         if let Some(idx) = self.active_file_tab_idx
@@ -166,8 +166,7 @@ impl VcsView {
         }
     }
 
-    /// 切换 amend：勾上且 message 为空时，异步拉 HEAD 的 message 填入输入框（IDEA 同款），
-    /// 方便在原文基础上改；取消勾选不动已输入内容
+    /// 启用 amend 时加载 HEAD 提交消息。
     pub(in crate::views) fn toggle_commit_amend(&mut self, cx: &mut Context<Self>) {
         if !self.commit_amend
             && self
@@ -198,6 +197,14 @@ impl VcsView {
                 .commit_details(&repo, "HEAD")
                 .await
                 .map(|commit| commit.message_full());
+            if let Err(error) = &head_msg {
+                error!(
+                    operation = "git_commit_amend_message",
+                    repo_id = %repo,
+                    error = %error,
+                    "load amend message failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) || !this.commit_amend {
                     return;
@@ -209,12 +216,6 @@ impl VcsView {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        tracing::error!(
-                            operation = "git_commit_amend_message",
-                            repo_id = %repo,
-                            error = %error,
-                            "load amend message failed"
-                        );
                         this.error = Some(format!("加载上次提交消息失败：{error}"));
                     }
                 }
@@ -224,7 +225,6 @@ impl VcsView {
         .detach();
     }
 
-    /// base=None 时从当前 HEAD 建
     pub(in crate::views) fn handle_create_branch(&mut self, cx: &mut Context<Self>) {
         if self
             .status
@@ -255,7 +255,7 @@ impl VcsView {
         cx.notify();
     }
 
-    /// skip=0 覆盖刷新，其他值 append
+    /// 加载提交历史页。
     pub(in crate::views) fn load_history_page(&mut self, skip: usize, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
@@ -308,6 +308,15 @@ impl VcsView {
         };
         cx.spawn(async move |this, cx| {
             let result = driver.log(&repo, opts).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "git_history_load",
+                    repo_id = %repo,
+                    skip,
+                    error = %error,
+                    "load history failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) || this.history_request_seq != request_seq {
                     cx.notify();
@@ -325,13 +334,6 @@ impl VcsView {
                         this.history_has_more = got >= HISTORY_PAGE_SIZE && !limit_reached;
                     }
                     Err(e) => {
-                        error!(
-                            operation = "git_history_load",
-                            repo_id = %repo,
-                            skip,
-                            error = %e,
-                            "load history failed"
-                        );
                         this.error = Some(format!("加载历史失败：{e}"));
                     }
                 }
@@ -383,6 +385,17 @@ impl VcsView {
 
         cx.spawn(async move |this, cx| {
             let result = driver.commit(&repo, &message, amend, sign).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "git_commit",
+                    repo_id = %repo,
+                    amend,
+                    sign,
+                    message_bytes = message.len(),
+                    error = %error,
+                    "commit failed"
+                );
+            }
             let new_status = if result.is_ok() {
                 crate::views::vcs_view_ops_sync::best_effort_refresh(
                     driver.status(&repo).await,
@@ -444,14 +457,6 @@ impl VcsView {
                         this.notify_success(format!("已提交 {short}"), cx);
                     }
                     Err(e) => {
-                        error!(
-                            operation = "git_commit",
-                            repo_id = %repo,
-                            amend,
-                            sign,
-                            error = %e,
-                            "commit failed"
-                        );
                         this.error = Some(format!("提交失败：{e}"));
                     }
                 }
@@ -461,7 +466,7 @@ impl VcsView {
         .detach();
     }
 
-    /// stage / unstage / discard，支持多文件批量（「全部 Stage」一次任务搞定，只刷一次 status）
+    /// 执行暂存、取消暂存或丢弃。
     pub(in crate::views) fn run_file_op(
         &mut self,
         op: FileOp,
@@ -490,6 +495,16 @@ impl VcsView {
                 FileOp::Unstage => driver.unstage(&repo, &paths).await,
                 FileOp::Discard => driver.discard(&repo, &paths).await,
             };
+            if let Err(error) = &result {
+                error!(
+                    operation = "git_file_operation",
+                    repo_id = %repo,
+                    file_operation = ?op,
+                    path_count = paths.len(),
+                    error = %error,
+                    "file operation failed"
+                );
+            }
             let new_status = if result.is_ok() {
                 crate::views::vcs_view_ops_sync::best_effort_refresh(
                     driver.status(&repo).await,
@@ -530,14 +545,6 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "git_file_operation",
-                            repo_id = %repo,
-                            file_operation = ?op,
-                            path_count = paths.len(),
-                            error = %e,
-                            "file operation failed"
-                        );
                         let action = match op {
                             FileOp::Stage => "暂存",
                             FileOp::Unstage => "取消暂存",

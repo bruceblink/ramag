@@ -37,12 +37,12 @@ pub struct TableTreePanel {
     pub(super) loading_schemas: bool,
     pub(super) schemas: Vec<Schema>,
     pub(super) error: Option<String>,
-    /// 表缓存与展开状态分离，避免搜索改变展开项。
+    /// 表缓存与展开状态分离。
     pub(super) expanded: HashMap<String, SchemaTables>,
     pub(super) open_schemas: HashSet<String>,
     pub(super) full_search: Option<FullSearchProgress>,
     pub(super) full_search_generation: u64,
-    /// 旧连接的异步结果不得回写。
+    /// 防止旧连接的异步结果回写。
     pub(super) metadata_generation: u64,
     pub(super) table_request_generation: u64,
     pub(super) column_request_generation: u64,
@@ -50,7 +50,7 @@ pub struct TableTreePanel {
     pub(super) selected: Option<(String, String)>,
     pub(super) show_system: bool,
     pub(super) search: gpui::Entity<InputState>,
-    /// 缓存小写搜索词，避免焦点变化触发元数据请求。
+    /// 缓存小写搜索词。
     pub(super) search_query: String,
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) editor_visible: bool,
@@ -59,9 +59,9 @@ pub struct TableTreePanel {
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// 通知渲染层移除常驻 DDL 提示。
+    /// 请求渲染层移除常驻 DDL 提示。
     pub(super) clear_ddl_notification: bool,
-    /// 旧连接的 DDL 回包不得解锁新连接。
+    /// 防止旧 DDL 回包解锁新连接。
     pub(super) ddl_gate: AsyncMutationGate,
     pub(super) transfer: ramag_ui::TransferState,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
@@ -133,14 +133,14 @@ impl TableTreePanel {
                 .clean_on_escape()
         });
         let subs = vec![
-            // InputState::set_value 不发 Change 事件，观察实体才能正确处理清除按钮。
+            // InputState::set_value 不触发 Change 事件。
             cx.observe(&search, |this: &mut Self, _, cx| {
                 let query = this.search.read(cx).value().trim().to_lowercase();
                 if query == this.search_query {
                     return;
                 }
                 this.search_query = query;
-                // 非空搜索覆盖全库，而非仅过滤已展开节点。
+                // 非空搜索覆盖全库。
                 this.ensure_search_coverage(cx);
                 this.invalidate_tree_rows();
                 cx.notify();
@@ -216,7 +216,7 @@ impl TableTreePanel {
         self.load_schemas(cx);
     }
 
-    /// 首次加载失败时，重新激活会重试且保留展开状态。
+    /// 首次加载失败后重新激活会重试。
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if self.connection.is_some() && self.schemas.is_empty() && !self.loading_schemas {
             self.load_schemas(cx);
@@ -257,6 +257,16 @@ impl TableTreePanel {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             let result = svc.list_schemas(&conn).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "sql_metadata_schemas",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    connection = %conn.name,
+                    error = %error,
+                    "load schemas failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id);
@@ -280,14 +290,6 @@ impl TableTreePanel {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "sql_metadata_schemas",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            connection = %conn.name,
-                            error = ?e,
-                            "load schemas failed"
-                        );
                         this.error = Some(e.to_string());
                     }
                 }

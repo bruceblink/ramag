@@ -1,7 +1,5 @@
-use super::{
-    MAX_OPEN_REPOS, MAX_OPEN_REPOS_PREF_BYTES, parse_open_repo_paths, prepare_clone_destination,
-    remove_cancelled_clone_directory,
-};
+use super::creation::{prepare_clone_destination, remove_cancelled_clone_directory};
+use super::{MAX_OPEN_REPOS, MAX_OPEN_REPOS_PREF_BYTES, parse_open_repo_paths};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn test_root(label: &str) -> std::path::PathBuf {

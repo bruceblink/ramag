@@ -101,7 +101,7 @@ pub(super) fn branch_row(
         .ghost()
         .xsmall()
         .icon(ramag_ui::icons::ellipsis())
-        .tooltip("分支操作")
+        .tooltip("分支")
         .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
             branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
         })

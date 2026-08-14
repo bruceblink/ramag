@@ -1,7 +1,7 @@
 use super::*;
 
 impl CollectionTreePanel {
-    /// 顺序补拉限制并发；清空搜索会取消并回收临时缓存。
+    /// 补齐搜索所需的集合列表。
     pub(super) fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
         if self.search.read(cx).value().trim().is_empty() {
             self.cancel_search_load();
@@ -108,6 +108,16 @@ impl CollectionTreePanel {
                 }
 
                 let result = service.list_collections(&conf, &database).await;
+                if let Err(error) = &result {
+                    error!(
+                        operation = "mongo_metadata_search_collections",
+                        connection_id = %conf.id,
+                        connection_name = %conf.name,
+                        database = %database,
+                        error = %error,
+                        "load search collections failed"
+                    );
+                }
                 let should_continue = this
                     .update(cx, |this, cx| {
                         let search_is_current = this.search_loading
@@ -138,18 +148,18 @@ impl CollectionTreePanel {
                                     this.store_collections(&database, collections, false)
                                     && let Some(state) = this.expanded.get_mut(&database)
                                 {
+                                    tracing::warn!(
+                                        operation = "mongo_metadata_search_collections_cache",
+                                        connection_id = %conf.id,
+                                        database = %database,
+                                        error = %message,
+                                        "store search collections failed"
+                                    );
                                     state.loading = false;
                                     state.error = Some(message);
                                 }
                             }
                             Err(error) => {
-                                error!(
-                                    operation = "mongo_metadata_search_collections",
-                                    connection_id = %conf.id,
-                                    database = %database,
-                                    error = %error,
-                                    "load search collections failed"
-                                );
                                 if let Some(state) = this.expanded.get_mut(&database) {
                                     state.loading = false;
                                     state.error = Some(error.to_string());
@@ -352,6 +362,16 @@ impl CollectionTreePanel {
         let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
             let r = svc.list_collections(&conf, &db_for_async).await;
+            if let Err(error) = &r {
+                error!(
+                    operation = "mongo_metadata_collections",
+                    connection_id = %conf.id,
+                    connection_name = %conf.name,
+                    database = %db_for_async,
+                    error = %error,
+                    "load collections failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conf.id)
@@ -374,18 +394,18 @@ impl CollectionTreePanel {
                         if let Err(message) = this.store_collections(&db_for_async, cs, true)
                             && let Some(state) = this.expanded.get_mut(&db_for_async)
                         {
+                            tracing::warn!(
+                                operation = "mongo_metadata_collections_cache",
+                                connection_id = %conf.id,
+                                database = %db_for_async,
+                                error = %message,
+                                "store collections failed"
+                            );
                             state.loading = false;
                             state.error = Some(message);
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "mongo_metadata_collections",
-                            connection_id = %conf.id,
-                            database = %db_for_async,
-                            error = %e,
-                            "load collections failed"
-                        );
                         if let Some(state) = this.expanded.get_mut(&db_for_async) {
                             state.loading = false;
                             state.error = Some(e.to_string());

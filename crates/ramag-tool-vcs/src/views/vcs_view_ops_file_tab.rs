@@ -1,12 +1,14 @@
 //! 文件标签与未跟踪文件预览。
 
 use gpui::Context;
-use ramag_domain::entities::{DiffKind, DiffLine, DiffLineKind, FileChangeKind, FileDiff, Hunk};
+use ramag_domain::entities::DiffKind;
 use tracing::error;
 
-use super::helpers::{FileContentSnapshot, FileTab, FileTabSource, GroupKind};
+use super::helpers::{FileTab, FileTabSource, GroupKind};
 use super::vcs_view::VcsView;
-use super::vcs_view_ops_repo::{RawFileContent, read_raw_file_content};
+use super::vcs_view_ops_repo::read_raw_file_content;
+
+mod data;
 
 /// 当前仓库所有文件标签的正文缓存预算；活动标签始终保留，非活动标签按最近打开顺序保留。
 const FILE_TAB_CACHE_BYTE_BUDGET: usize = 96 * 1024 * 1024;
@@ -24,7 +26,7 @@ impl VcsView {
             .position(|t| t.path == path && t.source == FileTabSource::Changes(kind));
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         let request_seq = self.diff_request_seq;
-        // 仅切换文件时复位视图，避免刷新打断阅读。
+        // 切换文件时重置阅读视图。
         let same_file = self.selected_file.as_ref() == Some(&(path.clone(), kind));
         if !same_file {
             self.reset_blame_context();
@@ -35,7 +37,7 @@ impl VcsView {
                 .scroll_to_item(0, gpui::ScrollStrategy::Top);
             self.diff_scroll_gesture.reset();
         }
-        // 点击 Changes 文件 → 关掉 commit detail，避免主区残留 commit diff
+        // 切换到变更文件时关闭提交详情。
         if self.viewing_commit.is_some() {
             self.commit_detail_request_seq = self.commit_detail_request_seq.wrapping_add(1);
             self.viewing_commit = None;
@@ -131,7 +133,7 @@ impl VcsView {
                                 this.current_diff = Some(d.clone());
                                 this.current_diff_syntax = syntax.clone();
                             }
-                            // 不缓存到捕获的索引：关 tab 后索引可能位移，必须按完整来源定位。
+                            // 按路径和来源回写，避免关闭标签后索引失效。
                             if let Some(tab) = this.file_tabs.iter_mut().find(|tab| {
                                 tab.path == path_for_diff && tab.source == source_for_diff
                             }) {
@@ -159,7 +161,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 关闭指定索引的文件 tab；根据剩余 active tab 的 source 重置 diff/pf 字段
+    /// 关闭文件标签。
     pub(super) fn close_file_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx >= self.file_tabs.len() {
             return;
@@ -212,8 +214,7 @@ impl VcsView {
         cx.notify();
     }
 
-    /// 读盘构造 untracked 文件的「全新增」伪 diff：与普通 diff 同一渲染管线，
-    /// 新文件点开即可预览内容（之前是占位文案，必须先 Stage 才能看）
+    /// 读取未跟踪文件并构造全新增 diff。
     fn load_untracked_preview(&mut self, path: String, request_seq: u64, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref() else {
             return;
@@ -227,7 +228,7 @@ impl VcsView {
                 match raw.error.clone() {
                     Some(error) => Err(ramag_domain::error::DomainError::Other(error)),
                     None => {
-                        let diff = build_untracked_diff(raw);
+                        let diff = data::build_untracked_diff(raw);
                         let syntax = super::syntax::DiffSyntaxSnapshot::new_bounded(
                             &diff,
                             super::syntax::lang_for_path(&rel_for_worker),
@@ -285,7 +286,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 同步 active tab 的派生状态：根据 source 写 selected_file / selected_pf_path 等
+    /// 同步活动标签的派生状态。
     pub(super) fn activate_file_tab_state(&mut self, tab: FileTab) {
         match &tab.source {
             FileTabSource::Changes(kind) => {
@@ -330,158 +331,31 @@ impl VcsView {
         }
     }
 
-    /// 丢弃超出预算的非活动标签正文；标签本身保留，切回时会按既有流程重新加载。
+    /// 清理超出预算的非活动标签缓存。
     pub(super) fn prune_file_tab_payloads(&mut self) {
-        prune_file_tab_payloads_to_budget(
+        data::prune_file_tab_payloads_to_budget(
             &mut self.file_tabs,
             self.active_file_tab_idx,
             FILE_TAB_CACHE_BYTE_BUDGET,
         );
     }
 
-    /// 大负 offset 由 GPUI 自动收敛到最大横向偏移，确保新标签可见。
+    /// 将标签滚动到末尾。
     pub(super) fn scroll_file_tabs_to_end(&self) {
         self.file_tabs_h_scroll
             .set_offset(gpui::point(gpui::px(-99_999.0), gpui::px(0.0)));
     }
 }
 
-fn prune_file_tab_payloads_to_budget(tabs: &mut [FileTab], active: Option<usize>, budget: usize) {
-    // 活动标签与未保存草稿属于不可淘汰数据；即使暂时超过预算，也不能丢用户编辑。
-    let mut retained = tabs
-        .iter()
-        .enumerate()
-        .filter(|(index, tab)| {
-            Some(*index) == active
-                || tab
-                    .cached_content
-                    .as_ref()
-                    .is_some_and(|content| content.dirty)
-        })
-        .fold(0usize, |total, (_, tab)| {
-            total.saturating_add(file_tab_payload_bytes(tab))
-        });
-
-    // 文件标签按打开顺序追加；从末尾开始保留，使较新的非活动标签更可能命中缓存。
-    for index in (0..tabs.len()).rev() {
-        if Some(index) == active
-            || tabs[index]
-                .cached_content
-                .as_ref()
-                .is_some_and(|content| content.dirty)
-        {
-            continue;
-        }
-        let bytes = file_tab_payload_bytes(&tabs[index]);
-        if bytes == 0 {
-            continue;
-        }
-        let Some(next) = retained.checked_add(bytes) else {
-            clear_file_tab_payload(&mut tabs[index]);
-            continue;
-        };
-        if next > budget {
-            clear_file_tab_payload(&mut tabs[index]);
-        } else {
-            retained = next;
-        }
-    }
-}
-
-fn clear_file_tab_payload(tab: &mut FileTab) {
-    tab.cached_diff = None;
-    tab.cached_diff_syntax = None;
-    tab.cached_content = None;
-}
-
-fn file_tab_payload_bytes(tab: &FileTab) -> usize {
-    tab.cached_diff
-        .as_deref()
-        .map_or(0, file_diff_payload_bytes)
-        .saturating_add(
-            tab.cached_diff_syntax
-                .as_deref()
-                .map_or(0, super::syntax::DiffSyntaxSnapshot::retained_bytes),
-        )
-        .saturating_add(
-            tab.cached_content
-                .as_ref()
-                .map_or(0, file_content_payload_bytes),
-        )
-}
-
-fn file_diff_payload_bytes(diff: &FileDiff) -> usize {
-    let mut total = std::mem::size_of::<FileDiff>()
-        .saturating_add(diff.path.capacity())
-        .saturating_add(diff.old_path.as_ref().map_or(0, String::capacity))
-        .saturating_add(
-            diff.hunks
-                .capacity()
-                .saturating_mul(std::mem::size_of::<Hunk>()),
-        );
-    for hunk in &diff.hunks {
-        total = total
-            .saturating_add(hunk.heading.as_ref().map_or(0, String::capacity))
-            .saturating_add(
-                hunk.lines
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<DiffLine>()),
-            );
-        for line in &hunk.lines {
-            total = total.saturating_add(line.text.capacity());
-        }
-    }
-    total
-}
-
-fn file_content_payload_bytes(content: &FileContentSnapshot) -> usize {
-    std::mem::size_of::<FileContentSnapshot>()
-        .saturating_add(content.path.capacity())
-        .saturating_add(content.text.capacity())
-        .saturating_add(content.error.as_ref().map_or(0, String::capacity))
-}
-
-/// 将未跟踪文件转换为全新增 diff，二进制和截断文件保留标记。
-fn build_untracked_diff(raw: RawFileContent) -> FileDiff {
-    let lines: Vec<DiffLine> = raw
-        .lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, text)| DiffLine {
-            kind: DiffLineKind::Add,
-            old_lineno: None,
-            new_lineno: Some(i as u32 + 1),
-            text,
-        })
-        .collect();
-    let hunks = if lines.is_empty() {
-        Vec::new()
-    } else {
-        vec![Hunk {
-            old_start: 0,
-            old_lines: 0,
-            new_start: 1,
-            new_lines: lines.len() as u32,
-            heading: raw
-                .truncated
-                .then(|| "文件过大，预览已截断（前 4MB）".to_string()),
-            lines,
-        }]
-    };
-    FileDiff {
-        path: raw.path,
-        old_path: None,
-        change_kind: FileChangeKind::Untracked,
-        binary: raw.binary,
-        old_mode: None,
-        new_mode: None,
-        hunks,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::helpers::FileContentSnapshot;
+    use super::super::vcs_view_ops_repo::RawFileContent;
+    use super::data::{
+        build_untracked_diff, file_tab_payload_bytes, prune_file_tab_payloads_to_budget,
+    };
     use super::*;
+    use ramag_domain::entities::DiffLineKind;
 
     fn raw(lines: Vec<&str>, binary: bool, truncated: bool) -> RawFileContent {
         RawFileContent {

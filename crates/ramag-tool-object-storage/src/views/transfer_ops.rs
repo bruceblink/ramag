@@ -97,6 +97,23 @@ impl ObjectStorageView {
                 }
                 _ => None,
             };
+            if let Err(error) = &result
+                && !is_conflict(error)
+                && !is_cancelled(error)
+            {
+                tracing::error!(
+                    operation = "object_storage_upload",
+                    transfer_id,
+                    direction = "upload",
+                    account_id = %account_id,
+                    mount_id = %mount.id,
+                    bucket = %mount.bucket,
+                    key = %retry_key,
+                    local_path = %local_path_for_log,
+                    error = %error,
+                    "upload object failed"
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 let (status, history_error) = transfer_result(&result);
                 this.finish_transfer(transfer_id, status, history_error);
@@ -133,16 +150,6 @@ impl ObjectStorageView {
                     }
                     Err(error) if is_cancelled(&error) => {}
                     Err(error) => {
-                        tracing::error!(
-                            operation = "object_storage_upload",
-                            account_id = %account_id,
-                            mount_id = %mount.id,
-                            bucket = %mount.bucket,
-                            key = %retry_key,
-                            local_path = %local_path_for_log,
-                            error = %error,
-                            "upload object failed"
-                        );
                         this.error(format!("上传失败：{}", error.user_message()));
                     }
                 }
@@ -217,6 +224,23 @@ impl ObjectStorageView {
                     }),
                 )
                 .await;
+            if let Err(error) = &result
+                && !is_conflict(error)
+                && !is_cancelled(error)
+            {
+                tracing::error!(
+                    operation = "object_storage_download",
+                    transfer_id,
+                    direction = "download",
+                    account_id = %account_id,
+                    mount_id = %mount.id,
+                    bucket = %mount.bucket,
+                    key = %retry_key,
+                    local_path = %local_path_for_log,
+                    error = %error,
+                    "download object failed"
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 let (status, history_error) = transfer_result(&result);
                 this.finish_transfer(transfer_id, status, history_error);
@@ -238,16 +262,6 @@ impl ObjectStorageView {
                     }
                     Err(error) if is_cancelled(&error) => {}
                     Err(error) => {
-                        tracing::error!(
-                            operation = "object_storage_download",
-                            account_id = %account_id,
-                            mount_id = %mount.id,
-                            bucket = %mount.bucket,
-                            key = %retry_key,
-                            local_path = %local_path_for_log,
-                            error = %error,
-                            "download object failed"
-                        );
                         this.error(format!("下载失败：{}", error.user_message()));
                     }
                 }

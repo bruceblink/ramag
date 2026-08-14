@@ -1,11 +1,9 @@
-//! 通用渲染辅助：值分发 + 标量小块 + 时长格式化 + 并发 helper
+//! Key 详情渲染辅助。
 
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px,
 };
-use gpui_component::{
-    WindowExt as _, clipboard::Clipboard, h_flex, notification::Notification, v_flex,
-};
+use gpui_component::{WindowExt as _, clipboard::Clipboard, h_flex, v_flex};
 use ramag_domain::entities::RedisValue;
 
 use super::KeyDetailPanel;
@@ -15,8 +13,7 @@ use super::set_block::render_set_block;
 use super::stream_block::render_stream_block;
 use super::zset_block::render_zset_block;
 
-/// 按 RedisValue variant 分发：容器走带 cx 的方法版（emit 编辑 / 删除）；标量走只读 free fn；
-/// String / Bytes 由 mod.rs Render 单独走 `scalar::render_scalar`
+/// 按值类型分发渲染。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_value(
     v: &RedisValue,
@@ -78,7 +75,7 @@ pub(super) fn render_value(
             render_stream_block(cx, key.to_string(), entries, scroll, fg, muted_fg, border)
                 .into_any_element()
         }
-        // Array 兜底（命令应答的复合返回，不直接来自 key value）
+        // 命令返回的复合值。
         RedisValue::Array(items) => array_block(items, fg, muted_fg, border).into_any_element(),
     }
 }
@@ -139,7 +136,7 @@ pub(super) fn bytes_block(
         )
 }
 
-/// Array 类型的只读列表渲染（命令应答兜底，不带行操作按钮）
+/// 渲染只读数组值。
 fn array_block(
     items: &[RedisValue],
     fg: gpui::Hsla,
@@ -180,13 +177,10 @@ fn array_block(
                 )
                 .child(
                     Clipboard::new(format!("redis-array-copy-{i}"))
-                        .tooltip("复制完整值")
+                        .tooltip("复制")
                         .value(item.to_clipboard_string())
                         .on_copied(|_, window, cx| {
-                            window.push_notification(
-                                Notification::success("复制成功").autohide(true),
-                                cx,
-                            );
+                            window.push_notification(ramag_ui::copy_success_notification(), cx);
                         }),
                 ),
         );
@@ -194,7 +188,7 @@ fn array_block(
     rows
 }
 
-/// 把毫秒数格式化为人类可读
+/// 格式化毫秒数。
 pub(super) fn format_ttl_ms(ms: i64) -> String {
     let secs = ms / 1000;
     if secs < 60 {
@@ -208,8 +202,7 @@ pub(super) fn format_ttl_ms(ms: i64) -> String {
     }
 }
 
-/// 简单的并发 await 两个 future（不引入额外依赖）
-/// 借 GPUI 已有的 futures crate（workspace 默认包含）
+/// 并发等待两个任务。
 pub(super) async fn futures_join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
 where
     A: Future<Output = RA>,

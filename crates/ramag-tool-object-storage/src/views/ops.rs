@@ -126,10 +126,21 @@ impl ObjectStorageView {
         ) else {
             return;
         };
+        let prefix = self.prefix.clone();
         self.loading = true;
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let preview = service.preview_text_object(&account_id, &mount, &key).await;
+            if let Err(error) = &preview {
+                Self::log_operation_failure(
+                    "object_storage_object_preview",
+                    Some(&account_id),
+                    Some(&mount),
+                    &prefix,
+                    Some(&key),
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.detail_request_id != detail_request_id {
                     return;
@@ -168,11 +179,7 @@ impl ObjectStorageView {
                         );
                     }
                     Err(error) => {
-                        this.operation_error(
-                            "object_storage_object_preview",
-                            &error,
-                            format!("查看内容失败：{}", error.user_message()),
-                        );
+                        this.operation_notice(format!("查看内容失败：{}", error.user_message()));
                     }
                 }
                 cx.notify();
@@ -205,10 +212,21 @@ impl ObjectStorageView {
         ) else {
             return;
         };
+        let prefix = self.prefix.clone();
         self.loading = true;
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let metadata = service.stat_object(&account_id, &mount, &key).await;
+            if let Err(error) = &metadata {
+                Self::log_operation_failure(
+                    "object_storage_object_stat",
+                    Some(&account_id),
+                    Some(&mount),
+                    &prefix,
+                    Some(&key),
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, _window, cx| {
                 if this.detail_request_id != detail_request_id {
                     return;
@@ -221,11 +239,7 @@ impl ObjectStorageView {
                     }
                     Err(error) => {
                         this.detail_message = "对象详情加载失败，请重试".into();
-                        this.operation_error(
-                            "object_storage_object_stat",
-                            &error,
-                            format!("读取对象失败：{}", error.user_message()),
-                        );
+                        this.operation_notice(format!("读取对象失败：{}", error.user_message()));
                     }
                 }
                 cx.notify();
@@ -257,6 +271,26 @@ impl ObjectStorageView {
             let result = service
                 .start_listing(&account_id, &mount, &prefix, "")
                 .await;
+            if let Some(Err(error)) = &capabilities {
+                Self::log_operation_failure(
+                    "object_storage_capabilities",
+                    Some(&account_id),
+                    Some(&mount),
+                    &prefix,
+                    None,
+                    error,
+                );
+            }
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_object_list",
+                    Some(&account_id),
+                    Some(&mount),
+                    &prefix,
+                    None,
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, _window, cx| {
                 if this.listing_request_id != listing_request_id {
                     return;
@@ -273,11 +307,10 @@ impl ObjectStorageView {
                         }
                         Err(error) => {
                             this.capabilities = None;
-                            this.operation_error(
-                                "object_storage_capabilities",
-                                &error,
-                                format!("读取存储能力失败：{}", error.user_message()),
-                            );
+                            this.operation_notice(format!(
+                                "读取存储能力失败：{}",
+                                error.user_message()
+                            ));
                         }
                     }
                 }
@@ -292,11 +325,9 @@ impl ObjectStorageView {
                             this.notice = Some(("对象列表达到 20,000 条工作区上限".into(), true));
                         }
                     }
-                    Err(error) => this.operation_error(
-                        "object_storage_object_list",
-                        &error,
-                        format!("列出对象失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        this.operation_notice(format!("列出对象失败：{}", error.user_message()))
+                    }
                 }
                 cx.notify();
             });
@@ -321,6 +352,16 @@ impl ObjectStorageView {
             let result = service
                 .continue_listing(&account_id, &mount, &prefix, "", &cursor, generation)
                 .await;
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_object_list_next",
+                    Some(&account_id),
+                    Some(&mount),
+                    &prefix,
+                    None,
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, _window, cx| {
                 if this.listing_request_id != listing_request_id {
                     return;
@@ -333,11 +374,9 @@ impl ObjectStorageView {
                         sort_object_entries(entries.as_mut_slice());
                         this.next_cursor = result.page.next_cursor;
                     }
-                    Err(error) => this.operation_error(
-                        "object_storage_object_list_next",
-                        &error,
-                        format!("继续加载失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        this.operation_notice(format!("继续加载失败：{}", error.user_message()))
+                    }
                 }
                 cx.notify();
             });

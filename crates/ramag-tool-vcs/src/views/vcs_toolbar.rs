@@ -36,7 +36,7 @@ impl VcsView {
                         .danger()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("取消远程操作")
+                        .tooltip("取消")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.cancel_remote_op(cx);
                         })),
@@ -99,7 +99,7 @@ impl VcsView {
             .ghost()
             .xsmall()
             .icon(IconName::EllipsisVertical)
-            .tooltip("远程操作")
+            .tooltip("远程")
             .disabled(busy)
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let entity1 = entity.clone();

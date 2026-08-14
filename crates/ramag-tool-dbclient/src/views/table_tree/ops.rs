@@ -77,20 +77,22 @@ impl TableTreePanel {
             let entity = cx.entity().clone();
             cx.spawn_in(window, async move |_, async_cx| {
                 let result = service.list_columns(&connection, &schema, &table).await;
+                if let Err(error) = &result {
+                    tracing::error!(
+                        operation = "load_table_columns",
+                        connection_id = %connection.id,
+                        connection = %connection.name,
+                        driver = ?connection.driver,
+                        schema = %schema,
+                        table = %table,
+                        error = %error,
+                        "table designer column loading failed"
+                    );
+                }
                 let _ = entity.update_in(async_cx, |_, window, cx| match result {
                     Ok(columns) => designer
                         .update(cx, |designer, cx| designer.set_columns(columns, window, cx)),
                     Err(error) => {
-                        tracing::error!(
-                            operation = "load_table_columns",
-                            connection_id = %connection.id,
-                            connection = %connection.name,
-                            driver = ?connection.driver,
-                            schema,
-                            table,
-                            error = ?error,
-                            "table designer column loading failed"
-                        );
                         designer.update(cx, |designer, cx| {
                             designer.set_load_error(error.write_hint("加载表字段失败"), cx)
                         });
@@ -181,19 +183,21 @@ impl TableTreePanel {
             let designer_for_ddl = designer.clone();
             cx.spawn_in(window, async move |_, async_cx| {
                 let result = load_table_ddl(&service, &connection, &schema, &table).await;
+                if let Err(error) = &result {
+                    tracing::error!(
+                        operation = "load_table_ddl",
+                        connection_id = %connection.id,
+                        connection = %connection.name,
+                        driver = ?connection.driver,
+                        schema = %schema,
+                        table = %table,
+                        error = %error,
+                        "table designer DDL loading failed"
+                    );
+                }
                 let _ = designer_for_ddl.update_in(async_cx, |designer, _, cx| match result {
                     Ok(ddl) => designer.set_ddl(ddl, cx),
                     Err(error) => {
-                        tracing::error!(
-                            operation = "load_table_ddl",
-                            connection_id = %connection.id,
-                            connection = %connection.name,
-                            driver = ?connection.driver,
-                            schema,
-                            table,
-                            error = ?error,
-                            "table designer DDL loading failed"
-                        );
                         designer.set_ddl_error(format!("加载建表语句失败：{error:#}"), cx)
                     }
                 });
@@ -278,19 +282,21 @@ impl TableTreePanel {
                         &new_table_for_reload,
                     )
                     .await;
+                    if let Err(error) = &result {
+                        tracing::error!(
+                            operation = "load_table_ddl_after_rename",
+                            connection_id = %connection.id,
+                            connection = %connection.name,
+                            driver = ?connection.driver,
+                            schema = %schema_for_reload,
+                            table = %new_table_for_reload,
+                            error = %error,
+                            "renamed table DDL loading failed"
+                        );
+                    }
                     designer.update(cx, |designer, cx| match result {
                         Ok(ddl) => designer.set_ddl(ddl, cx),
                         Err(error) => {
-                            tracing::error!(
-                                operation = "load_table_ddl_after_rename",
-                                connection_id = %connection.id,
-                                connection = %connection.name,
-                                driver = ?connection.driver,
-                                schema = %schema_for_reload,
-                                table = %new_table_for_reload,
-                                error = ?error,
-                                "renamed table DDL loading failed"
-                            );
                             designer.set_ddl_error(format!("加载建表语句失败：{error:#}"), cx)
                         }
                     });
@@ -453,6 +459,17 @@ impl TableTreePanel {
                 Query::new(sql.clone())
             };
             let result = svc.execute(&conn, &query).await;
+            if let Err(error) = &result {
+                tracing::error!(
+                    operation = "sql_ddl",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    connection = %conn.name,
+                    sql_bytes = sql.len(),
+                    error = %error,
+                    "tree DDL failed"
+                );
+            }
             let completion_ms = started_at.elapsed().as_millis() as u64;
             let _ = this.update(cx, |this, cx| {
                 let current_mutation = this.ddl_gate.finish(mutation_token);
@@ -466,21 +483,10 @@ impl TableTreePanel {
                             conn.name
                         ))
                         .autohide(true),
-                        Err(error) => {
-                            tracing::error!(
-                                operation = "sql_ddl",
-                                connection_id = %conn.id,
-                                driver = ?conn.driver,
-                                error = ?error,
-                                connection = %conn.name,
-                                sql_bytes = sql.len(),
-                                "tree DDL failed after connection change"
-                            );
-                            Notification::error(
-                                error.write_hint(&format!("发起时的连接「{}」执行失败", conn.name)),
-                            )
-                            .autohide(true)
-                        }
+                        Err(error) => Notification::error(
+                            error.write_hint(&format!("发起时的连接「{}」执行失败", conn.name)),
+                        )
+                        .autohide(true),
                     });
                     if let Some(completion) = completion.take() {
                         completion(false, this, cx);
@@ -533,15 +539,6 @@ impl TableTreePanel {
                         }
                     }
                     Err(error) => {
-                        tracing::error!(
-                            operation = "sql_ddl",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            connection = %conn.name,
-                            error = ?error,
-                            sql_bytes = sql.len(),
-                            "tree DDL failed"
-                        );
                         this.pending_notification =
                             Some(Notification::error(error.write_hint("执行失败")).autohide(true));
                     }

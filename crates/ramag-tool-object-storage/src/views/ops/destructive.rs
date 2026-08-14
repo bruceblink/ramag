@@ -149,10 +149,21 @@ impl ObjectStorageView {
         ) else {
             return;
         };
+        let prefix = self.prefix.clone();
         self.loading = true;
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = service.delete_object(&account_id, &mount, &key).await;
+            if let Err(error) = &result {
+                Self::log_operation_failure(
+                    "object_storage_object_delete",
+                    Some(&account_id),
+                    Some(&mount),
+                    &prefix,
+                    Some(&key),
+                    error,
+                );
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
@@ -170,11 +181,9 @@ impl ObjectStorageView {
                             this.load_first_page(window, cx);
                         }
                     }
-                    Err(error) => this.operation_error(
-                        "object_storage_object_delete",
-                        &error,
-                        format!("删除对象失败：{}", error.user_message()),
-                    ),
+                    Err(error) => {
+                        this.operation_notice(format!("删除对象失败：{}", error.user_message()))
+                    }
                 }
                 cx.notify();
             });

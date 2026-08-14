@@ -406,7 +406,7 @@ impl VcsView {
             .outline()
             .xsmall()
             .icon(IconName::Inbox)
-            .tooltip("储藏当前变更")
+            .tooltip("储藏")
             .disabled(
                 self.busy
                     || !has_changes

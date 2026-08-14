@@ -1,4 +1,4 @@
-//! 仓库标签页会话、草稿持久化与缓存恢复。
+//! 仓库会话与草稿持久化。
 
 use super::*;
 
@@ -25,7 +25,7 @@ impl VcsView {
             {
                 return;
             }
-            // 关闭前保留会话，进程内重开可恢复。
+            // 关闭前保留会话。
             self.save_current_session_to_cache(cx);
         }
         self.loading = true;
@@ -35,6 +35,14 @@ impl VcsView {
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
             let result = driver.close_repo(&repo_id).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "git_repo_close",
+                    repo_id = %repo_id,
+                    error = %error,
+                    "close repository failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 this.loading_label = None;
@@ -53,12 +61,6 @@ impl VcsView {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "git_repo_close",
-                            error = %e,
-                            repo_id = %repo_id,
-                            "close repository failed"
-                        );
                         this.error = Some(format!("关闭仓库失败：{e}"));
                         cx.notify();
                     }
@@ -85,7 +87,7 @@ impl VcsView {
         };
         let commit_text = self.commit_input.read(cx).value();
         debug_assert!(commit_text.len() <= MAX_COMMIT_MESSAGE_BYTES);
-        // 切仓时立即持久化并作废在途防抖任务。
+        // 切仓时立即持久化草稿。
         let generation = self
             .commit_draft_gen
             .fetch_add(1, Ordering::Relaxed)
@@ -98,7 +100,7 @@ impl VcsView {
             let text = commit_text.clone();
             cx.spawn(async move |this, cx| {
                 let _guard = write_lock.lock().await;
-                // 不同仓库使用独立键，后续输入不能取消本次落盘。
+                // 不同仓库使用独立键。
                 let result = storage.set_preference(&key, &text).await;
                 if let Err(error) = &result {
                     tracing::warn!(
@@ -127,7 +129,7 @@ impl VcsView {
             })
             .detach();
         }
-        // 缓存只保留标签元数据，内容切回时重读。
+        // 缓存仅保留标签元数据。
         let mut file_tabs = self.file_tabs.clone();
         strip_file_tab_payloads(&mut file_tabs);
         cache_repo_session(
@@ -147,7 +149,7 @@ impl VcsView {
         );
     }
 
-    /// 输入停顿后持久化，同代校验防止旧任务覆盖。
+    /// 延迟保存提交草稿。
     pub(in crate::views) fn schedule_commit_draft_persist(&mut self, cx: &mut gpui::Context<Self>) {
         let Some(path) = self.repo.as_ref().map(|repo| repo.path.clone()) else {
             return;
@@ -210,7 +212,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 返回是否命中缓存。
     pub(in crate::views) fn restore_session_from_cache(
         &mut self,
         path: &str,
@@ -222,7 +223,7 @@ impl VcsView {
         }
         match cached {
             Some(mut state) => {
-                // 外部可能已修改仓库，恢复标签但丢弃内容缓存。
+                // 恢复标签但丢弃内容缓存。
                 for tab in &mut state.file_tabs {
                     tab.cached_diff = None;
                     tab.cached_diff_syntax = None;
@@ -241,7 +242,7 @@ impl VcsView {
                 self.detail_resize = state
                     .detail_resize
                     .unwrap_or_else(|| cx.new(|_| ResizableState::default()));
-                // 强制覆盖前一个仓库的输入残留。
+                // 清除前一仓库的输入残留。
                 self.pending_commit_text = Some(state.commit_text);
                 if let Some(idx) = self.active_file_tab_idx
                     && let Some(tab) = self.file_tabs.get(idx).cloned()

@@ -54,7 +54,7 @@ pub(super) fn open_object_preview_dialog(
                     )
                     .child(
                         Clipboard::new("object-preview-copy")
-                            .tooltip("复制完整内容")
+                            .tooltip("复制")
                             .value_fn(move |_, app| editor_for_copy.read(app).value()),
                     )
                     .child(

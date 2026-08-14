@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::{delete_id_batches, mongo_response_u64};
+use super::delete::{delete_id_batches, mongo_response_u64};
 
 #[test]
 fn delete_batches_bound_count_and_estimated_bytes() {
