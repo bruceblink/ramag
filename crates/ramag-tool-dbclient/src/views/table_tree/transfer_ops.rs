@@ -1,5 +1,4 @@
-//! 表树的库级传输与单表完整导出入口。编排在 `ramag_app::usecases::transfer`，
-//! 文件选择、进度槽 / 取消位、完成通知与树刷新。
+//! 表树的数据库与表文件传输。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,12 +17,10 @@ use tracing::error;
 use super::TableTreePanel;
 
 impl TableTreePanel {
-    /// 传输前置检查：并发互斥 + 连接存在
     fn transfer_ready(&mut self, cx: &mut Context<Self>) -> Option<ConnectionConfig> {
         if self.transfer.active() {
-            self.pending_notification = Some(
-                Notification::warning("已有导出 / 导入在进行中，请先完成或取消").autohide(true),
-            );
+            self.pending_notification =
+                Some(Notification::warning("已有传输任务进行中，请先完成或取消").autohide(true));
             cx.notify();
             return None;
         }
@@ -120,7 +117,6 @@ impl TableTreePanel {
                 this.pending_notification =
                     ramag_ui::transfer_notification("导入", "已完成部分保留", outcome);
                 if imported {
-                    // 导入可能新建了库 / 表，刷新树
                     this.refresh(cx);
                 } else {
                     cx.notify();
@@ -183,8 +179,7 @@ impl TableTreePanel {
         .detach();
     }
 
-    /// 表级 JSONL 导入：多文件循环，按 JSON 键名匹配列插入；
-    /// pub(crate)：结果工具条入口经 session 路由到此复用执行与进度
+    /// 将 JSONL 文件按键名导入表。
     pub(crate) fn import_table_from_files(
         &mut self,
         schema: String,
@@ -263,8 +258,26 @@ async fn run_export(
     };
     let path = handle.path().to_path_buf();
     let progress = ramag_ui::progress_sink(slot);
-    let summary =
-        transfer::export_sql_database(&svc, &config, &schema, &path, &cancel, &progress).await?;
+    let summary = match transfer::export_sql_database(
+        &svc, &config, &schema, &path, &cancel, &progress,
+    )
+    .await
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            error!(
+                operation = "sql_export_database",
+                connection_id = %config.id,
+                connection = %config.name,
+                driver = ?config.driver,
+                schema,
+                file = %path.display(),
+                error = ?error,
+                "database export failed"
+            );
+            return Err(error);
+        }
+    };
     Ok(Some((summary, path.display().to_string())))
 }
 
@@ -293,9 +306,32 @@ async fn run_table_export(
     };
     let path = handle.path().to_path_buf();
     let progress = ramag_ui::progress_sink(slot);
-    let summary =
-        transfer::export_sql_table(&svc, &config, (&schema, &table), &path, &cancel, &progress)
-            .await?;
+    let summary = match transfer::export_sql_table(
+        &svc,
+        &config,
+        (&schema, &table),
+        &path,
+        &cancel,
+        &progress,
+    )
+    .await
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            error!(
+                operation = "sql_export_table",
+                connection_id = %config.id,
+                connection = %config.name,
+                driver = ?config.driver,
+                schema,
+                table,
+                file = %path.display(),
+                error = ?error,
+                "table export failed"
+            );
+            return Err(error);
+        }
+    };
     Ok(Some((summary, path.display().to_string())))
 }
 
@@ -307,7 +343,7 @@ fn sql_database_type(driver: DriverKind) -> &'static str {
     }
 }
 
-/// 逐文件导入并汇总；任一文件出错即停止（出错文件名记入日志便于定位）
+/// 逐文件导入，首次失败时停止。
 async fn run_import(
     svc: Arc<ConnectionService>,
     config: ConnectionConfig,
@@ -343,12 +379,13 @@ async fn run_import(
                 error!(
                     operation = "sql_import_database",
                     connection_id = %config.id,
+                    connection = %config.name,
                     driver = ?config.driver,
                     schema = %schema,
                     file = %path.display(),
                     scope = "database",
-                    error = %e,
-                    "import failed"
+                    error = ?e,
+                    "database import failed"
                 );
                 return Err(e);
             }
@@ -367,7 +404,7 @@ async fn run_import(
     Ok(Some((total, target)))
 }
 
-/// 逐个恢复单表结构化文件；范围校验失败即停止，避免整库文件从“导入表”入口执行。
+/// 逐个恢复结构化表文件，首次失败时停止。
 async fn run_structured_table_import(
     svc: Arc<ConnectionService>,
     config: ConnectionConfig,
@@ -397,13 +434,14 @@ async fn run_structured_table_import(
                 error!(
                     operation = "sql_import_table",
                     connection_id = %config.id,
+                    connection = %config.name,
                     driver = ?config.driver,
                     schema = %schema,
                     file = %path.display(),
                     scope = "table",
                     format = "structured",
-                    error = %error,
-                    "import failed"
+                    error = ?error,
+                    "structured table import failed"
                 );
                 return Err(error);
             }
@@ -422,7 +460,7 @@ async fn run_structured_table_import(
     Ok(Some((total, target)))
 }
 
-/// 表级 JSONL：逐文件导入并汇总；任一文件出错即停止（出错文件名记入日志便于定位）
+/// 逐个导入表 JSONL 文件，首次失败时停止。
 async fn run_table_import(
     svc: Arc<ConnectionService>,
     config: ConnectionConfig,
@@ -459,14 +497,15 @@ async fn run_table_import(
                 error!(
                     operation = "sql_import_table",
                     connection_id = %config.id,
+                    connection = %config.name,
                     driver = ?config.driver,
                     schema = %schema,
                     table = %table,
                     file = %path.display(),
                     scope = "table",
                     format = "jsonl",
-                    error = %e,
-                    "import failed"
+                    error = ?e,
+                    "table JSONL import failed"
                 );
                 return Err(e);
             }

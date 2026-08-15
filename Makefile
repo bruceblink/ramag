@@ -3,7 +3,7 @@
 
 .PHONY: help \
         develop release \
-        check fmt fmt-check clippy test \
+        check size-check fmt fmt-check clippy test \
         db-test db-test-up db-test-seed db-test-run db-test-workspace \
         db-test-status db-test-down db-test-clean \
         _db-test-test _db-test-check _db-test-clippy _db-test-fmt \
@@ -22,6 +22,7 @@ help:
 	@printf "    make release        本地运行优化构建，不创建或发布安装包\n"
 	@printf "\n  \033[36m检查\033[0m\n"
 	@printf "    make check          cargo check --all-targets\n"
+	@printf "    make size-check     检查 Rust 文件不超过 600 行\n"
 	@printf "    make fmt            cargo fmt --all\n"
 	@printf "    make fmt-check      cargo fmt --all -- --check（CI 用）\n"
 	@printf "    make clippy         cargo clippy --all-targets -- -D warnings\n"
@@ -61,8 +62,11 @@ release:
 	cargo run --release -p ramag-bin
 
 # === 检查 ============================================================
-check:
+check: size-check
 	cargo check --all-targets
+
+size-check:
+	./scripts/check-source-size.sh
 
 fmt:
 	cargo fmt --all

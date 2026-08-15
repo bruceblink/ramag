@@ -158,14 +158,18 @@ mod tests {
 
     #[test]
     fn legacy_program_setting_migrates_to_external_program() -> Result<(), String> {
-        let settings = DatabaseSearchSettings::parse(
-            r#"{"id_conversion_enabled":true,"id_converter_program":"/opt/id-converter"}"#,
-        )?;
+        let program = std::env::temp_dir().join("ramag-id-converter");
+        let raw = serde_json::json!({
+            "id_conversion_enabled": true,
+            "id_converter_program": program,
+        })
+        .to_string();
+        let settings = DatabaseSearchSettings::parse(&raw)?;
 
         assert_eq!(settings.converter.kind, IdConverterKind::ExternalProgram);
         assert_eq!(
             settings.converter.external_program,
-            "/opt/id-converter".to_string()
+            program.to_string_lossy()
         );
         assert!(settings.is_ready());
         Ok(())

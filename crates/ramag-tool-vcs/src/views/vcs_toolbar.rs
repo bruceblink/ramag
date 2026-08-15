@@ -1,4 +1,4 @@
-//! History / Graph 工具栏远端操作：快捷同步 + dropdown（Fetch / Pull / Push / 强推）
+//! VCS 工具栏的远程操作。
 
 use gpui::{AnyElement, ClickEvent, Context, IntoElement, ParentElement as _, Styled as _, div};
 use gpui_component::{
@@ -10,13 +10,10 @@ use super::vcs_view::VcsView;
 use ramag_ui::PointerDropdownMenu as _;
 
 impl VcsView {
-    /// 同步快捷主按钮：待拉取时显示「Pull ↓N」、待推送时显示「Push ↑N」，一键可达；
-    /// 其余情形返回空（完整操作仍在聚合菜单里）
     pub(super) fn render_sync_quick_action(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.repo.is_none() {
             return div().into_any_element();
         }
-        // 远端操作进行中：显示实时进度行 + 取消按钮（Fetch / Pull / Push 与 Clone 同款体验）
         if self.remote_op_cancel.is_some() {
             let line = self
                 .remote_op_progress_line()
@@ -39,6 +36,7 @@ impl VcsView {
                         .danger()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("取消")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.cancel_remote_op(cx);
                         })),
@@ -72,7 +70,6 @@ impl VcsView {
             .into_any_element()
     }
 
-    /// Git 操作聚合：dropdown（Fetch / Pull / Push / 强推）。Pull / Push 按 ahead/behind 显示数字
     pub(super) fn render_remote_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.repo.is_none() {
             return div().into_any_element();
@@ -102,6 +99,7 @@ impl VcsView {
             .ghost()
             .xsmall()
             .icon(IconName::EllipsisVertical)
+            .tooltip("远程")
             .disabled(busy)
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |mut m, _, _| {
                 let entity1 = entity.clone();
@@ -134,7 +132,7 @@ impl VcsView {
                     )
                     .separator()
                     .item(
-                        ramag_ui::menu_item_with_disabled("⚠ 强推", !has_head).on_click(
+                        ramag_ui::menu_item_with_disabled("强推", !has_head).on_click(
                             move |_, w, app| {
                                 entity4.update(app, |this, cx| {
                                     this.confirm_remote_op(RemoteOp::PushForce, w, cx);

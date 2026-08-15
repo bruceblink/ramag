@@ -5,6 +5,7 @@ pub mod activity_bar;
 pub mod assets;
 pub mod axis_scroll;
 pub mod confirm_dialog;
+pub mod copy_support;
 pub mod data_sync_overlay;
 pub mod database_search;
 pub mod editor_workspace;
@@ -15,17 +16,22 @@ pub mod platform;
 pub mod pointer_menu;
 pub mod preferences;
 pub mod prompt_dialog;
+pub mod recent_items_dialog;
+pub mod redis_tree_settings;
 pub mod result_memory;
 pub mod settings_view;
 pub mod shell;
+pub mod shortcuts_dialog;
 pub mod theme;
 pub mod transfer_ui;
 
-pub use actions::{
-    CloseTab, CycleSection, CycleSectionReverse, SelectTool1, SelectTool2, SelectTool3, SelectTool4,
-};
+pub use actions::{CloseTab, OpenRecentItems};
 pub use assets::RamagAssets;
 pub use confirm_dialog::{open_confirm, open_confirm_with_cancel};
+pub use copy_support::{
+    SelectableText, copy_success_notification, copy_text, copy_text_with_notification,
+    is_primary_modifier_double_click,
+};
 pub use data_sync_overlay::DataSyncOverlay;
 pub use database_search::{
     DATABASE_SEARCH_SETTINGS_PREF_KEY, DatabaseSearchSettings, DatabaseSearchSettingsGlobal,
@@ -35,6 +41,10 @@ pub use database_search::{
 pub use prompt_dialog::{
     open_bounded_masked_prompt, open_bounded_prompt, open_masked_prompt,
     open_optional_bounded_prompt, open_optional_prompt, open_prompt, open_reveal_masked_prompt,
+};
+pub use redis_tree_settings::{
+    REDIS_TREE_SETTINGS_PREF_KEY, RedisTreeSettings, init_redis_tree_settings, redis_tree_settings,
+    set_redis_tree_settings,
 };
 
 pub use activity_bar::{ActivityBar, NavEvent, NavTarget, sync_update_indicator};
@@ -52,6 +62,7 @@ pub use result_memory::{
 };
 pub use settings_view::SettingsView;
 pub use shell::{Shell, WindowBoundsPref};
+pub use shortcuts_dialog::open_shortcuts;
 pub use theme::{Mode, StorageGlobal, apply_theme, current_mode, init_theme};
 pub use transfer_ui::{
     TransferState, open_import_options_dialog, progress_sink, spawn_transfer_ticker,
@@ -59,6 +70,12 @@ pub use transfer_ui::{
 };
 
 pub const FEEDBACK_ISSUE_URL: &str = "https://github.com/tools-rs/ramag/issues/new";
+pub const COMMUNITY_URL: &str =
+    "https://github.com/tools-rs/ramag/blob/main/README.md#%E4%BA%A4%E6%B5%81%E7%BE%A4";
+
+/// 数据库、SSH 与云存储共用的生产保护文案，避免同一语义在各工具中漂移。
+pub const PRODUCTION_MODE_LABEL: &str = "生产模式（只读保护）";
+pub const PRODUCTION_BADGE_LABEL: &str = "生产";
 
 /// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
 pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {
@@ -107,6 +124,7 @@ pub fn cleanable_input(
             .icon(Icon::new(IconName::CircleX))
             .ghost()
             .xsmall()
+            .tooltip("清空")
             .tab_stop(false)
             .text_color(cx.theme().muted_foreground)
             .on_click(move |_, window, cx| {
@@ -141,6 +159,7 @@ pub fn closable_dialog_title(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
+                .tooltip("关闭")
                 .on_click(move |_, window, cx| {
                     window.close_dialog(cx);
                     on_close(window, cx);
@@ -237,6 +256,9 @@ fn byte_prefix(value: &str, max_bytes: usize) -> &str {
     }
     &value[..end]
 }
+
+#[cfg(test)]
+mod copy_support_tests;
 
 #[cfg(test)]
 mod input_limit_tests {

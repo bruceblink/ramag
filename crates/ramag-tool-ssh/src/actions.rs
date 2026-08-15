@@ -11,7 +11,3 @@ pub struct NewSshTerminal;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema, Action)]
 #[action(namespace = ssh)]
 pub struct CloseSshTerminal;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema, Action)]
-#[action(namespace = ssh)]
-pub struct RefreshSftp;

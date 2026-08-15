@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    ConnectionConfig, ConnectionId, MAX_REDIS_VALUE_PAGE_BATCH, RedisType, RedisValue,
-    RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor,
+    ConnectionConfig, ConnectionId, MAX_REDIS_KEY_TYPE_BATCH, MAX_REDIS_VALUE_PAGE_BATCH,
+    RedisType, RedisValue, RedisValueLoad, RedisValuePage, ScanResult, ValuePageCursor,
 };
 use crate::error::{DomainError, Result};
 
@@ -31,6 +31,25 @@ pub trait KvDriver: Send + Sync {
     ) -> Result<ScanResult>;
 
     async fn key_type(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<RedisType>;
+
+    /// 批量读取类型，返回顺序必须与 `keys` 一致；Redis 实现应使用 Pipeline 降低网络往返。
+    async fn key_types(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+    ) -> Result<Vec<RedisType>> {
+        if keys.len() > MAX_REDIS_KEY_TYPE_BATCH {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis 类型批量读取超过 {MAX_REDIS_KEY_TYPE_BATCH} 个上限"
+            )));
+        }
+        let mut types = Vec::with_capacity(keys.len());
+        for key in keys {
+            types.push(self.key_type(config, db, key).await?);
+        }
+        Ok(types)
+    }
 
     /// PTTL：-1=永久，-2=key 不存在，>=0=剩余毫秒
     async fn key_ttl(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<i64>;

@@ -69,6 +69,15 @@ impl SettingsView {
                     })
                     .child(div().flex_1())
                     .child(
+                        crate::clickable_button("settings-community")
+                            .outline()
+                            .small()
+                            .label("交流群")
+                            .on_click(|_: &ClickEvent, _, cx| {
+                                cx.open_url(crate::COMMUNITY_URL);
+                            }),
+                    )
+                    .child(
                         crate::clickable_button("settings-feedback-issue")
                             .outline()
                             .small()

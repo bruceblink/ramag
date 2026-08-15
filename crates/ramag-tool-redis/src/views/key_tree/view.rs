@@ -16,7 +16,8 @@ impl Render for KeyTreePanel {
 
         let total = self.keys.len();
         let in_search = !self.query.is_empty();
-        let (visible_rc, visible_leaf_count) = self.visible_rows();
+        let sink_same_name_keys = ramag_ui::redis_tree_settings(cx).sink_same_name_keys;
+        let (visible_rc, visible_leaf_count) = self.visible_rows(sink_same_name_keys);
         let selected = self.selected.clone();
         let read_only = self.is_read_only();
         let mutating = self.mutation_gate.is_busy();
@@ -162,6 +163,7 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(icon)
+                    .tooltip(if scanning { "停止扫描" } else { "刷新" })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if scanning {
                             this.stop_scan(cx);
@@ -214,6 +216,7 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::ellipsis())
+                    .tooltip("更多操作")
                     .disabled(read_only || mutating)
                     .when_some(more_tip, |b, tip| b.tooltip(tip))
                     // 菜单顶部左角锚在按钮上，向右下方展开（不往上弹遮挡工具栏）
@@ -222,7 +225,6 @@ impl Render for KeyTreePanel {
                     })
             });
 
-        let theme_bg = theme.background;
         let theme_muted = theme.muted;
 
         let row_count = visible_rc.len();
@@ -287,7 +289,6 @@ impl Render for KeyTreePanel {
                                 muted_fg,
                                 row_hover,
                                 accent,
-                                theme_bg,
                                 theme_muted,
                                 cx,
                             )

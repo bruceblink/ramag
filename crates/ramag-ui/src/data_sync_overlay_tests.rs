@@ -10,7 +10,10 @@ use gpui::{
 use ramag_app::{DataSyncExecutionContext, DataSyncGate, DataSyncGatePhase};
 use ramag_domain::entities::{DataSyncSummary, DataSyncTaskId};
 
-use super::{DataSyncOverlay, format_count, format_elapsed_ms};
+use super::{
+    DataSyncOverlay,
+    result::{format_count, format_elapsed_ms},
+};
 
 struct OverlayTestHost {
     overlay: Entity<DataSyncOverlay>,

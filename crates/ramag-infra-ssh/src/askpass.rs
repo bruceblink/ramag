@@ -212,7 +212,7 @@ fn serve_one(stream: &mut TcpStream, shared: &BrokerShared) -> io::Result<()> {
 }
 
 /// AskPass 子进程入口。普通应用启动返回 `None`；AskPass 请求处理后返回退出码。
-pub(crate) fn run_helper(confirm: impl FnOnce(&str) -> bool) -> Option<i32> {
+pub fn run_askpass_helper(confirm: impl FnOnce(&str) -> bool) -> Option<i32> {
     if std::env::var(MARKER_ENV).as_deref() != Ok("1") {
         return None;
     }

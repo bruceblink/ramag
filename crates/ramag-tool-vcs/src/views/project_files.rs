@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
     prelude::*, px, uniform_list,
 };
-use gpui_component::{ActiveTheme, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 use ramag_domain::entities::{FileChangeKind, FileStatus, contains_case_insensitive};
 
 use super::helpers::{code_letter_color, code_to_letter};
@@ -362,6 +362,15 @@ impl VcsView {
                     .child(arrow),
             )
             .child(
+                Icon::new(if is_expanded {
+                    IconName::FolderOpen
+                } else {
+                    IconName::FolderClosed
+                })
+                .xsmall()
+                .text_color(fg),
+            )
+            .child(
                 div()
                     .flex_1()
                     .min_w_0()
@@ -393,6 +402,16 @@ impl VcsView {
 
         let letter = code_to_letter(status_kind);
         let letter_color = code_letter_color(letter, muted_fg);
+        let status_element = status_kind.map(|_| {
+            div()
+                .flex_none()
+                .w(px(12.0))
+                .text_xs()
+                .font_family(theme.mono_font_family.clone())
+                .text_color(letter_color)
+                .child(letter)
+                .into_any_element()
+        });
 
         let is_selected = self.selected_pf_path.as_deref() == Some(full_path.as_str());
 
@@ -412,15 +431,7 @@ impl VcsView {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.select_pf_file(path_for_open.clone(), cx);
             }))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(12.0))
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(letter_color)
-                    .child(letter),
-            )
+            .child(Icon::new(IconName::File).xsmall().text_color(muted_fg))
             .child(
                 div()
                     .flex_1()
@@ -430,7 +441,8 @@ impl VcsView {
                     .overflow_hidden()
                     .text_ellipsis()
                     .child(super::inline_text_preview(&name, 160)),
-            );
+            )
+            .children(status_element);
         if is_selected {
             row = row.bg(accent_bg);
         }

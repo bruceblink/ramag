@@ -6,7 +6,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext as _, Context, Entity, Point, ScrollHandle, Subscription, Window, px,
+    AnyView, App, AppContext as _, Context, Entity, FocusHandle, Focusable, Point, ScrollHandle,
+    Subscription, Window, px,
 };
 use ramag_app::{ConnectionService, DataSyncService, MongoService, RedisService};
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
@@ -125,7 +126,14 @@ pub struct DbClientView {
     /// 启动恢复只在用户尚未手动改动标签时生效；慢回包不得覆盖用户刚做出的选择。
     pub(super) restore_allowed: bool,
     pub(super) form_subscription: Option<Subscription>,
+    pub(super) focus_handle: FocusHandle,
     pub(super) _subscriptions: Vec<Subscription>,
+}
+
+impl Focusable for DbClientView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
 }
 
 const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
@@ -455,6 +463,15 @@ impl DbClientView {
         self.sync_result_activity(cx);
         self.picker.update(cx, |p, cx| p.refresh(cx));
         cx.notify();
+    }
+
+    pub(super) fn open_connection_from_picker(
+        &mut self,
+        config: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_session(config, window, cx);
     }
 
     pub(super) fn sync_result_activity(&self, cx: &mut Context<Self>) {

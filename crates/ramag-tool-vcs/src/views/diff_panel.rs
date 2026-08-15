@@ -279,6 +279,19 @@ fn render_diff_line(
     let row_id = SharedString::from(format!("vcs-diff-line-{hunk_idx}-{line_idx}"));
     let old_id = SharedString::from(format!("vcs-diff-old-{hunk_idx}-{line_idx}"));
     let new_id = SharedString::from(format!("vcs-diff-new-{hunk_idx}-{line_idx}"));
+    let content_id = SharedString::from(format!("vcs-diff-content-{hunk_idx}-{line_idx}"));
+    let line_for_copy = line.text.clone();
+    let content = div()
+        .id(content_id)
+        .flex_1()
+        .min_w(px(content_w))
+        .px(px(4.0))
+        .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+            if ramag_ui::is_primary_modifier_double_click(event) {
+                ramag_ui::copy_text(line_for_copy.clone(), cx);
+            }
+        }))
+        .child(super::syntax::render_code_line(code_line, fg, mono.clone()));
     let mut row = h_flex()
         .id(row_id)
         .w_full()
@@ -310,13 +323,7 @@ fn render_diff_line(
                 .text_color(marker_color)
                 .child(marker),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(content_w))
-                .px(px(4.0))
-                .child(super::syntax::render_code_line(code_line, fg, mono)),
-        );
+        .child(content);
 
     if let Some(c) = bg {
         row = row.bg(c);

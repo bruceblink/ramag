@@ -1,18 +1,15 @@
-//! 树节点破坏性操作：删除 key / 删除前缀下全部 key / 清空当前 DB。
-//! 右键菜单（清空 DB 在工具栏「更多操作」，与普通节点操作隔离防误触）→
-//! open_confirm 二次确认 → 异步执行 → 刷新 + toast；
-//! 删除完成 emit KeysDeleted，上层据此清理详情面板
+//! Redis 树的菜单与写操作。
 
 use gpui::{Context, Entity};
-use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
+use gpui_component::{IconName, menu::PopupMenu};
 use ramag_domain::entities::{MAX_REDIS_KEY_BYTES, RedisValue, validate_redis_key};
 use ramag_ui::{open_bounded_prompt, open_confirm};
 
 use super::helpers::{apply_local_rename, delete_by_pattern, escape_glob, truncate_label};
 use super::{DeletedScope, KeyTreeEvent, KeyTreePanel};
 
-/// key / 命名空间行右键菜单。两种身份兼具的节点（`user` 同时是 key 和前缀）两项都给
+/// Key 或命名空间的右键菜单。
 pub(super) fn node_context_menu(
     menu: PopupMenu,
     entity: Entity<KeyTreePanel>,
@@ -22,6 +19,19 @@ pub(super) fn node_context_menu(
     allow_write: bool,
 ) -> PopupMenu {
     let mut menu = menu;
+    let path_for_copy = full_path.clone();
+    let copy_label = if is_leaf {
+        "复制 Key"
+    } else {
+        "复制前缀"
+    };
+    menu = menu.item(
+        ramag_ui::menu_item(copy_label)
+            .icon(IconName::Copy)
+            .on_click(move |_, window, app| {
+                ramag_ui::copy_text_with_notification(path_for_copy.clone(), window, app);
+            }),
+    );
     if is_leaf {
         let (key, ent) = (full_path.clone(), entity.clone());
         menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
@@ -101,8 +111,7 @@ pub(super) fn node_context_menu(
     menu
 }
 
-/// 工具栏「更多」下拉菜单：新建 Key + DB 级毁灭性操作（清空 DB）。
-/// 毁灭性操作与 key 节点右键菜单隔离，避免误触
+/// 工具栏的 DB 级操作菜单。
 pub(super) fn toolbar_more_menu(
     menu: PopupMenu,
     entity: Entity<KeyTreePanel>,
@@ -195,7 +204,7 @@ impl KeyTreePanel {
         Some(token)
     }
 
-    /// RENAMENX：目标 key 已存在则返回 0 不覆盖，避免静默吞掉别人的数据
+    /// 使用 RENAMENX，避免覆盖已有 Key。
     pub(super) fn rename_key_op(&mut self, old: String, new: String, cx: &mut Context<Self>) {
         if new == old {
             return;
@@ -220,6 +229,17 @@ impl KeyTreePanel {
             let _ = this.update(cx, |this, cx| {
                 let current_mutation = this.mutation_gate.finish(mutation_token);
                 if !this.operation_context_matches(&config, db) || !current_mutation {
+                    if let Err(error) = &r {
+                        tracing::error!(
+                            operation = "redis_key_rename",
+                            connection_id = %config.id,
+                            db,
+                            old_key_bytes = old.len(),
+                            new_key_bytes = new.len(),
+                            error = %error,
+                            "rename key failed after context changed"
+                        );
+                    }
                     this.pending_notification = Some(match &r {
                         Ok(RedisValue::Int(1)) => Notification::success(format!(
                             "已在发起时的 DB {db} 完成重命名；当前树状态已变化，未自动刷新"
@@ -313,6 +333,16 @@ impl KeyTreePanel {
             let _ = this.update(cx, |this, cx| {
                 let current_mutation = this.mutation_gate.finish(mutation_token);
                 if !this.operation_context_matches(&config, db) || !current_mutation {
+                    if let Err(error) = &r {
+                        tracing::error!(
+                            operation = "redis_key_delete",
+                            connection_id = %config.id,
+                            db,
+                            key_bytes = key.len(),
+                            error = %error,
+                            "delete key failed after context changed"
+                        );
+                    }
                     this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
                             "已在发起时的 DB {db} 删除 key {}；当前树状态已变化，未自动刷新",
@@ -329,7 +359,6 @@ impl KeyTreePanel {
                 }
                 match r {
                     Ok(_) => {
-                        // 本地移除即可，无需整库重扫
                         this.keys.retain(|k| k.key != key);
                         this.rebuild_tree();
                         if this.selected.as_deref() == Some(key.as_str()) {
@@ -378,6 +407,16 @@ impl KeyTreePanel {
             let _ = this.update(cx, |this, cx| {
                 let current_mutation = this.mutation_gate.finish(mutation_token);
                 if !this.operation_context_matches(&config, db) || !current_mutation {
+                    if let Err(error) = &result {
+                        tracing::error!(
+                            operation = "redis_prefix_delete",
+                            connection_id = %config.id,
+                            db,
+                            pattern_bytes = pattern.len(),
+                            error = %error,
+                            "delete prefix failed after context changed"
+                        );
+                    }
                     this.pending_notification = Some(match &result {
                         Ok(count) => Notification::success(format!(
                             "已在发起时的 DB {db} 删除前缀 {} 下 {count} 个 key；当前树状态已变化，未自动刷新",
@@ -449,6 +488,15 @@ impl KeyTreePanel {
             let _ = this.update(cx, |this, cx| {
                 let current_mutation = this.mutation_gate.finish(mutation_token);
                 if !this.operation_context_matches(&config, db) || !current_mutation {
+                    if let Err(error) = &r {
+                        tracing::error!(
+                            operation = "redis_db_flush",
+                            connection_id = %config.id,
+                            db,
+                            error = %error,
+                            "flushdb failed after context changed"
+                        );
+                    }
                     this.pending_notification = Some(match &r {
                         Ok(_) => Notification::success(format!(
                             "已清空发起时的 DB {db}；当前树状态已变化，未自动刷新"

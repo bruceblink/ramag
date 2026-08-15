@@ -9,10 +9,8 @@ use gpui::{Image, ImageFormat, ImageSource};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
 use ramag_domain::entities::{ClipItem, ClipKind};
 
-use super::ClipboardDrawer;
+use super::{CARD_WIDTH, ClipboardDrawer};
 use crate::views::helpers::relative_time;
-
-const CARD_W: f32 = 232.0;
 
 impl ClipboardDrawer {
     pub(super) fn render_card(
@@ -21,7 +19,7 @@ impl ClipboardDrawer {
         item: Arc<ClipItem>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // 释放主题借用，避免与图片加载的可变借用冲突。
+        // 先复制主题颜色，释放主题借用。
         let border = cx.theme().border;
         let secondary = cx.theme().secondary;
         let muted = cx.theme().muted_foreground;
@@ -40,7 +38,7 @@ impl ClipboardDrawer {
 
         v_flex()
             .id(SharedString::from(format!("drawer-card-{}", item.id)))
-            .w(px(CARD_W))
+            .w(px(CARD_WIDTH))
             .h_full()
             .flex_none()
             .rounded(px(10.0))

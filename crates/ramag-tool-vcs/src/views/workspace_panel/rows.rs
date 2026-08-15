@@ -173,6 +173,15 @@ impl VcsView {
                     .child(icon),
             )
             .child(
+                Icon::new(if is_collapsed {
+                    IconName::FolderClosed
+                } else {
+                    IconName::FolderOpen
+                })
+                .xsmall()
+                .text_color(fg),
+            )
+            .child(
                 div()
                     .flex_1()
                     .min_w_0()

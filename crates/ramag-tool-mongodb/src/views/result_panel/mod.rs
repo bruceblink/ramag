@@ -4,6 +4,7 @@ mod edit;
 mod export;
 mod filter;
 mod flatten;
+mod helpers;
 mod ops;
 mod render;
 mod row;
@@ -24,27 +25,23 @@ use std::sync::{
 
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement, Point, Render,
-    ScrollHandle, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, UniformListScrollHandle,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _,
-    h_flex,
-    input::{Input, InputState},
-    v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
+    h_flex, input::InputState, v_flex,
 };
 use parking_lot::RwLock;
 use ramag_app::MongoService;
-use ramag_domain::entities::{
-    ConflictPolicy, ConnectionConfig, MongoQueryResult, json_pretty_bounded,
-};
+use ramag_domain::entities::{ConflictPolicy, ConnectionConfig, MongoQueryResult};
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease, ResultMemoryUpdate};
-use serde_json::Value;
 
 pub use flatten::FlatTable;
 
 use crate::views::inline_text_preview;
 use filter::{ParsedFilter, classify_filter, column_indices_for, row_indices_for_cancellable};
+use helpers::{bounded_cell_dialog_text, memory_notice, pretty_cell_value};
 use row_search::{RowFilter, RowSearchBlocker, RowSearchState};
 pub(crate) use row_search::{RowSearchConversionStatus, RowSearchMode};
 
@@ -494,29 +491,16 @@ impl ResultPanel {
         cx: &mut Context<Self>,
     ) {
         const MAX_DIALOG_PRETTY_BYTES: usize = 1024 * 1024;
-        let display = if text.len() <= MAX_DIALOG_PRETTY_BYTES
-            && (text.starts_with('{') || text.starts_with('['))
-        {
-            serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| json_pretty_bounded(&value, MAX_DIALOG_PRETTY_BYTES))
-                .unwrap_or(text)
-        } else {
-            text
-        };
+        let display = pretty_cell_value(text, MAX_DIALOG_PRETTY_BYTES);
         let display = bounded_cell_dialog_text(display, MAX_DIALOG_PRETTY_BYTES);
         let title: SharedString = SharedString::from(format!(
             "{}  ({kind})",
             inline_text_preview(&column_path, 96)
         ));
-        let input: Entity<InputState> = cx.new(|cx_inner| {
-            InputState::new(window, cx_inner)
-                .multi_line(true)
-                .default_value(display)
-        });
+        let display: SharedString = display.into();
         window.open_dialog(cx, move |dialog, _w, _app| {
-            let input = input.clone();
             let title = title.clone();
+            let display = display.clone();
             dialog
                 .title(ramag_ui::closable_dialog_title(
                     "mongo-value-detail-close",
@@ -529,9 +513,18 @@ impl ResultPanel {
                 .content(move |content, _, _| {
                     content.child(
                         div()
+                            .id("mongo-value-detail-scroll")
                             .w_full()
                             .h(px(400.0))
-                            .child(Input::new(&input).small().h_full().disabled(true)),
+                            .overflow_y_scroll()
+                            .child(
+                                ramag_ui::SelectableText::new(
+                                    "mongo-value-detail",
+                                    display.clone(),
+                                )
+                                .w_full()
+                                .text_sm(),
+                            ),
                     )
                 })
         });
@@ -543,51 +536,6 @@ impl Drop for ResultPanel {
         self.cancel_table_build();
         self.cancel_row_view_build();
     }
-}
-
-fn bounded_cell_dialog_text(mut text: String, max_bytes: usize) -> String {
-    const TRUNCATED_NOTICE: &str = "\n\n[内容过大，仅显示开头部分]";
-    if text.len() <= max_bytes {
-        return text;
-    }
-
-    let mut end = max_bytes.saturating_sub(TRUNCATED_NOTICE.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-    text.push_str(TRUNCATED_NOTICE);
-    text
-}
-
-fn memory_notice(
-    result: &MongoQueryResult,
-    retained_bytes: usize,
-    outcome: ResultMemoryUpdate,
-) -> Option<String> {
-    let mut notices = Vec::new();
-    if result.memory_warning
-        || retained_bytes >= ramag_domain::entities::INTERACTIVE_RESULT_WARNING_BYTES
-    {
-        notices.push(
-            "单个结果及表格视图已达到 128 MiB 提示线，建议用 filter / projection 收窄查询"
-                .to_string(),
-        );
-    }
-    if outcome.warning {
-        if outcome.evicted_results > 0 {
-            notices.push(format!(
-                "全部查询标签结果达到全局预算，已按 LRU 释放 {} 个非活动标签的旧结果",
-                outcome.evicted_results
-            ));
-        } else {
-            notices.push(format!(
-                "全部查询标签结果已达到 384 MiB 提示线（当前约 {} MiB）",
-                outcome.total_bytes / 1024 / 1024
-            ));
-        }
-    }
-    (!notices.is_empty()).then(|| notices.join("；"))
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ mod shell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-pub use hotkey::HotkeyListener;
+pub use hotkey::{HotkeyEvent, HotkeyListener};
 
 pub fn foreground_display_index() -> Option<usize> {
     app::foreground_display_index()

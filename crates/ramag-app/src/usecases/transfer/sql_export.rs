@@ -1,23 +1,19 @@
-//! MySQL / PostgreSQL 按库或单表导出为 .sql。
-//!
-//! 结构顺序（导入端零拓扑排序）：
-//! MySQL：header(FK_CHECKS=0) → 每表 [DDL(SHOW CREATE，FK 内联) → 数据] → 视图；
-//! PG：header → 枚举类型 → serial 序列预建 → 每表 [DDL(无 FK) + OWNED BY + 注释 → 数据]
-//!     → FK ALTER → 索引 → setval → 视图。
-//! 数据用主键 keyset 分页（无主键退化 OFFSET 并告警）；非快照一致（文件头注明）
+//! MySQL / PostgreSQL 按库或单表导出 .sql。
+//! PostgreSQL 按类型、序列、表、外键、索引和视图的依赖顺序输出。
 mod query_helpers;
+mod schema;
 
 use query_helpers::*;
+use schema::{write_header, write_table_ddl};
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use super::sql_catalog::{
-    PgSequenceInfo, begin_marker, first_column_strings, generated_columns_query,
-    parse_pg_sequences, parse_show_create, pg_comments_query, pg_enum_types_query,
-    pg_foreign_keys_query, pg_indexes_query, pg_sequences_query, pg_table_create_query,
-    pg_table_enum_types_query, pg_table_foreign_keys_query, transfer_literal,
+    PgSequenceInfo, begin_marker, generated_columns_query, parse_pg_sequences, pg_enum_types_query,
+    pg_foreign_keys_query, pg_indexes_query, pg_sequences_query, pg_table_enum_types_query,
+    pg_table_foreign_keys_query, transfer_literal,
 };
 use super::{
     ExportSink, MYSQL_IMPORT_PREFIX, Reporter, finish_summary, is_cancelled, with_export_sink,
@@ -25,10 +21,10 @@ use super::{
 use crate::usecases::ConnectionService;
 use ramag_domain::entities::{
     Column, ConnectionConfig, DriverKind, ProgressFn, Query, TRANSFER_BATCH_BYTES,
-    TRANSFER_BATCH_ITEMS, Table, TransferSummary, Value, build_ddl_query,
+    TRANSFER_BATCH_ITEMS, Table, TransferSummary, Value,
 };
 use ramag_domain::error::{DomainError, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 const PAGE_ROWS: u32 = TRANSFER_BATCH_ITEMS as u32;
 const INSERT_FLUSH_BYTES: usize = TRANSFER_BATCH_BYTES;
@@ -69,7 +65,7 @@ pub async fn export_sql_database(
     export_sql(svc, config, schema, None, path, cancel, progress).await
 }
 
-/// 导出单表结构与全部数据；文件沿用库级 SQL 协议，可直接走现有 SQL 导入恢复。
+/// 导出单表结构和数据。
 pub async fn export_sql_table(
     svc: &ConnectionService,
     config: &ConnectionConfig,
@@ -137,7 +133,7 @@ async fn export_sql(
 
         write_header(svc, config, schema, target_table, driver, &mut sink).await?;
 
-        // PG：枚举类型 + serial 序列预建（DEFAULT nextval 引用它们，必须先建）
+        // 先输出 PG 类型与序列，供后续 DEFAULT nextval 引用。
         let mut sequences: Vec<(String, PgSequenceInfo)> = Vec::new();
         if driver == DriverKind::Postgres {
             let enum_query = target_table
@@ -243,6 +239,15 @@ async fn export_sql(
                     summary.objects += 1;
                 }
                 Err(error) => {
+                    warn!(
+                        operation = "sql_export_view",
+                        connection_id = %config.id,
+                        driver = ?driver,
+                        schema,
+                        view = %view.name,
+                        error = %error,
+                        "export view failed"
+                    );
                     summary.failed += 1;
                     summary.push_warning(format!(
                         "视图 {} 导出失败：{}",
@@ -264,127 +269,6 @@ async fn export_sql(
     .await
 }
 
-async fn write_header(
-    svc: &ConnectionService,
-    config: &ConnectionConfig,
-    schema: &str,
-    target_table: Option<&str>,
-    driver: DriverKind,
-    sink: &mut ExportSink,
-) -> Result<()> {
-    let engine = match driver {
-        DriverKind::Mysql => "mysql",
-        _ => "postgres",
-    };
-    let kind = if target_table.is_some() {
-        "table"
-    } else {
-        "database"
-    };
-    sink.write_str(&format!(
-        "-- ramag {kind} export v1\n-- engine: {engine}\n-- database: {schema}\n"
-    ))?;
-    if let Some(table) = target_table {
-        sink.write_str(&format!("-- table: {table}\n"))?;
-    }
-    sink.write_str(&format!(
-        "-- exported_at: {}\n\
-         -- 说明：不含触发器 / 存储过程 / 事件 / 权限；导出为非快照一致\n",
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
-    ))?;
-    sink.write_str(&begin_marker("header", ""))?;
-    match driver {
-        DriverKind::Mysql => {
-            // 建库时尽量保留源库字符集和排序规则。
-            let source_schema = match svc.list_schemas(config).await {
-                Ok(schemas) => schemas.into_iter().find(|item| item.name == schema),
-                Err(error) => {
-                    tracing::warn!(
-                        operation = "sql_export_schema_options",
-                        error = %error,
-                        schema,
-                        "load source schema options failed"
-                    );
-                    None
-                }
-            };
-            let charset_clause = source_schema
-                .map(|source_schema| {
-                    let mut clause = String::new();
-                    if let Some(charset) = source_schema.charset {
-                        clause.push_str(&format!(" DEFAULT CHARACTER SET {charset}"));
-                    }
-                    if let Some(collation) = source_schema.collation {
-                        clause.push_str(&format!(" COLLATE {collation}"));
-                    }
-                    clause
-                })
-                .unwrap_or_default();
-            let quoted = driver.quote_identifier(schema);
-            sink.write_str("SET NAMES utf8mb4;\n")?;
-            sink.write_str(MYSQL_IMPORT_PREFIX)?;
-            sink.write_str(&format!(
-                "CREATE DATABASE IF NOT EXISTS {quoted}{charset_clause};\nUSE {quoted};\n"
-            ))?;
-        }
-        _ => {
-            sink.write_str(&format!(
-                "CREATE SCHEMA IF NOT EXISTS {};\n",
-                driver.quote_identifier(schema)
-            ))?;
-        }
-    }
-    Ok(())
-}
-
-async fn write_table_ddl(
-    svc: &ConnectionService,
-    config: &ConnectionConfig,
-    schema: &str,
-    table: &Table,
-    sequences: &[(String, PgSequenceInfo)],
-    sink: &mut ExportSink,
-) -> Result<()> {
-    sink.write_str(&begin_marker("table", &table.name))?;
-    match config.driver {
-        DriverKind::Mysql => {
-            let sql = build_ddl_query(DriverKind::Mysql, schema, &table.name, false);
-            let result = svc.execute(config, &Query::new(sql)).await?;
-            let statement = format!("{};", parse_show_create(&result)?);
-            write_sql_statement(sink, config.driver, &statement, "MySQL 表结构")?;
-        }
-        _ => {
-            // Overwrite 导入会在 table 段开始前删除旧表；serial 的 OWNED 序列也会被级联删除。
-            // 因此在同一 table 段内再保证一次序列存在，避免随后 DEFAULT nextval 建表失败。
-            if let Some((_, info)) = sequences.iter().find(|(name, _)| name == &table.name) {
-                for stmt in &info.create_stmts {
-                    sink.write_str(stmt)?;
-                    sink.write_str("\n")?;
-                }
-            }
-            let create = run_first_column(svc, config, pg_table_create_query(schema, &table.name))
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    DomainError::QueryFailed(format!("表 {} 结构查询无结果", table.name))
-                })?;
-            write_sql_statement(sink, config.driver, &create, "PostgreSQL 表结构")?;
-            if let Some((_, info)) = sequences.iter().find(|(name, _)| name == &table.name) {
-                for stmt in &info.owned_stmts {
-                    write_sql_statement(sink, config.driver, stmt, "PostgreSQL 序列归属")?;
-                }
-            }
-            for stmt in
-                run_first_column(svc, config, pg_comments_query(schema, &table.name)).await?
-            {
-                write_sql_statement(sink, config.driver, &stmt, "PostgreSQL 注释")?;
-            }
-        }
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn export_table_data(
     svc: &ConnectionService,
@@ -400,6 +284,14 @@ async fn export_table_data(
     let driver = config.driver;
     let columns = svc.list_columns(config, schema, &table.name).await?;
     if columns.is_empty() {
+        warn!(
+            operation = "sql_export_table_data",
+            connection_id = %config.id,
+            driver = ?driver,
+            schema,
+            table = %table.name,
+            "skip table data because no columns were returned"
+        );
         summary.push_warning(format!("表 {} 无列信息，跳过数据导出", table.name));
         return Ok(());
     }
@@ -414,6 +306,14 @@ async fn export_table_data(
         .filter(|c| !generated.contains(&c.name))
         .collect();
     if export_cols.is_empty() {
+        warn!(
+            operation = "sql_export_table_data",
+            connection_id = %config.id,
+            driver = ?driver,
+            schema,
+            table = %table.name,
+            "skip table data because every column is generated"
+        );
         summary.push_warning(format!("表 {} 全部列为生成列，跳过数据导出", table.name));
         return Ok(());
     }
@@ -424,12 +324,20 @@ async fn export_table_data(
         .collect();
     let use_keyset = !pk.is_empty();
     if !use_keyset {
+        warn!(
+            operation = "sql_export_table_data",
+            connection_id = %config.id,
+            driver = ?driver,
+            schema,
+            table = %table.name,
+            "fall back to offset pagination because no primary key is available"
+        );
         summary.push_warning(format!(
             "表 {} 无主键，使用 OFFSET 分页导出（大表较慢，且并发写入下可能重复/遗漏）",
             table.name
         ));
     }
-    // PG 有 GENERATED ALWAYS AS IDENTITY 列时，显式插入需 OVERRIDING SYSTEM VALUE
+    // PG identity ALWAYS 列需允许显式写入。
     let overriding = sequences
         .iter()
         .find(|(name, _)| name == &table.name)
@@ -447,7 +355,7 @@ async fn export_table_data(
         .collect::<Vec<_>>()
         .join(", ");
     let insert_target = match driver {
-        // MySQL 文件内不带库前缀：导入端 USE / default_schema 决定目标库
+        // MySQL 导入由 USE 选择目标库。
         DriverKind::Mysql => driver.quote_identifier(&table.name),
         _ => qualified.clone(),
     };
@@ -481,7 +389,6 @@ async fn export_table_data(
     let mut offset: u64 = 0;
     let mut insert_buf = String::with_capacity(INSERT_FLUSH_BYTES + 4096);
     let mut buffered_rows = 0usize;
-    // 预留 MySQL 导入时追加的外键检查前缀。
     let insert_payload_limit = sql_transfer_payload_limit(driver);
     loop {
         if is_cancelled(cancel) {
@@ -563,7 +470,7 @@ async fn export_table_data(
         reporter.emit();
 
         if use_keyset {
-            // 按实际返回的最后一行推进；即使 driver 因内存上限截断分页也不丢行
+            // 以实际末行推进，避免返回受限时丢行。
             if let Some(last_row) = result.rows.last() {
                 last_key = Some(
                     pk_indices

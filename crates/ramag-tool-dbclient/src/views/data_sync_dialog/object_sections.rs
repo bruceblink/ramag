@@ -1,8 +1,8 @@
-use gpui::{Anchor, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
-use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, input::Input,
-    scroll::ScrollableElement as _, v_flex,
+use gpui::{
+    Anchor, ClickEvent, Context, IntoElement, ParentElement, StatefulInteractiveElement as _,
+    Styled, div, prelude::*, px,
 };
+use gpui_component::{ActiveTheme, Disableable as _, Sizable as _, h_flex, input::Input, v_flex};
 use ramag_ui::PointerDropdownMenu as _;
 
 use super::catalog::visible_catalog_items;
@@ -182,9 +182,10 @@ impl DataSyncDialog {
             )
             .child(
                 div()
+                    .id("sync-object-list-scroll")
                     .w_full()
                     .h(px(object_list_height(shown)))
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
                     .border_1()
                     .border_color(border)
                     .rounded(px(5.0))

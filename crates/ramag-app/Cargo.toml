@@ -41,6 +41,8 @@ semver = { workspace = true }
 [dev-dependencies]
 # decide_capture 等纯逻辑测试无需额外 mock；保留位以备扩展
 async-trait = { workspace = true }
+ramag-infra-storage = { workspace = true }
+tempfile = "3"
 # 按库导出 / 导入端到端集成测试（tests/transfer_live.rs）：连真实四库容器
 ramag-infra-mysql = { workspace = true }
 ramag-infra-postgres = { workspace = true }

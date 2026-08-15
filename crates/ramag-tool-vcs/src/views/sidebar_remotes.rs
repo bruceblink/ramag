@@ -1,6 +1,4 @@
-//! 侧栏「远程仓库」：名称、fetch URL 与操作菜单。
-//! 与「远程分支」区分：本模块管理 remote 配置（origin 等），非远端分支引用。
-//! 行由 history 左栏的单个 uniform_list 统一渲染（28px 等高），段组装见 history_panel
+//! 侧栏远程配置行与操作菜单。
 
 use gpui::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
@@ -17,7 +15,6 @@ use ramag_ui::PointerDropdownMenu as _;
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
 
-/// 单条 remote 行：[globe] name + fetch URL 内联 + 行尾 [改URL][重命名][删除]（固定 28px 高）
 pub(super) fn remote_row(
     idx: usize,
     r: &Remote,
@@ -29,7 +26,6 @@ pub(super) fn remote_row(
     let muted_fg = theme.muted_foreground;
     let mono = theme.mono_font_family.clone();
     let hover_bg = theme.muted;
-    // 蓝青色：远程仓库与分支（暖橙 tag / 常规分支）区分
     let remote_color = gpui::hsla(200.0 / 360.0, 0.6, 0.55, 1.0);
 
     let name = r.name.clone();
@@ -89,6 +85,7 @@ pub(super) fn remote_row(
             .ghost()
             .xsmall()
             .icon(ramag_ui::icons::ellipsis())
+            .tooltip("远程")
             .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                 remote_actions_menu(
                     menu,

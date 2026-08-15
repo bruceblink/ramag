@@ -7,8 +7,7 @@ use ramag_domain::entities::{
 use ramag_domain::error::Result;
 use ramag_infra_sql_shared::sql::SplitOptions;
 use ramag_infra_sql_shared::{PoolCache, SqlBackend};
-use sqlx::pool::PoolConnection;
-use sqlx::{MySql, Pool};
+use sqlx::{MySql, MySqlConnection, Pool};
 
 #[derive(Clone)]
 struct StubMysqlBackend {
@@ -107,7 +106,7 @@ impl SqlBackend for StubMysqlBackend {
         Ok(Vec::new())
     }
 
-    async fn fetch_warnings(&self, _conn: &mut PoolConnection<Self::Db>) -> Vec<Warning> {
+    async fn fetch_warnings(&self, _conn: &mut MySqlConnection) -> Vec<Warning> {
         Vec::new()
     }
 }

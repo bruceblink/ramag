@@ -1,14 +1,8 @@
-//! 剪贴板历史 CRUD。整条 ClipItem JSON 经 Cipher 加密为 hex 落主表（preview / 来源也敏感）。
-//!
-//! 为支撑 100 万级历史不退化，另建三张**明文**索引表，让取最近 N / 去重 / 分页
-//! 都降到 O(log N) 或 O(N_可见)，不再全表解密：
-//! - `clip_by_time`：key=recency_key（越新越小，见 `recency_key`），value=uuid —— 取最近 N
-//! - `clip_by_hash`：key=content_hash，value=uuid —— 指纹去重 O(log N)
-//! - `clip_uuid_meta`：key=uuid，value="recency_key\thash" —— 更新/删除时反查清旧索引
+//! 加密剪贴板历史及其时间、内容哈希和搜索索引。
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use redb::{
     Database, ReadableDatabase as _, ReadableTable, ReadableTableMetadata, TableDefinition,
@@ -25,14 +19,13 @@ const MAX_CLIP_RECORD_JSON_BYTES: usize = 80 * 1024 * 1024;
 const MAX_CLIP_RECORD_HEX_BYTES: usize = (MAX_CLIP_RECORD_JSON_BYTES + 12 + 16) * 2;
 const MAX_CLIP_FULL_LIST_ITEMS: usize = 100_000;
 const MAX_CLIP_FULL_LIST_BYTES: usize = 64 * 1024 * 1024;
-const MAX_CLIP_MEDIA_PATHS: usize = 200_000;
-const MAX_CLIP_MEDIA_PATH_BYTES: usize = 256 * 1024;
-const MAX_CLIP_MEDIA_PATH_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CLIP_PRUNE_BATCH: usize = 10_000;
 
+mod maintenance;
 mod prune;
 mod search;
-use prune::{PruneSelection, select_prune_candidates};
+use maintenance::push_media_path;
+pub(crate) use maintenance::{clear, prune};
 pub(crate) use search::{
     initialize_index as initialize_search_index, search, search_cancellable,
     search_cancellable_bounded,
@@ -378,144 +371,6 @@ pub(crate) fn find_by_hash(
             "剪贴哈希索引 {hash} 指向缺失条目 {uuid}"
         ))),
     }
-}
-
-/// 清空全部历史。媒体目录由应用层流式删除，无需在事务前解密并收集全部路径。
-pub(crate) fn clear(db: Arc<Database>) -> Result<()> {
-    let write_txn = db.begin_write().map_err(store_err)?;
-    write_txn.delete_table(CLIPS_TABLE).map_err(store_err)?;
-    write_txn.delete_table(CLIP_BY_TIME).map_err(store_err)?;
-    write_txn.delete_table(CLIP_BY_HASH).map_err(store_err)?;
-    write_txn.delete_table(CLIP_UUID_META).map_err(store_err)?;
-    write_txn
-        .delete_table(search::CLIP_SEARCH_FILTERS)
-        .map_err(store_err)?;
-    write_txn
-        .delete_table(search::CLIP_SEARCH_META)
-        .map_err(store_err)?;
-    ensure_table(&write_txn)?;
-    search::mark_ready(&write_txn)?;
-    write_txn.commit().map_err(store_err)?;
-    info!(
-        operation = "clipboard_history_clear",
-        scope = "all",
-        "clipboard entries cleared"
-    );
-    Ok(())
-}
-
-/// 超量 / 过期清理：扫时间索引（不解密）定位越界 / 超龄条目，只解密待删的取媒体路径
-pub(crate) fn prune(
-    db: Arc<Database>,
-    cipher: Arc<RwLock<Cipher>>,
-    max_items: u32,
-    max_age_days: u32,
-) -> Result<Vec<String>> {
-    let cutoff_millis = (Utc::now() - Duration::days(i64::from(max_age_days))).timestamp_millis();
-
-    let PruneSelection {
-        doomed,
-        batch_full: prune_batch_full,
-        scanned,
-    } = {
-        let read_txn = db.begin_read().map_err(store_err)?;
-        let by_time = read_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-        let total = by_time.len().map_err(store_err)?;
-        // 快速路径：未超量 + 最旧未超龄 → 无需清理，避免正常采集每次都扫描索引。
-        let oldest_over_age = match by_time.iter().map_err(store_err)?.next_back() {
-            Some(entry) => {
-                let (rk_g, _) = entry.map_err(store_err)?;
-                millis_from_recency_key(rk_g.value())? < cutoff_millis
-            }
-            None => false,
-        };
-        if total <= u64::from(max_items) && !oldest_over_age {
-            return Ok(Vec::new());
-        }
-        let excess = total.saturating_sub(u64::from(max_items));
-        select_prune_candidates(&by_time, excess, cutoff_millis)?
-    };
-    if doomed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // 只解密待删条目取媒体路径（数量有限，非全表）
-    let images: Vec<String> = {
-        let cipher = cipher.read();
-        let read_txn = db.begin_read().map_err(store_err)?;
-        let clips = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
-        let mut imgs = Vec::new();
-        let mut retained_bytes = 0usize;
-        let mut scratch = Vec::new();
-        for uuid in &doomed {
-            let value = clips
-                .get(uuid.as_str())
-                .map_err(store_err)?
-                .ok_or_else(|| {
-                    DomainError::Storage(format!("待清理剪贴索引指向缺失条目 {uuid}"))
-                })?;
-            let item = decode_record_reusing(uuid, value.value(), &cipher, &mut scratch)?;
-            for path in [item.image_path, item.thumb_path].into_iter().flatten() {
-                push_media_path(&mut imgs, &mut retained_bytes, path)?;
-            }
-        }
-        imgs
-    };
-
-    let write_txn = db.begin_write().map_err(store_err)?;
-    {
-        let mut clips = write_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
-        let mut by_time = write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-        let mut by_hash = write_txn.open_table(CLIP_BY_HASH).map_err(store_err)?;
-        let mut meta = write_txn.open_table(CLIP_UUID_META).map_err(store_err)?;
-        let mut search_filters = write_txn
-            .open_table(search::CLIP_SEARCH_FILTERS)
-            .map_err(store_err)?;
-        for uuid in &doomed {
-            let value = meta.get(uuid.as_str()).map_err(store_err)?.ok_or_else(|| {
-                DomainError::Storage(format!("待清理剪贴条目 {uuid} 缺少索引元数据"))
-            })?;
-            let (rk, hash) = decode_meta(uuid, value.value())?;
-            let rk = rk.to_string();
-            let hash = hash.to_string();
-            drop(value);
-            by_time.remove(rk.as_str()).map_err(store_err)?;
-            search_filters.remove(rk.as_str()).map_err(store_err)?;
-            remove_hash_if_owned(&mut by_hash, &hash, uuid)?;
-            meta.remove(uuid.as_str()).map_err(store_err)?;
-            clips.remove(uuid.as_str()).map_err(store_err)?;
-        }
-    }
-    write_txn.commit().map_err(store_err)?;
-    info!(
-        operation = "clipboard_prune",
-        removed = doomed.len(),
-        batch_full = prune_batch_full,
-        scanned,
-        max_items,
-        max_age_days,
-        "clipboard entries pruned"
-    );
-    Ok(images)
-}
-
-fn push_media_path(
-    paths: &mut Vec<String>,
-    retained_bytes: &mut usize,
-    path: String,
-) -> Result<()> {
-    bounded_json::ensure_len(path.len(), MAX_CLIP_MEDIA_PATH_BYTES, "剪贴媒体路径")?;
-    let (_, next_bytes) = bounded_json::next_collection_budget(
-        paths.len(),
-        *retained_bytes,
-        path.len(),
-        MAX_CLIP_MEDIA_PATHS,
-        MAX_CLIP_MEDIA_PATH_TOTAL_BYTES,
-        "剪贴媒体引用",
-    )?;
-    *retained_bytes = next_bytes;
-    paths.push(path);
-    Ok(())
 }
 
 /// 由 lib.rs 在 open 时调：建主表与派生索引表。

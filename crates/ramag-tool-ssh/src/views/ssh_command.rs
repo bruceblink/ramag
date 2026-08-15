@@ -357,32 +357,37 @@ fn validate_field(label: &str, value: &str, max_bytes: usize) -> Result<(), Stri
 mod tests {
     use super::*;
 
+    fn absolute_test_key_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(name)
+            .to_str()
+            .unwrap()
+            .replace(std::path::MAIN_SEPARATOR, "/")
+    }
+
     #[test]
     fn parses_common_ssh_command() {
+        let user_home = std::env::temp_dir().join("ramag-ssh-command-user");
+        let expected_key_path = user_home.join(".ssh/id_ed25519");
         let parsed = parse_ssh_command(
             "ssh -p 2222 -i ~/.ssh/id_ed25519 alice@example.com",
-            Some(Path::new("/Users/alice")),
+            Some(&user_home),
         )
         .unwrap();
         assert_eq!(parsed.host, "example.com");
         assert_eq!(parsed.username, "alice");
         assert_eq!(parsed.port, Some(2222));
-        assert_eq!(
-            parsed.key_path.as_deref(),
-            Some("/Users/alice/.ssh/id_ed25519")
-        );
+        assert_eq!(parsed.key_path.as_deref(), expected_key_path.to_str());
     }
 
     #[test]
     fn parses_quoted_options_and_open_ssh_o_values() {
-        let parsed = parse_ssh_command(
-            r#"ssh -o User=deploy -o Port=2200 -i "/keys/team key" server"#,
-            None,
-        )
-        .unwrap();
+        let key_path = absolute_test_key_path("ramag-ssh-command/team key");
+        let command = format!(r#"ssh -o User=deploy -o Port=2200 -i "{key_path}" server"#);
+        let parsed = parse_ssh_command(&command, None).unwrap();
         assert_eq!(parsed.username, "deploy");
         assert_eq!(parsed.port, Some(2200));
-        assert_eq!(parsed.key_path.as_deref(), Some("/keys/team key"));
+        assert_eq!(parsed.key_path.as_deref(), Some(key_path.as_str()));
     }
 
     #[test]
@@ -419,7 +424,7 @@ mod tests {
     fn edit_command_quotes_key_paths_with_spaces() {
         let mut profile = SshProfile::new("key", "server");
         profile.auth_mode = SshAuthMode::KeyFile;
-        profile.key_path = Some("/keys/team key".into());
+        profile.key_path = Some(absolute_test_key_path("ramag-ssh-command/team key"));
 
         let parsed = parse_ssh_command(&profile_ssh_command(&profile), None).unwrap();
         assert_eq!(parsed.key_path, profile.key_path);

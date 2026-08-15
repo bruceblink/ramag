@@ -37,11 +37,11 @@ pub struct CollectionTreePanel {
     databases: Vec<MongoDatabase>,
     loading: bool,
     error: Option<String>,
-    /// 集合缓存与展开状态分离，避免搜索改变展开项。
+    /// 集合缓存与展开状态分离。
     expanded: HashMap<String, ExpandedState>,
     expanded_bytes: usize,
     open_databases: HashSet<String>,
-    /// 旧连接的异步结果不得回写。
+    /// 防止旧连接的异步结果回写。
     metadata_generation: u64,
     collection_request_generation: u64,
     search_load_generation: u64,
@@ -49,7 +49,7 @@ pub struct CollectionTreePanel {
     selected: Option<(String, String)>,
     active_db: Option<String>,
     search: Entity<InputState>,
-    /// 小写搜索词；与输入实体分开缓存，避免焦点变化触发元数据补拉。
+    /// 缓存小写搜索词。
     search_query: String,
     show_system: bool,
     editor_visible: bool,
@@ -58,7 +58,7 @@ pub struct CollectionTreePanel {
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
     auto_activate_pending: bool,
     pending_notification: Option<gpui_component::notification::Notification>,
-    /// 连接切换会使旧写任务失效。
+    /// 连接切换使旧写任务失效。
     mutation_gate: AsyncMutationGate,
     transfer: ramag_ui::TransferState,
     _subscriptions: Vec<Subscription>,
@@ -85,7 +85,7 @@ fn pick_default_db(conn: Option<&ConnectionConfig>, databases: &[MongoDatabase])
         .map(|d| d.name.clone())
 }
 
-/// driver 已返回有序数据库；配置中的空库用二分定位插入，避免 UI 再排序最多五万项。
+/// 向有序数据库列表插入配置中的空库。
 fn insert_configured_database(databases: &mut Vec<MongoDatabase>, configured: Option<String>) {
     let Some(name) = configured.filter(|name| !name.is_empty()) else {
         return;
@@ -117,18 +117,18 @@ pub enum TreeEvent {
         database: String,
         collection: String,
     },
-    /// 集合改名成功，查询面板据此同步/失效旧上下文。
+    /// 集合改名成功。
     CollectionRenamed {
         database: String,
         old: String,
         new: String,
     },
-    /// 集合删除成功，查询面板据此禁用旧结果的编辑入口。
+    /// 集合删除成功。
     CollectionDropped {
         database: String,
         collection: String,
     },
-    /// 数据库删除成功，查询面板据此清除旧库与旧集合写入目标。
+    /// 数据库删除成功。
     DatabaseDropped {
         database: String,
     },
@@ -148,14 +148,14 @@ impl CollectionTreePanel {
                 .clean_on_escape()
         });
         let subs = vec![
-            // InputState::set_value 不发 Change 事件，观察实体才能正确处理清除按钮。
+            // InputState::set_value 不触发 Change 事件。
             cx.observe(&search, |this: &mut Self, _, cx| {
                 let query = this.search.read(cx).value().trim().to_lowercase();
                 if query == this.search_query {
                     return;
                 }
                 this.search_query = query;
-                // 非空搜索覆盖全库，而非仅过滤已展开节点。
+                // 非空搜索覆盖全库。
                 this.ensure_search_coverage(cx);
                 this.invalidate_tree_rows();
                 cx.notify();
@@ -248,7 +248,7 @@ impl CollectionTreePanel {
         (self.loading, self.error.is_some())
     }
 
-    /// 首次加载失败时，重新激活会重试且保留展开状态。
+    /// 首次加载失败后重新激活会重试。
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if self.connection.is_some() && self.databases.is_empty() && !self.loading {
             self.refresh_databases(cx);
@@ -269,6 +269,15 @@ impl CollectionTreePanel {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let r = svc.list_databases(&conf).await;
+            if let Err(error) = &r {
+                error!(
+                    operation = "mongo_metadata_databases",
+                    connection_id = %conf.id,
+                    connection_name = %conf.name,
+                    error = %error,
+                    "load databases failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conf.id);
@@ -284,7 +293,7 @@ impl CollectionTreePanel {
                             count = dbs.len(),
                             "databases loaded"
                         );
-                        // 空库可能不在服务端列表中，仍展示连接配置里的库。
+                        // 显示连接配置中的空库。
                         insert_configured_database(&mut dbs, conf.database.clone());
                         this.databases = dbs;
                         if this.auto_activate_pending {
@@ -301,12 +310,6 @@ impl CollectionTreePanel {
                         this.ensure_search_coverage(cx);
                     }
                     Err(e) => {
-                        error!(
-                            operation = "mongo_metadata_databases",
-                            connection_id = %conf.id,
-                            error = %e,
-                            "load databases failed"
-                        );
                         this.error = Some(e.to_string());
                     }
                 }

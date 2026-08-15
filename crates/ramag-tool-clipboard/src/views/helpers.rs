@@ -1,14 +1,12 @@
-//! 纯函数：列表过滤 + 相对时间格式化（便于测试，不依赖 GPUI）
+//! 剪贴板列表过滤与时间格式化。
 
 use chrono::{DateTime, Utc};
 use ramag_domain::entities::{ClipItem, ClipKind, contains_case_insensitive};
 
-/// 即时层每条正文最多扫描此前缀；完整正文由去抖后的后台存储搜索覆盖。
+/// 即时搜索的正文扫描上限。
 const MAX_IMMEDIATE_TEXT_SEARCH_BYTES: usize = 4 * 1024;
 
-/// 过滤 + 排序：按 last_used_at desc。
-/// 搜索即时匹配 preview / 正文有界前缀（大小写不敏感）；kind=None 不限类型。
-/// 更深正文由后台全量搜索补齐，避免每次按键在 UI 线程扫描最多 64 MiB 缓存。
+/// 按类型与关键词过滤，并按最近使用时间排序。
 pub fn filter_items<'a, T>(items: &'a [T], query: &str, kind: Option<ClipKind>) -> Vec<&'a T>
 where
     T: std::borrow::Borrow<ClipItem>,
@@ -25,8 +23,7 @@ where
             q.is_empty() || matches_query(clip, &q)
         })
         .collect();
-    // service 缓存与存储搜索结果都已是最近优先；普通渲染无需再做 O(n log n) 排序。
-    // 保留乱序输入兼容，仅在确实发现逆序对时排序。
+    // 输入通常已按最近使用排序，仅在乱序时排序。
     let out_of_order = out.windows(2).any(|pair| {
         let left = <T as std::borrow::Borrow<ClipItem>>::borrow(pair[0]);
         let right = <T as std::borrow::Borrow<ClipItem>>::borrow(pair[1]);
@@ -57,7 +54,7 @@ fn text_prefix(text: &str) -> &str {
     &text[..end]
 }
 
-/// 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期
+/// 格式化相对时间。
 pub fn relative_time(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let secs = (now - then).num_seconds().max(0);
     match secs {

@@ -121,11 +121,7 @@ impl Render for VcsView {
         let bg = theme.background;
         let muted_fg = theme.muted_foreground;
 
-        // 两层结构（仿 dbclient）：tab bar（含右侧操作区） / body
-        // body 由 active_view 路由：RepoList → 仓库管理页；Session → IDE 布局
-        // 注意：error 不再独占 body —— 由 RepoList 顶部 banner 承载（不阻塞用户操作）
         let body: AnyElement = if self.loading {
-            // Clone 进行中：附加 git --progress 实时行 + 取消按钮（进度槽每帧读取）
             let clone_line = self
                 .clone_progress
                 .as_ref()
@@ -179,6 +175,45 @@ impl Render for VcsView {
             .bg(bg)
             .key_context("VcsView")
             .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &ramag_ui::OpenRecentItems, window, cx| {
+                    if matches!(this.active_view, ActiveView::Session) {
+                        let items = this
+                            .recent_repos
+                            .iter()
+                            .map(|repo| {
+                                ramag_ui::recent_items_dialog::RecentItem::new(
+                                    repo.path.clone(),
+                                    repo.name.clone(),
+                                    repo.path.clone(),
+                                    gpui_component::IconName::Folder,
+                                )
+                                .secondary("Git 仓库")
+                                .current(
+                                    this.repo
+                                        .as_ref()
+                                        .is_some_and(|current| current.path == repo.path),
+                                )
+                            })
+                            .collect();
+                        let view = cx.entity().clone();
+                        ramag_ui::recent_items_dialog::open_recent_item_picker(
+                            window,
+                            cx,
+                            "最近打开的仓库",
+                            "搜索仓库名称或完整路径",
+                            "vcs_recent_picker_favorites",
+                            items,
+                            std::sync::Arc::new(move |path, _, app| {
+                                view.update(app, |this, cx| this.open_recent_repo(path, cx));
+                            }),
+                        );
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             // CloseTab：先关文件标签；没有文件标签时关闭当前仓库标签。
             .on_action(cx.listener(|this, _: &ramag_ui::CloseTab, window, cx| {
                 if let Some(idx) = this.active_file_tab_idx {
@@ -194,19 +229,6 @@ impl Render for VcsView {
                     cx.propagate();
                 }
             }))
-            // cmd-r：手动刷新工作区
-            .on_action(
-                cx.listener(|this, _: &crate::actions::RefreshWorkspace, _, cx| {
-                    if this.repo.is_some() && !this.loading && !this.busy {
-                        this.refresh_workspace_silent(cx);
-                    }
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::actions::SaveProjectFile, _, cx| {
-                    this.save_project_file(cx);
-                }),
-            )
             // cmd-shift-k / cmd-t：push / pull 当前分支
             .on_action(
                 cx.listener(|this, _: &crate::actions::PushNow, window, cx| {
@@ -228,17 +250,6 @@ impl Render for VcsView {
                     if this.repo.is_some() {
                         this.toggle_history_pane(cx);
                     }
-                }),
-            )
-            // cmd-k：切 Changes 并聚焦 commit 输入框
-            .on_action(
-                cx.listener(|this, _: &crate::actions::FocusCommitMessage, window, cx| {
-                    if this.repo.is_none() {
-                        return;
-                    }
-                    this.set_files_view_mode(super::super::helpers::FilesViewMode::Changes, cx);
-                    let fh = this.commit_input.read(cx).focus_handle(cx);
-                    window.focus(&fh, cx);
                 }),
             )
             // cmd-enter：仅 commit 输入框聚焦时提交（其他输入框里不劫持）

@@ -32,6 +32,7 @@ pub mod data_sync;
 pub mod export;
 pub mod id_conversion;
 pub mod mongo_service;
+pub mod object_storage_service;
 pub mod redis_service;
 pub mod ssh_service;
 pub mod transfer;
@@ -46,6 +47,10 @@ pub use data_sync::{
 };
 pub use id_conversion::{convert_id_to_integer, convert_id_to_string};
 pub use mongo_service::MongoService;
+pub use object_storage_service::{
+    AccountVerification, ObjectListingPage, ObjectStorageMountResult, ObjectStorageService,
+    SavedObjectStorageAccount, configured_mounts,
+};
 pub use redis_service::RedisService;
 pub use ssh_service::SshService;
 pub use update_service::{

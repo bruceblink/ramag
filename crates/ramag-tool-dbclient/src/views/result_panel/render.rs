@@ -81,6 +81,7 @@ impl Render for ResultPanel {
                                     .ghost()
                                     .small()
                                     .icon(IconName::Copy)
+                                    .tooltip("复制错误信息")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             msg_for_copy.clone(),
@@ -233,7 +234,7 @@ impl ResultPanel {
     }
 
     /// 复制选中单元格完整值
-    pub(super) fn copy_selected_cell(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn copy_selected_cell(&mut self, cx: &mut Context<Self>) {
         let Some((ri, ci)) = self.selected_cell else {
             return;
         };
@@ -244,7 +245,7 @@ impl ResultPanel {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(val.to_clipboard_string()));
-        self.pending_notification = Some(Notification::success("已复制单元格").autohide(true));
+        self.pending_notification = Some(ramag_ui::copy_success_notification());
         cx.notify();
     }
 
@@ -260,8 +261,7 @@ impl ResultPanel {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
-        self.pending_notification =
-            Some(Notification::success(format!("已复制列名 {name}")).autohide(true));
+        self.pending_notification = Some(ramag_ui::copy_success_notification());
         cx.notify();
     }
 }

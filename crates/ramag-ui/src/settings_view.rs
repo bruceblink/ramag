@@ -31,15 +31,17 @@ enum SettingsPage {
     Database,
     VersionControl,
     Ssh,
+    ObjectStorage,
     Clipboard,
     Update,
 }
 
 impl SettingsPage {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Database,
         Self::VersionControl,
         Self::Ssh,
+        Self::ObjectStorage,
         Self::Clipboard,
         Self::Update,
     ];
@@ -49,6 +51,7 @@ impl SettingsPage {
             Self::Database => "database",
             Self::VersionControl => "version-control",
             Self::Ssh => "ssh",
+            Self::ObjectStorage => "object-storage",
             Self::Update => "update",
             Self::Clipboard => "clipboard",
         }
@@ -59,6 +62,7 @@ impl SettingsPage {
             Self::Database => "数据库客户端",
             Self::VersionControl => "版本管理",
             Self::Ssh => "SSH 管理",
+            Self::ObjectStorage => "云存储",
             Self::Update => "关于",
             Self::Clipboard => "剪贴板",
         }
@@ -69,6 +73,7 @@ impl SettingsPage {
             Self::Database => "管理数据库连接配置与搜索行为。",
             Self::VersionControl => "管理 Git 版本控制的模块级配置。",
             Self::Ssh => "管理 SSH 与 SFTP 配置。",
+            Self::ObjectStorage => "管理云对象存储账号、Bucket 与访问模式。",
             Self::Update => "查看版本信息与可用更新。",
             Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与历史数据。",
         }
@@ -123,6 +128,7 @@ pub struct SettingsView {
     ssh_module_settings: SshModuleSettings,
     saving_ssh_module_settings: bool,
     database_enabled_draft: bool,
+    redis_sink_same_name_keys: bool,
     database_converter_kind: IdConverterKind,
     database_custom_alphabet: Entity<InputState>,
     database_converter_program: Entity<InputState>,
@@ -154,6 +160,7 @@ impl SettingsView {
         let ssh_module_settings = ssh_service.module_settings_snapshot();
         let database = crate::database_search_settings(cx);
         let database_enabled_draft = database.id_conversion_enabled;
+        let redis_sink_same_name_keys = crate::redis_tree_settings(cx).sink_same_name_keys;
         let database_converter_kind = database.converter.kind;
         let custom_alphabet = database.converter.custom_alphabet.clone();
         let converter_program = database.converter.external_program.clone();
@@ -276,6 +283,7 @@ impl SettingsView {
             ssh_module_settings,
             saving_ssh_module_settings: false,
             database_enabled_draft,
+            redis_sink_same_name_keys,
             database_converter_kind,
             database_custom_alphabet,
             database_converter_program,
@@ -371,6 +379,7 @@ mod tests {
         assert!(ids.contains("version-control"));
         assert!(ids.contains("clipboard"));
         assert!(ids.contains("ssh"));
+        assert!(ids.contains("object-storage"));
         assert!(ids.contains("update"));
     }
 

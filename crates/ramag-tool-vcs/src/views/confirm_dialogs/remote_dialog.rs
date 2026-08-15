@@ -1,4 +1,4 @@
-//! 首次 Push 且仓库有多个 remote、没有 origin 时，让用户显式选择目标。
+//! 首次推送的远程选择。
 
 use gpui::{ClickEvent, Context, ParentElement, Styled, Window, div, px};
 use gpui_component::{
@@ -30,7 +30,7 @@ impl VcsView {
         let title = if force {
             "选择强推目标"
         } else {
-            "选择首次推送的远程仓库"
+            "选择推送目标"
         };
         window.open_dialog(cx, move |dialog, _, _| {
             let cancel = ramag_ui::clickable_button("vcs-first-push-cancel")
@@ -39,9 +39,9 @@ impl VcsView {
                 .label("取消")
                 .on_click(|_: &ClickEvent, window, app| window.close_dialog(app));
             let description = if force {
-                "请选择明确的强推目标；选择后还会显示最终风险确认："
+                "选择强推目标，之后还需确认风险。"
             } else {
-                "当前分支没有 upstream，且仓库存在多个 remote。请选择目标；成功后会设置 upstream："
+                "当前分支未设置 upstream，请选择远程；推送成功后自动设置。"
             };
             dialog
                 .title(ramag_ui::closable_dialog_title(
@@ -122,7 +122,7 @@ impl VcsView {
             view,
             "确认首次强推？",
             format!(
-                "目标：{target}\n\n将使用 --force-with-lease 改写该远程分支历史。即使有租约保护，仍可能让协作者丢失基于旧历史的提交。"
+                "将以 --force-with-lease 强推到 {target}。租约保护不能消除协作者提交丢失的风险。"
             ),
             "强推",
             true,

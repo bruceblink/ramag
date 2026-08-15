@@ -1,5 +1,4 @@
-//! 结果区顶部工具栏：过滤列 / 过滤行 / 增删文档 / 导出 / 运行。
-//! 行数 / 耗时摘要已下沉到底部 status bar（见 mod.rs render_status_bar），与 dbclient 一致
+//! 结果工具栏：过滤、文档操作与运行控制。
 
 use gpui::{ClickEvent, Context, Entity, div, prelude::*, px};
 use gpui_component::{
@@ -29,7 +28,6 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
         .items_center()
         .bg(secondary)
         .child(
-            // 过滤列 + 过滤行：内层 flex_1 组（结构与间距均对齐 dbclient 过滤栏）
             h_flex()
                 .flex_1()
                 .min_w_0()
@@ -138,6 +136,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .ghost()
                 .small()
                 .icon(IconName::Plus)
+                .tooltip("插入")
                 .when(!can_insert, |button| button.tooltip(disabled_reason))
                 .disabled(!can_insert)
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_insert_dialog(window, cx)))
@@ -167,6 +166,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .ghost()
                 .small()
                 .icon(IconName::Minus)
+                .tooltip("删除")
                 .when(!can_del, |button| button.tooltip(disabled_reason))
                 .disabled(!can_del)
                 .on_click(cx.listener(|panel, _, window, cx| panel.open_delete_confirm(window, cx)))
@@ -184,6 +184,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::download())
+                .tooltip("导入")
                 .when(!can_import, |button| button.tooltip(disabled_reason))
                 .disabled(!can_import)
                 .on_click(
@@ -197,6 +198,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .ghost()
                 .small()
                 .icon(ramag_ui::icons::upload())
+                .tooltip("导出")
                 .when(path_drilled, |button| button.tooltip("请清空路径钻取"))
                 .disabled(!has_data || panel.table_building || panel.exporting || path_drilled)
                 .on_click(cx.listener(|panel, _, _, cx| panel.export_documents(cx)))
@@ -207,7 +209,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .small()
                 .icon(IconName::CircleX)
                 .label("停止")
-                .tooltip("仅停止等待")
+                .tooltip("停止等待")
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Cancel)))
         } else {
             // 运行：与 dbclient 同位（结果区工具栏最右）、同快捷键（⌘↵）。
@@ -215,6 +217,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .primary()
                 .small()
                 .icon(IconName::Play)
+                .tooltip("运行")
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Refresh)))
         })
 }
@@ -273,6 +276,7 @@ fn row_search_input_suffix(
                 .xsmall()
                 .tab_stop(false)
                 .text_color(muted)
+                .tooltip("清除")
                 .on_click(move |_, window, cx| {
                     input.update(cx, |state, cx| {
                         state.set_value("", window, cx);

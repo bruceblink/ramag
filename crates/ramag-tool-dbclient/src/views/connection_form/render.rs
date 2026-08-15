@@ -38,7 +38,7 @@ impl ConnectionFormPanel {
                 div()
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("生产模式（只读保护）"),
+                    .child(ramag_ui::PRODUCTION_MODE_LABEL),
             )
             .child(
                 h_flex()
@@ -228,12 +228,13 @@ impl Render for ConnectionFormPanel {
                                             .ghost()
                                             .xsmall()
                                             .tab_stop(false)
-                                            .icon(if self.password_masked {
-                                                IconName::Eye
-                                            } else {
-                                                IconName::EyeOff
-                                            })
-                                            .disabled(self.saving)
+                        .icon(if self.password_masked {
+                            IconName::Eye
+                        } else {
+                            IconName::EyeOff
+                        })
+                        .tooltip("显示/隐藏密码")
+                        .disabled(self.saving)
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {
                                                     if this.saving {
@@ -428,11 +429,11 @@ impl Render for ConnectionFormPanel {
                                             .flex_none()
                                             .label("复制")
                                             .on_click(cx.listener(
-                                                move |_, _: &ClickEvent, _, cx| {
-                                                    cx.write_to_clipboard(
-                                                        gpui::ClipboardItem::new_string(
-                                                            msg_for_copy.clone(),
-                                                        ),
+                                                move |_, _: &ClickEvent, window, cx| {
+                                                    ramag_ui::copy_text_with_notification(
+                                                        msg_for_copy.clone(),
+                                                        window,
+                                                        cx,
                                                     );
                                                 },
                                             )),

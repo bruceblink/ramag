@@ -9,12 +9,6 @@ use super::jumpserver_dialog::{JumpServerEvent, JumpServerPanel};
 use super::model::Notice;
 use super::profile_dialog::{ProfileFormEvent, SshProfileFormPanel};
 
-#[derive(Clone, Copy)]
-enum RdpWebSessionAction {
-    Open,
-    Copy,
-}
-
 impl SshView {
     pub(super) fn open_profile_rdp(
         &mut self,
@@ -22,23 +16,13 @@ impl SshView {
         session: JumpServerRdpSession,
         cx: &mut Context<Self>,
     ) {
-        self.create_profile_rdp_web_session(profile_id, session, RdpWebSessionAction::Open, cx);
-    }
-
-    pub(super) fn copy_profile_rdp_link(
-        &mut self,
-        profile_id: SshProfileId,
-        session: JumpServerRdpSession,
-        cx: &mut Context<Self>,
-    ) {
-        self.create_profile_rdp_web_session(profile_id, session, RdpWebSessionAction::Copy, cx);
+        self.create_profile_rdp_web_session(profile_id, session, cx);
     }
 
     fn create_profile_rdp_web_session(
         &mut self,
         profile_id: SshProfileId,
         session: JumpServerRdpSession,
-        action: RdpWebSessionAction,
         cx: &mut Context<Self>,
     ) {
         if self.creating_rdp_web_session_profile.is_some() {
@@ -62,36 +46,23 @@ impl SshView {
                     return;
                 }
                 this.creating_rdp_web_session_profile = None;
-                match (action, result) {
-                    (RdpWebSessionAction::Open, Ok((url, None))) => {
+                match result {
+                    Ok((url, None)) => {
                         cx.open_url(&url);
                         this.notice = Some(Notice::info("已在浏览器中打开远程桌面"));
                     }
-                    (RdpWebSessionAction::Open, Ok((url, Some(error)))) => {
+                    Ok((url, Some(error))) => {
                         cx.open_url(&url);
                         this.notice = Some(Notice::error(format!(
                             "远程桌面已打开，但保存最近会话失败：{}",
                             error.message()
                         )));
                     }
-                    (RdpWebSessionAction::Copy, Ok((url, None))) => {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(url));
-                        this.notice = Some(Notice::info("一次性链接已复制"));
-                    }
-                    (RdpWebSessionAction::Copy, Ok((url, Some(error)))) => {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(url));
+                    Err(error) => {
                         this.notice = Some(Notice::error(format!(
-                            "链接已复制，但保存最近会话失败：{}",
+                            "打开远程桌面失败：{}",
                             error.message()
                         )));
-                    }
-                    (_, Err(error)) => {
-                        let message = match action {
-                            RdpWebSessionAction::Open => "打开远程桌面失败",
-                            RdpWebSessionAction::Copy => "复制一次性链接失败",
-                        };
-                        this.notice =
-                            Some(Notice::error(format!("{message}：{}", error.message())));
                     }
                 }
                 cx.notify();

@@ -311,9 +311,20 @@ impl ConnectionService {
             Ok(driver) => driver.execute(config, query).await,
             Err(e) => Err(e),
         };
-        log_query_result(config, query, &result, false);
-        self.append_history_for(config, query, &result).await;
+        self.append_history(config, query, &result, false).await;
         result
+    }
+
+    /// 记录已完成的查询，不参与数据库执行；调用方可在更新界面后异步落盘。
+    pub async fn append_history(
+        &self,
+        config: &ConnectionConfig,
+        query: &Query,
+        result: &Result<QueryResult>,
+        cancellable: bool,
+    ) {
+        log_query_result(config, query, result, cancellable);
+        self.append_history_for(config, query, result).await;
     }
 
     /// 历史写入失败仅记录警告，不阻塞查询。

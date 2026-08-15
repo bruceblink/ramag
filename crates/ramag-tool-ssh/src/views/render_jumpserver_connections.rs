@@ -184,7 +184,7 @@ impl JumpServerPanel {
                                         .ghost()
                                         .xsmall()
                                         .icon(ramag_ui::icons::pencil())
-                                        .tooltip("修改连接")
+                                        .tooltip("编辑")
                                         .disabled(busy)
                                         .on_click(cx.listener(
                                             move |this, _: &ClickEvent, window, cx| {
@@ -201,7 +201,7 @@ impl JumpServerPanel {
                                         .ghost()
                                         .xsmall()
                                         .icon(ramag_ui::icons::trash())
-                                        .tooltip("删除连接")
+                                        .tooltip("删除")
                                         .disabled(busy)
                                         .on_click(cx.listener(
                                             move |this, _: &ClickEvent, window, cx| {

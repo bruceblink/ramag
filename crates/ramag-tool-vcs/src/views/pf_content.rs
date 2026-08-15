@@ -5,7 +5,8 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, button::ButtonVariants as _, h_flex, input::Input, text, v_flex,
+    ActiveTheme, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard, h_flex,
+    input::Input, text, v_flex,
 };
 
 use super::vcs_view::VcsView;
@@ -49,12 +50,29 @@ impl VcsView {
                 }))
                 .into_any_element()
         });
+        let snapshot_text = snapshot.text.clone();
+        let editor_for_copy = self.pf_editor.clone();
+        let copy_button = Clipboard::new("vcs-pf-copy")
+            .tooltip("复制")
+            .value_fn(move |_, app| {
+                if editor_ready {
+                    editor_for_copy.read(app).value()
+                } else {
+                    snapshot_text.as_str().to_string().into()
+                }
+            })
+            .into_any_element();
+        let actions = h_flex()
+            .gap(px(4.0))
+            .children(source_toggle)
+            .child(copy_button)
+            .into_any_element();
         let mut body = v_flex().size_full().min_h_0().child(header_bar(
             &snapshot.path,
             self.pf_editor_line_count,
             muted_fg,
             fg,
-            source_toggle,
+            actions,
         ));
         if snapshot.truncated {
             body = body.child(truncated_banner(muted_fg));
@@ -99,7 +117,7 @@ fn header_bar(
     line_count: usize,
     muted_fg: gpui::Hsla,
     fg: gpui::Hsla,
-    action: Option<AnyElement>,
+    action: AnyElement,
 ) -> AnyElement {
     h_flex()
         .w_full()
@@ -125,7 +143,7 @@ fn header_bar(
                 .text_color(muted_fg)
                 .child(format!("{line_count} 行")),
         )
-        .children(action)
+        .child(action)
         .into_any_element()
 }
 

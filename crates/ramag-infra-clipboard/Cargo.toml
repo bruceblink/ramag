@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 ramag-domain = { workspace = true }
+async-channel = { workspace = true }
 
 # 图标缓存锁（macOS 驱动用；跨平台）
 parking_lot = { workspace = true }

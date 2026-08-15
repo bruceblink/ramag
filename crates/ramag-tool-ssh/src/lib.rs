@@ -11,7 +11,7 @@ use gpui::{App, AppContext as _, Entity, Window};
 use ramag_app::SshService;
 use ramag_domain::traits::{Tool, ToolMeta};
 
-pub use actions::{CloseSshTerminal, NewSshTerminal, RefreshSftp};
+pub use actions::{CloseSshTerminal, NewSshTerminal};
 pub use views::SshView;
 
 pub(crate) const TOOL_NAME: &str = "SSH 管理";

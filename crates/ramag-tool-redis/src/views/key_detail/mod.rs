@@ -5,7 +5,7 @@ mod list_block;
 mod list_delete;
 mod ops;
 #[cfg(test)]
-mod render_test;
+pub(crate) mod render_test;
 mod scalar;
 mod set_block;
 mod stream_block;
@@ -15,11 +15,11 @@ use std::sync::Arc;
 
 use gpui::{
     Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    ScrollStrategy, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled, UniformListScrollHandle,
+    Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _, notification::Notification,
-    scroll::ScrollableElement as _, v_flex,
+    ActiveTheme, Sizable as _, WindowExt as _, notification::Notification, v_flex,
 };
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COLLECTION_ITEMS, RedisValue};
@@ -34,6 +34,7 @@ const MAX_COLLECTION_ITEMS: usize = MAX_REDIS_COLLECTION_ITEMS;
 #[derive(Debug, Clone)]
 pub enum KeyDetailEvent {
     Deleted(String),
+    TypeResolved(String, ramag_domain::entities::RedisType),
     RequestEditTtl(String, Option<i64>),
     RequestEditValue(String, String),
     RequestAddHashField(String),
@@ -77,7 +78,7 @@ pub struct KeyDetailPanel {
     pub(super) value_byte_limited: bool,
     pub(super) value_memory_warning: bool,
     value_view_mode: Option<ViewMode>,
-    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 按行切好的内容, gzip 提示)。
+    /// 标量渲染缓存：(请求的 view_mode, 生效 mode, 当前视图完整文本, 按行切好的内容, gzip 提示)。
     /// 行数组供 uniform_list 行级虚拟化（大值单文本节点渲染会卡死滚动）；
     /// 解压 + JSON 解析 + 切行只算一次，key/value/view_mode 变化失效
     #[allow(clippy::type_complexity)]
@@ -85,6 +86,7 @@ pub struct KeyDetailPanel {
         Option<(
             Option<ViewMode>,
             ViewMode,
+            SharedString,
             std::sync::Arc<Vec<SharedString>>,
             Option<SharedString>,
         )>,
@@ -321,14 +323,15 @@ impl Render for KeyDetailPanel {
         };
 
         // 滚动区：外层 flex_1 + min_h_0 给出「减去 header 后的确定高度」。
-        // 容器类型的 uniform_list 自带虚拟滚动，只需内边距；其余套 overflow_y_scrollbar。
+        // 容器类型的 uniform_list 自带虚拟滚动，只需内边距；其余内容保留滚动但隐藏滚动条。
         let content = if self_scrolls {
             div().flex_col().flex_1().min_h_0().p(px(14.0)).child(body)
         } else {
             div().flex_1().min_h_0().child(
                 div()
+                    .id("redis-key-value-scroll")
                     .size_full()
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
                     .child(div().w_full().p(px(14.0)).child(body)),
             )
         };

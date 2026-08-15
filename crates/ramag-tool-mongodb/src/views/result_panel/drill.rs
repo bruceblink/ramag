@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use super::FlatTable;
 use super::ResultPanel;
-use super::cell::{Cell, cell_for_value, extjson_cell};
+use super::cell::{Cell, cell_for_value, extjson_cell, value_at_path};
 use super::flatten::{Column, build_flat_table_with_cancellable};
 use crate::views::{estimated_json_value_bytes, inline_text_preview};
 
@@ -145,7 +145,7 @@ impl ResultPanel {
                 if field == "_value" && !document.is_object() {
                     Some(document)
                 } else {
-                    document.get(field)
+                    value_at_path(document, field)
                 }
             })
         else {

@@ -69,6 +69,7 @@ fn zset_row(
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
     let preview = member.display_preview(256);
+    let member_for_copy = member.to_clipboard_string();
     // 仅文本成员可改 score：二进制成员显示 `[N bytes]` 摘要，用它做 ZADD 会新增一个
     // 名为摘要串的垃圾成员而非更新原成员（原成员 score 不变），故二进制成员只读
     let member_is_text = matches!(member, RedisValue::Text(_));
@@ -102,7 +103,11 @@ fn zset_row(
         .items_center()
         .when(editable, |row| row.cursor_pointer())
         // 双击该行打开「改 score」窗口（仅文本成员可编辑，二进制只读）
-        .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+        .on_click(cx.listener(move |_, e: &ClickEvent, window, cx| {
+            if ramag_ui::is_primary_modifier_double_click(e) {
+                ramag_ui::copy_text_with_notification(member_for_copy.clone(), window, cx);
+                return;
+            }
             if editable && e.click_count() >= 2 {
                 cx.emit(KeyDetailEvent::RequestEditZSetScore(
                     key_for_edit.clone(),

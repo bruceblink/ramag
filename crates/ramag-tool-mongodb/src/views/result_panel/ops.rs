@@ -1,8 +1,4 @@
-//! 结果区文档 DML：新增 / 删除 / 编辑。异步执行后 emit Refresh 重跑命令刷新结果。
-//! toast 经 pending_notification 在下次 render 推送（与 dbclient::result_panel 同款）
-
-use std::collections::HashSet;
-use std::sync::Arc;
+//! MongoDB 文档写操作。
 
 use gpui::{App, ClickEvent, Context, Entity, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
@@ -22,11 +18,10 @@ use crate::views::{
 };
 
 const MAX_INSERT_FORM_FIELDS: usize = 256;
-const MAX_DELETE_BATCH_IDS: usize = 5_000;
-const MAX_DELETE_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+mod delete;
 
 impl ResultPanel {
-    /// 弹「新增文档」：按当前结果的字段逐项填写（对齐 dbclient 按列填）；确认后 insert_one
     pub(crate) fn open_insert_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.doc_dml_busy {
             return self.notify_error("上一写操作尚未完成".to_string(), cx);
@@ -34,7 +29,7 @@ impl ResultPanel {
         let Some(coll) = self.target_collection.clone() else {
             return;
         };
-        // 字段模板：当前结果首个文档的顶层字段（排除 _id，让 mongo 自动生成）
+        // 使用首个文档字段作为模板，忽略 _id。
         let fields: Vec<String> = self
             .docs_arc
             .as_ref()
@@ -42,7 +37,7 @@ impl ResultPanel {
             .and_then(|d| d.as_object())
             .map(|m| m.keys().filter(|k| k.as_str() != "_id").cloned().collect())
             .unwrap_or_default();
-        // 空集合无字段模板：不再一味报错，改弹「整篇文档 JSON」输入框，支持插入首个文档
+        // 无模板时输入完整 JSON。
         if fields.is_empty() || fields.len() > MAX_INSERT_FORM_FIELDS {
             return self.open_raw_insert_dialog(coll, window, cx);
         }
@@ -78,7 +73,6 @@ impl ResultPanel {
                 .label("插入")
                 .disabled(dml_busy)
                 .on_click(move |_: &ClickEvent, _window, app| {
-                    // 不立即关弹框：成功经 pending_close_dialog 关闭，失败 / 校验不过保留输入
                     match collect_field_inputs(&inputs_apply, app) {
                         Ok(pairs) => {
                             panel_apply.update(app, |this, cx| this.do_insert_fields(pairs, cx));
@@ -117,7 +111,6 @@ impl ResultPanel {
         });
     }
 
-    /// 表单字段组装成文档 → insert_one（留空字段跳过；值按 JSON 解析，失败当字符串）
     fn do_insert_fields(&mut self, pairs: Vec<(String, String)>, cx: &mut Context<Self>) {
         let mut map = serde_json::Map::new();
         for (field, raw) in pairs {
@@ -136,7 +129,6 @@ impl ResultPanel {
         self.do_insert_doc(Value::Object(map), cx);
     }
 
-    /// 空集合兜底：直接输入整篇文档 JSON → insert_one（无字段模板可依时用）
     fn open_raw_insert_dialog(
         &mut self,
         coll: String,
@@ -191,7 +183,6 @@ impl ResultPanel {
                 .disabled(dml_busy)
                 .on_click(move |_: &ClickEvent, _window, app| {
                     let raw = input_apply.read(app).value().to_string();
-                    // 不立即关弹框：成功经 pending_close_dialog 关闭，解析失败保留输入
                     panel_apply.update(app, |this, cx| this.do_insert_raw(raw, cx));
                 });
             dialog
@@ -206,9 +197,12 @@ impl ResultPanel {
                         v_flex()
                             .w_full()
                             .gap(px(6.0))
-                            .child(div().text_xs().text_color(muted).child(
-                                "该集合暂无文档，直接输入整篇文档 JSON（_id 可省，自动生成）",
-                            ))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child("输入完整 JSON 文档（_id 可省略）"),
+                            )
                             .child(Input::new(&input_content).h(px(200.0))),
                     )
                 })
@@ -216,7 +210,6 @@ impl ResultPanel {
         });
     }
 
-    /// 原始 JSON 文本 → 校验为对象 → insert_one
     fn do_insert_raw(&mut self, raw: String, cx: &mut Context<Self>) {
         let doc = match serde_json::from_str::<Value>(raw.trim()) {
             Ok(v @ Value::Object(_)) => v,
@@ -226,9 +219,7 @@ impl ResultPanel {
         self.do_insert_doc(doc, cx);
     }
 
-    /// 异步 insert_one；成功关弹框 + emit Refresh + toast，失败保留弹框与输入
     fn do_insert_doc(&mut self, doc: Value, cx: &mut Context<Self>) {
-        // 防重入：上一提交未回包前忽略再次点击
         if self.doc_dml_busy {
             self.pending_notification =
                 Some(Notification::warning("提交执行中，请稍候").autohide(true));
@@ -245,13 +236,33 @@ impl ResultPanel {
             self.config.clone(),
             self.target_collection.clone(),
         ) else {
-            return;
+            tracing::warn!(
+                operation = "mongo_document_insert",
+                database = %self.database,
+                has_service = self.service.is_some(),
+                has_connection = self.config.is_some(),
+                has_collection = self.target_collection.is_some(),
+                "insert document skipped because execution context is unavailable"
+            );
+            return self.notify_error("当前连接或集合不可用，请刷新后重试".to_string(), cx);
         };
         let db = self.database.clone();
+        let document_bytes = estimated_json_value_bytes(&doc);
         self.doc_dml_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let r = svc.insert_one(&conf, &db, &coll, doc).await;
+            if let Err(error) = &r {
+                tracing::error!(
+                    operation = "mongo_document_insert",
+                    connection_id = %conf.id,
+                    database = %db,
+                    collection = %coll,
+                    document_bytes,
+                    error = %error,
+                    "insert document failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 this.doc_dml_busy = false;
                 if !this.dml_context_matches(&conf, &db, &coll) {
@@ -287,235 +298,10 @@ impl ResultPanel {
         .detach();
     }
 
-    /// 同步路径错误 toast
     pub(crate) fn notify_error(&mut self, msg: String, cx: &mut Context<Self>) {
         self.pending_notification = Some(Notification::error(msg).autohide(true));
         cx.notify();
     }
-
-    /// 弹删除确认；确认后对勾选行按 `_id` 受限分批删除。
-    pub(crate) fn open_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.doc_dml_busy {
-            return self.notify_error("上一写操作尚未完成".to_string(), cx);
-        }
-        if self.row_view_building {
-            return self.notify_error("正在筛选 / 排序，请完成后再删除".to_string(), cx);
-        }
-        if self.parse_column_filter(cx).drill_path.is_some() {
-            return self.notify_error("请清空路径钻取后再删除文档".to_string(), cx);
-        }
-        if let Some(error) = &self.row_view_error {
-            return self.notify_error(format!("当前行视图不可用：{error}"), cx);
-        }
-        let Some(documents) = self.docs_arc.as_ref() else {
-            return;
-        };
-        let ids: Vec<Value> = self
-            .selected_rows
-            .iter()
-            .filter_map(|&i| documents.get(i))
-            .filter_map(|d| d.get("_id").cloned())
-            .collect();
-        if ids.is_empty() {
-            return self.notify_error("勾选的文档缺少 _id，无法删除".to_string(), cx);
-        }
-        let ids = Arc::new(ids);
-        let n = ids.len();
-        let Some((visible, rows_filtered)) = self.display_row_indices(cx) else {
-            return self.notify_error("当前行视图尚未准备完成".to_string(), cx);
-        };
-        let hidden = if rows_filtered {
-            let visible: HashSet<usize> = visible.iter().copied().collect();
-            self.selected_rows
-                .iter()
-                .filter(|ri| !visible.contains(ri))
-                .count()
-        } else {
-            0
-        };
-        let hidden_hint = if hidden > 0 {
-            format!("；其中 {hidden} 个当前被筛选隐藏")
-        } else {
-            String::new()
-        };
-        let coll = self.target_collection.clone().unwrap_or_default();
-        let panel = cx.entity().clone();
-        let title = SharedString::from(format!("删除 {n} 个文档？"));
-        window.open_dialog(cx, move |dialog, _, _| {
-            let panel_apply = panel.clone();
-            let ids_apply = ids.clone();
-            let coll_hint = coll.clone();
-            let hidden_hint = hidden_hint.clone();
-            let cancel = ramag_ui::clickable_button("mongo-del-cancel")
-                .ghost()
-                .small()
-                .label("取消")
-                .on_click(move |_: &ClickEvent, window, app| window.close_dialog(app));
-            let apply = ramag_ui::clickable_button("mongo-del-apply")
-                .danger()
-                .small()
-                .label("删除")
-                .on_click(move |_: &ClickEvent, window, app| {
-                    // 仅确认时复制一次；弹框重渲染只克隆 Arc，避免反复深拷贝大 _id 集合。
-                    let ids = ids_apply.as_ref().clone();
-                    let started = panel_apply.update(app, |this, cx| this.do_delete_async(ids, cx));
-                    if started {
-                        window.close_dialog(app);
-                    }
-                });
-            dialog
-                .title(ramag_ui::closable_dialog_title(
-                    "mongo-delete-close",
-                    title.clone(),
-                    |_, _| {},
-                ))
-                .close_button(false)
-                .width(px(460.0))
-                .margin_top(px(160.0))
-                .content(move |content, _, cx| {
-                    let muted = cx.theme().muted_foreground;
-                    content.child(div().text_sm().text_color(muted).child(SharedString::from(
-                        format!("将从「{coll_hint}」按 _id 分批删除{hidden_hint}，操作不可撤销"),
-                    )))
-                })
-                .footer(dialog_footer(cancel, apply))
-        });
-    }
-
-    /// 异步分批执行 delete 命令；完成后 emit Refresh。
-    fn do_delete_async(&mut self, ids: Vec<Value>, cx: &mut Context<Self>) -> bool {
-        if self.doc_dml_busy {
-            self.pending_notification =
-                Some(Notification::warning("提交执行中，请稍候").autohide(true));
-            cx.notify();
-            return false;
-        }
-        let (Some(svc), Some(conf), Some(coll)) = (
-            self.service.clone(),
-            self.config.clone(),
-            self.target_collection.clone(),
-        ) else {
-            return false;
-        };
-        let db = self.database.clone();
-        let batches = match delete_id_batches(ids, MAX_DELETE_BATCH_IDS, MAX_DELETE_BATCH_BYTES) {
-            Ok(batches) => batches,
-            Err(message) => {
-                self.notify_error(message, cx);
-                return false;
-            }
-        };
-        self.doc_dml_busy = true;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let mut deleted = 0u64;
-            let mut failed: Option<ramag_domain::error::DomainError> = None;
-            for batch in batches {
-                let command = serde_json::json!({
-                    "delete": &coll,
-                    "deletes": [{"q": {"_id": {"$in": batch}}, "limit": 0}],
-                    "ordered": true,
-                });
-                match svc.run_command(&conf, &db, command).await {
-                    Ok(reply) => match mongo_response_u64(reply.get("n")) {
-                        Some(count) => deleted = deleted.saturating_add(count),
-                        None => {
-                            failed = Some(ramag_domain::error::DomainError::QueryFailed(
-                                "MongoDB delete 响应缺少有效的 n 字段".into(),
-                            ));
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        failed = Some(e);
-                        break;
-                    }
-                }
-            }
-            let _ = this.update(cx, |this, cx| {
-                this.doc_dml_busy = false;
-                if !this.dml_context_matches(&conf, &db, &coll) {
-                    this.pending_notification = Some(match failed {
-                        Some(error) => Notification::error(error.write_hint(&format!(
-                            "原上下文 {db}.{coll} 删除失败（已删 {deleted} 个）"
-                        )))
-                        .autohide(true),
-                        None => Notification::success(format!(
-                            "已在原上下文 {db}.{coll} 删除 {deleted} 个文档；当前视图未自动刷新"
-                        ))
-                        .autohide(true),
-                    });
-                    cx.notify();
-                    return;
-                }
-                match failed {
-                    Some(e) => {
-                        this.pending_notification = Some(
-                            Notification::error(
-                                e.write_hint(&format!("删除失败（已删 {deleted} 个）")),
-                            )
-                            .autohide(true),
-                        )
-                    }
-                    None => {
-                        this.pending_notification = Some(
-                            Notification::success(format!("已删除 {deleted} 个文档"))
-                                .autohide(true),
-                        );
-                        cx.emit(ResultEvent::Refresh);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        true
-    }
-}
-
-fn delete_id_batches(
-    ids: Vec<Value>,
-    max_ids: usize,
-    max_bytes: usize,
-) -> Result<Vec<Vec<Value>>, String> {
-    debug_assert!(max_ids > 0);
-    debug_assert!(max_bytes > 0);
-    let mut batches = Vec::new();
-    let mut current = Vec::with_capacity(ids.len().min(max_ids));
-    let mut current_bytes = 0usize;
-
-    for id in ids {
-        let id_bytes = estimated_json_value_bytes(&id);
-        if id_bytes > max_bytes {
-            return Err(format!(
-                "MongoDB _id 估算大小超过单批 {} MiB 上限，无法安全删除",
-                max_bytes / 1024 / 1024
-            ));
-        }
-        let exceeds_count = current.len() >= max_ids;
-        let exceeds_bytes = current_bytes.saturating_add(id_bytes) > max_bytes;
-        if !current.is_empty() && (exceeds_count || exceeds_bytes) {
-            batches.push(std::mem::take(&mut current));
-            current = Vec::with_capacity(max_ids);
-            current_bytes = 0;
-        }
-        current_bytes = current_bytes.saturating_add(id_bytes);
-        current.push(id);
-    }
-    if !current.is_empty() {
-        batches.push(current);
-    }
-    Ok(batches)
-}
-
-fn mongo_response_u64(value: Option<&Value>) -> Option<u64> {
-    let value = value?;
-    value.as_u64().or_else(|| {
-        value
-            .get("$numberLong")
-            .and_then(Value::as_str)
-            .and_then(|number| number.parse().ok())
-    })
 }
 
 fn collect_field_inputs(
@@ -563,7 +349,6 @@ pub(super) fn close_dialog_if_dml_idle(
     window.close_dialog(app);
 }
 
-/// 弹窗底部按钮条：右对齐「取消 + 主操作」，两个 dialog 共用同款布局
 fn dialog_footer(cancel: Button, apply: Button) -> impl IntoElement {
     h_flex()
         .w_full()

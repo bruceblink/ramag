@@ -185,6 +185,19 @@ impl RedisService {
         )
     }
 
+    pub async fn key_types(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+    ) -> Result<Vec<RedisType>> {
+        retry_idempotent_read!(
+            config.id,
+            self.driver.evict_pool(&config.id),
+            self.driver.key_types(config, db, keys).await
+        )
+    }
+
     pub async fn key_ttl(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<i64> {
         retry_idempotent_read!(
             config.id,

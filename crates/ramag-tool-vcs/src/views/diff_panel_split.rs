@@ -477,6 +477,7 @@ fn build_content_list(
                                 fg,
                                 mono.clone(),
                                 content_w,
+                                cx,
                             )
                         }
                         SplitKey::Spacer {

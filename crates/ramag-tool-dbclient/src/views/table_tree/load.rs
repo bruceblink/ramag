@@ -1,7 +1,7 @@
 use super::*;
 
 impl TableTreePanel {
-    /// 搜索按需补拉；库过多时由用户显式触发，避免请求雪崩。
+    /// 小规模库自动补齐搜索结果。
     pub(super) fn ensure_search_coverage(&mut self, cx: &mut Context<Self>) {
         const AUTO_LOAD_MAX_SCHEMAS: usize = 50;
         if self.search.read(cx).value().trim().is_empty() {
@@ -60,7 +60,7 @@ impl TableTreePanel {
         }
     }
 
-    /// 顺序补拉限制并发；取消后丢弃过期结果。
+    /// 依次加载所有库的表。
     pub(super) fn load_all_tables_for_search(&mut self, cx: &mut Context<Self>) {
         if self.full_search.is_some() || self.search.read(cx).value().trim().is_empty() {
             return;
@@ -86,7 +86,7 @@ impl TableTreePanel {
         if self.expanded.len().saturating_add(new_entries) > MAX_LOADED_SCHEMA_TABLES {
             self.pending_notification = Some(
                 gpui_component::notification::Notification::warning(format!(
-                    "全库搜索最多加载 {MAX_LOADED_SCHEMA_TABLES} 个 schema；请先选择具体 schema，或缩小数据库范围"
+                    "全库搜索最多加载 {MAX_LOADED_SCHEMA_TABLES} 个 schema，请选择具体 schema 后重试"
                 ))
                 .autohide(true),
             );
@@ -119,6 +119,17 @@ impl TableTreePanel {
                     break;
                 }
                 let result = service.list_tables(&conn, &schema).await;
+                if let Err(error) = &result {
+                    error!(
+                        operation = "sql_metadata_search_tables",
+                        connection_id = %conn.id,
+                        driver = ?conn.driver,
+                        schema = %schema,
+                        connection = %conn.name,
+                        error = %error,
+                        "load full-search tables failed"
+                    );
+                }
                 let should_continue = this
                     .update(cx, |this, cx| {
                         let is_current = this.connection.as_ref().map(|current| &current.id)
@@ -156,14 +167,6 @@ impl TableTreePanel {
                                 this.schema_cache
                                     .write()
                                     .cancel_table_refresh(&schema, cache_generation);
-                                error!(
-                                    operation = "sql_metadata_search_tables",
-                                    connection_id = %conn.id,
-                                    driver = ?conn.driver,
-                                    schema = %schema,
-                                    error = %err,
-                                    "load full-search tables failed"
-                                );
                                 entry.error = Some(err.to_string());
                                 if let Some(progress) = this.full_search.as_mut() {
                                     progress.failed += 1;
@@ -245,6 +248,17 @@ impl TableTreePanel {
             .begin_table_refresh(&schema_for_async);
         cx.spawn(async move |this, cx| {
             let result = svc.list_tables(&conn, &schema_for_async).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "sql_metadata_tables",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    schema = %schema_for_async,
+                    connection = %conn.name,
+                    error = %error,
+                    "load tables failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id)
@@ -283,14 +297,6 @@ impl TableTreePanel {
                         this.schema_cache
                             .write()
                             .cancel_table_refresh(&schema_for_async, cache_generation);
-                        error!(
-                            operation = "sql_metadata_tables",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            schema = %schema_for_async,
-                            error = %e,
-                            "load tables failed"
-                        );
                         let Some(entry) = this.expanded.get_mut(&schema_for_async) else {
                             return;
                         };
@@ -381,11 +387,47 @@ impl TableTreePanel {
         let table_async = table.clone();
         let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
-            // 索引或外键失败不阻塞列结构。
+            // 索引或外键失败不影响列结构。
             let cols_fut = svc.list_columns(&conn, &schema_async, &table_async);
             let idx_fut = svc.list_indexes(&conn, &schema_async, &table_async);
             let fk_fut = svc.list_foreign_keys(&conn, &schema_async, &table_async);
             let (cols_res, idx_res, fk_res) = futures::join!(cols_fut, idx_fut, fk_fut);
+            if let Err(error) = &cols_res {
+                error!(
+                    operation = "sql_metadata_columns",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    schema = %schema_async,
+                    table = %table_async,
+                    connection = %conn.name,
+                    error = %error,
+                    "load columns failed"
+                );
+            }
+            if let Err(error) = &idx_res {
+                tracing::warn!(
+                    operation = "sql_metadata_indexes",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    schema = %schema_async,
+                    table = %table_async,
+                    connection = %conn.name,
+                    error = %error,
+                    "load indexes failed"
+                );
+            }
+            if let Err(error) = &fk_res {
+                tracing::warn!(
+                    operation = "sql_metadata_foreign_keys",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    schema = %schema_async,
+                    table = %table_async,
+                    connection = %conn.name,
+                    error = %error,
+                    "load foreign keys failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id)
@@ -409,45 +451,16 @@ impl TableTreePanel {
                         entry.columns = cols;
                     }
                     Err(e) => {
-                        error!(
-                            operation = "sql_metadata_columns",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            schema = %schema_async,
-                            table = %table_async,
-                            error = %e,
-                            "load columns failed"
-                        );
                         entry.error = Some(e.to_string());
                     }
                 }
                 match idx_res {
                     Ok(ix) => entry.indexes = ix,
-                    Err(e) => {
-                        tracing::warn!(
-                            operation = "sql_metadata_indexes",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            schema = %schema_async,
-                            table = %table_async,
-                            error = %e,
-                            "load indexes failed"
-                        );
-                    }
+                    Err(_) => {}
                 }
                 match fk_res {
                     Ok(fk) => entry.foreign_keys = fk,
-                    Err(e) => {
-                        tracing::warn!(
-                            operation = "sql_metadata_foreign_keys",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            schema = %schema_async,
-                            table = %table_async,
-                            error = %e,
-                            "load foreign keys failed"
-                        );
-                    }
+                    Err(_) => {}
                 }
                 this.invalidate_tree_rows();
                 cx.notify();

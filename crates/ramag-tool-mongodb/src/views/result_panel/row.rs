@@ -7,7 +7,7 @@ use gpui::{
 use gpui_component::h_flex;
 
 use super::ResultPanel;
-use super::cell::Cell;
+use super::cell::{Cell, clipboard_text_for_value, value_at_path};
 use super::flatten::Column;
 use super::table::{CELL_PREVIEW_MAX, CELL_WIDTH, ROW_HEIGHT, sanitize_inline, truncate};
 
@@ -84,13 +84,15 @@ pub(super) fn render_row(
         // 钻取只读视图：预取该单元格完整内容供双击查看（嵌套取原始 JSON，标量取文本）
         let drill_click_text: Option<String> = drill_doc.map(|doc| {
             if is_nested {
-                doc.get(column.path.as_str())
+                value_at_path(doc, column.path.as_str())
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| cell.text.clone())
             } else {
                 cell.text.clone()
             }
         });
+        let fallback_for_copy = cell.text.clone();
+        let copy_path = column.path.clone();
         row = row.child(
             div()
                 .id(SharedString::from(format!(
@@ -105,6 +107,27 @@ pub(super) fn render_row(
                 .cursor_pointer()
                 .on_click({
                     cx.listener(move |panel, e: &gpui::ClickEvent, window, cx| {
+                        if ramag_ui::is_primary_modifier_double_click(e) {
+                            let text = if let Some(text) = drill_click_text.clone() {
+                                if is_nested {
+                                    serde_json::from_str::<serde_json::Value>(&text)
+                                        .map(|value| clipboard_text_for_value(&value))
+                                        .unwrap_or(text)
+                                } else {
+                                    text
+                                }
+                            } else {
+                                panel
+                                    .docs_arc
+                                    .as_ref()
+                                    .and_then(|documents| documents.get(source_row_idx))
+                                    .and_then(|document| value_at_path(document, &copy_path))
+                                    .map(clipboard_text_for_value)
+                                    .unwrap_or_else(|| fallback_for_copy.clone())
+                            };
+                            ramag_ui::copy_text_with_notification(text, window, cx);
+                            return;
+                        }
                         if e.click_count() < 2 {
                             return;
                         }

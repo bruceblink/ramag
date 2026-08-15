@@ -5,8 +5,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled,
-    UniformListScrollHandle, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement,
+    SharedString, Styled, UniformListScrollHandle, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex};
 use ramag_domain::entities::{MAX_REDIS_COMMAND_ARG_BYTES, RedisValue, StreamEntry};
@@ -99,10 +99,12 @@ fn stream_row(
             let item = entries.get(*entry)?;
             let id_for_del =
                 (item.id.len() <= MAX_REDIS_COMMAND_ARG_BYTES).then(|| item.id.clone());
+            let id_for_copy = item.id.clone();
             let key_for_del = key.to_string();
             let del_id = SharedString::from(format!("stream-del-{entry}"));
             Some(
                 h_flex()
+                    .id(SharedString::from(format!("stream-header-{entry}")))
                     .h(px(ROW_H))
                     .flex_none()
                     .w_full()
@@ -111,6 +113,11 @@ fn stream_row(
                     .px(px(8.0))
                     .border_t_1()
                     .border_color(border)
+                    .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                        if ramag_ui::is_primary_modifier_double_click(event) {
+                            ramag_ui::copy_text_with_notification(id_for_copy.clone(), window, cx);
+                        }
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -145,8 +152,11 @@ fn stream_row(
         }
         StreamRow::Field { entry, field } => {
             let (key, value) = entries.get(*entry)?.fields.get(*field)?;
+            let field_for_copy = key.to_string();
+            let value_for_copy = value.to_string();
             Some(
                 h_flex()
+                    .id(SharedString::from(format!("stream-field-{entry}-{field}")))
                     .h(px(ROW_H))
                     .flex_none()
                     .w_full()
@@ -156,16 +166,32 @@ fn stream_row(
                     .pr(px(8.0))
                     .child(
                         div()
+                            .id(SharedString::from(format!(
+                                "stream-field-name-{entry}-{field}"
+                            )))
                             .w(px(140.0))
                             .text_xs()
                             .text_color(muted_fg)
                             .flex_none()
                             .overflow_hidden()
                             .text_ellipsis()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text_with_notification(
+                                        field_for_copy.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }))
                             .child(inline_text_preview(key, 128)),
                     )
                     .child(
                         div()
+                            .id(SharedString::from(format!(
+                                "stream-field-value-{entry}-{field}"
+                            )))
                             .flex_1()
                             .min_w_0()
                             .text_xs()
@@ -173,6 +199,16 @@ fn stream_row(
                             .font_family("monospace")
                             .overflow_hidden()
                             .text_ellipsis()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text_with_notification(
+                                        value_for_copy.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }))
                             .child(inline_text_preview(value, 256)),
                     )
                     .into_any_element(),

@@ -5,15 +5,15 @@
 <h1 align="center">Ramag</h1>
 
 <p align="center">
-  <strong>数据库、Git、SSH 与剪贴板，一个真正本地优先的桌面工作台。</strong>
+  <strong>数据库、Git、SSH、云存储与剪贴板，一个真正本地优先的桌面工作台。</strong>
 </p>
 
 <p align="center">
-  MySQL · PostgreSQL · Redis · MongoDB · Git（试验性） · SSH / SFTP · Clipboard
+  MySQL · PostgreSQL · Redis · MongoDB · Git（试验性） · SSH / SFTP · COS / OSS · Clipboard
 </p>
 
 <p align="center">
-  macOS & Windows · Rust + GPUI · Local-first
+  Linux · macOS · Windows · Rust + GPUI · Local-first
 </p>
 
 <p align="center">
@@ -41,6 +41,7 @@
 | Apple Silicon Mac | `Ramag-*-macos-arm64.dmg` | macOS 12 |
 | Intel Mac | `Ramag-*-macos-x86_64.dmg` | macOS 12 |
 | Windows x64 | `Ramag-*-windows-x64-setup.exe` | Windows 10 |
+| Linux x86_64 | `Ramag-*-linux-amd64.deb` / `Ramag-*-linux-x86_64.AppImage` | Ubuntu 24.04 或兼容发行版 |
 
 > 项目仍处于 `0.0.x` 早期阶段。当前 Windows 安装包未做 Authenticode 签名，macOS 安装包未做 Developer ID 签名与 Apple 公证，系统可能显示未知发布者或安全警告。请只从本仓库 Releases 下载，并使用同一页面的 `SHA256SUMS.txt` 校验文件；完整状态见[桌面端构建与发布](docs/desktop-release.md#签名与公证状态)。
 
@@ -70,18 +71,18 @@ Windows 源码构建需要 Visual Studio C++ Build Tools 与 Windows 10/11 SDK�
 cargo run -p ramag-bin
 ```
 
-首次构建需要下载 GPUI 等依赖，耗时会明显长于后续增量构建。当前不支持 Linux。
+Linux 源码构建和打包所需系统依赖见[桌面端构建与发布](docs/desktop-release.md#本地-linux-打包)。首次构建需要下载 GPUI 等依赖，耗时会明显长于后续增量构建。
 
-## 不是四个工具的简单拼接
+## 不是多个工具的简单拼接
 
-Ramag 把开发中频繁切换的四类上下文收进一个原生窗口：查数据库、处理 Git 工作区、连接远程主机、找回刚才复制过的内容。它不依赖浏览器壳，不要求把连接配置或历史记录交给云端服务，也不会为了展示一张大表、一个大仓库、一个远程目录或一段很长的剪贴历史就无边界地吃掉内存。
+Ramag 把开发中频繁切换的上下文收进一个原生窗口：查数据库、处理 Git 工作区、连接远程主机、管理云端对象、找回刚才复制过的内容。它不依赖浏览器壳，不要求把连接配置或历史记录交给 Ramag 服务，也不会为了展示一张大表、一个大仓库、一个远程目录或一段很长的剪贴历史就无边界地吃掉内存。
 
 | 一个工作台 | 本地优先 | 面向真实数据量 | 原生交互 |
 |---|---|---|---|
-| 数据库、Git、SSH、剪贴板共享统一窗口与快捷键体系 | 数据库和 SSH 密码、剪贴历史加密后落本地，主密钥进入系统凭据库 | 百万级历史、十万文件与十万级数据库种子均有压力验证 | Rust + GPUI，耗时任务与 UI 线程隔离 |
+| 数据库、Git、SSH、云存储和剪贴板共享统一窗口与交互体系 | 数据库、SSH 和云存储凭据、剪贴历史加密后落本地，主密钥进入系统凭据库 | 百万级历史、十万文件与十万级数据库种子均有压力验证 | Rust + GPUI，耗时任务与 UI 线程隔离 |
 
 ```text
-连接数据库处理数据  ↔  在 Git 中检查改动  ↔  通过 SSH 操作远程主机  ↔  找回剪贴上下文
+连接数据库处理数据  ↔  在 Git 中检查改动  ↔  通过 SSH 操作远程主机  ↔  管理云端对象  ↔  找回剪贴上下文
 ```
 
 ## 数据库工作台
@@ -95,6 +96,7 @@ Ramag 把开发中频繁切换的四类上下文收进一个原生窗口：查�
 - Schema、表、视图、列、索引与 DDL 浏览。
 - SQL 补全、高亮、多语句执行、光标语句执行、格式化与 EXPLAIN。
 - 查询取消、结果分页、排序、筛选和单元格编辑。
+- MySQL 与 PostgreSQL 图形化表设计器：创建或修改表名、字段结构，预览 DDL 后再执行。
 - 大整数、高精度数值、JSON/JSONB、二进制、时间以及 PostgreSQL 原生类型保真展示。
 - 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
 
@@ -108,6 +110,7 @@ Ramag 把开发中频繁切换的四类上下文收进一个原生窗口：查�
 - 以 `:` 自动折叠 Key 命名空间，大型 Keyspace 使用游标 SCAN 和虚拟列表。
 - String、Hash、List、Set、ZSet、Stream 六种类型统一查看与编辑。
 - TTL 管理、大 String 有界加载、大集合自动分批继续加载。
+- Key 树批量识别类型并展示紧凑标签；同一路径既是命名空间又是实际 Key 时，可在设置中开启“同名 Key 下沉展示”。
 - 内置命令控制台；危险、阻塞和生产写命令在执行前识别。
 - 整库 JSONL 迁移保留类型、TTL、顺序、分数、Stream ID 与二进制内容。
 
@@ -127,6 +130,21 @@ Ramag 把开发中频繁切换的四类上下文收进一个原生窗口：查�
 - 结果搜索支持字符串 ID 与整数 ID 双向转换，内置 Base10、Base16、Base36、Base58 Bitcoin、Base58 Flickr 和自定义字符表，也可调用经过路径、超时与输出上限校验的外部转换器。
 - SQL、Redis、MongoDB 使用独立执行 runtime，某个慢查询不会直接挤占其他数据库的任务线程。
 
+### 统一操作与快捷键
+
+- 新增快捷键中心，可查看、修改和重置应用快捷键；各工作台也提供统一的连接或仓库快速切换入口。
+- 在支持的数据区域，macOS 使用 `⌘ + 双击`、Windows/Linux 使用 `Ctrl + 双击` 可复制当前已加载的完整值；普通双击仍用于打开、编辑或下钻。
+- SQL、MongoDB、Redis、Git Diff/项目文件、SSH/SFTP、对象存储和剪贴板的复制行为与成功提示已统一。
+- 所有可滚动区域保留鼠标滚轮和触控板滚动，但不显示可见滚动条，避免挤占内容空间。
+
+### 四引擎数据同步
+
+- 支持 MySQL、PostgreSQL、Redis 与 MongoDB 之间同类型连接的数据同步。
+- 从真实元数据选择数据库、Schema、表或集合，执行前明确展示源、目标和覆盖范围。
+- 同步前检查目标对象与依赖关系，并对写入已有库或 Schema 的操作再次确认。
+- PostgreSQL 同步保留枚举与自定义类型依赖；Redis 保留类型与 TTL；MongoDB 保留 BSON 类型语义。
+- 任务完成后汇总成功、跳过与失败对象，错误信息保留到具体对象和阶段。
+
 ## Git 工作台（试验性）
 
 Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，而不是把命令行按钮化。
@@ -137,7 +155,7 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 打开仓库 → 检查工作区 → 对照 Diff → Stage → Commit → Push / Pull
 ```
 
-- Changes、Project Files、Stash、历史日志、Commit 详情、Blame 与 Reflog。
+- Changes、Project Files、Stash、历史日志、Commit 详情、Blame 与 Reflog；文件树统一文件夹展开/收起和文件图标。
 - Unified / Split Diff、整文件上下文、35 种语法高亮和超大 Diff 虚拟化。
 - Stage / Unstage、Amend、Branch、Tag、Stash、Merge、Rebase、Cherry-pick。
 - 冲突三栏处理，可继续或中止 Merge / Rebase / Cherry-pick 流程。
@@ -173,6 +191,17 @@ SSH 管理把连接配置、内嵌终端和远程文件浏览放在同一个工�
   <img src="docs/screenshots/v0.0.2/ssh-workspace-light.png" alt="Ramag v0.0.2 SSH 内嵌终端与 SFTP 文件工作区">
 </picture>
 
+## 云存储工作台
+
+云存储工作台面向用户明确配置的 Bucket，不要求账号具备列出全部 Bucket 的权限。
+
+- 支持腾讯云 COS 与阿里云 OSS，凭据和工作区状态使用本机主密钥加密保存。
+- 每个账号至少配置一个 Bucket、Region 和可选 Root Prefix；Endpoint 由服务商与 Region 自动生成。
+- 支持目录面包屑与直接路径输入、名称模糊筛选、目录优先排序和路径收藏。
+- 支持对象元数据、常见文本与 JSON 格式化查看，SFTP 与对象存储预览上限均为 50 MiB。
+- 上传、下载、覆盖确认、取消和进度统一进入传输面板；重复任务只保留一条记录。
+- 生产模式默认关闭；开启后隐藏上传、删除等写操作，只保留浏览、查看与下载。
+
 ## 剪贴板工作台
 
 ```text
@@ -201,7 +230,7 @@ SSH 管理把连接配置、内嵌终端和远程文件浏览放在同一个工�
 | 执行光标所在 SQL | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
 | 新建查询标签 | `⌘T` | `Ctrl+T` |
 | 格式化 SQL / MongoDB JSON | `⌘⇧F` | `Ctrl+Shift+F` |
-| 在数据库、Git、SSH、剪贴板间切换 | `⌘1` / `⌘2` / `⌘3` / `⌘4` | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` |
+| 在数据库、Git、SSH、云存储间切换 | `⌘1` / `⌘2` / `⌘3` / `⌘4` | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` / `Ctrl+4` |
 
 ## 经得起数据量放大的性能设计
 
@@ -239,13 +268,13 @@ SSH 管理把连接配置、内嵌终端和远程文件浏览放在同一个工�
 
 ## 项目结构
 
-Ramag 是一个 Rust 2024 Cargo workspace，采用务实的 Clean Architecture：业务规则在内层，数据库、Git、SSH、剪贴板与 GPUI 都是外层实现，依赖只能向内。
+Ramag 是一个 Rust 2024 Cargo workspace，采用务实的 Clean Architecture：业务规则在内层，数据库、Git、SSH、云存储、剪贴板与 GPUI 都是外层实现，依赖只能向内。
 
 ```text
 ramag-bin              应用入口、依赖注入、快捷键与平台生命周期
-├── ramag-tool-*       数据库、Redis、MongoDB、Git、SSH、剪贴板界面
+├── ramag-tool-*       数据库、Redis、MongoDB、Git、SSH、云存储、剪贴板界面
 ├── ramag-ui           GPUI 主壳、主题和共享组件
-├── ramag-infra-*      数据库、Git、SSH/SFTP、剪贴板、隧道和本地存储适配器
+├── ramag-infra-*      数据库、Git、SSH/SFTP、云存储、更新、剪贴板、隧道和本地存储适配器
 ├── ramag-terminal     GPUI 内嵌终端内核与视图
 ├── ramag-app          用例编排与工具注册
 └── ramag-domain       实体和抽象接口，不依赖 GUI 或具体基础设施
@@ -280,15 +309,29 @@ make test
 
 ## 平台与文档
 
-Ramag 支持 macOS 12+（Apple Silicon / Intel）和 Windows 10/11 x64。Windows on ARM 仅计划通过系统 x64 模拟运行，尚未列为已完成人工验收的平台。
+Ramag 支持 Linux x86_64、macOS 12+（Apple Silicon / Intel）和 Windows 10/11 x64。Linux 提供 Debian 安装包与 AppImage，并支持 X11 与 Wayland；Windows on ARM 仅计划通过系统 x64 模拟运行，尚未列为已完成人工验收的平台。
 
 - [性能报告：VCS、数据库与剪贴板](docs/performance.md)
 - [架构说明](docs/architecture.md)
 - [桌面端构建与发布](docs/desktop-release.md)
 - [版本变更记录](CHANGELOG.md)
-- [SSH + SFTP 生产低影响只读诊断模式（规划）](docs/ssh-sftp-design.md)
 
 发现问题时，请在 [GitHub Issues](https://github.com/tools-rs/ramag/issues) 中附上操作系统、Ramag 版本、复现步骤和必要日志；提交前请移除连接地址、用户名、密码和业务数据。
+
+## 交流群
+
+欢迎加入 Ramag 官方交流群，交流使用体验、功能建议和问题反馈。群二维码有效期有限，过期后可扫码添加个人微信，再获取最新群二维码。
+
+<table>
+  <tr>
+    <td align="center">官方交流群（二维码有效期有限）</td>
+    <td align="center">个人中转二维码（群二维码过期后使用）</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/community/group-qr.png" width="320" alt="Ramag 官方交流群二维码"></td>
+    <td align="center"><img src="docs/community/personal-qr.png" width="320" alt="Ramag 个人中转二维码"></td>
+  </tr>
+</table>
 
 ## License
 

@@ -21,7 +21,8 @@ use tracing::{debug, info, warn};
 
 use ramag_domain::entities::{
     ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, MAX_CLIPBOARD_SEARCH_BYTES,
-    QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId, SshProfile, SshProfileId,
+    ObjectStorageAccount, ObjectStorageAccountId, QueryHistoryPage, QueryRecord, QueryRecordId,
+    RepoConfig, RepoId, SshProfile, SshProfileId,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::Storage;
@@ -74,6 +75,7 @@ impl RedbStorage {
         repos::clip_repo::migrate_indexes(db.clone(), cipher.clone())?;
         let _ = repos::connection_repo::list(db.clone(), cipher.clone())?;
         let _ = repos::ssh_profile_repo::list(db.clone(), cipher.clone())?;
+        let _ = repos::object_storage_account_repo::list(db.clone(), cipher.clone())?;
         repos::clip_repo::validate_key(db.clone(), cipher.clone())?;
         repos::clip_repo::initialize_search_index(db.clone(), cipher.clone())?;
 
@@ -138,7 +140,7 @@ fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 连接密码和剪贴历史使用主密钥；只有这两张表存在记录时才禁止重建密钥。
+/// 任一加密业务表存在记录时都必须复用原主密钥，不能静默创建新密钥。
 fn database_has_encrypted_records(db: &Database) -> Result<bool> {
     let read_txn = db
         .begin_read()
@@ -147,6 +149,7 @@ fn database_has_encrypted_records(db: &Database) -> Result<bool> {
         repos::connection_repo::CONNECTIONS_TABLE,
         repos::clip_repo::CLIPS_TABLE,
         repos::ssh_profile_repo::SSH_PROFILES_TABLE,
+        repos::object_storage_account_repo::OBJECT_STORAGE_ACCOUNTS_TABLE,
     ] {
         match read_txn.open_table(definition) {
             Ok(table)
@@ -233,6 +236,43 @@ impl Storage for RedbStorage {
         let db = self.db.clone();
         let id = id.clone();
         run_blocking(move || repos::ssh_profile_repo::delete(db, id)).await
+    }
+
+    async fn list_object_storage_accounts(&self) -> Result<Vec<ObjectStorageAccount>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        run_blocking(move || repos::object_storage_account_repo::list(db, cipher)).await
+    }
+
+    async fn get_object_storage_account(
+        &self,
+        id: &ObjectStorageAccountId,
+    ) -> Result<Option<ObjectStorageAccount>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let id = id.to_string();
+        run_blocking(move || repos::object_storage_account_repo::get(db, cipher, id)).await
+    }
+
+    async fn save_object_storage_account(&self, account: &ObjectStorageAccount) -> Result<()> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let account = account.clone();
+        run_blocking(move || repos::object_storage_account_repo::save(db, cipher, account)).await
+    }
+
+    async fn delete_object_storage_account(
+        &self,
+        id: &ObjectStorageAccountId,
+        workspace_preference_key: &str,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        let id = id.clone();
+        let preference_key = workspace_preference_key.to_string();
+        run_blocking(move || {
+            repos::object_storage_account_repo::delete_with_preference(db, id, preference_key)
+        })
+        .await
     }
 
     async fn list_repos(&self) -> Result<Vec<RepoConfig>> {

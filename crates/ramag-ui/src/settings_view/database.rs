@@ -34,6 +34,28 @@ pub(super) fn id_converter_kind_label(kind: IdConverterKind) -> &'static str {
 }
 
 impl SettingsView {
+    pub(super) fn toggle_redis_key_sink(&mut self, cx: &mut Context<Self>) {
+        self.redis_sink_same_name_keys = !self.redis_sink_same_name_keys;
+        let settings = crate::RedisTreeSettings {
+            sink_same_name_keys: self.redis_sink_same_name_keys,
+        };
+        match settings.to_json() {
+            Ok(json) => {
+                crate::set_redis_tree_settings(settings, cx);
+                crate::preferences::persist_preference_latest(
+                    crate::REDIS_TREE_SETTINGS_PREF_KEY,
+                    json,
+                    cx,
+                );
+            }
+            Err(error) => {
+                self.redis_sink_same_name_keys = crate::redis_tree_settings(cx).sink_same_name_keys;
+                self.pending_notification = Some(Notification::error(error));
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn on_database_converter_input_event(
         &mut self,
         event: &InputEvent,

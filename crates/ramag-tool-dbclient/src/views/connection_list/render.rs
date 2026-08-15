@@ -75,6 +75,7 @@ impl Render for ConnectionListPanel {
                     .outline()
                     .small()
                     .icon(IconName::Plus)
+                    .tooltip("新建")
                     .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
                         cx.emit(ListEvent::RequestNew);
                     })),
@@ -98,7 +99,7 @@ impl Render for ConnectionListPanel {
                 .child(div().text_sm().text_color(muted_fg).child("加载中…"))
                 .into_any_element()
         } else if total == 0 {
-            // 区分「加载失败」与「真的没有连接」：失败时给错误 + 重试，不误导为空
+            // 加载失败不能显示为空状态。
             if let Some(err) = self.load_error.clone() {
                 v_flex()
                     .size_full()

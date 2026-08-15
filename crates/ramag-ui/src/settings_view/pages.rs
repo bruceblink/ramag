@@ -1,10 +1,8 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
-    hsla, prelude::*, px,
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, hsla, prelude::*, px,
 };
-use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _, h_flex, scroll::ScrollableElement as _, v_flex,
-};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::{SettingsPage, SettingsView};
 
@@ -14,6 +12,9 @@ impl SettingsPage {
             Self::Database => crate::icons::database(),
             Self::VersionControl => crate::icons::git_branch(),
             Self::Ssh => crate::activity_bar::ActivityBar::icon_for_tool("ssh"),
+            Self::ObjectStorage => {
+                crate::activity_bar::ActivityBar::icon_for_tool("object-storage")
+            }
             Self::Update => Icon::new(IconName::Info),
             Self::Clipboard => crate::icons::clipboard(),
         }
@@ -78,13 +79,19 @@ impl SettingsView {
                 cx,
             ),
             SettingsPage::Ssh => self.render_ssh_page(cx),
+            SettingsPage::ObjectStorage => managed_in_module_card(
+                "账号与 Bucket",
+                "云存储账号、访问凭据、生产模式和 Bucket 挂载请在云存储页面中维护。",
+                cx,
+            ),
             SettingsPage::Update => self.render_update_page(cx),
             SettingsPage::Clipboard => self.render_clipboard_page(cx),
         };
 
         v_flex()
             .size_full()
-            .overflow_y_scrollbar()
+            .id("settings-page-scroll")
+            .overflow_y_scroll()
             .child(
                 v_flex()
                     .w_full()

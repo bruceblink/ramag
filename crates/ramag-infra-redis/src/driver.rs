@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use futures::stream::{self, StreamExt as _};
 use ramag_domain::entities::{
     ConnectionConfig, DriverKind, INTERACTIVE_RESULT_WARNING_BYTES, MAX_REDIS_COLLECTION_BYTES,
-    MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_VALUE_PAGE_BATCH, RedisType, RedisValue, RedisValueLoad,
-    RedisValuePage, ScanResult, StreamEntry, ValuePageCursor, validate_redis_collection_limit,
-    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
-    validate_redis_scan_count,
+    MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_KEY_TYPE_BATCH, MAX_REDIS_VALUE_PAGE_BATCH, RedisType,
+    RedisValue, RedisValueLoad, RedisValuePage, ScanResult, StreamEntry, ValuePageCursor,
+    validate_redis_collection_limit, validate_redis_command, validate_redis_key,
+    validate_redis_match_pattern, validate_redis_scan_count,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::KvDriver;
@@ -168,6 +168,55 @@ impl KvDriver for RedisDriver {
                 .await
                 .map_err(map_redis_error)?;
             Ok(RedisType::parse(&s))
+        })
+        .await
+    }
+
+    async fn key_types(
+        &self,
+        config: &ConnectionConfig,
+        db: u8,
+        keys: &[String],
+    ) -> Result<Vec<RedisType>> {
+        const PIPELINE_CHUNK: usize = 512;
+
+        ensure_redis_config(config)?;
+        if keys.len() > MAX_REDIS_KEY_TYPE_BATCH {
+            return Err(DomainError::InvalidConfig(format!(
+                "Redis 类型批量读取超过 {MAX_REDIS_KEY_TYPE_BATCH} 个上限"
+            )));
+        }
+        for key in keys {
+            validate_redis_key(key)?;
+        }
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let config = config.clone();
+        let keys = keys.to_vec();
+        let pools = self.pools.clone_handle();
+        run_in_tokio(async move {
+            let mut mgr = pools.get_or_create(&config, db).await?;
+            let mut types = Vec::with_capacity(keys.len());
+            for chunk in keys.chunks(PIPELINE_CHUNK) {
+                let mut pipeline = redis::pipe();
+                for key in chunk {
+                    pipeline.cmd("TYPE").arg(key);
+                }
+                let values: Vec<String> = pipeline
+                    .query_async(&mut mgr)
+                    .await
+                    .map_err(map_redis_error)?;
+                if values.len() != chunk.len() {
+                    return Err(DomainError::Other(format!(
+                        "Redis TYPE Pipeline 响应数量异常：期望 {}，实际 {}",
+                        chunk.len(),
+                        values.len()
+                    )));
+                }
+                types.extend(values.iter().map(|value| RedisType::parse(value)));
+            }
+            Ok(types)
         })
         .await
     }

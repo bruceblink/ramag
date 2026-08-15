@@ -5,7 +5,82 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, DomainError>;
 
 /// 只读保护的统一用户提示；具体拦截原因仅写入日志。
-pub const READ_ONLY_MESSAGE: &str = "只读模式下无法执行写操作";
+pub const READ_ONLY_MESSAGE: &str = "生产模式下无法执行写操作";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectStorageErrorCategory {
+    InvalidConfig,
+    InvalidCredentials,
+    PermissionDenied,
+    ClockSkew,
+    Network,
+    Tls,
+    Timeout,
+    RateLimited,
+    NotFound,
+    Conflict,
+    Archived,
+    Cancelled,
+    Provider,
+    CorruptResponse,
+}
+
+/// 对象存储错误只保留可安全展示和记录的结构化字段。
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[error("{safe_message}")]
+pub struct ObjectStorageError {
+    pub category: ObjectStorageErrorCategory,
+    pub safe_message: String,
+    pub provider_code: Option<String>,
+    pub request_id: Option<String>,
+    pub retryable: bool,
+    pub operation: &'static str,
+}
+
+impl ObjectStorageError {
+    pub fn new(
+        category: ObjectStorageErrorCategory,
+        operation: &'static str,
+        safe_message: impl Into<String>,
+    ) -> Self {
+        Self {
+            category,
+            safe_message: safe_message.into(),
+            provider_code: None,
+            request_id: None,
+            retryable: false,
+            operation,
+        }
+    }
+
+    pub fn with_provider_details(
+        mut self,
+        code: Option<String>,
+        request_id: Option<String>,
+    ) -> Self {
+        self.provider_code = code;
+        self.request_id = request_id;
+        self
+    }
+
+    pub fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
+    }
+
+    pub fn user_message(&self) -> String {
+        let mut message = self.safe_message.clone();
+        if let Some(code) = &self.provider_code {
+            message.push_str(&format!("（服务商错误码：{code}）"));
+        }
+        if let Some(request_id) = &self.request_id {
+            message.push_str(&format!("（RequestId：{request_id}）"));
+        }
+        message
+    }
+}
+
+pub type ObjectStorageResult<T> = std::result::Result<T, ObjectStorageError>;
 
 #[derive(Debug, Error)]
 pub enum DomainError {
@@ -23,6 +98,9 @@ pub enum DomainError {
 
     #[error("未找到: {0}")]
     NotFound(String),
+
+    #[error("对象存储错误: {0}")]
+    ObjectStorage(#[from] ObjectStorageError),
 
     #[error("功能尚未实现: {0}")]
     NotImplemented(String),
@@ -47,6 +125,14 @@ impl DomainError {
             | DomainError::NotImplemented(m)
             | DomainError::Forbidden(m)
             | DomainError::Other(m) => m,
+            DomainError::ObjectStorage(error) => &error.safe_message,
+        }
+    }
+
+    pub fn user_message(&self) -> String {
+        match self {
+            DomainError::ObjectStorage(error) => error.user_message(),
+            other => other.message().to_string(),
         }
     }
 

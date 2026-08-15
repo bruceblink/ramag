@@ -7,22 +7,24 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    h_flex,
+    Icon, IconName, Sizable as _, h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
 use ramag_domain::entities::{RedisType, contains_case_insensitive};
 
+use super::guides::{assign_visible_tree_guides, render_hierarchy_guides, render_namespace_stem};
 use super::tree::{TreeNode, VisibleRow, collect_namespace_paths};
-use super::{INDENT_PX, KeyTreePanel, VisibleRowsCacheEntry, VisibleRowsCacheKey};
+use super::{KeyTreePanel, VisibleRowsCacheEntry, VisibleRowsCacheKey};
 use crate::views::inline_text_preview;
 
 impl KeyTreePanel {
     /// 当前可见行与叶子数；选中态等普通重渲染直接复用，不重复克隆整棵树。
-    pub(super) fn visible_rows(&self) -> (Rc<Vec<VisibleRow>>, usize) {
+    pub(super) fn visible_rows(&self, sink_same_name_keys: bool) -> (Rc<Vec<VisibleRow>>, usize) {
         let key = VisibleRowsCacheKey {
             tree_revision: self.tree_revision,
             expanded_revision: self.expanded_revision,
             query: self.query.clone(),
+            sink_same_name_keys,
         };
         {
             let cache = self.visible_rows_cache.borrow();
@@ -36,6 +38,7 @@ impl KeyTreePanel {
             &self.expanded,
             &self.search_collapsed,
             &self.query,
+            sink_same_name_keys,
         ));
         let leaf_count = rows.iter().filter(|row| row.is_key).count();
         self.visible_rows_cache.replace(Some(VisibleRowsCacheEntry {
@@ -74,7 +77,6 @@ impl KeyTreePanel {
         cx.notify();
     }
 
-    /// `+ use<>` 显式不捕获生命周期，避免返回值锁住 &self 与 cx.listener 借用冲突
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_node_row(
         &self,
@@ -85,7 +87,6 @@ impl KeyTreePanel {
         muted_fg: gpui::Hsla,
         row_hover: gpui::Hsla,
         accent: gpui::Hsla,
-        theme_bg: gpui::Hsla,
         theme_muted: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -98,51 +99,93 @@ impl KeyTreePanel {
         let path_for_click = row.full_path.clone();
         let path_for_load = row.full_path.clone();
 
-        // 折叠/展开图标（命名空间专属）。既是 key 又是命名空间时，展开只由 chevron 负责，
-        // 行点击留给"加载值"（否则该 key 的值永远点不开）
+        // 下沉关闭时同一行可兼任命名空间与真实 Key：箭头展开，行本身加载值。
         let chevron: gpui::AnyElement = if is_namespace {
-            let glyph = if row.is_expanded { "▼" } else { "▶" };
             let path_for_chevron = row.full_path.clone();
+            let path_for_copy = row.full_path.clone();
             div()
                 .id(SharedString::from(format!("redis-tree-chev-{row_index}")))
-                .w(px(12.0))
-                .text_xs()
-                .text_color(muted_fg)
+                .w(px(14.0))
                 .cursor_pointer()
-                .child(glyph)
+                .child(
+                    Icon::new(if row.is_expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .xsmall()
+                    .text_color(muted_fg),
+                )
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if event.modifiers().secondary() {
+                        if ramag_ui::is_primary_modifier_double_click(event) {
+                            ramag_ui::copy_text_with_notification(
+                                path_for_copy.as_ref().clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                        return;
+                    }
                     this.toggle_expanded(path_for_chevron.as_ref().clone(), cx);
                 }))
                 .into_any_element()
         } else {
-            div().w(px(12.0)).into_any_element()
+            div().w(px(14.0)).into_any_element()
         };
 
-        let type_badge: Option<gpui::AnyElement> = row.leaf_type.map(|t| {
+        let badge = row
+            .leaf_type
+            .filter(|kind| *kind != RedisType::None)
+            .map(|kind| (tree_type_label(kind), type_color_solid(kind, theme_muted)));
+        let type_badge: Option<gpui::AnyElement> = badge.map(|(label, badge_color)| {
             let path = path_for_load.clone();
+            let path_for_copy = path_for_load.clone();
             div()
                 .id(SharedString::from(format!("redis-tree-badge-{row_index}")))
-                .text_xs()
-                .px(px(5.0))
-                .py(px(1.0))
-                .rounded(px(3.0))
-                .bg(type_color_solid(t, theme_muted))
-                .text_color(theme_bg)
+                .debug_selector(move || format!("redis-tree-badge-{row_index}"))
+                .text_size(px(9.0))
+                .px(px(3.0))
+                .rounded(px(2.0))
+                .border_1()
+                .border_color(badge_color.opacity(0.45))
+                .bg(badge_color.opacity(0.10))
+                .text_color(badge_color)
                 .cursor_pointer()
-                .child(t.label())
+                .child(label)
                 // badge 单击：始终加载值（不冒泡到行 toggle）
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if event.modifiers().secondary() {
+                        if ramag_ui::is_primary_modifier_double_click(event) {
+                            ramag_ui::copy_text_with_notification(
+                                path_for_copy.as_ref().clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                        return;
+                    }
                     this.select_key(path.as_ref().clone(), cx);
                 }))
                 .into_any_element()
         });
 
-        // 行点击：节点本身是 key 就加载值（既是 key 又是命名空间时，展开交给 chevron）；
-        // 纯命名空间（非 key）才 toggle 展开。修复"user 与 user:1 共存时 user 点不开"
+        // 真实 Key 行加载值；纯命名空间行只负责折叠/展开。
         let load_on_click = is_leaf;
-        let on_row_click = cx.listener(move |this, _: &ClickEvent, _, cx| {
+        let path_for_copy = row.full_path.clone();
+        let on_row_click = cx.listener(move |this, event: &ClickEvent, window, cx| {
+            if event.modifiers().secondary() {
+                if ramag_ui::is_primary_modifier_double_click(event) {
+                    ramag_ui::copy_text_with_notification(
+                        path_for_copy.as_ref().clone(),
+                        window,
+                        cx,
+                    );
+                }
+                return;
+            }
             if load_on_click {
                 this.select_key(path_for_click.as_ref().clone(), cx);
             } else {
@@ -150,31 +193,56 @@ impl KeyTreePanel {
             }
         });
 
-        let label_color = if is_namespace && !is_leaf {
-            muted_fg
+        let node_icon = if is_namespace {
+            if row.is_expanded {
+                IconName::FolderOpen
+            } else {
+                IconName::FolderClosed
+            }
         } else {
-            fg
+            IconName::File
         };
 
         // 显式行高 28px：uniform_list 行级虚拟化要求等高
         let mut row_el = h_flex()
             .id(row_id)
+            .debug_selector(move || format!("redis-tree-row-{row_index}"))
             .w_full()
             .h(px(28.0))
             .flex_none()
             .items_center()
             .gap(px(6.0))
-            .pl(px(8.0 + row.depth as f32 * INDENT_PX))
+            .pl(px(8.0))
             .pr(px(10.0))
+            .relative()
             .cursor_pointer()
+            .when(is_namespace && row.is_expanded, |this| {
+                this.child(render_namespace_stem(
+                    row_index,
+                    row.depth,
+                    muted_fg.opacity(0.55),
+                ))
+            })
+            .child(render_hierarchy_guides(
+                row_index,
+                row.depth,
+                row.has_next_sibling,
+                row.ancestor_guide_mask,
+                muted_fg.opacity(0.55),
+            ))
             .child(chevron)
+            .child(Icon::new(node_icon).xsmall().text_color(if is_namespace {
+                accent
+            } else {
+                muted_fg
+            }))
             .when_some(type_badge, |this, b| this.child(b))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .text_sm()
-                    .text_color(label_color)
+                    .text_color(fg)
                     .overflow_hidden()
                     .text_ellipsis()
                     .child(inline_text_preview(&row.label, 256)),
@@ -214,17 +282,27 @@ fn flatten_visible_rows(
     expanded: &std::collections::HashSet<String>,
     search_collapsed: &std::collections::HashSet<String>,
     query: &str,
+    sink_same_name_keys: bool,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
     if query.is_empty() {
         for node in tree {
-            collect_expanded_rows(node, 0, "", expanded, &mut rows);
+            collect_expanded_rows(node, 0, "", expanded, sink_same_name_keys, &mut rows);
         }
     } else {
         for node in tree {
-            collect_search_rows(node, 0, "", query, search_collapsed, &mut rows);
+            collect_search_rows(
+                node,
+                0,
+                "",
+                query,
+                search_collapsed,
+                sink_same_name_keys,
+                &mut rows,
+            );
         }
     }
+    assign_visible_tree_guides(&mut rows);
     rows
 }
 
@@ -233,17 +311,50 @@ fn collect_expanded_rows(
     depth: usize,
     parent_path: &str,
     expanded: &std::collections::HashSet<String>,
+    sink_same_name_keys: bool,
     rows: &mut Vec<VisibleRow>,
 ) {
     let full_path = joined_path(parent_path, &node.label);
     let is_namespace = node.is_namespace();
     let is_expanded = is_namespace && expanded.contains(&full_path);
-    rows.push(visible_row(node, depth, is_expanded, full_path.clone()));
+    if is_namespace && sink_same_name_keys {
+        rows.push(namespace_row(node, depth, is_expanded, full_path.clone()));
+    } else {
+        rows.push(combined_row(node, depth, is_expanded, full_path.clone()));
+    }
     if is_expanded {
         for child in &node.children {
-            collect_expanded_rows(child, depth + 1, &full_path, expanded, rows);
+            collect_expanded_rows(
+                child,
+                depth + 1,
+                &full_path,
+                expanded,
+                sink_same_name_keys,
+                rows,
+            );
         }
     }
+    let descendants_fully_expanded =
+        is_expanded && all_descendant_namespaces_expanded(node, &full_path, expanded);
+    if sink_same_name_keys && is_namespace && descendants_fully_expanded && node.is_key {
+        let sink_depth = visible_sink_depth(rows, depth);
+        rows.push(key_row(node, sink_depth, full_path));
+    }
+}
+
+fn all_descendant_namespaces_expanded(
+    node: &TreeNode,
+    parent_path: &str,
+    expanded: &std::collections::HashSet<String>,
+) -> bool {
+    node.children.iter().all(|child| {
+        if !child.is_namespace() {
+            return true;
+        }
+        let child_path = joined_path(parent_path, &child.label);
+        expanded.contains(&child_path)
+            && all_descendant_namespaces_expanded(child, &child_path, expanded)
+    })
 }
 
 /// 返回当前节点子树是否含匹配 key；命中时已按父节点在前的顺序写入 rows。
@@ -253,33 +364,90 @@ fn collect_search_rows(
     parent_path: &str,
     query: &str,
     search_collapsed: &std::collections::HashSet<String>,
+    sink_same_name_keys: bool,
     rows: &mut Vec<VisibleRow>,
 ) -> bool {
     let full_path = joined_path(parent_path, &node.label);
-    let row_index = rows.len();
-    rows.push(visible_row(node, depth, false, full_path.clone()));
+    let namespace_index = rows.len();
+    if node.is_namespace() && sink_same_name_keys {
+        rows.push(namespace_row(node, depth, false, full_path.clone()));
+    } else {
+        rows.push(combined_row(node, depth, false, full_path.clone()));
+    }
 
     let self_matches = node.is_key && contains_case_insensitive(&full_path, query);
     let mut descendant_matches = false;
     for child in &node.children {
-        descendant_matches |=
-            collect_search_rows(child, depth + 1, &full_path, query, search_collapsed, rows);
+        descendant_matches |= collect_search_rows(
+            child,
+            depth + 1,
+            &full_path,
+            query,
+            search_collapsed,
+            sink_same_name_keys,
+            rows,
+        );
     }
 
-    if self_matches || descendant_matches {
-        let is_expanded = descendant_matches && !search_collapsed.contains(&full_path);
-        rows[row_index].is_expanded = is_expanded;
-        if descendant_matches && !is_expanded {
-            rows.truncate(row_index + 1);
+    if !sink_same_name_keys {
+        if self_matches || descendant_matches {
+            let is_expanded = descendant_matches && !search_collapsed.contains(&full_path);
+            rows[namespace_index].is_expanded = is_expanded;
+            if descendant_matches && !is_expanded {
+                rows.truncate(namespace_index + 1);
+            }
+            return true;
         }
-        true
+        rows.truncate(namespace_index);
+        return false;
+    }
+
+    if descendant_matches {
+        let is_expanded = descendant_matches && !search_collapsed.contains(&full_path);
+        rows[namespace_index].is_expanded = is_expanded;
+        if !is_expanded {
+            rows.truncate(namespace_index + 1);
+        }
     } else {
-        rows.truncate(row_index);
-        false
+        rows.truncate(namespace_index);
+    }
+
+    if self_matches && sink_same_name_keys {
+        let sink_depth = visible_sink_depth(rows, depth);
+        rows.push(key_row(node, sink_depth, full_path));
+    }
+    self_matches || descendant_matches
+}
+
+fn visible_sink_depth(rows: &[VisibleRow], namespace_depth: usize) -> usize {
+    rows.iter()
+        .rev()
+        .take_while(|row| row.depth > namespace_depth)
+        .map(|row| row.depth)
+        .max()
+        .unwrap_or(namespace_depth + 1)
+}
+
+fn namespace_row(
+    node: &TreeNode,
+    depth: usize,
+    is_expanded: bool,
+    full_path: String,
+) -> VisibleRow {
+    VisibleRow {
+        depth,
+        label: node.label.clone(),
+        full_path: Rc::new(full_path),
+        is_key: false,
+        leaf_type: None,
+        is_namespace: true,
+        is_expanded,
+        has_next_sibling: false,
+        ancestor_guide_mask: 0,
     }
 }
 
-fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool, full_path: String) -> VisibleRow {
+fn combined_row(node: &TreeNode, depth: usize, is_expanded: bool, full_path: String) -> VisibleRow {
     VisibleRow {
         depth,
         label: if node.label.is_empty() && node.is_key {
@@ -292,6 +460,26 @@ fn visible_row(node: &TreeNode, depth: usize, is_expanded: bool, full_path: Stri
         leaf_type: node.leaf_type,
         is_namespace: node.is_namespace(),
         is_expanded,
+        has_next_sibling: false,
+        ancestor_guide_mask: 0,
+    }
+}
+
+fn key_row(node: &TreeNode, depth: usize, full_path: String) -> VisibleRow {
+    VisibleRow {
+        depth,
+        label: if node.label.is_empty() {
+            "（空 Key）".to_string()
+        } else {
+            node.label.clone()
+        },
+        full_path: Rc::new(full_path),
+        is_key: true,
+        leaf_type: node.leaf_type,
+        is_namespace: false,
+        is_expanded: false,
+        has_next_sibling: false,
+        ancestor_guide_mask: 0,
     }
 }
 
@@ -321,77 +509,17 @@ fn type_color_solid(kind: RedisType, fallback: gpui::Hsla) -> gpui::Hsla {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ramag_domain::entities::KeyMeta;
-
-    #[test]
-    fn search_flatten_visits_each_matching_branch_once() {
-        let keys = vec![
-            KeyMeta::bare("user:1:profile"),
-            KeyMeta::bare("user:2:settings"),
-            KeyMeta::bare("session:abc"),
-        ];
-        let tree = super::super::tree::build_tree(&keys);
-        let rows = flatten_visible_rows(
-            &tree,
-            &std::collections::HashSet::new(),
-            &std::collections::HashSet::new(),
-            "profile",
-        );
-        let paths: Vec<&str> = rows.iter().map(|row| row.full_path.as_str()).collect();
-
-        assert_eq!(paths, vec!["user", "user:1", "user:1:profile"]);
-        assert!(rows[0].is_expanded);
-        assert!(rows[1].is_expanded);
-        assert!(!rows[2].is_expanded);
-    }
-
-    #[test]
-    fn search_flatten_keeps_bare_key_without_type() {
-        let tree = super::super::tree::build_tree(&[KeyMeta::bare("111")]);
-        let rows = flatten_visible_rows(
-            &tree,
-            &std::collections::HashSet::new(),
-            &std::collections::HashSet::new(),
-            "111",
-        );
-
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].is_key);
-        assert!(rows[0].leaf_type.is_none());
-    }
-
-    #[test]
-    fn search_result_can_collapse_and_expand_without_changing_normal_state() {
-        let tree = super::super::tree::build_tree(&[
-            KeyMeta::bare("zset:1001"),
-            KeyMeta::bare("zset:1002"),
-        ]);
-        let normal_expanded = std::collections::HashSet::from(["other".to_string()]);
-        let collapsed = std::collections::HashSet::from(["zset".to_string()]);
-
-        let collapsed_rows = flatten_visible_rows(&tree, &normal_expanded, &collapsed, "1002");
-        assert_eq!(collapsed_rows.len(), 1);
-        assert_eq!(collapsed_rows[0].full_path.as_str(), "zset");
-        assert!(!collapsed_rows[0].is_expanded);
-
-        let expanded_rows = flatten_visible_rows(
-            &tree,
-            &normal_expanded,
-            &std::collections::HashSet::new(),
-            "1002",
-        );
-        let paths: Vec<&str> = expanded_rows
-            .iter()
-            .map(|row| row.full_path.as_str())
-            .collect();
-        assert_eq!(paths, vec!["zset", "zset:1002"]);
-        assert!(expanded_rows[0].is_expanded);
-        assert_eq!(
-            normal_expanded,
-            std::collections::HashSet::from(["other".to_string()])
-        );
+fn tree_type_label(kind: RedisType) -> &'static str {
+    match kind {
+        RedisType::String => "STR",
+        RedisType::List => "LIST",
+        RedisType::Hash => "HASH",
+        RedisType::Set => "SET",
+        RedisType::ZSet => "ZSET",
+        RedisType::Stream => "STREAM",
+        RedisType::None => "",
     }
 }
+
+#[cfg(test)]
+mod tests;

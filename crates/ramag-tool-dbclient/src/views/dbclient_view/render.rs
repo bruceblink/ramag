@@ -68,6 +68,7 @@ impl Render for DbClientView {
         let accent = theme.accent;
         let bg = theme.background;
         let warning = theme.warning;
+        let danger = theme.danger;
 
         let active = self.active_session;
 
@@ -202,9 +203,9 @@ impl Render for DbClientView {
                         .child(title.clone()),
                 )
                 .child(div().text_xs().text_color(muted_fg).child(kind_label))
-                // 生产只读徽标：会话顶部持续可见，与 driver 层拦截、写入口禁用同一语义
+                // 生产徽标持续可见，与 driver 层拦截、写入口禁用保持同一语义。
                 .when(production, |tab| {
-                    let mut chip_bg = warning;
+                    let mut chip_bg = danger;
                     chip_bg.a = 0.15;
                     tab.child(
                         div()
@@ -214,8 +215,8 @@ impl Render for DbClientView {
                             .rounded(px(4.0))
                             .bg(chip_bg)
                             .text_xs()
-                            .text_color(warning)
-                            .child("只读"),
+                            .text_color(danger)
+                            .child(ramag_ui::PRODUCTION_BADGE_LABEL),
                     )
                 })
                 .when_some(metadata_label, |tab, label| {
@@ -226,6 +227,7 @@ impl Render for DbClientView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("关闭")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.close_session(idx, cx);
@@ -284,6 +286,18 @@ impl Render for DbClientView {
         };
 
         v_flex()
+            .key_context("DbClientView")
+            .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &ramag_ui::OpenRecentItems, window, cx| {
+                    if matches!(this.center, CenterMode::Session) && !this.sessions.is_empty() {
+                        this.open_connection_picker_dialog(window, cx);
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .size_full()
             .bg(bg)
             .text_color(fg)

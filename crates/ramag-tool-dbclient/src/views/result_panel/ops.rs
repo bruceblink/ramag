@@ -1,4 +1,4 @@
-//! ResultPanel DML：行内编辑触发的 INSERT / UPDATE / DELETE
+//! 结果集的行内写操作。
 
 mod delete;
 use std::sync::Arc;
@@ -55,14 +55,12 @@ impl ResultPanel {
         false
     }
 
-    /// DML 前置守卫：取连接服务 + 连接配置，缺任一即弹 toast 返回 None。
-    /// `action` 用于提示文案（删除 / 新增 / 修改）。
+    /// 取得可执行 DML 的连接。
     fn dml_conn(
         &mut self,
         action: &str,
         cx: &mut Context<Self>,
     ) -> Option<(Arc<ConnectionService>, ConnectionConfig)> {
-        // 防重入：上一 DML 未回包前拒绝新提交，避免连点确认重复执行
         if self.dml_busy {
             self.pending_notification = Some(
                 Notification::warning(format!("上一操作尚未完成，请稍候再{action}")).autohide(true),
@@ -79,8 +77,7 @@ impl ResultPanel {
         Some((svc, conn))
     }
 
-    /// 行内修改 / 删除的总闸门（按钮已禁用，兜底处理弹框期间的条件变化）：
-    /// 过闸返回行定位键，未过弹 toast 返回 None
+    /// 检查行内修改或删除是否可执行。
     fn guard_modify(&mut self, action: &str, cx: &mut Context<Self>) -> Option<RowIdentity> {
         if let Some(reason) = self.modify_block_reason() {
             self.pending_notification =
@@ -91,8 +88,7 @@ impl ResultPanel {
         self.row_identity.clone()
     }
 
-    /// 删除前的预览数据：(row_idx, "列=值" 简短文案)；调用方拿去给 confirm dialog 用
-    /// 优先用行定位键第一列做预览，无键用第一列
+    /// 返回单行删除预览。
     pub(crate) fn delete_preview(&self, cx: &gpui::App) -> Option<(usize, String)> {
         let (ri, _) = self.selected_cell?;
         let ResultState::Ok(result) = &self.state else {
@@ -116,7 +112,7 @@ impl ResultPanel {
         Some((ri, format!("{col} = {val}{hidden_note}")))
     }
 
-    /// 批量删除前的预览：返回 (排序去重后的 indices, "N 行预览" 文案)
+    /// 返回批量删除预览。
     pub(crate) fn delete_preview_multi(&self, cx: &gpui::App) -> Option<(Vec<usize>, String)> {
         if self.selected_rows.is_empty() {
             return None;
@@ -174,7 +170,7 @@ impl ResultPanel {
         Some((indices, summary))
     }
 
-    /// 二次确认后真执行 DELETE：异步发到 DB，成功后本地移除该行
+    /// 确认后执行 DELETE。
     pub(crate) fn execute_delete_row_async(&mut self, ri: usize, cx: &mut Context<Self>) -> bool {
         let Some(identity) = self.guard_modify("删除", cx) else {
             return false;
@@ -222,6 +218,16 @@ impl ResultPanel {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
+            if let Err(error) = &outcome {
+                error!(
+                    operation = "sql_delete",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    table = %table_ref,
+                    error = %error,
+                    "delete row failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 this.dml_busy = false;
                 match outcome {
@@ -249,8 +255,7 @@ impl ResultPanel {
                                 this.selected_cell = None;
                                 this.mark_result_changed();
                             }
-                            // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
-                            // 本地只移除了一行，DB 实际删了多行——数据已不一致，必须显式告警
+                            // 定位键命中多行时，本地结果可能与数据库不一致。
                             if qr.affected_rows > 1 {
                                 let stale_note = if same_result {
                                     ""
@@ -284,14 +289,6 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "sql_delete",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            table = %table_ref,
-                            error = %e,
-                            "delete row failed"
-                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("删除失败")).autohide(true));
                     }
@@ -303,7 +300,7 @@ impl ResultPanel {
         true
     }
 
-    /// 单元格编辑弹框「确认修改」：异步执行 UPDATE，成功后同步本地 cell
+    /// 确认后执行 UPDATE。
     pub(crate) fn apply_cell_update_async(
         &mut self,
         ri: usize,
@@ -390,6 +387,17 @@ impl ResultPanel {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = svc.execute_with_history(&conn, &q).await;
+            if let Err(error) = &outcome {
+                error!(
+                    operation = "sql_update",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    table = %table_ref,
+                    column = %col_name,
+                    error = %error,
+                    "apply cell update failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 this.dml_busy = false;
                 match outcome {
@@ -416,8 +424,7 @@ impl ResultPanel {
                             if result_changed {
                                 this.mark_result_changed();
                             }
-                            // affected>1：按定位键仍命中多行属于异常（键失效 / 元数据漂移），
-                            // 意味着可能误改了其它行，必须显式告警而非当成功
+                            // 定位键命中多行时，本地结果可能与数据库不一致。
                             if qr.affected_rows > 1 {
                                 let stale_note = if same_result {
                                     ""
@@ -451,15 +458,6 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            operation = "sql_update",
-                            connection_id = %conn.id,
-                            driver = ?conn.driver,
-                            table = %table_ref,
-                            column = %col_name,
-                            error = %e,
-                            "apply cell update failed"
-                        );
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("更新失败")).autohide(true));
                     }

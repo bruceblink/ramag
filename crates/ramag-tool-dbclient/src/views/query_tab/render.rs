@@ -418,10 +418,11 @@ impl Render for QueryTab {
                     )
                     .child(
                         ramag_ui::clickable_button("export-btn")
-                            .ghost()
-                            .small()
-                            .icon(ramag_ui::icons::upload())
-                            .disabled(!has_result)
+                    .ghost()
+                    .small()
+                    .icon(ramag_ui::icons::upload())
+                    .tooltip("导出")
+                    .disabled(!has_result)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.result.update(cx, |r, cx| r.export(cx));
                             })),
@@ -429,10 +430,11 @@ impl Render for QueryTab {
                     .when(running, |this| {
                         this.child(
                             ramag_ui::clickable_button("cancel-query")
-                                .danger()
-                                .small()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    .danger()
+                    .small()
+                    .icon(IconName::Close)
+                    .tooltip("取消")
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_cancel(window, cx);
                                 })),
                         )
@@ -440,10 +442,11 @@ impl Render for QueryTab {
                     .when(!running, |this| {
                         this.child(
                             ramag_ui::clickable_button("run-query")
-                                .primary()
-                                .small()
-                                .icon(IconName::Play)
-                                .disabled(!has_connection)
+                    .primary()
+                    .small()
+                    .icon(IconName::Play)
+                    .tooltip("运行")
+                    .disabled(!has_connection)
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_run(window, cx);
                                 })),
@@ -514,6 +517,7 @@ fn row_search_input_suffix(
                 .xsmall()
                 .tab_stop(false)
                 .text_color(muted)
+                .tooltip("清除")
                 .on_click(move |_, window, cx| {
                     input.update(cx, |state, cx| {
                         state.set_value("", window, cx);

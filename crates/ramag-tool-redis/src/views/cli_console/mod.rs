@@ -1,5 +1,6 @@
 //! Redis 命令控制台与应答历史。
 
+mod command;
 mod complete;
 mod danger;
 mod format;
@@ -13,6 +14,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 use gpui::{
     ClickEvent, Context, Entity, IntoElement, ParentElement, Render, ScrollWheelEvent,
     SharedString, Styled, Subscription, UniformListScrollHandle, Window, div, prelude::*, px,
@@ -29,9 +31,6 @@ use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, RedisValue, validate_redis_command};
 use ramag_domain::error::READ_ONLY_MESSAGE;
 use ramag_ui::{AxisScrollGesture, RestrictScrollToAxisExt as _};
-use tracing::{error, info};
-
-use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 
 struct Entry {
     id: u64,
@@ -40,20 +39,20 @@ struct Entry {
     outcome: Outcome,
     display_lines: usize,
     elapsed_ms: u128,
-    /// 应答超限被分段时保留原始值（driver 已整体拉回内存），供「继续展开」续格式化
+    /// 超限应答的原始值，用于继续展开。
     raw: Option<Arc<RedisValue>>,
-    /// 续展开游标（标量=字节偏移，顶层容器=元素索引）；None = 已全部展开
+    /// 下一段起点；None 表示已展开完。
     cursor: Option<usize>,
 }
 
 enum Outcome {
     Pending,
-    /// 成功应答：已按显示行硬切好的行数组，供 uniform_list 等高行虚拟化
+    /// 已按显示行切分，供虚拟列表渲染。
     Ok(Arc<Vec<SharedString>>),
     Err(String),
 }
 
-/// 扁平等高行，避免大应答生成完整元素树。
+/// 均高转录行，避免大应答构建完整元素树。
 enum TranscriptRow {
     Header {
         command: SharedString,
@@ -135,7 +134,7 @@ pub struct CliConsole {
     history: Vec<Entry>,
     next_entry_id: u64,
     input: Entity<InputState>,
-    /// 已提交命令，与应答历史分离。
+    /// 已提交命令的历史。
     cmd_history: VecDeque<String>,
     cmd_history_bytes: usize,
     /// `None` 表示实时输入行。
@@ -158,7 +157,7 @@ impl CliConsole {
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx)
                 .validate(|value, _| value.len() <= MAX_COMMAND_BYTES)
-                .placeholder("输入 Redis 命令，Enter 执行（如 GET foo）");
+                .placeholder("输入命令，按 Enter 执行（如 GET foo）");
             state.lsp.completion_provider = Some(complete::RedisCompletionProvider::new_rc());
             state
         });
@@ -198,197 +197,6 @@ impl CliConsole {
         self.input.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    fn handle_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let raw_len = self.input.read(cx).value().trim().len();
-        if raw_len == 0 {
-            return;
-        }
-        if raw_len > MAX_COMMAND_BYTES {
-            let command = {
-                let input = self.input.read(cx);
-                command_preview(input.value().trim(), 200)
-            };
-            self.push_entry(
-                command,
-                Outcome::Err(format!(
-                    "(error) 命令超过 {} KiB 上限，请改用专用编辑器或脚本",
-                    MAX_COMMAND_BYTES / 1024
-                )),
-                0,
-            );
-            self.input.update(cx, |s, cx| s.set_value("", window, cx));
-            cx.notify();
-            return;
-        }
-        let raw = self.input.read(cx).value().trim().to_string();
-        if self.reject_if_command_queue_full(&raw, cx) {
-            return;
-        }
-        // 被拦截或解析失败的命令也可召回修正。
-        self.record_history(&raw);
-        let argv = match format::tokenize(&raw) {
-            Ok(a) if a.is_empty() => return,
-            Ok(a) => a,
-            Err(msg) => {
-                self.push_entry(raw, Outcome::Err(format!("(error) 解析失败：{msg}")), 0);
-                self.input.update(cx, |s, cx| s.set_value("", window, cx));
-                cx.notify();
-                return;
-            }
-        };
-        if let Err(error) = validate_redis_command(&argv) {
-            self.push_entry(raw, Outcome::Err(format!("(error) {}", error.message())), 0);
-            self.input.update(cx, |s, cx| s.set_value("", window, cx));
-            cx.notify();
-            return;
-        }
-        if self.config.production
-            && argv
-                .first()
-                .is_some_and(|command| self.service.is_write_command(command))
-        {
-            self.push_entry(raw, Outcome::Err(format!("(error) {READ_ONLY_MESSAGE}")), 0);
-            self.input.update(cx, |s, cx| s.set_value("", window, cx));
-            cx.notify();
-            return;
-        }
-        // SELECT 会污染连接池的 DB 上下文，订阅类命令会独占连接。
-        let blocked_reason = argv.first().and_then(|c| {
-            let up = c.to_ascii_uppercase();
-            if up == "SELECT" {
-                Some("请用顶部「DB」选择器切换数据库（命令行内 SELECT 会破坏连接池的库上下文）")
-            } else if matches!(
-                up.as_str(),
-                "MONITOR" | "SUBSCRIBE" | "PSUBSCRIBE" | "SSUBSCRIBE"
-            ) {
-                Some("该命令会让连接卡在特殊接收模式，命令行不支持")
-            } else {
-                None
-            }
-        });
-        if let Some(reason) = blocked_reason {
-            self.push_entry(raw, Outcome::Err(format!("(error) {reason}")), 0);
-            self.input.update(cx, |s, cx| s.set_value("", window, cx));
-            cx.notify();
-            return;
-        }
-
-        // 高危命令确认时固定连接、DB 和命令，避免上下文漂移。
-        if let Some(reason) = danger::dangerous_reason(&argv) {
-            let preview = command_preview(&raw, 4096);
-            let desc = format!(
-                "目标：{} · DB {}\n命令：{preview}\n\n{reason}。确认继续吗？",
-                self.config.name, self.db
-            );
-            let entity = cx.entity();
-            let confirmed_connection_id = self.config.id.clone();
-            let confirmed_db = self.db;
-            let confirmed_raw = raw.clone();
-            ramag_ui::open_confirm(
-                "执行高危命令？",
-                desc,
-                "执行",
-                true,
-                move |window, app| {
-                    entity.update(app, |this, cx| {
-                        let input_changed =
-                            this.input.read(cx).value().trim() != confirmed_raw.as_str();
-                        if this.config.id != confirmed_connection_id
-                            || this.db != confirmed_db
-                            || input_changed
-                        {
-                            this.push_entry(
-                                command_preview(&confirmed_raw, 200),
-                                Outcome::Err(
-                                    "(error) 连接、DB 或命令已变更，已取消执行；请重新确认".into(),
-                                ),
-                                0,
-                            );
-                            cx.notify();
-                            return;
-                        }
-                        this.dispatch(raw, argv, window, cx);
-                    });
-                },
-                window,
-                cx,
-            );
-            return;
-        }
-
-        self.dispatch(raw, argv, window, cx);
-    }
-
-    fn dispatch(
-        &mut self,
-        raw: String,
-        argv: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // 高危命令确认框可能停留较久，实际执行前必须再次检查并发上限。
-        if self.reject_if_command_queue_full(&raw, cx) {
-            return;
-        }
-        let command_name = argv
-            .first()
-            .map(|value| value.to_ascii_uppercase())
-            .unwrap_or_else(|| "UNKNOWN".to_string());
-        let command_bytes = raw.len();
-        let entry_id = self.push_entry(raw, Outcome::Pending, 0);
-        self.input.update(cx, |s, cx| s.set_value("", window, cx));
-        cx.notify();
-
-        let svc = self.service.clone();
-        let config = self.config.clone();
-        let db = self.db;
-        let start = Instant::now();
-        cx.spawn(async move |this, cx| {
-            let result = svc.execute_command(&config, db, argv).await;
-            let elapsed = start.elapsed().as_millis();
-            let _ = this.update(cx, |this, cx| {
-                if let Some(entry) = this.history.iter_mut().find(|entry| entry.id == entry_id) {
-                    entry.elapsed_ms = elapsed;
-                    let outcome = match result {
-                        Ok(v) => {
-                            info!(
-                                operation = "redis_command",
-                                connection_id = %config.id,
-                                db,
-                                command = %command_name,
-                                command_bytes,
-                                elapsed_ms = elapsed,
-                                "command completed"
-                            );
-                            // 保留游标，按需展开超限应答。
-                            let chunk = format::lines_of_first(&v);
-                            entry.cursor = chunk.cursor;
-                            entry.raw = chunk.cursor.map(|_| Arc::new(v));
-                            Outcome::Ok(Arc::new(wrap_display_lines(chunk.lines)))
-                        }
-                        Err(e) => {
-                            error!(
-                                operation = "redis_command",
-                                connection_id = %config.id,
-                                db,
-                                command = %command_name,
-                                command_bytes,
-                                error = %e,
-                                "command failed"
-                            );
-                            Outcome::Err(format!("(error) {}", e.message()))
-                        }
-                    };
-                    entry.display_lines = outcome_line_count(&outcome);
-                    entry.outcome = outcome;
-                }
-                this.prune_transcript();
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn clear(&mut self, cx: &mut Context<Self>) {
         clear_completed_entries(&mut self.history);
         self.rebuild_transcript_rows();
@@ -412,21 +220,6 @@ impl CliConsole {
             &vertical,
             cx,
         );
-    }
-
-    fn reject_if_command_queue_full(&mut self, command: &str, cx: &mut Context<Self>) -> bool {
-        if pending_command_count(&self.history) < MAX_PENDING_COMMANDS {
-            return false;
-        }
-        self.push_entry(
-            command_preview(command, 200),
-            Outcome::Err(format!(
-                "(error) 同时最多执行 {MAX_PENDING_COMMANDS} 条命令，请等待已有命令完成"
-            )),
-            0,
-        );
-        cx.notify();
-        true
     }
 
     fn push_entry(&mut self, command: String, outcome: Outcome, elapsed_ms: u128) -> u64 {

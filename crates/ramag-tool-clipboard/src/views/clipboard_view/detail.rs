@@ -1,4 +1,4 @@
-//! 详情面板：选中条目的完整内容 + 元信息 + 操作按钮
+//! 剪贴板详情。
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
 use gpui_component::{ActiveTheme, Sizable as _, h_flex, v_flex};
-use ramag_domain::entities::{ClipItem, ClipKind};
+use ramag_domain::entities::{ClipItem, ClipKind, format_bytes};
 use ramag_ui::platform::file_manager_reveal_label;
 
 use super::ClipboardView;
@@ -63,10 +63,10 @@ impl ClipboardView {
             .map(|s| format!("来源：{}", s.name))
             .unwrap_or_default();
         let meta = format!(
-            "{} · {} · {} 字节",
+            "{} · {} · {}",
             item.kind.label(),
             relative_time(item.last_used_at, Utc::now()),
-            item.byte_size
+            format_bytes(item.byte_size)
         );
         v_flex()
             .gap(px(2.0))
@@ -76,7 +76,7 @@ impl ClipboardView {
             })
     }
 
-    /// 只展示卡片行没有的上下文操作。
+    /// 渲染与条目类型相关的操作。
     fn detail_actions(
         &self,
         item: Arc<ClipItem>,
@@ -144,7 +144,6 @@ impl ClipboardView {
         match item.kind {
             ClipKind::Image => match self.image_for(item.clone(), false, cx) {
                 Some(image) => img(image).max_w_full().into_any_element(),
-                // 失败明示（媒体缺失 / 损坏 / 尺寸过大），不再永久显示假「加载中」
                 None if self.image_failed(item.as_ref(), false) => div()
                     .text_sm()
                     .child("图片无法加载（文件可能缺失、损坏或尺寸过大）")
@@ -152,13 +151,17 @@ impl ClipboardView {
                 None => div().child("加载中…").into_any_element(),
             },
             ClipKind::Files => {
-                let mut body = v_flex().gap(px(4.0)).children(
-                    item.files.iter().take(MAX_DETAIL_FILE_ROWS).map(|path| {
-                        div()
-                            .text_sm()
-                            .child(bounded_path_text(path))
-                            .into_any_element()
-                    }),
+                let paths = item
+                    .files
+                    .iter()
+                    .take(MAX_DETAIL_FILE_ROWS)
+                    .map(|path| bounded_path_text(path))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut body = v_flex().gap(px(4.0)).child(
+                    ramag_ui::SelectableText::new("clip-detail-files", paths)
+                        .w_full()
+                        .text_sm(),
                 );
                 if item.files.len() > MAX_DETAIL_FILE_ROWS {
                     body = body.child(
@@ -172,10 +175,9 @@ impl ClipboardView {
             }
             _ => {
                 let display = self.detail_text(item.as_ref());
-                div()
+                ramag_ui::SelectableText::new("clip-detail-text", display)
+                    .w_full()
                     .text_sm()
-                    .whitespace_normal()
-                    .child(display)
                     .into_any_element()
             }
         }

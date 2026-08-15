@@ -99,7 +99,6 @@ impl RedisSessionPanel {
                 KeyTreeEvent::DbSelected(db) => {
                     this.handle_db_change(*db, cx);
                 }
-                // 树侧右键删除完成：若详情面板正在展示受影响的 key，清空之
                 KeyTreeEvent::KeysDeleted(scope) => {
                     let current = this.detail.read(cx).current_key().map(str::to_string);
                     let invalidated = match (scope, current.as_deref()) {
@@ -115,13 +114,16 @@ impl RedisSessionPanel {
             },
         ));
 
-        // 详情事件：删除完成刷新树 + 编辑请求转弹窗 + 各种二次确认
         subs.push(cx.subscribe_in(
             &detail,
             window,
             move |this: &mut Self, _, e: &KeyDetailEvent, window, cx| match e {
                 KeyDetailEvent::Deleted(_) => {
                     this.tree.update(cx, |t, cx| t.refresh(cx));
+                }
+                KeyDetailEvent::TypeResolved(key, key_type) => {
+                    this.tree
+                        .update(cx, |tree, cx| tree.resolve_key_type(key, *key_type, cx));
                 }
                 KeyDetailEvent::RequestEditTtl(key, ttl_ms) => {
                     this.open_ttl_dialog(key.clone(), *ttl_ms, window, cx);

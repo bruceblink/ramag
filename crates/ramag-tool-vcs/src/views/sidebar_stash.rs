@@ -1,6 +1,4 @@
-//! Stash 列表渲染（IDE Files panel 的 Stash 视图主区调用）
-//!
-//! 行尾按钮 [Apply][Pop][Drop]，每条 stash 显示 stash@{N} + message + 时间。
+//! Stash 列表与操作。
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -13,7 +11,6 @@ use super::helpers::{StashOp, side_op_button};
 use super::vcs_view::VcsView;
 
 impl VcsView {
-    /// Stash 列表 body：供 IDE Files panel Stash 视图主区调用
     pub(super) fn render_stash_list_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted_fg = cx.theme().muted_foreground;
         let busy = self.busy
@@ -38,7 +35,6 @@ impl VcsView {
                 .child("暂无 stash；请在「变更」中创建")
                 .into_any_element();
         }
-        // Files panel 搜索框在 Stash 模式按描述过滤（与 Changes/Project 的路径过滤语义对齐）
         let search = self.files_search_input.read(cx);
         let search_value = search.value();
         let query = search_value.trim();
@@ -89,7 +85,6 @@ impl VcsView {
     }
 }
 
-/// 单条 stash 行：紧凑布局 stash@{N} + msg + 行尾按钮
 fn stash_row(s: &Stash, busy: bool, cx: &mut Context<VcsView>) -> impl IntoElement {
     let theme = cx.theme();
     let fg = theme.foreground;

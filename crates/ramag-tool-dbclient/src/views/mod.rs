@@ -9,8 +9,10 @@ pub mod dbclient_view;
 pub mod history_dialog;
 pub mod query_panel;
 pub mod query_tab;
+mod recent_connections_dialog;
 pub mod result_panel;
 pub mod result_table;
+mod table_designer;
 pub mod table_tree;
 pub mod tree_helpers;
 

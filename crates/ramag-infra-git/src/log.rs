@@ -1,12 +1,12 @@
-//! `git log --pretty=format:...`：`\x1f` 分字段、`\x1e` 分记录。
-//! 历史列表只读渲染所需摘要；详情再按需读取完整签名与正文。
+//! Git 历史查询与分页。
 
 use std::path::Path;
 use std::process::{Child, ChildStdout, Stdio};
 use std::thread::JoinHandle;
 
-use ramag_domain::entities::{Commit, CommitId, LogOptions, Signature};
+use ramag_domain::entities::{Commit, LogOptions};
 use ramag_domain::error::{DomainError, Result};
+use tracing::warn;
 
 use crate::git_cmd::{
     LimitedBytes, MAX_GIT_MESSAGE_BYTES, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, ensure_git_list_room,
@@ -14,14 +14,13 @@ use crate::git_cmd::{
     validate_path_arg, validate_positional_arg,
 };
 
-/// 历史列表不传 commit body；详情打开时再用 `LOG_DETAIL_FORMAT` 单条读取。
+/// 列表只读取摘要；详情按需读取完整字段。
 const LOG_LIST_FORMAT: &str = "%H%x1f%an%x1f%at%x1f%P%x1f%D%x1f%s%x1e";
 const LOG_DETAIL_FORMAT: &str =
     "%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%P%x1f%D%x1f%s%x1f%b%x1e";
-/// 正常 octopus merge 远低于此值；异常父边数量会放大提交图的内存与渲染成本。
-const MAX_COMMIT_PARENTS: usize = 1024;
-/// 引用只是装饰标签，超限时保留有界前缀并给出省略提示，不阻断历史浏览。
-const MAX_COMMIT_REFS: usize = 256;
+mod parse;
+
+use parse::{parse_log_list_output, parse_log_list_record, parse_log_output};
 
 pub(crate) type LogPagerSlot = parking_lot::Mutex<Option<LogPager>>;
 
@@ -65,10 +64,21 @@ pub fn run_log(repo_path: &Path, opts: &LogOptions) -> Result<Vec<Commit>> {
     let args = build_log_args(opts, true);
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = run_git_text(repo_path, &args_ref)?;
-    parse_log_list_output(&out)
+    parse_log_list_output(&out).map_err(|error| {
+        warn!(
+            operation = "git_log_parse",
+            repo = %repo_path.display(),
+            mode = "list",
+            skip = opts.skip,
+            limit = ?opts.limit,
+            error = %error,
+            "git log output parse failed"
+        );
+        error
+    })
 }
 
-/// UI 连续翻页复用同一个 `git log` 进程；查询或 offset 不连续时安全退回一次性读取。
+/// 连续翻页复用同一进程；查询或偏移变化时回退一次性读取。
 pub(crate) fn run_log_paged(
     repo_path: &Path,
     slot: &LogPagerSlot,
@@ -86,7 +96,10 @@ pub(crate) fn run_log_paged(
     let mut current = slot.lock();
     if opts.skip == 0 {
         current.take();
-        let mut pager = LogPager::spawn(repo_path, opts, key)?;
+        let mut pager = LogPager::spawn(repo_path, opts, key).map_err(|error| {
+            log_page_error(repo_path, opts, &error);
+            error
+        })?;
         let result = pager.read_page(limit);
         return match result {
             Ok((commits, finished)) => {
@@ -95,7 +108,10 @@ pub(crate) fn run_log_paged(
                 }
                 Ok(commits)
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                log_page_error(repo_path, opts, &error);
+                Err(error)
+            }
         };
     }
 
@@ -103,15 +119,19 @@ pub(crate) fn run_log_paged(
         .as_ref()
         .is_some_and(|pager| pager.key == key && pager.offset == opts.skip);
     if !resumable {
-        // 查询或 offset 跳变后旧流已不可能安全复用，立即终止，避免仓库长期保留闲置子进程。
+        // 查询或偏移变化时停止旧进程。
         current.take();
         drop(current);
         return run_log(repo_path, opts);
     }
-    let result = current
-        .as_mut()
-        .ok_or_else(|| DomainError::Other("Git 日志分页状态丢失".into()))?
-        .read_page(limit);
+    let result = match current.as_mut() {
+        Some(pager) => pager.read_page(limit),
+        None => {
+            let error = DomainError::Other("Git 日志分页状态丢失".into());
+            log_page_error(repo_path, opts, &error);
+            return Err(error);
+        }
+    };
     match result {
         Ok((commits, finished)) => {
             if finished {
@@ -121,9 +141,21 @@ pub(crate) fn run_log_paged(
         }
         Err(error) => {
             current.take();
+            log_page_error(repo_path, opts, &error);
             Err(error)
         }
     }
+}
+
+fn log_page_error(repo_path: &Path, opts: &LogOptions, error: &DomainError) {
+    warn!(
+        operation = "git_log_page",
+        repo = %repo_path.display(),
+        skip = opts.skip,
+        limit = ?opts.limit,
+        error = %error,
+        "git log page failed"
+    );
 }
 
 fn validate_log_options(opts: &LogOptions) -> Result<()> {
@@ -155,7 +187,7 @@ fn validate_log_options(opts: &LogOptions) -> Result<()> {
 }
 
 fn has_log_start(repo_path: &Path, opts: &LogOptions) -> Result<bool> {
-    // 新初始化仓库没有 HEAD；这是正常空态，不应把 git log 的 fatal 暴露给用户。
+    // 新仓库没有 HEAD 是正常空态。
     if opts.start.is_none()
         && !run_git_probe(repo_path, &["rev-parse", "--verify", "--quiet", "HEAD"])?
     {
@@ -176,7 +208,7 @@ fn build_log_args(opts: &LogOptions, include_page: bool) -> Vec<String> {
     }
     if let Some(g) = &opts.grep {
         args.push(format!("--grep={g}"));
-        // git log 默认对 --grep 大小写敏感，UI 期望忽略
+        // UI 搜索忽略大小写。
         args.push("--regexp-ignore-case".into());
     }
     if let Some(a) = &opts.author {
@@ -328,7 +360,7 @@ impl Drop for LogPager {
             && reader.join().is_err()
         {
             tracing::warn!(
-                operation = "vcs_git_log_cleanup",
+                operation = "git_log_pager_cleanup",
                 stage = "stderr_reader",
                 "git log stderr reader panicked during cleanup"
             );
@@ -382,7 +414,7 @@ fn terminate_pager_child(child: &mut Child) {
     }
 }
 
-/// 详情页按需读取一条完整 commit，避免历史分页携带所有正文。
+/// 按需读取一条完整 commit。
 pub fn run_commit(repo_path: &Path, revision: &str) -> Result<Commit> {
     validate_positional_arg(revision, "commit 详情 revision")?;
     let format = format!("--format={LOG_DETAIL_FORMAT}");
@@ -390,12 +422,30 @@ pub fn run_commit(repo_path: &Path, revision: &str) -> Result<Commit> {
         repo_path,
         &["show", "--no-patch", "--no-notes", &format, revision],
     )?;
-    let mut commits = parse_log_output(&out)?;
+    let mut commits = parse_log_output(&out).map_err(|error| {
+        warn!(
+            operation = "git_commit_parse",
+            repo = %repo_path.display(),
+            revision = %revision,
+            error = %error,
+            "git commit detail output parse failed"
+        );
+        error
+    })?;
     if commits.len() != 1 {
-        return Err(DomainError::QueryFailed(format!(
+        let error = DomainError::QueryFailed(format!(
             "commit 详情应返回 1 条记录，实际 {} 条",
             commits.len()
-        )));
+        ));
+        warn!(
+            operation = "git_commit_parse",
+            repo = %repo_path.display(),
+            revision = %revision,
+            record_count = commits.len(),
+            error = %error,
+            "git commit detail returned unexpected record count"
+        );
+        return Err(error);
     }
     commits
         .pop()
@@ -412,170 +462,6 @@ fn validate_log_filter(value: &str, label: &str) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-fn parse_log_list_output(text: &str) -> Result<Vec<Commit>> {
-    let mut commits = Vec::new();
-    for (index, record) in text.split('\x1e').enumerate() {
-        let trimmed = record.trim_start_matches('\n');
-        if trimmed.is_empty() {
-            continue;
-        }
-        ensure_git_list_room(commits.len(), "Git 日志列表")?;
-        ensure_git_message_size(trimmed.as_bytes(), "Git 日志记录", index + 1)?;
-        let commit = parse_log_list_record(trimmed).map_err(|reason| {
-            DomainError::QueryFailed(format!(
-                "解析 Git 日志第 {} 条记录失败：{reason}",
-                index + 1
-            ))
-        })?;
-        commits.push(commit);
-    }
-    Ok(commits)
-}
-
-fn parse_log_list_record(record: &str) -> std::result::Result<Commit, String> {
-    let mut fields = record.splitn(6, '\x1f');
-    let hash = fields.next().ok_or("缺少 commit id")?.trim();
-    if hash.is_empty() {
-        return Err("commit id 为空".into());
-    }
-    let author_name = fields.next().ok_or("缺少作者名")?;
-    let author_ts = fields
-        .next()
-        .ok_or("缺少作者时间")?
-        .parse::<i64>()
-        .map_err(|error| format!("作者时间非整数：{error}"))?;
-    let parents = parse_parents(fields.next().ok_or("缺少父提交字段")?)?;
-    let refs = parse_refs(fields.next().ok_or("缺少引用字段")?);
-    let subject = fields.next().ok_or("缺少提交主题")?.to_string();
-    let author_timestamp = chrono::DateTime::from_timestamp(author_ts, 0)
-        .ok_or_else(|| format!("作者时间超出支持范围：{author_ts}"))?;
-
-    Ok(Commit {
-        id: CommitId(hash.to_string()),
-        parents,
-        author: Signature {
-            name: author_name.to_string(),
-            email: String::new(),
-            timestamp: author_timestamp,
-        },
-        // 列表不展示 committer；详情页会按需读取完整字段。
-        committer: Signature {
-            name: String::new(),
-            email: String::new(),
-            timestamp: author_timestamp,
-        },
-        subject,
-        body: String::new(),
-        refs,
-    })
-}
-
-fn parse_log_output(text: &str) -> Result<Vec<Commit>> {
-    let mut commits = Vec::new();
-    for (index, record) in text.split('\x1e').enumerate() {
-        let trimmed = record.trim_start_matches('\n');
-        if trimmed.is_empty() {
-            continue;
-        }
-        ensure_git_list_room(commits.len(), "Git 日志列表")?;
-        ensure_git_message_size(trimmed.as_bytes(), "Git 日志记录", index + 1)?;
-        let commit = parse_record(trimmed).map_err(|reason| {
-            DomainError::QueryFailed(format!(
-                "解析 Git 日志第 {} 条记录失败：{reason}",
-                index + 1
-            ))
-        })?;
-        commits.push(commit);
-    }
-    Ok(commits)
-}
-
-fn parse_record(record: &str) -> std::result::Result<Commit, String> {
-    let mut fields = record.splitn(11, '\x1f');
-    let hash = fields.next().ok_or("缺少 commit id")?.trim();
-    if hash.is_empty() {
-        return Err("commit id 为空".into());
-    }
-    let author_name = fields.next().ok_or("缺少作者名")?;
-    let author_email = fields.next().ok_or("缺少作者邮箱")?;
-    let author_ts = fields
-        .next()
-        .ok_or("缺少作者时间")?
-        .parse::<i64>()
-        .map_err(|error| format!("作者时间非整数：{error}"))?;
-    let committer_name = fields.next().ok_or("缺少提交者名")?;
-    let committer_email = fields.next().ok_or("缺少提交者邮箱")?;
-    let committer_ts = fields
-        .next()
-        .ok_or("缺少提交时间")?
-        .parse::<i64>()
-        .map_err(|error| format!("提交时间非整数：{error}"))?;
-    let parents_str = fields.next().ok_or("缺少父提交字段")?;
-    // %D：decorate refs（"HEAD -> main, origin/main, tag: v1.0"），逗号分隔
-    let refs = parse_refs(fields.next().ok_or("缺少引用字段")?);
-    let subject = fields.next().ok_or("缺少提交主题")?.to_string();
-    let body = fields
-        .next()
-        .ok_or("缺少提交正文字段")?
-        .trim_end_matches('\n')
-        .to_string();
-
-    let author_timestamp = chrono::DateTime::from_timestamp(author_ts, 0)
-        .ok_or_else(|| format!("作者时间超出支持范围：{author_ts}"))?;
-    let committer_timestamp = chrono::DateTime::from_timestamp(committer_ts, 0)
-        .ok_or_else(|| format!("提交时间超出支持范围：{committer_ts}"))?;
-
-    let parents = parse_parents(parents_str)?;
-
-    Ok(Commit {
-        id: CommitId(hash.to_string()),
-        parents,
-        author: Signature {
-            name: author_name.to_string(),
-            email: author_email.to_string(),
-            timestamp: author_timestamp,
-        },
-        committer: Signature {
-            name: committer_name.to_string(),
-            email: committer_email.to_string(),
-            timestamp: committer_timestamp,
-        },
-        subject,
-        body,
-        refs,
-    })
-}
-
-fn parse_parents(raw: &str) -> std::result::Result<Vec<CommitId>, String> {
-    let mut parents = Vec::new();
-    for parent in raw.split_whitespace().filter(|value| !value.is_empty()) {
-        if parents.len() >= MAX_COMMIT_PARENTS {
-            return Err(format!("父提交数量超过 {MAX_COMMIT_PARENTS} 个安全上限"));
-        }
-        parents.push(CommitId(parent.to_string()));
-    }
-    Ok(parents)
-}
-
-fn parse_refs(raw: &str) -> Vec<String> {
-    let mut iter = raw
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let mut refs: Vec<String> = iter
-        .by_ref()
-        .take(MAX_COMMIT_REFS)
-        .map(str::to_string)
-        .collect();
-    let remaining = iter.count();
-    if remaining > 0 {
-        // 给提示腾一个位置，最终 Vec 始终不超过 MAX_COMMIT_REFS。
-        refs.pop();
-        refs.push(format!("…另有 {} 个引用已省略", remaining + 1));
-    }
-    refs
 }
 
 #[cfg(test)]

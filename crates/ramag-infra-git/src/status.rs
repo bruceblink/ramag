@@ -1,21 +1,22 @@
-//! 工作区状态 + 分支。HEAD / 文件变更 / ahead-behind 共用一次 porcelain v2；
-//! 本地与远程分支共用一次 `for-each-ref`，避免重复子进程和仓库锁。
+//! Git 工作区状态与操作检测。
 
 use std::path::Path;
 
 use ramag_domain::entities::{
-    Branch, BranchKind, CommitId, FileChangeKind, FileStatus, MAX_INCREMENTAL_STATUS_PATH_BYTES,
-    MAX_INCREMENTAL_STATUS_PATHS, RepoOperation, WorkingTreeStatus,
+    FileChangeKind, FileStatus, MAX_INCREMENTAL_STATUS_PATH_BYTES, MAX_INCREMENTAL_STATUS_PATHS,
+    RepoOperation, WorkingTreeStatus,
 };
 use ramag_domain::error::{DomainError, Result};
+use tracing::warn;
 
 use crate::git_cmd::{
     ensure_git_list_room, ensure_git_record_size, run_git_bytes, validate_output_path,
     validate_path_args,
 };
 
-const BRANCH_FORMAT: &str =
-    "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(symref)%1e";
+mod branches;
+
+pub use branches::{list_all_branches, list_branches};
 
 pub fn collect_status(repo_path: &Path, git_dir: &Path) -> Result<WorkingTreeStatus> {
     let parsed = run_porcelain_v2(repo_path, true, &[])?;
@@ -36,154 +37,6 @@ pub fn collect_status_paths(repo_path: &Path, paths: &[String]) -> Result<Vec<Fi
     Ok(run_porcelain_v2(repo_path, false, paths)?.files)
 }
 
-/// 单类分支仍只启动一次 `for-each-ref`；联合刷新使用 `list_all_branches`。
-pub fn list_branches(repo_path: &Path, kind: BranchKind) -> Result<Vec<Branch>> {
-    let refs = match kind {
-        BranchKind::Local => &["refs/heads/"][..],
-        BranchKind::Remote => &["refs/remotes/"][..],
-    };
-    let (local, remote) = query_branches(repo_path, refs)?;
-    Ok(match kind {
-        BranchKind::Local => local,
-        BranchKind::Remote => remote,
-    })
-}
-
-/// 本地与远程分支共用一次 `for-each-ref`，避免重复启动 Git 子进程。
-pub fn list_all_branches(repo_path: &Path) -> Result<(Vec<Branch>, Vec<Branch>)> {
-    query_branches(repo_path, &["refs/heads/", "refs/remotes/"])
-}
-
-fn query_branches(repo_path: &Path, refs: &[&str]) -> Result<(Vec<Branch>, Vec<Branch>)> {
-    let format_arg = format!("--format={BRANCH_FORMAT}");
-    let mut args = vec!["for-each-ref", format_arg.as_str()];
-    args.extend_from_slice(refs);
-    let bytes = run_git_bytes(repo_path, &args)?;
-    parse_branch_records(&bytes)
-}
-
-fn parse_branch_records(bytes: &[u8]) -> Result<(Vec<Branch>, Vec<Branch>)> {
-    let mut local = Vec::new();
-    let mut remote = Vec::new();
-    for (record_index, raw) in bytes.split(|byte| *byte == 0x1e).enumerate() {
-        let record = raw.strip_prefix(b"\n").unwrap_or(raw);
-        let record = record.strip_suffix(b"\n").unwrap_or(record);
-        if record.is_empty() {
-            continue;
-        }
-        ensure_git_record_size(record, "Git 分支记录", record_index + 1)?;
-        let fields = record.split(|byte| *byte == 0).collect::<Vec<_>>();
-        if fields.len() != 6 {
-            return Err(branch_parse_error(record_index, "字段数量异常"));
-        }
-        let full_name = decode_branch_field(fields[0], record_index, "ref 名")?;
-        let (kind, name) = if let Some(name) = full_name.strip_prefix("refs/heads/") {
-            (BranchKind::Local, name)
-        } else if let Some(name) = full_name.strip_prefix("refs/remotes/") {
-            (BranchKind::Remote, name)
-        } else {
-            return Err(branch_parse_error(record_index, "ref 前缀异常"));
-        };
-        if name.is_empty() {
-            return Err(branch_parse_error(record_index, "分支名为空"));
-        }
-        let object_id = decode_branch_field(fields[1], record_index, "commit id")?;
-        if object_id.is_empty() || !object_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(branch_parse_error(record_index, "commit id 无效"));
-        }
-        let head = decode_branch_field(fields[2], record_index, "HEAD 标记")?;
-        if head != " " && head != "*" {
-            return Err(branch_parse_error(record_index, "HEAD 标记异常"));
-        }
-        let upstream = decode_branch_field(fields[3], record_index, "upstream")?;
-        let track = decode_branch_field(fields[4], record_index, "track 状态")?;
-        let symref = decode_branch_field(fields[5], record_index, "symbolic ref")?;
-        // origin/HEAD 等符号引用不是可操作分支，保持旧 gix 实现的过滤语义。
-        if !symref.is_empty() {
-            continue;
-        }
-        let (upstream, ahead, behind) = if upstream.is_empty() {
-            if !track.is_empty() {
-                return Err(branch_parse_error(
-                    record_index,
-                    "无 upstream 但存在 track 状态",
-                ));
-            }
-            (None, None, None)
-        } else {
-            let (ahead, behind) = parse_track(track, record_index)?;
-            (Some(upstream.to_string()), ahead, behind)
-        };
-        let branch = Branch {
-            name: name.to_string(),
-            kind,
-            commit: CommitId(object_id.to_string()),
-            is_head: matches!(kind, BranchKind::Local) && head == "*",
-            upstream,
-            ahead,
-            behind,
-        };
-        ensure_git_list_room(local.len().saturating_add(remote.len()), "Git 分支列表")?;
-        let target = match kind {
-            BranchKind::Local => &mut local,
-            BranchKind::Remote => &mut remote,
-        };
-        target.push(branch);
-    }
-    Ok((local, remote))
-}
-
-fn decode_branch_field<'a>(bytes: &'a [u8], index: usize, label: &str) -> Result<&'a str> {
-    std::str::from_utf8(bytes)
-        .map_err(|error| branch_parse_error(index, &format!("{label} 非 UTF-8：{error}")))
-}
-
-fn branch_parse_error(index: usize, reason: &str) -> DomainError {
-    DomainError::QueryFailed(format!(
-        "解析 Git 分支第 {} 条记录失败：{reason}",
-        index + 1
-    ))
-}
-
-/// `%(upstream:track)` 形如 `[ahead 2, behind 1]`
-fn parse_track(s: &str, line_index: usize) -> Result<(Option<usize>, Option<usize>)> {
-    let s = s.trim();
-    if s.is_empty() || s == "[gone]" {
-        return Ok((None, None));
-    }
-    let s = s
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .ok_or_else(|| branch_tracking_parse_error(line_index, "track 状态缺少方括号"))?;
-    let mut ahead = None;
-    let mut behind = None;
-    for part in s.split(',') {
-        let part = part.trim();
-        if let Some(n) = part.strip_prefix("ahead ") {
-            if ahead.is_some() {
-                return Err(branch_tracking_parse_error(line_index, "ahead 计数重复"));
-            }
-            ahead = Some(n.trim().parse().map_err(|error| {
-                branch_tracking_parse_error(line_index, &format!("ahead 计数无效：{error}"))
-            })?);
-        } else if let Some(n) = part.strip_prefix("behind ") {
-            if behind.is_some() {
-                return Err(branch_tracking_parse_error(line_index, "behind 计数重复"));
-            }
-            behind = Some(n.trim().parse().map_err(|error| {
-                branch_tracking_parse_error(line_index, &format!("behind 计数无效：{error}"))
-            })?);
-        } else {
-            return Err(branch_tracking_parse_error(line_index, "未知 track 状态"));
-        }
-    }
-    Ok((ahead, behind))
-}
-
-fn branch_tracking_parse_error(line_index: usize, reason: &str) -> DomainError {
-    branch_parse_error(line_index, reason)
-}
-
 #[derive(Default)]
 struct ParsedStatus {
     files: Vec<FileStatus>,
@@ -195,7 +48,7 @@ struct ParsedStatus {
     saw_head_commit: bool,
 }
 
-/// 完整刷新从同一份 porcelain v2 输出读取 HEAD、ahead/behind 与文件状态；路径刷新不带分支头。
+/// 查询并解析 porcelain v2 状态。
 fn run_porcelain_v2(
     repo_path: &Path,
     include_branch: bool,
@@ -216,8 +69,18 @@ fn run_porcelain_v2(
     }
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
     let bytes = run_git_bytes(repo_path, &args)?;
-    let mut parsed = parse_porcelain_bytes(&bytes)?;
-    // 增量 UI 合并依赖路径有序；Git 通常已排序，先线性确认，异常时才真正排序。
+    let mut parsed = parse_porcelain_bytes(&bytes).map_err(|error| {
+        warn!(
+            operation = "git_status_parse",
+            repo = %repo_path.display(),
+            include_branch,
+            path_count = paths.len(),
+            error = %error,
+            "git status output parse failed"
+        );
+        error
+    })?;
+    // 路径有序时避免额外排序。
     if !parsed
         .files
         .windows(2)
@@ -269,7 +132,7 @@ fn parse_porcelain_bytes(bytes: &[u8]) -> Result<ParsedStatus> {
                 parsed.files.push(parse_ordinary(record, record_index)?);
             }
             b'2' => {
-                // type 2 紧跟一条 NUL 分隔的 old_path
+                // 下一项是旧路径。
                 let old_path = iter
                     .next()
                     .ok_or_else(|| status_parse_error(record_index, "rename 记录缺少旧路径"))?;
@@ -350,7 +213,7 @@ fn parse_branch_header(
         *ahead_behind = Some((ahead, behind));
         return Ok(());
     }
-    // branch.upstream 与 Git 未来新增的 `#` 头不影响当前快照。
+    // 忽略不影响当前快照的分支头。
     text.starts_with("# ")
         .then_some(())
         .ok_or_else(|| status_parse_error(index, "分支头记录格式异常"))
@@ -365,7 +228,7 @@ fn parse_branch_count(value: Option<&str>, prefix: char, index: usize) -> Result
 }
 
 fn parse_ordinary(record: &[u8], index: usize) -> Result<FileStatus> {
-    // 普通记录："1 XY sub mH mI mW hH hI path"。
+    // 格式：1 XY sub mH mI mW hH hI path。
     let text = decode_status_record(record, index)?;
     let parts: Vec<&str> = text.splitn(9, ' ').collect();
     if parts.len() != 9 || parts[0] != "1" {
@@ -386,7 +249,7 @@ fn parse_ordinary(record: &[u8], index: usize) -> Result<FileStatus> {
 }
 
 fn parse_rename(record: &[u8], old_path: &[u8], index: usize) -> Result<FileStatus> {
-    // 重命名记录："2 XY sub mH mI mW hH hI Xscore newpath"。
+    // 格式：2 XY sub mH mI mW hH hI Xscore newpath。
     let text = decode_status_record(record, index)?;
     let parts: Vec<&str> = text.splitn(10, ' ').collect();
     if parts.len() != 10 || parts[0] != "2" {
@@ -409,7 +272,7 @@ fn parse_rename(record: &[u8], old_path: &[u8], index: usize) -> Result<FileStat
 }
 
 fn parse_untracked(record: &[u8], index: usize) -> Result<FileStatus> {
-    // 未跟踪记录："? path"。
+    // 格式：? path。
     let text = decode_status_record(record, index)?;
     let path = text
         .strip_prefix("? ")
@@ -427,7 +290,7 @@ fn parse_untracked(record: &[u8], index: usize) -> Result<FileStatus> {
 }
 
 fn parse_unmerged(record: &[u8], index: usize) -> Result<FileStatus> {
-    // 冲突记录："u XY sub m1 m2 m3 mW h1 h2 h3 path"。
+    // 格式：u XY sub m1 m2 m3 mW h1 h2 h3 path。
     let text = decode_status_record(record, index)?;
     let parts: Vec<&str> = text.splitn(11, ' ').collect();
     if parts.len() != 11 || parts[0] != "u" {
@@ -551,23 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_local_and_remote_branches_in_one_response() -> Result<()> {
-        let raw = b"refs/heads/main\0aaaaaaaa\0*\0origin/main\0[ahead 2, behind 1]\0\x1e\n\
-                    refs/remotes/origin/main\0bbbbbbbb\0 \0\0\0\x1e\n\
-                    refs/remotes/origin/HEAD\0bbbbbbbb\0 \0\0\0refs/remotes/origin/main\x1e\n";
-        let (local, remote) = parse_branch_records(raw)?;
-
-        assert_eq!(local.len(), 1);
-        assert!(local[0].is_head);
-        assert_eq!(local[0].upstream.as_deref(), Some("origin/main"));
-        assert_eq!((local[0].ahead, local[0].behind), (Some(2), Some(1)));
-        assert_eq!(remote.len(), 1);
-        assert_eq!(remote[0].name, "origin/main");
-        assert!(!remote[0].is_head);
-        Ok(())
-    }
-
-    #[test]
     fn malformed_or_non_utf8_status_is_reported() {
         assert!(parse_porcelain_bytes(b"1 M. incomplete\0").is_err());
         assert!(parse_porcelain_bytes(b"2 R. incomplete\0").is_err());
@@ -576,15 +422,5 @@ mod tests {
         assert!(parse_porcelain_bytes(b"# branch.ab ahead -1\0").is_err());
         assert!(parse_porcelain_bytes(b"# branch.ab +1 -2 extra\0").is_err());
         assert!(parse_porcelain_bytes(b"# branch.ab +1 -2\0# branch.ab +1 -2\0").is_err());
-    }
-
-    #[test]
-    fn branch_track_parser_preserves_gone_and_rejects_bad_counts() -> Result<()> {
-        assert_eq!(parse_track("[ahead 2, behind 1]", 0)?, (Some(2), Some(1)));
-        assert_eq!(parse_track("[gone]", 0)?, (None, None));
-        assert!(parse_track("[ahead many]", 0).is_err());
-        assert!(parse_track("ahead 1", 0).is_err());
-        assert!(parse_track("[unknown 1]", 0).is_err());
-        Ok(())
     }
 }

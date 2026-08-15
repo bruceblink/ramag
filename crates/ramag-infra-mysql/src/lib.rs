@@ -97,7 +97,7 @@ impl SqlBackend for MysqlDriver {
         execute::record_backend_id(conn, handle).await
     }
 
-    async fn fetch_warnings(&self, conn: &mut sqlx::pool::PoolConnection<MySql>) -> Vec<Warning> {
+    async fn fetch_warnings(&self, conn: &mut MySqlConnection) -> Vec<Warning> {
         execute::fetch_warnings(conn).await
     }
 

@@ -10,8 +10,8 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
-    v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
+    h_flex, v_flex,
 };
 use ramag_domain::entities::{
     FileChangeKind, FileStatus, WorkingTreeStatus, contains_case_insensitive,
@@ -148,7 +148,7 @@ impl VcsView {
         .track_scroll(&self.changes_scroll)
         .flex_1();
 
-        // size_full + min_h_0：在外层 overflow_y_scrollbar 容器内拿到确定高度（同 project_files）
+        // size_full + min_h_0：在外层滚动容器内拿到确定高度（同 project_files）
         v_flex()
             .size_full()
             .min_h_0()
@@ -395,6 +395,7 @@ impl VcsView {
                     this.select_file(path_for_click.clone(), kind, cx);
                 }
             }))
+            .child(Icon::new(IconName::File).xsmall().text_color(muted_fg))
             .child(
                 div()
                     .w(px(14.0))

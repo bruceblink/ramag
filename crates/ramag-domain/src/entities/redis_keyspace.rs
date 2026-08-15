@@ -24,6 +24,8 @@ pub const MAX_REDIS_COLLECTION_ITEMS: usize = MAX_REDIS_LOADED_ITEMS;
 pub const MAX_REDIS_COLLECTION_BYTES: usize = super::MAX_INTERACTIVE_RESULT_BYTES;
 /// 单批 SCAN 的 COUNT 只是 hint，但仍需限制异常调用给服务端造成的瞬时压力。
 pub const MAX_REDIS_SCAN_COUNT: u32 = 5_000;
+/// 单次类型补查最多覆盖一个 SCAN 批次，避免异常调用构造无界 Pipeline。
+pub const MAX_REDIS_KEY_TYPE_BATCH: usize = MAX_REDIS_SCAN_COUNT as usize;
 /// `scan_all` 是小批辅助接口，不允许被直接调用成无界全库加载。
 pub const MAX_REDIS_SCAN_ALL_KEYS: usize = 10_000;
 /// 全量迁移首页预取窗口；限制同时驻留的值页数量，避免并发吞吐放大内存峰值。

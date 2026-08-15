@@ -99,6 +99,7 @@ impl VcsView {
             let result = driver.cherry_pick(&repo, &commit_id).await;
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let _ = this.update(cx, |this, cx| {
@@ -171,6 +172,7 @@ impl VcsView {
             };
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let _ = this.update(cx, |this, cx| {
@@ -271,10 +273,12 @@ impl VcsView {
             // 操作后刷新 status + branches（merge 完会切回干净状态，分支 ahead/behind 也变了）
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.list_branches(&repo, BranchKind::Local).await,
+                &repo,
                 "local branches",
             );
             let _ = this.update(cx, |this, cx| {
@@ -406,10 +410,12 @@ impl VcsView {
                 .await;
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             let new_local = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.list_branches(&repo, BranchKind::Local).await,
+                &repo,
                 "local branches",
             );
             let _ = this.update(cx, |this, cx| {

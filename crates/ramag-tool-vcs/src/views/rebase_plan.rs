@@ -369,6 +369,7 @@ fn rebase_todo_row(
                         .ghost()
                         .xsmall()
                         .icon(IconName::ArrowUp)
+                        .tooltip("上移")
                         .disabled(busy || !can_move_up)
                         .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             entity_up.update(app, |this, cx| {
@@ -381,6 +382,7 @@ fn rebase_todo_row(
                         .ghost()
                         .xsmall()
                         .icon(IconName::ArrowDown)
+                        .tooltip("下移")
                         .disabled(busy || !can_move_down)
                         .on_click(move |_: &ClickEvent, _: &mut Window, app: &mut App| {
                             entity_dn.update(app, |this, cx| {

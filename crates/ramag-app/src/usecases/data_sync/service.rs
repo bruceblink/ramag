@@ -212,31 +212,44 @@ impl DataSyncService {
 
     /// 列出同步范围。SQL 返回 Database / Schema，MongoDB 返回 Database。
     pub async fn list_catalog_scopes(&self, config: &ConnectionConfig) -> Result<Vec<String>> {
-        config.validate().map_err(DomainError::InvalidConfig)?;
-        let mut scopes: Vec<String> = match config.driver {
-            DriverKind::Mysql | DriverKind::Postgres => self
-                .connection_service
-                .list_schemas(config)
-                .await?
-                .into_iter()
-                .map(|schema| schema.name)
-                .filter(|name| !protected_catalog_scope(config.driver, name))
-                .collect(),
-            DriverKind::Mongodb => self
-                .mongo_service
-                .list_databases(config)
-                .await?
-                .into_iter()
-                .map(|database| database.name)
-                .filter(|name| !protected_catalog_scope(config.driver, name))
-                .collect(),
-            DriverKind::Redis => {
-                return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
-            }
-        };
-        scopes.sort();
-        scopes.dedup();
-        Ok(scopes)
+        let result = async {
+            config.validate().map_err(DomainError::InvalidConfig)?;
+            let mut scopes: Vec<String> = match config.driver {
+                DriverKind::Mysql | DriverKind::Postgres => self
+                    .connection_service
+                    .list_schemas(config)
+                    .await?
+                    .into_iter()
+                    .map(|schema| schema.name)
+                    .filter(|name| !protected_catalog_scope(config.driver, name))
+                    .collect(),
+                DriverKind::Mongodb => self
+                    .mongo_service
+                    .list_databases(config)
+                    .await?
+                    .into_iter()
+                    .map(|database| database.name)
+                    .filter(|name| !protected_catalog_scope(config.driver, name))
+                    .collect(),
+                DriverKind::Redis => {
+                    return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
+                }
+            };
+            scopes.sort();
+            scopes.dedup();
+            Ok(scopes)
+        }
+        .await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "data_sync_catalog_scopes",
+                connection_id = %config.id,
+                engine = ?config.driver,
+                error = %error,
+                "list data sync scopes failed"
+            );
+        }
+        result
     }
 
     /// 列出指定范围中的可同步对象。视图不属于当前同步范围，会在目录阶段过滤。
@@ -245,33 +258,47 @@ impl DataSyncService {
         config: &ConnectionConfig,
         scope: &str,
     ) -> Result<DataSyncObjectCatalog> {
-        config.validate().map_err(DomainError::InvalidConfig)?;
-        let mut names = match config.driver {
-            DriverKind::Mysql | DriverKind::Postgres => self
-                .connection_service
-                .list_tables(config, scope)
-                .await?
-                .into_iter()
-                .filter(|table| !table.is_view)
-                .map(|table| table.name)
-                .collect::<Vec<_>>(),
-            DriverKind::Mongodb => self
-                .mongo_service
-                .list_collections(config, scope)
-                .await?
-                .into_iter()
-                .filter(|collection| !collection.is_view)
-                .map(|collection| collection.name)
-                .collect::<Vec<_>>(),
-            DriverKind::Redis => {
-                return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
-            }
-        };
-        names.sort();
-        names.dedup();
-        let truncated = names.len() > MAX_DATA_SYNC_CATALOG_OBJECTS;
-        names.truncate(MAX_DATA_SYNC_CATALOG_OBJECTS);
-        Ok(DataSyncObjectCatalog { names, truncated })
+        let result = async {
+            config.validate().map_err(DomainError::InvalidConfig)?;
+            let mut names = match config.driver {
+                DriverKind::Mysql | DriverKind::Postgres => self
+                    .connection_service
+                    .list_tables(config, scope)
+                    .await?
+                    .into_iter()
+                    .filter(|table| !table.is_view)
+                    .map(|table| table.name)
+                    .collect::<Vec<_>>(),
+                DriverKind::Mongodb => self
+                    .mongo_service
+                    .list_collections(config, scope)
+                    .await?
+                    .into_iter()
+                    .filter(|collection| !collection.is_view)
+                    .map(|collection| collection.name)
+                    .collect::<Vec<_>>(),
+                DriverKind::Redis => {
+                    return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
+                }
+            };
+            names.sort();
+            names.dedup();
+            let truncated = names.len() > MAX_DATA_SYNC_CATALOG_OBJECTS;
+            names.truncate(MAX_DATA_SYNC_CATALOG_OBJECTS);
+            Ok(DataSyncObjectCatalog { names, truncated })
+        }
+        .await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "data_sync_catalog_objects",
+                connection_id = %config.id,
+                engine = ?config.driver,
+                scope,
+                error = %error,
+                "list data sync objects failed"
+            );
+        }
+        result
     }
 
     pub async fn preflight(&self, request: DataSyncRequest) -> Result<PreparedDataSync> {

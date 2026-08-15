@@ -1,14 +1,11 @@
 //! 剪贴板全文搜索与带密钥的三字节 Bloom 预筛索引。
 
-use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
-use redb::{
-    Database, ReadableDatabase as _, ReadableTable, ReadableTableMetadata as _, TableDefinition,
-};
+use redb::{Database, ReadableDatabase as _, ReadableTable, TableDefinition};
 
 use ramag_domain::entities::{
     ClipItem, ClipSearchResult, MAX_CLIPBOARD_SEARCH_BYTES, contains_case_insensitive,
@@ -31,7 +28,6 @@ const SEARCH_FILTER_BITS: usize = SEARCH_FILTER_BYTES * 8;
 const SEARCH_GRAM_BYTES: usize = 3;
 const SEARCH_HASHES_PER_GRAM: usize = 4;
 const MAX_FILTERABLE_TEXT_BYTES: usize = 1024 * 1024;
-const SEARCH_INDEX_MIGRATION_BATCH: usize = 10_000;
 pub(super) const PARALLEL_SEARCH_PREFIX: usize = 2_048;
 const PARALLEL_SEARCH_BATCH: usize = 4_096;
 
@@ -41,6 +37,12 @@ enum SearchProbe {
     Miss,
     Cancelled,
 }
+
+mod index_migration;
+
+pub(crate) use index_migration::initialize_index;
+#[cfg(test)]
+use index_migration::{is_ready, rebuild_index};
 
 struct QueryFilter {
     positions: Vec<u16>,
@@ -106,131 +108,6 @@ pub(super) fn mark_ready(write_txn: &redb::WriteTransaction) -> Result<()> {
     meta.insert(SEARCH_INDEX_READY_KEY, SEARCH_INDEX_VERSION)
         .map_err(store_err)?;
     Ok(())
-}
-
-fn is_ready(db: &Database) -> Result<bool> {
-    let read_txn = db.begin_read().map_err(store_err)?;
-    let meta = read_txn.open_table(CLIP_SEARCH_META).map_err(store_err)?;
-    Ok(meta
-        .get(SEARCH_INDEX_READY_KEY)
-        .map_err(store_err)?
-        .is_some_and(|value| value.value() == SEARCH_INDEX_VERSION))
-}
-
-/// 旧库已有时间索引时在后台一次性补齐搜索索引；完成前搜索自动沿用全量解密路径。
-pub(crate) fn initialize_index(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<()> {
-    if is_ready(&db)? {
-        return Ok(());
-    }
-    let is_empty = {
-        let read_txn = db.begin_read().map_err(store_err)?;
-        let by_time = read_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-        by_time.is_empty().map_err(store_err)?
-    };
-    if is_empty {
-        let write_txn = db.begin_write().map_err(store_err)?;
-        mark_ready(&write_txn)?;
-        write_txn.commit().map_err(store_err)?;
-        return Ok(());
-    }
-
-    std::thread::Builder::new()
-        .name("ramag-clip-search-index".into())
-        .spawn(move || match rebuild_index(&db, &cipher) {
-            Ok(count) => tracing::info!(operation = "clipboard_search_index_migrate", count, "clipboard search index migrated"),
-            Err(error) => tracing::warn!(operation = "clipboard_search_index_migrate", error = %error, "clipboard search index migration failed"),
-        })
-        .map_err(|error| DomainError::Storage(format!("启动剪贴搜索索引迁移失败：{error}")))?;
-    Ok(())
-}
-
-fn rebuild_index(db: &Database, cipher: &RwLock<Cipher>) -> Result<usize> {
-    let reset_txn = db.begin_write().map_err(store_err)?;
-    reset_txn
-        .delete_table(CLIP_SEARCH_FILTERS)
-        .map_err(store_err)?;
-    reset_txn
-        .open_table(CLIP_SEARCH_FILTERS)
-        .map_err(store_err)?;
-    {
-        let mut meta = reset_txn.open_table(CLIP_SEARCH_META).map_err(store_err)?;
-        meta.remove(SEARCH_INDEX_READY_KEY).map_err(store_err)?;
-    }
-    reset_txn.commit().map_err(store_err)?;
-
-    let cipher = cipher.read();
-    let mut last_key: Option<String> = None;
-    let mut migrated = 0usize;
-    loop {
-        let batch = {
-            let read_txn = db.begin_read().map_err(store_err)?;
-            let by_time = read_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-            let lower = last_key
-                .as_deref()
-                .map_or(Bound::Unbounded, Bound::Excluded);
-            let mut batch = Vec::with_capacity(SEARCH_INDEX_MIGRATION_BATCH);
-            for entry in by_time
-                .range::<&str>((lower, Bound::Unbounded))
-                .map_err(store_err)?
-                .take(SEARCH_INDEX_MIGRATION_BATCH)
-            {
-                let (rk, uuid) = entry.map_err(store_err)?;
-                batch.push((rk.value().to_string(), uuid.value().to_string()));
-            }
-            batch
-        };
-        let Some((next_last, _)) = batch.last() else {
-            break;
-        };
-        last_key = Some(next_last.clone());
-
-        let write_txn = db.begin_write().map_err(store_err)?;
-        {
-            let by_time = write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-            let clips = write_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
-            let mut filters = write_txn
-                .open_table(CLIP_SEARCH_FILTERS)
-                .map_err(store_err)?;
-            let mut scratch = Vec::new();
-            for (rk, uuid) in &batch {
-                let current = by_time.get(rk.as_str()).map_err(store_err)?;
-                if current.is_none_or(|value| value.value() != uuid) {
-                    continue;
-                }
-                let encrypted = clips
-                    .get(uuid.as_str())
-                    .map_err(store_err)?
-                    .ok_or_else(|| {
-                        DomainError::Storage(format!("剪贴时间索引 {rk} 指向缺失条目 {uuid}"))
-                    })?;
-                let item = decode_record_reusing(uuid, encrypted.value(), &cipher, &mut scratch)?;
-                let filter = build_filter(&item, &cipher);
-                filters
-                    .insert(rk.as_str(), filter.as_slice())
-                    .map_err(store_err)?;
-                migrated = migrated.saturating_add(1);
-            }
-        }
-        write_txn.commit().map_err(store_err)?;
-    }
-
-    let finish_txn = db.begin_write().map_err(store_err)?;
-    {
-        let by_time = finish_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
-        let filters = finish_txn
-            .open_table(CLIP_SEARCH_FILTERS)
-            .map_err(store_err)?;
-        let expected = by_time.len().map_err(store_err)?;
-        let actual = filters.len().map_err(store_err)?;
-        if actual != expected {
-            return Err(DomainError::Storage(format!(
-                "剪贴搜索索引迁移数量不一致：{actual} / {expected}"
-            )));
-        }
-    }
-    mark_ready(&finish_txn)?;
-    finish_txn.commit().map_err(store_err)?;
-    Ok(migrated)
 }
 
 pub(crate) fn search(

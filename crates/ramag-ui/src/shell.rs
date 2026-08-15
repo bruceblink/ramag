@@ -256,41 +256,6 @@ impl Shell {
         // 标题始终反映当前工具（含首帧 / 恢复到某工具），保留任务栏可辨识性
         window.set_window_title(&self.window_title());
     }
-
-    /// 跳到第 n 个已注册工具（0-based）；越界忽略。Cmd/Ctrl+1/2/3 用
-    fn select_tool_index(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tool) = self.registry.list().get(n) {
-            self.navigate_to(NavTarget::Tool(tool.meta().id.clone()), window, cx);
-        }
-    }
-
-    /// 在「首页 + 各工具 + 设置」间循环；`reverse=true` 时反向。
-    fn cycle_section(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let tools = self.registry.list();
-        let section_count = tools.len() + 2;
-        let current = if self.settings_selected {
-            section_count - 1
-        } else if let Some(id) = &self.selected {
-            tools
-                .iter()
-                .position(|tool| tool.meta().id == *id)
-                .map_or(0, |index| index + 1)
-        } else {
-            0
-        };
-        let next = if reverse {
-            (current + section_count - 1) % section_count
-        } else {
-            (current + 1) % section_count
-        };
-        if next == 0 {
-            self.navigate_to(NavTarget::Home, window, cx);
-        } else if next == section_count - 1 {
-            self.navigate_to(NavTarget::Settings, window, cx);
-        } else {
-            self.select_tool_index(next - 1, window, cx);
-        }
-    }
 }
 
 /// 上次工具落 prefs（后台异步，失败仅告警）。Home 存空串
@@ -323,37 +288,6 @@ impl Render for Shell {
             .bg(bg_color)
             .text_color(fg_color)
             .key_context("Shell")
-            // 工具切换快捷键：Cmd/Ctrl+1/2/3/4 跳工具，Ctrl+Tab 循环区段
-            .on_action(
-                cx.listener(|this, _: &crate::actions::SelectTool1, window, cx| {
-                    this.select_tool_index(0, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::actions::SelectTool2, window, cx| {
-                    this.select_tool_index(1, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::actions::SelectTool3, window, cx| {
-                    this.select_tool_index(2, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::actions::SelectTool4, window, cx| {
-                    this.select_tool_index(3, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::actions::CycleSection, window, cx| {
-                    this.cycle_section(false, window, cx);
-                }),
-            )
-            .on_action(cx.listener(
-                |this, _: &crate::actions::CycleSectionReverse, window, cx| {
-                    this.cycle_section(true, window, cx);
-                },
-            ))
             .child(
                 h_flex()
                     .flex_1()

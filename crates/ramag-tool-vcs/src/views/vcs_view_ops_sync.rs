@@ -32,6 +32,7 @@ enum WorkspaceStatusResult {
 /// 写操作后的辅助刷新允许保留旧 UI 数据，但失败必须留有可定位日志。
 pub(super) fn best_effort_refresh<T>(
     result: ramag_domain::error::Result<T>,
+    repo_id: &ramag_domain::entities::RepoId,
     resource: &'static str,
 ) -> Option<T> {
     match result {
@@ -39,6 +40,7 @@ pub(super) fn best_effort_refresh<T>(
         Err(error) => {
             tracing::warn!(
                 operation = "vcs_post_operation_refresh",
+                repo_id = %repo_id,
                 resource,
                 error = %error,
                 "post-operation refresh failed"

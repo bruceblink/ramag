@@ -3,8 +3,8 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
-    v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _,
+    clipboard::Clipboard, h_flex, v_flex,
 };
 
 use super::helpers::{FileTabSource, GroupKind};
@@ -192,6 +192,7 @@ impl VcsView {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .tooltip("关闭")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             // 阻止冒泡到 tab 的 select on_click（否则关了又被重新打开 = 关不掉）
                             cx.stop_propagation();
@@ -272,10 +273,33 @@ impl VcsView {
             } else {
                 IconName::Maximize
             })
+            .tooltip(if self.diff_fullscreen {
+                "退出全屏"
+            } else {
+                "全屏查看"
+            })
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_diff_fullscreen(cx);
             }));
-        h_flex()
+        let copy_button = self
+            .current_diff
+            .as_ref()
+            .filter(|diff| {
+                !diff.binary
+                    && !diff.hunks.is_empty()
+                    && super::vcs_view_ops_patch::can_build_patch_for_diff(diff)
+            })
+            .map(|diff| {
+                let diff = diff.clone();
+                Clipboard::new("vcs-diff-copy")
+                    .tooltip("复制")
+                    .value_fn(move |_, _| {
+                        super::vcs_view_ops_patch::build_patch_for_diff(&diff)
+                            .unwrap_or_default()
+                            .into()
+                    })
+            });
+        let mut header = h_flex()
             .gap(px(6.0))
             .items_center()
             .px(px(10.0))
@@ -312,9 +336,11 @@ impl VcsView {
                 row.child(div().text_xs().text_color(accent).child("blame 加载中…"))
             })
             .child(blame_btn)
-            .child(view_mode_btn)
-            .child(fullscreen_btn)
-            .into_any_element()
+            .child(view_mode_btn);
+        if let Some(copy_button) = copy_button {
+            header = header.child(copy_button);
+        }
+        header.child(fullscreen_btn).into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -414,6 +440,7 @@ fn render_inline_blame_banner(
                 .ghost()
                 .xsmall()
                 .icon(IconName::Close)
+                .tooltip("关闭")
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.clear_inline_blame(cx);
                 })),

@@ -7,6 +7,7 @@ pub mod history;
 pub mod id_conversion;
 pub mod jumpserver;
 pub mod mongo;
+pub mod object_storage;
 pub mod query;
 pub mod redis_keyspace;
 pub mod redis_value;
@@ -71,16 +72,38 @@ pub use mongo::{
     validate_mongo_database_name, validate_mongo_document, validate_mongo_field_path,
     validate_mongo_pipeline,
 };
+pub use object_storage::{
+    CloudProvider, HttpsEndpoint, MAX_MANUAL_BUCKETS_PER_ACCOUNT,
+    MAX_OBJECT_STORAGE_ACCESS_KEY_ID_BYTES, MAX_OBJECT_STORAGE_ACCESS_KEY_SECRET_BYTES,
+    MAX_OBJECT_STORAGE_ACCOUNT_NAME_BYTES, MAX_OBJECT_STORAGE_ACCOUNTS,
+    MAX_OBJECT_STORAGE_BUCKET_NAME_BYTES, MAX_OBJECT_STORAGE_CONCURRENT_TRANSFERS,
+    MAX_OBJECT_STORAGE_ENDPOINT_BYTES, MAX_OBJECT_STORAGE_KEY_BYTES,
+    MAX_OBJECT_STORAGE_PAGE_ENTRIES, MAX_OBJECT_STORAGE_QUEUED_TRANSFERS,
+    MAX_OBJECT_STORAGE_REGION_BYTES, MAX_OBJECT_STORAGE_SESSION_BYTES,
+    MAX_OBJECT_STORAGE_TEXT_PREVIEW_BYTES, MAX_OBJECT_STORAGE_TRANSFER_HISTORY,
+    MAX_OBJECT_STORAGE_WORKSPACE_BYTES, MAX_OBJECT_STORAGE_WORKSPACE_ENTRIES, ManualBucket,
+    OBJECT_STORAGE_ACCOUNT_SCHEMA_VERSION, OBJECT_STORAGE_TRANSFER_BUFFER_BYTES,
+    ObjectCapabilities, ObjectDownloadRequest, ObjectEntry, ObjectEntryKind, ObjectListCursor,
+    ObjectListQuery, ObjectMetadata, ObjectPage, ObjectProgressFn, ObjectStorageAccount,
+    ObjectStorageAccountId, ObjectStorageAccountSnapshot, ObjectStorageFavorite,
+    ObjectStorageMount, ObjectStorageMountId, ObjectStorageSessionPreference,
+    ObjectStorageWorkspacePreference, ObjectStorageWorkspaceState, ObjectTextPreview,
+    ObjectTransferProgress, ObjectUploadRequest, SecretString, is_opendal_safe_key,
+    is_opendal_safe_list_prefix, is_opendal_safe_prefix, validate_bucket_name,
+    validate_bucket_name_for_provider, validate_object_key, validate_object_name_prefix,
+    validate_prefix, validate_region, validate_root_prefix,
+};
 pub use query::{
     MAX_SQL_QUERY_BYTES, Query, QueryResult, Row, Value, Warning, json_pretty_bounded,
 };
 pub use redis_keyspace::{
     KeyMeta, MAX_REDIS_COLLECTION_BYTES, MAX_REDIS_COLLECTION_ITEMS, MAX_REDIS_COMMAND_ARG_BYTES,
     MAX_REDIS_COMMAND_ARGS, MAX_REDIS_COMMAND_BYTES, MAX_REDIS_COMMAND_NAME_BYTES,
-    MAX_REDIS_KEY_BYTES, MAX_REDIS_LOADED_ITEMS, MAX_REDIS_MATCH_PATTERN_BYTES,
-    MAX_REDIS_SCAN_ALL_KEYS, MAX_REDIS_SCAN_COUNT, MAX_REDIS_VALUE_PAGE_BATCH, RedisType,
-    ScanResult, validate_redis_collection_limit, validate_redis_command, validate_redis_key,
-    validate_redis_match_pattern, validate_redis_scan_count,
+    MAX_REDIS_KEY_BYTES, MAX_REDIS_KEY_TYPE_BATCH, MAX_REDIS_LOADED_ITEMS,
+    MAX_REDIS_MATCH_PATTERN_BYTES, MAX_REDIS_SCAN_ALL_KEYS, MAX_REDIS_SCAN_COUNT,
+    MAX_REDIS_VALUE_PAGE_BATCH, RedisType, ScanResult, validate_redis_collection_limit,
+    validate_redis_command, validate_redis_key, validate_redis_match_pattern,
+    validate_redis_scan_count,
 };
 pub use redis_value::{RedisValue, RedisValueLoad, RedisValuePage, StreamEntry, ValuePageCursor};
 pub use resource_limits::{

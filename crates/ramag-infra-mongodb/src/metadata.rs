@@ -37,13 +37,11 @@ pub async fn list_databases(client: &Client) -> Result<Vec<MongoDatabase>> {
 
 pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoCollection>> {
     let database = client.database(db);
-    // list_collections 返回 cursor of CollectionSpecification（含 name + type）
     let mut cursor = database.list_collections().await.map_err(map_mongo_error)?;
     let mut out = Vec::new();
     let mut retained_bytes = 0usize;
     while let Some(spec) = cursor.try_next().await.map_err(map_mongo_error)? {
-        // 跳过 MongoDB 系统集合（system.views / system.buckets.* / system.profile / system.js 等）：
-        // 受限账号无权访问，点开会报 code=13；数据库客户端惯例不展示
+        // 系统集合可能需要额外权限，不在客户端中展示。
         if is_system_collection(&spec.name) {
             continue;
         }
@@ -64,12 +62,11 @@ pub async fn list_collections(client: &Client, db: &str) -> Result<Vec<MongoColl
         ensure_metadata_limit(out.len().saturating_add(1), retained_bytes, "集合")?;
         out.push(collection);
     }
-    // listCollections 返回服务端顺序，按集合名字典序排，左侧列表稳定有序（与 SQL 的 ORDER BY 一致）
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
-/// MongoDB 系统集合判定：名字以 `system.` 开头（system.views / system.buckets.* / system.profile / system.js 等）
+/// 判断 MongoDB 系统集合。
 fn is_system_collection(name: &str) -> bool {
     name.starts_with("system.")
 }

@@ -1,4 +1,4 @@
-//! 仓库 storage 管理 + Clone / Init / 确认弹窗
+//! 仓库记录、克隆与初始化。
 
 use std::collections::HashSet;
 
@@ -6,17 +6,17 @@ use gpui::{Context, Window};
 use ramag_domain::entities::{RepoConfig, RepoId};
 use ramag_domain::error::{DomainError, Result};
 
-use super::super::helpers::is_current_arc_slot;
 use super::super::vcs_view::VcsView;
-use super::{MAX_OPEN_REPOS, open_repo_async};
+use super::MAX_OPEN_REPOS;
 
-/// 打开中的仓库 Tab 路径列表的偏好 key（JSON 数组，跨重启恢复用）
 const OPEN_REPOS_PREF: &str = "vcs_open_repos";
 const MAX_OPEN_REPOS_PREF_BYTES: usize = 256 * 1024;
 const MAX_OPEN_REPO_PATH_BYTES: usize = 32 * 1024;
 
+mod creation;
+
 impl VcsView {
-    /// 保存单条 RepoConfig 到 storage；失败要可见，否则最近时间会在重启后悄悄丢失。
+    /// 异步保存仓库记录。
     pub(crate) fn save_repo_async(&self, repo: RepoConfig, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
         let coordinator = self.repo_write_coordinator.clone();
@@ -42,8 +42,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 从 storage 删除单条 RepoConfig。失败要提示：内存列表已移除，
-    /// 持久化没删掉会在下次启动"复活"，静默会让用户以为删除生效了
+    /// 异步删除仓库记录。
     pub(crate) fn delete_repo_async(&self, path: String, id: RepoId, cx: &mut Context<Self>) {
         let storage = self.storage.clone();
         let coordinator = self.repo_write_coordinator.clone();
@@ -68,7 +67,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 弹确认对话框：从最近列表移除仓库（不删磁盘文件）
+    /// 确认后从最近列表移除仓库，不删除磁盘文件。
     pub(crate) fn confirm_remove_recent_repo(
         &self,
         path: String,
@@ -95,261 +94,7 @@ impl VcsView {
         );
     }
 
-    /// 异步 Clone 远程仓库到本地路径，完成后复用 open_repo_async 走 open + 拉数据流
-    pub(crate) fn clone_repo_async(
-        &mut self,
-        url: String,
-        dest: std::path::PathBuf,
-        cx: &mut Context<Self>,
-    ) {
-        self.startup_repo_restore_allowed = false;
-        if self.loading {
-            return;
-        }
-        if self.busy {
-            self.notify_warning("当前 Git 写操作尚未完成，完成后再 Clone 仓库", cx);
-            return;
-        }
-        if !self.ensure_commit_draft_within_limit(cx) || !self.ensure_project_file_drafts_saved(cx)
-        {
-            return;
-        }
-        if !self.ensure_open_repo_capacity(&dest.to_string_lossy(), cx) {
-            return;
-        }
-        let driver = self.driver.clone();
-        self.loading = true;
-        let repo_hint = url
-            .trim_end_matches('/')
-            .rsplit(['/', ':'])
-            .next()
-            .unwrap_or("仓库")
-            .trim_end_matches(".git");
-        self.loading_label = Some(format!("正在 Clone {repo_hint} 到 {}…", dest.display()));
-        self.error = None;
-        // 进度槽 + 取消位：infra 持续写进度，loading 屏每帧读；取消钮置位后 kill 子进程
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let progress = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        self.clone_cancel = Some(cancel.clone());
-        self.clone_progress = Some(progress.clone());
-        cx.notify();
-        // 进度刷新 ticker：进度槽由后台线程写入，须周期 notify 驱动 loading 屏重渲染；
-        // clone 结束（槽被清空）自动退出
-        let poll_cancel = cancel.clone();
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(200))
-                    .await;
-                let alive = this
-                    .update(cx, |this, cx| {
-                        let alive = is_current_arc_slot(this.clone_cancel.as_ref(), &poll_cancel);
-                        if alive {
-                            cx.notify();
-                        }
-                        alive
-                    })
-                    .unwrap_or(false);
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
-        cx.spawn(async move |this, cx| {
-            let destination = dest.clone();
-            let prepared =
-                ramag_app::run_blocking(move || prepare_clone_destination(&destination)).await;
-            if let Err(error) = prepared {
-                tracing::error!(
-                    operation = "git_clone",
-                    error = %error,
-                    dir = %dest.display(),
-                    "prepare clone destination failed"
-                );
-                let _ = this.update(cx, |this, cx| {
-                    if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
-                        return;
-                    }
-                    this.loading = false;
-                    this.loading_label = None;
-                    this.clone_cancel = None;
-                    this.clone_progress = None;
-                    this.error = Some(format!("无法准备 Clone 目标目录：{error}"));
-                    cx.notify();
-                });
-                return;
-            }
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                let _ = this.update(cx, |this, cx| {
-                    if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
-                        return;
-                    }
-                    this.loading = false;
-                    this.loading_label = None;
-                    this.clone_cancel = None;
-                    this.clone_progress = None;
-                    this.pending_clone_cleanup = Some(dest.clone());
-                    cx.notify();
-                });
-                return;
-            }
-            match driver
-                .clone_repo_streaming(&url, &dest, cancel.clone(), progress)
-                .await
-            {
-                Ok(rc) => {
-                    tracing::info!(
-                        operation = "git_clone",
-                        repo_id = %rc.id,
-                        path = %rc.path,
-                        "clone completed"
-                    );
-                    let current = this
-                        .update(cx, |this, cx| {
-                            if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
-                                return false;
-                            }
-                            this.clone_cancel = None;
-                            this.clone_progress = None;
-                            cx.notify();
-                            true
-                        })
-                        .unwrap_or(false);
-                    if !current {
-                        return;
-                    }
-                    open_repo_async(&this, driver, std::path::PathBuf::from(&rc.path), cx).await;
-                }
-                Err(e) => {
-                    let cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
-                    if cancelled {
-                        tracing::info!(
-                            operation = "git_clone",
-                            destination = %dest.display(),
-                            "clone cancelled by user"
-                        );
-                    } else {
-                        tracing::error!(
-                            operation = "git_clone",
-                            destination = %dest.display(),
-                            error = %e,
-                            "clone failed"
-                        );
-                    }
-                    let _ = this.update(cx, |this, cx| {
-                        if !is_current_arc_slot(this.clone_cancel.as_ref(), &cancel) {
-                            return;
-                        }
-                        this.loading = false;
-                        this.loading_label = None;
-                        this.clone_cancel = None;
-                        this.clone_progress = None;
-                        // 用户主动取消：静默回列表，不当错误弹横幅；
-                        // 半成品目录（本次任务独占创建）交用户决定删除或保留
-                        if !cancelled {
-                            this.error = Some(format!("Clone 失败: {e}"));
-                        } else {
-                            this.pending_clone_cleanup = Some(dest.clone());
-                        }
-                        cx.notify();
-                    });
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// 用户确认后删除本次 Clone 独占创建的残留目录；文件 I/O 放共享受限工作池。
-    pub(crate) fn cleanup_cancelled_clone_dir_async(
-        &mut self,
-        dir: std::path::PathBuf,
-        cx: &mut Context<Self>,
-    ) {
-        let display = dir.display().to_string();
-        cx.spawn(async move |this, cx| {
-            let path = dir.clone();
-            let result =
-                ramag_app::run_blocking(move || remove_cancelled_clone_directory(&path)).await;
-            let _ = this.update(cx, |this, cx| {
-                this.pending_notification = Some(match result {
-                    Ok(()) => {
-                        tracing::info!(
-                            operation = "vcs_clone_cleanup",
-                            path = %dir.display(),
-                            status = "completed",
-                            "partial clone directory removed"
-                        );
-                        gpui_component::notification::Notification::success(format!(
-                            "已删除未完成的 Clone 目录：{display}"
-                        ))
-                        .autohide(true)
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            operation = "vcs_clone_cleanup",
-                            error = %error,
-                            path = %dir.display(),
-                            "partial clone cleanup failed"
-                        );
-                        gpui_component::notification::Notification::error(format!(
-                            "删除未完成的 Clone 目录失败：{error}"
-                        ))
-                        .autohide(false)
-                    }
-                });
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// 异步初始化空仓库（真正执行 git init），完成后打开 session。
-    /// 目录已是 git 仓库时 init 幂等无害（git init 对既有仓库安全）
-    pub(crate) fn init_repo_async(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        self.startup_repo_restore_allowed = false;
-        if self.loading {
-            return;
-        }
-        if self.busy {
-            self.notify_warning("当前 Git 写操作尚未完成，完成后再初始化仓库", cx);
-            return;
-        }
-        if !self.ensure_commit_draft_within_limit(cx) || !self.ensure_project_file_drafts_saved(cx)
-        {
-            return;
-        }
-        if !self.ensure_open_repo_capacity(&path.to_string_lossy(), cx) {
-            return;
-        }
-        let driver = self.driver.clone();
-        self.loading = true;
-        self.loading_label = Some(format!("正在初始化仓库 {}…", path.display()));
-        self.error = None;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            if let Err(e) = driver.init_repo(&path).await {
-                tracing::error!(
-                    operation = "vcs_repository_init",
-                    path = %path.display(),
-                    error = %e,
-                    "repository initialization failed"
-                );
-                let _ = this.update(cx, |this, cx| {
-                    this.loading = false;
-                    this.loading_label = None;
-                    this.error = Some(format!("初始化仓库失败：{e}"));
-                    cx.notify();
-                });
-                return;
-            }
-            open_repo_async(&this, driver, path, cx).await;
-        })
-        .detach();
-    }
-
-    /// 启动时从 storage 加载 recent_repos（跨重启保留），并按偏好恢复上次打开的仓库 Tab
-    /// （仅恢复 Tab 列表，不自动 open 任何仓库——停留在仓库管理页，点 Tab 才真正打开）
+    /// 加载最近仓库及上次打开的标签，不自动打开仓库。
     pub(crate) fn load_recent_repos_async(cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let storage = match this.update(cx, |this, _| this.storage.clone()) {
@@ -399,13 +144,11 @@ impl VcsView {
                 match result {
                     Ok(mut list) => {
                         if restore_allowed {
-                            // 按保存顺序恢复 Tab；已从 recent 移除的仓库自动跳过
                             this.open_repos = open_paths
                                 .iter()
                                 .filter_map(|p| list.iter().find(|r| &r.path == p).cloned())
                                 .collect();
                         } else {
-                            // 用户已打开新仓库：保留内存中的较新记录，只补齐存储中的历史项。
                             for current in this.recent_repos.iter() {
                                 if let Some(loaded) =
                                     list.iter_mut().find(|loaded| loaded.path == current.path)
@@ -448,7 +191,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 把当前打开的仓库 Tab 路径列表落 prefs；同 key 串行且只保留最新快照。
+    /// 保存已打开仓库的标签列表。
     pub(crate) fn persist_open_repos(&self, cx: &mut Context<Self>) {
         let paths: Vec<String> = self.open_repos.iter().map(|r| r.path.clone()).collect();
         let json = match serde_json::to_string(&paths) {
@@ -507,82 +250,6 @@ fn parse_open_repo_paths(json: &str) -> Result<(Vec<String>, bool)> {
     }
     adjusted |= normalized.len() != original_len;
     Ok((normalized, adjusted))
-}
-
-fn prepare_clone_destination(path: &std::path::Path) -> Result<()> {
-    match std::fs::create_dir(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err(DomainError::InvalidConfig(format!(
-                "目标目录已存在：{}；为避免覆盖或误删，请选择其他父目录或调整仓库名",
-                path.display()
-            )))
-        }
-        Err(error) => Err(DomainError::Other(format!(
-            "创建 Clone 目标目录 {} 失败：{error}",
-            path.display()
-        ))),
-    }
-}
-
-fn remove_cancelled_clone_directory(path: &std::path::Path) -> Result<()> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(DomainError::Other(format!(
-                "检查残留目录 {} 失败：{error}",
-                path.display()
-            )));
-        }
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(DomainError::InvalidConfig(format!(
-            "路径已不再是本次 Clone 创建的普通目录，已拒绝删除：{}",
-            path.display()
-        )));
-    }
-
-    let git_path = path.join(".git");
-    match std::fs::symlink_metadata(&git_path) {
-        Ok(git_metadata) if git_metadata.is_dir() && !git_metadata.file_type().is_symlink() => {
-            std::fs::remove_dir_all(path).map_err(|error| {
-                DomainError::Other(format!(
-                    "删除残留 Clone 目录 {} 失败：{error}",
-                    path.display()
-                ))
-            })
-        }
-        Ok(_) => Err(DomainError::InvalidConfig(format!(
-            "残留目录中的 .git 类型异常，已拒绝删除：{}",
-            path.display()
-        ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut entries = std::fs::read_dir(path).map_err(|error| {
-                DomainError::Other(format!("读取残留目录 {} 失败：{error}", path.display()))
-            })?;
-            match entries.next() {
-                None => std::fs::remove_dir(path).map_err(|error| {
-                    DomainError::Other(format!(
-                        "删除空的 Clone 目标目录 {} 失败：{error}",
-                        path.display()
-                    ))
-                }),
-                Some(Ok(_)) => Err(DomainError::InvalidConfig(format!(
-                    "目录内容已变化且不含 .git，已拒绝自动删除：{}",
-                    path.display()
-                ))),
-                Some(Err(error)) => Err(DomainError::Other(format!(
-                    "检查残留目录 {} 内容失败：{error}",
-                    path.display()
-                ))),
-            }
-        }
-        Err(error) => Err(DomainError::Other(format!(
-            "检查残留目录 {} 的 .git 失败：{error}",
-            path.display()
-        ))),
-    }
 }
 
 #[cfg(test)]

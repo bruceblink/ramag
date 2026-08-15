@@ -22,6 +22,14 @@ impl VcsView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = driver.list_files(&repo).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "vcs_project_files_load",
+                    repo_id = %repo,
+                    error = %error,
+                    "load project files failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo) || this.project_files_request_seq != request_seq {
                     return;
@@ -30,12 +38,6 @@ impl VcsView {
                 match result {
                     Ok(paths) => this.project_files = paths,
                     Err(e) => {
-                        error!(
-                            operation = "vcs_project_files_load",
-                            repo_id = %repo,
-                            error = %e,
-                            "load project files failed"
-                        );
                         this.project_files = Vec::new();
                         this.error = Some(format!("加载 Project Files 失败: {e}"));
                     }
@@ -124,10 +126,19 @@ impl VcsView {
             .await
             {
                 Ok(prepared) => prepared,
-                Err(e) => prepare_file_snapshot(RawFileContent::with_error(
-                    path.clone(),
-                    format!("文件读取任务失败: {e}"),
-                )),
+                Err(error) => {
+                    error!(
+                        operation = "vcs_project_file_read",
+                        repo_id = %repo_id,
+                        path = %path,
+                        error = %error,
+                        "read project file failed"
+                    );
+                    prepare_file_snapshot(RawFileContent::with_error(
+                        path.clone(),
+                        format!("文件读取任务失败: {error}"),
+                    ))
+                }
             };
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo_id)
@@ -324,6 +335,16 @@ impl VcsView {
             let Some(result) = result else {
                 return;
             };
+            if let Err(error) = &result {
+                error!(
+                    operation = "vcs_project_file_autosave",
+                    repo_id = %repo_id,
+                    path = %path,
+                    revision,
+                    error = %error,
+                    "autosave project file failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 if !this.is_current_repo(&repo_id) {
                     return;
@@ -341,13 +362,6 @@ impl VcsView {
                         }
                     }
                     Err(error) => {
-                        tracing::error!(
-                            operation = "vcs_project_file_autosave",
-                            repo_id = %repo_id,
-                            path = %path,
-                            error = %error,
-                            "autosave project file failed"
-                        );
                         this.pending_notification = Some(
                             gpui_component::notification::Notification::error(format!(
                                 "自动保存 {path} 失败：{error}；可按 {} 重试",

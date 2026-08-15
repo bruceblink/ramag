@@ -139,10 +139,19 @@ impl CollectionTreePanel {
                             .whitespace_nowrap()
                             .child(SharedString::from(name.clone())),
                     )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.toggle_database(&name_for_click, cx)
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            if event.modifiers().secondary() {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text_with_notification(
+                                        name_for_click.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                return;
+                            }
+                            this.toggle_database(&name_for_click, cx);
                         }),
                     )
                     .context_menu(move |menu: PopupMenu, _, _| {
@@ -229,10 +238,23 @@ impl CollectionTreePanel {
                             .whitespace_nowrap()
                             .child(SharedString::from(name.clone())),
                     )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.select_collection(db_for_click.clone(), name_for_click.clone(), cx)
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            if event.modifiers().secondary() {
+                                if ramag_ui::is_primary_modifier_double_click(event) {
+                                    ramag_ui::copy_text_with_notification(
+                                        name_for_click.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                return;
+                            }
+                            this.select_collection(
+                                db_for_click.clone(),
+                                name_for_click.clone(),
+                                cx,
+                            );
                         }),
                     );
                 if selected {

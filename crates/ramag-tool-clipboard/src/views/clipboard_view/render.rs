@@ -6,12 +6,10 @@ use gpui_component::{
     ActiveTheme, Selectable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
     h_flex, input::Input, v_flex,
 };
-use ramag_domain::entities::ClipKind;
+use ramag_domain::entities::{ClipKind, format_bytes};
 
 use super::ClipboardView;
-use crate::actions::{
-    CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip, SelectPrevClip,
-};
+use crate::actions::{SelectNextClip, SelectPrevClip};
 
 impl Render for ClipboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -28,20 +26,17 @@ impl Render for ClipboardView {
         let muted = theme.muted_foreground;
         let visible = self.visible_items(cx);
         let count = visible.len();
+        let total_bytes = visible
+            .iter()
+            .fold(0_u64, |total, item| total.saturating_add(item.byte_size));
         let query_active = !self.search.read(cx).value().trim().is_empty();
-        let count_label = if query_active && self.search_truncated {
-            format!("显示 {count} 条 · 历史匹配至少 500 条，仅加载前 500 条")
-        } else {
-            format!("{count} 条")
-        };
+        let count_label =
+            clipboard_status_label(count, total_bytes, query_active && self.search_truncated);
         let focus = self.focus_handle.clone();
 
         v_flex()
             .key_context("ClipboardView")
             .track_focus(&focus)
-            .on_action(cx.listener(Self::on_focus_search))
-            .on_action(cx.listener(Self::on_copy_selected))
-            .on_action(cx.listener(Self::on_delete_selected))
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_select_prev))
             .size_full()
@@ -83,6 +78,15 @@ impl Render for ClipboardView {
                             .child(self.render_detail(cx)),
                     ),
             )
+    }
+}
+
+fn clipboard_status_label(count: usize, total_bytes: u64, search_truncated: bool) -> String {
+    let usage = format_bytes(total_bytes);
+    if search_truncated {
+        format!("显示 {count} 条 · 占用 {usage} · 历史匹配至少 500 条，仅加载前 500 条")
+    } else {
+        format!("{count} 条 · 占用 {usage}")
     }
 }
 
@@ -200,33 +204,32 @@ impl ClipboardView {
 }
 
 impl ClipboardView {
-    fn on_focus_search(
-        &mut self,
-        _: &FocusClipSearch,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.search.update(cx, |s, cx| s.focus(window, cx));
-    }
-
-    fn on_copy_selected(&mut self, _: &CopySelectedClip, _: &mut Window, cx: &mut Context<Self>) {
-        self.copy_selected(cx);
-    }
-
-    fn on_delete_selected(
-        &mut self,
-        _: &DeleteSelectedClip,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.delete_selected(window, cx);
-    }
-
     fn on_select_next(&mut self, _: &SelectNextClip, _: &mut Window, cx: &mut Context<Self>) {
         self.move_selection(1, cx);
     }
 
     fn on_select_prev(&mut self, _: &SelectPrevClip, _: &mut Window, cx: &mut Context<Self>) {
         self.move_selection(-1, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clipboard_status_label;
+
+    #[test]
+    fn clipboard_status_includes_readable_content_size() {
+        assert_eq!(
+            clipboard_status_label(257, 18 * 1024 * 1024, false),
+            "257 条 · 占用 18.0 MiB"
+        );
+    }
+
+    #[test]
+    fn truncated_search_status_keeps_size_and_limit_hint() {
+        assert_eq!(
+            clipboard_status_label(500, 2048, true),
+            "显示 500 条 · 占用 2 KiB · 历史匹配至少 500 条，仅加载前 500 条"
+        );
     }
 }

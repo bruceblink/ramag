@@ -11,7 +11,7 @@ use gpui_component::{
 
 use super::SshView;
 use super::model::ViewMode;
-use crate::{CloseSshTerminal, NewSshTerminal, RefreshSftp};
+use crate::{CloseSshTerminal, NewSshTerminal};
 
 impl SshView {
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -108,7 +108,7 @@ impl SshView {
                             muted
                         })
                         .child(if workspace.profile.production {
-                            "生产"
+                            ramag_ui::PRODUCTION_BADGE_LABEL
                         } else {
                             "SSH"
                         }),
@@ -120,6 +120,7 @@ impl SshView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
+                    .tooltip("关闭")
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, window, cx| {
                             cx.stop_propagation();
@@ -169,6 +170,70 @@ impl Render for SshView {
         v_flex()
             .key_context("SshWorkspace")
             .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &ramag_ui::OpenRecentItems, window, cx| {
+                    if this.view_mode == ViewMode::Workspace {
+                        let items = this
+                            .profiles
+                            .iter()
+                            .map(|profile| {
+                                let endpoint = format!(
+                                    "{}@{}:{}",
+                                    if profile.username.is_empty() {
+                                        "默认用户"
+                                    } else {
+                                        profile.username.as_str()
+                                    },
+                                    profile.host,
+                                    profile.port.unwrap_or(22)
+                                );
+                                let mut item = ramag_ui::recent_items_dialog::RecentItem::new(
+                                    profile.id.to_string(),
+                                    profile.name.clone(),
+                                    endpoint,
+                                    gpui_component::IconName::Network,
+                                )
+                                .secondary(
+                                    profile
+                                        .initial_directory
+                                        .clone()
+                                        .unwrap_or_else(|| "默认目录".into()),
+                                )
+                                .current(this.active_workspace_id.as_ref() == Some(&profile.id));
+                                if let Some(environment) = profile.environment.clone() {
+                                    item = item.badge(environment);
+                                }
+                                item
+                            })
+                            .collect();
+                        let view = cx.entity().clone();
+                        ramag_ui::recent_items_dialog::open_recent_item_picker(
+                            window,
+                            cx,
+                            "最近打开的 SSH 连接",
+                            "搜索名称、地址、用户或环境",
+                            "ssh_recent_picker_favorites",
+                            items,
+                            std::sync::Arc::new(move |id, window, app| {
+                                let id = view
+                                    .read(app)
+                                    .profiles
+                                    .iter()
+                                    .find(|profile| profile.id.to_string() == id)
+                                    .map(|profile| profile.id.clone());
+                                if let Some(id) = id {
+                                    view.update(app, |this, cx| {
+                                        this.open_workspace(id, window, cx)
+                                    });
+                                }
+                            }),
+                        );
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .size_full()
             .bg(cx.theme().background)
             .on_action(cx.listener(|this, _: &NewSshTerminal, window, cx| {
@@ -177,10 +242,6 @@ impl Render for SshView {
             }))
             .on_action(cx.listener(|this, _: &CloseSshTerminal, window, cx| {
                 this.close_active_terminal_or_workspace(window, cx);
-                cx.stop_propagation();
-            }))
-            .on_action(cx.listener(|this, _: &RefreshSftp, _window, cx| {
-                this.refresh_active_directory(cx);
                 cx.stop_propagation();
             }))
             .child(self.render_tabs(cx))

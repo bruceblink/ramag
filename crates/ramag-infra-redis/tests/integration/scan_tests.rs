@@ -36,6 +36,61 @@ async fn scan_iterates_full_keyspace() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn key_type_pipeline_preserves_input_order() {
+    let config = require_env!();
+    let driver = RedisDriver::new();
+    cleanup(&driver, &config).await;
+
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec!["SET".into(), "types:string".into(), "v".into()],
+        )
+        .await
+        .unwrap();
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec![
+                "HSET".into(),
+                "types:hash".into(),
+                "field".into(),
+                "v".into(),
+            ],
+        )
+        .await
+        .unwrap();
+    driver
+        .execute_command(
+            &config,
+            TEST_DB,
+            vec![
+                "ZADD".into(),
+                "types:zset".into(),
+                "1".into(),
+                "member".into(),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let keys = vec![
+        "types:zset".to_string(),
+        "types:string".to_string(),
+        "types:hash".to_string(),
+    ];
+    let types = driver.key_types(&config, TEST_DB, &keys).await.unwrap();
+    assert_eq!(
+        types,
+        vec![RedisType::ZSet, RedisType::String, RedisType::Hash]
+    );
+
+    cleanup(&driver, &config).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn ttl_set_and_persist() {
     let config = require_env!();
     let driver = RedisDriver::new();

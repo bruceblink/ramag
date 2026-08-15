@@ -1,3 +1,4 @@
+use super::import_support::{create_collection_command, scoped_collection};
 use super::*;
 
 #[test]

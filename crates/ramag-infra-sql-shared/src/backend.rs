@@ -14,7 +14,7 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::CancelHandle;
 use sqlx::pool::PoolConnection;
-use sqlx::{Database, Executor, IntoArguments, Pool};
+use sqlx::{Acquire as _, Database, Executor, IntoArguments, Pool};
 use tracing::{debug, info, warn};
 
 use crate::errors::map_sqlx_common;
@@ -93,7 +93,7 @@ where
     }
 
     /// MySQL SHOW WARNINGS；其他 DB 默认空
-    async fn fetch_warnings(&self, _conn: &mut PoolConnection<Self::Db>) -> Vec<Warning> {
+    async fn fetch_warnings(&self, _conn: &mut <Self::Db as Database>::Connection) -> Vec<Warning> {
         Vec::new()
     }
 
@@ -403,38 +403,34 @@ where
     };
 
     let user_disabled_limit = sql_has_no_limit_marker(&query.sql);
-
-    for (i, stmt) in statements.iter().enumerate() {
-        let trimmed = stmt.trim_start();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let is_select = is_query_returning_rows(trimmed);
-        let injected = if is_select && !user_disabled_limit {
-            inject_limit_if_needed(trimmed, query.auto_limit)
-        } else {
-            None
-        };
-        let effective_sql: &str = injected.as_deref().unwrap_or(stmt.as_str());
-
-        let mut r = if is_select {
-            let max_result_bytes = query
-                .result_byte_limit
-                .map_or(MAX_QUERY_RESULT_BYTES, |limit| {
-                    u64::try_from(limit).unwrap_or(MAX_QUERY_RESULT_BYTES)
-                });
-            run_select::<B>(b, &mut *conn, effective_sql, max_result_bytes).await?
-        } else {
-            run_dml::<B>(b, &mut *conn, effective_sql).await?
-        };
-        if !is_select {
-            total_affected = total_affected.saturating_add(r.affected_rows);
-        }
-        append_warnings_bounded(&mut accumulated_warnings, std::mem::take(&mut r.warnings));
-        append_warnings_bounded(&mut accumulated_warnings, b.fetch_warnings(&mut conn).await);
-        if i == last_idx {
-            last_result = r;
-        }
+    if query.transactional {
+        let mut transaction = conn.begin().await.map_err(|e| map_err(b, e))?;
+        execute_statements(
+            b,
+            &mut transaction,
+            query,
+            &statements,
+            last_idx,
+            user_disabled_limit,
+            &mut total_affected,
+            &mut accumulated_warnings,
+            &mut last_result,
+        )
+        .await?;
+        transaction.commit().await.map_err(|e| map_err(b, e))?;
+    } else {
+        execute_statements(
+            b,
+            &mut conn,
+            query,
+            &statements,
+            last_idx,
+            user_disabled_limit,
+            &mut total_affected,
+            &mut accumulated_warnings,
+            &mut last_result,
+        )
+        .await?;
     }
 
     if last_result.rows.is_empty() && last_result.columns.is_empty() {
@@ -456,6 +452,58 @@ where
         warnings: accumulated_warnings,
         ..last_result
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_statements<B>(
+    b: &B,
+    conn: &mut <B::Db as Database>::Connection,
+    query: &Query,
+    statements: &[String],
+    last_idx: usize,
+    user_disabled_limit: bool,
+    total_affected: &mut u64,
+    accumulated_warnings: &mut Vec<Warning>,
+    last_result: &mut QueryResult,
+) -> Result<()>
+where
+    B: SqlBackend,
+    for<'q> <B::Db as Database>::Arguments<'q>: IntoArguments<'q, B::Db>,
+    for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
+    for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
+{
+    for (i, stmt) in statements.iter().enumerate() {
+        let trimmed = stmt.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let is_select = is_query_returning_rows(trimmed);
+        let injected = if is_select && !user_disabled_limit {
+            inject_limit_if_needed(trimmed, query.auto_limit)
+        } else {
+            None
+        };
+        let effective_sql: &str = injected.as_deref().unwrap_or(stmt.as_str());
+        let mut result = if is_select {
+            let max_result_bytes = query
+                .result_byte_limit
+                .map_or(MAX_QUERY_RESULT_BYTES, |limit| {
+                    u64::try_from(limit).unwrap_or(MAX_QUERY_RESULT_BYTES)
+                });
+            run_select::<B>(b, conn, effective_sql, max_result_bytes).await?
+        } else {
+            run_dml::<B>(b, conn, effective_sql).await?
+        };
+        if !is_select {
+            *total_affected = total_affected.saturating_add(result.affected_rows);
+        }
+        append_warnings_bounded(accumulated_warnings, std::mem::take(&mut result.warnings));
+        append_warnings_bounded(accumulated_warnings, b.fetch_warnings(conn).await);
+        if i == last_idx {
+            *last_result = result;
+        }
+    }
+    Ok(())
 }
 
 fn append_warnings_bounded(accumulated: &mut Vec<Warning>, incoming: Vec<Warning>) {

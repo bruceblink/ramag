@@ -25,7 +25,7 @@ impl QueryTab {
         self.editor.read(cx).value()
     }
 
-    /// 运行、解析或格式化前先拦住异常大的编辑器内容，避免复制和 CPU 峰值。
+    /// 限制 SQL 大小，避免大文本占用过多资源。
     fn checked_current_sql(
         &mut self,
         operation: &str,
@@ -191,7 +191,7 @@ impl QueryTab {
         is_run: bool,
         cx: &mut Context<Self>,
     ) {
-        // 对话框等待期间可能已启动其他查询，再次防重入。
+        // 确认对话框期间可能已启动其他查询。
         if self.running {
             return;
         }
@@ -227,7 +227,7 @@ impl QueryTab {
             (sql_to_run, None)
         };
         self.pager = pager;
-        // 首屏并发精确计数，翻页复用结果。
+        // 首屏并发统计总数，翻页复用。
         let count_base = self.pager.as_ref().map(|pager| pager.base_sql.clone());
         self.execute_query(
             conn.clone(),
@@ -242,7 +242,7 @@ impl QueryTab {
         }
     }
 
-    /// 新查询通过代际使旧计数失效。
+    /// 异步格式化当前 SQL。
     pub(crate) fn handle_format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.formatting {
             self.pending_notification =
@@ -274,6 +274,14 @@ impl QueryTab {
                 ))
             })
             .await;
+            if let Err(error) = &formatted {
+                error!(
+                    operation = "sql_format",
+                    sql_bytes = source_sql.len(),
+                    error = %error,
+                    "format SQL failed"
+                );
+            }
             let _ = this.update_in(async_cx, move |this, window, cx| {
                 this.formatting = false;
                 if this.current_sql(cx) != source_sql {
@@ -344,7 +352,7 @@ impl QueryTab {
         });
     }
 
-    /// 先停止客户端等待，再尽力取消服务端查询。
+    /// 停止客户端等待，并请求取消服务端查询。
     pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.current_task.take().is_none() {
             return;
@@ -427,7 +435,7 @@ impl QueryTab {
         self.prefetch_columns_for_used_tables(cx);
     }
 
-    /// 按 SQL 限定名、活动库、连接默认库依次推断表并预拉列。
+    /// 推断 SQL 所用的表并预取列。
     fn prefetch_columns_for_used_tables(&self, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;

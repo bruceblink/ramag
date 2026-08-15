@@ -29,8 +29,8 @@ use gpui::{
 };
 use gpui_component::Root;
 use ramag_app::{
-    ClipboardService, ConnectionService, DataSyncGate, DataSyncService, MongoService, RedisService,
-    SshService, ToolRegistry, UpdateService,
+    AUTO_CHECK_INTERVAL, ClipboardService, ConnectionService, DataSyncGate, DataSyncService,
+    MongoService, ObjectStorageService, RedisService, SshService, ToolRegistry, UpdateService,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_domain::traits::ClipboardDriver;
@@ -38,7 +38,9 @@ use ramag_domain::traits::{
     DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use ramag_infra_clipboard::{HotkeyListener, PlatformClipboardDriver, foreground_display_index};
+use ramag_infra_clipboard::{
+    HotkeyEvent, HotkeyListener, PlatformClipboardDriver, foreground_display_index,
+};
 use ramag_infra_git::GitDriverImpl;
 use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
@@ -49,24 +51,22 @@ use ramag_infra_storage::RedbStorage;
 use ramag_infra_update::GitHubUpdateDriver;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_tool_clipboard::{
-    ClipboardTool, CopySelectedClip, DeleteSelectedClip, FocusClipSearch, SelectNextClip,
-    SelectPrevClip, create_clipboard_drawer, create_clipboard_view,
+    ClipboardImageCache, ClipboardTool, SelectNextClip, SelectPrevClip,
+    create_clipboard_drawer_with_cache, create_clipboard_view,
 };
 use ramag_tool_dbclient::{
     DbClientTool, ExplainQuery, FindInResults, FormatSql, NewQueryTab, RunQuery,
     RunStatementAtCursor, ToggleRedisConsole, ToggleSqlEditor, create_dbclient_view,
 };
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
-use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, RefreshSftp, SshTool, create_ssh_view};
-use ramag_tool_vcs::{
-    CommitNow, FocusCommitMessage, PullNow, PushNow, RefreshWorkspace, SaveProjectFile,
-    ToggleHistoryPane, VcsTool, create_vcs_view,
-};
+use ramag_tool_object_storage::{ObjectStorageTool, create_object_storage_view};
+use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, SshTool, create_ssh_view};
+use ramag_tool_vcs::{CommitNow, PullNow, PushNow, ToggleHistoryPane, VcsTool, create_vcs_view};
 use ramag_ui::{
-    CloseTab, CycleSection, CycleSectionReverse, DATABASE_SEARCH_SETTINGS_PREF_KEY,
-    FEEDBACK_ISSUE_URL, HomeEvent, HomeView, NavTarget, RamagAssets, SelectTool1, SelectTool2,
-    SelectTool3, SelectTool4, SettingsView, Shell, StorageGlobal, init_database_search_settings,
-    init_theme, sync_update_indicator,
+    CloseTab, DATABASE_SEARCH_SETTINGS_PREF_KEY, FEEDBACK_ISSUE_URL, HomeEvent, HomeView,
+    NavTarget, OpenRecentItems, REDIS_TREE_SETTINGS_PREF_KEY, RamagAssets, SettingsView, Shell,
+    StorageGlobal, init_database_search_settings, init_redis_tree_settings, init_theme,
+    sync_update_indicator,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -116,6 +116,7 @@ struct AppDeps {
     data_sync_gate: Arc<DataSyncGate>,
     clipboard_service: Option<Arc<ClipboardService>>,
     ssh_service: Arc<SshService>,
+    object_storage_service: Arc<ObjectStorageService>,
     update_service: Option<Arc<UpdateService>>,
     storage: Arc<dyn Storage>,
 }
@@ -161,6 +162,7 @@ fn finish_main_window_open(cx: &mut App) {
 }
 
 fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
+    cx.activate(true);
     if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|g| g.0)
         && handle
             .update(cx, |_, window, _| window.activate_window())
@@ -186,6 +188,16 @@ fn main() {
         debug = cfg!(debug_assertions),
         "application starting"
     );
+
+    if let Err(error) = install_tls_crypto_provider() {
+        error!(operation = "tls_provider_init", error = %error, "TLS crypto provider initialization failed");
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Ramag 启动失败")
+            .set_description(format!("无法初始化安全网络组件：{error}"))
+            .show();
+        std::process::exit(1);
+    }
 
     // 单实例：已有实例在跑则通知其唤起主窗口后静默退出（避免 redb 文件锁报错）；
     // macOS 由系统 LaunchServices 保证 .app 单实例，无需自建
@@ -236,14 +248,39 @@ fn main() {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let clipboard_service: Option<Arc<ClipboardService>> = None;
     let ssh_service: Arc<SshService> = build_ssh_service(storage.clone());
+    let object_storage_service = match build_object_storage_service(storage.clone()) {
+        Ok(service) => service,
+        Err(error) => {
+            error!(operation = "object_storage_init", error = %error, "object storage initialization failed");
+            let _ = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Ramag 启动失败")
+                .set_description(format!("无法初始化对象存储模块：{error}"))
+                .show();
+            std::process::exit(1);
+        }
+    };
     let update_service = build_update_service(storage.clone());
 
     // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
-    let startup_preferences =
-        read_preferences(&storage, &["theme_mode", DATABASE_SEARCH_SETTINGS_PREF_KEY]);
+    let startup_preferences = read_preferences(
+        &storage,
+        &[
+            "theme_mode",
+            DATABASE_SEARCH_SETTINGS_PREF_KEY,
+            REDIS_TREE_SETTINGS_PREF_KEY,
+            ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY,
+        ],
+    );
     let initial_pref = startup_preferences.get("theme_mode").cloned();
     let initial_database_search_pref = startup_preferences
         .get(DATABASE_SEARCH_SETTINGS_PREF_KEY)
+        .cloned();
+    let initial_redis_tree_pref = startup_preferences
+        .get(REDIS_TREE_SETTINGS_PREF_KEY)
+        .cloned();
+    let initial_shortcut_overrides = startup_preferences
+        .get(ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY)
         .cloned();
 
     // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
@@ -284,6 +321,7 @@ fn main() {
         data_sync_gate,
         clipboard_service,
         ssh_service,
+        object_storage_service,
         update_service,
         storage,
     };
@@ -307,6 +345,9 @@ fn main() {
         {
             warn!(operation = "database_search_settings_load", error, "ignore invalid database search settings");
         }
+        if let Err(error) = init_redis_tree_settings(initial_redis_tree_pref.as_deref(), cx) {
+            warn!(operation = "redis_tree_settings_load", error, "ignore invalid Redis tree settings");
+        }
         cx.set_global(StorageGlobal(deps.storage.clone()));
         cx.activate(true);
 
@@ -317,13 +358,18 @@ fn main() {
             }
         });
 
-        // 退出时关闭全部 SSH 隧道子进程，避免残留孤儿 ssh 占用端口
+        // 退出时关闭 SSH 与对象存储运行时，避免残留后台任务。
         let ssh_service_for_quit = deps.ssh_service.clone();
+        let object_storage_for_quit = deps.object_storage_service.clone();
         cx.on_app_quit(move |_| {
             let ssh_service = ssh_service_for_quit.clone();
+            let object_storage = object_storage_for_quit.clone();
             async move {
                 if let Err(error) = ssh_service.shutdown().await {
                     warn!(operation = "ssh_shutdown", error = %error, "shutdown ssh tool resources failed");
+                }
+                if let Err(error) = object_storage.shutdown().await {
+                    warn!(operation = "object_storage_shutdown", error = %error, "shutdown object storage resources failed");
                 }
                 ramag_infra_tunnel::shutdown_all();
             }
@@ -398,12 +444,7 @@ fn main() {
 
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
-            KeyBinding::new("secondary-1", SelectTool1, None),
-            KeyBinding::new("secondary-2", SelectTool2, None),
-            KeyBinding::new("secondary-3", SelectTool3, None),
-            KeyBinding::new("secondary-4", SelectTool4, None),
-            KeyBinding::new("ctrl-tab", CycleSection, None),
-            KeyBinding::new("ctrl-shift-tab", CycleSectionReverse, None),
+            KeyBinding::new("secondary-p", OpenRecentItems, None),
             KeyBinding::new("secondary-enter", RunQuery, None),
             KeyBinding::new("secondary-shift-enter", RunStatementAtCursor, None),
             KeyBinding::new("secondary-t", NewQueryTab, None),
@@ -417,25 +458,23 @@ fn main() {
             KeyBinding::new("secondary-shift-f", FormatMongoJson, Some("MongoQueryTab")),
             KeyBinding::new("secondary-e", ToggleMongoEditor, Some("MongoQueryPanel")),
             KeyBinding::new("secondary-e", ToggleRedisConsole, Some("RedisSession")),
-            KeyBinding::new("secondary-k", FocusCommitMessage, Some("VcsView")),
             KeyBinding::new("secondary-enter", CommitNow, Some("VcsView")),
             KeyBinding::new("secondary-shift-k", PushNow, Some("VcsView")),
             KeyBinding::new("secondary-t", PullNow, Some("VcsView")),
-            KeyBinding::new("secondary-r", RefreshWorkspace, Some("VcsView")),
-            KeyBinding::new("secondary-s", SaveProjectFile, Some("VcsView")),
             KeyBinding::new("secondary-shift-h", ToggleHistoryPane, Some("VcsView")),
             KeyBinding::new("secondary-t", NewSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("SshWorkspace")),
             KeyBinding::new("secondary-w", CloseSshTerminal, Some("Terminal")),
-            KeyBinding::new("secondary-r", RefreshSftp, Some("SshWorkspace")),
         ]);
+
+        ramag_ui::shortcuts_dialog::init_shortcut_overrides(
+            initial_shortcut_overrides.as_deref(),
+            cx,
+        );
+        ramag_ui::shortcuts_dialog::apply_saved_shortcut_overrides(cx);
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         cx.bind_keys([
-            KeyBinding::new("secondary-f", FocusClipSearch, Some("ClipboardView")),
-            KeyBinding::new("enter", CopySelectedClip, Some("ClipboardView")),
-            KeyBinding::new("delete", DeleteSelectedClip, Some("ClipboardView")),
-            KeyBinding::new("backspace", DeleteSelectedClip, Some("ClipboardView")),
             KeyBinding::new("down", SelectNextClip, Some("ClipboardView")),
             KeyBinding::new("up", SelectPrevClip, Some("ClipboardView")),
         ]);
@@ -453,7 +492,7 @@ fn main() {
             cx.spawn(async move |_| preload_service.preload().await)
                 .detach();
             spawn_clipboard_capture(svc.clone(), cx);
-            spawn_clipboard_hotkey(svc, deps.registry.clone(), cx);
+            spawn_clipboard_hotkey(svc, deps.registry.clone(), deps.clone(), cx);
         }
 
         let log_path_for_open = log_path.clone();
@@ -506,24 +545,30 @@ fn main() {
         if !cfg!(debug_assertions)
             && let Some(service) = deps.update_service.clone()
         {
-            spawn_update_check(service, cx);
+            spawn_update_checks(service, cx);
         }
     });
     info!(operation = "application_stop", "application stopped");
 }
 
-fn spawn_update_check(service: Arc<UpdateService>, cx: &mut App) {
+const INITIAL_UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn spawn_update_checks(service: Arc<UpdateService>, cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor()
-            .timer(std::time::Duration::from_secs(3))
+            .timer(INITIAL_UPDATE_CHECK_DELAY)
             .await;
-        let result = service.check(false).await;
-        cx.update(|cx| match result {
-            Ok(result) => sync_update_indicator(&result, cx),
-            Err(error) => {
-                warn!(operation = "application_update_check", error = %error, "automatic update check failed");
-            }
-        });
+        loop {
+            // 每次启动和每个周期都访问远端，避免跨进程缓存延迟新版本提示。
+            let result = service.check(true).await;
+            cx.update(|cx| match result {
+                Ok(result) => sync_update_indicator(&result, cx),
+                Err(error) => {
+                    warn!(operation = "application_update_check", error = %error, "automatic update check failed");
+                }
+            });
+            cx.background_executor().timer(AUTO_CHECK_INTERVAL).await;
+        }
     })
     .detach();
 }

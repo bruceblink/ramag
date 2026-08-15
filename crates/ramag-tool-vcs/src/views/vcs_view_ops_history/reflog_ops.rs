@@ -73,6 +73,7 @@ impl VcsView {
             let result = driver.checkout(&repo, &commit).await;
             let new_status = crate::views::vcs_view_ops_sync::best_effort_refresh(
                 driver.status(&repo).await,
+                &repo,
                 "workspace status",
             );
             // detached HEAD 后分支的 is_head 标记会变，同步刷新
@@ -80,6 +81,7 @@ impl VcsView {
                 driver
                     .list_branches(&repo, ramag_domain::entities::BranchKind::Local)
                     .await,
+                &repo,
                 "local branches",
             );
             let _ = this.update(cx, |this, cx| {

@@ -185,6 +185,7 @@ impl VcsView {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::refresh_cw())
+                    .tooltip("刷新")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_workspace_silent(cx);
@@ -405,7 +406,7 @@ impl VcsView {
             .outline()
             .xsmall()
             .icon(IconName::Inbox)
-            .tooltip("储藏当前变更")
+            .tooltip("储藏")
             .disabled(
                 self.busy
                     || !has_changes
