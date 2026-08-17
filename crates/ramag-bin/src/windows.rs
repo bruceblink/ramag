@@ -25,14 +25,14 @@ impl gpui::Global for MainWindowGlobal {}
 
 /// 合并主窗口句柄写入前的重复唤起。
 #[derive(Default)]
-struct MainWindowOpenGate {
+pub(super) struct MainWindowOpenGate {
     opening: bool,
 }
 
 impl gpui::Global for MainWindowOpenGate {}
 
 impl MainWindowOpenGate {
-    fn try_begin(&mut self) -> bool {
+    pub(super) fn try_begin(&mut self) -> bool {
         if self.opening {
             return false;
         }
@@ -40,7 +40,7 @@ impl MainWindowOpenGate {
         true
     }
 
-    fn finish(&mut self) {
+    pub(super) fn finish(&mut self) {
         self.opening = false;
     }
 }
