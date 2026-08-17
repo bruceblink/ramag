@@ -383,6 +383,7 @@ mod tests {
     #[cfg(unix)]
     use std::time::{Duration, Instant};
 
+    #[cfg(unix)]
     use super::*;
     #[cfg(unix)]
     use crate::TerminalCommand;
