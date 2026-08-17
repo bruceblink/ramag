@@ -523,7 +523,7 @@ pub(super) fn persist_ide_left_width(
         return;
     };
     let width = f32::from(width).clamp(LEFT_WIDTH_MIN, LEFT_WIDTH_MAX);
-    _ = view.update(cx, |this, _| this.ide_left_width = width);
+    view.update(cx, |this, _| this.ide_left_width = width);
     cx.background_spawn(async move {
         if let Err(error) = storage
             .set_preference(LEFT_WIDTH_PREFERENCE, &format!("{width:.1}"))
