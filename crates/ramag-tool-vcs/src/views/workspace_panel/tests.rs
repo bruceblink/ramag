@@ -43,3 +43,9 @@ fn parent_directory_set_excludes_file_names() {
         HashSet::from(["src".to_string(), "src/ui".to_string()])
     );
 }
+
+#[test]
+fn git_file_name_removes_tree_directory_prefix() {
+    assert_eq!(git_file_name("crates/ramag-ui/src/lib.rs"), "lib.rs");
+    assert_eq!(git_file_name("README.md"), "README.md");
+}

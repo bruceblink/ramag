@@ -301,8 +301,10 @@ impl VcsView {
         let code_color = code_letter_color(code, muted_fg);
 
         let path_label = match (&f.old_path, &f.path) {
-            (Some(old), new) if old != new => format!("{old} → {new}"),
-            _ => f.path.clone(),
+            (Some(old), new) if old != new => {
+                format!("{} → {}", git_file_name(old), git_file_name(new))
+            }
+            _ => git_file_name(&f.path).to_string(),
         };
 
         let path_for_buttons = f.path.clone();
@@ -446,6 +448,10 @@ fn collect_parent_dirs<'a>(paths: impl IntoIterator<Item = &'a str>) -> HashSet<
         }
     }
     dirs
+}
+
+fn git_file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 #[allow(clippy::too_many_arguments)]

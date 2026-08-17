@@ -72,6 +72,21 @@ pub fn folder_plus() -> Icon {
 }
 
 #[inline]
+pub fn files() -> Icon {
+    Icon::default().path("icons/files.svg")
+}
+
+#[inline]
+pub fn git_compare() -> Icon {
+    Icon::default().path("icons/git-compare.svg")
+}
+
+#[inline]
+pub fn archive() -> Icon {
+    Icon::default().path("icons/archive.svg")
+}
+
+#[inline]
 pub fn arrow_up_down() -> Icon {
     Icon::default().path("icons/arrow-up-down.svg")
 }
