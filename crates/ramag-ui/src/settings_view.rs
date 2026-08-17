@@ -1,5 +1,3 @@
-//! 设置中心：各大模块使用独立页面。
-
 mod clipboard;
 mod database;
 mod pages;
@@ -23,6 +21,7 @@ use ramag_domain::entities::{
     ClipboardSettings, IdConverterKind, MAX_CUSTOM_ID_ALPHABET_BYTES,
     MAX_ID_CONVERTER_PROGRAM_BYTES, SshModuleSettings,
 };
+use tracing::error;
 
 use crate::MAX_SEARCH_INPUT_BYTES;
 
@@ -71,12 +70,12 @@ impl SettingsPage {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Database => "配置连接与搜索行为。",
-            Self::VersionControl => "配置 Git 行为。",
-            Self::Ssh => "配置 SSH 与 SFTP。",
-            Self::ObjectStorage => "配置账号、Bucket 与访问模式。",
-            Self::Update => "查看版本信息与可用更新。",
-            Self::Clipboard => "配置采集、热键与历史记录。",
+            Self::Database => "连接与搜索",
+            Self::VersionControl => "Git 行为",
+            Self::Ssh => "SSH 与 SFTP",
+            Self::ObjectStorage => "账号与访问模式",
+            Self::Update => "版本与更新",
+            Self::Clipboard => "采集、热键与历史",
         }
     }
 
@@ -235,6 +234,11 @@ impl SettingsView {
                 }
                 Ok(_) => {}
                 Err(error) => {
+                    error!(
+                        operation = "ssh_module_settings_load",
+                        error = %error,
+                        "load SSH module settings failed"
+                    );
                     this.pending_notification = Some(Notification::error(format!(
                         "SSH 模块设置读取失败：{error}"
                     )));
@@ -327,6 +331,11 @@ impl SettingsView {
                         this.clipboard = settings;
                     }
                     Err(error) => {
+                        error!(
+                            operation = "clipboard_settings_save",
+                            error = %error,
+                            "save clipboard settings failed"
+                        );
                         this.clipboard = previous;
                         this.pending_notification = Some(Notification::error(format!(
                             "剪贴板设置保存失败（已还原）：{error}"

@@ -1,5 +1,3 @@
-//! 常用鼠标操作说明。
-
 use gpui::{IntoElement, ParentElement as _, Styled as _, div, prelude::FluentBuilder as _, px};
 use gpui_component::{h_flex, v_flex};
 
@@ -14,13 +12,13 @@ struct CommonInteraction {
 const COMMON_INTERACTIONS: &[CommonInteraction] = &[
     CommonInteraction {
         label: "操作",
-        description: "打开或处理当前内容",
+        description: "打开当前项",
         macos_gesture: "双击",
         other_gesture: "双击",
     },
     CommonInteraction {
         label: "复制",
-        description: "复制完整单元格或路径",
+        description: "复制内容或路径",
         macos_gesture: "⌘ + 双击",
         other_gesture: "Ctrl + 双击",
     },

@@ -1,4 +1,4 @@
-//! 结果集的行内写操作。
+//! 结果集行内写操作。
 
 mod delete;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ impl ResultPanel {
         false
     }
 
-    /// 取得可执行 DML 的连接。
+    /// 返回可执行 DML 的连接。
     fn dml_conn(
         &mut self,
         action: &str,
@@ -77,7 +77,7 @@ impl ResultPanel {
         Some((svc, conn))
     }
 
-    /// 检查行内修改或删除是否可执行。
+    /// 检查行内写操作。
     fn guard_modify(&mut self, action: &str, cx: &mut Context<Self>) -> Option<RowIdentity> {
         if let Some(reason) = self.modify_block_reason() {
             self.pending_notification =
@@ -88,7 +88,6 @@ impl ResultPanel {
         self.row_identity.clone()
     }
 
-    /// 返回单行删除预览。
     pub(crate) fn delete_preview(&self, cx: &gpui::App) -> Option<(usize, String)> {
         let (ri, _) = self.selected_cell?;
         let ResultState::Ok(result) = &self.state else {
@@ -112,7 +111,6 @@ impl ResultPanel {
         Some((ri, format!("{col} = {val}{hidden_note}")))
     }
 
-    /// 返回批量删除预览。
     pub(crate) fn delete_preview_multi(&self, cx: &gpui::App) -> Option<(Vec<usize>, String)> {
         if self.selected_rows.is_empty() {
             return None;
@@ -170,7 +168,6 @@ impl ResultPanel {
         Some((indices, summary))
     }
 
-    /// 确认后执行 DELETE。
     pub(crate) fn execute_delete_row_async(&mut self, ri: usize, cx: &mut Context<Self>) -> bool {
         let Some(identity) = self.guard_modify("删除", cx) else {
             return false;
@@ -255,7 +252,7 @@ impl ResultPanel {
                                 this.selected_cell = None;
                                 this.mark_result_changed();
                             }
-                            // 定位键命中多行时，本地结果可能与数据库不一致。
+                            // 多行命中时本地结果可能失效。
                             if qr.affected_rows > 1 {
                                 let stale_note = if same_result {
                                     ""
@@ -300,7 +297,6 @@ impl ResultPanel {
         true
     }
 
-    /// 确认后执行 UPDATE。
     pub(crate) fn apply_cell_update_async(
         &mut self,
         ri: usize,
@@ -424,7 +420,7 @@ impl ResultPanel {
                             if result_changed {
                                 this.mark_result_changed();
                             }
-                            // 定位键命中多行时，本地结果可能与数据库不一致。
+                            // 多行命中时本地结果可能失效。
                             if qr.affected_rows > 1 {
                                 let stale_note = if same_result {
                                     ""

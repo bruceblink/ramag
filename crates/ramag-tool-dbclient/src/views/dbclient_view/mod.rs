@@ -23,7 +23,6 @@ pub(super) enum CenterMode {
     ConnectionPicker,
 }
 
-/// 数据库会话视图句柄。
 pub(super) enum SessionEntity {
     Sql(Entity<ConnectionSession>),
     Redis(Entity<RedisSessionPanel>),
@@ -46,7 +45,6 @@ impl SessionEntity {
             SessionEntity::Mongo(e) => e.clone().into(),
         }
     }
-    /// 未成功加载元数据时补拉。
     pub(super) fn ensure_loaded(&self, cx: &mut App) {
         match self {
             SessionEntity::Sql(e) => e.update(cx, |s, cx| s.ensure_loaded(cx)),
@@ -76,7 +74,6 @@ impl SessionEntity {
     }
 }
 
-/// 首次激活时创建会话；配置变化后需重连。
 pub(super) struct SessionSlot {
     pub(super) entity: Option<SessionEntity>,
     pub(super) config: ConnectionConfig,
@@ -98,7 +95,6 @@ pub(super) fn evict_connection_resources(
     mongo_service: &MongoService,
     id: &ConnectionId,
 ) {
-    // 连接可切换 driver，需清理所有类型的资源。
     service.evict_all_pools(id);
     redis_service.evict_pool(id);
     mongo_service.evict_pool(id);
@@ -115,7 +111,6 @@ pub struct DbClientView {
     pub(super) center: CenterMode,
     pub(super) picker: Entity<ConnectionListPanel>,
     pub(super) sessions_scroll: ScrollHandle,
-    /// 异步通知由 Render 延后推送。
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
     /// 启动后按保存顺序恢复标签；渲染时才创建视图。
     pub(super) pending_restore: Option<(
@@ -136,9 +131,7 @@ impl Focusable for DbClientView {
 }
 
 const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
-/// 单窗口连接会话上限。
 const MAX_CONNECTION_SESSIONS: usize = 32;
-/// 恢复偏好原始数据上限。
 const MAX_OPEN_SESSIONS_PREF_BYTES: usize = 64 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -148,7 +141,6 @@ struct OpenSessionsPref {
     active: Option<ramag_domain::entities::ConnectionId>,
 }
 
-/// 解析恢复偏好，并报告是否已规整。
 fn parse_open_sessions(json: &str) -> Result<(OpenSessionsPref, bool), String> {
     if json.len() > MAX_OPEN_SESSIONS_PREF_BYTES {
         return Err(format!("连接标签恢复数据过大：{} bytes", json.len()));
@@ -183,7 +175,6 @@ fn parse_open_sessions(json: &str) -> Result<(OpenSessionsPref, bool), String> {
 }
 
 impl DbClientView {
-    /// 持久化打开标签，仅保留最新快照。
     fn persist_open_sessions(&self, cx: &mut Context<Self>) {
         let ids: Vec<ramag_domain::entities::ConnectionId> =
             self.sessions.iter().map(|s| s.config.id.clone()).collect();
@@ -293,7 +284,6 @@ impl DbClientView {
         }
     }
 
-    /// 首次激活惰性槽时创建实体。
     pub(super) fn materialize_slot(
         &mut self,
         idx: usize,
@@ -311,7 +301,6 @@ impl DbClientView {
         entity.focus(window, cx);
         self.sessions[idx].entity = Some(entity);
         self.sync_result_activity(cx);
-        // 仅在实际打开时预取版本。
         self.picker
             .update(cx, |p, cx| p.prefetch_version(&config, cx));
         cx.notify();
@@ -339,7 +328,6 @@ impl DbClientView {
     ) {
         self.restore_allowed = false;
         self.pending_restore = None;
-        // 已打开时切换；stale 槽按新配置重连。
         if let Some(idx) = self.sessions.iter().position(|s| s.config.id == config.id) {
             self.active_session = Some(idx);
             self.center = CenterMode::Session;
@@ -348,7 +336,6 @@ impl DbClientView {
             } else if self.sessions[idx].entity.is_none() {
                 self.materialize_slot(idx, window, cx);
             } else if let Some(entity) = &self.sessions[idx].entity {
-                // 补拉未加载元数据并聚焦内容。
                 entity.ensure_loaded(cx);
                 entity.focus(window, cx);
             }
@@ -380,10 +367,8 @@ impl DbClientView {
         self.active_session = Some(self.sessions.len() - 1);
         self.center = CenterMode::Session;
         self.sync_result_activity(cx);
-        // 将新标签滚入视图。
         self.sessions_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
-        // 仅用户打开的连接预取版本。
         self.picker
             .update(cx, |p, cx| p.prefetch_version(&version_config, cx));
         self.persist_open_sessions(cx);
@@ -401,7 +386,6 @@ impl DbClientView {
             config,
             stale: _,
         } = self.sessions.remove(idx);
-        // 先释放视图，再清理连接资源。
         drop(entity);
         self.picker
             .update(cx, |picker, _| picker.cancel_version_prefetch(&config.id));
@@ -436,17 +420,13 @@ impl DbClientView {
             self.active_session = Some(idx);
             self.center = CenterMode::Session;
             if self.sessions[idx].stale {
-                // stale 槽显示重新连接面板。
             } else if self.sessions[idx].entity.is_none() {
-                // 首次激活时创建实体。
                 self.materialize_slot(idx, window, cx);
             } else if let Some(entity) = &self.sessions[idx].entity {
-                // 补拉未加载元数据并聚焦内容。
                 entity.ensure_loaded(cx);
                 entity.focus(window, cx);
             }
             self.sync_result_activity(cx);
-            // 保存活动标签，供重启恢复。
             self.persist_open_sessions(cx);
             cx.notify();
         }

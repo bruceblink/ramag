@@ -1,4 +1,4 @@
-//! `impl Render for QueryTab`：编辑器 + 工具条 + 结果区。按钮行为在 actions
+//! 查询标签渲染。
 
 use gpui::{
     AppContext as _, ClickEvent, Context, Entity, IntoElement, ParentElement, Render, Styled,
@@ -18,7 +18,6 @@ use ramag_ui::PointerDropdownMenu as _;
 use super::QueryTab;
 use super::sql_utils::format_elapsed;
 
-/// 千分位格式化（10_000 → "10,000"），自动限制档位展示用
 use crate::actions::{ExplainQuery, FormatSql, RunQuery, RunStatementAtCursor};
 use crate::views::result_panel::{
     MAX_INSERT_COLUMNS, ResultPanel, ResultState, RowSearchConversionStatus, RowSearchMode,
@@ -26,7 +25,6 @@ use crate::views::result_panel::{
 
 impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 把异步任务挂起的 toast 推送出来（如生产模式只读拦截提示）
         if let Some(n) = self.pending_notification.take() {
             window.push_notification(n, cx);
         }

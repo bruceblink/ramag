@@ -45,6 +45,18 @@ impl SshService {
 
     /// 读取本机加密保存的 JumpServer 连接，并自动迁移旧版单连接数据。
     pub async fn load_jumpserver_connections(&self) -> Result<Vec<JumpServerConnection>> {
+        let result = self.load_jumpserver_connections_inner().await;
+        if let Err(error) = &result {
+            warn!(
+                operation = "jumpserver_connection_load",
+                error = %error,
+                "load jumpserver connections failed"
+            );
+        }
+        result
+    }
+
+    async fn load_jumpserver_connections_inner(&self) -> Result<Vec<JumpServerConnection>> {
         if let Some(stored) = self
             .storage
             .get_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY)
@@ -102,76 +114,93 @@ impl SshService {
         connection_id: Option<&str>,
         credential: &JumpServerCredential,
     ) -> Result<JumpServerConnection> {
-        credential.validate().map_err(DomainError::InvalidConfig)?;
-        let mut connections = self.load_jumpserver_connections().await?;
-        let connection = if let Some(connection_id) = connection_id {
-            let index = connections
+        let requested_connection_id = connection_id.unwrap_or("-");
+        let result = async {
+            credential.validate().map_err(DomainError::InvalidConfig)?;
+            let mut connections = self.load_jumpserver_connections_inner().await?;
+            let connection = if let Some(connection_id) = connection_id {
+                let index = connections
+                    .iter()
+                    .position(|connection| connection.id == connection_id)
+                    .ok_or_else(|| {
+                        DomainError::NotFound("选中的 JumpServer 连接已不存在".into())
+                    })?;
+                let mut connection = connections.remove(index);
+                connection.credential = credential.clone();
+                connection
+            } else if let Some(index) = connections
                 .iter()
-                .position(|connection| connection.id == connection_id)
-                .ok_or_else(|| DomainError::NotFound("选中的 JumpServer 连接已不存在".into()))?;
-            let mut connection = connections.remove(index);
-            connection.credential = credential.clone();
-            connection
-        } else if let Some(index) = connections
-            .iter()
-            .position(|connection| same_connection_identity(&connection.credential, credential))
-        {
-            let mut connection = connections.remove(index);
-            connection.credential = credential.clone();
-            connection
-        } else {
-            if connections.len() >= MAX_JUMPSERVER_CONNECTIONS {
-                return Err(DomainError::InvalidConfig(format!(
-                    "JumpServer 连接最多保存 {MAX_JUMPSERVER_CONNECTIONS} 个"
-                )));
-            }
-            JumpServerConnection::new(credential.clone())
-        };
-        connections
-            .retain(|item| !same_connection_identity(&item.credential, &connection.credential));
-        connections.insert(0, connection.clone());
-        self.store_jumpserver_connections(&connections).await?;
-        info!(
-            operation = "jumpserver_connection_save",
-            connection_id = %connection.id,
-            total = connections.len(),
-            "jumpserver connection saved"
-        );
-        Ok(connection)
+                .position(|connection| same_connection_identity(&connection.credential, credential))
+            {
+                let mut connection = connections.remove(index);
+                connection.credential = credential.clone();
+                connection
+            } else {
+                if connections.len() >= MAX_JUMPSERVER_CONNECTIONS {
+                    return Err(DomainError::InvalidConfig(format!(
+                        "JumpServer 连接最多保存 {MAX_JUMPSERVER_CONNECTIONS} 个"
+                    )));
+                }
+                JumpServerConnection::new(credential.clone())
+            };
+            connections
+                .retain(|item| !same_connection_identity(&item.credential, &connection.credential));
+            connections.insert(0, connection.clone());
+            self.store_jumpserver_connections(&connections).await?;
+            Ok((connection, connections.len()))
+        }
+        .await;
+        match &result {
+            Ok((connection, total)) => info!(
+                operation = "jumpserver_connection_save",
+                connection_id = %connection.id,
+                total,
+                "jumpserver connection saved"
+            ),
+            Err(error) => error!(
+                operation = "jumpserver_connection_save",
+                connection_id = requested_connection_id,
+                error = %error,
+                "save jumpserver connection failed"
+            ),
+        }
+        result.map(|(connection, _)| connection)
     }
 
     pub async fn delete_jumpserver_connection(&self, connection_id: &str) -> Result<()> {
-        let mut connections = self.load_jumpserver_connections().await?;
-        let previous_len = connections.len();
-        connections.retain(|connection| connection.id != connection_id);
-        if connections.len() == previous_len {
-            return Err(DomainError::NotFound(
-                "选中的 JumpServer 连接已不存在".into(),
-            ));
+        let result = async {
+            let mut connections = self.load_jumpserver_connections_inner().await?;
+            let previous_len = connections.len();
+            connections.retain(|connection| connection.id != connection_id);
+            if connections.len() == previous_len {
+                return Err(DomainError::NotFound(
+                    "选中的 JumpServer 连接已不存在".into(),
+                ));
+            }
+            if connections.is_empty() {
+                self.storage
+                    .delete_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY)
+                    .await?;
+            } else {
+                self.store_jumpserver_connections(&connections).await?;
+            }
+            Ok(connections.len())
         }
-        let result = if connections.is_empty() {
-            self.storage
-                .delete_preference(JUMPSERVER_CONNECTIONS_PREFERENCE_KEY)
-                .await
-        } else {
-            self.store_jumpserver_connections(&connections).await
-        };
+        .await;
         match &result {
-            Ok(()) => info!(
+            Ok(remaining) => info!(
                 operation = "jumpserver_connection_delete",
-                connection_id,
-                remaining = connections.len(),
-                "jumpserver connection deleted"
+                connection_id, remaining, "jumpserver connection deleted"
             ),
-            Err(delete_error) => {
+            Err(error) => {
                 error!(
                     operation = "jumpserver_connection_delete",
-                    error = %delete_error,
                     connection_id,
+                    error = %error,
                     "delete jumpserver connection failed"
                 )
             }
         }
-        result
+        result.map(|_| ())
     }
 }

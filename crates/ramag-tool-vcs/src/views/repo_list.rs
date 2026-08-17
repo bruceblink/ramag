@@ -13,7 +13,6 @@ use gpui_component::{
 };
 
 impl VcsView {
-    /// 渲染当前错误。
     pub(super) fn render_error_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let err = self.error.as_ref()?;
         let theme = cx.theme();
@@ -73,7 +72,6 @@ use ramag_domain::entities::{RepoConfig, contains_case_insensitive};
 
 use super::vcs_view::VcsView;
 
-/// 内容区最大宽度。
 const CONTENT_MAX_W: f32 = 1080.0;
 
 pub(super) struct RepoListRowsCacheEntry {
@@ -90,7 +88,6 @@ impl RepoListRowsCacheEntry {
 }
 
 impl VcsView {
-    /// 渲染仓库管理页。
     pub(super) fn render_repo_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -260,7 +257,6 @@ impl VcsView {
         let mut indices: Vec<usize> = (0..repos.len())
             .filter(|&index| repo_matches_query(&repos[index], query_lower))
             .collect();
-        // 最近打开优先；未打开过的按名字排在最后。
         indices.sort_by(|&left, &right| {
             let left = &repos[left];
             let right = &repos[right];
@@ -279,7 +275,6 @@ impl VcsView {
         indices
     }
 
-    /// Clone 使用独立对话框，避免临时表单挤压仓库列表布局。
     fn open_clone_dialog(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         self.clone_dest_path = None;
         self.clone_url_input
@@ -392,7 +387,6 @@ fn repo_matches_query(repo: &RepoConfig, query_lower: &str) -> bool {
         || contains_case_insensitive(&repo.path, query_lower)
 }
 
-/// 同时兼容 URL、scp 风格地址和 Windows 本地路径，并拒绝空目录名。
 fn clone_repo_name(source: &str) -> Option<String> {
     let source = source.trim().trim_end_matches(['/', '\\']);
     if let Some((_, remainder)) = source.split_once("://")
@@ -406,7 +400,6 @@ fn clone_repo_name(source: &str) -> Option<String> {
     (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
 }
 
-/// 单条仓库行（整行点击 = 打开；行内删除按钮独立 emit）
 #[allow(clippy::too_many_arguments)]
 fn repo_row(
     idx: usize,
@@ -419,7 +412,6 @@ fn repo_row(
     muted_fg: gpui::Hsla,
     cx: &mut Context<VcsView>,
 ) -> impl IntoElement {
-    // Git 类型 badge（与 dbclient driver 一类一色对齐：Git 用 accent 蓝）
     let badge_fg = accent;
     let mut badge_bg = badge_fg;
     badge_bg.a = 0.12;
@@ -468,7 +460,6 @@ fn repo_row(
                 .text_ellipsis()
                 .child(super::inline_text_preview(&r.name, 160)),
         )
-        // 路径（mono 小灰，尾部省略；右对齐占据 360px）
         .child(
             div()
                 .flex_none()
@@ -480,7 +471,6 @@ fn repo_row(
                 .text_ellipsis()
                 .child(super::inline_text_preview(&r.path, 240)),
         )
-        // 操作按钮组；mouse_down 拦冒泡避免触发整行打开。
         .child(
             h_flex()
                 .flex_none()
@@ -502,7 +492,6 @@ fn repo_row(
         )
 }
 
-/// 空状态：只放一个居中主按钮
 fn empty_state(cx: &mut Context<VcsView>) -> AnyElement {
     v_flex()
         .size_full()

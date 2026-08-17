@@ -9,7 +9,6 @@ use ramag_ui::{open_bounded_prompt, open_confirm};
 use super::helpers::{apply_local_rename, delete_by_pattern, escape_glob, truncate_label};
 use super::{DeletedScope, KeyTreeEvent, KeyTreePanel};
 
-/// Key 或命名空间的右键菜单。
 pub(super) fn node_context_menu(
     menu: PopupMenu,
     entity: Entity<KeyTreePanel>,
@@ -56,7 +55,7 @@ pub(super) fn node_context_menu(
             let (key, ent) = (key.clone(), ent.clone());
             open_bounded_prompt(
                 "重命名 Key",
-                format!("输入「{}」的新名称", truncate_label(&key, 60)),
+                format!("新名称：{}", truncate_label(&key, 60)),
                 &key.clone(),
                 "改名",
                 MAX_REDIS_KEY_BYTES,
@@ -72,10 +71,7 @@ pub(super) fn node_context_menu(
             let (key, ent) = (key.clone(), ent.clone());
             open_confirm(
                 "删除 Key",
-                format!(
-                    "将永久删除 key「{}」，此操作不可恢复。",
-                    truncate_label(&key, 60)
-                ),
+                format!("删除 Key「{}」，不可恢复。", truncate_label(&key, 60)),
                 "删除",
                 true,
                 move |_, app| {
@@ -92,9 +88,9 @@ pub(super) fn node_context_menu(
             ramag_ui::menu_item("删除前缀").on_click(move |_, window, app| {
                 let (prefix, ent) = (prefix.clone(), ent.clone());
                 open_confirm(
-                    "删除前缀下全部 Key",
+                    "删除前缀",
                     format!(
-                        "将删除服务端所有匹配「{}:*」的 Key（包括未加载项），不可恢复。",
+                        "删除服务端匹配「{}:*」的全部 Key（含未加载项），不可恢复。",
                         truncate_label(&prefix, 60)
                     ),
                     "删除",
@@ -111,7 +107,6 @@ pub(super) fn node_context_menu(
     menu
 }
 
-/// 工具栏的 DB 级操作菜单。
 pub(super) fn toolbar_more_menu(
     menu: PopupMenu,
     entity: Entity<KeyTreePanel>,
@@ -135,11 +130,8 @@ pub(super) fn toolbar_more_menu(
         ramag_ui::menu_item("导入库").on_click(move |_, window, app| {
             let ent = entity_for_import.clone();
             ramag_ui::open_import_options_dialog(
-                "导入整个 Redis DB",
-                format!(
-                    "选择冲突策略与 .jsonl 文件（可多选），导入到 DB {db}。\
-                     「跳过」保留已有 Key，「覆盖」重建 Key；Redis 不支持「合并」。"
-                ),
+                "导入 Redis DB",
+                format!("选择 JSONL 导入 DB {db}。跳过保留 Key，覆盖重建 Key。"),
                 false,
                 ("JSONL", &["jsonl", "json"]),
                 move |policy, files, _, app| {
@@ -151,26 +143,22 @@ pub(super) fn toolbar_more_menu(
         }),
     )
     .item(
-        ramag_ui::menu_item("导入对象").on_click(
-            move |_, window, app| {
-                let ent = entity_for_selection_import.clone();
-                ramag_ui::open_import_options_dialog(
-                    "导入对象",
-                    format!(
-                        "选择由 Ramag 导出的 Key/前缀 .jsonl 文件（可多选），恢复 Key 的类型、TTL 和值到 DB {db}；Key 名来自文件。"
-                    ),
-                    false,
-                    ("JSONL", &["jsonl", "json"]),
-                    move |policy, files, _, app| {
-                        ent.update(app, |this, cx| {
-                            this.import_selections_from_files(policy, files, cx);
-                        });
-                    },
-                    window,
-                    app,
-                );
-            },
-        ),
+        ramag_ui::menu_item("导入对象").on_click(move |_, window, app| {
+            let ent = entity_for_selection_import.clone();
+            ramag_ui::open_import_options_dialog(
+                "导入对象",
+                format!("选择 Ramag Key/前缀 JSONL，恢复类型、TTL 和值到 DB {db}。"),
+                false,
+                ("JSONL", &["jsonl", "json"]),
+                move |policy, files, _, app| {
+                    ent.update(app, |this, cx| {
+                        this.import_selections_from_files(policy, files, cx);
+                    });
+                },
+                window,
+                app,
+            );
+        }),
     )
     .separator()
     .item(
@@ -178,7 +166,7 @@ pub(super) fn toolbar_more_menu(
             let ent = entity.clone();
             open_confirm(
                 "清空库",
-                format!("将删除 DB {db} 的全部 key（FLUSHDB），此操作不可恢复。"),
+                format!("删除 DB {db} 的全部 Key（FLUSHDB），不可恢复。"),
                 "清空",
                 true,
                 move |_, app| {
@@ -195,7 +183,7 @@ impl KeyTreePanel {
     fn begin_tree_mutation(&mut self, cx: &mut Context<Self>) -> Option<ramag_ui::MutationToken> {
         let Some(token) = self.mutation_gate.begin() else {
             self.pending_notification =
-                Some(Notification::warning("上一项 Key 操作尚未完成，请稍候").autohide(true));
+                Some(Notification::warning("Key 操作进行中").autohide(true));
             cx.notify();
             return None;
         };
@@ -203,7 +191,7 @@ impl KeyTreePanel {
         Some(token)
     }
 
-    /// 使用 RENAMENX，避免覆盖已有 Key。
+    // RENAMENX 避免覆盖已有 Key。
     pub(super) fn rename_key_op(&mut self, old: String, new: String, cx: &mut Context<Self>) {
         if new == old {
             return;
@@ -293,6 +281,7 @@ impl KeyTreePanel {
                             db,
                             old_key_bytes = old.len(),
                             new_key_bytes = new.len(),
+                            reason = "unexpected_renamenx_response",
                             "RENAMENX returned an unexpected reply"
                         );
                         this.pending_notification =

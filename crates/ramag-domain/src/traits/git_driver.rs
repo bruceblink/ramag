@@ -1,5 +1,3 @@
-//! Git 操作接口；默认实现用于兼容功能较少的驱动。
-
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -48,7 +46,6 @@ pub trait GitDriver: Send + Sync {
 
     async fn list_branches(&self, repo: &RepoId, kind: BranchKind) -> Result<Vec<Branch>>;
 
-    /// 实现可覆盖此方法，将两次查询合并为一次。
     async fn list_all_branches(&self, repo: &RepoId) -> Result<(Vec<Branch>, Vec<Branch>)> {
         let local = self.list_branches(repo, BranchKind::Local).await?;
         let remote = self.list_branches(repo, BranchKind::Remote).await?;
@@ -119,7 +116,6 @@ pub trait GitDriver: Send + Sync {
         not_impl("discard")
     }
 
-    /// 创建 commit。amend=修改上一次，sign=GPG 签名
     async fn commit(
         &self,
         _repo: &RepoId,
@@ -170,7 +166,6 @@ pub trait GitDriver: Send + Sync {
         not_impl("pull")
     }
 
-    /// 带进度操作默认退化为对应的普通操作。
     async fn fetch_streaming(
         &self,
         repo: &RepoId,
@@ -376,7 +371,6 @@ pub trait GitDriver: Send + Sync {
         not_impl("remove_remote")
     }
 
-    /// 修改 fetch URL，并让 push URL 跟随。
     async fn set_remote_url(&self, _repo: &RepoId, _name: &str, _url: &str) -> Result<()> {
         not_impl("set_remote_url")
     }
@@ -396,7 +390,6 @@ pub trait GitDriver: Send + Sync {
         not_impl("blame")
     }
 
-    /// ref_name=None 等价 HEAD；limit=None 用 git 默认
     async fn list_reflog(
         &self,
         _repo: &RepoId,
@@ -406,7 +399,6 @@ pub trait GitDriver: Send + Sync {
         not_impl("list_reflog")
     }
 
-    /// 目标目录必须不存在或为空。
     async fn clone_repo(&self, _url: &str, _dest: &Path) -> Result<RepoConfig> {
         not_impl("clone_repo")
     }
@@ -427,7 +419,6 @@ pub trait GitDriver: Send + Sync {
         not_impl("init_repo")
     }
 
-    /// 返回全部默认为 Pick 的 interactive rebase 计划。
     async fn interactive_rebase_plan(
         &self,
         _repo: &RepoId,

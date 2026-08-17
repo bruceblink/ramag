@@ -22,21 +22,16 @@ use crate::usecases::clip_thumb::{THUMB_MAX_W, make_thumbnail};
 use pending_media::PendingMediaDeletes;
 
 const SETTINGS_KEY: &str = "clipboard_settings";
-/// 限制异常大的剪贴设置。
 const MAX_SETTINGS_JSON_BYTES: usize = 256 * 1024;
 
-/// 固定保留上限。
 const MAX_ITEMS: u32 = 1_000_000;
 const MAX_AGE_DAYS: u32 = 360;
 
 /// 最近条目的解密缓存，受条数与正文预算限制。
 const CACHE_WINDOW: usize = 500;
-/// 最近条目正文预算。
 const CACHE_INLINE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
-/// 搜索结果正文预算。
 const SEARCH_INLINE_BYTE_BUDGET: u64 = CACHE_INLINE_BYTE_BUDGET;
 
-/// 图片解码和渲染的内存上限。
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 
@@ -49,7 +44,6 @@ fn validate_search_query(query: &str) -> Result<()> {
     Ok(())
 }
 
-/// 不触发 I/O 的采集判定结果。
 #[derive(Debug, PartialEq)]
 pub enum CaptureDecision {
     Skip(&'static str),
@@ -59,7 +53,6 @@ pub enum CaptureDecision {
 pub struct ClipboardService {
     driver: Arc<dyn ClipboardDriver>,
     storage: Arc<dyn Storage>,
-    /// 写操作版本，供视图判断是否重载。
     revision: Arc<AtomicU64>,
     cache: Arc<RwLock<Vec<Arc<ClipItem>>>>,
     /// 设置缓存，避免热键循环反复 I/O。
@@ -67,21 +60,18 @@ pub struct ClipboardService {
     alternate_hotkey: Arc<AtomicBool>,
     /// 自动粘贴设置镜像，避免加载期间误执行。
     auto_paste: Arc<AtomicBool>,
-    /// 共享设置快照。
     settings_cache: Arc<RwLock<ClipboardSettings>>,
     settings_revision: Arc<AtomicU64>,
     /// 串行设置读写，防止旧保存覆盖新值。
     settings_save_lock: Arc<futures::lock::Mutex<()>>,
     /// 串行历史与媒体写操作，避免断链媒体。
     history_mutation_lock: Arc<futures::lock::Mutex<()>>,
-    /// 热键注册状态。
     hotkey_state: Arc<AtomicU8>,
     /// 设置异常时暂停采集。
     settings_degraded: Arc<AtomicBool>,
     pending_media_deletes: Arc<PendingMediaDeletes>,
 }
 
-/// 全局热键注册状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyState {
     Disabled,
@@ -197,7 +187,6 @@ impl ClipboardService {
         self.storage.clip_search(query, limit).await
     }
 
-    /// 可取消的全量搜索。
     pub async fn search_cancellable(
         &self,
         query: &str,
@@ -264,7 +253,6 @@ impl ClipboardService {
         self.driver.paste_to_app(activation_target)
     }
 
-    /// 仅复制纯文本。
     pub async fn copy_as_plain_text(&self, item: &ClipItem) -> Result<()> {
         let _guard = self.history_mutation_lock.lock().await;
         let current = self.current_clip(&item.id).await?;
@@ -469,14 +457,12 @@ fn reverse_fnv1a_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// 更新使用时间，不改原始负载。
 fn touch_item(item: &ClipItem, now: chrono::DateTime<Utc>) -> ClipItem {
     let mut latest = item.clone();
     latest.last_used_at = now;
     latest
 }
 
-/// 在线程池生成缩略图。
 async fn make_thumbnail_off_thread(png: Arc<Vec<u8>>) -> Result<Vec<u8>> {
     crate::run_blocking(move || make_thumbnail(png.as_slice(), THUMB_MAX_W)).await
 }

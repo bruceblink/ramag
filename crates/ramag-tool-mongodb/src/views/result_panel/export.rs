@@ -1,4 +1,4 @@
-//! 将选中文档导出为 JSONL。
+//! 结果 JSONL 导入与导出。
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use tracing::{error, info};
 use super::{ResultEvent, ResultPanel};
 
 impl ResultPanel {
-    /// 打开当前集合的 JSONL 导入对话框。
+    /// 打开集合 JSONL 导入对话框。
     pub(crate) fn open_import_jsonl_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_write() {
             return;
@@ -23,10 +23,10 @@ impl ResultPanel {
         let db = self.database.clone();
         let entity = cx.entity();
         ramag_ui::open_import_options_dialog(
-            "导入 JSONL 到集合",
+            "导入集合 JSONL",
             format!(
-                "选择 .jsonl 文件（可多选）导入到 {db}.{collection}。每行一个 Extended JSON 文档；\
-                 「跳过」重复 _id，「覆盖」清空文档（保留索引，不可恢复），「停止」遇重复报错。"
+                "选择 JSONL 导入 {db}.{collection}。每行一个 Extended JSON 文档；\
+                 跳过重复 _id，覆盖清空文档（保留索引）。"
             ),
             false,
             ("JSONL", &["jsonl", "json"]),
@@ -46,27 +46,26 @@ impl ResultPanel {
     }
     pub(crate) fn export_documents(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
-            self.pending_notification =
-                Some(Notification::info("已有导出任务正在进行").autohide(true));
+            self.pending_notification = Some(Notification::info("导出进行中").autohide(true));
             cx.notify();
             return;
         }
         let Some(documents) = self.docs_arc.clone() else {
-            return self.notify_error("无可导出的结果".to_string(), cx);
+            return self.notify_error("没有可导出的结果".to_string(), cx);
         };
         if documents.is_empty() {
-            return self.notify_error("结果为空，无需导出".to_string(), cx);
+            return self.notify_error("结果为空".to_string(), cx);
         }
         if self.selected_rows.is_empty() {
-            self.pending_notification = Some(Notification::warning("未选择数据").autohide(true));
+            self.pending_notification = Some(Notification::warning("请选择数据").autohide(true));
             cx.notify();
             return;
         }
         if self.parse_column_filter(cx).drill_path.is_some() {
-            return self.notify_error("钻取视图无法导出，请先退出钻取".to_string(), cx);
+            return self.notify_error("请先退出钻取再导出".to_string(), cx);
         }
         let Some(table) = self.table.clone() else {
-            return self.notify_error("无表格数据可导出".to_string(), cx);
+            return self.notify_error("没有可导出的表格".to_string(), cx);
         };
 
         let rows: Vec<usize> = self
@@ -76,7 +75,7 @@ impl ResultPanel {
             .filter(|i| *i < table.rows.len())
             .collect();
         if rows.is_empty() {
-            return self.notify_error("未选择有效数据".to_string(), cx);
+            return self.notify_error("没有有效的选中数据".to_string(), cx);
         }
         let scope = format!("选中 {} 行", rows.len());
         let selected_sort = if let Some((sort_path, dir)) = self.sort_by.clone()
@@ -90,7 +89,7 @@ impl ResultPanel {
         } else {
             None
         };
-        // 防御无效选择索引；正常视图的表格行与当前层文档一一对应。
+        // 确认所选行对应当前文档。
         if !rows.iter().any(|&index| documents.get(index).is_some()) {
             return self.notify_error(
                 "当前视图与原始文档不对应（钻取层），请返回上层后导出".to_string(),
@@ -115,7 +114,7 @@ impl ResultPanel {
             .clone()
             .unwrap_or_else(|| "-".to_string());
         let scope_label = scope;
-        // 用户选定路径后才占用工作池。
+        // 选定文件后再占用工作池。
         self.exporting = true;
         cx.notify();
         cx.spawn(async move |this, cx| {

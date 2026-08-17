@@ -244,7 +244,7 @@ impl DataSyncOverlay {
                                 .child(
                                     div()
                                         .text_sm()
-                                        .child("取消后会等待当前批次或结构创建安全收尾。"),
+                                        .child("取消会等待当前批次或结构创建安全收尾。"),
                                 )
                                 .child(
                                     h_flex()
@@ -269,7 +269,7 @@ impl DataSyncOverlay {
                                                     crate::clickable_button("sync-cancel-confirm")
                                                         .danger()
                                                         .small()
-                                                        .label("确认取消")
+                                                        .label("取消")
                                                         .on_click(cx.listener(
                                                             move |this, _: &ClickEvent, _, cx| {
                                                                 this.gate.request_cancel_current(

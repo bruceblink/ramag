@@ -337,9 +337,9 @@ impl AccountFormPanel {
         }
         let form = cx.entity();
         ramag_ui::open_confirm(
-            "放弃修改？",
+            "放弃？",
             "未保存内容将丢失。",
-            "放弃修改",
+            "放弃",
             true,
             move |_, app| {
                 form.update(app, |_this, cx| cx.emit(AccountFormEvent::Cancelled));

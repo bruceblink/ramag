@@ -19,27 +19,18 @@ use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConnectionId, QueryRecord, QueryStatus, compact_text_preview};
 use tracing::error;
 
-/// 单次最多加载条数
 const HISTORY_LIMIT: usize = 200;
-/// SQL 单行预览最大字符数
 const PREVIEW_MAX_CHARS: usize = 160;
-/// 失败原因展示最大字符数
 const ERROR_MAX_CHARS: usize = 80;
-/// 列表区固定高度：加载前后弹框尺寸不跳动，超出部分内部滚动
 const LIST_HEIGHT: f32 = 480.0;
 
-/// 历史中心行为事件：QueryPanel 订阅处理
 pub enum HistoryEvent {
-    /// 填入当前活动 Tab（不执行）
     FillEditor(String),
-    /// 填入并立即执行（重跑 / 失败重试）
     RunSql(String),
 }
 
-/// 弹框内容视图：异步加载 + 搜索过滤 + 列表渲染 + 删除 / 清空
 pub struct HistoryList {
     service: Arc<ConnectionService>,
-    /// 只看当前连接的历史（list_history 原生支持按 ConnectionId 过滤）
     connection_id: ConnectionId,
     records: Arc<Vec<Arc<QueryRecord>>>,
     /// 后台筛选只保存命中下标，避免复制大记录正文。
@@ -55,7 +46,6 @@ pub struct HistoryList {
     mutating: bool,
     load_error: Option<String>,
     mutation_error: Option<String>,
-    /// 关键字过滤（客户端 contains，大小写不敏感）
     search: gpui::Entity<gpui_component::input::InputState>,
 }
 
@@ -100,7 +90,6 @@ impl HistoryList {
         this
     }
 
-    /// 删除单条：storage 删除成功后本地移除（失败 toast 留在弹框上方不可见——用错误行呈现）
     fn delete_record(&mut self, id: ramag_domain::entities::QueryRecordId, cx: &mut Context<Self>) {
         if !self.begin_mutation(cx) {
             return;
@@ -131,7 +120,6 @@ impl HistoryList {
         .detach();
     }
 
-    /// 清空当前连接全部历史（调用方已确认）
     fn clear_all(&mut self, cx: &mut Context<Self>) {
         if !self.begin_mutation(cx) {
             return;
@@ -174,7 +162,6 @@ impl HistoryList {
         true
     }
 
-    /// 异步拉取历史。必须走 service（内部已处理 storage 的线程桥接），视图层不碰底层
     fn load(&mut self, cx: &mut Context<Self>) {
         if self.loading {
             return;
@@ -210,7 +197,6 @@ impl HistoryList {
         .detach();
     }
 
-    /// 单行：状态点 + SQL 预览 + 元信息（时间 / 行数 / 耗时或失败原因）+ 行操作
     fn render_row(&self, ix: usize, rec: Arc<QueryRecord>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let fg = theme.foreground;
@@ -475,7 +461,6 @@ impl Render for HistoryList {
         };
         let _ = window;
 
-        // 外层给定高度，内层 size_full + overflow 才能滚（同 cli_console 模式）
         v_flex()
             .w_full()
             .h(px(LIST_HEIGHT))
@@ -494,7 +479,6 @@ impl Render for HistoryList {
     }
 }
 
-/// 居中提示（加载中 / 空态 / 错误共用）
 fn centered_hint(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
     v_flex()
         .size_full()

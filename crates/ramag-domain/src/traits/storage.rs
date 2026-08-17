@@ -1,5 +1,3 @@
-//! 本地持久化接口。
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,8 +23,6 @@ pub trait Storage: Send + Sync {
     }
     async fn delete_connection(&self, id: &ConnectionId) -> Result<()>;
 
-    // 默认实现用于兼容未实现 SSH 存储的测试替身。
-
     async fn list_ssh_profiles(&self) -> Result<Vec<SshProfile>> {
         Err(crate::error::DomainError::NotImplemented(
             "list_ssh_profiles".into(),
@@ -50,8 +46,6 @@ pub trait Storage: Send + Sync {
             "delete_ssh_profile".into(),
         ))
     }
-
-    // 默认实现用于兼容未实现云对象存储的测试替身。
 
     async fn list_object_storage_accounts(&self) -> Result<Vec<ObjectStorageAccount>> {
         Err(crate::error::DomainError::NotImplemented(
@@ -85,21 +79,18 @@ pub trait Storage: Send + Sync {
         ))
     }
 
-    /// 按 name 字母序，列表顺序稳定不随打开顺序漂移
     async fn list_repos(&self) -> Result<Vec<RepoConfig>> {
         Err(crate::error::DomainError::NotImplemented(
             "list_repos".into(),
         ))
     }
 
-    /// 新增或更新。VCS 打开仓库后会先更新 `last_opened_at` 再调
     async fn save_repo(&self, _config: &RepoConfig) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "save_repo".into(),
         ))
     }
 
-    /// 仅从最近列表移除，不影响磁盘文件
     async fn delete_repo(&self, _id: &RepoId) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "delete_repo".into(),
@@ -108,7 +99,6 @@ pub trait Storage: Send + Sync {
 
     async fn append_history(&self, record: &QueryRecord) -> Result<()>;
 
-    /// 按 executed_at desc。connection_id=None 全部连接
     async fn list_history(
         &self,
         connection_id: Option<&ConnectionId>,
@@ -134,12 +124,10 @@ pub trait Storage: Send + Sync {
 
     async fn delete_history(&self, id: &QueryRecordId) -> Result<()>;
 
-    /// connection_id=None 清空全部
     async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()>;
 
     async fn get_preference(&self, key: &str) -> Result<Option<String>>;
     async fn set_preference(&self, key: &str, value: &str) -> Result<()>;
-    /// 删除单条偏好；默认以空值覆盖，旧 mock 无需同步实现。
     async fn delete_preference(&self, key: &str) -> Result<()> {
         self.set_preference(key, "").await
     }
@@ -149,12 +137,9 @@ pub trait Storage: Send + Sync {
         Err(crate::error::DomainError::NotImplemented("seal".into()))
     }
 
-    /// 解密 `seal` 产物
     async fn unseal(&self, _cipher: &[u8]) -> Result<Vec<u8>> {
         Err(crate::error::DomainError::NotImplemented("unseal".into()))
     }
-
-    // 默认实现用于兼容未实现剪贴板存储的测试替身。
 
     async fn clip_save(&self, _item: &ClipItem) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
@@ -162,7 +147,6 @@ pub trait Storage: Send + Sync {
         ))
     }
 
-    /// 按 ID 读取当前记录。复制等排队操作用它确认条目未被更早的删除/清空移除。
     async fn clip_get(&self, id: &ClipId) -> Result<Option<ClipItem>> {
         Ok(self
             .clip_list()
@@ -171,14 +155,12 @@ pub trait Storage: Send + Sync {
             .find(|item| &item.id == id))
     }
 
-    /// 按 last_used_at desc 返回全部（全量解密，仅孤儿清理 / 导出等低频场景用）
     async fn clip_list(&self) -> Result<Vec<ClipItem>> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_list".into(),
         ))
     }
 
-    /// 返回历史引用的媒体路径。默认实现兼容旧存储；高容量实现应流式提取，避免保留全文。
     async fn clip_media_paths(&self) -> Result<Vec<String>> {
         Ok(self
             .clip_list()
@@ -189,7 +171,6 @@ pub trait Storage: Send + Sync {
             .collect())
     }
 
-    /// 取最近 limit 条（最近优先）。窗口缓存预加载用，走时间索引只解密这 limit 条
     async fn clip_list_recent(&self, _limit: usize) -> Result<Vec<ClipItem>> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_list_recent".into(),
@@ -206,7 +187,6 @@ pub trait Storage: Send + Sync {
         Ok(recent_items_within_budget(items, max_inline_bytes))
     }
 
-    /// 全量搜索（最近优先，匹配 preview/text，到 limit 停）。覆盖缓存窗口之外的历史
     async fn clip_search(&self, _query: &str, _limit: usize) -> Result<Vec<ClipItem>> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_search".into(),
@@ -251,14 +231,12 @@ pub trait Storage: Send + Sync {
         ))
     }
 
-    /// 内容指纹查重（连续复制同内容时提升旧条目）
     async fn clip_find_by_hash(&self, _hash: &str) -> Result<Option<ClipItem>> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_find_by_hash".into(),
         ))
     }
 
-    /// 清空全部历史；媒体目录由剪贴板驱动另行流式清理。
     async fn clip_clear(&self) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "clip_clear".into(),

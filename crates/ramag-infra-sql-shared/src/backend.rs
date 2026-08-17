@@ -48,10 +48,8 @@ where
     /// 共享池在缓存命中前也必须确认 driver 类型，不能只依赖具体 build_pool 的 miss 路径。
     fn driver_kind(&self) -> DriverKind;
 
-    /// 按 ConnectionId 缓存连接池。
     fn cache(&self) -> &PoolCache<Self::Db>;
 
-    /// 按方言引用标识符。
     fn quote_identifier(&self, ident: &str) -> String;
 
     /// 取消语句：MySQL `KILL QUERY`，PG `pg_cancel_backend()`。
@@ -60,14 +58,12 @@ where
     /// 返回切换数据库语句；PG 在连接时绑定，故返回 None。
     fn use_database_sql(&self, db: &str) -> Option<String>;
 
-    /// 返回方言对应的语句切分选项。
     fn split_options(&self) -> SplitOptions;
 
     async fn build_pool(&self, config: &ConnectionConfig) -> Result<Pool<Self::Db>>;
 
     fn decode_row(&self, row: &<Self::Db as Database>::Row) -> Result<Vec<Value>>;
 
-    /// 提取列名和类型名。
     fn extract_columns(&self, row: &<Self::Db as Database>::Row) -> (Vec<String>, Vec<String>);
 
     /// 空结果集的列定义；默认 None。
@@ -79,7 +75,6 @@ where
         None
     }
 
-    /// 返回 DML 受影响行数。
     fn rows_affected(&self, query_result: &<Self::Db as Database>::QueryResult) -> u64;
 
     /// 将后端会话 ID 写入取消句柄。
@@ -90,7 +85,6 @@ where
     ) {
     }
 
-    /// 返回数据库警告；默认空。
     async fn fetch_warnings(&self, _conn: &mut <Self::Db as Database>::Connection) -> Vec<Warning> {
         Vec::new()
     }
@@ -128,7 +122,6 @@ where
     ) -> Result<Vec<ForeignKey>>;
 }
 
-/// 获取或创建连接池。
 async fn get_pool<B>(b: &B, config: &ConnectionConfig) -> Result<Pool<B::Db>>
 where
     B: SqlBackend,
@@ -172,7 +165,6 @@ fn validate_backend_config(
     Ok(())
 }
 
-/// 优先使用 driver 的错误映射。
 fn map_err<B>(b: &B, err: sqlx::Error) -> DomainError
 where
     B: SqlBackend,

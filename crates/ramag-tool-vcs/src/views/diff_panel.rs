@@ -17,13 +17,9 @@ use super::vcs_view::VcsView;
 pub(super) const DIFF_ROW_H: f32 = 20.0;
 /// 等宽字体单字符估算宽度（mono 13px size 下约 7.5px/字，与 pf_content 同款）
 pub(super) const MONO_CHAR_W: f32 = 7.5;
-/// 行号列固定宽度（含左右 padding）
 pub(super) const LINE_NO_W: f32 = 40.0;
-/// Unified marker 列宽（+/-）
 const UNIFIED_MARKER_W: f32 = 14.0;
-/// Split marker 列宽（+/-，比 unified 略窄）
 pub(super) const SPLIT_MARKER_W: f32 = 10.0;
-/// 行内容左右 padding（×2）
 pub(super) const CONTENT_PAD: f32 = 8.0;
 
 use super::diff_keys::UnifiedKey;
@@ -49,7 +45,6 @@ pub(super) fn render_file_diff(
     }
     // Rc clone：不复制 diff 本体（大 diff 每帧全量拷贝是主线程卡顿源）
     let diff_rc: Rc<FileDiff> = diff.clone();
-    // 末尾追加一行空白，让最后一行代码不会紧贴面板底边。
     let total = keys.len().saturating_add(1);
     let scroll = scroll.clone();
     let h_scroll = h_scroll.clone();
@@ -174,7 +169,6 @@ pub(super) fn render_diff_scroll_input(
         }))
 }
 
-/// hunk header unified：整行宽，enable_discard 时显示回滚按钮
 pub(super) fn render_hunk_header_unified(
     hunk: &ramag_domain::entities::Hunk,
     hunk_idx: usize,
@@ -187,7 +181,6 @@ pub(super) fn render_hunk_header_unified(
     render_hunk_header_common(hunk, hunk_idx, enable_discard, mono, muted_fg, muted_bg, cx)
 }
 
-/// hunk header 通用渲染：左 hunk text + 右可选回滚按钮
 pub(super) fn render_hunk_header_common(
     hunk: &ramag_domain::entities::Hunk,
     hunk_idx: usize,
@@ -226,14 +219,12 @@ pub(super) fn render_hunk_header_common(
                 .overflow_hidden()
                 .child(header_text),
         );
-    // unified 回滚按钮在 split 中间分隔条，此处不渲染。
     let _ = enable_discard;
     let _ = hunk_idx;
     let _ = cx;
     row.into_any_element()
 }
 
-/// 二进制 / 无差异时给出占位元素，否则 None
 pub(super) fn render_diff_empty(diff: &FileDiff, muted_fg: gpui::Hsla) -> Option<AnyElement> {
     if diff.binary {
         return Some(
@@ -260,8 +251,6 @@ pub(super) fn render_diff_empty(diff: &FileDiff, muted_fg: gpui::Hsla) -> Option
     None
 }
 
-/// Unified 单行 diff：[old_no][new_no][marker][content (flex_1 + nowrap)]
-/// 整个 list 外层 overflow_x_scroll 包住 → 行不再有自己的横滚 cell；点行号 = inline blame
 #[allow(clippy::too_many_arguments)]
 fn render_diff_line(
     line: &DiffLine,
@@ -331,7 +320,6 @@ fn render_diff_line(
     row
 }
 
-/// 公共行号单元格（40px 宽，右对齐贴紧内容，仿 VSCode）
 pub(super) fn line_no_cell(label: String, muted_fg: gpui::Hsla) -> impl IntoElement {
     h_flex()
         .flex_none()
@@ -342,8 +330,6 @@ pub(super) fn line_no_cell(label: String, muted_fg: gpui::Hsla) -> impl IntoElem
         .child(label)
 }
 
-/// 可点击的行号单元格：点击 → 顶部 banner 显示该行的 inline blame
-/// `line_no=None` 时退化为静态单元格（空配对侧无 line_no）；is_old 用于区分 blame 取 old/new 行号
 pub(super) fn line_no_cell_clickable(
     line_no: Option<u32>,
     is_old: bool,
@@ -371,7 +357,6 @@ pub(super) fn line_no_cell_clickable(
     cell.into_any_element()
 }
 
-/// 行类型 → (背景色, 标记字符, 标记色)
 pub(super) fn line_palette(kind: DiffLineKind) -> (Option<gpui::Hsla>, &'static str, gpui::Hsla) {
     match kind {
         DiffLineKind::Context => (None, " ", gpui::hsla(0.0, 0.0, 0.5, 1.0)),

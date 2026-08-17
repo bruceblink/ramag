@@ -220,7 +220,7 @@ impl SettingsView {
                         crate::open_confirm(
                             "导入未加密配置？",
                             format!(
-                                "这是旧版 V1 明文文件，可能直接包含数据库密码。将新增 {added} 个连接、覆盖 {overwritten} 个同 ID 连接，跳过 {} 个无效条目。请仅导入可信文件。",
+                                "V1 明文文件可能含数据库密码。新增 {added} 个连接、覆盖 {overwritten} 个同 ID 连接，跳过 {} 个无效条目。请仅导入可信文件。",
                                 skipped.len()
                             ),
                             "继续导入",

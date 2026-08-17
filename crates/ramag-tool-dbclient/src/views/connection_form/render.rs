@@ -10,7 +10,7 @@ use gpui_component::{
 use super::{ConnectionFormPanel, FormMode, TestState, field_row, section_title};
 
 impl ConnectionFormPanel {
-    /// 生产模式由驱动层拦截写操作。
+    /// 写操作由驱动层拦截。
     fn render_production_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -58,7 +58,7 @@ impl ConnectionFormPanel {
                         div()
                             .text_xs()
                             .text_color(muted_fg)
-                            .child("开启后该连接禁止一切写 / 改 / 删操作"),
+                            .child("开启后禁止写操作"),
                     ),
             )
     }
@@ -103,7 +103,7 @@ impl ConnectionFormPanel {
                 div()
                     .text_xs()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("环境标签（可选，列表中显示为徽章）"),
+                    .child("环境标签（可选）"),
             )
             .child(row)
     }
@@ -114,11 +114,11 @@ impl Render for ConnectionFormPanel {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let border = theme.border;
-        // 小窗口仅滚动主体，保证底部操作可见。
+        // 小窗口仅滚动主体，保持操作区可见。
         let viewport_h = window.viewport_size().height;
         let body_max_h = (viewport_h * 0.9 - px(210.0)).max(px(200.0));
 
-        // 失败诊断完整展示，其他状态保持单行。
+        // 失败信息完整显示。
         let (test_msg, test_failed) = match &self.test_state {
             TestState::Idle => (None, false),
             TestState::Testing => (Some(("测试中…".to_string(), muted_fg)), false),
@@ -146,8 +146,7 @@ impl Render for ConnectionFormPanel {
             .w_full()
             .pt(px(4.0))
             .child(
-                // max_h 与滚动放在同一元素上，溢出量即可滚动量
-                // （不渲染滚动条：滚轮 / 触控板直接滚，避免常显轨道贯穿表单）
+                // 主体滚动，避免常显滚动条。
                 div()
                     .id("conn-form-body")
                     .w_full()
@@ -164,7 +163,7 @@ impl Render for ConnectionFormPanel {
                     .items_end()
                     .gap(px(8.0))
                     .child(div().flex_1().min_w_0().child(field_row(
-                        "连接 URI（编辑回填不含密码）",
+                        "连接 URI（编辑时不含密码）",
                         Input::new(&self.uri).disabled(self.saving),
                     )))
                     .child(
@@ -282,9 +281,9 @@ impl Render for ConnectionFormPanel {
                             .child(
                                 v_flex()
                                     .gap(px(2.0))
-                                    .child(div().text_sm().child("启用 TLS 加密"))
+                                    .child(div().text_sm().child("TLS 加密"))
                                     .child(div().text_xs().text_color(muted_fg).child(
-                                        "关闭时按服务端能力协商（SQL 有则用）；开启则强制加密连接",
+                                        "关闭时自动协商；开启时强制加密。",
                                     )),
                             )
                             .child(
@@ -299,7 +298,7 @@ impl Render for ConnectionFormPanel {
                             ),
                     )
                     .when(self.tls, |this| {
-                        // 身份验证三档：加密 ≠ 确认对端身份，明示各档语义
+                        // 加密不等于验证对端身份。
                         let current = self.tls_verify;
                         let mut verify_row = h_flex().w_full().items_center().gap(px(8.0));
                         for (mode, label) in [
@@ -332,21 +331,21 @@ impl Render for ConnectionFormPanel {
                         }
                         this.child(verify_row)
                             .child(field_row(
-                                "自定义 CA 证书（PEM，自签服务端用；留空用系统信任链验证）",
+                                "CA 证书（PEM，留空使用系统信任链）",
                                 Input::new(&self.ca_cert_path).disabled(self.saving),
                             ))
-                            // Redis / Mongo 驱动无「验链不验名」档：Ca 档在这两类上等同严格校验
+                            // Redis/MongoDB 的 Ca 档等同完整验证。
                             .when(
                                 matches!(self.driver_id, "redis" | "mongodb")
                                     && current == ramag_domain::entities::TlsVerify::Ca,
                                 |t| {
                                     t.child(div().text_xs().text_color(muted_fg).child(
-                                        "该数据库驱动不支持「验链不验名」，此档等同完整验证",
+                                        "此驱动的“验 CA”即完整验证",
                                     ))
                                 },
                             )
                     })
-                    // SSH 与 TLS 同开时验证等级受限（隧道内主机名校验必败），如实提示
+                    // SSH 隧道下 TLS 主机名校验受限。
                     .when(self.tls, |t| {
                         let ssh_on = !self
                             .ssh_target
@@ -356,18 +355,17 @@ impl Render for ConnectionFormPanel {
                             .is_empty();
                         t.when(ssh_on, |t| {
                             t.child(div().text_xs().text_color(muted_fg).child(
-                                "经 SSH 隧道时身份验证自动降级：MySQL/PG 最高验 CA，Redis/Mongo 仅加密（隧道段已由 SSH 加密）",
+                                "SSH 隧道下：MySQL/PG 最高验 CA；Redis/Mongo 仅加密。",
                             ))
                         })
                     })
-                    // SSH 跳板：target 非空即启用；密钥 / agent / 别名由系统 ssh 处理，
-                    // 不在此存任何 SSH 凭证
+                    // SSH 认证由系统配置处理。
                     .child(
                         h_flex()
                             .w_full()
                             .gap(px(12.0))
                             .child(div().flex_1().min_w_0().child(field_row(
-                                "SSH 跳板（可选，需已配密钥或 ssh-agent）",
+                                "SSH 跳板（需密钥或 agent）",
                                 Input::new(&self.ssh_target).disabled(self.saving),
                             )))
                             .child(
@@ -418,7 +416,7 @@ impl Render for ConnectionFormPanel {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::NORMAL)
                                     .text_color(color)
-                                    // 失败诊断换行全量展示，成功 / 测试中保持单行省略
+                                    // 失败信息可换行并复制。
                                     .when(!test_failed, |d| d.overflow_hidden().text_ellipsis())
                                     .child(msg);
                                 if test_failed {

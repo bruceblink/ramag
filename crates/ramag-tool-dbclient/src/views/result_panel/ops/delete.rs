@@ -1,7 +1,7 @@
 use super::*;
 
 impl ResultPanel {
-    /// 批量执行 DELETE：每行独立 SQL（DELETE ... WHERE ... LIMIT 1），串行 await
+    /// 批量删除逐行执行。
     pub(crate) fn execute_delete_rows_async(
         &mut self,
         indices: Vec<usize>,
@@ -166,7 +166,7 @@ impl ResultPanel {
         true
     }
 
-    /// 新增行弹框确认后调用：异步执行 INSERT，成功后本地 rows.push
+    /// 新增行后异步插入并更新本地结果。
     pub(crate) fn apply_insert_async(
         &mut self,
         values: Vec<(String, Value)>,
@@ -175,7 +175,7 @@ impl ResultPanel {
         if values.is_empty() {
             return false;
         }
-        // 兜底草稿行提交时条件已变化（如手改 SQL / 配置转生产只读）
+        // 草稿期间的条件可能已变化。
         if let Some(reason) = self.insert_block_reason() {
             self.pending_notification =
                 Some(Notification::warning(format!("无法新增：{reason}")).autohide(true));

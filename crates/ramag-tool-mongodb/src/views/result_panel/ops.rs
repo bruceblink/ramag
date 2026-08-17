@@ -29,7 +29,6 @@ impl ResultPanel {
         let Some(coll) = self.target_collection.clone() else {
             return;
         };
-        // 使用首个文档字段作为模板，忽略 _id。
         let fields: Vec<String> = self
             .docs_arc
             .as_ref()
@@ -37,7 +36,6 @@ impl ResultPanel {
             .and_then(|d| d.as_object())
             .map(|m| m.keys().filter(|k| k.as_str() != "_id").cloned().collect())
             .unwrap_or_default();
-        // 无模板时输入完整 JSON。
         if fields.is_empty() || fields.len() > MAX_INSERT_FORM_FIELDS {
             return self.open_raw_insert_dialog(coll, window, cx);
         }

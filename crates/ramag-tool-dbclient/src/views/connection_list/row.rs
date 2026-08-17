@@ -1,6 +1,4 @@
-//! 单行连接（整行点击 = 打开；行内编辑/删除独立 emit）
-//!
-//! driver badge + 名称 + 只读标记 + 版本 / 地址 / 账号固定列对齐 + 编辑/删除按钮。
+//! 单行数据库连接。
 
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
@@ -10,14 +8,10 @@ use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::{ConnectionListPanel, ListEvent};
 
-/// 行密度：按面板宽度决定隐藏哪些次要列（800px 窗口固定列已挤占近满）
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum RowDensity {
-    /// 宽：版本 / 地址 / 账号全显示
     Full,
-    /// 中：隐藏版本、账号，保留地址
     Medium,
-    /// 窄：仅名称、类型、只读、操作
     Narrow,
 }
 
@@ -27,7 +21,6 @@ pub(super) fn connection_row(
     conn: ConnectionConfig,
     is_selected: bool,
     show_sync: bool,
-    // 服务端版本（None = 还没拉到 / 拉失败）
     version: Option<String>,
     density: RowDensity,
     border: gpui::Hsla,
@@ -47,7 +40,6 @@ pub(super) fn connection_row(
         DriverKind::Mongodb => "MongoDB",
     };
 
-    // 类型 badge 前的官方品牌彩色 logo（img 渲染，非单色 Icon）
     let brand_icon: Option<&'static str> = ramag_ui::icons::db_brand_icon(match conn.driver {
         DriverKind::Mysql => "mysql",
         DriverKind::Postgres => "postgres",
@@ -55,8 +47,6 @@ pub(super) fn connection_row(
         DriverKind::Mongodb => "mongodb",
     });
 
-    // driver 配色（一类一色，便于扫一眼连接列表区分）：
-    // MySQL 蓝（主题 accent）/ PostgreSQL 紫 / Redis 红 / MongoDB 绿
     let badge_fg: gpui::Hsla = match conn.driver {
         DriverKind::Mysql => accent,
         DriverKind::Postgres => gpui::hsla(265.0 / 360.0, 0.55, 0.55, 1.0),
@@ -80,7 +70,6 @@ pub(super) fn connection_row(
 
     let host_port = format!("{}:{}", conn.host, conn.port);
 
-    // 名字 = host 时（用户没改默认同步），名字列已显示 host:port，地址列留空避免重复
     let name_collapsed_with_host = conn.name == conn.host;
     let primary_label = if name_collapsed_with_host {
         host_port.clone()
@@ -93,7 +82,6 @@ pub(super) fn connection_row(
         host_port
     };
 
-    // 账号：空段省略，避免 Redis 这类无 user / db 的连接显示无意义的「— @ —」
     let account_text = {
         let user = conn.username.trim();
         let db = conn.database.as_deref().map(str::trim).unwrap_or("");
@@ -105,10 +93,8 @@ pub(super) fn connection_row(
         }
     };
 
-    // 类型名已由独立类型列展示，版本列只放纯版本号，避免重复
     let version_text = version.unwrap_or_default();
 
-    // 固定宽度的次要信息列：内容为空也占位，保证各行整列对齐
     let secondary_col = move |w: f32, text: String| {
         div()
             .flex_none()
@@ -180,7 +166,6 @@ pub(super) fn connection_row(
                 )
             }
         })
-        // 类型胶囊移到名称之后的固定列（一类一色，保留扫读区分度）
         .child(
             div().flex_none().w(px(84.0)).flex().justify_center().child(
                 div()
@@ -193,7 +178,6 @@ pub(super) fn connection_row(
                     .child(kind_label),
             ),
         )
-        // 生产徽章槽（固定宽，未开启时保留空白占位以维持整列对齐）。
         .child(div().flex_none().w(px(44.0)).flex().justify_center().when(
             is_production,
             move |slot| {
@@ -209,7 +193,6 @@ pub(super) fn connection_row(
                 )
             },
         ))
-        // 版本 / 地址 / 账号：按密度隐藏，窄窗口下让位给名称与操作
         .when(show_version, |row| {
             row.child(secondary_col(120.0, version_text))
         })
@@ -219,7 +202,6 @@ pub(super) fn connection_row(
         .when(show_account, |row| {
             row.child(secondary_col(150.0, account_text))
         })
-        // 拦截按钮事件，避免触发父行的打开操作。
         .child(
             h_flex()
                 .flex_none()
@@ -270,7 +252,6 @@ pub(super) fn connection_row(
     row
 }
 
-/// 环境徽章配色：dev 绿 / test 琥珀 / prod 红（与只读同域警示色），自定义值用中性灰
 fn environment_badge_colors(
     environment: &str,
     fallback_fg: gpui::Hsla,

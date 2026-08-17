@@ -37,7 +37,6 @@ pub struct CollectionTreePanel {
     databases: Vec<MongoDatabase>,
     loading: bool,
     error: Option<String>,
-    /// 集合缓存与展开状态分离。
     expanded: HashMap<String, ExpandedState>,
     expanded_bytes: usize,
     open_databases: HashSet<String>,
@@ -49,7 +48,6 @@ pub struct CollectionTreePanel {
     selected: Option<(String, String)>,
     active_db: Option<String>,
     search: Entity<InputState>,
-    /// 缓存小写搜索词。
     search_query: String,
     show_system: bool,
     editor_visible: bool,
@@ -70,7 +68,6 @@ pub(super) fn is_system_db(name: &str) -> bool {
     SYSTEM_DBS.contains(&name)
 }
 
-/// 优先使用连接配置，否则选择首个非系统库。
 fn pick_default_db(conn: Option<&ConnectionConfig>, databases: &[MongoDatabase]) -> Option<String> {
     if let Some(db) = conn
         .and_then(|c| c.database.as_deref())
@@ -85,7 +82,6 @@ fn pick_default_db(conn: Option<&ConnectionConfig>, databases: &[MongoDatabase])
         .map(|d| d.name.clone())
 }
 
-/// 向有序数据库列表插入配置中的空库。
 fn insert_configured_database(databases: &mut Vec<MongoDatabase>, configured: Option<String>) {
     let Some(name) = configured.filter(|name| !name.is_empty()) else {
         return;
@@ -117,18 +113,15 @@ pub enum TreeEvent {
         database: String,
         collection: String,
     },
-    /// 集合改名成功。
     CollectionRenamed {
         database: String,
         old: String,
         new: String,
     },
-    /// 集合删除成功。
     CollectionDropped {
         database: String,
         collection: String,
     },
-    /// 数据库删除成功。
     DatabaseDropped {
         database: String,
     },
@@ -155,7 +148,6 @@ impl CollectionTreePanel {
                     return;
                 }
                 this.search_query = query;
-                // 非空搜索覆盖全库。
                 this.ensure_search_coverage(cx);
                 this.invalidate_tree_rows();
                 cx.notify();
@@ -248,7 +240,6 @@ impl CollectionTreePanel {
         (self.loading, self.error.is_some())
     }
 
-    /// 首次加载失败后重新激活会重试。
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if self.connection.is_some() && self.databases.is_empty() && !self.loading {
             self.refresh_databases(cx);

@@ -45,7 +45,6 @@ use helpers::{bounded_cell_dialog_text, memory_notice, pretty_cell_value};
 use row_search::{RowFilter, RowSearchBlocker, RowSearchState};
 pub(crate) use row_search::{RowSearchConversionStatus, RowSearchMode};
 
-/// 列补全最大嵌套深度。
 const PATH_COMPLETION_DEPTH: usize = 5;
 /// 行过滤防抖，避免按键时反复扫描大表。
 const ROW_VIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
@@ -55,7 +54,6 @@ pub struct ResultPanel {
     /// 当前层文档由此共享，避免渲染时复制。
     pub(crate) docs_arc: Option<Arc<Vec<serde_json::Value>>>,
     pub(crate) error: Option<String>,
-    /// 当前结果的内存提示。
     memory_notice: Option<String>,
     pub(crate) running: bool,
     pagination: Option<MongoResultPagination>,
@@ -69,7 +67,6 @@ pub struct ResultPanel {
     row_search: RowSearchState,
     pub(crate) uniform_scroll: UniformListScrollHandle,
     pub(crate) h_scroll: ScrollHandle,
-    /// 表格双轴手势状态。
     scroll_gesture: AxisScrollGesture,
     pub(crate) column_completion_source: Arc<RwLock<Vec<String>>>,
     pub(crate) service: Option<Arc<MongoService>>,
@@ -81,7 +78,6 @@ pub struct ResultPanel {
     /// DML 防重入；失败时保留弹框输入。
     pub(super) doc_dml_busy: bool,
     pub(super) exporting: bool,
-    /// 仅成功后关闭 DML 弹框。
     pub(super) pending_close_dialog: bool,
     pub(crate) selected_rows: BTreeSet<usize>,
     /// 选择代际与可见行交集缓存，避免重复扫描。
@@ -89,7 +85,6 @@ pub struct ResultPanel {
     visible_selection_cache: Option<VisibleSelectionCache>,
     /// 下钻栈；深度大于 1 时只读并显示面包屑。
     pub(crate) drill_stack: Vec<drill::DrillLevel>,
-    /// 下钻换表后用路径检测排序失配。
     pub(crate) sort_by: Option<(String, SortDir)>,
     /// 行过滤和排序缓存，避免重复扫描矩阵。
     row_view_cache: Option<RowViewCache>,
@@ -100,7 +95,6 @@ pub struct ResultPanel {
     row_view_cancel: Option<Arc<AtomicBool>>,
     /// 行视图构建失败信息；条件变化时清除。
     pub(crate) row_view_error: Option<String>,
-    /// 当前标签的结果内存登记。
     result_memory: Option<ResultMemoryLease>,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -278,7 +272,6 @@ impl ResultPanel {
         self.target_collection = coll;
     }
 
-    /// 写操作使用当前数据库。
     pub fn set_database(&mut self, db: String) {
         self.database = db;
     }
@@ -296,7 +289,6 @@ impl ResultPanel {
         }
     }
 
-    /// 切换层级时清空列过滤；内容搜索保留。
     pub fn clear_column_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.column_filter
             .update(cx, |s, cx| s.set_value("", window, cx));
@@ -461,7 +453,6 @@ impl ResultPanel {
         self.clear_selected_rows();
     }
 
-    /// 释放旧结果，保留编辑器命令。
     pub fn evict_result_for_budget(&mut self, cx: &mut Context<Self>) {
         self.release_result_payload();
         self.error =

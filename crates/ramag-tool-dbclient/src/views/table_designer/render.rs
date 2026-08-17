@@ -199,9 +199,9 @@ impl Render for TableDesigner {
                             .secondary()
                             .small()
                             .label(if show_ddl {
-                                "返回字段设计"
+                                "字段设计"
                             } else {
-                                "查看建表语句"
+                                "建表语句"
                             })
                             .disabled(reviewing || executing)
                             .on_click(move |_: &ClickEvent, _, app| {
@@ -247,9 +247,12 @@ impl Render for TableDesigner {
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .child("字段结构"),
                                 )
-                                .child(div().text_xs().text_color(muted_fg).child(format!(
-                                    "共 {active_fields} 个字段。修改完成后先预览 SQL，再确认执行。"
-                                ))),
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted_fg)
+                                        .child(format!("{active_fields} 个字段")),
+                                ),
                         )
                         .child(
                             v_flex()
@@ -349,7 +352,7 @@ impl Render for TableDesigner {
                                             ramag_ui::clickable_button("modify-table-back-to-edit")
                                                 .ghost()
                                                 .small()
-                                                .label("返回修改")
+                                                .label("返回")
                                                 .disabled(executing)
                                                 .on_click({
                                                     let entity = entity.clone();
@@ -444,7 +447,7 @@ impl Render for TableDesigner {
                                             ramag_ui::clickable_button("modify-table-preview")
                                                 .primary()
                                                 .small()
-                                                .label("预览变更")
+                                                .label("预览")
                                                 .disabled(executing || has_table_name_change)
                                                 .when(has_table_name_change, |button| {
                                                     button.tooltip("请先保存表名")
@@ -486,13 +489,13 @@ impl Render for TableDesigner {
                                     div()
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child("放弃未执行的变更？"),
+                                        .child("放弃更改？"),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(muted_fg)
-                                        .child("未保存的表名和字段更改将丢失。"),
+                                        .child("未保存的更改将丢失。"),
                                 ),
                         )
                         .child(

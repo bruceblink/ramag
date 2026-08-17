@@ -25,7 +25,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-/// 托盘回调消息。
 const TRAY_CALLBACK: u32 = WM_APP + 1;
 const TRAY_ICON_ID: u32 = 1;
 const MENU_CMD_OPEN: u32 = 1;
@@ -35,13 +34,10 @@ const EVENT_QUIT: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrayEvent {
-    /// 唤起主窗口。
     Open,
-    /// 退出应用。
     Quit,
 }
 
-/// 托盘句柄，释放时关闭隐藏窗口并回收线程。
 pub(crate) struct TrayIcon {
     events: Arc<AtomicU8>,
     hwnd: isize,
@@ -49,7 +45,6 @@ pub(crate) struct TrayIcon {
 }
 
 impl TrayIcon {
-    /// 安装托盘图标；失败返回 `None`。
     pub(crate) fn install() -> Option<Self> {
         let events = Arc::new(AtomicU8::new(0));
         let thread_events = events.clone();
@@ -85,7 +80,6 @@ impl TrayIcon {
         }
     }
 
-    /// 非阻塞读取一个托盘事件。
     pub(crate) fn poll(&self) -> Option<TrayEvent> {
         let events = self.events.swap(0, Ordering::AcqRel);
         if events & EVENT_QUIT != 0 {
@@ -128,23 +122,27 @@ fn join_thread(thread: JoinHandle<()>) {
     }
 }
 
-/// 托盘线程：创建隐藏窗口、挂图标并运行消息泵。
 fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
     let hwnd = match create_tray_window(events) {
         Ok(hwnd) => hwnd,
-        Err(reason) => {
+        Err(error) => {
             warn!(
                 operation = "tray_install",
                 stage = "window_create",
-                reason,
+                error = %error,
                 "create tray window failed"
             );
             let _ = ready_tx.send(None);
             return;
         }
     };
-    if !add_tray_icon(hwnd) {
-        // 通过 WM_CLOSE 销毁窗口。
+    if let Err(error) = add_tray_icon(hwnd) {
+        warn!(
+            operation = "tray_install",
+            stage = "icon_add",
+            error = %error,
+            "add system tray icon failed"
+        );
         unsafe {
             let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
         }
@@ -186,10 +184,9 @@ fn pump_messages() {
     }
 }
 
-/// 注册窗口类并创建隐藏窗口。
-fn create_tray_window(events: Arc<AtomicU8>) -> Result<HWND, &'static str> {
+fn create_tray_window(events: Arc<AtomicU8>) -> windows::core::Result<HWND> {
     unsafe {
-        let instance = GetModuleHandleW(None).map_err(|_| "GetModuleHandleW failed")?;
+        let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
             lpfnWndProc: Some(tray_wndproc),
             hInstance: instance.into(),
@@ -215,13 +212,13 @@ fn create_tray_window(events: Arc<AtomicU8>) -> Result<HWND, &'static str> {
         );
         if hwnd.0 == 0 {
             drop(Box::from_raw(events_ptr));
-            return Err("CreateWindowExW failed");
+            return Err(windows::core::Error::from_win32());
         }
         Ok(hwnd)
     }
 }
 
-fn add_tray_icon(hwnd: HWND) -> bool {
+fn add_tray_icon(hwnd: HWND) -> windows::core::Result<()> {
     let mut data = NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
@@ -233,11 +230,11 @@ fn add_tray_icon(hwnd: HWND) -> bool {
     };
     let tip: Vec<u16> = "Ramag".encode_utf16().collect();
     data.szTip[..tip.len()].copy_from_slice(&tip);
-    let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
-    if !added {
-        warn!(operation = "tray_icon_add", "add system tray icon failed");
+    if unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
+        Ok(())
+    } else {
+        Err(windows::core::Error::from_win32())
     }
-    added
 }
 
 /// 加载应用图标，失败回退系统图标。

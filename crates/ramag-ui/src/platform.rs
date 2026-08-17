@@ -1,6 +1,3 @@
-//! 用户可见的平台术语与快捷键文案。
-
-/// 主修饰键快捷键：macOS 使用 Command，Windows 使用 Ctrl。
 pub fn primary_shortcut(key: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("⌘{key}")
@@ -9,7 +6,6 @@ pub fn primary_shortcut(key: &str) -> String {
     }
 }
 
-/// 主修饰键 + Shift 快捷键。
 pub fn primary_shift_shortcut(key: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("⌘⇧{key}")
@@ -18,7 +14,6 @@ pub fn primary_shift_shortcut(key: &str) -> String {
     }
 }
 
-/// 主修饰键 + Option/Alt 快捷键。
 pub fn primary_alt_shortcut(key: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("⌘⌥{key}")
@@ -27,7 +22,6 @@ pub fn primary_alt_shortcut(key: &str) -> String {
     }
 }
 
-/// 剪贴板抽屉全局热键文案（alternate 对应设置里的备用组合）
 pub fn clipboard_hotkey(alternate: bool) -> String {
     if alternate {
         primary_alt_shortcut("V")
@@ -44,7 +38,7 @@ pub fn auto_paste_description() -> &'static str {
     if cfg!(target_os = "macos") {
         "选中后粘贴（需辅助功能权限）"
     } else {
-        "选中后切回原窗口并粘贴（管理员应用可能仅复制）"
+        "选中后粘贴；管理员应用可能只能复制"
     }
 }
 

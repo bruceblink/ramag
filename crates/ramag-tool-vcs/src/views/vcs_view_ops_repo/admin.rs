@@ -83,7 +83,7 @@ impl VcsView {
             .unwrap_or_else(|| path.clone());
         ramag_ui::open_confirm(
             "从最近列表移除？",
-            format!("确定从最近列表移除「{name}」吗？\n仅清除本地最近记录，不会删除磁盘文件。"),
+            format!("移除「{name}」的本机最近记录；不会删除磁盘文件。"),
             "移除",
             true,
             move |_window, app| {

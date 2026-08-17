@@ -122,7 +122,7 @@ impl GitDriver for GitDriverImpl {
         .await
     }
 
-    // gix 写入 API 尚不稳定，写操作使用 Git 子进程。
+    // 写操作使用 Git 子进程。
 
     async fn stage(&self, repo: &RepoId, paths: &[String]) -> Result<()> {
         git_cmd::validate_path_args(paths, "待暂存文件列表")?;

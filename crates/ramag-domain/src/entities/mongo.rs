@@ -207,7 +207,6 @@ pub struct MongoDatabase {
 pub struct MongoCollection {
     pub name: String,
     pub database: String,
-    /// 视图不可写入。
     pub is_view: bool,
 }
 
@@ -218,7 +217,6 @@ pub struct MongoIndex {
     /// (字段名, 方向)；方向 1=升序 / -1=降序 / 文本索引等扩展为 0
     pub keys: Vec<(String, i32)>,
     pub unique: bool,
-    /// `_id` 索引视为主键
     pub primary: bool,
     pub sparse: bool,
 }
@@ -236,7 +234,6 @@ pub struct MongoQuerySpec {
     pub projection: Option<Value>,
     /// 排序 spec，例 `{"createdAt": -1}`
     pub sort: Option<Value>,
-    /// 跳过文档数（分页）
     pub skip: Option<u64>,
     /// 返回条数上限；`None` 仅受字节预算约束。
     pub limit: Option<i64>,
@@ -290,21 +287,17 @@ pub struct MongoQueryResult {
     /// write 类返回的影响数（matched / modified / deleted / inserted）
     pub affected: u64,
     pub elapsed_ms: u64,
-    /// UI 状态栏 / 历史摘要，如 "12 docs, 18ms"
     pub summary: String,
     /// 结果是否被安全上限截断（游标超过上限只取前 N）。UI 据此提示"仅显示前 N 条"，
     /// 导出也据此告知用户导出的是已加载数据而非完整查询结果
     #[serde(default)]
     pub truncated: bool,
-    /// 客户端常驻内存估算。
     #[serde(default)]
     pub retained_bytes: usize,
-    /// 是否达到单结果提示线。
     #[serde(default)]
     pub memory_warning: bool,
 }
 
-/// `insert_many` 结果：插入数与重复 `_id` 跳过数
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct InsertManyOutcome {
     pub inserted: u64,
@@ -335,7 +328,6 @@ impl MongoQueryResult {
         Self::read_with_budget(documents, elapsed_ms, truncated, retained_bytes)
     }
 
-    /// 使用驱动累计的内存估算构造读取结果。
     pub fn read_with_budget(
         documents: Vec<MongoDocument>,
         elapsed_ms: u64,

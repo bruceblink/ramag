@@ -131,8 +131,9 @@ impl SshService {
             .try_acquire_owned()
             .map_err(|_| DomainError::Forbidden("同一连接同时只能执行 1 个安全诊断".into()))?;
         tracing::info!(
+            operation = "ssh_diagnostic",
+            diagnostic = operation.kind(),
             profile_id = %profile.id,
-            operation = operation.kind(),
             platform = ?capabilities.operating_system,
             "ssh diagnostic started"
         );
@@ -143,8 +144,9 @@ impl SshService {
             .await;
         match &result {
             Ok(result) => tracing::info!(
+                operation = "ssh_diagnostic",
+                diagnostic = operation.kind(),
                 profile_id = %profile.id,
-                operation = operation.kind(),
                 elapsed_ms = started.elapsed().as_millis(),
                 exit_code = ?result.exit_code,
                 truncated = result.truncated,
@@ -153,8 +155,9 @@ impl SshService {
                 "ssh diagnostic finished"
             ),
             Err(error) => tracing::warn!(
+                operation = "ssh_diagnostic",
+                diagnostic = operation.kind(),
                 profile_id = %profile.id,
-                operation = operation.kind(),
                 elapsed_ms = started.elapsed().as_millis(),
                 error = %error,
                 "ssh diagnostic failed"

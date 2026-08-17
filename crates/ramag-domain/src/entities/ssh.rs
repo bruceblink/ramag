@@ -1,5 +1,3 @@
-//! SSH 配置、远程文件与传输任务实体。
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -42,8 +40,7 @@ pub const MAX_SSH_TERMINALS_PER_WORKSPACE: usize = 8;
 pub const MAX_SSH_FAVORITE_PATHS_PER_PROFILE: usize = 16;
 pub const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 
-/// SSH 模块级通用配置。
-/// 该配置不属于单个连接，修改后对所有 SSH/SFTP 连接生效。
+/// 对所有 SSH/SFTP 连接生效的模块配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SshModuleSettings {
     /// Windows 标准 SFTP 无法列出目录或盘符时，改用远端 sftp-server.exe。

@@ -31,7 +31,7 @@ impl Render for VcsView {
                 let display = dir.display().to_string();
                 ramag_ui::open_confirm(
                     "删除未完成的 Clone 目录？",
-                    format!("Clone 已取消，残留半成品目录：\n{display}\n\n删除该目录？选择保留可稍后手动处理。"),
+                    format!("Clone 已取消，残留目录：\n{display}\n\n删除？保留可稍后处理。"),
                     "删除",
                     true,
                     move |_, app| {

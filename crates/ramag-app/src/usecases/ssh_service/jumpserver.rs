@@ -126,21 +126,54 @@ impl SshService {
         &self,
         saved: &JumpServerRdpSession,
     ) -> Result<String> {
-        saved.validate().map_err(DomainError::InvalidConfig)?;
-        let connection = self
-            .load_jumpserver_connections()
-            .await?
-            .into_iter()
-            .find(|connection| connection.id == saved.connection_id)
-            .ok_or_else(|| {
-                DomainError::NotFound("对应的 JumpServer 登录连接已删除，请重新选择资源".into())
-            })?;
-        let session = self.authenticate_jumpserver(&connection.credential).await?;
-        self.create_jumpserver_rdp_web_session(&session, &saved.asset_snapshot(), &saved.account_id)
+        let connection_id = saved.connection_id.clone();
+        let asset_id = saved.asset_id.clone();
+        let account_id = saved.account_id.clone();
+        let result = async {
+            saved.validate().map_err(DomainError::InvalidConfig)?;
+            let connection = self
+                .load_jumpserver_connections()
+                .await?
+                .into_iter()
+                .find(|connection| connection.id == saved.connection_id)
+                .ok_or_else(|| {
+                    DomainError::NotFound("对应的 JumpServer 登录连接已删除，请重新选择资源".into())
+                })?;
+            let session = self.authenticate_jumpserver(&connection.credential).await?;
+            self.create_jumpserver_rdp_web_session(
+                &session,
+                &saved.asset_snapshot(),
+                &saved.account_id,
+            )
             .await
+        }
+        .await;
+        if let Err(error) = &result {
+            warn!(
+                operation = "jumpserver_saved_rdp_session_create",
+                connection_id,
+                asset_id,
+                account_id,
+                error = %error,
+                "create saved JumpServer RDP session failed"
+            );
+        }
+        result
     }
 
     pub async fn load_jumpserver_rdp_sessions(&self) -> Result<JumpServerRdpSessionHistory> {
+        let result = self.load_jumpserver_rdp_sessions_inner().await;
+        if let Err(error) = &result {
+            warn!(
+                operation = "jumpserver_rdp_history_load",
+                error = %error,
+                "load jumpserver RDP history failed"
+            );
+        }
+        result
+    }
+
+    async fn load_jumpserver_rdp_sessions_inner(&self) -> Result<JumpServerRdpSessionHistory> {
         let Some(stored) = self
             .storage
             .get_preference(JUMPSERVER_RDP_SESSIONS_PREFERENCE_KEY)
@@ -173,12 +206,27 @@ impl SshService {
         &self,
         session: JumpServerRdpSession,
     ) -> Result<JumpServerRdpSessionHistory> {
-        let mut history = self.load_jumpserver_rdp_sessions().await?;
-        history
-            .record_open(session)
-            .map_err(DomainError::InvalidConfig)?;
-        self.store_jumpserver_rdp_sessions(&history).await?;
-        Ok(history)
+        let connection_id = session.connection_id.clone();
+        let asset_id = session.asset_id.clone();
+        let result = async {
+            let mut history = self.load_jumpserver_rdp_sessions_inner().await?;
+            history
+                .record_open(session)
+                .map_err(DomainError::InvalidConfig)?;
+            self.store_jumpserver_rdp_sessions(&history).await?;
+            Ok(history)
+        }
+        .await;
+        if let Err(error) = &result {
+            warn!(
+                operation = "jumpserver_rdp_history_record",
+                connection_id,
+                asset_id,
+                error = %error,
+                "record jumpserver RDP history failed"
+            );
+        }
+        result
     }
 
     pub async fn set_jumpserver_rdp_session_favorite(
@@ -186,12 +234,26 @@ impl SshService {
         session: &JumpServerRdpSession,
         favorite: bool,
     ) -> Result<JumpServerRdpSessionHistory> {
-        let mut history = self.load_jumpserver_rdp_sessions().await?;
-        history
-            .set_favorite(session, favorite)
-            .map_err(DomainError::InvalidConfig)?;
-        self.store_jumpserver_rdp_sessions(&history).await?;
-        Ok(history)
+        let result = async {
+            let mut history = self.load_jumpserver_rdp_sessions_inner().await?;
+            history
+                .set_favorite(session, favorite)
+                .map_err(DomainError::InvalidConfig)?;
+            self.store_jumpserver_rdp_sessions(&history).await?;
+            Ok(history)
+        }
+        .await;
+        if let Err(error) = &result {
+            warn!(
+                operation = "jumpserver_rdp_history_favorite",
+                connection_id = %session.connection_id,
+                asset_id = %session.asset_id,
+                favorite,
+                error = %error,
+                "update jumpserver RDP history favorite failed"
+            );
+        }
+        result
     }
 
     /// 测试前重新读取资产详情，避免账号权限变化后仍使用旧连接信息。

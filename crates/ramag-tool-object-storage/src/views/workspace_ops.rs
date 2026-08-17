@@ -155,7 +155,6 @@ impl ObjectStorageView {
             workspaces: self.workspace_states.clone(),
             favorites: self.favorites.clone(),
             show_mounts: self.show_mounts,
-            // 详情不跨会话恢复。
             show_detail: false,
         };
         cx.spawn(async move |_this, _cx| {

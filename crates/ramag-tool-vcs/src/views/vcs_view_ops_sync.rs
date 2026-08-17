@@ -1,5 +1,3 @@
-//! 工作区状态静默刷新，并同步 Changes 标签。
-
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -29,7 +27,6 @@ enum WorkspaceStatusResult {
     },
 }
 
-/// 写操作后的辅助刷新可保留旧数据，但必须记录失败。
 pub(super) fn best_effort_refresh<T>(
     result: ramag_domain::error::Result<T>,
     repo_id: &ramag_domain::entities::RepoId,
@@ -51,7 +48,6 @@ pub(super) fn best_effort_refresh<T>(
 }
 
 impl VcsView {
-    /// 静默刷新状态、分支和当前文件视图，并同步 Changes 标签。
     pub(super) fn refresh_workspace_silent(&mut self, cx: &mut Context<Self>) {
         self.refresh_workspace(RepoRefresh::full(), cx);
     }
@@ -306,7 +302,6 @@ impl VcsView {
         .detach();
     }
 
-    /// 启动当前仓库监听；外部改动防抖后静默刷新。
     pub(in crate::views) fn start_fs_watcher(&mut self, cx: &mut Context<Self>) {
         self.fs_watcher = None;
         let Some(repo) = self.repo.as_ref() else {
@@ -353,7 +348,6 @@ impl VcsView {
         }
     }
 
-    /// 同步 Changes 标签：关闭无变更项、迁移分组并刷新缓存。
     pub(super) fn sync_changes_tabs_with_status(&mut self, cx: &mut Context<Self>) {
         self.sync_changes_tabs_with_status_paths(None, cx);
     }

@@ -335,13 +335,13 @@ impl DbClientView {
                 div()
                     .text_xs()
                     .text_color(muted_fg)
-                    .child("该标签持有的旧配置已停用（查询与写入已暂停），以避免按旧地址或旧只读设置操作数据库。"),
+                    .child("查询和写入已暂停，避免按旧配置操作数据库。"),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(muted_fg)
-                    .child("手写 SQL / 命令草稿已保留，重新连接后自动恢复。"),
+                    .child("SQL / 命令草稿会在重连后恢复。"),
             )
             .child(
                 h_flex()

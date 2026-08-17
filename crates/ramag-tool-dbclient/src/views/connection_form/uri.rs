@@ -1,27 +1,26 @@
-//! 连接 URI 解析：`mysql:// / postgres:// / redis:// / mongodb://` → 表单字段，scheme 决定 driver。
-//! 纯函数便于测试；`mongodb+srv` 需 DNS SRV 查询，明确报不支持而非静默错连
+//! 连接 URI 解析。
 
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
-/// URI 可能包含百分号编码后的凭证，预留密码上限约四倍空间并阻断异常粘贴。
+/// URI 粘贴上限，包含转义余量。
 pub(super) const MAX_URI_BYTES: usize = 256 * 1024;
 
-/// URI 解析出的表单字段集
+/// URI 字段。
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct UriParts {
-    /// 按 scheme 识别出的 driver id（取值与表单 `DRIVERS` 一致）
+    /// URI scheme 对应的驱动。
     pub driver_id: &'static str,
     pub host: String,
     pub port: Option<u16>,
     pub username: String,
     pub password: String,
     pub database: Option<String>,
-    /// 仅 MongoDB：authSource
+    /// MongoDB authSource。
     pub auth_source: Option<String>,
     pub tls: bool,
 }
 
-/// 将现有配置回填为 URI。明文密码只保留在掩码密码框，不复制到可见 URI。
+/// 回填 URI，不包含密码。
 pub(super) fn connection_uri_without_password(config: &ConnectionConfig) -> String {
     let scheme = match (config.driver, config.tls) {
         (DriverKind::Redis, true) => "rediss",
@@ -80,7 +79,7 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-/// 解析单主机连接 URI；多主机（副本集）与拓扑类参数显式报错，不静默降级
+/// 解析单主机 URI，拒绝不支持的拓扑参数。
 pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
     if raw.len() > MAX_URI_BYTES {
         return Err(format!(
@@ -92,7 +91,7 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
     if raw.starts_with("mongodb+srv://") {
         return Err("mongodb+srv 需 DNS SRV 解析，暂不支持；请改用标准 mongodb:// 地址".into());
     }
-    // scheme → (driver, 该 scheme 是否自带 TLS)
+    // scheme 决定驱动与默认 TLS。
     let (driver_id, rest, tls_from_scheme) = [
         ("mysql", "mysql://", false),
         ("postgres", "postgres://", false),
@@ -132,7 +131,7 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
         },
         None => (String::new(), String::new()),
     };
-    // 多主机（副本集）拒绝而非静默取首个：悄悄改变连接拓扑比报错更危险
+    // 拒绝多主机 URI，避免改变拓扑。
     if hostport.contains(',') {
         return Err(
             "URI 含多个主机（副本集拓扑），本表单仅支持单主机直连；请填写要直连的那台节点".into(),
@@ -142,7 +141,7 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
     if host.is_empty() {
         return Err("URI 缺少主机地址".into());
     }
-    // Redis 的 path 是库号，提前校验避免脏值填进表单后保存才报错
+    // 提前校验 Redis 库号。
     if driver_id == "redis"
         && let Some(db) = &database
         && db.parse::<u8>().is_err()
@@ -150,8 +149,7 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
         return Err(format!("Redis URI 的库号须为 0 - 255 的数字：{db}"));
     }
 
-    // query：识别 TLS 相关与 MongoDB 的 authSource；影响连接拓扑的参数显式拒绝
-    // （静默忽略 replicaSet 等会让实际连接行为偏离 URI 声明），其余参数忽略
+    // 解析 TLS、authSource，并拒绝拓扑参数。
     let mut auth_source = None;
     let mut tls = tls_from_scheme;
     if let Some(q) = query {
@@ -168,7 +166,7 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
                         _ => return Err(format!("URI 参数「{k}」须为 true 或 false")),
                     }
                 }
-                // MySQL 的 ssl-mode / PostgreSQL 的 sslmode 档位映射到 TLS 开关
+                // SQL sslmode 映射为 TLS 开关。
                 "sslmode" | "ssl-mode" if matches!(driver_id, "mysql" | "postgres") => {
                     tls = parse_ssl_mode(v)?;
                 }
@@ -202,8 +200,7 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
     })
 }
 
-/// sslmode（PG）/ ssl-mode（MySQL）档位 → 是否强制 TLS：
-/// disable / allow / prefer 类不强制；require / verify 类开启（验证等级由表单另行选择）
+/// 将 SQL sslmode 映射为 TLS 开关。
 fn parse_ssl_mode(value: &str) -> Result<bool, String> {
     match value.to_ascii_lowercase().replace('_', "-").as_str() {
         "disable" | "disabled" | "allow" | "prefer" | "preferred" => Ok(false),
@@ -251,7 +248,7 @@ fn parse_port(raw: &str) -> Result<u16, String> {
     Ok(port)
 }
 
-/// 最简 percent 解码（%XX → 字节）；URI 中用户名/密码常见转义（@ : / 等）
+/// 最简百分号解码。
 fn percent_decode(s: &str) -> Result<String, String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -306,7 +303,7 @@ mod tests {
         assert_eq!(p.host, "db.example.com");
         assert_eq!(p.port, Some(27018));
         assert_eq!(p.username, "alice");
-        assert_eq!(p.password, "p@ss"); // %40 → @
+        assert_eq!(p.password, "p@ss");
         assert_eq!(p.database.as_deref(), Some("orders"));
         assert_eq!(p.auth_source.as_deref(), Some("admin"));
         assert!(p.tls);

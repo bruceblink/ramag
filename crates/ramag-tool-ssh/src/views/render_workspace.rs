@@ -433,7 +433,7 @@ impl SshView {
                             .flex_none()
                             .text_xs()
                             .text_color(warning)
-                            .child("终端未限制生产只读，请谨慎操作！"),
+                            .child("终端不受生产只读限制，请谨慎操作。"),
                     ),
                 )
             })

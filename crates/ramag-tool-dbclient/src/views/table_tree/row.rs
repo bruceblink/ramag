@@ -1,4 +1,4 @@
-//! 数据库对象树行，统一高度 28px。
+//! 数据库对象树行。
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -85,7 +85,6 @@ impl TreeRowsCacheEntry {
 }
 
 impl TableTreePanel {
-    /// 普通重渲染复用已派生的树行。
     pub(super) fn tree_rows_view(&self, filter: &str) -> TreeRowsView {
         let key = TreeRowsCacheKey {
             tree_revision: self.tree_revision,
@@ -272,7 +271,6 @@ impl TableTreePanel {
                         }
                         this.handle_table_click(s_for_click.clone(), t_for_click.clone(), cx);
                     }))
-                    // 展开箭头不能触发表选择。
                     .child(
                         div()
                             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use gpui::{AppContext as _, Context, Entity, ParentElement, Styled, Window, px};
 use gpui_component::WindowExt as _;
 use ramag_domain::entities::{JumpServerRdpSession, SshProfile, SshProfileId};
+use tracing::error;
 
 use super::SshView;
 use super::jumpserver_dialog::{JumpServerEvent, JumpServerPanel};
@@ -244,6 +245,14 @@ impl SshView {
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, async_cx| {
             let result = service.save_profile(&profile).await;
+            if let Err(error) = &result {
+                error!(
+                    operation = "ssh_profile_save",
+                    profile_id = %profile.id,
+                    error = %error,
+                    "save SSH profile failed"
+                );
+            }
             let _ = this.update_in(async_cx, |this, window, cx| match result {
                 Ok(()) => {
                     this.profile_form_subscription = None;
@@ -321,6 +330,22 @@ impl SshView {
             } else {
                 Ok(Vec::new())
             };
+            if let Err(error) = &result {
+                error!(
+                    operation = "ssh_profile_delete",
+                    profile_id = %id,
+                    error = %error,
+                    "delete SSH profile failed"
+                );
+            }
+            if let Err(error) = &profiles {
+                error!(
+                    operation = "ssh_profile_list",
+                    profile_id = %id,
+                    error = %error,
+                    "reload SSH profiles after deletion failed"
+                );
+            }
             let _ = this.update_in(async_cx, |this, window, cx| {
                 this.deleting_profile = false;
                 match (result, profiles) {

@@ -54,7 +54,6 @@ pub struct VcsView {
     pub(super) repo_write_coordinator: super::latest_write::LatestWriteCoordinator,
     pub(super) repo: Option<RepoConfig>,
     pub(super) status: Option<WorkingTreeStatus>,
-    /// 静默刷新代际，防止旧回包覆盖。
     pub(super) status_request_seq: u64,
     /// 状态与分支刷新仅允许一组在途；新请求合并后补刷。
     pub(super) workspace_refresh_in_flight: bool,
@@ -66,7 +65,6 @@ pub struct VcsView {
     pub(super) loading_label: Option<String>,
     pub(super) clone_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(super) clone_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
-    /// 取消克隆后的目录需由用户确认删除。
     pub(super) pending_clone_cleanup: Option<std::path::PathBuf>,
     pub(super) busy: bool,
     pub(super) busy_label: Option<&'static str>,
@@ -74,14 +72,12 @@ pub struct VcsView {
     pub(super) remote_op_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     /// 异步回调无 Window，由渲染层延后推送通知。
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// 仅在窗口重新激活时自动刷新工作区。
     pub(super) was_window_active: bool,
     pub(super) commit_input: Entity<InputState>,
     pub(super) commit_amend: bool,
     pub(super) commit_sign: bool,
     /// 切仓后待恢复的提交草稿，由渲染层延后写入输入框。
     pub(super) pending_commit_text: Option<SharedString>,
-    /// 提交草稿写入代际；切仓后使旧任务失效。
     pub(super) commit_draft_gen: Arc<std::sync::atomic::AtomicU64>,
     /// 提交草稿串行写入，防止旧写覆盖新内容。
     pub(super) commit_draft_write_lock: Arc<futures::lock::Mutex<()>>,
@@ -89,29 +85,21 @@ pub struct VcsView {
     pub(super) pending_clear_search_inputs: bool,
     pub(super) pending_clear_creation_inputs: bool,
     pub(super) selected_file: Option<(String, GroupKind)>,
-    /// 当前 diff 快照，以 Rc 供渲染层共享。
     pub(super) current_diff: Option<std::rc::Rc<FileDiff>>,
     /// 当前 diff 的语法树，滚动时仅查询可见范围。
     pub(super) current_diff_syntax: Option<std::rc::Rc<super::syntax::DiffSyntaxSnapshot>>,
-    /// diff 布局缓存，避免渲染重复扫描。
     pub(super) diff_layout_cache: RefCell<Option<super::diff_panel_split::DiffLayoutCacheEntry>>,
     pub(super) loading_diff: bool,
     /// diff 请求代际，防止旧回包覆盖。
     pub(super) diff_request_seq: u64,
     pub(super) view_mode: ViewMode,
-    /// History 提交缓存；更新时同步维护图数据。
     pub(super) history_commits: std::rc::Rc<Vec<std::rc::Rc<Commit>>>,
-    /// History 当前内存估算，供分页续算。
     pub(super) history_retained_bytes: usize,
     /// 达到条数或内存上限后停止自动翻页。
     pub(super) history_limit_reached: bool,
-    /// History 图缓存，渲染时直接复用。
     pub(super) history_graph_rows: std::rc::Rc<Vec<super::commit_graph::CommitGraphRow>>,
-    /// 分页图续算状态，避免重算全部历史。
     pub(super) history_graph_state: super::commit_graph::CommitLaneState,
-    /// 上次满页时认为 History 可能还有下一页。
     pub(super) history_has_more: bool,
-    /// History 请求代际，防止乱序回包覆盖。
     pub(super) history_request_seq: u64,
     pub(super) loading_history: bool,
     pub(super) stashes: Vec<Stash>,
@@ -128,9 +116,7 @@ pub struct VcsView {
     pub(super) collapsed_remote: bool,
     pub(super) collapsed_tag: bool,
     pub(super) collapsed_remote_repos: bool,
-    /// History 左栏缓存，避免重复构建。
     pub(super) history_left_rows_cache: RefCell<Option<HistoryLeftRowsCacheEntry>>,
-    /// 已展开的 diff 间隔行；切换文件或提交时清空。
     pub(super) expanded_diff_spacers: std::collections::HashSet<(usize, usize)>,
     pub(super) remotes: Vec<Remote>,
     pub(super) loading_remotes: bool,
@@ -144,14 +130,11 @@ pub struct VcsView {
     pub(super) loading_commit_files: bool,
     /// 提交详情请求代际，防止旧回包覆盖。
     pub(super) commit_detail_request_seq: u64,
-    /// 提交详情的折叠目录，与 Changes 目录分开维护。
     pub(super) commit_files_collapsed: std::collections::HashSet<String>,
     pub(super) commit_files_collapsed_version: u64,
     pub(super) commit_files_rows_cache: RefCell<Option<CommitFilesRowsCacheEntry>>,
     pub(super) changes_collapsed_dirs: std::collections::HashSet<String>,
-    /// Changes 折叠目录版本；切换目录或仓库时递增。
     pub(super) changes_collapsed_dirs_version: u64,
-    /// Changes 行缓存，避免重复建树。
     pub(super) changes_rows_cache: RefCell<Option<WorkspaceRowsCacheEntry>>,
     pub(super) history_path_filter: Option<String>,
     pub(super) history_search_input: Entity<InputState>,
@@ -166,19 +149,16 @@ pub struct VcsView {
     pub(super) inline_blame_text: Option<SharedString>,
     pub(super) diff_view_mode: DiffViewMode,
     pub(super) reflog_entries: std::rc::Rc<Vec<ramag_domain::entities::ReflogEntry>>,
-    /// Reflog 搜索缓存，避免重复过滤。
     pub(super) reflog_rows_cache: RefCell<Option<ReflogRowsCacheEntry>>,
     pub(super) loading_reflog: bool,
     pub(super) reflog_request_seq: u64,
     pub(super) showing_reflog: bool,
     pub(super) ide_left_resize: Entity<ResizableState>,
-    /// 左侧文件栏宽度；持久化后作为新会话与重启后的初始值。
     pub(super) ide_left_width: f32,
     pub(super) ide_files_resize: Entity<ResizableState>,
     pub(super) detail_resize: Entity<ResizableState>,
     pub(super) active_view: ActiveView,
     pub(super) recent_repos: std::rc::Rc<Vec<RepoConfig>>,
-    /// 仓库列表过滤与排序缓存。
     pub(super) repo_list_rows_cache: RefCell<Option<RepoListRowsCacheEntry>>,
     pub(super) repo_search_input: Entity<InputState>,
     pub(super) focused_repo_search_once: bool,
@@ -188,22 +168,18 @@ pub struct VcsView {
     pub(super) loading_project_files: bool,
     pub(super) project_files_request_seq: u64,
     pub(super) project_expanded_dirs: std::collections::HashSet<String>,
-    /// Project Files 缓存版本；文件或目录状态变化时重建树和行。
     pub(super) project_files_version: u64,
     pub(super) project_expanded_dirs_version: u64,
     pub(super) project_rows_cache: RefCell<Option<ProjectRowsCacheEntry>>,
     pub(super) project_status_cache: RefCell<Option<ProjectStatusCacheEntry>>,
     pub(super) project_scroll: UniformListScrollHandle,
-    /// Project Files 的选中文件，与 diff 选中项独立。
     pub(super) selected_pf_path: Option<String>,
     pub(super) current_file_content: Option<FileContentSnapshot>,
     pub(super) pf_editor: Entity<InputState>,
     /// 异步读完后由渲染层写入编辑器。
     pub(super) pending_pf_editor_load: Option<PendingFileEditorLoad>,
-    /// 编辑器实际加载路径；不同表示延后写入尚未完成。
     pub(super) pf_editor_loaded_path: Option<String>,
     pub(super) pf_editor_dirty: bool,
-    /// Markdown 默认预览，可切换源代码。
     pub(super) pf_show_source: bool,
     /// 编辑代际，防止自动保存误标后续修改。
     pub(super) pf_editor_revision: u64,
@@ -228,7 +204,6 @@ pub struct VcsView {
     pub(super) rebase_scroll: UniformListScrollHandle,
     pub(super) file_tabs_h_scroll: ScrollHandle,
     pub(super) diff_h_scroll: ScrollHandle,
-    /// Diff 双轴手势状态。
     pub(super) diff_scroll_gesture: AxisScrollGesture,
     pub(super) history_pane_visible: bool,
     pub(super) diff_fullscreen: bool,
@@ -259,7 +234,6 @@ pub struct VcsView {
     /// 冲突内容请求代际，只接收最后一次回包。
     pub(super) conflict_request_seq: u64,
 
-    /// 当前仓库的监听器；切仓重建，关仓释放。
     pub(super) fs_watcher: Option<crate::watcher::RepoWatcher>,
 
     pub(super) focus_handle: FocusHandle,
@@ -439,7 +413,6 @@ impl VcsView {
         }
     }
 
-    /// 写入 History 并重建保留预算和图缓存。
     pub(super) fn set_history_commits(&mut self, commits: Vec<Commit>) -> bool {
         let retained = super::history_retention::replace(commits);
         self.history_retained_bytes = retained.retained_bytes;
@@ -451,7 +424,6 @@ impl VcsView {
         self.history_limit_reached
     }
 
-    /// 分页追加仅复制 Rc 指针，避免重复复制历史正文。
     pub(super) fn append_history_commits(&mut self, commits: Vec<Commit>) -> bool {
         let previous_len = self.history_commits.len();
         let retained = super::history_retention::append(

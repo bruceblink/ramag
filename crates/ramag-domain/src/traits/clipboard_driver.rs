@@ -15,7 +15,6 @@ pub trait ClipboardDriver: Send + Sync {
     /// 空剪贴板或无可识别类型时返回 `None`。
     fn read(&self) -> Result<Option<CapturedClip>>;
 
-    /// 写文本回剪贴板（可附带 RTF 富文本表示）
     fn write_text(&self, text: &str, rtf: Option<&[u8]>) -> Result<()>;
 
     fn write_image_png(&self, png: &[u8]) -> Result<()>;

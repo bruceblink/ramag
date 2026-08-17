@@ -153,7 +153,6 @@ fn is_module_write_command(upper: &str) -> bool {
 }
 
 const WRITE_COMMANDS: &[&str] = &[
-    // String / 通用
     "SET",
     "SETNX",
     "SETEX",
@@ -183,7 +182,6 @@ const WRITE_COMMANDS: &[&str] = &[
     "COPY",
     "RESTORE",
     "MIGRATE",
-    // 列表
     "LPUSH",
     "RPUSH",
     "LPUSHX",
@@ -202,7 +200,6 @@ const WRITE_COMMANDS: &[&str] = &[
     "BRPOPLPUSH",
     "LMPOP",
     "BLMPOP",
-    // 集合
     "SADD",
     "SREM",
     "SPOP",
@@ -210,7 +207,6 @@ const WRITE_COMMANDS: &[&str] = &[
     "SINTERSTORE",
     "SUNIONSTORE",
     "SDIFFSTORE",
-    // 哈希
     "HSET",
     "HSETNX",
     "HMSET",
@@ -222,7 +218,6 @@ const WRITE_COMMANDS: &[&str] = &[
     "HEXPIREAT",
     "HPEXPIREAT",
     "HPERSIST",
-    // 有序集合
     "ZADD",
     "ZREM",
     "ZINCRBY",
@@ -239,7 +234,6 @@ const WRITE_COMMANDS: &[&str] = &[
     "ZUNIONSTORE",
     "ZMPOP",
     "BZMPOP",
-    // 流
     "XADD",
     "XDEL",
     "XTRIM",
@@ -249,25 +243,19 @@ const WRITE_COMMANDS: &[&str] = &[
     "XAUTOCLAIM",
     "XACK",
     "XREADGROUP",
-    // HyperLogLog 基数统计
     "PFADD",
     "PFMERGE",
-    // Geo（带 STORE 写，保守归写）
     "GEOADD",
     "GEOSEARCHSTORE",
     "GEORADIUS",
     "GEORADIUSBYMEMBER",
-    // 位图
     "SETBIT",
     "BITOP",
     "BITFIELD",
-    // Scripting（可能写，保守归写；_RO 变体放行）
     "EVAL",
     "EVALSHA",
     "FCALL",
-    // 排序（带 STORE 写；SORT_RO 放行）
     "SORT",
-    // Server / 管理（改状态 / 危险）
     "FLUSHDB",
     "FLUSHALL",
     "SWAPDB",

@@ -12,6 +12,7 @@ use ramag_domain::{
     entities::{IdConverterConfig, IdConverterKind},
     error::DomainError,
 };
+use tracing::{error, warn};
 
 use super::{DatabaseConverterTestDirection, DatabaseConverterTestState, SettingsView};
 use crate::{
@@ -49,6 +50,11 @@ impl SettingsView {
                 );
             }
             Err(error) => {
+                error!(
+                    operation = "redis_tree_settings_save",
+                    error = %error,
+                    "serialize Redis tree settings failed"
+                );
                 self.redis_sink_same_name_keys = crate::redis_tree_settings(cx).sink_same_name_keys;
                 self.pending_notification = Some(Notification::error(error));
             }
@@ -133,6 +139,11 @@ impl SettingsView {
                 this.picking_id_converter = false;
                 if let Some(handle) = picked {
                     let Some(path) = handle.path().to_str().map(str::to_owned) else {
+                        warn!(
+                            operation = "database_converter_pick",
+                            path = %handle.path().display(),
+                            "selected ID converter path is not UTF-8"
+                        );
                         this.pending_notification =
                             Some(Notification::error("ID 转换器路径不是有效的 UTF-8"));
                         cx.notify();
@@ -336,6 +347,11 @@ impl SettingsView {
     }
 
     fn handle_database_search_save_error(&mut self, error: String, cx: &gpui::App) {
+        error!(
+            operation = "database_search_settings_save",
+            error = %error,
+            "save database search settings failed"
+        );
         self.database_enabled_draft = crate::database_search_settings(cx).id_conversion_enabled;
         self.pending_notification = Some(Notification::error(format!("保存失败：{error}")));
     }

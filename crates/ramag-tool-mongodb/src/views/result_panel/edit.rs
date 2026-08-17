@@ -1,5 +1,4 @@
 //! MongoDB 结果单元格编辑。
-//! 仅允许可从显示文本无损恢复的 BSON 类型。
 
 use gpui::{ClickEvent, Context, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
@@ -12,7 +11,6 @@ use super::{ResultEvent, ResultPanel};
 use crate::views::{MAX_MONGO_INTERACTIVE_INPUT_BYTES, bounded_input, inline_text_preview};
 
 impl ResultPanel {
-    /// 打开单元格编辑弹窗。
     pub(crate) fn open_cell_edit_dialog(
         &self,
         id: Value,
@@ -25,7 +23,6 @@ impl ResultPanel {
         if current.len() > MAX_MONGO_INTERACTIVE_INPUT_BYTES {
             return self.open_cell_dialog(path, kind, current, window, cx);
         }
-        // 值可包含换行，使用多行输入框。
         let input = cx.new(|c| {
             bounded_input(window, c)
                 .multi_line(true)
@@ -77,7 +74,6 @@ impl ResultPanel {
                     let raw = input_apply.read(app).value().to_string();
                     let id = id_apply.clone();
                     let path = path_apply.clone();
-                    // 成功后再关闭，失败时保留输入。
                     panel_apply.update(app, |this, cx| {
                         this.do_update_async(id, path, kind, raw, cx)
                     });
@@ -98,7 +94,7 @@ impl ResultPanel {
                                     .text_xs()
                                     .text_color(muted)
                                     .pb(px(6.0))
-                                    .child("输入按 JSON 解析：123→数字、true→布尔、其它→字符串"),
+                                    .child("按 JSON 解析：123 为数字，true 为布尔，其它为字符串"),
                             )
                             .child(Input::new(&input_content).h(px(220.0))),
                     )
@@ -115,7 +111,6 @@ impl ResultPanel {
         });
     }
 
-    /// 异步执行 `update_one`。
     fn do_update_async(
         &mut self,
         id: Value,
@@ -124,7 +119,6 @@ impl ResultPanel {
         raw: String,
         cx: &mut Context<Self>,
     ) {
-        // 忽略提交尚未完成时的重复点击。
         if self.doc_dml_busy {
             self.pending_notification =
                 Some(Notification::warning("提交执行中，请稍候").autohide(true));
@@ -143,12 +137,20 @@ impl ResultPanel {
             self.config.clone(),
             self.target_collection.clone(),
         ) else {
+            tracing::warn!(
+                operation = "mongo_document_update",
+                database = %self.database,
+                has_service = self.service.is_some(),
+                has_connection = self.config.is_some(),
+                has_collection = self.target_collection.is_some(),
+                "update document skipped because execution context is unavailable"
+            );
             return;
         };
         let db = self.database.clone();
         let filter = serde_json::json!({ "_id": id });
         let mut set = serde_json::Map::new();
-        set.insert(path, new_val);
+        set.insert(path.clone(), new_val);
         let mut update = serde_json::Map::new();
         update.insert("$set".to_string(), Value::Object(set));
         let update = Value::Object(update);
@@ -156,6 +158,17 @@ impl ResultPanel {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let r = svc.update_one(&conf, &db, &coll, &filter, &update).await;
+            if let Err(error) = &r {
+                tracing::error!(
+                    operation = "mongo_document_update",
+                    connection_id = %conf.id,
+                    database = %db,
+                    collection = %coll,
+                    path = %path,
+                    error = %error,
+                    "update document failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 this.doc_dml_busy = false;
                 if !this.dml_context_matches(&conf, &db, &coll) {
@@ -179,7 +192,6 @@ impl ResultPanel {
                 }
                 match r {
                     Ok(res) if res.affected == 0 => {
-                        // 保留输入，便于核对后重试。
                         this.pending_notification = Some(
                             Notification::warning(
                                 "未匹配到文档：该行无 _id，或当前 collection 与所选库不一致"
@@ -208,7 +220,6 @@ impl ResultPanel {
     }
 }
 
-/// 仅允许可无损回写的 BSON 类型。
 pub(super) fn kind_is_editable(kind: &str) -> bool {
     matches!(
         kind,
@@ -220,13 +231,12 @@ pub(super) fn cell_is_editable(kind: &str, text_bytes: usize) -> bool {
     kind_is_editable(kind) && text_bytes <= MAX_MONGO_INTERACTIVE_INPUT_BYTES
 }
 
-/// 按 BSON 类型恢复编辑值。
 fn value_for_kind(kind: &str, raw: String) -> Value {
     match kind {
         "oid" => serde_json::json!({ "$oid": raw }),
         "date" => serde_json::json!({ "$date": raw }),
         "decimal" => serde_json::json!({ "$numberDecimal": raw }),
-        // 用 Extended JSON 保留 Int64。
+        // Extended JSON 保留 Int64。
         "long" => serde_json::json!({ "$numberLong": raw }),
         _ => match serde_json::from_str::<Value>(&raw) {
             Ok(v) => v,

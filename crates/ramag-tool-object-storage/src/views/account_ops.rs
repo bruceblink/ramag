@@ -278,9 +278,9 @@ impl ObjectStorageView {
                     }
                     let form = form_for_cancel.clone();
                     ramag_ui::open_confirm(
-                        "放弃修改？",
+                        "放弃？",
                         "未保存内容将丢失。",
-                        "放弃修改",
+                        "放弃",
                         true,
                         move |_, app| {
                             form.update(app, |_this, cx| {
@@ -350,9 +350,9 @@ impl ObjectStorageView {
             .count();
         let view = cx.entity();
         ramag_ui::open_confirm(
-            "删除云存储账号？",
+            "删除账号？",
             format!(
-                "将从本机删除「{name}」及工作区偏好；关闭会话：{}，取消 {transfer_count} 个传输。远端 Bucket 和对象不受影响。",
+                "删除本机账号「{name}」及工作区偏好；关闭会话：{}，取消 {transfer_count} 个传输。远端对象不受影响。",
                 if closes_session { "是" } else { "否" }
             ),
             "删除",
@@ -461,7 +461,7 @@ impl ObjectStorageView {
                         this.account_session_states.remove(&id);
                         this.persist_session_preference(cx);
                         this.management_visible = true;
-                        this.notice = Some(("账号及其工作区偏好已删除".into(), false));
+                        this.notice = Some(("账号和工作区偏好已删除".into(), false));
                         this.load_accounts(window, cx);
                     }
                     Err(error) => {

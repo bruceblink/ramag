@@ -25,7 +25,6 @@ impl QueryTab {
         self.editor.read(cx).value()
     }
 
-    /// 限制 SQL 大小，避免大文本占用过多资源。
     fn checked_current_sql(
         &mut self,
         operation: &str,
@@ -88,7 +87,6 @@ impl QueryTab {
         self.submit_sql(to_run, trimmed, false, window, cx);
     }
 
-    /// 高危语句确认后执行，其余直接执行。
     pub(super) fn submit_sql(
         &mut self,
         sql_to_run: String,
@@ -191,7 +189,6 @@ impl QueryTab {
         is_run: bool,
         cx: &mut Context<Self>,
     ) {
-        // 确认对话框期间可能已启动其他查询。
         if self.running {
             return;
         }
@@ -227,7 +224,6 @@ impl QueryTab {
             (sql_to_run, None)
         };
         self.pager = pager;
-        // 首屏并发统计总数，翻页复用。
         let count_base = self.pager.as_ref().map(|pager| pager.base_sql.clone());
         self.execute_query(
             conn.clone(),
@@ -242,7 +238,6 @@ impl QueryTab {
         }
     }
 
-    /// 异步格式化当前 SQL。
     pub(crate) fn handle_format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.formatting {
             self.pending_notification =
@@ -435,7 +430,6 @@ impl QueryTab {
         self.prefetch_columns_for_used_tables(cx);
     }
 
-    /// 推断 SQL 所用的表并预取列。
     fn prefetch_columns_for_used_tables(&self, cx: &mut Context<Self>) {
         let Some(conn) = self.connection.clone() else {
             return;

@@ -139,7 +139,6 @@ pub fn scan_dollar_quoted(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// 按首关键字粗判 SQL 是否返回结果集。
 pub fn is_query_returning_rows(sql: &str) -> bool {
     let code = sql_code_for_write_check(sql);
     let Some(keyword) = first_keyword(&code) else {
@@ -152,7 +151,6 @@ pub fn is_query_returning_rows(sql: &str) -> bool {
         && contains_word(&code.to_ascii_uppercase(), "RETURNING"))
 }
 
-/// 返回首关键字（大写），跳过前导空白和注释。
 pub fn first_keyword(stmt: &str) -> Option<String> {
     let bytes = stmt.as_bytes();
     let mut i = 0usize;
@@ -338,7 +336,6 @@ pub fn inject_limit_if_needed(stmt: &str, limit: Option<u32>) -> Option<String> 
     Some(out)
 }
 
-/// 是否含大小写不敏感的 `-- ramag:no-limit` 标记。
 pub fn sql_has_no_limit_marker(sql: &str) -> bool {
     sql.lines().any(|line| {
         let trimmed = line.trim_start();
@@ -352,7 +349,6 @@ pub fn sql_has_no_limit_marker(sql: &str) -> bool {
     })
 }
 
-/// 全词匹配。
 pub fn contains_word(haystack_upper: &str, word: &str) -> bool {
     let bytes = haystack_upper.as_bytes();
     let target = word.as_bytes();

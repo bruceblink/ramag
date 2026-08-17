@@ -1,16 +1,15 @@
 use super::*;
 
 pub(super) async fn open_repo(driver: &GitDriverImpl, path: &Path) -> Result<RepoConfig> {
-    // Windows 的 std::fs::canonicalize 常返回 `\\?\` 路径，Git for Windows 和 UI
-    // 未必都能识别；dunce 仅在可无歧义转换时还原为常规路径。
+    // dunce 将 Windows 扩展路径还原为常规路径。
     let canonical = dunce::canonicalize(path)
         .map_err(|e| DomainError::InvalidConfig(format!("路径无法访问: {e}")))?;
 
-    // 串行化同一路径的首次打开并在锁内双检，避免并发创建孤儿句柄。
+    // 同一路径的首次打开串行化。
     let open_lock = driver.open_lock(&canonical);
     let _guard = open_lock.lock().await;
 
-    // 同 path 复用已打开句柄；同时清理旧版本或异常中断留下的失效映射。
+    // 复用存活句柄，清理失效映射。
     if let Some(existing_id) = driver.by_path.get(&canonical) {
         let id = existing_id.clone();
         drop(existing_id);

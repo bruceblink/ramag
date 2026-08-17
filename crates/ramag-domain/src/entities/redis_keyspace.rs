@@ -1,34 +1,20 @@
-//! Redis SCAN 使用的 key、类型和 TTL 元数据。
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DomainError, Result};
 
 /// 当前界面只支持可安全显示的 UTF-8 Key；限制异常长 Key 避免树、搜索与命令参数放大内存。
 pub const MAX_REDIS_KEY_BYTES: usize = 4 * 1024;
-/// SCAN MATCH 来自即时搜索输入，保持与共享搜索框相同的资源边界。
 pub const MAX_REDIS_MATCH_PATTERN_BYTES: usize = 4 * 1024;
-/// 单个值 / 成员 / 字段参数上限；与 String 详情的最大可编辑前缀一致。
 pub const MAX_REDIS_COMMAND_ARG_BYTES: usize = 4 * 1024 * 1024;
-/// Redis 核心与模块命令名都很短，独立限制避免分类器为异常名称分配大写副本。
 pub const MAX_REDIS_COMMAND_NAME_BYTES: usize = 256;
-/// 单条命令全部参数的总字节上限，避免批量编辑形成超大网络缓冲区。
 pub const MAX_REDIS_COMMAND_BYTES: usize = super::TRANSFER_BATCH_BYTES;
-/// 单条命令参数个数上限，单独约束大量空参数造成的容器与协议开销。
 pub const MAX_REDIS_COMMAND_ARGS: usize = 10_000;
-/// Redis 界面单次最多保留的条目数；Key 树与集合详情共用，避免各处上限不一致。
 pub const MAX_REDIS_LOADED_ITEMS: usize = 1_000_000;
-/// 集合详情最多保留的元素数；同时受累计内容字节预算约束。
 pub const MAX_REDIS_COLLECTION_ITEMS: usize = MAX_REDIS_LOADED_ITEMS;
-/// Redis 值加载的全局字节上限；集合累计内容与单批响应共同复用。
 pub const MAX_REDIS_COLLECTION_BYTES: usize = super::MAX_INTERACTIVE_RESULT_BYTES;
-/// 单批 SCAN 的 COUNT 只是 hint，但仍需限制异常调用给服务端造成的瞬时压力。
 pub const MAX_REDIS_SCAN_COUNT: u32 = 5_000;
-/// 单次类型补查最多覆盖一个 SCAN 批次，避免异常调用构造无界 Pipeline。
 pub const MAX_REDIS_KEY_TYPE_BATCH: usize = MAX_REDIS_SCAN_COUNT as usize;
-/// `scan_all` 是小批辅助接口，不允许被直接调用成无界全库加载。
 pub const MAX_REDIS_SCAN_ALL_KEYS: usize = 10_000;
-/// 全量迁移首页预取窗口；限制同时驻留的值页数量，避免并发吞吐放大内存峰值。
 pub const MAX_REDIS_VALUE_PAGE_BATCH: usize = 16;
 
 pub fn validate_redis_key(key: &str) -> Result<()> {

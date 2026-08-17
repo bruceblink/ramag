@@ -334,7 +334,6 @@ impl ObjectStorageView {
         let key = entry.key.clone();
         let kind = entry.kind;
         let operable = entry.operable;
-        // 详情抽屉打开时，焦点已经转移到抽屉，不继续高亮底层列表行。
         let selected = !self.show_detail && self.selected_key.as_ref() == Some(&key);
         let modified = object_modified_label(
             kind,

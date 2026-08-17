@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::CollectionTreePanel;
 
-/// 集合与视图右键菜单。
+/// 集合右键菜单。
 pub(super) fn collection_context_menu(
     menu: PopupMenu,
     entity: Entity<CollectionTreePanel>,
@@ -28,7 +28,6 @@ pub(super) fn collection_context_menu(
         .separator()
     };
 
-    // 视图不支持 renameCollection。
     let menu = if is_view {
         menu
     } else {
@@ -36,8 +35,8 @@ pub(super) fn collection_context_menu(
         menu.item(ramag_ui::menu_item("改名").on_click(move |_, window, app| {
             let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
             open_bounded_prompt(
-                "重命名集合",
-                format!("输入 {d}.{c} 的新名称"),
+                "改名",
+                "新名称",
                 &c.clone(),
                 "改名",
                 MAX_MONGO_COLLECTION_NAME_BYTES,
@@ -58,8 +57,8 @@ pub(super) fn collection_context_menu(
             ramag_ui::menu_item("清空集合").on_click(move |_, window, app| {
                 let (d, c, ent) = (d.clone(), c.clone(), ent.clone());
                 open_confirm(
-                    "清空集合",
-                    format!("将删除 {d}.{c} 的全部文档（集合与索引保留），此操作不可恢复。"),
+                    "清空",
+                    format!("清空 {d}.{c} 的文档（保留集合和索引，不可恢复）。"),
                     "清空",
                     true,
                     move |_, app| {
@@ -76,13 +75,13 @@ pub(super) fn collection_context_menu(
         (
             "删除视图",
             "删除视图",
-            format!("将删除视图 {db}.{coll}（仅删除视图定义，不影响源集合数据）。"),
+            format!("删除视图 {db}.{coll}，不影响源集合。"),
         )
     } else {
         (
             "删除集合",
             "删除集合",
-            format!("将永久删除集合 {db}.{coll}（文档与索引一并删除），此操作不可恢复。"),
+            format!("删除 {db}.{coll} 及文档和索引，不可恢复。"),
         )
     };
     menu.item(ramag_ui::menu_item(label).on_click(move |_, window, app| {
@@ -118,10 +117,7 @@ pub(super) fn database_context_menu(
             let (d, ent) = (d.clone(), ent.clone());
             ramag_ui::open_import_options_dialog(
                 "导入库",
-                format!(
-                    "选择 .jsonl 文件（可多选）导入到库 {d}。\
-                     「跳过」按集合续传，「合并」按文档补齐，「覆盖」重建集合。"
-                ),
+                format!("选择 JSONL 导入库 {d}。跳过续传、合并补齐、覆盖重建集合。"),
                 true,
                 ("JSONL", &["jsonl", "json"]),
                 move |policy, files, _, app| {
@@ -141,9 +137,7 @@ pub(super) fn database_context_menu(
                 let (d, ent) = (d.clone(), ent.clone());
                 ramag_ui::open_import_options_dialog(
                     "导入集合",
-                    format!(
-                        "选择由 Ramag 导出的集合 .jsonl 文件（可多选），恢复选项、索引和文档到库 {d}；集合名来自文件。"
-                    ),
+                    format!("选择 Ramag 集合 JSONL，恢复选项、索引和文档到库 {d}。"),
                     true,
                     ("JSONL", &["jsonl", "json"]),
                     move |policy, files, _, app| {
@@ -161,7 +155,7 @@ pub(super) fn database_context_menu(
         let (db, ent) = (db.clone(), entity.clone());
         open_confirm(
             "删除",
-            format!("将永久删除数据库 {db} 及其中全部集合与数据，此操作不可恢复。"),
+            format!("删除数据库 {db} 及所有集合和数据，不可恢复。"),
             "删除",
             true,
             move |_, app| {
@@ -177,7 +171,7 @@ impl CollectionTreePanel {
     fn begin_tree_mutation(&mut self, cx: &mut Context<Self>) -> Option<ramag_ui::MutationToken> {
         let Some(token) = self.mutation_gate.begin() else {
             self.pending_notification =
-                Some(Notification::warning("上一项集合操作尚未完成，请稍候").autohide(true));
+                Some(Notification::warning("上一项操作未完成，请稍候").autohide(true));
             cx.notify();
             return None;
         };
@@ -185,7 +179,6 @@ impl CollectionTreePanel {
         Some(token)
     }
 
-    /// 清空集合文档，保留集合和索引。
     pub(super) fn clear_collection(&mut self, db: String, coll: String, cx: &mut Context<Self>) {
         let Some(conf) = self.connection.clone() else {
             return;
@@ -249,7 +242,7 @@ impl CollectionTreePanel {
         .detach();
     }
 
-    /// 在 admin 库执行集合重命名。
+    /// 在 admin 库执行改名。
     pub(super) fn rename_collection(
         &mut self,
         db: String,

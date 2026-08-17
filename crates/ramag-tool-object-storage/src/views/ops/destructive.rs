@@ -29,7 +29,7 @@ impl ObjectStorageView {
             return;
         };
         let description = format!(
-            "Key：{}\n{}\n\n将覆盖现有对象；确认前目标仍可能变化。",
+            "Key：{}\n{}\n\n将覆盖现有对象；目标可能在确认前变化。",
             conflict.key, conflict.existing_summary
         );
         let confirm_view = cx.entity();
@@ -37,7 +37,7 @@ impl ObjectStorageView {
         ramag_ui::open_confirm_with_cancel(
             "覆盖上传？",
             description,
-            "覆盖上传",
+            "覆盖",
             true,
             (
                 move |window, app| {
@@ -88,7 +88,7 @@ impl ObjectStorageView {
         ramag_ui::open_confirm_with_cancel(
             "覆盖下载？",
             description,
-            "覆盖下载",
+            "覆盖",
             true,
             (
                 move |window, app| {
@@ -125,7 +125,7 @@ impl ObjectStorageView {
             .unwrap_or_else(|| "未知账号".into());
         let view = cx.entity();
         ramag_ui::open_confirm(
-            "删除对象？",
+            "删除对象",
             format!(
                 "账号：{account_name}\nBucket：{}\nKey：{key}\n\n未启用版本控制时通常不可恢复；启用后可能生成 Delete Marker。",
                 mount.bucket

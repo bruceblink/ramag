@@ -25,7 +25,6 @@ impl std::fmt::Display for ClipId {
     }
 }
 
-/// 条目类型。Text/Link/Color 互斥（由 classify_text 决定）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ClipKind {
     Text,
@@ -78,7 +77,6 @@ pub struct ClipSource {
 pub struct ClipItem {
     pub id: ClipId,
     pub kind: ClipKind,
-    /// 仅文本、链接和颜色类型使用。
     pub text: Option<String>,
     /// 富文本 RTF 原始数据（伴随 text；粘贴时与纯文本一起写回）
     #[serde(default)]
@@ -88,14 +86,11 @@ pub struct ClipItem {
     /// Image 类型的缩略图落盘路径（AES 加密密文，列表展示用，降解码成本）
     #[serde(default)]
     pub thumb_path: Option<String>,
-    /// 图片尺寸（宽, 高）
     pub image_dims: Option<(u32, u32)>,
-    /// Files 类型的路径列表
     #[serde(default)]
     pub files: Vec<String>,
     pub preview: String,
     pub source: Option<ClipSource>,
-    /// 原始内容字节数（文本字节 / PNG 字节）
     pub byte_size: u64,
     /// 内容指纹（fnv1a 十六进制），同内容去重
     pub content_hash: String,
@@ -116,7 +111,6 @@ impl ClipItem {
     }
 }
 
-/// 有界剪贴板搜索结果；`truncated` 同时覆盖条数与内存预算截断。
 #[derive(Debug)]
 pub struct ClipSearchResult {
     pub items: Vec<ClipItem>,
@@ -132,7 +126,6 @@ pub const MAX_CLIPBOARD_SEARCH_BYTES: usize = 4 * 1024;
 pub struct ClipboardSettings {
     pub enabled: bool,
     pub capture_images: bool,
-    /// 单条内容字节上限，超出跳过不记录
     pub max_item_bytes: u64,
     /// 抽屉选中后自动粘贴（平台可能需要系统权限；false 仅复制）
     pub auto_paste: bool,

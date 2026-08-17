@@ -56,13 +56,15 @@ pub(crate) fn command() -> Command {
 /// `-C` 锁定仓库目录；`-c core.quotepath=false` 让非 ASCII 路径走原始 utf-8
 pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let started = std::time::Instant::now();
+    let git_command = args.first().copied().unwrap_or("unknown");
     let output = run_git_output(repo_path, args)?;
     if !output.status.success() {
         let error = output_error(args, &output);
         warn!(
+            operation = "git_command",
+            git_command,
             error = %error,
             repo = %repo_path.display(),
-            operation = args.first().copied().unwrap_or("unknown"),
             exit_code = ?output.status.code(),
             elapsed_ms = started.elapsed().as_millis(),
             "git command failed"
@@ -70,8 +72,9 @@ pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
         return Err(error);
     }
     debug!(
+        operation = "git_command",
+        git_command,
         repo = %repo_path.display(),
-        operation = args.first().copied().unwrap_or("unknown"),
         bytes = output.stdout.len(),
         elapsed_ms = started.elapsed().as_millis(),
         "git command completed"
@@ -90,9 +93,10 @@ pub(crate) fn run_git_probe(repo_path: &Path, args: &[&str]) -> Result<bool> {
     }
     let error = output_error(args, &output);
     warn!(
+        operation = "git_probe",
+        git_command = args.first().copied().unwrap_or("unknown"),
         error = %error,
         repo = %repo_path.display(),
-        operation = args.first().copied().unwrap_or("unknown"),
         exit_code = ?output.status.code(),
         "git probe failed"
     );
@@ -101,8 +105,9 @@ pub(crate) fn run_git_probe(repo_path: &Path, args: &[&str]) -> Result<bool> {
 
 fn run_git_output(repo_path: &Path, args: &[&str]) -> Result<Output> {
     debug!(
+        operation = "git_command_start",
+        git_command = args.first().copied().unwrap_or("unknown"),
         repo = %repo_path.display(),
-        operation = args.first().copied().unwrap_or("unknown"),
         arg_count = args.len(),
         "git subprocess"
     );
@@ -251,9 +256,14 @@ pub(crate) fn run_git_streaming(
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
-    let operation = args.first().copied().unwrap_or("unknown");
+    let git_command = args.first().copied().unwrap_or("unknown");
     let started = std::time::Instant::now();
-    info!(operation, repo = %dir.display(), "git streaming command started");
+    info!(
+        operation = "git_streaming_command",
+        git_command,
+        repo = %dir.display(),
+        "git streaming command started"
+    );
     let child = command()
         .env("LC_ALL", "C")
         .env("LANG", "C")
@@ -373,7 +383,8 @@ pub(crate) fn run_git_streaming(
 
     if cancel.load(Ordering::Relaxed) {
         info!(
-            operation,
+            operation = "git_streaming_command",
+            git_command,
             repo = %dir.display(),
             elapsed_ms = started.elapsed().as_millis(),
             "git streaming command cancelled"
@@ -384,8 +395,9 @@ pub(crate) fn run_git_streaming(
         let tail: Vec<String> = last_lines.into_iter().collect();
         let error = DomainError::QueryFailed(friendly_git_error(args, &tail.join("\n")));
         warn!(
+            operation = "git_streaming_command",
+            git_command,
             error = %error,
-            operation,
             repo = %dir.display(),
             exit_code = ?status.code(),
             elapsed_ms = started.elapsed().as_millis(),
@@ -394,7 +406,8 @@ pub(crate) fn run_git_streaming(
         return Err(error);
     }
     info!(
-        operation,
+        operation = "git_streaming_command",
+        git_command,
         repo = %dir.display(),
         elapsed_ms = started.elapsed().as_millis(),
         "git streaming command completed"
@@ -412,8 +425,9 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
         )));
     }
     debug!(
+        operation = "git_stdin_command",
+        git_command = args.first().copied().unwrap_or("unknown"),
         repo = %repo_path.display(),
-        operation = args.first().copied().unwrap_or("unknown"),
         arg_count = args.len(),
         stdin_len = stdin_text.len(),
         "git subprocess (stdin)"
@@ -488,8 +502,8 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
         )));
     }
     drop(stdin);
-    let operation = args.first().copied().unwrap_or("unknown");
-    let status = match wait_child_or_cleanup(&mut child, operation) {
+    let git_command = args.first().copied().unwrap_or("unknown");
+    let status = match wait_child_or_cleanup(&mut child, git_command) {
         Ok(status) => status,
         Err(error) => {
             drop(stderr_reader);
@@ -509,9 +523,10 @@ pub fn run_git_stdin(repo_path: &Path, args: &[&str], stdin_text: &str) -> Resul
         let stderr = String::from_utf8_lossy(&stderr.bytes);
         let error = DomainError::QueryFailed(friendly_git_error(args, &stderr));
         warn!(
+            operation = "git_stdin_command",
+            git_command,
             error = %error,
             repo = %repo_path.display(),
-            operation,
             exit_code = ?status.code(),
             "git stdin command failed"
         );

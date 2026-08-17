@@ -58,8 +58,6 @@ impl VisibleRowsCacheEntry {
     }
 }
 
-/// 当前 DB 的加载上限，列表、去重和 Trie 共同受 key 数与名称字节预算约束。
-/// 超限后提示使用 MATCH 缩小范围。
 const MAX_LOADED_KEYS: usize = MAX_REDIS_LOADED_ITEMS;
 const MAX_LOADED_KEY_BYTES: usize = MAX_INTERACTIVE_RESULT_BYTES;
 
@@ -79,7 +77,6 @@ pub enum KeyTreeEvent {
 #[derive(Debug, Clone)]
 pub enum DeletedScope {
     Key(String),
-    /// 前缀路径（如 "user"，删除 user:*）。
     Prefix(String),
     Db,
 }
@@ -107,9 +104,7 @@ pub struct KeyTreePanel {
     has_loaded: bool,
     error: Option<String>,
     search: Entity<InputState>,
-    /// 输入框原文，用于忽略非文本变化通知。
     search_text: String,
-    /// 本地不区分大小写匹配使用的小写查询词。
     query: String,
     /// 服务端 MATCH 模式；None 表示全库扫描。
     match_pattern: Option<String>,
@@ -118,7 +113,6 @@ pub struct KeyTreePanel {
     search_pending: bool,
     /// 扫描代际；停止、重扫、换模式或切库后使旧回包失效。
     scan_generation: u64,
-    /// 上次重建 Trie 时的 key 数，用于批量加载节流。
     last_rebuilt_count: usize,
     selected: Option<String>,
     /// 手动停止或批次出错后暂停，可从断点继续扫描。
@@ -127,7 +121,6 @@ pub struct KeyTreePanel {
     resource_limited: bool,
     /// 下次继续扫描的 cursor；None 表示已完整扫描。
     resume_cursor: Option<u64>,
-    /// 虚拟列表滚动句柄。
     uniform_scroll: UniformListScrollHandle,
     /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pending_notification: Option<gpui_component::notification::Notification>,
@@ -232,7 +225,6 @@ impl KeyTreePanel {
         }
     }
 
-    /// key 元数据加载快照，不代表实时连接健康。
     pub fn health(&self) -> (bool, bool) {
         (self.loading, self.error.is_some())
     }

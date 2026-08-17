@@ -82,7 +82,6 @@ impl RedisValue {
         matches!(self, RedisValue::Nil)
     }
 
-    /// 集合元素数量；标量返回 `None`。
     pub fn len(&self) -> Option<usize> {
         match self {
             RedisValue::List(v) | RedisValue::Set(v) | RedisValue::Array(v) => Some(v.len()),
@@ -93,7 +92,6 @@ impl RedisValue {
         }
     }
 
-    /// String/Bytes 当前已加载字节数；其它类型返回 None。
     pub fn scalar_byte_len(&self) -> Option<usize> {
         match self {
             RedisValue::Text(value) => Some(value.len()),
@@ -106,7 +104,6 @@ impl RedisValue {
         self.len().is_some_and(|n| n == 0)
     }
 
-    /// 生成经过截断和换行清理的单行预览。
     pub fn display_preview(&self, max_len: usize) -> String {
         match self {
             RedisValue::Nil => "(nil)".to_string(),

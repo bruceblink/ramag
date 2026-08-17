@@ -91,7 +91,6 @@ impl Query {
     }
 }
 
-/// 查询结果（INSERT/UPDATE 也走这个，rows 空、affected_rows 有值）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
@@ -99,7 +98,6 @@ pub struct QueryResult {
     #[serde(default)]
     pub column_types: Vec<String>,
     pub rows: Vec<Row>,
-    /// INSERT/UPDATE/DELETE 受影响行数
     pub affected_rows: u64,
     pub elapsed_ms: u64,
     /// MySQL SHOW WARNINGS；多语句执行时累积所有 statement 的警告
@@ -111,7 +109,6 @@ pub struct QueryResult {
 }
 
 impl QueryResult {
-    /// 客户端常驻内存估算。
     pub fn retained_bytes(&self) -> u64 {
         let mut bytes = std::mem::size_of::<Self>()
             .saturating_add(
@@ -159,9 +156,7 @@ impl QueryResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warning {
-    /// 服务端级别：Note、Warning 或 Error。
     pub level: String,
-    /// 对应 mysql_errno()
     pub code: u32,
     pub message: String,
 }
@@ -194,7 +189,6 @@ pub enum Value {
     Float(f64),
     Text(String),
     Bytes(Vec<u8>),
-    /// UTC 纳秒精度
     DateTime(chrono::DateTime<chrono::Utc>),
     /// MySQL JSON 列、PG jsonb
     Json(serde_json::Value),
@@ -365,7 +359,6 @@ impl Value {
         }
     }
 
-    /// 返回不截断的剪贴板文本。
     pub fn to_clipboard_string(&self) -> String {
         match self {
             Value::Null => String::new(),

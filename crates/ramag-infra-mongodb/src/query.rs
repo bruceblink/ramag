@@ -487,9 +487,9 @@ fn warn_if_truncated(truncated: bool, budget: &ResultBudget, operation: &'static
         return;
     }
     tracing::warn!(
+        operation,
         collected = budget.documents,
         retained_bytes = budget.retained_bytes,
-        operation,
         "cursor truncated at safety cap"
     );
 }

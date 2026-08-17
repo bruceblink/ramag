@@ -14,7 +14,7 @@ use ramag_domain::entities::ConflictPolicy;
 
 type ImportPickHandler = Box<dyn FnOnce(ConflictPolicy, Vec<PathBuf>, &mut Window, &mut App)>;
 
-/// 导入选项表单。
+/// 导入选项。
 struct ImportOptionsForm {
     description: SharedString,
     offer_merge: bool,
@@ -22,13 +22,13 @@ struct ImportOptionsForm {
     extensions: &'static [&'static str],
     policy: ConflictPolicy,
     files: Vec<PathBuf>,
-    /// 防止文件框重复打开。
+    /// 防止重复打开文件框。
     picking: bool,
     on_pick: Rc<RefCell<Option<ImportPickHandler>>>,
 }
 
 impl ImportOptionsForm {
-    /// 打开系统多选文件框。
+    /// 选择多个文件。
     fn pick_files(&mut self, cx: &mut Context<Self>) {
         if self.picking {
             return;
@@ -108,7 +108,7 @@ impl Render for ImportOptionsForm {
         let mut policy_row = h_flex().w_full().gap(px(8.0)).child(policy_button(
             "ramag-import-skip",
             "跳过",
-            "跳过同名对象（推荐）",
+            "跳过同名（推荐）",
             ConflictPolicy::Skip,
             false,
             self.policy == ConflictPolicy::Skip,
@@ -117,7 +117,7 @@ impl Render for ImportOptionsForm {
             policy_row = policy_row.child(policy_button(
                 "ramag-import-merge",
                 "合并",
-                "保留对象，补齐缺失条目",
+                "补齐缺失条目",
                 ConflictPolicy::Merge,
                 false,
                 self.policy == ConflictPolicy::Merge,
@@ -127,7 +127,7 @@ impl Render for ImportOptionsForm {
             .child(policy_button(
                 "ramag-import-overwrite",
                 "覆盖",
-                "删除同名对象后导入，不可恢复",
+                "替换同名对象（不可恢复）",
                 ConflictPolicy::Overwrite,
                 true,
                 self.policy == ConflictPolicy::Overwrite,
@@ -135,7 +135,7 @@ impl Render for ImportOptionsForm {
             .child(policy_button(
                 "ramag-import-fail",
                 "停止",
-                "遇到同名对象即停止",
+                "遇同名即停止",
                 ConflictPolicy::Fail,
                 false,
                 self.policy == ConflictPolicy::Fail,
@@ -198,7 +198,7 @@ impl Render for ImportOptionsForm {
             .child(
                 v_flex()
                     .gap(px(6.0))
-                    .child(div().text_xs().text_color(muted_fg).child("同名对象"))
+                    .child(div().text_xs().text_color(muted_fg).child("同名"))
                     .child(policy_row),
             )
             .child(
@@ -230,7 +230,7 @@ impl Render for ImportOptionsForm {
     }
 }
 
-/// 打开导入选项对话框。
+/// 打开导入对话框。
 pub fn open_import_options_dialog(
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,

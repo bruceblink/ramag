@@ -119,7 +119,7 @@ impl TtlEditForm {
                         connection_id = %config.id,
                         db,
                         key_bytes = key.len(),
-                        outcome = "key_missing_or_unchanged",
+                        reason = "key_missing_or_unchanged",
                         "ttl update returned false (key may be gone)"
                     );
                     this.state = SubmitState::Failed("Key 不存在或操作未生效".into());

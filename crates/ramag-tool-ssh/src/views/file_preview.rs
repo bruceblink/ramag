@@ -103,7 +103,17 @@ impl SshView {
                             window,
                             cx,
                         ),
-                        Err(error) => this.notice = Some(Notice::error(error)),
+                        Err(error) => {
+                            error!(
+                                operation = "ssh_file_preview_decode",
+                                profile_id = %profile.id,
+                                path = %path,
+                                position = ?position,
+                                error = %error,
+                                "decode remote file preview failed"
+                            );
+                            this.notice = Some(Notice::error(error));
+                        }
                     },
                     Err(error) => this.notice = Some(Notice::error(format!("查看失败：{error}"))),
                 }
@@ -401,7 +411,17 @@ impl RemoteFileEditor {
                 match result {
                     Ok(chunk) => match decode_remote_file_chunk(chunk, position) {
                         Ok(preview) => this.replace_chunk(preview, false, window, cx),
-                        Err(error) => window.push_notification(Notification::error(error), cx),
+                        Err(error) => {
+                            error!(
+                                operation = "ssh_file_chunk_decode",
+                                profile_id = %profile.id,
+                                path = %path,
+                                position = ?position,
+                                error = %error,
+                                "decode remote file chunk failed"
+                            );
+                            window.push_notification(Notification::error(error), cx);
+                        }
                     },
                     Err(error) => window
                         .push_notification(Notification::error(format!("读取失败：{error}")), cx),

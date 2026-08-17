@@ -1,9 +1,7 @@
-//! Driver 默认值表：新建连接时以 placeholder 虚影呈现，保存留空时回退到这些值
+//! 连接表单默认值。
 
-/// 默认 Host（所有 driver 一致）
 pub(super) const DEFAULT_HOST: &str = "127.0.0.1";
 
-/// driver 默认端口
 pub(super) fn default_port(driver_id: &str) -> u16 {
     match driver_id {
         "postgres" => 5432,
@@ -13,7 +11,6 @@ pub(super) fn default_port(driver_id: &str) -> u16 {
     }
 }
 
-/// driver 默认用户名；Redis / MongoDB 无默认（留空 = 无认证 / 无 ACL 用户）
 pub(super) fn default_username(driver_id: &str) -> &'static str {
     match driver_id {
         "mysql" => "root",
@@ -22,7 +19,6 @@ pub(super) fn default_username(driver_id: &str) -> &'static str {
     }
 }
 
-/// 用户名输入框虚影：有默认值显示默认值，无默认值提示可选
 pub(super) fn username_placeholder(driver_id: &str) -> &'static str {
     match default_username(driver_id) {
         "" => "（可选）",
@@ -30,7 +26,6 @@ pub(super) fn username_placeholder(driver_id: &str) -> &'static str {
     }
 }
 
-/// 默认库输入框虚影：Redis 默认 0 号库 / MongoDB 默认 admin，SQL 类给示例
 pub(super) fn database_placeholder(driver_id: &str) -> &'static str {
     match driver_id {
         "redis" => "0",
@@ -40,7 +35,6 @@ pub(super) fn database_placeholder(driver_id: &str) -> &'static str {
     }
 }
 
-/// URI 粘贴框虚影：按 driver 显示对应 scheme 示例
 pub(super) fn uri_placeholder(driver_id: &str) -> &'static str {
     match driver_id {
         "postgres" => "postgres://user:pass@host:5432/db?sslmode=require",

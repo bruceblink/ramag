@@ -20,7 +20,6 @@ use self::catalog::{preferred_scope, selected_source, visible_catalog_items};
 
 const DROPDOWN_MENU_ITEM_HEIGHT: f32 = 32.0;
 const MAX_VISIBLE_DROPDOWN_ITEMS: usize = 5;
-/// 数据同步中的下拉列表最多直接展示五项，更多内容在菜单内部滚动。
 pub(super) const DROPDOWN_MENU_MAX_HEIGHT: f32 =
     DROPDOWN_MENU_ITEM_HEIGHT * MAX_VISIBLE_DROPDOWN_ITEMS as f32;
 

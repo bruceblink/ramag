@@ -325,6 +325,7 @@ impl KeyDetailPanel {
                             connection_id = %config.id,
                             db,
                             key_bytes = key.len(),
+                            reason = "unexpected_memory_usage_response",
                             "memory usage returned an unexpected response"
                         );
                         this.size_error =

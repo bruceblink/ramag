@@ -89,11 +89,9 @@ struct VisibleSelectionCache {
 
 pub struct ResultPanel {
     pub(super) state: ResultState,
-    /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pub(super) pending_notification: Option<Notification>,
     pub(super) selected_cell: Option<(usize, usize)>,
     pub(super) selected_rows: BTreeSet<usize>,
-    /// 选择代际与可见行交集缓存，避免重复扫描。
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
     pub(super) source_sql: Option<String>,
@@ -101,9 +99,7 @@ pub struct ResultPanel {
     /// 行定位键（主键或全非空唯一索引）；未就绪时禁用行内修改和删除。
     pub(super) row_identity: Option<RowIdentity>,
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
-    /// DML 防重入闸；请求期间禁止再次提交。
     pub(super) dml_busy: bool,
-    /// 导出防重入闸；任务结束后复位。
     pub(super) exporting: bool,
     pub(super) sort_by: Option<(usize, SortDir)>,
     /// 当前服务端结果页；None 表示不支持安全分页。
@@ -289,7 +285,6 @@ impl ResultPanel {
             return;
         }
         if self.apply_insert_async(values, cx) {
-            // 请求发起后退出草稿；前置校验失败时保留输入。
             self.pending_insert = None;
             cx.notify();
         }
@@ -325,7 +320,6 @@ impl ResultPanel {
         }
     }
 
-    /// 返回行内新增的禁用原因。
     pub(crate) fn insert_block_reason(&self) -> Option<&'static str> {
         if self.dml_busy {
             return Some("上一写操作尚未完成");
@@ -349,7 +343,6 @@ impl ResultPanel {
         self.dml_busy
     }
 
-    /// 返回行内修改或删除的禁用原因。
     pub(crate) fn modify_block_reason(&self) -> Option<&'static str> {
         if let Some(r) = self.insert_block_reason() {
             return Some(r);
@@ -360,7 +353,6 @@ impl ResultPanel {
         None
     }
 
-    /// 当前结果集对应的目标表的引用字符串：优先用 pinned_target，再回退 SQL 解析
     pub(super) fn current_table_ref(&self) -> Option<String> {
         let driver = self.connection.as_ref().map(|c| c.driver)?;
         if let Some((schema, table)) = &self.pinned_target {
@@ -422,7 +414,6 @@ impl ResultPanel {
         Some((col_name, display, truncated))
     }
 
-    /// 返回单元格编辑的只读原因。
     pub(super) fn cell_edit_block_reason(&self, ri: usize, ci: usize) -> Option<String> {
         if let Some(reason) = self.modify_block_reason() {
             return Some(reason.to_string());

@@ -1,41 +1,29 @@
-//! 数据导入、导出的冲突策略、进度和结果。
-
 use serde::{Deserialize, Serialize};
 
-/// 超出上限的警告只累计数量。
 pub const MAX_TRANSFER_WARNINGS: usize = 100;
 
-/// 导入冲突处理策略（同名表 / collection / key 已存在时）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ConflictPolicy {
-    /// 跳过已存在对象，其余继续（默认）
     #[default]
     Skip,
     /// 保留已存在对象，数据按条目去重补齐（SQL=INSERT IGNORE / ON CONFLICT DO NOTHING，
     /// Mongo=重复 `_id` 跳过；Redis 的 list/string 无法条目级去重，不支持该策略）
     Merge,
-    /// 先删除已存在对象再导入
     Overwrite,
-    /// 遇到冲突立即终止
     Fail,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransferProgress {
-    /// 当前阶段（如「导出表结构」「写入数据」）
     pub stage: String,
-    /// 当前对象（表 / collection / key）
     pub object: String,
     pub objects_done: u64,
-    /// `None` 表示总数未知。
     pub objects_total: Option<u64>,
-    /// 已处理条目（行 / 文档 / key）
     pub items_done: u64,
     pub bytes: u64,
 }
 
 impl TransferProgress {
-    /// 生成不含换行符的工具栏进度文案。
     pub fn display_line(&self) -> String {
         let mut text = self.stage.replace(['\n', '\r'], " ");
         if !self.object.is_empty() {
@@ -75,23 +63,17 @@ pub fn format_bytes(bytes: u64) -> String {
 
 pub type ProgressFn<'a> = &'a (dyn Fn(TransferProgress) + Send + Sync);
 
-/// 导出 / 导入结果汇总。取消不是错误：`cancelled=true` + 已完成部分留在计数里
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransferSummary {
-    /// 完成对象数（表 / collection / key）
     pub objects: u64,
-    /// 条目数（行 / 文档 / 集合元素）
     pub items: u64,
-    /// 冲突策略跳过的对象数
     pub skipped: u64,
-    /// 失败对象数（导入逐对象容错时累计）
     pub failed: u64,
     pub bytes: u64,
     pub elapsed_ms: u64,
     pub cancelled: bool,
     /// 警告明细（跳过原因 / 不支持对象），超上限只计数
     pub warnings: Vec<String>,
-    /// 未纳入明细的额外警告数
     pub warnings_overflow: u64,
 }
 
@@ -124,7 +106,6 @@ impl TransferSummary {
         text
     }
 
-    /// 多文件导入逐文件累加计数；警告受同一上限约束，任一文件取消即整体取消。
     pub fn merge(&mut self, other: TransferSummary) {
         self.objects = self.objects.saturating_add(other.objects);
         self.items = self.items.saturating_add(other.items);

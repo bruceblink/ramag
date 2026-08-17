@@ -35,7 +35,6 @@ pub struct ClipboardRead {
     pub owner_pid: u32,
 }
 
-/// 当前剪贴板变更序列号。
 pub fn sequence_number() -> i64 {
     unsafe { GetClipboardSequenceNumber() as i64 }
 }
@@ -74,12 +73,10 @@ impl Drop for Clipboard {
     }
 }
 
-/// 注册或获取 PNG 剪贴板格式 ID。
 fn png_format() -> u32 {
     unsafe { RegisterClipboardFormatW(w!("PNG")) }
 }
 
-/// Windows 约定的 RTF 剪贴板格式。
 fn rtf_format() -> u32 {
     unsafe { RegisterClipboardFormatW(w!("Rich Text Format")) }
 }
@@ -482,12 +479,10 @@ pub fn write_files(paths: &[String]) -> Result<i64> {
     }
 }
 
-/// 构造 NUL 结尾的宽字符串。
 pub fn wide_nul(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 将宽字符串首指针包装为 PCWSTR。
 pub fn pcwstr(buf: &[u16]) -> PCWSTR {
     PCWSTR(buf.as_ptr())
 }

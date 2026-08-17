@@ -12,16 +12,12 @@ use tracing::{error, warn};
 use super::ClipboardView;
 use crate::views::helpers::filter_items;
 
-/// 删除图片的撤销宽限期。
 const DELETE_UNDO_GRACE: Duration = Duration::from_secs(30);
 
-/// 全量搜索去抖时间。
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
-/// 全量搜索结果上限。
 const SEARCH_LIMIT: usize = 500;
 
 impl ClipboardView {
-    /// 从内存缓存刷新最近条目。
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.loaded_revision = self.service.revision();
         self.items = self.service.cached_snapshot();
@@ -49,7 +45,6 @@ impl ClipboardView {
         .detach();
     }
 
-    /// 返回筛选和排序后的条目。
     pub(super) fn visible_items(&self, cx: &gpui::App) -> Vec<Arc<ClipItem>> {
         let search = self.search.read(cx);
         let query = search.value();
@@ -59,7 +54,6 @@ impl ClipboardView {
                 .cloned()
                 .collect();
         }
-        // 缓存结果优先，后台结果仅补充缓存外匹配。
         let mut seen = std::collections::HashSet::new();
         let mut out: Vec<Arc<ClipItem>> = Vec::new();
         for it in filter_items(&self.items, &query, self.filter) {
@@ -74,13 +68,11 @@ impl ClipboardView {
         out
     }
 
-    /// 输入变化后延迟全量搜索，补充缓存外匹配。
     pub(super) fn schedule_search(&mut self, cx: &mut Context<Self>) {
         self.search_gen = self.search_gen.wrapping_add(1);
         let generation = self.search_gen;
         let query = self.search.read(cx).value().to_string();
         self.search_cancel.store(true, Ordering::Relaxed);
-        // 清除旧结果，避免去抖期间显示错误命中。
         self.search_results.clear();
         self.search_truncated = false;
         if query.trim().is_empty() {
@@ -91,7 +83,6 @@ impl ClipboardView {
         let svc = self.service.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
-            // 输入已变化时放弃本次搜索。
             if this
                 .update(cx, |this, _| this.search_gen != generation)
                 .unwrap_or(true)
@@ -181,7 +172,6 @@ impl ClipboardView {
         .detach();
     }
 
-    /// 在浏览器打开链接。
     pub(super) fn open_link(&mut self, url: String, cx: &mut Context<Self>) {
         if let Err(e) = self.service.open_url(&url) {
             error!(
@@ -195,7 +185,6 @@ impl ClipboardView {
         }
     }
 
-    /// 在文件管理器中显示文件。
     pub(super) fn reveal_files(&mut self, paths: &[String], cx: &mut Context<Self>) {
         if let Err(e) = self.service.reveal_in_file_manager(paths) {
             error!(
@@ -311,7 +300,6 @@ impl ClipboardView {
         cx.notify();
     }
 
-    /// 按可见列表上下移动选中项。
     pub(super) fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
         let visible = self.visible_items(cx);
         if visible.is_empty() {
@@ -346,7 +334,6 @@ impl ClipboardView {
             .cloned()
     }
 
-    /// 图片是否已加载失败。
     pub(super) fn image_failed(&self, item: &ClipItem, thumb: bool) -> bool {
         let path = if thumb {
             item.thumb_path.clone().or_else(|| item.image_path.clone())
@@ -356,7 +343,6 @@ impl ClipboardView {
         path.is_some_and(|p| self.img_cache.is_failed(&p))
     }
 
-    /// 读取图片，缓存未命中时异步加载。
     pub(super) fn image_for(
         &self,
         item: Arc<ClipItem>,

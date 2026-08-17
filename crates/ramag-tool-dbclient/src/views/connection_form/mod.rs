@@ -32,7 +32,7 @@ pub(super) enum TestState {
 
 #[derive(Debug, Clone)]
 pub enum FormEvent {
-    /// Box 避免大型配置撑大枚举。
+    /// 避免枚举过大。
     Saved(Box<ConnectionConfig>),
     Cancelled,
 }
@@ -65,11 +65,11 @@ pub struct ConnectionFormPanel {
     pub(super) port: Entity<InputState>,
     pub(super) username: Entity<InputState>,
     pub(super) password: Entity<InputState>,
-    /// 密码显示状态仅影响界面，不属于连接配置或脏检测内容。
+    /// 仅影响界面显示。
     pub(super) password_masked: bool,
     pub(super) database: Entity<InputState>,
     pub(super) auth_source: Entity<InputState>,
-    /// 当前表单不渲染备注字段；编辑时仍需原样保留，避免静默丢失历史数据。
+    /// 不显示备注，但编辑时保留。
     pub(super) remark: Option<String>,
     pub(super) environment: Entity<InputState>,
     pub(super) production: bool,
@@ -80,10 +80,10 @@ pub struct ConnectionFormPanel {
     pub(super) ssh_target: Entity<InputState>,
     pub(super) ssh_port: Entity<InputState>,
     pub(super) test_state: TestState,
-    /// 测试结果代次：连接参数变更即递增，在途测试结果代次不符则丢弃
+    /// 用于丢弃过期测试结果。
     pub(super) test_epoch: u64,
     pub(super) saving: bool,
-    /// 打开表单时的初始值快照：关闭前比对判断是否有未保存修改（脏保护）
+    /// 用于检测未保存修改。
     initial: FormSnapshot,
     _subscriptions: Vec<Subscription>,
 }
@@ -207,7 +207,7 @@ impl ConnectionFormPanel {
         });
         let password = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_PASSWORD_BYTES, window, cx)
-                .placeholder("（留空表示无密码）")
+                .placeholder("留空为无密码")
                 .masked(true)
                 .default_value(p.password)
         });
@@ -223,12 +223,12 @@ impl ConnectionFormPanel {
         });
         let environment = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_ENVIRONMENT_BYTES, window, cx)
-                .placeholder("自定义，如 staging（留空不打标）")
+                .placeholder("自定义，如 staging")
                 .default_value(p.environment.unwrap_or_default())
         });
         let ca_cert_path = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_PATH_BYTES, window, cx)
-                .placeholder("CA 证书路径（PEM，可选；留空用系统信任链）")
+                .placeholder("CA 证书（PEM）")
                 .default_value(p.ca_cert_path.unwrap_or_default())
         });
         let uri = cx.new(|cx| {
@@ -238,7 +238,7 @@ impl ConnectionFormPanel {
         });
         let ssh_target = cx.new(|cx| {
             bounded_input(MAX_CONNECTION_SSH_TARGET_BYTES, window, cx)
-                .placeholder("user@bastion 或 ~/.ssh/config 别名（留空不启用）")
+                .placeholder("user@bastion 或 SSH 别名")
                 .default_value(p.ssh_target.unwrap_or_default())
         });
         let ssh_port = cx.new(|cx| {
@@ -247,7 +247,7 @@ impl ConnectionFormPanel {
                 .default_value(p.ssh_port.map(|v| v.to_string()).unwrap_or_default())
         });
 
-        // 名称留空时跟随主机名，但不写入真实值。
+        // 名称默认使用主机名。
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe_in(
             &host,
@@ -275,7 +275,7 @@ impl ConnectionFormPanel {
             },
         ));
 
-        // 连接参数变化后，旧测试结论失效。
+        // 参数变更会使测试结果失效。
         for input in [
             &host,
             &port,

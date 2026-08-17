@@ -383,10 +383,10 @@ fn log_mongo_result(
 ) {
     match result {
         Ok(output) => tracing::info!(
+            operation,
             connection_id = %config.id,
             db,
             collection,
-            operation,
             documents = output.documents.len(),
             affected = output.affected,
             elapsed_ms = output.elapsed_ms,
@@ -394,11 +394,11 @@ fn log_mongo_result(
             "mongodb operation completed"
         ),
         Err(error) => tracing::warn!(
+            operation,
             error = %error,
             connection_id = %config.id,
             db,
             collection,
-            operation,
             "mongodb operation failed"
         ),
     }

@@ -142,6 +142,7 @@ impl KeyDetailPanel {
                                 db,
                                 key_bytes = key.len(),
                                 ?response,
+                                reason = "unexpected_delete_response",
                                 "delete list element returned unexpected response"
                             );
                             this.pending_notification = Some(

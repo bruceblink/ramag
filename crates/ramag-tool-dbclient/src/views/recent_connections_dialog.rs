@@ -88,7 +88,14 @@ impl ConnectionPickerPanel {
                 this.loading = false;
                 match connections {
                     Ok(connections) => this.connections = connections,
-                    Err(error) => this.error = Some(format!("读取连接失败：{error}")),
+                    Err(error) => {
+                        tracing::error!(
+                            operation = "dbclient_connection_list",
+                            error = %error,
+                            "load connections for picker failed"
+                        );
+                        this.error = Some(format!("读取连接失败：{error}"));
+                    }
                 }
                 if let Some(json) = favorites {
                     match serde_json::from_str::<Vec<ConnectionId>>(&json) {

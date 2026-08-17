@@ -66,7 +66,7 @@ impl SettingsView {
                         div()
                             .text_xs()
                             .text_color(muted)
-                            .child("两个 @ID 模式共用一套转换配置；内置与字符表模式按相同字符顺序双向换算。"),
+                            .child("两个 @ID 模式共用此配置。"),
                     ),
             )
             .child(
@@ -87,7 +87,7 @@ impl SettingsView {
                             div()
                                 .text_xs()
                                 .text_color(muted)
-                                .child("按数值从小到大排列；至少 2 个互不重复的可见 ASCII 字符，不允许空格。"),
+                                .child("至少 2 个不重复的可见 ASCII 字符，不能含空格。"),
                         ),
                 )
             })
@@ -108,18 +108,16 @@ impl SettingsView {
                                         .disabled(picking),
                                 )
                                 .child(
-                                    crate::clickable_button(
-                                        "settings-db-id-converter-pick",
-                                    )
-                                    .outline()
-                                    .small()
-                                    .label(if picking { "选择中…" } else { "选择…" })
-                                    .disabled(picking)
-                                    .on_click(cx.listener(
-                                        |this, _: &ClickEvent, window, cx| {
-                                            this.pick_id_converter(window, cx);
-                                        },
-                                    )),
+                                    crate::clickable_button("settings-db-id-converter-pick")
+                                        .outline()
+                                        .small()
+                                        .label(if picking { "选择中…" } else { "选择…" })
+                                        .disabled(picking)
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.pick_id_converter(window, cx);
+                                            },
+                                        )),
                                 ),
                         )
                         .child(
@@ -137,10 +135,9 @@ impl SettingsView {
             ))
             .when(current_kind.is_external(), |card| {
                 card.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child("每次仅传入一个参数，不经 shell、不使用 stdin，超时为 2 秒。-s 须输出非负 i64；-i 须输出一行 UTF-8 字符串。"),
+                    div().text_xs().text_color(muted).child(
+                        "不经 shell 或 stdin；超时 2 秒。-s 输出非负 i64，-i 输出一行 UTF-8。",
+                    ),
                 )
             });
 
@@ -205,22 +202,15 @@ impl SettingsView {
                             ),
                     )
                     .when(self.database_transferring, |card| {
-                        card.child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child("正在处理连接配置…"),
-                        )
+                        card.child(div().text_xs().text_color(muted).child("正在处理连接配置…"))
                     }),
             )
             .when(self.saving_database, |page| {
                 page.child(
-                    h_flex().w_full().justify_end().child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child("正在自动保存…"),
-                    ),
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .child(div().text_xs().text_color(muted).child("正在自动保存…")),
                 )
             })
             .child(
@@ -237,10 +227,9 @@ impl SettingsView {
                                 .gap(px(2.0))
                                 .child(div().text_sm().child("同名 Key 下沉展示"))
                                 .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child("路径同时也是真实 Key 时，将真实 Key 单独放到子树末尾；默认关闭。"),
+                                    div().text_xs().text_color(muted).child(
+                                        "路径也是 Key 时，将该 Key 放到子树末尾。默认关闭。",
+                                    ),
                                 ),
                         )
                         .child(
@@ -256,42 +245,41 @@ impl SettingsView {
             .child(
                 super::super::pages::settings_card("搜索配置", theme.border)
                     .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(16.0))
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(px(2.0))
-                                .child(div().text_sm().child("雪花 ID 转换"))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child("在数据库结果行搜索中使用 @ID -> I（字符串转整数）和 @ID -> S（整数转字符串）。"),
-                                ),
-                        )
-                        .child(
-                            crate::clickable_switch("settings-db-id-conversion")
-                                .flex_none()
-                                .checked(self.database_enabled_draft)
-                                .disabled(picking)
-                                .on_click(cx.listener(|this, _: &bool, window, cx| {
-                                    this.database_enabled_draft =
-                                        !this.database_enabled_draft;
-                                    if !this.database_enabled_draft {
-                                        this.clear_database_converter_test(window, cx);
-                                    }
-                                    this.schedule_database_search_save(
-                                        std::time::Duration::ZERO,
-                                        cx,
-                                    );
-                                    cx.notify();
-                                })),
-                        ),
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.0))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.0))
+                                    .child(div().text_sm().child("雪花 ID 转换"))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child("结果搜索支持 @ID -> I 和 @ID -> S。"),
+                                    ),
+                            )
+                            .child(
+                                crate::clickable_switch("settings-db-id-conversion")
+                                    .flex_none()
+                                    .checked(self.database_enabled_draft)
+                                    .disabled(picking)
+                                    .on_click(cx.listener(|this, _: &bool, window, cx| {
+                                        this.database_enabled_draft = !this.database_enabled_draft;
+                                        if !this.database_enabled_draft {
+                                            this.clear_database_converter_test(window, cx);
+                                        }
+                                        this.schedule_database_search_save(
+                                            std::time::Duration::ZERO,
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .when_some(converter_test, |card, converter_test| {
                         card.child(
@@ -351,7 +339,7 @@ impl SettingsView {
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child("直接使用上方当前配置。输入一项值，再明确选择转换方向。"),
+                    .child("使用当前配置；输入值后选择方向。"),
             )
             .child(
                 crate::cleanable_input(

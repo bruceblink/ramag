@@ -78,17 +78,9 @@ impl SettingsView {
         let page = self.selected_page;
         let content = match page {
             SettingsPage::Database => self.render_database_page(cx),
-            SettingsPage::VersionControl => managed_in_module_card(
-                "Git 配置",
-                "复用系统 Git、SSH Agent 和已有凭据；仓库及远程地址在版本管理页面维护。",
-                cx,
-            ),
+            SettingsPage::VersionControl => managed_in_module_card("Git 配置", cx),
             SettingsPage::Ssh => self.render_ssh_page(cx),
-            SettingsPage::ObjectStorage => managed_in_module_card(
-                "账号与 Bucket",
-                "账号、凭据、生产模式和 Bucket 挂载在云存储页面维护。",
-                cx,
-            ),
+            SettingsPage::ObjectStorage => managed_in_module_card("账号与 Bucket", cx),
             SettingsPage::Update => self.render_update_page(cx),
             SettingsPage::Clipboard => self.render_clipboard_page(cx),
         };
@@ -189,14 +181,9 @@ pub(super) fn settings_card(title: &'static str, border: gpui::Hsla) -> gpui::Di
         )
 }
 
-fn managed_in_module_card(
-    title: &'static str,
-    description: &'static str,
-    cx: &Context<SettingsView>,
-) -> AnyElement {
+fn managed_in_module_card(title: &'static str, cx: &Context<SettingsView>) -> AnyElement {
     let muted = cx.theme().muted_foreground;
     settings_card(title, cx.theme().border)
-        .child(div().text_sm().text_color(muted).child(description))
         .child(
             div()
                 .text_xs()

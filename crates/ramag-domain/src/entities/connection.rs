@@ -1,25 +1,14 @@
-//! 数据库连接配置。
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// 连接名称用于列表渲染与日志字段，限制异常输入造成的内存与布局开销。
 pub const MAX_CONNECTION_NAME_BYTES: usize = 256;
-/// TCP 主机名 / IP 的资源边界；保留足够空间兼容较长内部域名。
 pub const MAX_CONNECTION_HOST_BYTES: usize = 1024;
-/// 用户名、数据库名与 MongoDB authSource 的统一资源边界。
 pub const MAX_CONNECTION_IDENTIFIER_BYTES: usize = 4 * 1024;
-/// 密码只在内存中保留明文，但加密与 hex 编码会放大体积，故单独限制。
 pub const MAX_CONNECTION_PASSWORD_BYTES: usize = 64 * 1024;
-/// 备注允许多行，但不应让单条连接记录无界增长。
 pub const MAX_CONNECTION_REMARK_BYTES: usize = 16 * 1024;
-/// 环境标签仅用于列表徽章展示（dev / test / prod 或自定义短词）。
 pub const MAX_CONNECTION_ENVIRONMENT_BYTES: usize = 64;
-/// Windows 长路径与 Unix 路径均留有余量，同时约束 CA 路径复制成本。
 pub const MAX_CONNECTION_PATH_BYTES: usize = 32 * 1024;
-/// SSH 目标仅需容纳 user@host 或 config 别名。
 pub const MAX_CONNECTION_SSH_TARGET_BYTES: usize = 4 * 1024;
-/// 本地最多保存的连接配置数量；导入与存储共用，避免边界在不同层漂移。
 pub const MAX_CONNECTION_CONFIGS: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -52,7 +41,6 @@ pub enum DriverKind {
 }
 
 impl DriverKind {
-    /// 按方言加引号包裹标识符。MySQL 反引号、PG 双引号、Redis / MongoDB 原样
     pub fn quote_identifier(&self, ident: &str) -> String {
         match self {
             DriverKind::Mysql => format!("`{}`", ident.replace('`', "``")),
@@ -74,7 +62,6 @@ pub enum TlsVerify {
     Full,
 }
 
-/// 密码仅在运行时为明文，持久化前由存储层加密。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: ConnectionId,
@@ -85,20 +72,15 @@ pub struct ConnectionConfig {
     pub username: String,
     pub password: String,
     pub database: Option<String>,
-    /// MongoDB 认证库（authSource）：用户凭证所在库，留空 = admin；其它 driver 不使用
     #[serde(default)]
     pub auth_source: Option<String>,
     pub remark: Option<String>,
-    /// 环境标签（dev / test / prod 或自定义）：仅列表徽章展示，不影响连接行为
     #[serde(default)]
     pub environment: Option<String>,
-    /// 生产模式：开启后由 driver 层拦截一切写 / 改 / 删操作（只读保护）
     #[serde(default)]
     pub production: bool,
-    /// 启用 TLS 加密传输（默认关，与历史行为一致；各 driver 底层均走 rustls）
     #[serde(default)]
     pub tls: bool,
-    /// TLS 身份验证等级（仅 tls=true 时生效；默认 Full = 验证书链 + 主机名）
     #[serde(default)]
     pub tls_verify: TlsVerify,
     /// 自定义 CA 证书路径（PEM）。仅 tls=true 时生效：留空用系统 / webpki 根证书，
@@ -109,7 +91,6 @@ pub struct ConnectionConfig {
     /// 认证由系统 ssh 处理（密钥 / agent），经隧道时 DB 实际连 127.0.0.1:本地转发端口
     #[serde(default)]
     pub ssh_target: Option<String>,
-    /// SSH 跳板端口（None = 22 或 ~/.ssh/config 决定）
     #[serde(default)]
     pub ssh_port: Option<u16>,
 }
@@ -195,7 +176,6 @@ impl ConnectionConfig {
         }
     }
 
-    /// 构造 Redis 连接（username 留空走老版 AUTH，6.0+ ACL 时填用户名）
     pub fn new_redis(name: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         Self {
             id: ConnectionId::new(),
@@ -218,7 +198,6 @@ impl ConnectionConfig {
         }
     }
 
-    /// 构造 MongoDB 连接。database 可选，留空表示默认 `admin`
     pub fn new_mongodb(name: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         Self {
             id: ConnectionId::new(),

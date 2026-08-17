@@ -33,7 +33,6 @@ pub struct QueryTab {
     pub(super) run_seq: u64,
     /// COUNT 代际；新查询使旧回包失效，翻页不变。
     pub(super) count_seq: u64,
-    /// 防止 SQL 格式化重入。
     pub(super) formatting: bool,
     pub(super) current_task: Option<Task<()>>,
     /// 延后预取列元数据；替换任务会取消旧任务。
@@ -44,9 +43,7 @@ pub struct QueryTab {
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) title: String,
     pub(super) short_title: Option<String>,
-    /// 异步通知由 Render 延后推送。
     pub(super) pending_notification: Option<Notification>,
-    /// 表树 SELECT 的目标表。
     pub(super) pinned_target: Option<(String, String)>,
     pub(super) show_editor: bool,
     /// 未手写 LIMIT 的单条 SELECT 分页状态。
@@ -134,7 +131,6 @@ impl QueryTab {
                         .autohide(true),
                     );
                 }
-                // 用户手改 SQL 后清除表树目标，使结果只读。
                 if this.pinned_target.is_some() && this.has_user_draft(cx) {
                     this.pinned_target = None;
                     this.result.update(cx, |r, cx| r.clear_editable_target(cx));
@@ -187,7 +183,6 @@ impl QueryTab {
             .update(cx, |result, _| result.set_result_active(active));
     }
 
-    /// 编辑器非空且不同于自动注入 SQL 时视为用户草稿。
     pub fn has_user_draft(&self, cx: &gpui::App) -> bool {
         let value = self.editor.read(cx).value();
         let cur = value.trim();
@@ -197,13 +192,11 @@ impl QueryTab {
         self.last_injected_sql.as_deref().map(str::trim) != Some(cur)
     }
 
-    /// 返回可跨重启保存的用户草稿。
     pub fn draft_text(&self, cx: &gpui::App) -> Option<gpui::SharedString> {
         self.has_user_draft(cx)
             .then(|| self.editor.read(cx).value())
     }
 
-    /// 恢复本地草稿，不执行查询。
     pub fn restore_draft(
         &mut self,
         text: gpui::SharedString,
@@ -213,7 +206,6 @@ impl QueryTab {
     ) {
         self.set_sql(text, window, cx);
         self.active_schema = schema.filter(|s| !s.is_empty());
-        // 恢复内容仍视为用户草稿。
         self.last_injected_sql = None;
     }
 
@@ -247,7 +239,6 @@ impl QueryTab {
             .and_then(|c| c.database.clone())
             .filter(|s| !s.is_empty());
         self.connection = conn.clone();
-        // 新连接使分页基线失效，并同步给结果面板。
         self.clear_pager(cx);
         let svc = self.service.clone();
         self.result.update(cx, |r, _| {
@@ -287,7 +278,6 @@ impl QueryTab {
         }
         self.editor
             .update(cx, |state, cx| state.set_value(sql, window, cx));
-        // 替换 SQL 后清除旧目标和分页基线。
         self.pinned_target = None;
         self.last_injected_sql = None;
         // set_value 不发 Change，需手动预取列结构。
@@ -299,7 +289,6 @@ impl QueryTab {
         self.handle_run(window, cx);
     }
 
-    /// 关闭 Tab 前取消仍在执行的查询。
     pub fn cancel_if_running(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             self.handle_cancel(window, cx);
@@ -317,16 +306,13 @@ impl QueryTab {
             state.set_value(sql.to_string(), window, cx);
             state.focus(window, cx);
         });
-        // 示例不沿用表树目标或分页基线。
         self.pinned_target = None;
-        // 示例属于自动注入。
         self.last_injected_sql = Some(sql.to_string());
         // set_value 不发 Change，需手动预取列结构。
         self.prefetch_columns_now(cx);
         cx.notify();
     }
 
-    /// 清除旧页码和分页基线。
     pub(super) fn clear_pager(&mut self, cx: &mut Context<Self>) {
         self.pager = None;
         self.result

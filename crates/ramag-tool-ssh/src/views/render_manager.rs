@@ -311,7 +311,7 @@ impl SshView {
                                 .ghost()
                                 .small()
                                 .icon(ramag_ui::icons::remote_desktop())
-                                .tooltip("打开远程桌面")
+                                .tooltip("远程桌面")
                                 .disabled(rdp_busy)
                                 .on_click(cx.listener(
                                     move |this, _: &ClickEvent, _, cx| {
