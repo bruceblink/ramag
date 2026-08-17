@@ -54,17 +54,28 @@ impl SettingsView {
                     .when_some(update, |row, update| {
                         let release_url = update.release.release_url.clone();
                         row.child(
-                            div()
-                                .id("settings-update-release-page")
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(accent)
-                                .cursor_pointer()
-                                .hover(move |link| link.text_color(link_hover))
-                                .child(format!("新版本：{}", update.release.version))
-                                .on_click(move |_: &ClickEvent, _, cx| {
-                                    cx.open_url(&release_url);
-                                }),
+                            h_flex()
+                                .gap(px(6.0))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(accent)
+                                        .child("新"),
+                                )
+                                .child(
+                                    div()
+                                        .id("settings-update-release-page")
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(accent)
+                                        .cursor_pointer()
+                                        .hover(move |link| link.text_color(link_hover))
+                                        .child(format!("新版本：{}", update.release.version))
+                                        .on_click(move |_: &ClickEvent, _, cx| {
+                                            cx.open_url(&release_url);
+                                        }),
+                                ),
                         )
                     })
                     .child(div().flex_1())

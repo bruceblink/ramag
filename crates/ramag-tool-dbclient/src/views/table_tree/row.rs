@@ -128,7 +128,11 @@ impl TableTreePanel {
                 is_expanded,
                 is_system,
             } => {
-                let arrow = if *is_expanded { "▾" } else { "▸" };
+                let chevron = if *is_expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                };
                 let id_str = SharedString::from(format!("schema-{name}"));
                 let name_for_click = name.clone();
                 let name_for_copy = name.clone();
@@ -162,10 +166,8 @@ impl TableTreePanel {
                     }))
                     .child(
                         div()
-                            .w(px(12.0))
-                            .text_xs()
-                            .text_color(muted_fg)
-                            .child(arrow),
+                            .w(px(14.0))
+                            .child(Icon::new(chevron).xsmall().text_color(muted_fg)),
                     )
                     .child(Icon::new(IconName::HardDrive).small().text_color(muted_fg))
                     .child(

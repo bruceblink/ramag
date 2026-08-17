@@ -210,7 +210,7 @@ impl JumpServerPanel {
                                     } else {
                                         IconName::EyeOff
                                     })
-                                    .tooltip("显示/隐藏密码")
+                                    .tooltip("显示/隐藏")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.toggle_password_mask(window, cx);

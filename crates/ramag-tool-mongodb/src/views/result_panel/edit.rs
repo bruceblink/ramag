@@ -1,5 +1,5 @@
-//! 单元格编辑：双击 → 输入新值 → update_one $set（dotted path）。
-//! 按列原始 BSON 类型还原写入值，避免 oid/date/decimal 被降级成字符串 / 浮点。
+//! MongoDB 结果单元格编辑。
+//! 仅允许可从显示文本无损恢复的 BSON 类型。
 
 use gpui::{ClickEvent, Context, SharedString, Window, div, prelude::*, px};
 use gpui_component::{
@@ -12,8 +12,7 @@ use super::{ResultEvent, ResultPanel};
 use crate::views::{MAX_MONGO_INTERACTIVE_INPUT_BYTES, bounded_input, inline_text_preview};
 
 impl ResultPanel {
-    /// 双击单元格编辑：输入新值 → update_one $set（dotted path）。
-    /// kind 是该列原始 BSON 类型，用于保存时按类型还原（oid/date/decimal 不降级成字符串）
+    /// 打开单元格编辑弹窗。
     pub(crate) fn open_cell_edit_dialog(
         &self,
         id: Value,
@@ -26,7 +25,7 @@ impl ResultPanel {
         if current.len() > MAX_MONGO_INTERACTIVE_INPUT_BYTES {
             return self.open_cell_dialog(path, kind, current, window, cx);
         }
-        // multi_line：值可能含换行（GPUI 单行 shape_line 不接受 \n），且本对话框是 220px 多行编辑框
+        // 值可包含换行，使用多行输入框。
         let input = cx.new(|c| {
             bounded_input(window, c)
                 .multi_line(true)
@@ -78,7 +77,7 @@ impl ResultPanel {
                     let raw = input_apply.read(app).value().to_string();
                     let id = id_apply.clone();
                     let path = path_apply.clone();
-                    // 不立即关弹框：请求成功后经 pending_close_dialog 关闭，失败保留输入可改
+                    // 成功后再关闭，失败时保留输入。
                     panel_apply.update(app, |this, cx| {
                         this.do_update_async(id, path, kind, raw, cx)
                     });
@@ -116,7 +115,7 @@ impl ResultPanel {
         });
     }
 
-    /// 异步 update_one：filter {_id} + $set {dotted path: 新值（按列 kind 还原 BSON 类型）}
+    /// 异步执行 `update_one`。
     fn do_update_async(
         &mut self,
         id: Value,
@@ -125,7 +124,7 @@ impl ResultPanel {
         raw: String,
         cx: &mut Context<Self>,
     ) {
-        // 防重入：上一提交未回包前忽略再次点击（弹框仍开着，按钮可被连点）
+        // 忽略提交尚未完成时的重复点击。
         if self.doc_dml_busy {
             self.pending_notification =
                 Some(Notification::warning("提交执行中，请稍候").autohide(true));
@@ -180,7 +179,7 @@ impl ResultPanel {
                 }
                 match r {
                     Ok(res) if res.affected == 0 => {
-                        // 未命中不关弹框：用户可核对 _id / 库后再试
+                        // 保留输入，便于核对后重试。
                         this.pending_notification = Some(
                             Notification::warning(
                                 "未匹配到文档：该行无 _id，或当前 collection 与所选库不一致"
@@ -198,7 +197,6 @@ impl ResultPanel {
                         cx.emit(ResultEvent::Refresh);
                     }
                     Err(e) => {
-                        // 失败保留弹框与输入，仅 toast 说明原因
                         this.pending_notification =
                             Some(Notification::error(e.write_hint("更新失败")).autohide(true));
                     }
@@ -210,12 +208,7 @@ impl ResultPanel {
     }
 }
 
-/// 按列原始 BSON 类型把单元格编辑文本还原为写入值：
-/// 特殊类型（oid/date/decimal）包回 Extended JSON，避免 $set 把它降级成字符串 / 浮点；
-/// 该 BSON 类型的单元格是否可安全编辑。只放行能从显示文本无损还原的类型：
-/// binary/code/regex/ts/symbol/dbptr/minkey/maxkey 等显示的是摘要串，编辑会把真实
-/// BSON 覆盖成摘要（静默毁数据）；date 显示形态不定（canonical 为毫秒数字），
-/// 回写易被 driver 拒绝，一并设为只读。
+/// 仅允许可无损回写的 BSON 类型。
 pub(super) fn kind_is_editable(kind: &str) -> bool {
     matches!(
         kind,
@@ -227,14 +220,13 @@ pub(super) fn cell_is_editable(kind: &str, text_bytes: usize) -> bool {
     kind_is_editable(kind) && text_bytes <= MAX_MONGO_INTERACTIVE_INPUT_BYTES
 }
 
-/// 其余按 JSON 解析（123→数字 / true→布尔 / 其它→字符串），保留「可改类型」的灵活性。
-/// 注：date 文本需为 ISO8601（结果集 relaxed Extended JSON 形态即 ISO），否则 driver 转换报错
+/// 按 BSON 类型恢复编辑值。
 fn value_for_kind(kind: &str, raw: String) -> Value {
     match kind {
         "oid" => serde_json::json!({ "$oid": raw }),
         "date" => serde_json::json!({ "$date": raw }),
         "decimal" => serde_json::json!({ "$numberDecimal": raw }),
-        // Int64：显式包 $numberLong 保住 64 位，否则正小值会被 serde 反序列化窄化成 Int32
+        // 用 Extended JSON 保留 Int64。
         "long" => serde_json::json!({ "$numberLong": raw }),
         _ => match serde_json::from_str::<Value>(&raw) {
             Ok(v) => v,
@@ -250,7 +242,6 @@ mod tests {
 
     #[test]
     fn special_kinds_wrap_extjson() {
-        // oid/date/decimal 必须包回 Extended JSON，否则会被写成普通字符串/浮点
         assert_eq!(
             value_for_kind("oid", "507f1f77bcf86cd799439011".into()),
             json!({"$oid": "507f1f77bcf86cd799439011"})
@@ -274,7 +265,6 @@ mod tests {
 
     #[test]
     fn long_kind_wraps_numberlong() {
-        // Int64 编辑写回必须包 $numberLong，保住 64 位不被 serde 窄化成 Int32
         assert_eq!(
             value_for_kind("long", "9999999999".into()),
             json!({ "$numberLong": "9999999999" })

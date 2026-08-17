@@ -6,7 +6,7 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::{Commit, FileStatus};
 
@@ -298,7 +298,11 @@ fn render_tree_row(
             file_count,
         } => {
             let id = SharedString::from(format!("vcs-cd-dir-{idx_in_rows}"));
-            let icon = if *is_collapsed { "▸" } else { "▾" };
+            let chevron = if *is_collapsed {
+                IconName::ChevronRight
+            } else {
+                IconName::ChevronDown
+            };
             let dir_clone = dir_path.clone();
             h_flex()
                 .id(id)
@@ -316,10 +320,8 @@ fn render_tree_row(
                 .child(
                     div()
                         .flex_none()
-                        .w(px(12.0))
-                        .text_xs()
-                        .text_color(muted_fg)
-                        .child(icon),
+                        .w(px(14.0))
+                        .child(Icon::new(chevron).xsmall().text_color(muted_fg)),
                 )
                 .child(
                     div()

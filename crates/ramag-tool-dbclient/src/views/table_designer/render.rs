@@ -84,7 +84,7 @@ impl Render for TableDesigner {
                                     .checked(field.nullable)
                                     .small()
                                     .disabled(reviewing || self.executing)
-                                    .tooltip("勾选表示该字段允许 NULL")
+                                    .tooltip("允许 NULL")
                                     .on_click(move |nullable: &bool, _, app| {
                                         toggle.update(app, |this, cx| {
                                             if let Some(field) = this.fields.get_mut(index) {

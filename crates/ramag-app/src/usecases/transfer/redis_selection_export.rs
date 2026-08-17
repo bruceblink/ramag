@@ -12,6 +12,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, Result};
 use serde_json::json;
+use tracing::{info, warn};
 
 use super::redis::{
     ExportKeySource, KeyOutcome, PAGE_ITEMS, ensure_redis, export_key, export_scanned_keys,
@@ -20,6 +21,29 @@ use super::{Reporter, finish_summary, is_cancelled, with_export_sink};
 use crate::usecases::RedisService;
 
 pub async fn export_redis_key(
+    svc: &RedisService,
+    config: &ConnectionConfig,
+    db: u8,
+    key: &str,
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    info!(
+        operation = "redis_selection_export",
+        connection_id = %config.id,
+        db,
+        scope = "key",
+        object_bytes = key.len(),
+        path = %path.display(),
+        "transfer started"
+    );
+    let result = export_redis_key_inner(svc, config, db, key, path, cancel, progress).await;
+    log_selection_export_result(config, db, "key", key, path, &result);
+    result
+}
+
+async fn export_redis_key_inner(
     svc: &RedisService,
     config: &ConnectionConfig,
     db: u8,
@@ -93,6 +117,29 @@ pub async fn export_redis_prefix(
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<TransferSummary> {
+    info!(
+        operation = "redis_selection_export",
+        connection_id = %config.id,
+        db,
+        scope = "prefix",
+        object_bytes = prefix.len(),
+        path = %path.display(),
+        "transfer started"
+    );
+    let result = export_redis_prefix_inner(svc, config, db, prefix, path, cancel, progress).await;
+    log_selection_export_result(config, db, "prefix", prefix, path, &result);
+    result
+}
+
+async fn export_redis_prefix_inner(
+    svc: &RedisService,
+    config: &ConnectionConfig,
+    db: u8,
+    prefix: &str,
+    path: &Path,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
     let start = Instant::now();
     ensure_redis(config)?;
     let pattern = format!("{}:*", escape_glob_literal(prefix));
@@ -132,6 +179,45 @@ pub async fn export_redis_prefix(
         Ok(finish_summary(summary, start))
     })
     .await
+}
+
+fn log_selection_export_result(
+    config: &ConnectionConfig,
+    db: u8,
+    scope: &'static str,
+    object: &str,
+    path: &Path,
+    result: &Result<TransferSummary>,
+) {
+    match result {
+        Ok(summary) => info!(
+            operation = "redis_selection_export",
+            connection_id = %config.id,
+            db,
+            scope,
+            object_bytes = object.len(),
+            path = %path.display(),
+            objects = summary.objects,
+            items = summary.items,
+            bytes = summary.bytes,
+            failed = summary.failed,
+            skipped = summary.skipped,
+            cancelled = summary.cancelled,
+            warning_count = summary.warnings.len() as u64 + summary.warnings_overflow,
+            elapsed_ms = summary.elapsed_ms,
+            "transfer completed"
+        ),
+        Err(error) => warn!(
+            operation = "redis_selection_export",
+            connection_id = %config.id,
+            db,
+            scope,
+            object_bytes = object.len(),
+            path = %path.display(),
+            error = %error,
+            "transfer failed"
+        ),
+    }
 }
 
 fn write_header(sink: &mut super::ExportSink, db: u8, scope: &str, object: &str) -> Result<()> {

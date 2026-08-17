@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, h_flex, v_flex};
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, DriverKind};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::{
     ConnectionFormPanel, DRIVERS, FormEvent, FormMode, TestState, defaults, driver_display_name,
@@ -26,6 +26,13 @@ impl ConnectionFormPanel {
         let parts = match super::uri::parse_connection_uri(&raw) {
             Ok(p) => p,
             Err(msg) => {
+                warn!(
+                    operation = "connection_uri_apply",
+                    driver = self.driver_id,
+                    uri_bytes = raw.len(),
+                    error = %msg,
+                    "connection URI parse failed"
+                );
                 self.test_state = TestState::Failed(format!("URI 解析失败：{msg}"));
                 cx.notify();
                 return;
@@ -35,6 +42,13 @@ impl ConnectionFormPanel {
             if matches!(self.mode, FormMode::Create) {
                 self.set_driver(parts.driver_id, window, cx);
             } else {
+                warn!(
+                    operation = "connection_uri_apply",
+                    driver = self.driver_id,
+                    uri_driver = parts.driver_id,
+                    uri_bytes = raw.len(),
+                    "connection URI driver does not match the edited connection"
+                );
                 self.test_state = TestState::Failed(format!(
                     "这是 {} 连接地址，与当前连接类型（不可变更）不符",
                     driver_display_name(parts.driver_id)
@@ -51,7 +65,7 @@ impl ConnectionFormPanel {
         });
         self.username
             .update(cx, |s, cx| s.set_value(parts.username, window, cx));
-        // 编辑回填的 URI 刻意不含明文密码；重新套用时保留原密码。
+        // 编辑回填的 URI 不含明文密码，重新套用时保留原密码。
         if !parts.password.is_empty() || matches!(self.mode, FormMode::Create) {
             self.password
                 .update(cx, |s, cx| s.set_value(parts.password, window, cx));
@@ -122,7 +136,7 @@ impl ConnectionFormPanel {
         if host.is_empty() {
             host = defaults::DEFAULT_HOST.to_string();
         }
-        // 名称默认跟随 Host（与名称输入框虚影一致）
+        // 名称默认跟随 Host，与占位符一致。
         let mut name = self.name.read(cx).value().trim().to_string();
         if name.is_empty() {
             name = host.clone();
@@ -138,7 +152,7 @@ impl ConnectionFormPanel {
         if port == 0 {
             return Err("Port 必须是 1 - 65535".into());
         }
-        // 用户名留空：MySQL/Postgres 回退默认账号；Redis/MongoDB 保持空（无 ACL / 无认证）
+        // 用户名留空时，SQL 使用默认账号，Redis/MongoDB 保持空。
         let mut username = self.username.read(cx).value().trim().to_string();
         if username.is_empty() {
             username = defaults::default_username(self.driver_id).to_string();
@@ -148,21 +162,21 @@ impl ConnectionFormPanel {
             let v = self.database.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         };
-        // authSource 仅 MongoDB 有意义（用户凭证所在库）；其它 driver 不存
+        // authSource 仅 MongoDB 使用。
         let auth_source = if matches!(driver, DriverKind::Mongodb) {
             let v = self.auth_source.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         } else {
             None
         };
-        // Redis 的 DB 字段限制 0-255 数字
+        // Redis DB 限制为 0-255。
         if matches!(driver, DriverKind::Redis)
             && let Some(ref s) = database
         {
             s.parse::<u8>()
                 .map_err(|_| "DB 必须是 0 - 255 的数字（默认 Redis 上限 0-15）".to_string())?;
         }
-        // Postgres 必须连接具体 database（不能不指定）
+        // PostgreSQL 必须指定数据库。
         if matches!(driver, DriverKind::Postgres) && database.is_none() {
             return Err("PostgreSQL 必须填写默认库".into());
         }
@@ -171,19 +185,19 @@ impl ConnectionFormPanel {
             FormMode::Edit(id) => id.clone(),
         };
 
-        // CA 路径仅 TLS 开启时保存；关着时留空避免脏值残留
+        // 仅 TLS 开启时保存 CA 路径，避免保留旧值。
         let ca_cert_path = if self.tls {
             let v = self.ca_cert_path.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         } else {
             None
         };
-        // 环境标签：仅列表徽章展示；留空不打标
+        // 环境标签仅用于列表展示。
         let environment = {
             let v = self.environment.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         };
-        // SSH 跳板：target 非空即启用；端口须为数字
+        // SSH 跳板由非空目标启用。
         let ssh_target = {
             let v = self.ssh_target.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
@@ -192,8 +206,7 @@ impl ConnectionFormPanel {
             let v = self.ssh_port.read(cx).value().trim().to_string();
             parse_optional_ssh_port(&v)?
         };
-        // SSH 与 TLS 允许同开（分别保护跳板段与后段链路）；经隧道后主机名校验必败，
-        // driver 层自动降级验证等级（MySQL/PG Full→Ca；Redis/Mongo 仅加密），表单有提示
+        // SSH 与 TLS 可同时启用；隧道下主机名校验会失败，driver 自动降级验证级别。
 
         let config = ConnectionConfig {
             id,
@@ -236,7 +249,7 @@ impl ConnectionFormPanel {
             let is_selected = self.driver_id == id;
             let btn_id = SharedString::from(format!("driver-btn-{id}"));
 
-            // 按钮等分宽度（flex_1 + min_w_0），避免文字长的 PostgreSQL 撑破布局
+            // 等分按钮宽度，避免长标签撑破布局。
             let mut btn = h_flex()
                 .id(btn_id)
                 .flex_1()
@@ -315,14 +328,14 @@ impl ConnectionFormPanel {
                 DriverKind::Redis => redis_svc.test(&config).await,
                 DriverKind::Mongodb => mongo_svc.test(&config).await,
             };
-            // 无论成败，释放本次测试建的池与 SSH 隧道（一次性 id，无人复用）
+            // 无论成败都释放本次测试创建的池和隧道。
             match config.driver {
                 DriverKind::Mysql | DriverKind::Postgres => sql_svc.evict_pool(&config),
                 DriverKind::Redis => redis_svc.evict_pool(&config.id),
                 DriverKind::Mongodb => mongo_svc.evict_pool(&config.id),
             }
             let _ = this.update(cx, |this, cx| {
-                // 测试期间参数已变更：结果作废，保持重置后的 Idle
+                // 参数已变更时丢弃测试结果。
                 if this.test_epoch != epoch {
                     return;
                 }
@@ -404,7 +417,6 @@ impl ConnectionFormPanel {
         .detach();
     }
 
-    /// 有未保存修改时确认后再取消。
     pub(super) fn handle_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -416,7 +428,7 @@ impl ConnectionFormPanel {
         let entity = cx.entity();
         ramag_ui::open_confirm(
             "放弃修改？",
-            "表单有未保存的修改，关闭将丢弃这些修改。",
+            "未保存内容将丢失。",
             "放弃修改",
             true,
             move |_, app| {

@@ -13,19 +13,7 @@ impl SshService {
         local_path: &Path,
         remote_path: &str,
     ) -> Result<TransferId> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        ensure_sftp_writable(profile)?;
-        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
-        let local_path = local_path
-            .to_str()
-            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
-        self.transfers.enqueue(TransferTask::new(
-            profile.id.clone(),
-            TransferDirection::Upload,
-            local_path,
-            remote_path,
-        ))
+        self.enqueue_transfer(profile, TransferDirection::Upload, local_path, remote_path)
     }
 
     pub fn enqueue_download(
@@ -34,18 +22,12 @@ impl SshService {
         remote_path: &str,
         local_path: &Path,
     ) -> Result<TransferId> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
-        let local_path = local_path
-            .to_str()
-            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
-        self.transfers.enqueue(TransferTask::new(
-            profile.id.clone(),
+        self.enqueue_transfer(
+            profile,
             TransferDirection::Download,
             local_path,
             remote_path,
-        ))
+        )
     }
 
     pub fn enqueue_directory_download(
@@ -54,18 +36,55 @@ impl SshService {
         remote_path: &str,
         local_path: &Path,
     ) -> Result<TransferId> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
-        let local_path = local_path
-            .to_str()
-            .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
-        self.transfers.enqueue(TransferTask::new(
-            profile.id.clone(),
+        self.enqueue_transfer(
+            profile,
             TransferDirection::DownloadArchive,
             local_path,
             remote_path,
-        ))
+        )
+    }
+
+    fn enqueue_transfer(
+        &self,
+        profile: &SshProfile,
+        direction: TransferDirection,
+        local_path: &Path,
+        remote_path: &str,
+    ) -> Result<TransferId> {
+        let result = (|| {
+            profile.validate().map_err(DomainError::InvalidConfig)?;
+            if direction == TransferDirection::Upload {
+                ensure_sftp_writable(profile)?;
+            }
+            validate_local_transfer_path(local_path).map_err(DomainError::InvalidConfig)?;
+            validate_remote_path(remote_path).map_err(DomainError::InvalidConfig)?;
+            let local_path = local_path
+                .to_str()
+                .ok_or_else(|| DomainError::InvalidConfig("本地路径不是 UTF-8".into()))?;
+            self.transfers.enqueue(TransferTask::new(
+                profile.id.clone(),
+                direction,
+                local_path,
+                remote_path,
+            ))
+        })();
+        match &result {
+            Ok(task_id) => tracing::debug!(
+                operation = "ssh_transfer_enqueue",
+                task_id = %task_id,
+                profile_id = %profile.id,
+                direction = ?direction,
+                "ssh transfer queued"
+            ),
+            Err(error) => tracing::warn!(
+                operation = "ssh_transfer_enqueue",
+                error = %error,
+                profile_id = %profile.id,
+                direction = ?direction,
+                "queue ssh transfer failed"
+            ),
+        }
+        result
     }
 
     pub async fn execute_transfer(
@@ -73,20 +92,30 @@ impl SshService {
         id: &TransferId,
         overwrite: OverwritePolicy,
     ) -> Result<()> {
-        let (task, cancellation) = self.transfers.begin(id)?;
+        let (task, cancellation) = match self.transfers.begin(id) {
+            Ok(task) => task,
+            Err(error) => {
+                tracing::warn!(
+                    operation = "ssh_transfer",
+                    error = %error,
+                    task_id = %id,
+                    stage = "begin",
+                    "start ssh transfer failed"
+                );
+                return Err(error);
+            }
+        };
         let profile = match self.current_profile(&task.profile_id).await {
             Ok(profile) => profile,
             Err(error) => {
-                self.transfers
-                    .finish(id, &Err(DomainError::Other(error.message().into())), false);
+                self.finish_transfer_preflight_failure(id, &task, "profile", &error);
                 return Err(error);
             }
         };
         let capabilities = match self.capabilities_for_profile(&profile, false).await {
             Ok(capabilities) => capabilities,
             Err(error) => {
-                self.transfers
-                    .finish(id, &Err(DomainError::Other(error.message().into())), false);
+                self.finish_transfer_preflight_failure(id, &task, "capabilities", &error);
                 return Err(error);
             }
         };
@@ -100,8 +129,7 @@ impl SshService {
         let remote_path = match remote_path {
             Ok(path) => path,
             Err(error) => {
-                self.transfers
-                    .finish(id, &Err(DomainError::Other(error.message().into())), false);
+                self.finish_transfer_preflight_failure(id, &task, "remote_path", &error);
                 return Err(error);
             }
         };
@@ -115,21 +143,13 @@ impl SshService {
         if task.direction == TransferDirection::Upload
             && let Err(error) = ensure_sftp_writable(&profile)
         {
-            self.transfers.finish(
-                id,
-                &Err(DomainError::Forbidden(error.message().into())),
-                false,
-            );
+            self.finish_transfer_preflight_failure(id, &task, "write_permission", &error);
             return Err(error);
         }
         if task.direction == TransferDirection::Upload
             && let Err(error) = ensure_remote_write_platform(&profile, &capabilities)
         {
-            self.transfers.finish(
-                id,
-                &Err(DomainError::Forbidden(error.message().into())),
-                false,
-            );
+            self.finish_transfer_preflight_failure(id, &task, "remote_platform", &error);
             return Err(error);
         }
         let transfer_store = self.transfers.clone();
@@ -222,23 +242,40 @@ impl SshService {
     }
 
     pub fn retry_transfer(&self, id: &TransferId) -> Result<TransferId> {
-        let state = self.transfers.state.lock();
-        let task = state
-            .tasks
-            .iter()
-            .find(|task| &task.id == id)
-            .cloned()
-            .ok_or_else(|| DomainError::NotFound(format!("传输任务 {id}")))?;
-        if !task.status.is_terminal() {
-            return Err(DomainError::Other("只能重试已结束的传输任务".into()));
+        let result = (|| {
+            let state = self.transfers.state.lock();
+            let task = state
+                .tasks
+                .iter()
+                .find(|task| &task.id == id)
+                .cloned()
+                .ok_or_else(|| DomainError::NotFound(format!("传输任务 {id}")))?;
+            if !task.status.is_terminal() {
+                return Err(DomainError::Other("只能重试已结束的传输任务".into()));
+            }
+            drop(state);
+            self.transfers.enqueue(TransferTask::new(
+                task.profile_id,
+                task.direction,
+                task.local_path,
+                task.remote_path,
+            ))
+        })();
+        match &result {
+            Ok(retry_id) => tracing::debug!(
+                operation = "ssh_transfer_retry",
+                task_id = %id,
+                retry_task_id = %retry_id,
+                "ssh transfer retry queued"
+            ),
+            Err(error) => tracing::warn!(
+                operation = "ssh_transfer_retry",
+                error = %error,
+                task_id = %id,
+                "retry ssh transfer failed"
+            ),
         }
-        drop(state);
-        self.transfers.enqueue(TransferTask::new(
-            task.profile_id,
-            task.direction,
-            task.local_path,
-            task.remote_path,
-        ))
+        result
     }
 
     pub fn transfer_tasks(&self) -> Vec<TransferTask> {
@@ -259,12 +296,55 @@ impl SshService {
     pub async fn disconnect(&self, profile_id: &SshProfileId) -> Result<()> {
         self.cancel_profile_transfers(profile_id);
         self.wait_for_profile_transfers(profile_id).await;
-        self.driver.disconnect(profile_id).await
+        let result = self.driver.disconnect(profile_id).await;
+        match &result {
+            Ok(()) => tracing::info!(
+                operation = "ssh_profile_disconnect",
+                profile_id = %profile_id,
+                "ssh profile disconnected"
+            ),
+            Err(error) => tracing::warn!(
+                operation = "ssh_profile_disconnect",
+                error = %error,
+                profile_id = %profile_id,
+                "disconnect ssh profile failed"
+            ),
+        }
+        result
     }
 
     pub async fn shutdown(&self) -> Result<()> {
         self.cancel_all_transfers();
         self.wait_for_all_transfers().await;
-        self.driver.shutdown().await
+        let result = self.driver.shutdown().await;
+        match &result {
+            Ok(()) => tracing::info!(operation = "ssh_shutdown", "ssh service shut down"),
+            Err(error) => tracing::warn!(
+                operation = "ssh_shutdown",
+                error = %error,
+                "shut down ssh service failed"
+            ),
+        }
+        result
+    }
+
+    fn finish_transfer_preflight_failure(
+        &self,
+        id: &TransferId,
+        task: &TransferTask,
+        stage: &'static str,
+        error: &DomainError,
+    ) {
+        let failure = Err(DomainError::Other(error.message().into()));
+        self.transfers.finish(id, &failure, false);
+        tracing::warn!(
+            operation = "ssh_transfer",
+            error = %error,
+            task_id = %id,
+            profile_id = %task.profile_id,
+            direction = ?task.direction,
+            stage,
+            "prepare ssh transfer failed"
+        );
     }
 }

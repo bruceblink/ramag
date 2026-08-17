@@ -1,6 +1,5 @@
-//! Windows 系统托盘：关窗后应用常驻（剪贴板采集不停），托盘图标可唤回主窗口或退出。
-//! Shell_NotifyIcon 的回调消息必须投递到创建图标的窗口，故专用线程建隐藏窗口跑消息泵，
-//! 事件经原子位图合并，由 main.rs 计时器轮询消费；重复点击不会堆积无界队列。
+//! Windows 系统托盘。
+//! 隐藏窗口接收回调，主线程轮询原子事件位图。
 
 use std::mem::size_of;
 use std::sync::Arc;
@@ -26,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-/// 托盘回调消息（投递到隐藏窗口）
+/// 托盘回调消息。
 const TRAY_CALLBACK: u32 = WM_APP + 1;
 const TRAY_ICON_ID: u32 = 1;
 const MENU_CMD_OPEN: u32 = 1;
@@ -36,13 +35,13 @@ const EVENT_QUIT: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrayEvent {
-    /// 左键 / 菜单「打开」：唤起主窗口
+    /// 唤起主窗口。
     Open,
-    /// 菜单「退出」
+    /// 退出应用。
     Quit,
 }
 
-/// 托盘句柄：Drop 时向隐藏窗口投 WM_CLOSE，令消息泵删图标并退出，再 join 回收
+/// 托盘句柄，释放时关闭隐藏窗口并回收线程。
 pub(crate) struct TrayIcon {
     events: Arc<AtomicU8>,
     hwnd: isize,
@@ -50,7 +49,7 @@ pub(crate) struct TrayIcon {
 }
 
 impl TrayIcon {
-    /// 安装托盘图标。失败返回 None（调用方回退「关最后窗口即退出」）
+    /// 安装托盘图标；失败返回 `None`。
     pub(crate) fn install() -> Option<Self> {
         let events = Arc::new(AtomicU8::new(0));
         let thread_events = events.clone();
@@ -86,7 +85,7 @@ impl TrayIcon {
         }
     }
 
-    /// 非阻塞取一条托盘事件
+    /// 非阻塞读取一个托盘事件。
     pub(crate) fn poll(&self) -> Option<TrayEvent> {
         let events = self.events.swap(0, Ordering::AcqRel);
         if events & EVENT_QUIT != 0 {
@@ -110,7 +109,7 @@ impl Drop for TrayIcon {
                     join_thread(thread);
                 }
                 Err(error) => {
-                    // 无法唤醒时不能阻塞 join；进程退出由系统回收线程与图标
+                    // 无法唤醒时不能阻塞 join。
                     warn!(operation = "tray_shutdown", stage = "detach_signal", error = %error, "post tray shutdown failed; detaching thread");
                 }
             }
@@ -129,7 +128,7 @@ fn join_thread(thread: JoinHandle<()>) {
     }
 }
 
-/// 托盘线程：注册窗口类 → 建隐藏窗口（携带事件位图）→ 挂托盘图标 → 消息泵
+/// 托盘线程：创建隐藏窗口、挂图标并运行消息泵。
 fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
     let hwnd = match create_tray_window(events) {
         Ok(hwnd) => hwnd,
@@ -145,7 +144,7 @@ fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
         }
     };
     if !add_tray_icon(hwnd) {
-        // 图标挂载失败：窗口经 WM_CLOSE 流程销毁（WM_DESTROY 内 NIM_DELETE 幂等无害）
+        // 通过 WM_CLOSE 销毁窗口。
         unsafe {
             let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
         }
@@ -170,7 +169,7 @@ fn tray_thread(events: Arc<AtomicU8>, ready_tx: SyncSender<Option<isize>>) {
 
 fn pump_messages() {
     let mut msg = MSG::default();
-    // GetMessageW 返回 >0 正常、0 收到 WM_QUIT、-1 出错，后两者退出循环
+    // 0 为 WM_QUIT，负值为错误。
     loop {
         let status = unsafe { GetMessageW(&mut msg, None, 0, 0) }.0;
         if status <= 0 {
@@ -187,7 +186,7 @@ fn pump_messages() {
     }
 }
 
-/// 注册窗口类并创建隐藏窗口；事件位图经 lpCreateParams 交给 WndProc（WM_DESTROY 回收）
+/// 注册窗口类并创建隐藏窗口。
 fn create_tray_window(events: Arc<AtomicU8>) -> Result<HWND, &'static str> {
     unsafe {
         let instance = GetModuleHandleW(None).map_err(|_| "GetModuleHandleW failed")?;
@@ -197,7 +196,6 @@ fn create_tray_window(events: Arc<AtomicU8>) -> Result<HWND, &'static str> {
             lpszClassName: w!("RamagTrayWindow"),
             ..Default::default()
         };
-        // 返回 0 且类已存在（进程内重装）可容忍，交给 CreateWindowExW 判定
         let _ = RegisterClassW(&class);
 
         let events_ptr = Box::into_raw(Box::new(events));
@@ -242,7 +240,7 @@ fn add_tray_icon(hwnd: HWND) -> bool {
     added
 }
 
-/// 自身 exe 的首个图标（build.rs 嵌入的应用图标）；取不到退回系统默认应用图标
+/// 加载应用图标，失败回退系统图标。
 fn load_app_icon() -> HICON {
     unsafe {
         let mut path = [0u16; MAX_PATH as usize];
@@ -259,7 +257,7 @@ fn load_app_icon() -> HICON {
     }
 }
 
-/// 右键菜单：TPM_RETURNCMD 同步返回命令 id（0 = 未选择）
+/// 显示右键菜单并返回选择。
 fn show_tray_menu(hwnd: HWND) -> Option<u32> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
@@ -269,7 +267,7 @@ fn show_tray_menu(hwnd: HWND) -> Option<u32> {
             AppendMenuW(menu, MF_STRING, MENU_CMD_QUIT as usize, w!("退出")).ok()?;
             let mut point = POINT::default();
             GetCursorPos(&mut point).ok()?;
-            // TrackPopupMenu 惯例：前台化托盘窗口，点击菜单外才能正常关闭
+            // 前台化后，菜单才能在点击外部时正常关闭。
             let _ = SetForegroundWindow(hwnd);
             let cmd = TrackPopupMenu(
                 menu,
@@ -309,7 +307,7 @@ unsafe extern "system" fn tray_wndproc(
 ) -> LRESULT {
     match msg {
         WM_NCCREATE => {
-            // lpCreateParams 是 Box<Arc<AtomicU8>>，存入窗口 userdata 供回调取用
+            // 保存事件位图，供回调使用。
             let create = lparam.0 as *const CREATESTRUCTW;
             if let Some(create) = unsafe { create.as_ref() } {
                 unsafe {
@@ -338,9 +336,9 @@ unsafe extern "system" fn tray_wndproc(
                 ..Default::default()
             };
             unsafe {
-                // 图标未挂载时删除失败无害（幂等）
+                // 删除未挂载图标也无害。
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
-                // 回收事件位图句柄，阻断后续事件发送
+                // 回收事件位图，阻止后续发送。
                 let ptr = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Arc<AtomicU8>;
                 if !ptr.is_null() {
                     drop(Box::from_raw(ptr));

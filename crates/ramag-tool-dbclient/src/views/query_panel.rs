@@ -51,15 +51,15 @@ pub struct QueryPanel {
     tabs_scroll: ScrollHandle,
     history_sub: Option<gpui::Subscription>,
     draft_subscriptions: Vec<gpui::Subscription>,
-    /// 草稿落盘防抖代际；Arc 让会话关闭后最后一次写入仍可完成。
+    /// 草稿落盘防抖代际。
     draft_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// 同一连接的草稿写入串行化；等待锁后再验代际，保证最终落盘的一定是最新快照。
+    /// 串行草稿写入，防止旧内容覆盖新内容。
     draft_write_lock: Arc<futures::lock::Mutex<()>>,
-    /// 异步读取旧草稿期间，空默认标签不应抢先覆盖持久化内容。
+    /// 读取草稿时阻止默认标签覆盖。
     draft_load_pending: bool,
-    /// 异步恢复期间抑制中间态落盘。
+    /// 恢复草稿时抑制中间态落盘。
     restoring_drafts: bool,
-    /// 最近一次草稿落盘失败的原因：顶部常驻警示条展示，成功后自动清除
+    /// 最近草稿落盘错误，显示在顶部。
     pub(super) draft_persist_error: Option<String>,
 }
 
@@ -81,7 +81,6 @@ impl QueryPanel {
             session_active: false,
             connection: None,
             active_schema: None,
-            // 数据浏览 / 导出是主场景，写 SQL 走 cmd-e 或表树按钮唤出
             show_editor: false,
             tabs_scroll: ScrollHandle::new(),
             history_sub: None,
@@ -127,7 +126,7 @@ impl QueryPanel {
         cx.notify();
     }
 
-    /// 切换 SQL 编辑器显隐：所有 Tab 同步；返回切换后的可见状态供调用方更新 UI
+    /// 切换 SQL 编辑器并返回可见状态。
     pub fn toggle_editor(&mut self, cx: &mut Context<Self>) -> bool {
         self.show_editor = !self.show_editor;
         let v = self.show_editor;
@@ -151,7 +150,7 @@ impl QueryPanel {
             return false;
         }
         self.draft_load_pending = false;
-        // 找出未使用的最小编号（这样关闭"查询 1"再新建会重新得到"查询 1"）
+        // 使用未占用的最小编号。
         let title = {
             let mut n = 1usize;
             loop {
@@ -183,7 +182,7 @@ impl QueryPanel {
         self.active = self.tabs.len() - 1;
         self.sync_result_activity(cx);
         self.focus_active_editor(window, cx);
-        // 大负 offset 让 tab bar 滚末尾，GPUI 自动 clamp 到 max_offset
+        // 滚动至最后一个标签。
         self.tabs_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
         self.schedule_draft_persist(cx);
@@ -195,7 +194,7 @@ impl QueryPanel {
         if index >= self.tabs.len() {
             return;
         }
-        // 防丢稿：有手写草稿先确认（确认弹窗模态，index 在回调前不会漂移）
+        // 有手写草稿时先确认。
         let has_draft = self
             .tabs
             .get(index)
@@ -204,7 +203,7 @@ impl QueryPanel {
             let entity = cx.entity();
             ramag_ui::open_confirm(
                 "关闭查询标签？",
-                "该标签的编辑器有未保存的手写内容，关闭将丢弃。".to_string(),
+                "未保存内容将丢失。".to_string(),
                 "关闭",
                 true,
                 move |window, app| {
@@ -223,7 +222,7 @@ impl QueryPanel {
             return;
         }
         self.draft_load_pending = false;
-        // 执行中的查询先取消（含后端 KILL），避免关 Tab 后语句仍占用数据库
+        // 先取消执行中的查询。
         if let Some(tab) = self.tabs.get(index) {
             tab.update(cx, |t, cx| t.cancel_if_running(window, cx));
         }
@@ -233,12 +232,12 @@ impl QueryPanel {
             let _ = self.draft_subscriptions.remove(index);
         }
         if self.tabs.is_empty() {
-            self.add_tab(window, cx); // 总保持至少一个 Tab（add_tab 内部会 focus）
+            // 保持至少一个标签。
+            self.add_tab(window, cx);
             return;
         }
         self.active = active_index_after_close(self.active, index, self.tabs.len());
         self.sync_result_activity(cx);
-        // 关闭后让新 active tab 编辑器获得焦点，无需再点一下
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
         cx.notify();
@@ -299,8 +298,7 @@ impl QueryPanel {
         self.schedule_draft_persist(cx);
     }
 
-    /// 同 prefill_active_sql_and_run，额外注入精确目标表 (schema, table)
-    /// 表树点击触发的 SELECT 用：避开反引号内带短横线被 SQL parser 吞的坑
+    /// 运行 SQL 并注入精确目标表。
     pub fn prefill_active_sql_and_run_with_target(
         &mut self,
         sql: String,
@@ -309,8 +307,7 @@ impl QueryPanel {
         cx: &mut Context<Self>,
     ) {
         self.draft_load_pending = false;
-        // 草稿保护：活动 Tab 存在手写内容（非空且非上次自动注入）时不覆盖，
-        // 另开 Tab 浏览；未手改的浏览 SQL / 示例则原地复用，连点切表不膨胀 Tab
+        // 有手写草稿时新建标签，避免覆盖。
         let has_draft = self
             .tabs
             .get(self.active)
@@ -321,11 +318,11 @@ impl QueryPanel {
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
                 t.cancel_if_running(window, cx);
-                // set_sql 内会清 pinned_target，所以必须先 set_sql 再 set_pinned_target
+                // set_sql 会清除 target，须先调用。
                 t.set_sql(sql.clone(), window, cx);
                 t.mark_injected(sql);
                 t.set_pinned_target(target);
-                // 表的列结构会变化；内容搜索作为用户条件跨表保留。
+                // 表结构变化，清除列筛选。
                 t.clear_result_column_filter(window, cx);
                 t.run(window, cx);
             });
@@ -333,8 +330,7 @@ impl QueryPanel {
         self.schedule_draft_persist(cx);
     }
 
-    /// 新建一个 Tab 写入 SQL 并立即执行（用于 SHOW CREATE TABLE 等辅助查询，
-    /// 不污染用户当前编辑的 Tab）
+    /// 在新标签执行 SQL。
     pub fn open_in_new_tab_and_run(
         &mut self,
         sql: String,
@@ -353,8 +349,7 @@ impl QueryPanel {
             .is_some_and(|t| t.read(cx).has_user_draft(cx))
     }
 
-    /// 把示例 SQL 插入当前激活 Tab 的编辑器（Tab 栏「示例」下拉用）。
-    /// 有手写草稿时另开 Tab，不覆盖
+    /// 写入示例 SQL；有草稿时新建标签。
     fn insert_example_into_active(
         &mut self,
         sql: &str,
@@ -371,8 +366,7 @@ impl QueryPanel {
         self.schedule_draft_persist(cx);
     }
 
-    /// 把 SQL 填入当前活动 Tab 的编辑器并聚焦（不执行）。
-    /// 有手写草稿时另开 Tab，不覆盖；面板恒保持至少一个 Tab，空列表仅是兜底防御
+    /// 填入 SQL 并聚焦；有草稿时新建标签。
     fn fill_active_sql(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
         self.draft_load_pending = false;
         let needs_new_tab = self.tabs.is_empty() || self.active_has_draft(cx);

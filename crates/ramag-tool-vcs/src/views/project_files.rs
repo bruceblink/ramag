@@ -336,7 +336,11 @@ impl VcsView {
         let fg = theme.foreground;
         let muted_fg = theme.muted_foreground;
         let hover_bg = theme.muted;
-        let arrow = if is_expanded { "▾" } else { "▸" };
+        let chevron = if is_expanded {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        };
         let dir_path_for_toggle = dir_path.clone();
         let row_id = SharedString::from(format!("vcs-pf-dir-{row_index}"));
 
@@ -356,10 +360,8 @@ impl VcsView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.0))
-                    .text_xs()
-                    .text_color(muted_fg)
-                    .child(arrow),
+                    .w(px(14.0))
+                    .child(Icon::new(chevron).xsmall().text_color(muted_fg)),
             )
             .child(
                 Icon::new(if is_expanded {

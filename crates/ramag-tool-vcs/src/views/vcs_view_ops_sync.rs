@@ -1,4 +1,4 @@
-//! 工作区状态同步：静默刷新（窗口激活 / 手动刷新）+ Changes 文件 tabs 与最新 status 对齐
+//! 工作区状态静默刷新，并同步 Changes 标签。
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -29,7 +29,7 @@ enum WorkspaceStatusResult {
     },
 }
 
-/// 写操作后的辅助刷新允许保留旧 UI 数据，但失败必须留有可定位日志。
+/// 写操作后的辅助刷新可保留旧数据，但必须记录失败。
 pub(super) fn best_effort_refresh<T>(
     result: ramag_domain::error::Result<T>,
     repo_id: &ramag_domain::entities::RepoId,
@@ -51,8 +51,7 @@ pub(super) fn best_effort_refresh<T>(
 }
 
 impl VcsView {
-    /// 静默刷新工作区：status + 本地/远程分支 + 当前 Files 视图数据。
-    /// 不显示整屏 loading；完成后对齐 Changes tabs（外部改动 / 终端 git 操作后界面自动跟上）
+    /// 静默刷新状态、分支和当前文件视图，并同步 Changes 标签。
     pub(super) fn refresh_workspace_silent(&mut self, cx: &mut Context<Self>) {
         self.refresh_workspace(RepoRefresh::full(), cx);
     }
@@ -162,7 +161,7 @@ impl VcsView {
                         Ok(files) => match this.status.as_mut() {
                             Some(status) => (merge_partial_status(status, &paths, files), false),
                             None => {
-                                // 缺少完整基线时不能安全合并，补一次完整刷新。
+                                // 无完整基线时不能安全合并，补全量刷新。
                                 next_refresh.merge(RepoRefresh::full());
                                 (false, false)
                             }
@@ -223,7 +222,7 @@ impl VcsView {
                     }
                 }
                 if head_changed {
-                    // 两个分支都干净时 files 指纹同为空，但文件内容仍可能完全不同。
+                    // 两个分支都干净时，文件内容仍可能不同。
                     this.refresh_after_head_change(cx);
                     if this.history_pane_visible || !this.history_commits.is_empty() {
                         this.load_history_page(0, cx);
@@ -244,7 +243,7 @@ impl VcsView {
                                     Instant::now(),
                                 )
                             });
-                    // watcher 明确给出路径时只失效命中标签；全量 status 变化才失效全部。
+                    // watcher 给出路径时仅失效命中标签；全量变化才失效全部。
                     for tab in &mut this.file_tabs {
                         if matches!(tab.source, FileTabSource::ProjectFiles)
                             && !tab.is_dirty()
@@ -265,14 +264,14 @@ impl VcsView {
                         && path_matches_prefixes(&tab.path, prefixes)
                         && let FileTabSource::Changes(kind) = tab.source
                     {
-                        // 状态种类不变不代表内容没变；仅重拉命中的活动 diff。
+                        // 状态种类不变时，仍重拉命中的活动 diff。
                         if let Some(active_tab) = this.file_tabs.get_mut(idx) {
                             active_tab.cached_diff = None;
                             active_tab.cached_diff_syntax = None;
                         }
                         this.select_file(tab.path, kind, cx);
                     }
-                    // active 是 PF tab 时立即重读。
+                    // 活动 Project Files 标签立即重读。
                     if let Some(idx) = this.active_file_tab_idx
                         && let Some(tab) = this.file_tabs.get(idx).cloned()
                         && matches!(tab.source, FileTabSource::ProjectFiles)
@@ -286,7 +285,7 @@ impl VcsView {
                         this.select_pf_file(tab.path, cx);
                     }
                     if files_changed {
-                        // 全量刷新没有路径补丁时，Project Files 仍需重拉。
+                        // 全量刷新无路径补丁时，重拉 Project Files。
                         match this.files_view_mode {
                             super::helpers::FilesViewMode::Project
                                 if !project_files_incremental =>
@@ -307,15 +306,14 @@ impl VcsView {
         .detach();
     }
 
-    /// 启动当前仓库的文件系统监听：外部改动防抖后静默刷新。
-    /// 旧 watcher 先 drop（防抖线程随通道关闭退出，旧转发任务随 sender 关闭结束）
+    /// 启动当前仓库监听；外部改动防抖后静默刷新。
     pub(in crate::views) fn start_fs_watcher(&mut self, cx: &mut Context<Self>) {
         self.fs_watcher = None;
         let Some(repo) = self.repo.as_ref() else {
             return;
         };
         let root = std::path::PathBuf::from(&repo.path);
-        // futures mpsc 每个 sender 自带一个保留槽；容量 0 + 单 sender 即最多积压一个刷新信号。
+        // 容量 0 且单 sender，最多积压一个刷新信号。
         let (tx, mut rx) = futures::channel::mpsc::channel::<()>(0);
         let tx = std::sync::Arc::new(std::sync::Mutex::new(tx));
         let pending = std::sync::Arc::new(std::sync::Mutex::new(RepoRefresh::default()));
@@ -332,7 +330,7 @@ impl VcsView {
                     while rx.next().await.is_some() {
                         let refresh = take_pending_refresh(&pending);
                         let alive = this.update(cx, |this, cx| {
-                            // busy 中跳过：写操作完成路径自己会刷新，避免叠加
+                            // 写操作完成路径会刷新，避免叠加。
                             if this.repo.is_some() && !this.loading && !this.busy {
                                 this.refresh_workspace_change(refresh, cx);
                             }
@@ -345,7 +343,7 @@ impl VcsView {
                 .detach();
             }
             Err(e) => {
-                // 监听失败不阻断使用：窗口激活刷新 + 手动刷新仍可用
+                // 监听失败不阻断使用，窗口激活和手动刷新仍可用。
                 tracing::warn!(
                     operation = "vcs_filesystem_watcher_start",
                     error = %e,
@@ -355,13 +353,12 @@ impl VcsView {
         }
     }
 
-    /// 同步变更来源标签：关闭无变更项、迁移分组并刷新相应缓存。
-    /// 项目文件和提交来源不受影响。
+    /// 同步 Changes 标签：关闭无变更项、迁移分组并刷新缓存。
     pub(super) fn sync_changes_tabs_with_status(&mut self, cx: &mut Context<Self>) {
         self.sync_changes_tabs_with_status_paths(None, cx);
     }
 
-    /// watcher 增量刷新只失效命中路径的 Changes 缓存；`paths=None` 表示全量失效。
+    /// 增量刷新仅失效命中路径的 Changes 缓存；None 表示全量失效。
     fn sync_changes_tabs_with_status_paths(
         &mut self,
         paths: Option<&[String]>,
@@ -378,7 +375,7 @@ impl VcsView {
                 .as_ref()
                 .is_none_or(|prefixes| path_matches_prefixes(path, prefixes))
         };
-        // 没有 Changes 来源标签时无需复制或索引可能很大的工作区文件列表。
+        // 无 Changes 标签时无需索引工作区文件。
         if !self
             .file_tabs
             .iter()
@@ -391,8 +388,7 @@ impl VcsView {
             .and_then(|i| self.file_tabs.get(i))
             .map(|t| (t.path.clone(), t.source.clone()));
 
-        // 预建借用索引，把 O(tabs × files) 的重复线性搜索降为 O(files + tabs)，
-        // 同时不克隆路径与整份 FileStatus。
+        // 预建借用索引，避免重复查找和克隆 FileStatus。
         let files_by_path: HashMap<&str, &FileStatus> = status
             .files
             .iter()
@@ -408,7 +404,7 @@ impl VcsView {
                 continue;
             };
             let new_kind = redirect_group_kind(f, kind);
-            // 重定向后可能与既有 tab 重合（如 Staged + Unstaged 两个 tab 合流）→ 去重
+            // 重定向后可能与既有标签重合，需去重。
             if new_tabs.iter().any(|t: &super::helpers::FileTab| {
                 t.path == tab.path && t.source == FileTabSource::Changes(new_kind)
             }) {
@@ -423,7 +419,7 @@ impl VcsView {
         }
         self.file_tabs = new_tabs;
 
-        // 恢复 active tab：优先同 (path, source)，其次同 path 的 Changes tab，再次序号回退
+        // 恢复活动标签：优先相同 path/source，其次同 path 的 Changes 标签。
         let restored = active_identity.and_then(|(path, source)| {
             self.file_tabs
                 .iter()
@@ -448,12 +444,12 @@ impl VcsView {
                     {
                         self.select_file(tab.path, kind, cx);
                     }
-                    // 其余来源缓存未动，仅同步派生字段
+                    // 其余来源缓存未变，仅同步派生字段。
                     _ => self.activate_file_tab_state(tab),
                 }
             }
             None => {
-                // active tab 被关：顺延到最后一个 tab；没有 tab 则清空主区
+                // 活动标签被关闭时顺延；没有标签则清空主区。
                 self.active_file_tab_idx = self.file_tabs.len().checked_sub(1);
                 if let Some(idx) = self.active_file_tab_idx {
                     let tab = self.file_tabs[idx].clone();
@@ -481,7 +477,7 @@ impl VcsView {
     }
 }
 
-/// 按最新文件状态推导 tab 应归属的组：原组仍有效则保持，否则按 冲突 > 已暂存 > 未暂存 > 未跟踪 迁移
+/// 按最新状态推导标签分组，优先冲突、已暂存、未暂存、未跟踪。
 fn redirect_group_kind(f: &FileStatus, prefer: GroupKind) -> GroupKind {
     if f.is_conflicted() {
         return GroupKind::Conflict;

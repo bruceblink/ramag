@@ -279,7 +279,7 @@ impl ObjectStorageView {
                     let form = form_for_cancel.clone();
                     ramag_ui::open_confirm(
                         "放弃修改？",
-                        "表单有未保存的修改，关闭将丢弃这些修改。",
+                        "未保存内容将丢失。",
                         "放弃修改",
                         true,
                         move |_, app| {
@@ -352,7 +352,7 @@ impl ObjectStorageView {
         ramag_ui::open_confirm(
             "删除云存储账号？",
             format!(
-                "确定删除「{name}」吗？账号配置和工作区偏好将从本机删除；关闭会话：{}；取消传输：{transfer_count} 个。远端 Bucket 和对象不会被删除。",
+                "将从本机删除「{name}」及工作区偏好；关闭会话：{}，取消 {transfer_count} 个传输。远端 Bucket 和对象不受影响。",
                 if closes_session { "是" } else { "否" }
             ),
             "删除",

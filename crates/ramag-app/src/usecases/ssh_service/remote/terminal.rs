@@ -6,26 +6,39 @@ impl SshService {
         profile_id: &SshProfileId,
         initial_directory: Option<&str>,
     ) -> Result<SshLaunchCommand> {
-        let generation = self.terminal_generation_if_allowed(profile_id)?;
-        let profile = self
-            .storage
-            .get_ssh_profile(profile_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("SSH 配置已删除".into()))?;
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        if let Some(path) = initial_directory {
-            validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-            RemotePath::parse_server_canonical(path).map_err(DomainError::InvalidConfig)?;
+        let result = async {
+            let generation = self.terminal_generation_if_allowed(profile_id)?;
+            let profile = self
+                .storage
+                .get_ssh_profile(profile_id)
+                .await?
+                .ok_or_else(|| DomainError::NotFound("SSH 配置已删除".into()))?;
+            profile.validate().map_err(DomainError::InvalidConfig)?;
+            if let Some(path) = initial_directory {
+                validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
+                RemotePath::parse_server_canonical(path).map_err(DomainError::InvalidConfig)?;
+            }
+            let mut command = self
+                .driver
+                .terminal_command(&profile, initial_directory)
+                .await?;
+            if self.terminal_generation_if_allowed(profile_id)? != generation {
+                return Err(terminal_launch_cancelled());
+            }
+            command.authorization_generation = generation;
+            Ok(command)
         }
-        let mut command = self
-            .driver
-            .terminal_command(&profile, initial_directory)
-            .await?;
-        if self.terminal_generation_if_allowed(profile_id)? != generation {
-            return Err(terminal_launch_cancelled());
+        .await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "ssh_terminal_command",
+                error = %error,
+                profile_id = %profile_id,
+                initial_directory_configured = initial_directory.is_some(),
+                "prepare ssh terminal command failed"
+            );
         }
-        command.authorization_generation = generation;
-        Ok(command)
+        result
     }
 
     /// 生命周期操作期间禁止创建终端。

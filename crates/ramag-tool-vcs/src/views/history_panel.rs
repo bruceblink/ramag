@@ -211,11 +211,21 @@ impl VcsView {
             div().size_full().min_w_0().child(middle).into_any_element()
         };
 
+        let layout_storage = self.storage.clone();
+        let layout_view = cx.entity();
         gpui_component::resizable::h_resizable("vcs-history-bottom")
             .with_state(&self.ide_left_resize)
+            .on_resize(move |state, _, cx| {
+                super::ide_layout::persist_ide_left_width(
+                    layout_view.clone(),
+                    layout_storage.clone(),
+                    state,
+                    cx,
+                );
+            })
             .child(
                 gpui_component::resizable::resizable_panel()
-                    .size(px(280.0))
+                    .size(px(self.ide_left_width))
                     .size_range(px(220.0)..px(600.0))
                     .child(
                         div()

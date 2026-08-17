@@ -93,7 +93,7 @@ impl KeyCreateForm {
         let string_input = cx.new(|cx| {
             bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
-                .placeholder("字符串值（任意文本，可多行）")
+                .placeholder("字符串值（可多行）")
         });
         ramag_ui::enforce_multiline_input_byte_limit(
             &string_input,

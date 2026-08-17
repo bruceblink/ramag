@@ -1,4 +1,4 @@
-//! 对象分页、元数据和传输操作。
+//! 对象列表、元数据与传输操作。
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -13,7 +13,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 
-use super::{ObjectListingPage, ObjectStorageService};
+use super::{ObjectListingPage, ObjectStorageService, log_object_storage_error};
 
 impl ObjectStorageService {
     pub async fn capabilities(
@@ -21,11 +21,16 @@ impl ObjectStorageService {
         account_id: &ObjectStorageAccountId,
         mount: &ObjectStorageMount,
     ) -> Result<ObjectCapabilities> {
-        let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
-        self.driver
-            .capabilities(&account.snapshot(), mount)
-            .await
-            .map_err(DomainError::from)
+        let result = async {
+            let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
+            self.driver
+                .capabilities(&account.snapshot(), mount)
+                .await
+                .map_err(DomainError::from)
+        }
+        .await;
+        log_object_storage_error("object_storage_capabilities", Some(account_id), &result);
+        result
     }
 
     pub async fn start_listing(
@@ -35,11 +40,16 @@ impl ObjectStorageService {
         prefix: &str,
         name_prefix: &str,
     ) -> Result<ObjectListingPage> {
-        let query =
-            ObjectListQuery::new(prefix, name_prefix).map_err(DomainError::InvalidConfig)?;
-        let generation = self.advance_listing_generation(account_id, mount);
-        self.list_page(account_id, mount, &query, None, generation)
-            .await
+        let result = async {
+            let query =
+                ObjectListQuery::new(prefix, name_prefix).map_err(DomainError::InvalidConfig)?;
+            let generation = self.advance_listing_generation(account_id, mount);
+            self.list_page(account_id, mount, &query, None, generation)
+                .await
+        }
+        .await;
+        log_object_storage_error("object_storage_list_start", Some(account_id), &result);
+        result
     }
 
     pub async fn continue_listing(
@@ -51,16 +61,21 @@ impl ObjectStorageService {
         cursor: &ObjectListCursor,
         generation: u64,
     ) -> Result<ObjectListingPage> {
-        let current = self.current_listing_generation(account_id, mount);
-        if current != Some(generation) {
-            return Err(DomainError::InvalidConfig(
-                "对象列表上下文已变化，请重新加载".into(),
-            ));
+        let result = async {
+            let current = self.current_listing_generation(account_id, mount);
+            if current != Some(generation) {
+                return Err(DomainError::InvalidConfig(
+                    "对象列表上下文已变化，请重新加载".into(),
+                ));
+            }
+            let query =
+                ObjectListQuery::new(prefix, name_prefix).map_err(DomainError::InvalidConfig)?;
+            self.list_page(account_id, mount, &query, Some(cursor), generation)
+                .await
         }
-        let query =
-            ObjectListQuery::new(prefix, name_prefix).map_err(DomainError::InvalidConfig)?;
-        self.list_page(account_id, mount, &query, Some(cursor), generation)
-            .await
+        .await;
+        log_object_storage_error("object_storage_list_continue", Some(account_id), &result);
+        result
     }
 
     pub async fn stat_object(
@@ -69,11 +84,16 @@ impl ObjectStorageService {
         mount: &ObjectStorageMount,
         key: &str,
     ) -> Result<ObjectMetadata> {
-        let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
-        self.driver
-            .stat(&account.snapshot(), mount, key)
-            .await
-            .map_err(DomainError::from)
+        let result = async {
+            let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
+            self.driver
+                .stat(&account.snapshot(), mount, key)
+                .await
+                .map_err(DomainError::from)
+        }
+        .await;
+        log_object_storage_error("object_storage_object_stat", Some(account_id), &result);
+        result
     }
 
     pub async fn preview_text_object(
@@ -82,11 +102,16 @@ impl ObjectStorageService {
         mount: &ObjectStorageMount,
         key: &str,
     ) -> Result<ObjectTextPreview> {
-        let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
-        self.driver
-            .read_text_preview(&account.snapshot(), mount, key)
-            .await
-            .map_err(DomainError::from)
+        let result = async {
+            let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
+            self.driver
+                .read_text_preview(&account.snapshot(), mount, key)
+                .await
+                .map_err(DomainError::from)
+        }
+        .await;
+        log_object_storage_error("object_storage_object_preview", Some(account_id), &result);
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -105,12 +130,16 @@ impl ObjectStorageService {
             Ok(permit) => permit,
             Err(error) => {
                 self.unregister_transfer(account_id, transfer_id);
-                return Err(error);
+                let result: Result<()> = Err(error);
+                log_object_storage_error("object_storage_upload", Some(account_id), &result);
+                return result;
             }
         };
         if cancellation.is_cancelled() {
             self.unregister_transfer(account_id, transfer_id);
-            return Err(transfer_cancelled());
+            let result = Err(transfer_cancelled());
+            log_object_storage_error("object_storage_upload", Some(account_id), &result);
+            return result;
         }
         let result = async {
             let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
@@ -135,6 +164,7 @@ impl ObjectStorageService {
         }
         .await;
         self.unregister_transfer(account_id, transfer_id);
+        log_object_storage_error("object_storage_upload", Some(account_id), &result);
         result
     }
 
@@ -154,12 +184,16 @@ impl ObjectStorageService {
             Ok(permit) => permit,
             Err(error) => {
                 self.unregister_transfer(account_id, transfer_id);
-                return Err(error);
+                let result: Result<()> = Err(error);
+                log_object_storage_error("object_storage_download", Some(account_id), &result);
+                return result;
             }
         };
         if cancellation.is_cancelled() {
             self.unregister_transfer(account_id, transfer_id);
-            return Err(transfer_cancelled());
+            let result = Err(transfer_cancelled());
+            log_object_storage_error("object_storage_download", Some(account_id), &result);
+            return result;
         }
         let result = async {
             let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
@@ -181,6 +215,7 @@ impl ObjectStorageService {
         }
         .await;
         self.unregister_transfer(account_id, transfer_id);
+        log_object_storage_error("object_storage_download", Some(account_id), &result);
         result
     }
 
@@ -190,14 +225,19 @@ impl ObjectStorageService {
         mount: &ObjectStorageMount,
         key: &str,
     ) -> Result<()> {
-        let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
-        if account.read_only {
-            return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
+        let result = async {
+            let (account, _guard) = self.lock_account_for_mount(account_id, mount).await?;
+            if account.read_only {
+                return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
+            }
+            self.driver
+                .delete(&account.snapshot(), mount, key)
+                .await
+                .map_err(DomainError::from)
         }
-        self.driver
-            .delete(&account.snapshot(), mount, key)
-            .await
-            .map_err(DomainError::from)
+        .await;
+        log_object_storage_error("object_storage_object_delete", Some(account_id), &result);
+        result
     }
 
     async fn list_page(
@@ -230,7 +270,7 @@ impl ObjectStorageService {
             ));
         }
         let guard = self.account_gate(account_id).read_owned().await;
-        let account = self.get_account(account_id).await?;
+        let account = self.load_account(account_id).await?;
         Ok((account, guard))
     }
 

@@ -1,4 +1,4 @@
-//! RedisDriver。实现 KvDriver。每个方法：clone config + pool 句柄 → run_in_tokio → 取 mgr 发命令 → 解码 → 映射错
+//! Redis 驱动：校验参数后在专用 Tokio runtime 执行命令。
 
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt as _};
@@ -50,8 +50,7 @@ impl Default for RedisDriver {
     }
 }
 
-/// 生产（只读）模式下拦截写操作：命中即记日志并返回 Forbidden。
-/// `op` 标识被拦截的操作（DEL / TTL change / 具体命令名），用于日志定位。
+/// 生产模式下拦截写操作并记录操作名。
 fn ensure_writable(config: &ConnectionConfig, op: &str) -> Result<()> {
     if config.production {
         warn!(operation = op, connection = %config.name, "read-only write blocked");
@@ -143,7 +142,7 @@ impl KvDriver for RedisDriver {
             if let Some(p) = pattern.as_ref() {
                 cmd.arg("MATCH").arg(p);
             }
-            // COUNT 仅是 hint
+            // COUNT 仅为提示值。
             cmd.arg("COUNT").arg(count.max(1));
             if let Some(t) = type_filter {
                 cmd.arg("TYPE").arg(t.as_scan_arg());
@@ -476,9 +475,8 @@ impl KvDriver for RedisDriver {
     }
 
     fn evict_pool(&self, id: &ramag_domain::entities::ConnectionId) {
-        // 池按 (ConnectionId, db) 索引，需清空该连接所有 db
+        // 清理该连接所有 DB 的连接池和 SSH 隧道。
         self.pools.evict_all_dbs(id);
-        // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
         ramag_infra_tunnel::evict(id);
     }
 }
@@ -539,7 +537,7 @@ async fn run_info(mgr: &mut ConnectionManager, sections: &[&str]) -> Result<Stri
     }
 }
 
-/// 从 INFO server 文本提取 redis_version
+/// 从 INFO 提取 Redis 版本。
 fn parse_redis_version(info: &str) -> Result<String> {
     for line in info.lines() {
         if let Some(rest) = line.strip_prefix("redis_version:") {
@@ -563,6 +561,5 @@ fn validate_ttl_secs(ttl_secs: Option<i64>) -> Result<()> {
     Ok(())
 }
 
-/// 通用读取与详情页共用全局条目上限；累计内容仍受字节预算约束。
 #[cfg(test)]
 mod tests;

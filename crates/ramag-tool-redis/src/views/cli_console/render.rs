@@ -57,7 +57,7 @@ impl Render for CliConsole {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::trash())
-                    .tooltip("清空记录")
+                    .tooltip("清空")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             );
 
@@ -126,7 +126,7 @@ impl Render for CliConsole {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .tooltip("执行命令")
+                    .tooltip("执行")
                     .disabled(read_only_write || command_queue_full)
                     .when(read_only_write || command_queue_full, |button| {
                         button.tooltip(if read_only_write {

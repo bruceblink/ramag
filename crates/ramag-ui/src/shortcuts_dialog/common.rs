@@ -13,20 +13,20 @@ struct CommonInteraction {
 
 const COMMON_INTERACTIONS: &[CommonInteraction] = &[
     CommonInteraction {
-        label: "执行操作",
-        description: "打开、编辑或应用当前内容",
+        label: "操作",
+        description: "打开或处理当前内容",
         macos_gesture: "双击",
         other_gesture: "双击",
     },
     CommonInteraction {
-        label: "复制完整值",
-        description: "复制未截断的单元格或文件路径",
+        label: "复制",
+        description: "复制完整单元格或路径",
         macos_gesture: "⌘ + 双击",
         other_gesture: "Ctrl + 双击",
     },
     CommonInteraction {
-        label: "更多操作",
-        description: "打开操作菜单",
+        label: "更多",
+        description: "打开菜单",
         macos_gesture: "右键",
         other_gesture: "右键",
     },

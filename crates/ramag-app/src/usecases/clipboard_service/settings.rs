@@ -61,25 +61,46 @@ impl ClipboardService {
     }
 
     pub async fn save_settings(&self, settings: &ClipboardSettings) -> Result<()> {
-        let json = serialize_clipboard_settings(settings)?;
-        let _guard = self.settings_save_lock.lock().await;
-        // 先更新内存镜像（与 UI 乐观更新一致），热键循环最迟下一拍生效
-        let prev_enabled = self
-            .capture_enabled
-            .swap(settings.enabled, Ordering::Relaxed);
-        let prev_alternate = self
-            .alternate_hotkey
-            .swap(settings.alternate_hotkey, Ordering::Relaxed);
-        let prev_auto_paste = self.auto_paste.swap(settings.auto_paste, Ordering::Relaxed);
-        let result = self.storage.set_preference(SETTINGS_KEY, &json).await;
-        // 持久化失败回滚镜像：内存与落盘不一致会让「界面已关但仍在采集」类偏差跨拍存在
-        if result.is_err() {
-            self.capture_enabled.store(prev_enabled, Ordering::Relaxed);
-            self.alternate_hotkey
-                .store(prev_alternate, Ordering::Relaxed);
-            self.auto_paste.store(prev_auto_paste, Ordering::Relaxed);
-        } else {
-            self.cache_settings(settings);
+        let result = async {
+            let json = serialize_clipboard_settings(settings)?;
+            let _guard = self.settings_save_lock.lock().await;
+            // 先更新内存镜像（与 UI 乐观更新一致），热键循环最迟下一拍生效
+            let prev_enabled = self
+                .capture_enabled
+                .swap(settings.enabled, Ordering::Relaxed);
+            let prev_alternate = self
+                .alternate_hotkey
+                .swap(settings.alternate_hotkey, Ordering::Relaxed);
+            let prev_auto_paste = self.auto_paste.swap(settings.auto_paste, Ordering::Relaxed);
+            let result = self.storage.set_preference(SETTINGS_KEY, &json).await;
+            // 持久化失败回滚镜像：内存与落盘不一致会让「界面已关但仍在采集」类偏差跨拍存在
+            if result.is_err() {
+                self.capture_enabled.store(prev_enabled, Ordering::Relaxed);
+                self.alternate_hotkey
+                    .store(prev_alternate, Ordering::Relaxed);
+                self.auto_paste.store(prev_auto_paste, Ordering::Relaxed);
+            } else {
+                self.cache_settings(settings);
+            }
+            result
+        }
+        .await;
+        match &result {
+            Ok(()) => debug!(
+                operation = "clipboard_settings_save",
+                enabled = settings.enabled,
+                alternate_hotkey = settings.alternate_hotkey,
+                auto_paste = settings.auto_paste,
+                "clipboard settings saved"
+            ),
+            Err(error) => warn!(
+                operation = "clipboard_settings_save",
+                error = %error,
+                enabled = settings.enabled,
+                alternate_hotkey = settings.alternate_hotkey,
+                auto_paste = settings.auto_paste,
+                "save clipboard settings failed"
+            ),
         }
         result
     }

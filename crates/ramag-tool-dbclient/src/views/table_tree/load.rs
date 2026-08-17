@@ -454,13 +454,11 @@ impl TableTreePanel {
                         entry.error = Some(e.to_string());
                     }
                 }
-                match idx_res {
-                    Ok(ix) => entry.indexes = ix,
-                    Err(_) => {}
+                if let Ok(ix) = idx_res {
+                    entry.indexes = ix;
                 }
-                match fk_res {
-                    Ok(fk) => entry.foreign_keys = fk,
-                    Err(_) => {}
+                if let Ok(fk) = fk_res {
+                    entry.foreign_keys = fk;
                 }
                 this.invalidate_tree_rows();
                 cx.notify();

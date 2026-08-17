@@ -6,7 +6,7 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 
-use super::{MAX_TRANSFER_ERROR_BYTES, MAX_WORKSPACE_PREFERENCE_BYTES, TransferState};
+use super::{MAX_TRANSFER_ERROR_BYTES, TransferState, workspace::MAX_WORKSPACE_PREFERENCE_BYTES};
 
 pub(super) fn parse_workspace_preference(json: &str) -> Result<SshWorkspacePreference> {
     if json.len() > MAX_WORKSPACE_PREFERENCE_BYTES {

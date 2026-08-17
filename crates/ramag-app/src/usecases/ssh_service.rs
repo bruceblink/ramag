@@ -26,16 +26,10 @@ mod jumpserver;
 mod remote;
 mod settings;
 mod transfer_ops;
+mod workspace;
 
-use helpers::{
-    bounded_error, cancel_tasks, ensure_sftp_writable, normalized_workspace_preference,
-    parse_workspace_preference,
-};
+use helpers::{bounded_error, cancel_tasks, ensure_sftp_writable};
 
-const WORKSPACE_PREFERENCE_KEY: &str = "ssh_workspaces_v1";
-const MAX_WORKSPACE_PREFERENCE_BYTES: usize = 64 * 1024;
-const MAX_ENCRYPTED_WORKSPACE_PREFERENCE_BYTES: usize = MAX_WORKSPACE_PREFERENCE_BYTES * 2 + 1024;
-const ENCRYPTED_WORKSPACE_PREFIX: &str = "enc-v1:";
 const MAX_TRANSFER_ERROR_BYTES: usize = 16 * 1024;
 const TRANSFER_STOP_GRACE: Duration = Duration::from_secs(5);
 const TRANSFER_STOP_POLL: Duration = Duration::from_millis(25);
@@ -205,12 +199,37 @@ impl SshService {
     }
 
     pub async fn list_profiles(&self) -> Result<Vec<SshProfile>> {
-        self.ensure_module_settings_loaded().await?;
-        self.storage.list_ssh_profiles().await
+        let result = async {
+            self.ensure_module_settings_loaded().await?;
+            self.storage.list_ssh_profiles().await
+        }
+        .await;
+        match &result {
+            Ok(profiles) => tracing::debug!(
+                operation = "ssh_profile_list",
+                count = profiles.len(),
+                "ssh profiles listed"
+            ),
+            Err(error) => tracing::warn!(
+                operation = "ssh_profile_list",
+                error = %error,
+                "list ssh profiles failed"
+            ),
+        }
+        result
     }
 
     pub async fn get_profile(&self, id: &SshProfileId) -> Result<Option<SshProfile>> {
-        self.storage.get_ssh_profile(id).await
+        let result = self.storage.get_ssh_profile(id).await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "ssh_profile_get",
+                error = %error,
+                profile_id = %id,
+                "get ssh profile failed"
+            );
+        }
+        result
     }
 
     pub async fn save_profile(&self, profile: &SshProfile) -> Result<()> {
@@ -307,69 +326,6 @@ impl SshService {
             "ssh profile deleted"
         );
         Ok(())
-    }
-
-    pub async fn load_workspace_preference(&self) -> Result<SshWorkspacePreference> {
-        let Some(stored) = self
-            .storage
-            .get_preference(WORKSPACE_PREFERENCE_KEY)
-            .await?
-        else {
-            return Ok(SshWorkspacePreference::default());
-        };
-        if stored.len() > MAX_ENCRYPTED_WORKSPACE_PREFERENCE_BYTES {
-            return Err(DomainError::InvalidConfig("SSH 工作区恢复数据过大".into()));
-        }
-        let json = if let Some(encoded) = stored.strip_prefix(ENCRYPTED_WORKSPACE_PREFIX) {
-            let encrypted = hex::decode(encoded).map_err(|error| {
-                DomainError::Storage(format!("SSH 工作区密文编码无效：{error}"))
-            })?;
-            let plain = self.storage.unseal(&encrypted).await?;
-            String::from_utf8(plain).map_err(|error| {
-                DomainError::Storage(format!("SSH 工作区解密结果不是 UTF-8：{error}"))
-            })?
-        } else {
-            // 兼容短期开发版本写入的明文偏好；下次保存会自动迁移为密文。
-            stored
-        };
-        parse_workspace_preference(&json)
-    }
-
-    pub async fn save_workspace_preference(
-        &self,
-        preference: &SshWorkspacePreference,
-    ) -> Result<()> {
-        let preference = normalized_workspace_preference(preference.clone())?;
-        let json = serde_json::to_string(&preference)
-            .map_err(|error| DomainError::Storage(format!("序列化 SSH 工作区失败：{error}")))?;
-        if json.len() > MAX_WORKSPACE_PREFERENCE_BYTES {
-            return Err(DomainError::InvalidConfig("SSH 工作区恢复数据过大".into()));
-        }
-        let encrypted = self.storage.seal(json.as_bytes()).await?;
-        let stored = format!("{ENCRYPTED_WORKSPACE_PREFIX}{}", hex::encode(encrypted));
-        if stored.len() > MAX_ENCRYPTED_WORKSPACE_PREFERENCE_BYTES {
-            return Err(DomainError::InvalidConfig(
-                "加密后的 SSH 工作区恢复数据过大".into(),
-            ));
-        }
-        let result = self
-            .storage
-            .set_preference(WORKSPACE_PREFERENCE_KEY, &stored)
-            .await;
-        match &result {
-            Ok(()) => tracing::debug!(
-                operation = "ssh_workspace_preference_save",
-                workspaces = preference.workspaces.len(),
-                favorites = preference.path_favorites.len(),
-                "ssh workspace preference saved"
-            ),
-            Err(error) => tracing::warn!(
-                operation = "ssh_workspace_preference_save",
-                error = %error,
-                "save ssh workspace preference failed"
-            ),
-        }
-        result
     }
 
     fn cancel_profile_transfers(&self, profile_id: &SshProfileId) {

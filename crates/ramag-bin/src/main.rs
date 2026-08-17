@@ -105,74 +105,6 @@ fn open_path_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-/// 主窗口重建时复用的依赖。
-#[derive(Clone)]
-struct AppDeps {
-    registry: Arc<ToolRegistry>,
-    conn_service: Arc<ConnectionService>,
-    redis_service: Arc<RedisService>,
-    mongo_service: Arc<MongoService>,
-    data_sync_service: Arc<DataSyncService>,
-    data_sync_gate: Arc<DataSyncGate>,
-    clipboard_service: Option<Arc<ClipboardService>>,
-    ssh_service: Arc<SshService>,
-    object_storage_service: Arc<ObjectStorageService>,
-    update_service: Option<Arc<UpdateService>>,
-    storage: Arc<dyn Storage>,
-}
-
-/// 托盘和单实例激活优先复用此窗口。
-struct MainWindowGlobal(gpui::AnyWindowHandle);
-
-impl gpui::Global for MainWindowGlobal {}
-
-/// `open_window` 在异步任务中完成；句柄写入全局前，重复唤起必须被合并。
-#[derive(Default)]
-struct MainWindowOpenGate {
-    opening: bool,
-}
-
-impl gpui::Global for MainWindowOpenGate {}
-
-impl MainWindowOpenGate {
-    fn try_begin(&mut self) -> bool {
-        if self.opening {
-            return false;
-        }
-        self.opening = true;
-        true
-    }
-
-    fn finish(&mut self) {
-        self.opening = false;
-    }
-}
-
-fn begin_main_window_open(cx: &mut App) -> bool {
-    if !cx.has_global::<MainWindowOpenGate>() {
-        cx.set_global(MainWindowOpenGate::default());
-    }
-    cx.global_mut::<MainWindowOpenGate>().try_begin()
-}
-
-fn finish_main_window_open(cx: &mut App) {
-    if cx.has_global::<MainWindowOpenGate>() {
-        cx.global_mut::<MainWindowOpenGate>().finish();
-    }
-}
-
-fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
-    cx.activate(true);
-    if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|g| g.0)
-        && handle
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-    {
-        return;
-    }
-    open_main_window(deps.clone(), cx);
-}
-
 fn main() {
     if let Some(exit_code) = ramag_infra_ssh::run_askpass_helper(confirm_ssh_host) {
         std::process::exit(exit_code);
@@ -199,8 +131,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    // 单实例：已有实例在跑则通知其唤起主窗口后静默退出（避免 redb 文件锁报错）；
-    // macOS 由系统 LaunchServices 保证 .app 单实例，无需自建
+    // 单实例：通知已有进程唤起主窗口后退出，避免 redb 锁冲突；macOS 由 LaunchServices 保证。
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let instance_guard = match single_instance::acquire() {
         single_instance::InstanceRole::Secondary => {
@@ -262,7 +193,7 @@ fn main() {
     };
     let update_service = build_update_service(storage.clone());
 
-    // 主题偏好。"dark" 用暗色，其余（含旧版 "system" 残值）默认浅色
+    // dark 使用深色主题；其余值（含旧 system）使用浅色主题。
     let startup_preferences = read_preferences(
         &storage,
         &[
@@ -283,7 +214,7 @@ fn main() {
         .get(ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY)
         .cloned();
 
-    // 剪贴板总开关决定工具入口可见性；启动同步读取，避免「恢复上次工具」误入已隐藏的剪贴板
+    // 启动时同步读取剪贴板开关，避免恢复到已隐藏的工具。
     let registry = build_tool_registry();
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -328,7 +259,7 @@ fn main() {
 
     let app = gpui_platform::application().with_assets(RamagAssets);
 
-    // on_reopen 必须在 app.run 之前注册（属 Application）。仅当无活窗口时重开主窗口，避免 dock 叠加
+    // 必须在 app.run 前注册；仅在无窗口时重新打开主窗口。
     let deps_for_reopen = deps.clone();
     app.on_reopen(move |cx: &mut App| {
         if cx.windows().is_empty() {
@@ -358,7 +289,7 @@ fn main() {
             }
         });
 
-        // 退出时关闭 SSH 与对象存储运行时，避免残留后台任务。
+        // 退出时关闭运行时，避免后台任务残留。
         let ssh_service_for_quit = deps.ssh_service.clone();
         let object_storage_for_quit = deps.object_storage_service.clone();
         cx.on_app_quit(move |_| {
@@ -376,9 +307,8 @@ fn main() {
         })
         .detach();
 
-        // Windows：托盘常驻——关窗后采集继续，托盘可唤回/退出；
-        // 托盘安装失败则回退「关最后窗口即退出」，避免无处唤回的无形后台进程。
-        // macOS 保留「关窗不退出」+ dock on_reopen，无需此回调
+        // Windows 由托盘维持后台运行；安装失败时关闭最后窗口即退出。
+        // macOS 依靠 dock 的 on_reopen，无需此回调。
         #[cfg(target_os = "windows")]
         {
             let tray = std::rc::Rc::new(std::cell::RefCell::new(tray::TrayIcon::install()));
@@ -388,7 +318,7 @@ fn main() {
             } else {
                 warn!(operation = "tray_install", reason = "unavailable", "tray unavailable; app quits when the last window closes");
             }
-            // 任何退出路径（cmd-Q / 托盘退出）先删托盘图标，避免任务栏残影
+            // 退出前移除托盘图标，避免任务栏残影。
             cx.on_app_quit(move |_| {
                 let tray = tray.borrow_mut().take();
                 async move {
@@ -402,11 +332,11 @@ fn main() {
                 }
             })
             .detach();
-            // 双开的后启实例经命名事件请求唤起
+            // 次实例通过命名事件请求唤起。
             spawn_instance_activation(instance_guard, deps.clone(), cx);
         }
 
-        // Linux 无后台常驻功能：关闭最后一个窗口即退出；重复启动会唤起已有实例。
+        // Linux 关闭最后窗口即退出；重复启动会唤起已有实例。
         #[cfg(target_os = "linux")]
         {
             cx.on_window_closed(|cx, _window_id| {
@@ -418,9 +348,8 @@ fn main() {
             spawn_instance_activation(instance_guard, deps.clone(), cx);
         }
 
-        // 主修饰键+W 全局 fallback：视图层先消费（关 tab），没消费就关窗。
-        // 关窗须 defer：此刻正处在该窗口的按键分发栈内（window 已被 take 出），
-        // 直接 handle.update 会重入 take 失败而静默不关；defer 到本次分发结束后再移除
+        // 视图未消费 Cmd/Ctrl+W 时，才关闭非主窗口。
+        // 必须延后关闭：按键分发期间窗口已被取出，直接更新会重入失败。
         cx.on_action(|_: &CloseTab, cx: &mut App| {
             let Some(handle) = cx
                 .active_window()
@@ -428,9 +357,7 @@ fn main() {
             else {
                 return;
             };
-            // 主窗口不因 cmd-w 关闭（IDEA 语义）：视图层有 tab 可关时已消费不冒泡，
-            // 无 tab 可关时不退出，避免误关主窗丢弃会话和查询稿。
-            // 主窗关闭走 cmd-q 或系统关闭按钮；非主窗（抽屉等浮层）照常关闭
+            // 主窗口保留；无标签可关闭时不退出，避免丢失会话和查询稿。
             if cx
                 .try_global::<MainWindowGlobal>()
                 .is_some_and(|g| g.0 == handle)
@@ -559,7 +486,7 @@ fn spawn_update_checks(service: Arc<UpdateService>, cx: &mut App) {
             .timer(INITIAL_UPDATE_CHECK_DELAY)
             .await;
         loop {
-            // 每次启动和每个周期都访问远端，避免跨进程缓存延迟新版本提示。
+            // 每次检查都访问远端，避免缓存延迟新版本提示。
             let result = service.check(true).await;
             cx.update(|cx| match result {
                 Ok(result) => sync_update_indicator(&result, cx),

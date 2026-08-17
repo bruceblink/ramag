@@ -1,6 +1,4 @@
-//! 查询历史弹框内容：当前连接的最近查询记录（最近优先，最多 200 条）。
-//! 行操作：复制 SQL / 填入编辑器（不自动执行）；入口在 QueryPanel 工具条，
-//! 由 QueryPanel 经 `window.open_dialog` 装载本视图并订阅 `HistoryEvent`
+//! SQL 查询历史弹框。
 
 mod filter;
 
@@ -15,7 +13,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    h_flex, input::InputEvent, notification::Notification, v_flex,
+    h_flex, input::InputEvent, v_flex,
 };
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConnectionId, QueryRecord, QueryStatus, compact_text_preview};
@@ -306,10 +304,7 @@ impl HistoryList {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     rec_for_copy.sql.clone(),
                                 ));
-                                window.push_notification(
-                                    Notification::success("已复制 SQL").autohide(true),
-                                    cx,
-                                );
+                                window.push_notification(ramag_ui::copy_success_notification(), cx);
                             })),
                     )
                     .child(

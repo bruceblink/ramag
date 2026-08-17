@@ -99,7 +99,7 @@ impl JumpServerPanel {
                             ramag_ui::clickable_button("new-jumpserver-connection-button")
                                 .small()
                                 .icon(IconName::Plus)
-                                .label("新建连接")
+                                .label("新建")
                                 .disabled(busy)
                                 .when(self.selected_connection_id.is_none(), |button| {
                                     button.primary()

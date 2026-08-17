@@ -1,4 +1,4 @@
-//! Redis Session 9 个 open_*_dialog + 破坏性操作二次确认
+//! Redis 编辑弹窗与危险操作确认。
 
 use std::rc::Rc;
 
@@ -21,8 +21,7 @@ use crate::views::zset_element_form::{ZSetElementForm, ZSetElementFormEvent, ZSe
 pub(super) type ConfirmCallback = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 impl RedisSessionPanel {
-    /// 弹窗保存后：仅当主区当前 key 与弹窗目标 key 一致时才刷新；
-    /// 用户在弹窗期间切了别的 key 则跳过（已经看不到了）
+    /// 仅刷新仍在查看的 Key。
     pub(super) fn reload_detail_if_key(&mut self, key: &str, cx: &mut Context<Self>) {
         let matches = self
             .detail

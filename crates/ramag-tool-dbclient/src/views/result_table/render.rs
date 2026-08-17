@@ -383,7 +383,7 @@ pub(in crate::views) fn render_table(
                     .ghost()
                     .small()
                     .label("下页")
-                    .tooltip("下一页；未写 ORDER BY 时数据库不保证分页顺序")
+                    .tooltip("无排序时顺序不固定")
                     .disabled(!pagination.has_more)
                     .on_click(move |_, _, app| {
                         panel_for_next.update(app, |_, cx| {

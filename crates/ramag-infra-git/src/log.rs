@@ -96,9 +96,8 @@ pub(crate) fn run_log_paged(
     let mut current = slot.lock();
     if opts.skip == 0 {
         current.take();
-        let mut pager = LogPager::spawn(repo_path, opts, key).map_err(|error| {
-            log_page_error(repo_path, opts, &error);
-            error
+        let mut pager = LogPager::spawn(repo_path, opts, key).inspect_err(|error| {
+            log_page_error(repo_path, opts, error);
         })?;
         let result = pager.read_page(limit);
         return match result {

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Task, Window, div,
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
+    Task, Window, div,
 };
 use gpui_component::{
     WindowExt as _, h_flex,
@@ -70,12 +71,12 @@ impl SettingsPage {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Database => "管理数据库连接配置与搜索行为。",
-            Self::VersionControl => "管理 Git 版本控制的模块级配置。",
-            Self::Ssh => "管理 SSH 与 SFTP 配置。",
-            Self::ObjectStorage => "管理云对象存储账号、Bucket 与访问模式。",
+            Self::Database => "配置连接与搜索行为。",
+            Self::VersionControl => "配置 Git 行为。",
+            Self::Ssh => "配置 SSH 与 SFTP。",
+            Self::ObjectStorage => "配置账号、Bucket 与访问模式。",
             Self::Update => "查看版本信息与可用更新。",
-            Self::Clipboard => "管理剪贴板的启用状态、采集行为、全局热键与历史数据。",
+            Self::Clipboard => "配置采集、热键与历史记录。",
         }
     }
 
@@ -142,6 +143,7 @@ pub struct SettingsView {
     picking_id_converter: bool,
     database_transferring: bool,
     pending_notification: Option<Notification>,
+    _update_indicator_subscription: Subscription,
 }
 
 impl SettingsView {
@@ -153,6 +155,8 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let update_indicator_subscription =
+            cx.observe_global::<crate::activity_bar::UpdateIndicatorGlobal>(|_, cx| cx.notify());
         let (clipboard, loaded_revision) = clipboard_service
             .as_ref()
             .map(|service| service.settings_snapshot_with_revision())
@@ -297,6 +301,7 @@ impl SettingsView {
             picking_id_converter: false,
             database_transferring: false,
             pending_notification: None,
+            _update_indicator_subscription: update_indicator_subscription,
         }
     }
 

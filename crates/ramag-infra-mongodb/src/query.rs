@@ -1,5 +1,4 @@
-//! 查询与写操作：find / count / aggregate / insert_one / update_one / delete_one / run_command / ping。
-//! 全部走最小 API；options 通过 builder 链式装载
+//! MongoDB 查询和写操作。
 
 use std::time::Instant;
 
@@ -17,7 +16,7 @@ use serde_json::Value;
 use crate::errors::map_mongo_error;
 use crate::types::{document_to_json, json_to_document};
 
-/// `ping` 命令，仅用于 test_connection
+/// 用于连接测试的 `ping`。
 pub async fn ping(client: &Client) -> Result<()> {
     client
         .database("admin")
@@ -179,11 +178,10 @@ pub async fn insert_one(
     Ok(format_bson_id(&r.inserted_id))
 }
 
-/// MongoDB duplicate key 错误码（E11000）
+/// E11000 重复键错误码。
 const DUPLICATE_KEY_CODE: i32 = 11000;
 
-/// 批量插入。`skip_duplicates=true` 走无序批量：重复 `_id`（E11000）不算错误只计数；
-/// 其余 write error / write concern error 照常报错。false 走有序批量，任何错误即失败
+/// 批量插入；跳过重复时只忽略 E11000。
 pub async fn insert_many(
     client: &Client,
     db: &str,
@@ -222,7 +220,7 @@ pub async fn insert_many(
     }
 }
 
-/// 错误若纯由重复 `_id` 组成则返回重复条数，否则 None（按真错误上抛）
+/// 仅重复 `_id` 时返回重复数量。
 fn duplicates_only(error: &mongodb::error::Error) -> Option<u64> {
     let mongodb::error::ErrorKind::InsertMany(bulk) = error.kind.as_ref() else {
         return None;
@@ -241,7 +239,7 @@ fn duplicates_only(error: &mongodb::error::Error) -> Option<u64> {
     Some(write_errors.len() as u64)
 }
 
-/// 只把 `_id_` 索引冲突当作同步竞态跳过；其它唯一索引冲突必须显式失败。
+/// 仅忽略 `_id_` 索引冲突。
 fn duplicate_message_is_id_index(message: &str) -> bool {
     message.contains("index: _id_") || message.contains(".$_id_ dup key")
 }
@@ -271,8 +269,7 @@ pub async fn update_one(
         "document update completed"
     );
     let elapsed_ms = start.elapsed().as_millis() as u64;
-    // affected 取 matched_count（定位到的文档数）而非 modified_count：改成与原值相同时
-    // modified=0，用 matched 才能正确反映「已定位」，避免上层把「值未变」误报成「未匹配」
+    // 使用 matched_count，原值相同也算命中。
     Ok(MongoQueryResult::write(
         r.matched_count,
         elapsed_ms,
@@ -302,11 +299,7 @@ pub async fn delete_one(
     ))
 }
 
-/// 兜底任意命令。例：`dbStats` / `serverStatus` / `createIndexes`。
-/// 游标类命令（find / aggregate / listCollections / listIndexes）改走驱动游标
-/// (`run_cursor_command`)：由驱动正确处理 getMore + 连接钉定。此前用独立 run_command 手动发
-/// getMore 不钉连接，对需要多批次的结果（单条文档较大、一个 16MB batch 装不下，几十条也会触发）
-/// 会卡死/超时——这正是某些集合在本工具打不开、在别的客户端却正常的根因
+/// 执行任意命令；游标类命令改走驱动游标，避免 getMore 使用错误连接。
 pub async fn run_command(
     client: &Client,
     db: &str,
@@ -325,8 +318,7 @@ pub async fn run_command(
     Ok(document_to_json(raw))
 }
 
-/// serde_json 未启用 preserve_order，转 BSON 后字段按字典序；MongoDB 协议却要求命令名为
-/// 第一字段。把本项目支持的命令名提升到首位，避免带 `filter` / `indexes` 时被误识别。
+/// 将支持的命令名置于首字段，满足 MongoDB 协议。
 fn promote_known_command(mut command: Document) -> Document {
     const COMMAND_NAMES: &[&str] = &[
         "aggregate",
@@ -364,15 +356,14 @@ fn promote_known_command(mut command: Document) -> Document {
     ordered
 }
 
-/// 命令是否返回游标（含这些命令名时需用游标抽取完整结果）
+/// 是否应通过驱动游标执行。
 fn is_cursor_command(cmd: &Document) -> bool {
     ["find", "aggregate", "listCollections", "listIndexes"]
         .iter()
         .any(|k| cmd.contains_key(*k))
 }
 
-/// 用驱动游标执行命令并收集结果（受统一安全上限保护），
-/// 包成 `cursor.firstBatch` 形态供上层 `parse_run_command_response` 解析
+/// 通过驱动游标收集受上限保护的结果。
 async fn collect_cursor_command(client: &Client, db: &str, cmd: Document) -> Result<MongoDocument> {
     let mut cursor = client
         .database(db)
@@ -392,7 +383,7 @@ async fn collect_cursor_command(client: &Client, db: &str, cmd: Document) -> Res
         docs.push(document);
     }
     warn_if_truncated(truncated, &budget, "runCommand");
-    // 内部标记：截断信息随 firstBatch 一起上传，parse_run_command_response 提取后剔除
+    // 截断信息随 firstBatch 返回，供上层提取。
     Ok(serde_json::json!({
         "cursor": { "firstBatch": docs, "id": 0 },
         "__ramag_truncated": truncated,
@@ -453,7 +444,7 @@ struct ResultBudget {
 }
 
 impl ResultBudget {
-    /// 返回 `false` 表示当前文档超限；仅在读到额外文档时标记截断。
+    /// 当前文档超限时返回 `false`。
     fn try_reserve(&mut self, bytes: usize, max_bytes: usize) -> bool {
         let Some(total_bytes) = self.retained_bytes.checked_add(bytes) else {
             return false;
@@ -503,7 +494,7 @@ fn warn_if_truncated(truncated: bool, budget: &ResultBudget, operation: &'static
     );
 }
 
-/// insertedId 是 Bson，常见 ObjectId / String / Int64；统一转可读字符串
+/// 将常见 `_id` 转为可读字符串。
 fn format_bson_id(b: &Bson) -> String {
     let v: Value = b.clone().into_relaxed_extjson();
     match &v {

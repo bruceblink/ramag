@@ -2,22 +2,34 @@
 
 mod files;
 mod terminal;
+mod write_ops;
 use super::*;
 
 impl SshService {
     pub async fn probe(&self, custom_path: Option<&str>) -> Result<SshCapability> {
-        self.driver.probe(custom_path).await
+        let result = self.driver.probe(custom_path).await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "ssh_client_probe",
+                error = %error,
+                custom_path_configured = custom_path.is_some(),
+                "probe ssh client failed"
+            );
+        }
+        result
     }
 
     pub async fn test_connection(&self, profile: &SshProfile) -> Result<SshRemoteCapabilities> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        self.ensure_module_settings_loaded().await?;
-        let effective_profile = self.apply_module_settings(profile);
         let started = std::time::Instant::now();
-        let result = self
-            .driver
-            .probe_remote_capabilities(&effective_profile)
-            .await;
+        let result = async {
+            profile.validate().map_err(DomainError::InvalidConfig)?;
+            self.ensure_module_settings_loaded().await?;
+            let effective_profile = self.apply_module_settings(profile);
+            self.driver
+                .probe_remote_capabilities(&effective_profile)
+                .await
+        }
+        .await;
         match &result {
             Ok(capabilities) => {
                 tracing::info!(
@@ -152,14 +164,26 @@ impl SshService {
     }
 
     pub(super) async fn current_profile(&self, profile_id: &SshProfileId) -> Result<SshProfile> {
-        self.ensure_module_settings_loaded().await?;
-        let profile = self
-            .storage
-            .get_ssh_profile(profile_id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound("SSH 配置已删除".into()))?;
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        Ok(self.apply_module_settings(&profile))
+        let result = async {
+            self.ensure_module_settings_loaded().await?;
+            let profile = self
+                .storage
+                .get_ssh_profile(profile_id)
+                .await?
+                .ok_or_else(|| DomainError::NotFound("SSH 配置已删除".into()))?;
+            profile.validate().map_err(DomainError::InvalidConfig)?;
+            Ok(self.apply_module_settings(&profile))
+        }
+        .await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "ssh_profile_load",
+                error = %error,
+                profile_id = %profile_id,
+                "load ssh profile failed"
+            );
+        }
+        result
     }
 
     pub(super) async fn capabilities_for_profile(
@@ -173,7 +197,18 @@ impl SshService {
         {
             return Ok(cached.capabilities.clone());
         }
-        let mut capabilities = self.driver.probe_remote_capabilities(profile).await?;
+        let mut capabilities = match self.driver.probe_remote_capabilities(profile).await {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                tracing::warn!(
+                    operation = "ssh_capabilities_probe",
+                    error = %error,
+                    profile_id = %profile.id,
+                    "probe ssh remote capabilities failed"
+                );
+                return Err(error);
+            }
+        };
         if let Some(cached) = self.remote_capabilities.lock().get(&profile.id)
             && cached.profile == *profile
         {
@@ -219,117 +254,6 @@ impl SshService {
                 || profile.clone(),
                 |cached| profile_for_capabilities(profile, &cached.capabilities),
             )
-    }
-
-    /// 首次打开工作区只走 SFTP 列目录，不等待平台和终端能力探测。
-    pub async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()> {
-        let profile = self.current_profile(&profile.id).await?;
-        ensure_sftp_writable(&profile)?;
-        let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        let path = resolved_new_remote_path(&capabilities, path)?;
-        let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        let result = self
-            .driver
-            .create_directory(&effective_profile, &path)
-            .await;
-        match &result {
-            Ok(()) => {
-                tracing::info!(
-                    operation = "ssh_directory_create",
-                    profile_id = %profile.id,
-                    path = ?path,
-                    "ssh directory created"
-                )
-            }
-            Err(error) => {
-                tracing::warn!(
-                    operation = "ssh_directory_create",
-                    error = %error,
-                    profile_id = %profile.id,
-                    path = ?path,
-                    "create ssh directory failed"
-                )
-            }
-        }
-        result
-    }
-
-    pub async fn rename(&self, profile: &SshProfile, old_path: &str, new_path: &str) -> Result<()> {
-        let profile = self.current_profile(&profile.id).await?;
-        ensure_sftp_writable(&profile)?;
-        let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities)?;
-        validate_remote_path(old_path).map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(new_path).map_err(DomainError::InvalidConfig)?;
-        let old_path = resolved_remote_path(&capabilities, old_path)?;
-        let new_path = resolved_new_remote_path(&capabilities, new_path)?;
-        let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        let result = self
-            .driver
-            .rename(&effective_profile, &old_path, &new_path)
-            .await;
-        match &result {
-            Ok(()) => {
-                tracing::info!(
-                    operation = "ssh_path_rename",
-                    profile_id = %profile.id,
-                    old_path = ?old_path,
-                    new_path = ?new_path,
-                    "ssh path renamed"
-                )
-            }
-            Err(error) => {
-                tracing::warn!(
-                    operation = "ssh_path_rename",
-                    error = %error,
-                    profile_id = %profile.id,
-                    old_path = ?old_path,
-                    new_path = ?new_path,
-                    "rename ssh path failed"
-                )
-            }
-        }
-        result
-    }
-
-    pub async fn remove(
-        &self,
-        profile: &SshProfile,
-        path: &str,
-        kind: RemoteEntryKind,
-    ) -> Result<()> {
-        let profile = self.current_profile(&profile.id).await?;
-        ensure_sftp_writable(&profile)?;
-        let capabilities = self.capabilities_for_profile(&profile, false).await?;
-        ensure_remote_write_platform(&profile, &capabilities)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        let path = resolved_remote_path(&capabilities, path)?;
-        let effective_profile = profile_for_capabilities(&profile, &capabilities);
-        let result = self.driver.remove(&effective_profile, &path, kind).await;
-        match &result {
-            Ok(()) => {
-                tracing::info!(
-                    operation = "ssh_remote_remove",
-                    profile_id = %profile.id,
-                    path = ?path,
-                    kind = ?kind,
-                    "ssh remote entry removed"
-                )
-            }
-            Err(error) => {
-                tracing::warn!(
-                    operation = "ssh_remote_remove",
-                    error = %error,
-                    profile_id = %profile.id,
-                    path = ?path,
-                    kind = ?kind,
-                    "remove ssh remote entry failed"
-                )
-            }
-        }
-        result
     }
 }
 

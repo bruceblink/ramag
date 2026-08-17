@@ -82,9 +82,10 @@ impl VcsView {
             div()
                 .id("vcs-markdown-preview")
                 .size_full()
-                .overflow_y_scroll()
                 .p(px(20.0))
-                .child(text::markdown(snapshot.text.as_str().to_string()).selectable(true))
+                // 让 TextView 自己使用 ListState 滚动，只布局可视区域，避免长文滚动时
+                // 每一帧都重新处理整篇 Markdown。预览区通过顶部复制按钮复制全文。
+                .child(text::markdown(snapshot.text.as_str().to_string()).scrollable(true))
                 .into_any_element()
         } else if editor_ready {
             Input::new(&self.pf_editor)

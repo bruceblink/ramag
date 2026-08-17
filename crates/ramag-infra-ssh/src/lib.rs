@@ -7,6 +7,7 @@ mod driver;
 mod jumpserver;
 mod runtime;
 mod session;
+mod sftp_ops;
 mod support;
 mod transfer;
 
@@ -310,23 +311,7 @@ impl SshDriver for OpenSshDriver {
     }
 
     async fn list_directory(&self, profile: &SshProfile, path: &str) -> Result<RemoteDirectory> {
-        profile.validate().map_err(DomainError::InvalidConfig)?;
-        validate_remote_path(path).map_err(DomainError::InvalidConfig)?;
-        let profile = profile.clone();
-        let path = path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        run_in_tokio(async move {
-            let first = list_once(&locator, &sessions, &profile, &path).await;
-            if uses_windows_remote_sftp(&profile)
-                || !matches!(first, Err(DomainError::ConnectionFailed(_)))
-            {
-                return first;
-            }
-            sessions.invalidate(&profile.id).await;
-            list_once(&locator, &sessions, &profile, &path).await
-        })
-        .await
+        sftp_ops::list_directory(self, profile, path).await
     }
 
     async fn read_file_preview(
@@ -334,21 +319,7 @@ impl SshDriver for OpenSshDriver {
         profile: &SshProfile,
         path: &str,
     ) -> Result<RemoteFilePreview> {
-        validate_profile_and_path(profile, path)?;
-        let profile = profile.clone();
-        let path = path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_file_preview",
-                session::read_file_preview(&connection.session, &path).await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
-        .await
+        sftp_ops::read_file_preview(self, profile, path).await
     }
 
     async fn read_file_chunk(
@@ -357,21 +328,7 @@ impl SshDriver for OpenSshDriver {
         path: &str,
         position: RemoteFileChunkPosition,
     ) -> Result<RemoteFileChunk> {
-        validate_profile_and_path(profile, path)?;
-        let profile = profile.clone();
-        let path = path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_file_chunk",
-                session::read_file_chunk(&connection.session, &path, position).await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
-        .await
+        sftp_ops::read_file_chunk(self, profile, path, position).await
     }
 
     async fn save_file(
@@ -381,82 +338,19 @@ impl SshDriver for OpenSshDriver {
         expected: &[u8],
         contents: &[u8],
     ) -> Result<()> {
-        validate_writable_profile_and_path(profile, path)?;
-        let profile = profile.clone();
-        let path = path.to_string();
-        let expected = expected.to_vec();
-        let contents = contents.to_vec();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        let transfers = self.transfers.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_file_save",
-                transfers
-                    .save_file(connection.session.clone(), path, expected, contents)
-                    .await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
-        .await
+        sftp_ops::save_file(self, profile, path, expected, contents).await
     }
 
     async fn create_directory(&self, profile: &SshProfile, path: &str) -> Result<()> {
-        validate_writable_profile_and_path(profile, path)?;
-        let profile = profile.clone();
-        let path = path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_directory_create",
-                session::create_directory(&connection.session, &path).await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
-        .await
+        sftp_ops::create_directory(self, profile, path).await
     }
 
     async fn rename(&self, profile: &SshProfile, old_path: &str, new_path: &str) -> Result<()> {
-        validate_writable_profile_and_path(profile, old_path)?;
-        validate_remote_path(new_path).map_err(DomainError::InvalidConfig)?;
-        let profile = profile.clone();
-        let old_path = old_path.to_string();
-        let new_path = new_path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_entry_rename",
-                session::rename(&connection.session, &old_path, &new_path).await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
-        .await
+        sftp_ops::rename(self, profile, old_path, new_path).await
     }
 
     async fn remove(&self, profile: &SshProfile, path: &str, kind: RemoteEntryKind) -> Result<()> {
-        validate_writable_profile_and_path(profile, path)?;
-        let profile = profile.clone();
-        let path = path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_entry_remove",
-                session::remove(&connection.session, &path, kind).await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
-        .await
+        sftp_ops::remove(self, profile, path, kind).await
     }
 
     async fn upload(
@@ -468,31 +362,15 @@ impl SshDriver for OpenSshDriver {
         cancellation: TransferCancellation,
         progress: SshProgressFn,
     ) -> Result<()> {
-        validate_writable_profile_and_path(profile, remote_path)?;
-        let profile = profile.clone();
-        let local_path = local_path.to_path_buf();
-        let remote_path = remote_path.to_string();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        let transfers = self.transfers.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_upload",
-                transfers
-                    .upload(
-                        connection.session.clone(),
-                        local_path,
-                        remote_path,
-                        overwrite,
-                        cancellation,
-                        progress,
-                    )
-                    .await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
+        sftp_ops::upload(
+            self,
+            profile,
+            local_path,
+            remote_path,
+            overwrite,
+            cancellation,
+            progress,
+        )
         .await
     }
 
@@ -505,32 +383,15 @@ impl SshDriver for OpenSshDriver {
         cancellation: TransferCancellation,
         progress: SshProgressFn,
     ) -> Result<()> {
-        validate_profile_and_path(profile, remote_path)?;
-        let profile = profile.clone();
-        let remote_path = remote_path.to_string();
-        let local_path = local_path.to_path_buf();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        let transfers = self.transfers.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_download",
-                transfers
-                    .download(
-                        connection.session.clone(),
-                        remote_path,
-                        local_path,
-                        overwrite,
-                        cancellation,
-                        progress,
-                        profile.production,
-                    )
-                    .await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
+        sftp_ops::download(
+            self,
+            profile,
+            remote_path,
+            local_path,
+            overwrite,
+            cancellation,
+            progress,
+        )
         .await
     }
 
@@ -543,32 +404,15 @@ impl SshDriver for OpenSshDriver {
         cancellation: TransferCancellation,
         progress: SshProgressFn,
     ) -> Result<()> {
-        validate_profile_and_path(profile, remote_path)?;
-        let profile = profile.clone();
-        let remote_path = remote_path.to_string();
-        let local_path = local_path.to_path_buf();
-        let locator = self.locator.clone();
-        let sessions = self.sessions.clone();
-        let transfers = self.transfers.clone();
-        run_in_tokio(async move {
-            let connection = connect(&locator, &sessions, &profile).await?;
-            let result = connection.contextualize(
-                "ssh_sftp_directory_download",
-                transfers
-                    .download_directory(
-                        connection.session.clone(),
-                        remote_path,
-                        local_path,
-                        overwrite,
-                        cancellation,
-                        progress,
-                        profile.production,
-                    )
-                    .await,
-            );
-            invalidate_broken(&sessions, &profile.id, &result).await;
-            result
-        })
+        sftp_ops::download_directory(
+            self,
+            profile,
+            remote_path,
+            local_path,
+            overwrite,
+            cancellation,
+            progress,
+        )
         .await
     }
 

@@ -5,23 +5,28 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::Result;
 
-use super::{ObjectStorageMountResult, ObjectStorageService};
+use super::{ObjectStorageMountResult, ObjectStorageService, log_object_storage_error};
 
 impl ObjectStorageService {
     pub async fn list_mounts(
         &self,
         account_id: &ramag_domain::entities::ObjectStorageAccountId,
     ) -> Result<ObjectStorageMountResult> {
-        let gate = self.account_gate(account_id);
-        let _account_guard = gate.read_owned().await;
-        let account = self.get_account(account_id).await?;
-        let mounts = configured_mounts(&account)?;
-        if mounts.is_empty() {
-            return Err(ramag_domain::error::DomainError::InvalidConfig(
-                "此账号未配置 Bucket，请编辑账号后至少添加一个挂载".into(),
-            ));
+        let result = async {
+            let gate = self.account_gate(account_id);
+            let _account_guard = gate.read_owned().await;
+            let account = self.load_account(account_id).await?;
+            let mounts = configured_mounts(&account)?;
+            if mounts.is_empty() {
+                return Err(ramag_domain::error::DomainError::InvalidConfig(
+                    "此账号未配置 Bucket，请编辑账号后至少添加一个挂载".into(),
+                ));
+            }
+            Ok(ObjectStorageMountResult { mounts })
         }
-        Ok(ObjectStorageMountResult { mounts })
+        .await;
+        log_object_storage_error("object_storage_mount_list", Some(account_id), &result);
+        result
     }
 }
 

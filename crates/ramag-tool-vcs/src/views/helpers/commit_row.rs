@@ -148,10 +148,9 @@ pub(in crate::views) fn render_commit_row(
                 let c = c1.clone();
                 open_confirm_dialog(
                     e1.clone(),
-                    "Cherry-pick 这个 commit？",
+                    "摘取此提交？",
                     format!(
-                        "将把「{short}」拣选到当前 HEAD。\n\
-                                 有冲突时会进入 cherry-pick 进行中状态。"
+                        "将把「{short}」应用到当前分支；冲突时需处理后继续。"
                     ),
                     "摘取",
                     false,
@@ -161,18 +160,17 @@ pub(in crate::views) fn render_commit_row(
                 );
             }))
             .item(
-                ramag_ui::menu_item("反向提交").on_click(move |_, window, app| {
+                ramag_ui::menu_item("撤销提交").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
                     let short: String = c2.chars().take(7).collect();
                     let c = c2.clone();
                     open_confirm_dialog(
                         e2.clone(),
-                        "Revert 这个 commit？",
+                        "撤销此提交？",
                         format!(
-                            "将生成一个反向 commit 撤销「{short}」的改动（不改写历史，安全）。\n\
-                                 有冲突时会进入 revert 进行中状态。"
+                            "将新建反向提交撤销「{short}」，不改写历史；冲突时需处理后继续。"
                         ),
-                        "反向提交",
+                        "撤销",
                         false,
                         move |this, cx| this.run_revert(c, cx),
                         window,
@@ -187,11 +185,9 @@ pub(in crate::views) fn render_commit_row(
                     let c = c3.clone();
                     open_confirm_dialog(
                         e3.clone(),
-                        "Reset --mixed？",
+                        "混合重置？",
                         format!(
-                            "将 HEAD 移到「{short}」：该 commit 之后的提交会离开当前分支\
-                             （可在 reflog 找回），它们的改动与未提交的暂存内容一起回到\
-                             未暂存状态（工作区文件保留）。"
+                            "HEAD 将移至「{short}」；之后提交可从 reflog 找回，改动回到未暂存状态，工作区文件保留。"
                         ),
                         "重置",
                         false,

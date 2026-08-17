@@ -216,7 +216,7 @@ impl Render for KeyTreePanel {
                     .ghost()
                     .xsmall()
                     .icon(ramag_ui::icons::ellipsis())
-                    .tooltip("更多操作")
+                    .tooltip("更多")
                     .disabled(read_only || mutating)
                     .when_some(more_tip, |b, tip| b.tooltip(tip))
                     // 菜单顶部左角锚在按钮上，向右下方展开（不往上弹遮挡工具栏）

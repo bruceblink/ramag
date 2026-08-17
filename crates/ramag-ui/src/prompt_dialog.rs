@@ -279,7 +279,7 @@ pub fn open_reveal_masked_prompt(
                         } else {
                             IconName::EyeOff
                         })
-                        .tooltip("显示或隐藏内容")
+                        .tooltip("显示/隐藏")
                         .on_click(move |_: &ClickEvent, window, app| {
                             let next = !*masked_cell.borrow();
                             *masked_cell.borrow_mut() = next;

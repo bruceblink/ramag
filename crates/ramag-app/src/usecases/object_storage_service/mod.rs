@@ -1,4 +1,4 @@
-//! 对象存储用例：账号生命周期、配置挂载、分页对象与传输编排。
+//! 对象存储账号、对象与传输服务。
 
 mod mounts;
 mod operations;
@@ -81,91 +81,126 @@ impl ObjectStorageService {
     }
 
     pub async fn list_accounts(&self) -> Result<Vec<ObjectStorageAccount>> {
-        self.storage.list_object_storage_accounts().await
+        let result = self.storage.list_object_storage_accounts().await;
+        log_object_storage_error("object_storage_account_list", None, &result);
+        result
     }
 
     pub async fn get_account(&self, id: &ObjectStorageAccountId) -> Result<ObjectStorageAccount> {
-        self.storage
-            .get_object_storage_account(id)
-            .await?
-            .ok_or_else(|| DomainError::NotFound(format!("对象存储账号 {id}")))
+        let result = self.load_account(id).await;
+        log_object_storage_error("object_storage_account_get", Some(id), &result);
+        result
+    }
+
+    pub(super) async fn load_account(
+        &self,
+        id: &ObjectStorageAccountId,
+    ) -> Result<ObjectStorageAccount> {
+        match self.storage.get_object_storage_account(id).await {
+            Ok(Some(account)) => Ok(account),
+            Ok(None) => Err(DomainError::NotFound(format!("对象存储账号 {id}"))),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn verify_account(
         &self,
         account: &ObjectStorageAccount,
     ) -> Result<AccountVerification> {
-        account.validate().map_err(DomainError::InvalidConfig)?;
-        self.verify_configured_mounts(account).await
+        let result = async {
+            account.validate().map_err(DomainError::InvalidConfig)?;
+            self.verify_configured_mounts(account).await
+        }
+        .await;
+        log_object_storage_error("object_storage_account_verify", Some(&account.id), &result);
+        result
     }
 
     pub async fn save_account(
         &self,
         mut account: ObjectStorageAccount,
     ) -> Result<SavedObjectStorageAccount> {
-        normalize_manual_mounts(&mut account);
-        account.validate().map_err(DomainError::InvalidConfig)?;
-        self.cancel_account_transfers(&account.id);
-        let _guard = self.acquire_account_write_guard(&account.id).await?;
-        let existing = self.storage.get_object_storage_account(&account.id).await?;
-        match existing {
-            Some(existing) if existing.revision != account.revision => {
-                return Err(DomainError::InvalidConfig(
-                    "账号已被其他操作更新，请刷新后重试".into(),
-                ));
+        let account_id = account.id.clone();
+        let result = async {
+            normalize_manual_mounts(&mut account);
+            account.validate().map_err(DomainError::InvalidConfig)?;
+            self.cancel_account_transfers(&account.id);
+            let _guard = self.acquire_account_write_guard(&account.id).await?;
+            let existing = self.storage.get_object_storage_account(&account.id).await?;
+            match existing {
+                Some(existing) if existing.revision != account.revision => {
+                    return Err(DomainError::InvalidConfig(
+                        "账号已被其他操作更新，请刷新后重试".into(),
+                    ));
+                }
+                Some(existing) if existing.revision == u64::MAX => {
+                    return Err(DomainError::InvalidConfig(
+                        "账号 revision 已耗尽，请新建账号后迁移配置".into(),
+                    ));
+                }
+                Some(existing) => account.revision = existing.next_revision(),
+                None if account.revision != 1 => {
+                    return Err(DomainError::InvalidConfig(
+                        "新账号 revision 必须为 1".into(),
+                    ));
+                }
+                None => {}
             }
-            Some(existing) if existing.revision == u64::MAX => {
-                return Err(DomainError::InvalidConfig(
-                    "账号 revision 已耗尽，请新建账号后迁移配置".into(),
-                ));
-            }
-            Some(existing) => account.revision = existing.next_revision(),
-            None if account.revision != 1 => {
-                return Err(DomainError::InvalidConfig(
-                    "新账号 revision 必须为 1".into(),
-                ));
-            }
-            None => {}
+            let verification = self.verify_configured_mounts(&account).await?;
+            self.storage.save_object_storage_account(&account).await?;
+            self.driver
+                .invalidate_account(&account.id, account.revision)
+                .await?;
+            self.clear_account_state(&account.id);
+            Ok(SavedObjectStorageAccount {
+                account,
+                verification,
+            })
         }
-        let verification = self.verify_configured_mounts(&account).await?;
-        self.storage.save_object_storage_account(&account).await?;
-        self.driver
-            .invalidate_account(&account.id, account.revision)
-            .await?;
-        self.clear_account_state(&account.id);
-        Ok(SavedObjectStorageAccount {
-            account,
-            verification,
-        })
+        .await;
+        log_object_storage_error("object_storage_account_save", Some(&account_id), &result);
+        result
     }
 
     pub async fn delete_account(&self, id: &ObjectStorageAccountId) -> Result<()> {
-        self.cancel_account_transfers(id);
-        let _guard = self.acquire_account_write_guard(id).await?;
-        self.storage
-            .delete_object_storage_account(id, &workspace_preference_key(id))
-            .await?;
-        self.driver.invalidate_account(id, u64::MAX).await?;
-        self.clear_account_state(id);
-        Ok(())
+        let result = async {
+            self.cancel_account_transfers(id);
+            let _guard = self.acquire_account_write_guard(id).await?;
+            self.storage
+                .delete_object_storage_account(id, &workspace_preference_key(id))
+                .await?;
+            self.driver.invalidate_account(id, u64::MAX).await?;
+            self.clear_account_state(id);
+            Ok(())
+        }
+        .await;
+        log_object_storage_error("object_storage_account_delete", Some(id), &result);
+        result
     }
 
     pub async fn close_account_session(&self, id: &ObjectStorageAccountId) -> Result<()> {
-        self.cancel_account_transfers(id);
-        let _guard = self.acquire_account_write_guard(id).await?;
-        let revision = self
-            .storage
-            .get_object_storage_account(id)
-            .await?
-            .map(|account| account.revision)
-            .unwrap_or(1);
-        self.driver.invalidate_account(id, revision).await?;
-        self.clear_account_state(id);
-        Ok(())
+        let result = async {
+            self.cancel_account_transfers(id);
+            let _guard = self.acquire_account_write_guard(id).await?;
+            let revision = self
+                .storage
+                .get_object_storage_account(id)
+                .await?
+                .map(|account| account.revision)
+                .unwrap_or(1);
+            self.driver.invalidate_account(id, revision).await?;
+            self.clear_account_state(id);
+            Ok(())
+        }
+        .await;
+        log_object_storage_error("object_storage_session_close", Some(id), &result);
+        result
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        self.driver.shutdown().await.map_err(DomainError::from)
+        let result = self.driver.shutdown().await.map_err(DomainError::from);
+        log_object_storage_error("object_storage_shutdown", None, &result);
+        result
     }
 
     pub(super) fn account_gate(&self, id: &ObjectStorageAccountId) -> Arc<tokio::sync::RwLock<()>> {
@@ -215,7 +250,19 @@ impl ObjectStorageService {
                 .await
             {
                 Ok(_) => {}
-                Err(error) => return verification_from_error(error),
+                Err(error) => {
+                    let result = verification_from_error(error);
+                    if let Ok(AccountVerification::Unverified { reason }) = &result {
+                        tracing::warn!(
+                            operation = "object_storage_account_verify",
+                            account_id = %account.id,
+                            mount_id = %mount.id,
+                            reason,
+                            "object storage account verification incomplete"
+                        );
+                    }
+                    return result;
+                }
             }
         }
         Ok(AccountVerification::Verified)
@@ -251,6 +298,45 @@ impl ObjectStorageService {
                 cancellation.cancel();
             }
         }
+    }
+}
+
+pub(super) fn log_object_storage_error<T>(
+    operation: &'static str,
+    account_id: Option<&ObjectStorageAccountId>,
+    result: &Result<T>,
+) {
+    let Err(error) = result else {
+        return;
+    };
+    let account_id = account_id.map_or_else(|| "-".to_string(), ToString::to_string);
+    match error {
+        DomainError::ObjectStorage(error)
+            if error.category == ObjectStorageErrorCategory::Cancelled =>
+        {
+            tracing::info!(
+                operation,
+                account_id = %account_id,
+                "object storage operation cancelled"
+            );
+        }
+        DomainError::ObjectStorage(error) => tracing::error!(
+            operation,
+            error = %error.safe_message,
+            account_id = %account_id,
+            category = ?error.category,
+            provider_operation = error.operation,
+            provider_code = error.provider_code.as_deref().unwrap_or("-"),
+            request_id = error.request_id.as_deref().unwrap_or("-"),
+            retryable = error.retryable,
+            "object storage operation failed"
+        ),
+        error => tracing::warn!(
+            operation,
+            error = %error,
+            account_id = %account_id,
+            "object storage operation failed"
+        ),
     }
 }
 

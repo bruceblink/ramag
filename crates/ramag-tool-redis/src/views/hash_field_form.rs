@@ -74,7 +74,7 @@ impl HashFieldForm {
         let value_input = cx.new(|cx| {
             bounded_input(MAX_REDIS_COMMAND_ARG_BYTES, window, cx)
                 .multi_line(true)
-                .placeholder("字段值（任意文本，可多行）")
+                .placeholder("字段值（可多行）")
                 .default_value(initial_value)
         });
         ramag_ui::enforce_multiline_input_byte_limit(

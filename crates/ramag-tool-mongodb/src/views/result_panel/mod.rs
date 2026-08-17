@@ -45,9 +45,9 @@ use helpers::{bounded_cell_dialog_text, memory_notice, pretty_cell_value};
 use row_search::{RowFilter, RowSearchBlocker, RowSearchState};
 pub(crate) use row_search::{RowSearchConversionStatus, RowSearchMode};
 
-/// 过滤列补全收集的最大嵌套深度（支持 consume.detail.x 这类多层）
+/// 列补全最大嵌套深度。
 const PATH_COMPLETION_DEPTH: usize = 5;
-/// 行过滤输入停顿后再扫描，避免每次按键都排一个最多 200 万单元格的任务。
+/// 行过滤防抖，避免按键时反复扫描大表。
 const ROW_VIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
 
 pub struct ResultPanel {
@@ -61,7 +61,7 @@ pub struct ResultPanel {
     pagination: Option<MongoResultPagination>,
     pub(crate) table: Option<Arc<FlatTable>>,
     pub(crate) table_building: bool,
-    /// 表格构建代际；新结果/下钻会使旧任务回包失效。
+    /// 表格构建代际，防止旧任务回包生效。
     table_build_seq: u64,
     table_build_cancel: Option<Arc<AtomicBool>>,
     pub(crate) column_filter: Entity<InputState>,
@@ -69,7 +69,7 @@ pub struct ResultPanel {
     row_search: RowSearchState,
     pub(crate) uniform_scroll: UniformListScrollHandle,
     pub(crate) h_scroll: ScrollHandle,
-    /// 表格双轴手势状态，跨渲染帧保留。
+    /// 表格双轴手势状态。
     scroll_gesture: AxisScrollGesture,
     pub(crate) column_completion_source: Arc<RwLock<Vec<String>>>,
     pub(crate) service: Option<Arc<MongoService>>,
@@ -78,27 +78,27 @@ pub struct ResultPanel {
     pub(crate) target_collection: Option<String>,
     /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pub(crate) pending_notification: Option<gpui_component::notification::Notification>,
-    /// 提交中防重入，失败时保留弹框输入。
+    /// DML 防重入；失败时保留弹框输入。
     pub(super) doc_dml_busy: bool,
     pub(super) exporting: bool,
     /// 仅成功后关闭 DML 弹框。
     pub(super) pending_close_dialog: bool,
     pub(crate) selected_rows: BTreeSet<usize>,
-    /// 选择变化代次与当前可见行交集缓存，避免普通重渲染反复扫描最多五万行。
+    /// 选择代际与可见行交集缓存，避免重复扫描。
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
-    /// 下钻栈：栈底=原始查询结果，双击嵌套 push 一层；栈深 > 1 即下钻态（只读 + 面包屑）
+    /// 下钻栈；深度大于 1 时只读并显示面包屑。
     pub(crate) drill_stack: Vec<drill::DrillLevel>,
-    /// 路径在钻取换表后可检测失配。
+    /// 下钻换表后用路径检测排序失配。
     pub(crate) sort_by: Option<(String, SortDir)>,
-    /// 行过滤 + 排序派生结果；选择/弹框等重渲染时复用，避免反复扫描整张矩阵。
+    /// 行过滤和排序缓存，避免重复扫描矩阵。
     row_view_cache: Option<RowViewCache>,
-    /// 行过滤 / 排序正在受限工作池计算；依赖当前视图的操作在此期间禁用。
+    /// 行视图构建期间禁用依赖当前视图的操作。
     pub(crate) row_view_building: bool,
-    /// 行视图请求代次；输入、排序或表格变化后递增，旧回包不得覆盖新条件。
+    /// 行视图请求代际，防止旧回包覆盖。
     row_view_request_seq: u64,
     row_view_cancel: Option<Arc<AtomicBool>>,
-    /// 后台行视图构建失败时显式展示，修改条件或重建表格会清除。
+    /// 行视图构建失败信息；条件变化时清除。
     pub(crate) row_view_error: Option<String>,
     /// 当前标签的结果内存登记。
     result_memory: Option<ResultMemoryLease>,
@@ -108,7 +108,7 @@ pub struct ResultPanel {
 #[derive(Clone, Debug)]
 pub enum ResultEvent {
     Refresh,
-    /// 仅停止客户端等待；MongoDB 服务端操作可能仍在执行。
+    /// 仅取消客户端等待，服务端操作仍可能继续。
     Cancel,
     PageRequested(usize),
     CollectionImportRequested {
@@ -193,7 +193,7 @@ impl ResultPanel {
         );
         let column_filter = cx.new(|cx| {
             let mut state = ramag_ui::bounded_search_input(window, cx)
-                .placeholder("过滤列（列名逗号分隔；填 object/array 字段或 a.b 路径则钻取）");
+                .placeholder("过滤列（逗号分隔；填路径可钻取）");
             state.lsp.completion_provider = Some(provider);
             state
         });
@@ -278,12 +278,12 @@ impl ResultPanel {
         self.target_collection = coll;
     }
 
-    /// 写操作必须随当前数据库切换。
+    /// 写操作使用当前数据库。
     pub fn set_database(&mut self, db: String) {
         self.database = db;
     }
 
-    /// 切库后旧结果不能作为新库的写入上下文。
+    /// 切库后旧结果不可写入新库。
     pub fn switch_database(&mut self, db: String, cx: &mut Context<Self>) {
         let had_result = self.running || self.result.is_some() || self.error.is_some();
         self.database = db;
@@ -296,7 +296,7 @@ impl ResultPanel {
         }
     }
 
-    /// 切换结果层级或数据源时，列结构会变化；内容搜索作为用户条件跨层保留。
+    /// 切换层级时清空列过滤；内容搜索保留。
     pub fn clear_column_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.column_filter
             .update(cx, |s, cx| s.set_value("", window, cx));

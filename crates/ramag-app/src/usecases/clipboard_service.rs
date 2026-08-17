@@ -22,24 +22,21 @@ use crate::usecases::clip_thumb::{THUMB_MAX_W, make_thumbnail};
 use pending_media::PendingMediaDeletes;
 
 const SETTINGS_KEY: &str = "clipboard_settings";
-/// 剪贴设置远小于通用偏好 16 MiB 上限；先拒绝异常大 JSON，避免反序列化时无谓分配。
+/// 限制异常大的剪贴设置。
 const MAX_SETTINGS_JSON_BYTES: usize = 256 * 1024;
 
-/// 固定保留上限：100 万条或 360 天，入库后清理超限记录。
+/// 固定保留上限。
 const MAX_ITEMS: u32 = 1_000_000;
 const MAX_AGE_DAYS: u32 = 360;
 
-/// 内存缓存窗口：常驻最近 N 条（已解密），视图唤起 / 刷新同步读；内存与历史总量解耦。
-/// 取 500 而非上万：启动只解密这些条；快照通过 Arc 共享正文，不再深拷贝大文本；
-/// 更早的历史由主视图与抽屉的全量存储搜索（`search`）覆盖，不靠缓存兜底。
-/// 与 SEARCH_LIMIT 同量级，避免"缓存即时层"与"全量层"结果规模悬殊
+/// 最近条目的解密缓存，受条数与正文预算限制。
 const CACHE_WINDOW: usize = 500;
-/// 文本、RTF 与文件路径在内存窗口中的总预算；最新一条即使较大也保留，避免记录刚产生就不可见。
+/// 最近条目正文预算。
 const CACHE_INLINE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
-/// 后台搜索结果与缓存使用相同正文预算，避免匹配大量大文本时再次放大内存。
+/// 搜索结果正文预算。
 const SEARCH_INLINE_BYTE_BUDGET: u64 = CACHE_INLINE_BYTE_BUDGET;
 
-/// 防止高压缩图片在解码/渲染时膨胀为超大内存。
+/// 图片解码和渲染的内存上限。
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 
@@ -62,24 +59,24 @@ pub enum CaptureDecision {
 pub struct ClipboardService {
     driver: Arc<dyn ClipboardDriver>,
     storage: Arc<dyn Storage>,
-    /// 写操作后自增，视图仅在变化时重载解密。
+    /// 写操作版本，供视图判断是否重载。
     revision: Arc<AtomicU64>,
     cache: Arc<RwLock<Vec<Arc<ClipItem>>>>,
-    /// 避免热键循环每拍读取并解密设置。
+    /// 设置缓存，避免热键循环反复 I/O。
     capture_enabled: Arc<AtomicBool>,
     alternate_hotkey: Arc<AtomicBool>,
-    /// 自动粘贴设置镜像。抽屉构造时同步读取，避免异步加载设置期间误执行自动粘贴。
+    /// 自动粘贴设置镜像，避免加载期间误执行。
     auto_paste: Arc<AtomicBool>,
-    /// 多个设置入口共享同一快照。
+    /// 共享设置快照。
     settings_cache: Arc<RwLock<ClipboardSettings>>,
     settings_revision: Arc<AtomicU64>,
-    /// 设置读写串行化，避免慢读取或旧保存晚完成后覆盖新值。
+    /// 串行设置读写，防止旧保存覆盖新值。
     settings_save_lock: Arc<futures::lock::Mutex<()>>,
-    /// 历史与媒体写操作串行化，避免采集、清空、删除和复制提升相互穿插后留下断链媒体。
+    /// 串行历史与媒体写操作，避免断链媒体。
     history_mutation_lock: Arc<futures::lock::Mutex<()>>,
-    /// 热键循环写、设置面板读，使注册失败对用户可见。
+    /// 热键注册状态。
     hotkey_state: Arc<AtomicU8>,
-    /// 设置异常时暂停采集并向用户告警。
+    /// 设置异常时暂停采集。
     settings_degraded: Arc<AtomicBool>,
     pending_media_deletes: Arc<PendingMediaDeletes>,
 }
@@ -117,7 +114,7 @@ impl ClipboardService {
             storage,
             revision: Arc::new(AtomicU64::new(0)),
             cache: Arc::new(RwLock::new(Vec::new())),
-            // 初始化时保持关闭，启动预热后再恢复用户设置。
+            // 预热后恢复用户设置。
             capture_enabled: Arc::new(AtomicBool::new(false)),
             alternate_hotkey: Arc::new(AtomicBool::new(false)),
             auto_paste: Arc::new(AtomicBool::new(true)),
@@ -152,7 +149,7 @@ impl ClipboardService {
     }
 
     pub async fn preload(&self) {
-        // 与采集/清空共用锁，避免慢预热最后用旧快照覆盖启动期间刚写入的缓存。
+        // 与采集和清空共用锁。
         let _guard = self.history_mutation_lock.lock().await;
         match self
             .storage
@@ -200,7 +197,7 @@ impl ClipboardService {
         self.storage.clip_search(query, limit).await
     }
 
-    /// 可取消的全量搜索；视图输入变化后用取消标记尽快停止旧扫描。
+    /// 可取消的全量搜索。
     pub async fn search_cancellable(
         &self,
         query: &str,
@@ -257,7 +254,7 @@ impl ClipboardService {
         Ok(())
     }
 
-    /// 复制并粘贴到目标应用；无辅助功能权限时仅完成复制并返回错误。
+    /// 复制并尝试粘贴到目标应用。
     pub async fn paste_to_app(
         &self,
         item: &ClipItem,
@@ -267,13 +264,12 @@ impl ClipboardService {
         self.driver.paste_to_app(activation_target)
     }
 
-    /// 仅复制纯文本；非文本类型回退到普通复制。
+    /// 仅复制纯文本。
     pub async fn copy_as_plain_text(&self, item: &ClipItem) -> Result<()> {
         let _guard = self.history_mutation_lock.lock().await;
         let current = self.current_clip(&item.id).await?;
         self.write_clipboard_payload(&current, true).await?;
-        // “纯文本”只影响本次写回；历史中的 RTF 必须保留，否则之后普通复制
-        // 无法再恢复原富文本内容，属于不可见的数据损失。
+        // 仅本次按纯文本复制，保留 RTF。
         self.touch_current_clip(current).await
     }
 
@@ -328,7 +324,7 @@ pub fn decide_capture(captured: &CapturedClip, settings: &ClipboardSettings) -> 
         return CaptureDecision::Skip("concealed");
     }
 
-    // 文件优先，其次图片，最后文本（与驱动读取优先级一致）
+    // 与驱动读取优先级一致。
     if !captured.files.is_empty() {
         if file_payload_len(&captured.files) > settings.max_item_bytes {
             return CaptureDecision::Skip("files too large");
@@ -432,7 +428,7 @@ fn inline_payload_matches(existing: &ClipItem, captured: &CapturedClip, kind: Cl
     }
 }
 
-/// 仅在主 FNV 指纹真实碰撞时使用；反向 FNV 与主哈希组合，兼容既有 16 位哈希记录。
+/// 主指纹碰撞时用反向 FNV 组合，兼容既有 16 位哈希。
 fn collision_hash(captured: &CapturedClip, primary: &str) -> String {
     let secondary = if !captured.files.is_empty() {
         reverse_file_payload_hash(&captured.files)
@@ -473,14 +469,14 @@ fn reverse_fnv1a_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// 提升条目最近使用时间，但不改写任何原始负载（text / RTF / 媒体引用）。
+/// 更新使用时间，不改原始负载。
 fn touch_item(item: &ClipItem, now: chrono::DateTime<Utc>) -> ClipItem {
     let mut latest = item.clone();
     latest.last_used_at = now;
     latest
 }
 
-/// 在线程池生成缩略图，避免阻塞 GPUI 前台执行器。
+/// 在线程池生成缩略图。
 async fn make_thumbnail_off_thread(png: Arc<Vec<u8>>) -> Result<Vec<u8>> {
     crate::run_blocking(move || make_thumbnail(png.as_slice(), THUMB_MAX_W)).await
 }

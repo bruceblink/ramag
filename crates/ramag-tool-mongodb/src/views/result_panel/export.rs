@@ -12,8 +12,7 @@ use tracing::{error, info};
 use super::{ResultEvent, ResultPanel};
 
 impl ResultPanel {
-    /// 结果工具条「导入」：对当前目标集合发起 JSONL 导入；
-    /// 确认后上抛事件，由 session 路由到集合树执行（进度条显示在树侧）
+    /// 打开当前集合的 JSONL 导入对话框。
     pub(crate) fn open_import_jsonl_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_write() {
             return;
@@ -26,9 +25,8 @@ impl ResultPanel {
         ramag_ui::open_import_options_dialog(
             "导入 JSONL 到集合",
             format!(
-                "选择冲突策略与 .jsonl 文件（可多选），每行一个文档（支持 Extended JSON），\
-                 导入到 {db}.{collection}。「跳过」重复 _id 跳过，「覆盖」先清空集合文档\
-                 （保留索引，不可恢复），「停止」遇重复即报错。"
+                "选择 .jsonl 文件（可多选）导入到 {db}.{collection}。每行一个 Extended JSON 文档；\
+                 「跳过」重复 _id，「覆盖」清空文档（保留索引，不可恢复），「停止」遇重复报错。"
             ),
             false,
             ("JSONL", &["jsonl", "json"]),
@@ -65,10 +63,7 @@ impl ResultPanel {
             return;
         }
         if self.parse_column_filter(cx).drill_path.is_some() {
-            return self.notify_error(
-                "当前是路径钻取视图，行号不对应原始文档；请清空过滤列后再导出".to_string(),
-                cx,
-            );
+            return self.notify_error("钻取视图无法导出，请先退出钻取".to_string(), cx);
         }
         let Some(table) = self.table.clone() else {
             return self.notify_error("无表格数据可导出".to_string(), cx);

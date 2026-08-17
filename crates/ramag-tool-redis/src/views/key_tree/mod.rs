@@ -58,9 +58,8 @@ impl VisibleRowsCacheEntry {
     }
 }
 
-/// 当前 DB 的 key 树加载上限（各 DB 独立）。列表、去重集合与 Trie 三份索引
-/// 共同受此计数和原始名称字节预算约束：100 万 key（名称均长 ~30B）约占
-/// 300-500 MB，是桌面场景合理极限；再大提示用 MATCH 缩小范围
+/// 当前 DB 的加载上限，列表、去重和 Trie 共同受 key 数与名称字节预算约束。
+/// 超限后提示使用 MATCH 缩小范围。
 const MAX_LOADED_KEYS: usize = MAX_REDIS_LOADED_ITEMS;
 const MAX_LOADED_KEY_BYTES: usize = MAX_INTERACTIVE_RESULT_BYTES;
 
@@ -80,7 +79,7 @@ pub enum KeyTreeEvent {
 #[derive(Debug, Clone)]
 pub enum DeletedScope {
     Key(String),
-    /// 前缀路径（如 "user"，实际删除 user:* 全部）
+    /// 前缀路径（如 "user"，删除 user:*）。
     Prefix(String),
     Db,
 }
@@ -90,51 +89,49 @@ pub struct KeyTreePanel {
     config: Option<ConnectionConfig>,
     db: u8,
     keys: Vec<KeyMeta>,
-    /// 已加载 key 名集合：SCAN 弱一致会跨批重复返回同一 key，追加前据此去重
-    /// （否则计数虚高、Trie 重复插入）
+    /// 已加载 key 名集合；SCAN 可能跨批重复返回，追加前据此去重。
     seen_keys: HashSet<String>,
-    /// `keys` 中原始 Key 名的总字节数；避免超长名称在多份树索引中放大内存。
+    /// 原始 Key 名总字节数，避免树索引放大内存。
     key_bytes: usize,
     tree: Vec<TreeNode>,
     /// 普通浏览态的展开项；进入和退出搜索都不改变它。
     expanded: HashSet<String>,
-    /// 搜索结果默认展开，仅记录用户在当前搜索中主动折叠的命名空间。
+    /// 搜索结果默认展开，仅记录当前搜索中主动折叠的命名空间。
     search_collapsed: HashSet<String>,
-    /// Trie 内容与展开状态代次；可见行缓存只依赖这两者和查询词。
+    /// Trie 与展开状态代际，供可见行缓存使用。
     tree_revision: u64,
     expanded_revision: u64,
     visible_rows_cache: RefCell<Option<VisibleRowsCacheEntry>>,
     loading: bool,
-    /// 至少收到过一批有效 SCAN 回包；空数据库也算已加载，避免 Tab 激活时反复重扫。
+    /// 收到过有效 SCAN 回包；空库也算已加载，避免反复重扫。
     has_loaded: bool,
     error: Option<String>,
     search: Entity<InputState>,
-    /// 输入框原始内容，用于过滤掉焦点、光标等非文本变化通知。
+    /// 输入框原文，用于忽略非文本变化通知。
     search_text: String,
     /// 本地不区分大小写匹配使用的小写查询词。
     query: String,
-    /// 服务端 MATCH 模式（Enter 下推触发重扫）；None = 全库扫描
+    /// 服务端 MATCH 模式；None 表示全库扫描。
     match_pattern: Option<String>,
-    /// 搜索输入防抖代际与等待态；停顿后自动下推 MATCH，Enter 可立即触发。
+    /// 搜索防抖代际与等待态；Enter 立即下推 MATCH。
     search_generation: u64,
     search_pending: bool,
-    /// 扫描代际：换代（停止 / 重扫 / 换 pattern / 切库）后在途批次回包一律作废
+    /// 扫描代际；停止、重扫、换模式或切库后使旧回包失效。
     scan_generation: u64,
-    /// 上次重建 Trie 时的 key 数（分批加载期间节流重建，避免每批 O(N) 重建）
+    /// 上次重建 Trie 时的 key 数，用于批量加载节流。
     last_rebuilt_count: usize,
     selected: Option<String>,
-    /// 手动停止或批次出错后暂停，仍可从断点继续扫描。
+    /// 手动停止或批次出错后暂停，可从断点继续扫描。
     truncated: bool,
-    /// 达到全局资源上限后不再提供继续扫描，需用 MATCH 缩小范围。
+    /// 达到资源上限后不再继续扫描，需用 MATCH 缩小范围。
     resource_limited: bool,
-    /// 下一次应继续使用的 SCAN cursor；None 表示已经完整扫完。
+    /// 下次继续扫描的 cursor；None 表示已完整扫描。
     resume_cursor: Option<u64>,
-    /// 虚拟列表滚动句柄：树扁平化后用 uniform_list 行级虚拟化，
-    /// 支持 5w+ key 仍流畅
+    /// 虚拟列表滚动句柄。
     uniform_scroll: UniformListScrollHandle,
     /// 异步回调无法访问 Window，通知由 Render 延后推送。
     pending_notification: Option<gpui_component::notification::Notification>,
-    /// 树级写操作串行化闸门；切换连接或 DB 后旧任务 token 失效。
+    /// 树级写操作闸门；切换连接或 DB 后旧任务失效。
     mutation_gate: AsyncMutationGate,
     transfer: ramag_ui::TransferState,
     _subscriptions: Vec<gpui::Subscription>,
@@ -145,11 +142,11 @@ impl EventEmitter<KeyTreeEvent> for KeyTreePanel {}
 impl KeyTreePanel {
     pub fn new(service: Arc<RedisService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| {
-            ramag_ui::bounded_search_input(window, cx).placeholder("全库搜索 key（支持 * ? [）")
+            ramag_ui::bounded_search_input(window, cx).placeholder("搜索 Key（支持 * ? [）")
         });
 
         let subs = vec![
-            // InputState::set_value 不发 InputEvent::Change；观察实体才能覆盖清除按钮和 Esc。
+            // set_value 不发 Change，需观察实体以响应清除和 Esc。
             cx.observe(&search, |this: &mut Self, _, cx| {
                 this.sync_search_input(cx);
             }),
@@ -158,7 +155,7 @@ impl KeyTreePanel {
                 window,
                 |this: &mut Self, _, e: &InputEvent, _, cx| {
                     if matches!(e, InputEvent::PressEnter { .. }) {
-                        // Enter 跳过去抖立即全库搜索。
+                        // Enter 跳过去抖，立即搜索。
                         this.search_generation = this.search_generation.wrapping_add(1);
                         this.search_pending = false;
                         this.apply_server_match(cx);
@@ -225,8 +222,7 @@ impl KeyTreePanel {
         self.resource_limited = false;
         self.resume_cursor = None;
         self.search_pending = false;
-        // 切连接/db：旧 SCAN 回包已由 refresh 内的 stale 校验拦截，此处清 loading。
-        // 让新目标的 refresh 不被防重入拒绝
+        // 旧回包由刷新时的 stale 校验拦截；清空 loading 以启动新刷新。
         self.loading = false;
         self.has_loaded = false;
         if self.config.is_some() {
@@ -236,13 +232,12 @@ impl KeyTreePanel {
         }
     }
 
-    /// key 元数据加载快照 (loading, has_error)，不代表实时连接健康。
+    /// key 元数据加载快照，不代表实时连接健康。
     pub fn health(&self) -> (bool, bool) {
         (self.loading, self.error.is_some())
     }
 
-    /// 会话 Tab 被（重新）激活时调用：仅当从未成功加载（无 key 且非加载中）才 SCAN，
-    /// 避免每次切 Tab 都重置展开/选中。首次加载失败留下的空状态会在下次激活时自动重试
+    /// 激活 Tab 时仅在未成功加载且未加载中时 SCAN，避免重置展开和选中。
     pub fn ensure_loaded(&mut self, cx: &mut Context<Self>) {
         if should_ensure_loaded(self.config.is_some(), self.has_loaded, self.loading) {
             self.refresh(cx);
@@ -252,7 +247,7 @@ impl KeyTreePanel {
     fn rebuild_tree(&mut self) {
         self.tree = build_tree(&self.keys);
         self.last_rebuilt_count = self.keys.len();
-        // 增量扫描和 MATCH 搜索都只是局部快照，不能据此删除普通浏览态的展开项。
+        // 增量扫描和 MATCH 搜索是局部快照，不能删除普通浏览态展开项。
         let has_complete_full_snapshot = self.match_pattern.is_none()
             && !self.loading
             && !self.truncated

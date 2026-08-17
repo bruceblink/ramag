@@ -39,8 +39,7 @@ impl VcsView {
             let result = match &op {
                 BranchOp::Checkout(name) => driver.checkout(&repo, name).await,
                 BranchOp::Create(name, base) => {
-                    // 等价 `git checkout -b`：创建后立即 checkout；
-                    // checkout 失败必须如实上报，否则界面谎称"已切换"
+                    // 创建后立即切换；切换失败必须上报。
                     match driver.create_branch(&repo, name, base.as_deref()).await {
                         Ok(()) => driver.checkout(&repo, name).await.map_err(|e| {
                             ramag_domain::error::DomainError::Other(format!(
@@ -51,7 +50,7 @@ impl VcsView {
                     }
                 }
                 BranchOp::Delete(name, force) => driver.delete_branch(&repo, name, *force).await,
-                // --no-ff 强制建 merge commit；冲突时仓库进入 Merge 状态
+                // --no-ff 强制创建 merge commit。
                 BranchOp::Merge(name) => driver.merge(&repo, name, true, false, None).await,
                 BranchOp::Rebase(name) => driver.rebase(&repo, name).await,
             };
@@ -123,7 +122,7 @@ impl VcsView {
                             | BranchOp::Create(_, _)
                     )
                 {
-                    // HEAD 变了，缓存全失效
+                    // HEAD 已变，缓存全部失效。
                     this.load_history_page(0, cx);
                     this.refresh_after_head_change(cx);
                 }
@@ -154,7 +153,7 @@ impl VcsView {
             && let Some(tab) = self.file_tabs.get(idx).cloned()
         {
             match tab.source {
-                // Changes 来源已由 sync_changes_tabs_with_status 重拉
+                // Changes 来源已重新加载。
                 FileTabSource::Changes(_) => {}
                 FileTabSource::ProjectFiles => {
                     self.select_pf_file(tab.path, cx);
@@ -210,7 +209,7 @@ impl VcsView {
                     return;
                 }
                 match head_msg {
-                    // 异步期间用户已输入内容则不覆盖
+                    // 用户已输入时不覆盖。
                     Ok(msg) if this.commit_input.read(cx).value().trim().is_empty() => {
                         this.pending_commit_text = Some(msg.into());
                     }
@@ -260,7 +259,7 @@ impl VcsView {
         let Some(repo) = self.repo.as_ref().map(|r| r.id.clone()) else {
             return;
         };
-        // status 已确认 unborn HEAD 时直接给空态，避免为必然失败的 `git log HEAD` 启进程。
+        // unborn HEAD 直接显示空态，避免启动必然失败的 git log。
         if self
             .status
             .as_ref()
@@ -275,19 +274,18 @@ impl VcsView {
             cx.notify();
             return;
         }
-        // skip>0 是 load-more：正在加载时跳过避免重复拉同一页；
-        // skip=0 是刷新/切仓/换搜索，即使有在途请求也要发起（否则切仓后新仓库 history 会因早退而不加载）
+        // 加载更多时避免重复拉页；刷新、切仓或换搜索仍需发起新请求。
         if skip > 0 && self.loading_history {
             return;
         }
         self.loading_history = true;
-        // 请求代际：换搜索词/刷新后才返回的旧回包据此丢弃，避免乱序覆盖新结果
+        // 请求代际防止旧回包乱序覆盖新结果。
         self.history_request_seq = self.history_request_seq.wrapping_add(1);
         let request_seq = self.history_request_seq;
         cx.notify();
 
         let driver = self.driver.clone();
-        // `@xxx`→author，`7d`/`1m`→since，其余→message grep
+        // @xxx 搜索作者，7d/1m 搜索时间，其余搜索提交说明。
         let raw_search = self
             .history_search_input
             .read(cx)
@@ -296,7 +294,7 @@ impl VcsView {
             .to_string();
         let (grep, author, since) = parse_search_query(&raw_search);
         let opts = LogOptions {
-            // UI 已由 status 排除 unborn HEAD；显式 HEAD 让 infra 省掉额外 rev-parse 探测。
+            // 显式 HEAD，避免 infra 额外探测。
             start: Some("HEAD".into()),
             skip,
             limit: Some(HISTORY_PAGE_SIZE),
@@ -426,8 +424,7 @@ impl VcsView {
                             this.status = Some(s);
                         }
                         this.commit_amend = false;
-                        // 提交成功：清空 message（避免下次误用同一条），已提交文件的 tabs 对齐；
-                        // 持久化的草稿一并清除（作废在途防抖写）
+                        // 提交后清空消息和草稿，并使在途草稿写入失效。
                         this.pending_commit_text = Some(gpui::SharedString::default());
                         this.commit_draft_gen
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -449,7 +446,7 @@ impl VcsView {
                                 .detach();
                         }
                         this.sync_changes_tabs_with_status(cx);
-                        // history 已加载过 / 面板开着 → 立即把新 commit 刷到列表顶部
+                        // 已加载或打开 History 时，立即刷新新提交。
                         if this.history_pane_visible || !this.history_commits.is_empty() {
                             this.load_history_page(0, cx);
                         }
@@ -533,7 +530,7 @@ impl VcsView {
                         if let Some(s) = new_status {
                             this.status = Some(s);
                         }
-                        // 组别迁移（如 stage 后 Unstaged → Staged）跟着对齐
+                        // 文件组别迁移后同步标签。
                         this.sync_changes_tabs_with_status(cx);
                         if matches!(op, FileOp::Discard) {
                             let target = if paths.len() == 1 {

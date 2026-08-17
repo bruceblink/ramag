@@ -158,7 +158,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
             } else if panel.is_drilled() {
                 "请返回上层"
             } else if path_drilled {
-                "请清空路径钻取"
+                "请先退出钻取"
             } else {
                 "请先选择数据"
             };
@@ -199,7 +199,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .small()
                 .icon(ramag_ui::icons::upload())
                 .tooltip("导出")
-                .when(path_drilled, |button| button.tooltip("请清空路径钻取"))
+                .when(path_drilled, |button| button.tooltip("请先退出钻取"))
                 .disabled(!has_data || panel.table_building || panel.exporting || path_drilled)
                 .on_click(cx.listener(|panel, _, _, cx| panel.export_documents(cx)))
         })
@@ -209,10 +209,8 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .small()
                 .icon(IconName::CircleX)
                 .label("停止")
-                .tooltip("停止等待")
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Cancel)))
         } else {
-            // 运行：与 dbclient 同位（结果区工具栏最右）、同快捷键（⌘↵）。
             ramag_ui::clickable_button("mongo-run-result")
                 .primary()
                 .small()

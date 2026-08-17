@@ -2,6 +2,8 @@
 //! 缺少的列使用数据库默认值，未知键会被忽略并汇总警告。
 //! `Merge` 在行级等同于 `Skip`。
 
+mod sql;
+
 use std::collections::{BTreeSet, HashSet};
 use std::io::BufReader;
 use std::path::Path;
@@ -13,9 +15,11 @@ use ramag_domain::entities::{
     TRANSFER_BATCH_ITEMS, TransferSummary,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
+use tracing::{info, warn};
 
 use super::{Reporter, finish_summary, is_cancelled, read_line_bounded};
 use crate::usecases::ConnectionService;
+use sql::{build_insert_sql, qualified_table, render_row};
 
 const BATCH_ROWS: usize = TRANSFER_BATCH_ITEMS;
 const BATCH_BYTES: usize = TRANSFER_BATCH_BYTES;
@@ -23,6 +27,62 @@ const MAX_LINE_BYTES: usize = TRANSFER_BATCH_BYTES;
 const MAX_UNKNOWN_KEYS_LISTED: usize = 8;
 
 pub async fn import_jsonl_into_table(
+    svc: &ConnectionService,
+    config: &ConnectionConfig,
+    target: (&str, &str),
+    path: &Path,
+    policy: ConflictPolicy,
+    cancel: &AtomicBool,
+    progress: ProgressFn<'_>,
+) -> Result<TransferSummary> {
+    let (schema, table) = target;
+    info!(
+        operation = "sql_table_jsonl_import",
+        connection_id = %config.id,
+        driver = ?config.driver,
+        schema,
+        table,
+        policy = ?policy,
+        path = %path.display(),
+        "transfer started"
+    );
+    let result =
+        import_jsonl_into_table_inner(svc, config, target, path, policy, cancel, progress).await;
+    match &result {
+        Ok(summary) => info!(
+            operation = "sql_table_jsonl_import",
+            connection_id = %config.id,
+            driver = ?config.driver,
+            schema,
+            table,
+            policy = ?policy,
+            path = %path.display(),
+            objects = summary.objects,
+            items = summary.items,
+            bytes = summary.bytes,
+            failed = summary.failed,
+            skipped = summary.skipped,
+            cancelled = summary.cancelled,
+            warning_count = summary.warnings.len() as u64 + summary.warnings_overflow,
+            elapsed_ms = summary.elapsed_ms,
+            "transfer completed"
+        ),
+        Err(error) => warn!(
+            operation = "sql_table_jsonl_import",
+            connection_id = %config.id,
+            driver = ?config.driver,
+            schema,
+            table,
+            policy = ?policy,
+            path = %path.display(),
+            error = %error,
+            "transfer failed"
+        ),
+    }
+    result
+}
+
+async fn import_jsonl_into_table_inner(
     svc: &ConnectionService,
     config: &ConnectionConfig,
     target: (&str, &str),
@@ -305,98 +365,6 @@ fn present_columns(
         .collect()
 }
 
-/// 渲染一行 `VALUES` 元组；缺失值防御性填充为 `NULL`。
-fn render_row(
-    driver: DriverKind,
-    cols: &[String],
-    object: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    let mut out = String::from("(");
-    for (index, name) in cols.iter().enumerate() {
-        if index > 0 {
-            out.push_str(", ");
-        }
-        match object.get(name) {
-            Some(value) => out.push_str(&sql_literal(driver, value)),
-            None => out.push_str("NULL"),
-        }
-    }
-    out.push(')');
-    out
-}
-
-/// 将 JSON 值转换为 SQL 字面量；嵌套值以 JSON 文本写入。
-fn sql_literal(driver: DriverKind, value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => "NULL".to_string(),
-        serde_json::Value::Bool(true) => "TRUE".to_string(),
-        serde_json::Value::Bool(false) => "FALSE".to_string(),
-        serde_json::Value::Number(number) => number.to_string(),
-        serde_json::Value::String(text) => quote_string(driver, text),
-        nested => quote_string(driver, &nested.to_string()),
-    }
-}
-
-/// 转义 SQL 字符串字面量。
-fn quote_string(driver: DriverKind, text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('\'');
-    for ch in text.chars() {
-        match ch {
-            '\'' => out.push_str("''"),
-            '\\' if driver == DriverKind::Mysql => out.push_str("\\\\"),
-            _ => out.push(ch),
-        }
-    }
-    out.push('\'');
-    out
-}
-
-fn quote_ident(driver: DriverKind, ident: &str) -> String {
-    match driver {
-        DriverKind::Mysql => format!("`{}`", ident.replace('`', "``")),
-        _ => format!("\"{}\"", ident.replace('"', "\"\"")),
-    }
-}
-
-fn qualified_table(driver: DriverKind, schema: &str, table: &str) -> String {
-    format!(
-        "{}.{}",
-        quote_ident(driver, schema),
-        quote_ident(driver, table)
-    )
-}
-
-/// 构造多行插入；`Skip` 和 `Merge` 使用数据库原生冲突跳过语法。
-fn build_insert_sql(
-    driver: DriverKind,
-    policy: ConflictPolicy,
-    qualified: &str,
-    cols: &[String],
-    rows: &[String],
-) -> String {
-    let dedupe = matches!(policy, ConflictPolicy::Skip | ConflictPolicy::Merge);
-    let verb = if dedupe && driver == DriverKind::Mysql {
-        "INSERT IGNORE INTO"
-    } else {
-        "INSERT INTO"
-    };
-    let suffix = if dedupe && driver == DriverKind::Postgres {
-        "\nON CONFLICT DO NOTHING"
-    } else {
-        ""
-    };
-    let col_list = cols
-        .iter()
-        .map(|name| quote_ident(driver, name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{verb} {qualified} ({col_list}) VALUES\n{}{suffix}",
-        rows.join(",\n")
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,47 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn ident_quoting_is_driver_specific() {
-        assert_eq!(quote_ident(DriverKind::Mysql, "or`der"), "`or``der`");
-        assert_eq!(
-            quote_ident(DriverKind::Postgres, "or\"der"),
-            "\"or\"\"der\""
-        );
-        assert_eq!(
-            qualified_table(DriverKind::Mysql, "demo", "users"),
-            "`demo`.`users`"
-        );
-    }
-
-    #[test]
-    fn literals_escape_per_driver() {
-        assert_eq!(
-            sql_literal(DriverKind::Mysql, &serde_json::Value::Null),
-            "NULL"
-        );
-        assert_eq!(
-            sql_literal(DriverKind::Mysql, &serde_json::json!(true)),
-            "TRUE"
-        );
-        assert_eq!(
-            sql_literal(DriverKind::Mysql, &serde_json::json!(1.5)),
-            "1.5"
-        );
-        assert_eq!(
-            sql_literal(DriverKind::Mysql, &serde_json::json!("a'b\\c")),
-            "'a''b\\\\c'"
-        );
-        assert_eq!(
-            sql_literal(DriverKind::Postgres, &serde_json::json!("a'b\\c")),
-            "'a''b\\c'"
-        );
-        assert_eq!(
-            sql_literal(DriverKind::Postgres, &serde_json::json!({"k": 1})),
-            "'{\"k\":1}'"
-        );
-    }
-
-    #[test]
     fn present_columns_follow_table_order_and_collect_unknown() {
         let names: Vec<String> = ["id", "name", "note"].map(String::from).to_vec();
         let set: HashSet<String> = names.iter().cloned().collect();
@@ -458,43 +385,5 @@ mod tests {
         let present = present_columns(&names, &set, &row, &mut unknown);
         assert_eq!(present, vec!["id".to_string(), "note".to_string()]);
         assert_eq!(unknown.iter().cloned().collect::<Vec<_>>(), vec!["ghost"]);
-    }
-
-    #[test]
-    fn insert_sql_applies_policy_per_engine() {
-        let cols = vec!["id".to_string(), "name".to_string()];
-        let rows = vec!["(1, 'a')".to_string(), "(2, 'b')".to_string()];
-        let mysql_skip = build_insert_sql(
-            DriverKind::Mysql,
-            ConflictPolicy::Skip,
-            "`d`.`t`",
-            &cols,
-            &rows,
-        );
-        assert!(mysql_skip.starts_with("INSERT IGNORE INTO `d`.`t` (`id`, `name`) VALUES"));
-        let pg_skip = build_insert_sql(
-            DriverKind::Postgres,
-            ConflictPolicy::Skip,
-            "\"d\".\"t\"",
-            &cols,
-            &rows,
-        );
-        assert!(pg_skip.ends_with("ON CONFLICT DO NOTHING"));
-        let plain = build_insert_sql(
-            DriverKind::Postgres,
-            ConflictPolicy::Fail,
-            "\"d\".\"t\"",
-            &cols,
-            &rows,
-        );
-        assert!(plain.starts_with("INSERT INTO"));
-        assert!(!plain.contains("ON CONFLICT"));
-    }
-
-    #[test]
-    fn render_row_serializes_in_column_order() {
-        let row = object(r#"{"name": "张三", "id": 7}"#);
-        let cols = vec!["id".to_string(), "name".to_string()];
-        assert_eq!(render_row(DriverKind::Mysql, &cols, &row), "(7, '张三')");
     }
 }

@@ -43,18 +43,18 @@ pub struct MongoQueryPanel {
     session_active: bool,
     tabs_scroll: ScrollHandle,
     show_editor: bool,
-    /// 面板根焦点：隐藏编辑器后焦点回到面板，保证 cmd-e 仍能再次触发
+    /// 面板根焦点，隐藏编辑器后接收快捷键。
     focus_handle: FocusHandle,
     history_sub: Option<Subscription>,
     draft_subscriptions: Vec<Subscription>,
-    /// 草稿落盘防抖代际；会话关闭后最后一次后台写仍可完成。
+    /// 草稿落盘防抖代际。
     draft_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// 草稿写入串行化；等待锁后再验代际，避免较慢旧写覆盖最新内容。
+    /// 串行草稿写入，防止旧内容覆盖新内容。
     draft_write_lock: Arc<futures::lock::Mutex<()>>,
-    /// 读取旧草稿期间，空默认标签不得覆盖存储内容。
+    /// 读取草稿时阻止默认标签覆盖。
     draft_load_pending: bool,
     restoring_drafts: bool,
-    /// 最近一次草稿落盘失败的原因：顶部常驻警示条展示，成功后自动清除
+    /// 最近草稿落盘错误，显示在顶部。
     pub(super) draft_persist_error: Option<String>,
 }
 
@@ -87,8 +87,7 @@ impl MongoQueryPanel {
         }
     }
 
-    /// 切换编辑器显隐，同步给所有 tab；返回当前可见状态。
-    /// 显示→聚焦编辑器；隐藏→焦点收回面板根，保证 cmd-e 的 handler 仍在焦点链可反复触发
+    /// 切换编辑器并返回可见状态。
     pub fn toggle_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.show_editor = !self.show_editor;
         for tab in &self.tabs {
@@ -116,7 +115,7 @@ impl MongoQueryPanel {
             self.database = db;
         }
         self.connection = conn;
-        // 重置 tabs（不同连接的 tabs 不共享上下文）
+        // 不同连接不共享标签。
         self.tabs.clear();
         self.titles.clear();
         self.draft_subscriptions.clear();
@@ -136,8 +135,7 @@ impl MongoQueryPanel {
         }
     }
 
-    /// 树点 collection：复用当前激活 Tab（覆盖编辑器 + 运行）；如果还没 Tab 自动建一个。
-    /// 活动 Tab 有手写草稿（非空且非上次自动注入）时不覆盖，另开 Tab 浏览（防丢稿）
+    /// 打开集合查询；有草稿时另开标签。
     pub fn prefill_collection(
         &mut self,
         database: String,
@@ -186,7 +184,7 @@ impl MongoQueryPanel {
             return false;
         }
         self.draft_load_pending = false;
-        // 找出未使用的最小编号（与 dbclient::QueryPanel 同款策略）
+        // 使用未占用的最小编号。
         let title = self.next_tab_title();
         let tab = self.build_tab(conf, window, cx);
         let sub = cx.subscribe(
@@ -235,8 +233,7 @@ impl MongoQueryPanel {
         }
     }
 
-    /// 供 session 在 Tab 激活时聚焦：编辑器可见则聚焦编辑器（cmd-e 与 cmd-enter 都在焦点链上，
-    /// 因 MongoQueryTab 嵌在 MongoQueryPanel 内）；隐藏则聚焦面板根，让 cmd-e 能唤出编辑器
+    /// 激活标签时恢复编辑器或面板焦点。
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_editor {
             self.focus_active_editor(window, cx);
@@ -276,7 +273,6 @@ impl MongoQueryPanel {
                 match e {
                     MongoHistoryEvent::FillEditor(cmd) => {
                         window.close_dialog(cx);
-                        // 复用示例插入语义：有手写草稿自动另开 Tab（防丢稿）
                         this.apply_example(cmd, window, cx);
                         this.mark_active_as_user_draft(cx);
                     }
@@ -318,7 +314,7 @@ impl MongoQueryPanel {
         if idx >= self.tabs.len() {
             return;
         }
-        // 防丢稿：有手写草稿先确认（确认弹窗模态，idx 在回调前不会漂移）
+        // 有手写草稿时先确认。
         let has_draft = self
             .tabs
             .get(idx)
@@ -327,7 +323,7 @@ impl MongoQueryPanel {
             let entity = cx.entity();
             ramag_ui::open_confirm(
                 "关闭查询标签？",
-                "该标签的编辑器有未保存的手写内容，关闭将丢弃。".to_string(),
+                "未保存内容将丢失。".to_string(),
                 "关闭",
                 true,
                 move |window, app| {
@@ -357,7 +353,7 @@ impl MongoQueryPanel {
             let _ = self.draft_subscriptions.remove(idx);
         }
         if self.tabs.is_empty() {
-            // 至少保留一个 Tab（与 dbclient 一致）
+            // 至少保留一个标签。
             self.add_tab(window, cx);
             return;
         }
@@ -403,8 +399,7 @@ impl MongoQueryPanel {
         self.tabs.len()
     }
 
-    /// 把示例命令写入当前激活 Tab 的编辑器（整体替换）；没 Tab 时先建一个。
-    /// 有手写草稿时另开 Tab，不覆盖（防丢稿）
+    /// 写入示例命令；有草稿时新建标签。
     fn apply_example(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.draft_load_pending = false;
         let has_draft = self
@@ -431,7 +426,7 @@ impl MongoQueryPanel {
         self.schedule_draft_persist(cx);
     }
 
-    /// 集合改名成功：同步受影响标签并让旧结果失效。
+    /// 集合改名后同步受影响标签。
     pub fn collection_renamed(
         &mut self,
         database: &str,
@@ -448,7 +443,7 @@ impl MongoQueryPanel {
         self.schedule_draft_persist(cx);
     }
 
-    /// 集合删除成功：清掉受影响标签的 DML 目标并标明结果失效。
+    /// 集合删除后使相关结果失效。
     pub fn collection_dropped(&mut self, database: &str, collection: &str, cx: &mut Context<Self>) {
         for tab in &self.tabs {
             tab.update(cx, |tab, cx| {
@@ -458,7 +453,7 @@ impl MongoQueryPanel {
         self.schedule_draft_persist(cx);
     }
 
-    /// 数据库删除成功后立即切到安全的 `admin` 上下文；树刷新后若有其它业务库会再次同步。
+    /// 数据库删除后切换至 `admin`。
     pub fn database_dropped(&mut self, database: &str, cx: &mut Context<Self>) {
         if self.database != database {
             return;

@@ -31,13 +31,13 @@ pub(crate) use search::{
     search_cancellable_bounded,
 };
 
-/// 主表：key=ClipId UUID，value=加密 JSON（hex）
+/// 加密剪贴记录。
 pub(crate) const CLIPS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("clips");
-/// 时间索引：key=recency_key，value=uuid（按最近优先有序）
+/// 最近优先索引。
 pub(crate) const CLIP_BY_TIME: TableDefinition<&str, &str> = TableDefinition::new("clip_by_time");
-/// 去重索引：key=content_hash，value=uuid
+/// 内容哈希索引。
 pub(crate) const CLIP_BY_HASH: TableDefinition<&str, &str> = TableDefinition::new("clip_by_hash");
-/// 反查表：key=uuid，value="recency_key\thash"（更新/删除时定位旧索引项）
+/// uuid 到时间键和哈希的反查索引。
 pub(crate) const CLIP_UUID_META: TableDefinition<&str, &str> =
     TableDefinition::new("clip_uuid_meta");
 
@@ -83,16 +83,14 @@ pub(crate) fn validate_key(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Re
     Ok(())
 }
 
-/// 最近优先的有序 key：`{inverted_millis:016x}:{uuid}`。
-/// inverted = u64::MAX - last_used_millis → 越新越小 → 升序遍历即最近优先；
-/// 拼 uuid 保证同毫秒多条不冲突。定长 16 位 hex 让字典序 == 数值序。
+/// 反转毫秒时间戳，升序即最近优先。
 fn recency_key(last_used: DateTime<Utc>, uuid: &str) -> String {
     let millis = last_used.timestamp_millis().max(0) as u64;
     let inverted = u64::MAX - millis;
     format!("{inverted:016x}:{uuid}")
 }
 
-/// 从 recency_key 反解出 last_used 毫秒（prune 判超龄用，无需解密条目）
+/// 从时间索引键提取毫秒时间戳。
 fn millis_from_recency_key(rk: &str) -> Result<i64> {
     let (hex, uuid) = rk
         .split_once(':')
@@ -136,7 +134,7 @@ fn remove_hash_if_owned(
     Ok(())
 }
 
-/// 全表解密（仅 clear / cleanup 等低频全量场景用，不在采集 / 唤起热路径）
+/// 全量解密，仅用于低频维护。
 fn load_all(db: &Arc<Database>, cipher: &Cipher) -> Result<Vec<ClipItem>> {
     let read_txn = db.begin_read().map_err(store_err)?;
     let table = read_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
@@ -186,7 +184,7 @@ pub(crate) fn save(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>, item: ClipIte
             .open_table(search::CLIP_SEARCH_FILTERS)
             .map_err(store_err)?;
 
-        // 已存在（更新 last_used）→ 删旧时间索引项（recency_key 已变）
+        // 更新时删除旧时间索引。
         let old_meta = match meta.get(uuid.as_str()).map_err(store_err)? {
             Some(value) => {
                 let (old_rk, old_hash) = decode_meta(&uuid, value.value())?;
@@ -242,7 +240,7 @@ pub(crate) fn get(
     Ok(Some(decode_record(&uuid, value.value(), &cipher)?))
 }
 
-/// 全量列表（按 last_used desc）。仅 cleanup_orphans 等全量场景用；日常用 `list_recent`
+/// 按最近使用时间倒序列出所有条目。
 pub(crate) fn list(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Vec<ClipItem>> {
     let cipher = cipher.read();
     let mut out = load_all(&db, &cipher)?;
@@ -250,7 +248,7 @@ pub(crate) fn list(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Vec
     Ok(out)
 }
 
-/// 流式解密并仅保留媒体路径，避免孤儿清理为文本历史构造百万级 `ClipItem` 向量。
+/// 流式读取媒体路径，避免构造完整条目列表。
 pub(crate) fn media_paths(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<Vec<String>> {
     let cipher = cipher.read();
     let read_txn = db.begin_read().map_err(store_err)?;
@@ -268,7 +266,7 @@ pub(crate) fn media_paths(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Res
     Ok(paths)
 }
 
-/// 取最近 limit 条：扫时间索引前 limit 个（已最近优先），只解密这 limit 条。O(limit)
+/// 返回最近的 `limit` 条记录。
 pub(crate) fn list_recent(
     db: Arc<Database>,
     cipher: Arc<RwLock<Cipher>>,
@@ -277,7 +275,7 @@ pub(crate) fn list_recent(
     list_recent_bounded(db, cipher, limit, u64::MAX)
 }
 
-/// 按最近顺序解密连续前缀，并在构造结果向量时执行正文总量预算，避免启动预热峰值失控。
+/// 在正文预算内返回最近连续前缀。
 pub(crate) fn list_recent_bounded(
     db: Arc<Database>,
     cipher: Arc<RwLock<Cipher>>,
@@ -351,7 +349,7 @@ pub(crate) fn delete(db: Arc<Database>, id: String) -> Result<()> {
     Ok(())
 }
 
-/// 内容指纹查重：查去重索引拿 uuid → 解密该一条。O(log N)，不全表解密
+/// 按内容哈希查找条目。
 pub(crate) fn find_by_hash(
     db: Arc<Database>,
     cipher: Arc<RwLock<Cipher>>,
@@ -373,7 +371,7 @@ pub(crate) fn find_by_hash(
     }
 }
 
-/// 由 lib.rs 在 open 时调：建主表与派生索引表。
+/// 创建主表和索引表。
 pub(crate) fn ensure_table(write_txn: &redb::WriteTransaction) -> Result<()> {
     write_txn.open_table(CLIPS_TABLE).map_err(store_err)?;
     write_txn.open_table(CLIP_BY_TIME).map_err(store_err)?;
@@ -388,8 +386,7 @@ pub(crate) fn ensure_table(write_txn: &redb::WriteTransaction) -> Result<()> {
     Ok(())
 }
 
-/// 首启迁移：主表非空但时间索引为空（旧版本数据 / 索引缺失）→ 解密全部重建三索引。
-/// 一次性，之后索引随写操作在线维护
+/// 旧数据缺少索引时重建。
 pub(crate) fn migrate_indexes(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) -> Result<()> {
     let need = {
         let read_txn = db.begin_read().map_err(store_err)?;
@@ -416,7 +413,7 @@ pub(crate) fn migrate_indexes(db: Arc<Database>, cipher: Arc<RwLock<Cipher>>) ->
             .open_table(search::CLIP_SEARCH_FILTERS)
             .map_err(store_err)?;
         let mut scratch = Vec::new();
-        // 主表逐条解密后立即写三个索引；不再额外保留整表 (uuid, key, hash) 向量。
+        // 逐条解密并立即写入索引。
         for entry in clips.iter().map_err(store_err)? {
             let (uuid, value) = entry.map_err(store_err)?;
             let item = decode_record_reusing(uuid.value(), value.value(), &cipher, &mut scratch)?;

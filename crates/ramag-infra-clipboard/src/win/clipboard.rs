@@ -1,5 +1,4 @@
-//! Win32 剪贴板读写：文本（CF_UNICODETEXT）/ 文件（CF_HDROP）/ 图片（注册 "PNG" 格式）。
-//! changeCount 用 GetClipboardSequenceNumber（与 macOS changeCount 同义，轮询比对）。
+//! Win32 剪贴板读写与变更序列号。
 
 use std::ffi::c_void;
 
@@ -36,12 +35,12 @@ pub struct ClipboardRead {
     pub owner_pid: u32,
 }
 
-/// 当前剪贴板序列号（系统级单调递增，任何内容变更都会自增）
+/// 当前剪贴板变更序列号。
 pub fn sequence_number() -> i64 {
     unsafe { GetClipboardSequenceNumber() as i64 }
 }
 
-/// OpenClipboard/CloseClipboard 的 RAII 守卫，确保任何路径退出都关闭
+/// OpenClipboard/CloseClipboard 的 RAII 守卫。
 struct Clipboard;
 
 impl Clipboard {
@@ -75,7 +74,7 @@ impl Drop for Clipboard {
     }
 }
 
-/// 注册（或取回已注册的）"PNG" 剪贴板格式 id
+/// 注册或获取 PNG 剪贴板格式 ID。
 fn png_format() -> u32 {
     unsafe { RegisterClipboardFormatW(w!("PNG")) }
 }
@@ -159,7 +158,7 @@ unsafe fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// 注册格式的 DWORD 值；用于 Windows 剪贴板隐私标记。
+/// 读取注册格式的 DWORD 值。
 fn format_u32(format: u32) -> Option<u32> {
     if !format_available(format) {
         return None;
@@ -183,7 +182,7 @@ fn format_u32(format: u32) -> Option<u32> {
     Some(u32::from_le_bytes(value))
 }
 
-/// 密码管理器和系统可用这些格式声明“不允许监控/不进入历史”。
+/// 识别系统和密码管理器的隐私标记。
 fn is_concealed() -> bool {
     let exclude_monitor =
         unsafe { RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing")) };
@@ -206,7 +205,7 @@ fn is_concealed() -> bool {
     matches!(format_u32(include_history), Some(0))
 }
 
-/// 累加一条 UTF-16 路径，并预留每条 NUL 与列表末尾 NUL。
+/// 累加 UTF-16 路径长度并预留 NUL。
 fn checked_file_units(total: usize, path_units: usize) -> Option<usize> {
     if path_units == 0 || path_units > MAX_PATH_UNITS {
         return None;
@@ -259,7 +258,7 @@ fn read_file_list(handle: HANDLE) -> Option<Vec<String>> {
     Some(files)
 }
 
-/// 读当前剪贴板。优先级：文件 > 图片（PNG）> 文本
+/// 按文件、图片、文本优先级读取剪贴板。
 pub fn read() -> Result<Option<ClipboardRead>> {
     let guard = Clipboard::open(None)?;
     let owner = unsafe { GetClipboardOwner() };
@@ -278,7 +277,6 @@ pub fn read() -> Result<Option<ClipboardRead>> {
     }
     let mut cap = CapturedClip::default();
 
-    // 文件：CF_HDROP
     if unsafe { IsClipboardFormatAvailable(CF_HDROP.0 as u32) }.is_ok()
         && let Ok(handle) = unsafe { GetClipboardData(CF_HDROP.0 as u32) }
         && let Some(files) = read_file_list(handle)
@@ -289,7 +287,6 @@ pub fn read() -> Result<Option<ClipboardRead>> {
         }
     }
 
-    // 图片：注册的 "PNG" 格式（Ramag 自身与多数现代应用走此格式）
     let png_fmt = png_format();
     if unsafe { IsClipboardFormatAvailable(png_fmt) }.is_ok()
         && let Ok(handle) = unsafe { GetClipboardData(png_fmt) }
@@ -307,7 +304,7 @@ pub fn read() -> Result<Option<ClipboardRead>> {
         );
     }
 
-    // 先复制候选格式，再关闭系统剪贴板；图片解码不能长时间占用全局锁。
+    // 先复制格式，再关闭剪贴板后解码图片。
     let mut remaining = MAX_CLIPBOARD_BYTES;
     let mut dib_candidates = Vec::with_capacity(2);
     for format in [CF_DIBV5.0 as u32, CF_DIB.0 as u32] {
@@ -322,7 +319,7 @@ pub fn read() -> Result<Option<ClipboardRead>> {
     });
     drop(guard);
 
-    // 图片：Windows 截图、画图等常用 CF_DIBV5 / CF_DIB，补 BMP 头转 PNG。
+    // 将 CF_DIBV5/CF_DIB 转为 PNG。
     for dib in dib_candidates {
         if let Some(png) = dib_to_png(&dib)
             && let Some(dims) = png_dims(&png).filter(|dims| image_dimensions_allowed(*dims))
@@ -333,7 +330,6 @@ pub fn read() -> Result<Option<ClipboardRead>> {
         }
     }
 
-    // 文本：CF_UNICODETEXT
     if let Some(bytes) = text_bytes {
         let units: Vec<u16> = bytes
             .chunks_exact(2)
@@ -357,7 +353,7 @@ pub fn read() -> Result<Option<ClipboardRead>> {
     Ok(None)
 }
 
-/// 写文本（UTF-16 + 结尾 NUL），并在有数据时附带标准 RTF 格式。
+/// 写入 UTF-16 文本，可附带 RTF。
 pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
     if text.contains('\0') {
         return Err(DomainError::InvalidConfig(
@@ -385,12 +381,12 @@ pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
     let mut units: Vec<u16> = text.encode_utf16().collect();
     units.push(0);
     let bytes = unsafe { std::slice::from_raw_parts(units.as_ptr().cast::<u8>(), units.len() * 2) };
-    // owner 必须先创建、后销毁；局部变量逆序析构保证先 CloseClipboard 再 DestroyWindow。
+    // owner 需在剪贴板关闭后销毁。
     let owner = ClipboardOwner::create()?;
     let _guard = Clipboard::open(Some(owner.hwnd()))?;
     unsafe {
         EmptyClipboard().map_err(|e| DomainError::Other(format!("清空剪贴板失败：{e}")))?;
-        // Windows 建议按「最丰富 → 最基础」顺序注册格式，枚举格式的应用才能优先选 RTF。
+        // 按丰富度顺序注册，使应用优先选择 RTF。
         if let Some(rtf) = rtf.filter(|bytes| !bytes.is_empty()) {
             let mut terminated = Vec::with_capacity(rtf.len() + 1);
             terminated.extend_from_slice(rtf);
@@ -407,7 +403,7 @@ pub fn write_text(text: &str, rtf: Option<&[u8]>) -> Result<i64> {
     }
 }
 
-/// 写图片：同时放 "PNG" 格式（Ramag 自身往返）与 CF_DIB（外部应用如 Paint / Word 识别）
+/// 写入 PNG，并尽量附带 CF_DIB 兼容外部应用。
 pub fn write_image_png(png: &[u8]) -> Result<i64> {
     if png.len() > MAX_CLIPBOARD_BYTES {
         return Err(DomainError::InvalidConfig(format!(
@@ -418,7 +414,7 @@ pub fn write_image_png(png: &[u8]) -> Result<i64> {
     let _dims = png_dims(png)
         .filter(|dims| image_dimensions_allowed(*dims))
         .ok_or_else(|| DomainError::InvalidConfig("PNG 图片格式无效或尺寸过大".into()))?;
-    // 转码可能涉及完整图片解码，必须在打开系统剪贴板前完成，避免长时间占用全局锁。
+    // 转码在打开剪贴板前完成，避免长时间占锁。
     let dib = png_to_dib(png);
     let fmt = png_format();
     let owner = ClipboardOwner::create()?;
@@ -426,7 +422,7 @@ pub fn write_image_png(png: &[u8]) -> Result<i64> {
     unsafe {
         EmptyClipboard().map_err(|e| DomainError::Other(format!("清空剪贴板失败：{e}")))?;
         set_clipboard_bytes(fmt, png)?;
-        // CF_DIB 供外部应用；转码或附加格式写入失败不影响已写入的 PNG。
+        // 附加 CF_DIB 失败不影响已写入的 PNG。
         if let Some(dib) = dib
             && let Err(error) = set_clipboard_bytes(CF_DIB.0 as u32, &dib)
         {
@@ -436,14 +432,13 @@ pub fn write_image_png(png: &[u8]) -> Result<i64> {
     }
 }
 
-/// 写文件列表（CF_HDROP）：DROPFILES 头 + 双 NUL 结尾的 UTF-16 路径串
+/// 写入 CF_HDROP 文件列表。
 pub fn write_files(paths: &[String]) -> Result<i64> {
     if paths.is_empty() || paths.len() > MAX_CLIPBOARD_FILES as usize {
         return Err(DomainError::InvalidConfig(
             "文件列表为空或文件数量过多".into(),
         ));
     }
-    // 构造 UTF-16 路径区：每条路径 NUL 结尾，整体再补一个 NUL
     let mut wide: Vec<u16> = Vec::new();
     let mut total_units = 0usize;
     for p in paths {
@@ -487,12 +482,12 @@ pub fn write_files(paths: &[String]) -> Result<i64> {
     }
 }
 
-/// 构造 NUL 结尾的宽字符串，供 PCWSTR 传参
+/// 构造 NUL 结尾的宽字符串。
 pub fn wide_nul(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// 供 app 模块复用：把宽串首指针包成 PCWSTR
+/// 将宽字符串首指针包装为 PCWSTR。
 pub fn pcwstr(buf: &[u16]) -> PCWSTR {
     PCWSTR(buf.as_ptr())
 }

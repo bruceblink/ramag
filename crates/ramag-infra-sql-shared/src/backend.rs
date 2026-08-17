@@ -1,5 +1,4 @@
-//! SqlBackend：SQL 类 driver 唯一抽象层 + 泛型模板（test/execute/cancel/list_*）。
-//! driver crate 仅实现方言方法 + 行解码 + 元数据 SQL，由 `impl_driver_for!` 宏代理到 Driver
+//! SQL driver 的共享抽象与执行模板。
 
 mod query;
 use query::*;
@@ -34,8 +33,7 @@ const MAX_QUERY_RESULT_BYTES: u64 = ramag_domain::entities::MAX_INTERACTIVE_RESU
 const MAX_QUERY_RESULT_COLUMNS: usize = 4_096;
 const MAX_QUERY_RESULT_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
-/// SQL 类 driver 抽象。`Db` 绑到 sqlx Database（MySql/Postgres/Sqlite 等）。
-/// where 子句的 HRTB GAT 是 sqlx 0.8 必备，sqlx 内置 Database 自动满足
+/// SQL driver 抽象；泛型约束适配 sqlx 0.8。
 #[async_trait]
 pub trait SqlBackend: Send + Sync + 'static
 where
@@ -50,29 +48,29 @@ where
     /// 共享池在缓存命中前也必须确认 driver 类型，不能只依赖具体 build_pool 的 miss 路径。
     fn driver_kind(&self) -> DriverKind;
 
-    /// 按 ConnectionId 缓存的连接池
+    /// 按 ConnectionId 缓存连接池。
     fn cache(&self) -> &PoolCache<Self::Db>;
 
-    /// MySQL 反引号 / PG 双引号
+    /// 按方言引用标识符。
     fn quote_identifier(&self, ident: &str) -> String;
 
     /// 取消语句：MySQL `KILL QUERY`，PG `pg_cancel_backend()`。
     fn cancel_query_sql(&self, backend_id: u64) -> String;
 
-    /// MySQL `USE <db>`；PG None（连接时绑定 db）
+    /// 返回切换数据库语句；PG 在连接时绑定，故返回 None。
     fn use_database_sql(&self, db: &str) -> Option<String>;
 
-    /// PG 需识别 dollar-quoted
+    /// 返回方言对应的语句切分选项。
     fn split_options(&self) -> SplitOptions;
 
     async fn build_pool(&self, config: &ConnectionConfig) -> Result<Pool<Self::Db>>;
 
     fn decode_row(&self, row: &<Self::Db as Database>::Row) -> Result<Vec<Value>>;
 
-    /// 列名 + 列类型名
+    /// 提取列名和类型名。
     fn extract_columns(&self, row: &<Self::Db as Database>::Row) -> (Vec<String>, Vec<String>);
 
-    /// 空结果集 fallback 列定义。默认 None，MySQL 走 `Connection::describe`
+    /// 空结果集的列定义；默认 None。
     async fn extract_columns_fallback(
         &self,
         _conn: &mut <Self::Db as Database>::Connection,
@@ -81,10 +79,10 @@ where
         None
     }
 
-    /// DML 受影响行数。sqlx 没抽到 trait 上，只能 hook
+    /// 返回 DML 受影响行数。
     fn rows_affected(&self, query_result: &<Self::Db as Database>::QueryResult) -> u64;
 
-    /// 把后端 thread/session id 写入 cancel handle
+    /// 将后端会话 ID 写入取消句柄。
     async fn record_backend_id(
         &self,
         _conn: &mut PoolConnection<Self::Db>,
@@ -92,12 +90,12 @@ where
     ) {
     }
 
-    /// MySQL SHOW WARNINGS；其他 DB 默认空
+    /// 返回数据库警告；默认空。
     async fn fetch_warnings(&self, _conn: &mut <Self::Db as Database>::Connection) -> Vec<Warning> {
         Vec::new()
     }
 
-    /// 数据库错误码识别，优先于通用大类映射
+    /// 按数据库错误码映射错误；优先于通用映射。
     fn map_database_error(&self, _err: &sqlx::Error) -> Option<DomainError> {
         None
     }
@@ -130,7 +128,7 @@ where
     ) -> Result<Vec<ForeignKey>>;
 }
 
-/// 取连接池：命中缓存即返，否则 build_pool 后 insert
+/// 获取或创建连接池。
 async fn get_pool<B>(b: &B, config: &ConnectionConfig) -> Result<Pool<B::Db>>
 where
     B: SqlBackend,
@@ -139,8 +137,7 @@ where
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
     validate_backend_config(config, b.driver_kind(), b.name())?;
-    // 在等待建池锁前固定请求代际；若期间配置被 evict，本次旧请求可完成，
-    // 但不得命中新配置的池，也不得把旧池重新写回缓存。
+    // 固定请求代际，避免旧请求命中或写回新配置的连接池。
     let generation = b.cache().generation_for_request(&config.id);
     if let Some(p) = b.cache().get(&config.id, generation) {
         return Ok(p);
@@ -150,7 +147,7 @@ where
     if !b.cache().is_current_generation(&config.id, generation) {
         return b.build_pool(config).await;
     }
-    // 等锁期间其它请求可能已完成建池。
+    // 等锁期间可能已有请求完成建池。
     if let Some(p) = b.cache().get(&config.id, generation) {
         return Ok(p);
     }
@@ -175,7 +172,7 @@ fn validate_backend_config(
     Ok(())
 }
 
-/// 先走 driver 自定义识别，未命中走 sqlx 通用大类
+/// 优先使用 driver 的错误映射。
 fn map_err<B>(b: &B, err: sqlx::Error) -> DomainError
 where
     B: SqlBackend,
@@ -186,8 +183,6 @@ where
     b.map_database_error(&err)
         .unwrap_or_else(|| map_sqlx_common(&err))
 }
-
-// 模板函数：由 `impl_driver_for!` 代理调用
 
 pub async fn test_connection_impl<B>(b: &B, config: &ConnectionConfig) -> Result<()>
 where
@@ -327,7 +322,7 @@ where
     Ok(())
 }
 
-/// 多语句切分 + LIMIT 注入 + cancel handle + warnings
+/// 执行多语句查询并管理 LIMIT、取消和警告。
 pub async fn execute_impl<B>(
     b: &B,
     config: &ConnectionConfig,
@@ -356,7 +351,7 @@ where
             operation = "sql_query_switch_schema",
             schema, "switching default schema before query"
         );
-        // MySQL `USE <db>` 在 prepared statement 协议不支持，必须走 COM_QUERY 简单查询
+        // MySQL 的 USE 不支持 prepared statement，需走简单查询。
         conn.execute(use_sql.as_str())
             .await
             .map_err(|e| map_err(b, e))?;
@@ -375,8 +370,7 @@ where
         });
     }
 
-    // 生产模式只读保护：任一语句为写即整批拒绝，不执行其中任何一条。
-    // 详细拦截信息进日志，页面只回统一文案
+    // 生产模式中任一写语句都会拒绝整批执行；细节仅记日志。
     if config.production
         && let Some(stmt) = statements.iter().find(|s| is_write_statement(s))
     {
@@ -516,7 +510,7 @@ fn append_warnings_bounded(accumulated: &mut Vec<Warning>, incoming: Vec<Warning
         return;
     }
 
-    // 为明确的截断提示预留一格；若此前恰好装满，则替换最后一条。
+    // 为截断提示预留一格。
     if remaining == 0 {
         accumulated.pop();
     } else {

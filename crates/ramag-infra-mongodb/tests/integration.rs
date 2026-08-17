@@ -1,17 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! 集成测试：连真实 MongoDB（默认 skip，缺环境变量直接 return，不让 `make test` 失败）。
-//!
-//! 必填环境变量（缺任一即 skip）：
-//!   RAMAG_TEST_MONGO_HOST  (例 127.0.0.1)
-//!   RAMAG_TEST_MONGO_PORT  (例 27017)
-//!   RAMAG_TEST_MONGO_DB    (例 ramag_test)
-//! 可选：
-//!   RAMAG_TEST_MONGO_USER
-//!   RAMAG_TEST_MONGO_PASSWORD
-//!
-//! 跑法：
-//!   cargo test -p ramag-infra-mongodb --test integration -- --nocapture
+//! MongoDB 集成测试；未配置 `RAMAG_TEST_MONGO_*` 时跳过。
 
 use ramag_domain::entities::ConnectionConfig;
 use ramag_domain::traits::DocDriver;
@@ -102,8 +91,7 @@ async fn test_crud_roundtrip() {
         .await;
 }
 
-/// 深度查询：对 ramag_demo 库的 users / products / orders 跑完整方法集。
-/// 需先用 docker mongosh 灌入种子数据；不存在时 skip
+/// 对示例数据执行完整查询集；无种子数据时跳过。
 #[tokio::test]
 async fn test_demo_data_full_queries() {
     let Some(cfg) = build_config_from_env() else {
@@ -151,7 +139,6 @@ async fn test_demo_data_full_queries() {
     assert!(stats.count >= 10);
     assert!(stats.index_count >= 3);
 
-    // 4) count 全量 + 条件
     let n_all = driver
         .count(&cfg, &db, "users", &json!({}))
         .await
@@ -164,7 +151,6 @@ async fn test_demo_data_full_queries() {
     assert!(n_all >= 10);
     assert!(n_admin >= 2);
 
-    // 5) find: age>=30 倒序 limit=5
     use ramag_domain::entities::MongoQuerySpec;
     let spec = MongoQuerySpec {
         filter: json!({"age": {"$gte": 30}}),
@@ -183,7 +169,6 @@ async fn test_demo_data_full_queries() {
     assert!(!r.documents.is_empty());
     assert!(r.documents.len() <= 5);
 
-    // 6) aggregate: 按 role 分组
     let pipeline = vec![
         json!({"$group": {"_id": "$role", "count": {"$sum": 1}}}),
         json!({"$sort": {"count": -1}}),
@@ -198,7 +183,6 @@ async fn test_demo_data_full_queries() {
     }
     assert!(r.documents.len() >= 2);
 
-    // 7) products: Decimal128 字段 find，确认 Extended JSON 编码 $numberDecimal
     let spec = MongoQuerySpec {
         filter: json!({"category": "electronics"}),
         limit: Some(3),
@@ -218,7 +202,6 @@ async fn test_demo_data_full_queries() {
         .any(|d| d.to_string().contains("$numberDecimal"));
     assert!(any_decimal, "Decimal128 字段应编码为 $numberDecimal");
 
-    // 8) run_command: dbStats 兜底通用命令
     let stats = driver
         .run_command(&cfg, &db, json!({"dbStats": 1}))
         .await
@@ -227,8 +210,7 @@ async fn test_demo_data_full_queries() {
     assert!(stats.get("collections").is_some());
 }
 
-/// 复现 UI 单元格编辑路径：insert → find 取回 Extended JSON 形式的 _id → 用它构造
-/// filter={_id} + update={$set} → update_one → 回查确认。验证 ObjectId _id 往返后能否匹配更新。
+/// 验证 Extended JSON `_id` 可用于单元格更新。
 #[tokio::test]
 async fn test_update_one_reproduce() {
     let Some(cfg) = build_config_from_env() else {
@@ -303,9 +285,7 @@ async fn test_update_one_reproduce() {
         .await;
 }
 
-/// 探测某种 _id 类型能否走通 UI 更新路径：插入带该 _id 的文档 → find 取回 Extended JSON
-/// 形式的 _id → 用它构造 filter={_id} 做 update_one → 回查 marker 是否被改。
-/// 返回 true=filter 匹配成功（更新生效），false=matched 0（更新不了）。
+/// 验证指定 `_id` 可完成 UI 更新路径。
 async fn probe_id_roundtrip(
     driver: &MongoDriver,
     cfg: &ConnectionConfig,
@@ -334,14 +314,12 @@ async fn probe_id_roundtrip(
         .expect("inserted doc not found by probe");
     let id = found.get("_id").cloned().expect("no _id");
     eprintln!("[{probe_tag}] find 取回 _id = {id}");
-    // 模拟 UI 单元格编辑：filter={_id}, update={$set:{marker:"updated"}}
     let filter = json!({ "_id": id });
     let update = json!({ "$set": { "marker": "updated" } });
     driver
         .update_one(cfg, db, coll, &filter, &update)
         .await
         .expect("update failed");
-    // 用 probe 字段（不靠 _id）回查 marker 是否真被改
     let r2 = driver
         .find(cfg, db, coll, &spec)
         .await
@@ -352,7 +330,7 @@ async fn probe_id_roundtrip(
     ok
 }
 
-/// _id 类型往返矩阵：逐类型走 UI 更新路径，列出哪些类型「更新不了」（matched 0）。
+/// 覆盖多种 `_id` 的 UI 更新路径。
 #[tokio::test]
 async fn test_id_type_roundtrip_matrix() {
     let Some(cfg) = build_config_from_env() else {
@@ -366,9 +344,7 @@ async fn test_id_type_roundtrip_matrix() {
     let coll = "ramag_idtype_probe";
     let _ = driver.run_command(&cfg, &db, json!({"drop": coll})).await;
 
-    // 各类型文档：带 probe（稳定定位，不依赖 _id）+ marker（被更新的目标字段）
     let cases: Vec<(serde_json::Value, &str)> = vec![
-        // 不指定 _id → mongo 自动 ObjectId（基线，应成功）
         (json!({"probe": "objectid", "marker": "orig"}), "objectid"),
         (
             json!({"_id": "str-id-1", "probe": "string", "marker": "orig"}),
@@ -500,7 +476,6 @@ async fn test_insert_many_skips_duplicate_ids() {
     assert_eq!(outcome.inserted, 5);
     assert_eq!(outcome.duplicates, 0);
 
-    // 重复导入（断点续传语义）：2 条重复计数、3 条新写入
     let mixed: Vec<_> = (3..8).map(|i| json!({"_id": i, "n": i})).collect();
     let outcome = driver
         .insert_many(&cfg, &db, coll, mixed, true)

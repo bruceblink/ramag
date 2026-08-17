@@ -56,8 +56,7 @@ pub enum SortDir {
     Desc,
 }
 
-/// 全表精确总行数的异步计数状态。分页刻意只用哨兵判断有无下一页，
-/// 精确总数由首屏后台 COUNT(*) 回填，故需三态区分。
+/// 异步精确总行数状态；分页用哨兵判断下一页，COUNT(*) 后台回填。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TotalRows {
     Counting,
@@ -70,7 +69,7 @@ pub(crate) struct ResultPagination {
     pub(crate) page: usize,
     pub(crate) page_size: usize,
     pub(crate) has_more: bool,
-    /// 全表精确总行数状态；跨翻页缓存复用，不逐页重算。
+    /// 精确总行数，跨页复用。
     pub(crate) total: TotalRows,
 }
 
@@ -94,27 +93,26 @@ pub struct ResultPanel {
     pub(super) pending_notification: Option<Notification>,
     pub(super) selected_cell: Option<(usize, usize)>,
     pub(super) selected_rows: BTreeSet<usize>,
-    /// 选择变化代次与当前可见行交集缓存，避免普通重渲染反复扫描最多一万行。
+    /// 选择代际与可见行交集缓存，避免重复扫描。
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
     pub(super) source_sql: Option<String>,
     pub(super) pinned_target: Option<(Option<String>, String)>,
-    /// 行定位键（真实主键 / 全非空唯一索引）：QueryTab 查询成功后异步注入；
-    /// None = 元数据未就绪或该表无键，行内修改 / 删除一律禁用
+    /// 行定位键（主键或全非空唯一索引）；未就绪时禁用行内修改和删除。
     pub(super) row_identity: Option<RowIdentity>,
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
-    /// DML（增删改）防重入闸：spawn 前置位、回包复位；置位期间再次提交被 dml_conn 拦下
+    /// DML 防重入闸；请求期间禁止再次提交。
     pub(super) dml_busy: bool,
-    /// 导出防重入闸；后台任务完成（含取消/失败）后复位。
+    /// 导出防重入闸；任务结束后复位。
     pub(super) exporting: bool,
     pub(super) sort_by: Option<(usize, SortDir)>,
-    /// 当前服务端结果页；None 表示本次 SQL 不具备安全分页资格。
+    /// 当前服务端结果页；None 表示不支持安全分页。
     pub(super) pagination: Option<ResultPagination>,
-    /// 结果内容代次：状态切换或本地增删改后递增，用于派生视图缓存和异步回包校验。
+    /// 结果代际，供派生缓存和异步回包校验。
     pub(super) result_revision: u64,
-    /// 排序、筛选及列布局的派生缓存；选择单元格等无关重渲染可直接复用。
+    /// 排序、筛选和列布局缓存。
     pub(super) display_view_cache: Option<crate::views::result_table::DisplayViewCache>,
-    /// 当前后台派生视图的条件；用于避免普通重渲染重复排队同一任务。
+    /// 当前后台派生视图条件，避免重复排队。
     pub(super) display_view_build_key: Option<crate::views::result_table::DisplayViewCacheKey>,
     /// 派生视图构建状态与精确取消令牌。
     pub(super) display_view_building: bool,
@@ -131,7 +129,7 @@ pub struct ResultPanel {
     pub(super) pending_insert: Option<PendingInsert>,
     pub(super) uniform_scroll: UniformListScrollHandle,
     pub(super) h_scroll: ScrollHandle,
-    /// 结果表触控板手势的轴锁定状态，必须跨帧保留。
+    /// 结果表触控板手势的轴锁定状态。
     result_scroll_gesture: AxisScrollGesture,
     pub(super) column_completion_source: Arc<RwLock<Vec<String>>>,
     pub(super) warnings_expanded: bool,
@@ -291,7 +289,7 @@ impl ResultPanel {
             return;
         }
         if self.apply_insert_async(values, cx) {
-            // 请求已成功发起后退出草稿模式；前置校验失败时保留用户输入。
+            // 请求发起后退出草稿；前置校验失败时保留输入。
             self.pending_insert = None;
             cx.notify();
         }
@@ -302,7 +300,6 @@ impl ResultPanel {
         self.pinned_target = target;
     }
 
-    /// 仅向匹配的结果集注入行定位键。
     pub(crate) fn set_row_identity_if_target(
         &mut self,
         schema: &str,
@@ -320,7 +317,6 @@ impl ResultPanel {
         }
     }
 
-    /// 手改 SQL 后清除可编辑目标。
     pub fn clear_editable_target(&mut self, cx: &mut Context<Self>) {
         if self.pinned_target.is_some() || self.row_identity.is_some() {
             self.pinned_target = None;
@@ -341,7 +337,7 @@ impl ResultPanel {
             return Some("生产连接 · 只读");
         }
         if self.pinned_target.is_none() {
-            return Some("仅表树打开的单表数据支持增删改；手写 / 手改 SQL 的结果为只读");
+            return Some("仅表树打开的单表可编辑");
         }
         if self.target_is_view() {
             return Some("视图不可写入");

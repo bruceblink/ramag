@@ -22,24 +22,23 @@ pub(super) fn render_row(
     columns: &[Column],
     fg: Hsla,
     muted: Hsla,
-    // 嵌套对象/数组摘要单元格的字色（蓝色，提示可点击下钻）
+    // 嵌套摘要使用蓝色，提示可下钻。
     nested_fg: Hsla,
     border: Hsla,
     muted_bg: Hsla,
     mono_font: SharedString,
     allow_edit: bool,
-    // Some = 只读钻取视图的源文档：双击仅查看该单元格完整内容
+    // 只读钻取的源文档；双击仅查看完整内容。
     drill_doc: Option<&serde_json::Value>,
     cx: &mut Context<ResultPanel>,
 ) -> gpui::AnyElement {
-    // 斑马纹：偶数行透明，奇数行 muted_bg 35% 透明度（与 dbclient::result_table 一致）
+    // 斑马纹。
     let stripe = if row_idx_in_view.is_multiple_of(2) {
         muted_bg.opacity(0.0)
     } else {
         muted_bg.opacity(0.35)
     };
 
-    // 行号列：满格高度（竖线连续）+ 等宽字体 + 右对齐
     let row_num_cell = div()
         .w(row_num_width)
         .flex_none()
@@ -69,19 +68,16 @@ pub(super) fn render_row(
     for &ci in visible_cols {
         let cell = &cells[ci];
         let column = &columns[ci];
-        // cell.text 原值保留（编辑/查看/导出用），仅清洗显示预览的换行，避免 GPUI 单行断言 panic
+        // 保留原值；仅清洗单行预览，避免 GPUI 断言失败。
         let preview = sanitize_inline(&truncate(&cell.text, CELL_PREVIEW_MAX));
         let is_null = cell.kind == "null" && preview.is_empty();
-        // 数字类型列右对齐（与 dbclient is_right 同款）
         let is_right = matches!(column.kind, "int" | "long" | "double" | "decimal");
         let mf = mono_font.clone();
-        // 捕获列信息 + 单元格值，双击 → 弹单元格 dialog（与 dbclient 单元格编辑器同款交互）
         let path_for_click = column.path.clone();
         let kind_for_click = column.kind;
-        // 嵌套对象/数组单元格显示的是摘要（{N 字段}/[N 项]），双击取该行该字段原值下钻
         let is_nested = matches!(cell.kind, "object" | "array");
         let column_index = ci;
-        // 钻取只读视图：预取该单元格完整内容供双击查看（嵌套取原始 JSON，标量取文本）
+        // 只读钻取预取完整内容供双击查看。
         let drill_click_text: Option<String> = drill_doc.map(|doc| {
             if is_nested {
                 value_at_path(doc, column.path.as_str())
@@ -131,7 +127,7 @@ pub(super) fn render_row(
                         if e.click_count() < 2 {
                             return;
                         }
-                        // 钻取只读视图：双击仅查看该单元格完整内容，不编辑、不再入栈
+                        // 只读钻取仅查看完整内容，不编辑或继续下钻。
                         if let Some(text) = drill_click_text.clone() {
                             panel.open_cell_dialog(
                                 path_for_click.clone(),
@@ -142,7 +138,7 @@ pub(super) fn render_row(
                             );
                             return;
                         }
-                        // 仅在实际双击时克隆定位值；避免每帧为所有可见行复制可能很大的 _id。
+                        // 仅在双击时复制定位值，避免每帧复制大 _id。
                         let (id_for_click, ident_for_click) = panel
                             .docs_arc
                             .as_ref()
@@ -163,8 +159,7 @@ pub(super) fn render_row(
                         else {
                             return;
                         };
-                        // 嵌套对象/数组：下钻查看（对象层进去可编辑，数组层只读），
-                        // 传当前行 _id 作回写定位上下文 + 行标识作下钻层前导列
+                        // 嵌套值进入下钻；保留行 ID 作为回写定位上下文。
                         if is_nested {
                             panel.drill_into(
                                 path_for_click.clone(),
@@ -176,11 +171,7 @@ pub(super) fn render_row(
                             );
                             return;
                         }
-                        // 标量编辑（仅 allow_edit 视图）：
-                        // - 顶层：行 _id + 列名
-                        // - 下钻对象层：顶层 _id + 完整 dotted 路径
-                        // - 其余（数组层 / 派生只读视图 / 无 _id）：只读查看
-                        // 只有可无损往返的类型才允许编辑；binary/regex/code/ts 等只读查看
+                        // 顶层和对象下钻层可编辑；其余视图或无法无损回写的类型仅查看。
                         if allow_edit
                             && panel.can_write()
                             && !panel.is_drilled()
@@ -232,7 +223,6 @@ pub(super) fn render_row(
                         .when(is_right, |this| this.justify_end())
                         .text_xs()
                         .font_family(mf)
-                        // 嵌套摘要用蓝色（可点击下钻）；空值 muted；其余正常前景色
                         .text_color(if is_null {
                             muted
                         } else if is_nested {
@@ -243,7 +233,6 @@ pub(super) fn render_row(
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()
-                        // 嵌套摘要不再加 › 箭头，改由蓝色字体表达可下钻
                         .child(SharedString::from(if is_null {
                             "NULL".to_string()
                         } else {

@@ -1,18 +1,16 @@
-//! 值显示：Raw / JSON / Hex / base64 视图 + Gzip 自动解压。仅作用于 String / Bytes 标量
+//! Redis 标量值的 Raw、JSON、Hex 和 Base64 视图。
 
 use base64::Engine as _;
 use flate2::read::GzDecoder;
 use std::fmt;
 use std::io::{self, Read, Write};
 
-/// 行虚拟化展示的单行最大字符数：超长行硬切成段，保证等高行且避免单节点排版爆炸
+/// 虚拟化行的最大字符数。
 pub const MAX_DISPLAY_LINE_CHARS: usize = 200;
-/// 行虚拟化内容区固定宽度：200 字符 × ~9px（text_sm 等宽）+ 余量，
-/// 配合外层横向滚动保证行尾不被视口裁掉
+/// 虚拟化内容区固定宽度。
 pub const DISPLAY_CONTENT_WIDTH_PX: f32 = 1840.0;
 
-/// 按行切分显示文本；超长行按字符数硬切（char 边界安全），供 uniform_list 等高行虚拟化。
-/// 大值塞进单个文本节点的整体排版是滚动卡死的根源。空文本给单个空行占位
+/// 按字符边界拆分文本，供等高行虚拟化展示。
 pub fn split_display_lines(text: &str) -> Vec<gpui::SharedString> {
     let mut lines: Vec<gpui::SharedString> = Vec::new();
     for raw in text.split('\n') {
@@ -47,9 +45,7 @@ mod split_lines_tests {
     fn display_lines_split_by_newline_and_hard_wrap_on_char_boundary() {
         assert_eq!(split_display_lines("").len(), 1);
         assert_eq!(split_display_lines("a\nb").len(), 2);
-        // 尾随换行保留末尾空行；\r\n 归一
         assert_eq!(split_display_lines("a\r\nb\n").len(), 3);
-        // 超长行按字符数硬切，多字节字符不越界
         let long = "汉".repeat(MAX_DISPLAY_LINE_CHARS + 5);
         let lines = split_display_lines(&long);
         assert_eq!(lines.len(), 2);
@@ -67,14 +63,14 @@ const HEX_LINE_RENDERED_BYTES: usize = 79;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
-    /// 原文（utf-8）
+    /// 原文。
     #[default]
     Raw,
-    /// JSON 解析 + pretty
+    /// 格式化 JSON。
     Json,
-    /// Hex 字节流（每字节 2 位 + 空格分隔，每 16 字节换行）
+    /// Hex 字节流。
     Hex,
-    /// base64 编码
+    /// Base64 编码。
     Base64,
 }
 
@@ -95,7 +91,7 @@ impl fmt::Display for GzipDecodeError {
     }
 }
 
-/// Gzip magic：检测到 `1f 8b` 前缀才尝试解压，并限制输出大小以防压缩炸弹。
+/// Gzip 魔数匹配时尝试解压，并限制输出大小。
 pub fn try_decompress_gzip(bytes: &[u8]) -> Result<Option<Vec<u8>>, GzipDecodeError> {
     decompress_gzip_with_limit(bytes, MAX_GZIP_DECOMPRESSED_BYTES)
 }
@@ -119,7 +115,7 @@ fn decompress_gzip_with_limit(
     Ok(Some(out))
 }
 
-/// 以指定 ViewMode 渲染文本（Raw / JSON / Hex / base64）
+/// 按指定视图渲染文本。
 pub fn render_text(text: &str, mode: ViewMode) -> String {
     render_text_with_limit(text, mode, MAX_RENDER_SOURCE_BYTES)
 }
@@ -151,7 +147,7 @@ fn render_text_with_limits(
     cap_rendered_output(rendered, output_limit)
 }
 
-/// 以指定 ViewMode 渲染字节流
+/// 按指定视图渲染字节流。
 pub fn render_bytes(bytes: &[u8], mode: ViewMode) -> String {
     render_bytes_with_limit(bytes, mode, MAX_RENDER_SOURCE_BYTES)
 }
@@ -261,14 +257,13 @@ fn truncate_string_bytes(value: &mut String, limit: usize) {
     value.truncate(end);
 }
 
-/// 按内容判定默认视图：内容本身、或被编码成字符串的内容（兼容二次编码）解析后是 JSON
-/// 对象/数组 → JSON（美化），否则 Raw。超过 256KB 不自动解析（默认 Raw，仍可手动切 JSON）
+/// JSON 对象和数组默认使用 JSON 视图；最多自动解析 256 KiB。
 pub fn auto_view_mode(bytes: &[u8]) -> ViewMode {
     const MAX_AUTO_PARSE: usize = 256 * 1024;
     if bytes.len() > MAX_AUTO_PARSE {
         return ViewMode::Raw;
     }
-    // 廉价前缀过滤：只有 { [ " 开头才值得解析（覆盖普通 JSON 与被字符串编码的 JSON）
+    // 仅对象、数组和字符串前缀值得解析。
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ViewMode::Raw;
     };
@@ -278,7 +273,6 @@ pub fn auto_view_mode(bytes: &[u8]) -> ViewMode {
     ) {
         return ViewMode::Raw;
     }
-    // 解析（并解开字符串编码）后是对象/数组才默认 JSON。matches! 作用于临时 Result，不移动绑定变量
     let parsed =
         serde_json::from_slice::<serde_json::Value>(bytes).map(|v| unwrap_encoded_json(v, 4));
     if matches!(
@@ -291,8 +285,7 @@ pub fn auto_view_mode(bytes: &[u8]) -> ViewMode {
     }
 }
 
-/// 解开被编码成字符串的 JSON（兼容二次编码，如 `"{\"a\":1}"`）：某层是字符串且其内容能解析为
-/// JSON 对象/数组时继续解开，最多 depth 层防御。普通字符串/标量原样返回
+/// 递归解开字符串编码的 JSON 对象或数组。
 fn unwrap_encoded_json(v: serde_json::Value, depth: u8) -> serde_json::Value {
     if depth == 0 {
         return v;
@@ -309,7 +302,6 @@ fn unwrap_encoded_json(v: serde_json::Value, depth: u8) -> serde_json::Value {
     v
 }
 
-/// 解析 bytes 为 JSON 并 pretty 输出（先解开被字符串编码的 JSON）；失败时返回原文 + 提示
 #[cfg(test)]
 fn pretty_json(bytes: &[u8]) -> String {
     pretty_json_with_limit(bytes, MAX_RENDERED_OUTPUT_BYTES)
@@ -383,13 +375,12 @@ impl Write for BoundedJsonWriter {
     }
 }
 
-/// 经典 hex dump：每 16 字节一行；左侧偏移地址，右侧 ASCII 预览
+/// 生成带偏移量和 ASCII 预览的 Hex 转储。
 fn to_hex_dump(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().saturating_mul(4));
     for (i, chunk) in bytes.chunks(16).enumerate() {
         let offset = i * 16;
         out.push_str(&format!("{offset:08x}  "));
-        // hex 部分（每字节 2 位 + 空格；不足 16 字节用空格补齐对齐）
         for (j, b) in chunk.iter().enumerate() {
             out.push_str(&format!("{b:02x} "));
             if j == 7 {
@@ -479,7 +470,6 @@ mod tests {
     #[test]
     fn hex_dump_format() {
         let out = to_hex_dump(b"AB12");
-        // 十六进制行格式："00000000  41 42 31 32  |AB12|"。
         assert!(out.starts_with("00000000  41 42 31 32"));
         assert!(out.contains("|AB12|"));
     }
@@ -534,12 +524,9 @@ mod tests {
     fn auto_view_mode_detects_json_else_raw() {
         assert_eq!(auto_view_mode(br#"{"a":1}"#), ViewMode::Json);
         assert_eq!(auto_view_mode(b"[1,2,3]"), ViewMode::Json);
-        // 前导空白也应识别为 JSON
         assert_eq!(auto_view_mode(b"  \n {\"a\":1}"), ViewMode::Json);
-        // 被字符串编码的 JSON（二次编码）也应识别为 JSON
         let encoded = serde_json::to_string(r#"{"a":1}"#).unwrap();
         assert_eq!(auto_view_mode(encoded.as_bytes()), ViewMode::Json);
-        // 纯文本 / 普通带引号字符串 / 非 UTF-8 / 空 → Raw
         assert_eq!(auto_view_mode(b"hello world"), ViewMode::Raw);
         assert_eq!(auto_view_mode(br#""hello""#), ViewMode::Raw);
         assert_eq!(auto_view_mode(&[0xff, 0xfe]), ViewMode::Raw);
@@ -548,11 +535,9 @@ mod tests {
 
     #[test]
     fn pretty_json_unwraps_string_encoded() {
-        // 值本身是 JSON 字符串，内容又是 JSON 对象（二次编码）→ 应解开并美化内层
         let encoded = serde_json::to_string(r#"{"a":1}"#).unwrap();
         let out = pretty_json(encoded.as_bytes());
         assert!(out.contains("\n  \"a\": 1"), "got: {out}");
-        // 普通带引号字符串内容非 JSON → 原样（仍是带引号字符串，不强行展开）
         let plain = serde_json::to_string("hello").unwrap();
         assert_eq!(pretty_json(plain.as_bytes()), "\"hello\"");
     }

@@ -299,7 +299,7 @@ impl AccountFormPanel {
         let service = self.service.clone();
         let account_id = account.id.clone();
         let account_name = account.name.clone();
-        let provider = account.provider.clone();
+        let provider = account.provider;
         cx.spawn(async move |this, cx| {
             let result = service.save_account(account).await;
             if let Err(error) = &result {
@@ -338,7 +338,7 @@ impl AccountFormPanel {
         let form = cx.entity();
         ramag_ui::open_confirm(
             "放弃修改？",
-            "表单有未保存的修改，关闭将丢弃这些修改。",
+            "未保存内容将丢失。",
             "放弃修改",
             true,
             move |_, app| {

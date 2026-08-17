@@ -2,6 +2,74 @@
 
 use super::*;
 
+/// 主窗口重建时复用的依赖。
+#[derive(Clone)]
+pub(super) struct AppDeps {
+    pub(super) registry: Arc<ToolRegistry>,
+    pub(super) conn_service: Arc<ConnectionService>,
+    pub(super) redis_service: Arc<RedisService>,
+    pub(super) mongo_service: Arc<MongoService>,
+    pub(super) data_sync_service: Arc<DataSyncService>,
+    pub(super) data_sync_gate: Arc<DataSyncGate>,
+    pub(super) clipboard_service: Option<Arc<ClipboardService>>,
+    pub(super) ssh_service: Arc<SshService>,
+    pub(super) object_storage_service: Arc<ObjectStorageService>,
+    pub(super) update_service: Option<Arc<UpdateService>>,
+    pub(super) storage: Arc<dyn Storage>,
+}
+
+/// 托盘和单实例激活优先复用此窗口。
+pub(super) struct MainWindowGlobal(pub(super) gpui::AnyWindowHandle);
+
+impl gpui::Global for MainWindowGlobal {}
+
+/// 合并主窗口句柄写入前的重复唤起。
+#[derive(Default)]
+struct MainWindowOpenGate {
+    opening: bool,
+}
+
+impl gpui::Global for MainWindowOpenGate {}
+
+impl MainWindowOpenGate {
+    fn try_begin(&mut self) -> bool {
+        if self.opening {
+            return false;
+        }
+        self.opening = true;
+        true
+    }
+
+    fn finish(&mut self) {
+        self.opening = false;
+    }
+}
+
+fn begin_main_window_open(cx: &mut App) -> bool {
+    if !cx.has_global::<MainWindowOpenGate>() {
+        cx.set_global(MainWindowOpenGate::default());
+    }
+    cx.global_mut::<MainWindowOpenGate>().try_begin()
+}
+
+fn finish_main_window_open(cx: &mut App) {
+    if cx.has_global::<MainWindowOpenGate>() {
+        cx.global_mut::<MainWindowOpenGate>().finish();
+    }
+}
+
+pub(super) fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
+    cx.activate(true);
+    if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|global| global.0)
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        return;
+    }
+    open_main_window(deps.clone(), cx);
+}
+
 pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
     if !begin_main_window_open(cx) {
         return;
@@ -10,13 +78,12 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
         &deps.storage,
         &["last_tool", ramag_ui::WindowBoundsPref::PREF_KEY],
     );
-    // 恢复上次停留的工具（重启不回炉 Home）；registry 校验防 pref 残留失效 id
+    // 恢复上次工具；已移除的工具 ID 会被忽略。
     let last_tool = window_preferences
         .get("last_tool")
         .filter(|tool| !tool.is_empty())
         .cloned();
-    // 恢复上次窗口位置尺寸；无记录默认最大化（centered 作取消最大化的复位 bounds）。
-    // 尺寸下限对齐 window_min_size，防坏数据 / 换显示器造出不可用窗口
+    // 恢复窗口尺寸；无记录则居中最大化。
     let saved_bounds = window_preferences
         .get(ramag_ui::WindowBoundsPref::PREF_KEY)
         .and_then(|json| match ramag_ui::WindowBoundsPref::parse(json) {
@@ -49,9 +116,7 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
                 gpui::point(px(p.x), px(p.y)),
                 size(px(p.w.max(800.0)), px(p.h.max(500.0))),
             );
-            // 校验保存的位置是否仍落在某个显示器内：外接屏拔除后旧坐标可能整体在屏幕外，
-            // 恢复出去将无法拖回。要求标题栏区域（顶部中点）落在某显示器内，保证可拖动，
-            // 否则丢弃位置、回退居中最大化
+            // 显示器移除后回退居中，避免窗口恢复到屏幕外。
             let title_pt = gpui::point(b.origin.x + b.size.width / 2.0, b.origin.y + px(16.0));
             let on_screen = cx.displays().iter().any(|d| d.bounds().contains(&title_pt));
             if !on_screen {
@@ -76,7 +141,7 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
                 app_id: Some("com.ramag.Ramag".into()),
                 window_bounds: Some(window_bounds),
                 window_min_size: Some(size(px(800.0), px(500.0))),
-                // 原生标题栏需 appears_transparent=false，否则失去双击 zoom 命中区
+                // 原生标题栏需保留双击缩放热区。
                 titlebar: Some(TitlebarOptions {
                     title: if cfg!(any(target_os = "windows", target_os = "linux")) {
                         Some("Ramag".into())
@@ -151,7 +216,7 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
                     shell
                 });
 
-                // 恢复上次工具视图（工具已被移除则忽略，留在 Home）
+                // 恢复上次工具；已移除时留在 Home。
                 if let Some(tool_id) = last_tool.clone().filter(|t| registry.find(t).is_some()) {
                     shell.update(cx, |s, cx| {
                         s.navigate_to(NavTarget::Tool(tool_id), window, cx);

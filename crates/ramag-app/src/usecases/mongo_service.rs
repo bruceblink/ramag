@@ -1,4 +1,4 @@
-//! MongoDB 连接与文档操作服务。
+//! MongoDB 连接与文档服务。
 
 use std::sync::Arc;
 
@@ -47,7 +47,9 @@ impl MongoService {
     }
 
     pub async fn server_version(&self, config: &ConnectionConfig) -> Result<String> {
-        self.driver.server_version(config).await
+        let result = self.driver.server_version(config).await;
+        log_mongo_error("mongodb_server_version", config, None, None, &result);
+        result
     }
 
     pub fn evict_pool(&self, id: &ConnectionId) {
@@ -55,12 +57,17 @@ impl MongoService {
     }
 
     pub async fn list_databases(&self, config: &ConnectionConfig) -> Result<Vec<MongoDatabase>> {
-        let databases = retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.list_databases(config).await
-        )?;
-        crate::run_blocking(move || Ok(sort_databases(databases))).await
+        );
+        let result = match result {
+            Ok(databases) => crate::run_blocking(move || Ok(sort_databases(databases))).await,
+            Err(error) => Err(error),
+        };
+        log_mongo_error("mongodb_list_databases", config, None, None, &result);
+        result
     }
 
     pub async fn list_collections(
@@ -68,11 +75,13 @@ impl MongoService {
         config: &ConnectionConfig,
         db: &str,
     ) -> Result<Vec<MongoCollection>> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.list_collections(config, db).await
-        )
+        );
+        log_mongo_error("mongodb_list_collections", config, Some(db), None, &result);
+        result
     }
 
     pub async fn find(
@@ -98,11 +107,13 @@ impl MongoService {
         coll: &str,
         filter: &MongoDocument,
     ) -> Result<u64> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.count(config, db, coll, filter).await
-        )
+        );
+        log_mongo_error("mongodb_count", config, Some(db), Some(coll), &result);
+        result
     }
 
     pub async fn insert_many(
@@ -238,7 +249,7 @@ impl MongoService {
         result
     }
 
-    // 与 SQL 共用查询历史表，sql 字段保存原始 JSON 命令。
+    // 历史与 SQL 共用存储，sql 保存 JSON 命令。
 
     pub async fn append_history(
         &self,
@@ -285,18 +296,76 @@ impl MongoService {
         connection_id: Option<&ConnectionId>,
         limit: usize,
     ) -> Result<QueryHistoryPage> {
-        self.storage
+        let result = self
+            .storage
             .list_history_bounded(connection_id, limit, HISTORY_INLINE_BYTE_BUDGET)
-            .await
+            .await;
+        if let Err(error) = &result {
+            tracing::warn!(
+                operation = "mongodb_query_history_list",
+                error = %error,
+                connection_id = ?connection_id,
+                limit,
+                "list mongodb query history failed"
+            );
+        }
+        result
     }
 
     pub async fn delete_history(&self, id: &ramag_domain::entities::QueryRecordId) -> Result<()> {
-        self.storage.delete_history(id).await
+        let result = self.storage.delete_history(id).await;
+        match &result {
+            Ok(()) => tracing::info!(
+                operation = "mongodb_query_history_delete",
+                record_id = %id,
+                "mongodb query history deleted"
+            ),
+            Err(error) => tracing::warn!(
+                operation = "mongodb_query_history_delete",
+                error = %error,
+                record_id = %id,
+                "delete mongodb query history failed"
+            ),
+        }
+        result
     }
 
     /// 清空指定连接的历史；`None` 表示全部连接。
     pub async fn clear_history(&self, connection_id: Option<&ConnectionId>) -> Result<()> {
-        self.storage.clear_history(connection_id).await
+        let result = self.storage.clear_history(connection_id).await;
+        match &result {
+            Ok(()) => tracing::info!(
+                operation = "mongodb_query_history_clear",
+                connection_id = ?connection_id,
+                "mongodb query history cleared"
+            ),
+            Err(error) => tracing::warn!(
+                operation = "mongodb_query_history_clear",
+                error = %error,
+                connection_id = ?connection_id,
+                "clear mongodb query history failed"
+            ),
+        }
+        result
+    }
+}
+
+fn log_mongo_error<T>(
+    operation: &'static str,
+    config: &ConnectionConfig,
+    db: Option<&str>,
+    collection: Option<&str>,
+    result: &Result<T>,
+) {
+    if let Err(error) = result {
+        tracing::warn!(
+            operation,
+            error = %error,
+            connection_id = %config.id,
+            db = db.unwrap_or("-"),
+            collection = collection.unwrap_or("-"),
+            "mongodb operation failed"
+        );
     }
 }
 

@@ -1,5 +1,4 @@
-//! 连接管理页：行点击=打开（emit Selected），行内按钮独立 emit。
-//! 搜索按 名称 / 环境标签 / 类型 不区分大小写混合匹配
+//! 连接列表、搜索与版本预取。
 
 mod render;
 mod row;
@@ -19,27 +18,23 @@ use tracing::{debug, error};
 
 pub struct ConnectionListPanel {
     pub(super) service: Arc<ConnectionService>,
-    /// Redis 连接的 server_version 走 redis_service
     redis_service: Arc<RedisService>,
-    /// MongoDB 连接的 server_version 走 mongo_service
     mongo_service: Arc<MongoService>,
     pub(super) connections: Arc<Vec<ConnectionConfig>>,
     filtered_indices_cache: RefCell<Option<FilteredIndicesCacheEntry>>,
     pub(super) selected: Option<ConnectionId>,
     pub(super) loading: bool,
-    /// 加载失败信息：非空时顶部显示错误条，避免把"读取失败"伪装成"没有连接"
+    /// 加载失败信息。
     pub(super) load_error: Option<String>,
     pub(super) search: Entity<InputState>,
-    /// 小写的搜索关键字
+    /// 小写搜索词。
     pub(super) query: String,
-    /// 服务端版本缓存。失败连接不入缓存避免重试
+    /// 服务端版本缓存。
     pub(super) versions: HashMap<ConnectionId, String>,
-    /// 版本探测状态。底层 Tokio 请求可能在界面任务结束后继续，因此取消只做标记；
-    /// 请求结束后会再次清池，确保旧任务不能把资源建回来。
+    /// 版本探测状态；取消后完成时仍清理资源。
     version_requests: HashMap<ConnectionId, VersionRequest>,
     refresh_generation: u64,
     loaded_revision: u64,
-    /// 首次显示时聚焦搜索框（仅一次，不抢用户后续焦点）
     pub(super) focused_search_once: bool,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -53,13 +48,13 @@ struct FilteredIndicesCacheEntry {
 struct VersionRequest {
     config: ConnectionConfig,
     cancelled: Arc<AtomicBool>,
-    /// 配置变化期间若用户已重新连接，旧请求清理完成后再串行探测新配置。
+    /// 旧请求清理后重试的新配置。
     restart_config: Option<ConnectionConfig>,
 }
 
 impl Drop for VersionRequest {
     fn drop(&mut self) {
-        // 面板销毁时 detached 请求仍可能在 Tokio 中运行；完成后必须走清理分支。
+        // 后台请求可能仍在运行，需标记取消。
         self.cancelled.store(true, Ordering::Release);
     }
 }
@@ -82,7 +77,7 @@ pub enum ListEvent {
     RequestSync(ConnectionConfig),
     RequestEdit(ConnectionConfig),
     RequestDelete(ConnectionId),
-    /// 其它入口修改连接后，通知根视图清理连接池并暂停仍持旧配置的标签。
+    /// 通知根视图清理旧连接资源。
     ConnectionsChanged(Vec<ConnectionConfig>),
 }
 
@@ -101,7 +96,7 @@ impl ConnectionListPanel {
         });
 
         let mut subs = Vec::new();
-        // InputState::set_value 不发 Change 事件，观察实体才能正确处理清除按钮。
+        // set_value 不发 Change，需观察实体处理清除。
         subs.push(cx.observe(&search, |this: &mut Self, _, cx| {
             let query = this.search.read(cx).value().trim().to_lowercase();
             if query == this.query {
@@ -166,30 +161,28 @@ impl ConnectionListPanel {
                     }
                     Err(e) => {
                         error!(operation = "connection_list_load", error = %e, "load connections failed");
-                        // 保留旧列表（若有）而非清空成假空态，并记错误供顶部提示
+                        // 保留旧列表，避免伪装成空态。
                         this.load_error = Some(format!("加载连接列表失败：{e}"));
                     }
                 }
                 cx.notify();
-                // refresh 不批量探测版本，避免对未打开连接反复试连不可达主机；
-                // 真正 open_session 时由外层调 prefetch_version
             });
         })
         .detach();
     }
 
-    /// 已缓存则跳过；失败仅 debug
+    /// 未缓存时预取版本。
     pub fn prefetch_version(&mut self, conn: &ConnectionConfig, cx: &mut Context<Self>) {
         if self.versions.contains_key(&conn.id) {
             return;
         }
         if let Some(request) = self.version_requests.get_mut(&conn.id) {
             if request.config == *conn {
-                // 同配置快速关闭再重开：保留原探测，不重复握手。
+                // 同配置重开时复用原探测。
                 request.cancelled.store(false, Ordering::Release);
                 request.restart_config = None;
             } else {
-                // 新旧配置不能并发争用同一 ConnectionId 的池；旧请求清理后再启动新请求。
+                // 旧请求清理后再探测新配置。
                 request.cancelled.store(true, Ordering::Release);
                 request.restart_config = Some(conn.clone());
             }
@@ -255,14 +248,14 @@ impl ConnectionListPanel {
                 }
             });
             if update_result.is_err() {
-                // 面板已销毁：没有任何会话需要保留此次探测建立的资源。
+                // 面板已销毁，释放此次探测资源。
                 evict_version_resources(&mysql_svc, &redis_svc, &mongo_svc, &conn.id);
             }
         })
         .detach();
     }
 
-    /// 关闭连接标签时标记探测不再需要；底层请求完成后会再次清池。
+    /// 标记版本探测不再需要。
     pub fn cancel_version_prefetch(&mut self, id: &ConnectionId) {
         if let Some(request) = self.version_requests.get_mut(id) {
             request.cancelled.store(true, Ordering::Release);
@@ -270,7 +263,7 @@ impl ConnectionListPanel {
         }
     }
 
-    /// 配置变化时版本文案也失效，并让旧探测进入“完成后清池”分支。
+    /// 使版本缓存失效并取消旧探测。
     pub fn invalidate_version(&mut self, id: &ConnectionId) {
         self.versions.remove(id);
         self.cancel_version_prefetch(id);
@@ -342,7 +335,7 @@ fn changed_connections(
         .collect()
 }
 
-/// 只有可写目标且存在另一个同引擎连接时才提供同步入口。
+/// 可写且同引擎存在另一连接时允许同步。
 fn syncable_target_ids(connections: &[ConnectionConfig]) -> HashSet<ConnectionId> {
     let mut driver_connections: HashMap<DriverKind, HashSet<ConnectionId>> = HashMap::new();
     for connection in connections {
@@ -364,7 +357,7 @@ fn syncable_target_ids(connections: &[ConnectionConfig]) -> HashSet<ConnectionId
         .collect()
 }
 
-/// 搜索用类型名（与列表类型徽章文案一致，支持按 "mysql" / "redis" 等过滤）
+/// 搜索用的数据库类型名。
 fn driver_search_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",

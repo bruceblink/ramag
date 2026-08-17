@@ -27,7 +27,7 @@ impl ResultPanel {
             return self.notify_error("正在筛选 / 排序，请完成后再删除".to_string(), cx);
         }
         if self.parse_column_filter(cx).drill_path.is_some() {
-            return self.notify_error("请清空路径钻取后再删除文档".to_string(), cx);
+            return self.notify_error("请先退出钻取，再删除文档".to_string(), cx);
         }
         if let Some(error) = &self.row_view_error {
             return self.notify_error(format!("当前行视图不可用：{error}"), cx);

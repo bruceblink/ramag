@@ -110,7 +110,11 @@ impl CollectionTreePanel {
                 else {
                     return div().h(px(28.0)).into_any_element();
                 };
-                let arrow = if *is_expanded { "▾" } else { "▸" };
+                let chevron = if *is_expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                };
                 let name_for_click = name.clone();
                 let name_for_menu = name.clone();
                 let entity_for_menu = cx.entity().clone();
@@ -126,10 +130,8 @@ impl CollectionTreePanel {
                     .hover(move |s| s.bg(muted_bg))
                     .child(
                         div()
-                            .w(px(12.0))
-                            .text_xs()
-                            .text_color(muted_fg)
-                            .child(SharedString::from(arrow.to_string())),
+                            .w(px(14.0))
+                            .child(Icon::new(chevron).xsmall().text_color(muted_fg)),
                     )
                     .child(Icon::new(IconName::HardDrive).small().text_color(muted_fg))
                     .child(

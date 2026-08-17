@@ -129,9 +129,7 @@ pub(super) fn schema_context_menu(
             let (schema, entity) = (schema_for_import.clone(), entity_for_import.clone());
             ramag_ui::open_import_options_dialog(
                 "导入库",
-                format!(
-                    "选择 SQL 文件导入到 {schema}。Ramag 导出文件保留原库，普通 SQL 默认导入当前库。"
-                ),
+                format!("选择 SQL 文件导入到 {schema}。Ramag 导出保留原库；普通 SQL 导入当前库。"),
                 true,
                 ("SQL", &["sql"]),
                 move |policy, files, _, app| {
@@ -153,7 +151,7 @@ pub(super) fn schema_context_menu(
                 ramag_ui::open_import_options_dialog(
                     "导入表",
                     format!(
-                        "选择 Ramag 导出的表 SQL 文件，恢复结构和数据到 {schema}。文件所属库必须与当前库一致。"
+                        "选择 Ramag 导出的表 SQL 文件，恢复结构和数据到 {schema}；文件库须与当前库一致。"
                     ),
                     true,
                     ("SQL", &["sql"]),

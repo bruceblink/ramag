@@ -164,12 +164,10 @@ impl ClipboardView {
                         .text_sm(),
                 );
                 if item.files.len() > MAX_DETAIL_FILE_ROWS {
-                    body = body.child(
-                        div().text_xs().child(format!(
-                            "文件较多，仅展示前 {MAX_DETAIL_FILE_ROWS} / {} 个；复制和粘贴仍使用完整列表",
-                            item.files.len()
-                        )),
-                    );
+                    body = body.child(div().text_xs().child(format!(
+                        "仅展示前 {MAX_DETAIL_FILE_ROWS} / {} 个；复制和粘贴仍使用完整列表",
+                        item.files.len()
+                    )));
                 }
                 body.into_any_element()
             }

@@ -118,7 +118,7 @@ impl DbClientView {
                     let form_inner = form_for_cancel.clone();
                     ramag_ui::open_confirm(
                         "放弃修改？",
-                        "表单有未保存的修改，关闭将丢弃这些修改。",
+                        "未保存内容将丢失。",
                         "放弃修改",
                         true,
                         move |_, app| {
@@ -201,14 +201,13 @@ impl DbClientView {
         any_stale
     }
 
-    /// 弹出删除确认对话框；用户点「删除」后才真正执行 handle_delete
+    /// 确认删除连接。
     pub(super) fn confirm_delete(
         &mut self,
         id: ConnectionId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 找到对应连接名（用于描述文案）；找不到就 fallback 到 id 后 6 位
         let conn_name = self
             .picker
             .read(cx)
@@ -225,7 +224,7 @@ impl DbClientView {
         ramag_ui::open_confirm(
             "删除连接？",
             format!(
-                "确定要删除连接「{conn_name}」吗？\n将同时清除该连接在本机的查询历史和未完成草稿，不影响数据库中的数据。此操作不可撤销。"
+                "将删除本机连接「{conn_name}」及其查询历史、未完成草稿；不影响数据库，不可撤销。"
             ),
             "删除",
             true,

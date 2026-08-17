@@ -1,5 +1,4 @@
-//! MongoDB 查询历史弹框：与 SQL 共用同一张历史表（sql 字段存原始 JSON 命令）。
-//! 搜索 / 复制 / 填入编辑器 / 重跑 / 删除 / 清空；入口在 MongoQueryPanel 工具条
+//! MongoDB 查询历史弹框。
 
 mod filter;
 
@@ -17,7 +16,6 @@ use gpui_component::{
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputEvent, InputState},
-    notification::Notification,
     v_flex,
 };
 use ramag_app::MongoService;
@@ -304,10 +302,7 @@ impl MongoHistoryList {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     rec_for_copy.sql.clone(),
                                 ));
-                                window.push_notification(
-                                    Notification::success("已复制命令").autohide(true),
-                                    cx,
-                                );
+                                window.push_notification(ramag_ui::copy_success_notification(), cx);
                             })),
                     )
                     .child(

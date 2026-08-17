@@ -1,4 +1,4 @@
-//! `impl Render for ResultPanel` + 警告 banner（MySQL SHOW WARNINGS） + 复制单元格 / 列名
+//! SQL 结果面板渲染与复制。
 
 use gpui::{
     ClickEvent, ClipboardItem, Context, Focusable as _, IntoElement, ParentElement, Render,
@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
-    notification::Notification, v_flex,
+    v_flex,
 };
 use ramag_ui::platform::primary_shortcut;
 
@@ -81,14 +81,13 @@ impl Render for ResultPanel {
                                     .ghost()
                                     .small()
                                     .icon(IconName::Copy)
-                                    .tooltip("复制错误信息")
+                                    .tooltip("复制")
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             msg_for_copy.clone(),
                                         ));
-                                        this.pending_notification = Some(
-                                            Notification::success("已复制错误信息").autohide(true),
-                                        );
+                                        this.pending_notification =
+                                            Some(ramag_ui::copy_success_notification());
                                         cx.notify();
                                     })),
                             ),

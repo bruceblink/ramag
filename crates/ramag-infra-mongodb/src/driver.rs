@@ -1,4 +1,4 @@
-//! MongoDriver。impl DocDriver。每个方法 clone config + pool 句柄 → run_in_tokio → dispatch 到 metadata / query
+//! MongoDB 驱动：校验请求后转交 metadata/query 模块。
 
 use async_trait::async_trait;
 use ramag_domain::entities::{
@@ -362,7 +362,7 @@ impl DocDriver for MongoDriver {
 
     fn evict_pool(&self, id: &ConnectionId) {
         self.pools.evict(id);
-        // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
+        // 配置变更后下次建连重建隧道。
         ramag_infra_tunnel::evict(id);
     }
 }

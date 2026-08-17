@@ -46,7 +46,7 @@ impl ResultPanel {
             .map(|f| {
                 (
                     f.clone(),
-                    cx.new(|c| bounded_input(window, c).placeholder("值（JSON / 文本，留空跳过）")),
+                    cx.new(|c| bounded_input(window, c).placeholder("值（JSON/文本，可留空）")),
                 )
             })
             .collect();

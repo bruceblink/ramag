@@ -1,4 +1,4 @@
-//! MongoDB `runCommand` JSON 编辑与结果标签。
+//! MongoDB 命令编辑与结果标签。
 
 mod actions;
 mod command;
@@ -44,19 +44,17 @@ pub struct MongoQueryTab {
     pub(crate) show_editor: bool,
     pub(crate) result: Entity<ResultPanel>,
     pub(crate) running: bool,
-    /// JSON 格式化防重入；CPU 工作在共享有界 worker 中执行。
+    /// 防止 JSON 格式化重入。
     formatting: bool,
-    /// 当前 UI 等待任务；drop 后停止等待与历史追加，旧后端回包也无法再触碰标签。
+    /// 当前运行任务；丢弃后旧回包不再更新标签。
     current_task: Option<Task<()>>,
-    /// 运行代际号：切库 / 切 collection / 重新运行都自增，慢查询旧回包据此丢弃，
-    /// 不串到新上下文（防运行期间切换后旧结果显示在新库/集合的界面里）
+    /// 运行代际号，用于丢弃切换上下文后的旧回包。
     pub(crate) run_seq: u64,
-    /// 异步回调无法访问 Window，通知由 Render 延后推送。
+    /// 异步通知，在渲染时推送。
     pending_notification: Option<Notification>,
-    /// 上次自动注入的命令（默认模板 / 树点 collection / 示例）。编辑器内容仍等于它
-    /// = 未手改，树点击可原地覆盖；否则视为手写草稿，浏览另开 Tab（防丢稿）
+    /// 最近自动注入的命令，用于识别手写草稿。
     last_injected_cmd: Option<String>,
-    /// 普通 `find` 分页状态，基线命令与编辑器文本隔离。
+    /// `find` 分页状态。
     pager: Option<MongoPager>,
     _subscriptions: Vec<Subscription>,
 }
@@ -170,7 +168,6 @@ impl MongoQueryTab {
             current_task: None,
             run_seq: 0,
             pending_notification: None,
-            // 新 Tab 出生自带默认模板，属自动注入（未手改前树点击可原地覆盖）
             last_injected_cmd: Some(default_command_template()),
             pager: None,
             _subscriptions: vec![refresh_sub, editor_sub],
@@ -182,7 +179,7 @@ impl MongoQueryTab {
             .update(cx, |result, _| result.set_result_active(active));
     }
 
-    /// 是否存在用户手写草稿：编辑器非空且内容不等于上次自动注入的命令
+    /// 是否存在手写草稿。
     pub fn has_user_draft(&self, cx: &gpui::App) -> bool {
         let value = self.editor.read(cx).value();
         let cur = value.trim();
@@ -192,13 +189,13 @@ impl MongoQueryTab {
         self.last_injected_cmd.as_deref().map(str::trim) != Some(cur)
     }
 
-    /// 手写草稿快照；默认模板和树自动注入不落盘。
+    /// 手写草稿快照；自动模板不落盘。
     pub fn draft_text(&self, cx: &gpui::App) -> Option<gpui::SharedString> {
         self.has_user_draft(cx)
             .then(|| self.editor.read(cx).value())
     }
 
-    /// 从本地偏好恢复手写命令，不自动执行。
+    /// 恢复本地草稿，不自动执行。
     pub fn restore_draft(
         &mut self,
         text: gpui::SharedString,
@@ -247,7 +244,7 @@ impl MongoQueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 连点切集合时，停止等待旧命令后立即运行新集合，不能让 request_run 因旧 busy 状态静默失效。
+        // 使旧回包失效，避免忙碌状态阻止新集合运行。
         self.cancel_if_running(cx);
         self.database = database;
         self.collection = Some(collection.clone());
@@ -256,9 +253,8 @@ impl MongoQueryTab {
         self.editor.update(cx, |s, cx| {
             s.set_value(cmd.clone(), window, cx);
         });
-        // 树点击注入属自动内容：未手改前再点其它 collection 仍原地覆盖
         self.last_injected_cmd = Some(cmd);
-        // collection 的列结构会变化；内容搜索作为用户条件跨集合保留。
+        // 集合字段变化，清除列筛选。
         self.result
             .update(cx, |p, cx| p.clear_column_filter(window, cx));
         cx.notify();
@@ -269,12 +265,11 @@ impl MongoQueryTab {
         self.editor.update(cx, |s, cx| {
             s.set_value(cmd.to_string(), window, cx);
         });
-        // 示例模板属自动注入：未手改前树点击仍可原地覆盖
         self.last_injected_cmd = Some(cmd.to_string());
         cx.notify();
     }
 
-    /// 历史记录填入属于用户主动选择，后续关闭/重启都应按手写草稿保护。
+    /// 将历史命令标记为手写草稿。
     pub fn mark_user_draft(&mut self) {
         self.last_injected_cmd = None;
     }
@@ -283,7 +278,7 @@ impl MongoQueryTab {
         if self.database != db {
             self.database = db;
             self.pager = None;
-            // Mongo driver 当前没有可靠 killOp 句柄；让旧回包失效，并清除旧结果的 DML 目标。
+            // Mongo 无可靠 killOp 句柄，改为使旧回包失效。
             self.current_task = None;
             self.run_seq = self.run_seq.wrapping_add(1);
             self.running = false;
@@ -294,7 +289,7 @@ impl MongoQueryTab {
         }
     }
 
-    /// 集合改名后同步或失效旧查询上下文，防止结果区继续对旧集合执行 DML。
+    /// 集合改名后同步查询上下文并使旧结果失效。
     pub fn collection_renamed(
         &mut self,
         db: &str,
@@ -327,7 +322,7 @@ impl MongoQueryTab {
         cx.notify();
     }
 
-    /// 集合删除后清除结果区写入目标，保留手写命令供用户参考。
+    /// 集合删除后清除结果区写入目标。
     pub fn collection_dropped(&mut self, db: &str, coll: &str, cx: &mut Context<Self>) {
         if self.database != db || self.collection.as_deref() != Some(coll) {
             return;
@@ -346,7 +341,7 @@ impl MongoQueryTab {
         cx.notify();
     }
 
-    /// 数据库删除后，旧结果不能继续编辑；先落到 admin，等待树选择新的业务库。
+    /// 数据库删除后切换至 admin 并使旧结果失效。
     pub fn database_dropped(&mut self, db: &str, cx: &mut Context<Self>) {
         if self.database != db {
             return;
@@ -380,7 +375,6 @@ impl Render for MongoQueryTab {
         let fg = cx.theme().foreground;
         let border = cx.theme().border;
 
-        // 编辑器仅在 show_editor=true 时显示；运行 / 格式化按钮已移到 query_panel 顶部 tab 栏（与 dbclient 一致）
         let show_editor = self.show_editor;
         let editor_clone = self.editor.clone();
 

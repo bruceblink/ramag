@@ -42,9 +42,9 @@ pub fn file_manager_reveal_label() -> &'static str {
 
 pub fn auto_paste_description() -> &'static str {
     if cfg!(target_os = "macos") {
-        "抽屉选中后自动粘贴到当前应用（需辅助功能权限）"
+        "选中后粘贴（需辅助功能权限）"
     } else {
-        "抽屉选中后自动切回原窗口并粘贴（管理员权限应用可能仅复制）"
+        "选中后切回原窗口并粘贴（管理员应用可能仅复制）"
     }
 }
 

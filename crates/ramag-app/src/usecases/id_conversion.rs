@@ -1,11 +1,13 @@
 //! ID 转换用例：进程内通用进制与外部转换器进程边界。
 
+use std::borrow::Cow;
 use std::io;
 use std::process::Stdio;
 use std::time::Duration;
 
 use ramag_domain::entities::{IdConverterConfig, IdConverterKind, parse_nonnegative_id_integer};
 use smol::io::{AsyncRead, AsyncReadExt as _};
+use tracing::warn;
 
 const CONVERTER_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_CONVERTER_INPUT_BYTES: usize = 4 * 1024;
@@ -20,14 +22,19 @@ pub async fn convert_id_to_integer(config: &IdConverterConfig, input: &str) -> R
         return config.decode_local(input);
     }
 
-    let stdout = run_external_converter_with_timeout(
-        &config.external_program,
-        "-s",
-        input,
-        MAX_CONVERTER_INTEGER_STDOUT_BYTES,
-    )
-    .await?;
-    parse_integer_stdout(&stdout)
+    let result = async {
+        let stdout = run_external_converter_with_timeout(
+            &config.external_program,
+            "-s",
+            input,
+            MAX_CONVERTER_INTEGER_STDOUT_BYTES,
+        )
+        .await?;
+        parse_integer_stdout(&stdout)
+    }
+    .await;
+    log_external_conversion_failure("to_integer", input.len(), &result);
+    result
 }
 
 pub async fn convert_id_to_string(
@@ -42,14 +49,64 @@ pub async fn convert_id_to_string(
     }
 
     let canonical_input = value.to_string();
-    let stdout = run_external_converter_with_timeout(
-        &config.external_program,
-        "-i",
-        &canonical_input,
-        MAX_CONVERTER_STRING_STDOUT_BYTES,
-    )
-    .await?;
-    parse_string_stdout(&stdout)
+    let result = async {
+        let stdout = run_external_converter_with_timeout(
+            &config.external_program,
+            "-i",
+            &canonical_input,
+            MAX_CONVERTER_STRING_STDOUT_BYTES,
+        )
+        .await?;
+        parse_string_stdout(&stdout)
+    }
+    .await;
+    log_external_conversion_failure("to_string", input.len(), &result);
+    result
+}
+
+fn log_external_conversion_failure<T>(
+    direction: &'static str,
+    input_bytes: usize,
+    result: &Result<T, String>,
+) {
+    let Err(error) = result else { return };
+    let safe_error = safe_converter_error_for_log(error);
+    warn!(
+        operation = "id_conversion",
+        direction,
+        converter = "external_program",
+        input_bytes,
+        failure_kind = converter_failure_kind(error),
+        error = %safe_error,
+        "external ID conversion failed"
+    );
+}
+
+fn converter_failure_kind(error: &str) -> &'static str {
+    if error.starts_with("启动 ID 转换器失败") {
+        "spawn"
+    } else if error.starts_with("读取 ID 转换器结果失败") {
+        "io"
+    } else if error.starts_with("ID 转换器执行超过") {
+        "timeout"
+    } else if error.starts_with("ID 转换器失败") || error.starts_with("ID 转换器退出状态异常")
+    {
+        "nonzero_exit"
+    } else if error.starts_with("ID 转换器 stdout") {
+        "invalid_stdout"
+    } else {
+        "unknown"
+    }
+}
+
+/// 外部程序可能在 stderr 回显搜索词，日志仅保留退出状态，不记录该正文。
+fn safe_converter_error_for_log(error: &str) -> Cow<'_, str> {
+    if error.starts_with("ID 转换器失败（")
+        && let Some((prefix, _)) = error.split_once("）：")
+    {
+        return Cow::Owned(format!("{prefix}）"));
+    }
+    Cow::Borrowed(error)
 }
 
 fn validate_input(input: &str) -> Result<(), String> {
@@ -208,7 +265,7 @@ mod tests {
 
     use super::{
         convert_id_to_integer, convert_id_to_string, parse_integer_stdout, parse_string_stdout,
-        read_bounded, sanitize_stderr, validate_input,
+        read_bounded, safe_converter_error_for_log, sanitize_stderr, validate_input,
     };
 
     #[test]
@@ -246,6 +303,19 @@ mod tests {
     #[test]
     fn converter_stderr_is_safe_for_inline_display() {
         assert_eq!(sanitize_stderr(b"bad\n\x1b[31mvalue\0"), "bad [31mvalue");
+    }
+
+    #[test]
+    fn converter_error_log_redacts_external_stderr() {
+        let error = "ID 转换器失败（exit status: 9）：input value";
+        assert_eq!(
+            safe_converter_error_for_log(error).as_ref(),
+            "ID 转换器失败（exit status: 9）"
+        );
+        assert_eq!(
+            safe_converter_error_for_log("启动 ID 转换器失败：Permission denied").as_ref(),
+            "启动 ID 转换器失败：Permission denied"
+        );
     }
 
     #[test]

@@ -1,6 +1,4 @@
-//! MongoDB 编辑器与过滤框补全：实现 gpui-component CompletionProvider。
-//! - CommandCompletionProvider：JSON 命令编辑器（命令名 / 参数名 / 查询聚合操作符）
-//! - ColumnFilterCompletionProvider：结果区"过滤列"（候选为当前结果集列 path，逗号分隔）
+//! MongoDB 命令与结果列补全。
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -16,10 +14,10 @@ use lsp_types::{
 use parking_lot::RwLock;
 use ropey::Rope;
 
-/// 补全只需要当前词；限制回看窗口，避免大命令每次按键复制整份 Rope。
+/// 补全前缀回看窗口上限。
 const MAX_COMMAND_COMPLETION_PREFIX_BYTES: usize = 4 * 1024;
 
-/// runCommand 顶层命令名 + 常用参数名（不带 $）
+/// 常用 runCommand 命令和参数。
 const MONGO_COMMANDS: &[&str] = &[
     "find",
     "aggregate",
@@ -61,7 +59,7 @@ const MONGO_COMMANDS: &[&str] = &[
     "ordered",
 ];
 
-/// 查询 / 聚合操作符（带 $ 前缀）
+/// 查询和聚合操作符。
 const MONGO_OPERATORS: &[&str] = &[
     "$eq",
     "$ne",
@@ -114,8 +112,7 @@ const MONGO_OPERATORS: &[&str] = &[
     "$dateToString",
 ];
 
-/// 单条补全项：InsertAndReplace 保证覆盖已输入的前缀；
-/// docs 走 markdown，选中项在右侧说明卡片展示（与 SQL 补全同款样式）
+/// 创建可覆盖当前前缀的补全项。
 fn make_item(
     label: &str,
     kind: CompletionItemKind,
@@ -140,7 +137,7 @@ fn make_item(
     }
 }
 
-/// 取光标前的补全前缀（字母 / 数字 / _ / $），返回 (起点字节 offset, 前缀)
+/// 返回光标前补全前缀的起点和内容。
 fn word_prefix(text: &str, offset: usize) -> (usize, &str) {
     let bytes = text.as_bytes();
     let end = offset.min(bytes.len());
@@ -166,7 +163,7 @@ fn normalized_path_segments(path: &str) -> Vec<String> {
     path.split('.').map(str::to_lowercase).collect()
 }
 
-/// 按路径段比较，避免用小写结果的字节长度切原字符串；Unicode 大小写转换可能扩展字节数。
+/// 按路径段比较，避免 Unicode 大小写转换改变字节偏移。
 fn child_after_path<'a>(name: &'a str, parent_lower: &[String]) -> Option<(&'a str, bool)> {
     let mut segments = name.split('.');
     for expected in parent_lower {
@@ -183,8 +180,7 @@ fn path_prefix_segments(name: &str, count: usize) -> String {
     name.split('.').take(count).collect::<Vec<_>>().join(".")
 }
 
-/// 点号深入补全：收集 parent 路径下的全部子字段（含标量叶子），按发现序去重、聚合可下钻性。
-/// 返回 (完整点路径, 是否可继续下钻)；seg_prefix_lower 非空时按子串过滤子字段名。
+/// 收集路径下的子字段及其可下钻状态。
 fn dotted_child_candidates(
     cols: &[String],
     parent_lower: &[String],
@@ -202,7 +198,7 @@ fn dotted_child_candidates(
             continue;
         }
         if let Some(&i) = index.get(&seg_lower) {
-            // 同名子字段已出现：任一路径更深即标记可下钻（collect_paths 排序后叶子可能先出现）
+            // 任一路径更深即可下钻。
             children[i].1 = children[i].1 || expandable;
         } else if children.len() < limit {
             index.insert(seg_lower, children.len());
@@ -215,7 +211,7 @@ fn dotted_child_candidates(
     children
 }
 
-/// 命令编辑器补全：`$` 前缀补操作符，否则补命令名 / 参数名
+/// MongoDB 命令编辑器补全。
 pub struct CommandCompletionProvider;
 
 impl CommandCompletionProvider {
@@ -293,7 +289,7 @@ fn command_completion_prefix(rope: &Rope, offset: usize) -> Option<(usize, usize
         return None;
     }
 
-    // 窗口若切在超长标识符中间，不提供会只替换后半段的错误补全。
+    // 避免截断超长标识符后只替换后半段。
     if local_start == 0 && window_start > 0 {
         let previous_start = rope.floor_char_boundary(window_start.saturating_sub(1));
         let previous = rope.slice(previous_start..window_start).to_string();
@@ -313,7 +309,7 @@ fn command_completion_prefix(rope: &Rope, offset: usize) -> Option<(usize, usize
     ))
 }
 
-/// "过滤列"补全：候选为当前结果集列 path，按逗号切 token 仅匹配最后一段（与 dbclient 同款）
+/// 结果列路径补全。
 pub struct ColumnFilterCompletionProvider {
     columns: Arc<RwLock<Vec<String>>>,
 }
@@ -336,7 +332,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         let text = rope.to_string();
         let bytes = text.as_bytes();
         let real_offset = rope.floor_char_boundary(offset.min(bytes.len()));
-        // token 起点：向前扫到最近逗号，再跳过前导空格
+        // 从最近分隔符后的第一个非空白字符开始。
         let mut tok_start = real_offset;
         while tok_start > 0 && bytes[tok_start - 1] != b',' && bytes[tok_start - 1] != b';' {
             tok_start -= 1;
@@ -354,7 +350,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
             rope.offset_to_position(real_offset),
         );
 
-        // 已填入的其它列不再建议，避免重复
+        // 不重复建议已填入的列。
         let already: std::collections::HashSet<String> = text
             .split([',', ';'])
             .map(|t| t.trim().to_lowercase())
@@ -363,7 +359,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
 
         let cols = self.columns.read();
         let mut items: Vec<CompletionItem> = Vec::new();
-        // 光标在分号后 → 投影：候选 = 钻取路径（分号前最后一个 token）下的子字段（裸名）
+        // 分号后仅补全钻取路径下的子字段。
         let drill = text[..real_offset]
             .rsplit_once(';')
             .map(|(head, _)| head.rsplit(',').next().unwrap_or("").trim())
@@ -406,7 +402,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
                 }
             }
         } else if prefix.contains('.') {
-            // 点号深入：提示 parent 路径下的全部子字段名（含标量叶子），可再下钻的对象/数组标注类型
+            // 点号后深入补全子字段。
             let (parent, seg_prefix) = prefix.rsplit_once('.').unwrap_or(("", prefix));
             let parent_lower = normalized_path_segments(parent);
             for (full, expandable) in dotted_child_candidates(
@@ -435,7 +431,7 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
                 ));
             }
         } else {
-            // 无点：只提示顶层字段名（各路径第一段，去重），子串匹配；打点后才深入子字段
+            // 无点时仅补全顶层字段。
             let mut seen = std::collections::HashSet::new();
             for name in cols.iter() {
                 let top = name.split('.').next().unwrap_or(name);
@@ -465,7 +461,6 @@ impl CompletionProvider for ColumnFilterCompletionProvider {
         new_text: &str,
         _cx: &mut Context<InputState>,
     ) -> bool {
-        // 字母 / 数字 / 下划线 / 点号触发（点号用于深入嵌套 consume.子字段）；逗号不触发
         new_text
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
@@ -507,7 +502,6 @@ mod tests {
 
     #[test]
     fn unicode_path_matching_does_not_slice_by_lowercase_byte_length() {
-        // U+0130 转小写后字节数变化，不能按转换后的偏移切原文。
         let parent = normalized_path_segments("İ");
         let (child, expandable) = child_after_path("İ.名称.deep", &parent).unwrap();
 
@@ -520,15 +514,13 @@ mod tests {
     fn dotted_completion_includes_scalar_leaves_and_marks_drillable() {
         let cols = vec![
             "labels".to_string(),
-            "labels.name".to_string(), // 标量叶子
-            "labels.meta".to_string(), // 对象（有更深路径）
+            "labels.name".to_string(),
+            "labels.meta".to_string(),
             "labels.meta.x".to_string(),
         ];
         let out = dotted_child_candidates(&cols, &["labels".to_string()], "", 50);
         let by_name = |n: &str| out.iter().find(|(f, _)| f == n).map(|(_, e)| *e);
-        // 叶子字段也要提示（修复"labels. 无补全"）
         assert_eq!(by_name("labels.name"), Some(false));
-        // 对象聚合为可下钻，即使 labels.meta 在排序中先于 labels.meta.x 出现
         assert_eq!(by_name("labels.meta"), Some(true));
     }
 

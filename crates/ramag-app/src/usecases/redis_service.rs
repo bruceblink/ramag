@@ -1,4 +1,4 @@
-//! Redis 连接与键值操作服务。
+//! Redis 连接与键值服务。
 
 use std::sync::Arc;
 
@@ -21,16 +21,29 @@ impl RedisService {
 
     /// 仅列出 Redis 连接。
     pub async fn list(&self) -> Result<Vec<ConnectionConfig>> {
-        let all = self.storage.list_connections().await?;
-        Ok(all
-            .into_iter()
-            .filter(|c| matches!(c.driver, DriverKind::Redis))
-            .collect())
+        let result = self.storage.list_connections().await.map(|all| {
+            all.into_iter()
+                .filter(|c| matches!(c.driver, DriverKind::Redis))
+                .collect()
+        });
+        if let Err(error) = &result {
+            tracing::error!(operation = "redis_connection_list", error = %error, "list Redis connections failed");
+        }
+        result
     }
 
     /// 按 ID 获取连接，不限制驱动类型。
     pub async fn get(&self, id: &ConnectionId) -> Result<Option<ConnectionConfig>> {
-        self.storage.get_connection(id).await
+        let result = self.storage.get_connection(id).await;
+        if let Err(error) = &result {
+            tracing::error!(
+                operation = "redis_connection_get",
+                error = %error,
+                connection_id = %id,
+                "load Redis connection failed"
+            );
+        }
+        result
     }
 
     pub async fn save(&self, config: &ConnectionConfig) -> Result<()> {
@@ -99,7 +112,9 @@ impl RedisService {
     }
 
     pub async fn server_version(&self, config: &ConnectionConfig) -> Result<String> {
-        self.driver.server_version(config).await
+        let result = self.driver.server_version(config).await;
+        log_redis_error("redis_server_version", config, None, None, &result);
+        result
     }
 
     /// 清除该连接所有数据库的连接池缓存。
@@ -107,7 +122,7 @@ impl RedisService {
         self.driver.evict_pool(id);
     }
 
-    /// 一次性扫描完整数据库；大库慎用。
+    /// 扫描完整数据库，受 `max_keys` 限制。
     pub async fn scan_all(
         &self,
         config: &ConnectionConfig,
@@ -117,20 +132,30 @@ impl RedisService {
         max_keys: usize,
     ) -> Result<Vec<KeyMeta>> {
         if !(1..=MAX_REDIS_SCAN_ALL_KEYS).contains(&max_keys) {
-            return Err(DomainError::InvalidConfig(format!(
+            let error = DomainError::InvalidConfig(format!(
                 "Redis scan_all 最大 key 数必须在 1–{MAX_REDIS_SCAN_ALL_KEYS} 之间"
-            )));
+            ));
+            let result: Result<Vec<KeyMeta>> = Err(error);
+            log_redis_error("redis_scan_all", config, Some(db), None, &result);
+            return result;
         }
         let mut cursor = 0u64;
         let mut out: Vec<KeyMeta> = Vec::new();
         loop {
-            let r = retry_idempotent_read!(
+            let r = match retry_idempotent_read!(
                 config.id,
                 self.driver.evict_pool(&config.id),
                 self.driver
                     .scan(config, db, cursor, pattern, type_filter, 200)
                     .await
-            )?;
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    let result: Result<Vec<KeyMeta>> = Err(error);
+                    log_redis_error("redis_scan_all", config, Some(db), None, &result);
+                    return result;
+                }
+            };
             out.extend(r.keys);
             cursor = r.cursor;
             if cursor == 0 || out.len() >= max_keys {
@@ -152,8 +177,7 @@ impl RedisService {
         Ok(out)
     }
 
-    /// 执行一批增量扫描，返回游标供调用方继续。
-    /// `pattern` 通过服务端 `MATCH` 过滤，避免拉取全库数据。
+    /// 执行一批增量扫描。
     pub async fn scan_batch(
         &self,
         config: &ConnectionConfig,
@@ -163,13 +187,15 @@ impl RedisService {
         type_filter: Option<RedisType>,
         count: u32,
     ) -> Result<ScanResult> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver
                 .scan(config, db, cursor, pattern, type_filter, count)
                 .await
-        )
+        );
+        log_redis_error("redis_scan_batch", config, Some(db), None, &result);
+        result
     }
 
     pub async fn key_type(
@@ -178,11 +204,13 @@ impl RedisService {
         db: u8,
         key: &str,
     ) -> Result<RedisType> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.key_type(config, db, key).await
-        )
+        );
+        log_redis_error("redis_key_type", config, Some(db), Some(key.len()), &result);
+        result
     }
 
     pub async fn key_types(
@@ -191,19 +219,23 @@ impl RedisService {
         db: u8,
         keys: &[String],
     ) -> Result<Vec<RedisType>> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.key_types(config, db, keys).await
-        )
+        );
+        log_redis_error("redis_key_types", config, Some(db), None, &result);
+        result
     }
 
     pub async fn key_ttl(&self, config: &ConnectionConfig, db: u8, key: &str) -> Result<i64> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.key_ttl(config, db, key).await
-        )
+        );
+        log_redis_error("redis_key_ttl", config, Some(db), Some(key.len()), &result);
+        result
     }
 
     pub async fn get_value(
@@ -212,11 +244,19 @@ impl RedisService {
         db: u8,
         key: &str,
     ) -> Result<RedisValue> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.get_value(config, db, key).await
-        )
+        );
+        log_redis_error(
+            "redis_value_get",
+            config,
+            Some(db),
+            Some(key.len()),
+            &result,
+        );
+        result
     }
 
     pub async fn get_value_limited(
@@ -226,22 +266,32 @@ impl RedisService {
         key: &str,
         limit: usize,
     ) -> Result<RedisValueLoad> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.get_value_limited(config, db, key, limit).await
-        )
+        );
+        log_redis_error(
+            "redis_value_get_limited",
+            config,
+            Some(db),
+            Some(key.len()),
+            &result,
+        );
+        result
     }
 
     pub async fn db_size(&self, config: &ConnectionConfig, db: u8) -> Result<u64> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver.db_size(config, db).await
-        )
+        );
+        log_redis_error("redis_db_size", config, Some(db), None, &result);
+        result
     }
 
-    /// 分段读取完整值，供导出使用。
+    /// 分段读取完整值。
     pub async fn read_value_page(
         &self,
         config: &ConnectionConfig,
@@ -251,16 +301,24 @@ impl RedisService {
         cursor: ValuePageCursor,
         max_items: u32,
     ) -> Result<RedisValuePage> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver
                 .read_value_page(config, db, key, kind, cursor.clone(), max_items)
                 .await
-        )
+        );
+        log_redis_error(
+            "redis_value_page",
+            config,
+            Some(db),
+            Some(key.len()),
+            &result,
+        );
+        result
     }
 
-    /// 导出首页的有界批量读取；结果顺序与 `keys` 完全一致。
+    /// 批量读取值首页。
     pub async fn read_value_first_pages(
         &self,
         config: &ConnectionConfig,
@@ -268,13 +326,15 @@ impl RedisService {
         keys: &[String],
         max_items: u32,
     ) -> Result<Vec<RedisValuePage>> {
-        retry_idempotent_read!(
+        let result = retry_idempotent_read!(
             config.id,
             self.driver.evict_pool(&config.id),
             self.driver
                 .read_value_first_pages(config, db, keys, max_items)
                 .await
-        )
+        );
+        log_redis_error("redis_value_first_pages", config, Some(db), None, &result);
+        result
     }
 
     /// 分段写入导入值；写操作不做断连重试。
@@ -412,6 +472,36 @@ impl RedisService {
             }
         }
         result
+    }
+}
+
+fn log_redis_error<T>(
+    operation: &'static str,
+    config: &ConnectionConfig,
+    db: Option<u8>,
+    key_bytes: Option<usize>,
+    result: &Result<T>,
+) {
+    let Err(error) = result else {
+        return;
+    };
+    let db = db.map_or_else(|| "-".to_string(), |db| db.to_string());
+    match key_bytes {
+        Some(key_bytes) => tracing::warn!(
+            operation,
+            error = %error,
+            connection_id = %config.id,
+            db = %db,
+            key_bytes,
+            "redis read operation failed"
+        ),
+        None => tracing::warn!(
+            operation,
+            error = %error,
+            connection_id = %config.id,
+            db = %db,
+            "redis read operation failed"
+        ),
     }
 }
 

@@ -16,29 +16,47 @@ impl SshService {
     }
 
     pub async fn save_module_settings(&self, settings: &SshModuleSettings) -> Result<()> {
-        let _guard = self.module_settings_io.lock().await;
-        let json = serde_json::to_string(settings)
-            .map_err(|error| DomainError::Storage(format!("序列化 SSH 模块设置失败：{error}")))?;
-        if json.len() > MAX_SSH_MODULE_SETTINGS_BYTES {
-            return Err(DomainError::InvalidConfig("SSH 模块设置数据过大".into()));
-        }
-        self.storage
-            .set_preference(SSH_MODULE_SETTINGS_KEY, &json)
-            .await?;
+        let result = async {
+            let _guard = self.module_settings_io.lock().await;
+            let json = serde_json::to_string(settings).map_err(|error| {
+                DomainError::Storage(format!("序列化 SSH 模块设置失败：{error}"))
+            })?;
+            if json.len() > MAX_SSH_MODULE_SETTINGS_BYTES {
+                return Err(DomainError::InvalidConfig("SSH 模块设置数据过大".into()));
+            }
+            self.storage
+                .set_preference(SSH_MODULE_SETTINGS_KEY, &json)
+                .await?;
 
-        let changed = *self.module_settings.lock() != *settings;
-        *self.module_settings.lock() = *settings;
-        self.module_settings_loaded.store(true, Ordering::Release);
-        if changed {
-            self.remote_capabilities.lock().clear();
+            let changed = *self.module_settings.lock() != *settings;
+            *self.module_settings.lock() = *settings;
+            self.module_settings_loaded.store(true, Ordering::Release);
+            if changed {
+                self.remote_capabilities.lock().clear();
+            }
+            Ok(changed)
         }
-        tracing::info!(
-            operation = "ssh_module_settings_save",
-            changed,
-            windows_sftp_compatibility = settings.windows_sftp_compatibility,
-            "ssh module settings saved"
-        );
-        Ok(())
+        .await;
+        match result {
+            Ok(changed) => {
+                tracing::info!(
+                    operation = "ssh_module_settings_save",
+                    changed,
+                    windows_sftp_compatibility = settings.windows_sftp_compatibility,
+                    "ssh module settings saved"
+                );
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(
+                    operation = "ssh_module_settings_save",
+                    error = %error,
+                    windows_sftp_compatibility = settings.windows_sftp_compatibility,
+                    "save ssh module settings failed"
+                );
+                Err(error)
+            }
+        }
     }
 
     pub(super) async fn ensure_module_settings_loaded(&self) -> Result<()> {
@@ -49,25 +67,41 @@ impl SshService {
         if self.module_settings_loaded.load(Ordering::Acquire) {
             return Ok(());
         }
-        let settings = match self.storage.get_preference(SSH_MODULE_SETTINGS_KEY).await? {
-            Some(json) => {
-                if json.len() > MAX_SSH_MODULE_SETTINGS_BYTES {
-                    return Err(DomainError::InvalidConfig("SSH 模块设置数据过大".into()));
+        let result = async {
+            let settings = match self.storage.get_preference(SSH_MODULE_SETTINGS_KEY).await? {
+                Some(json) => {
+                    if json.len() > MAX_SSH_MODULE_SETTINGS_BYTES {
+                        return Err(DomainError::InvalidConfig("SSH 模块设置数据过大".into()));
+                    }
+                    serde_json::from_str(&json).map_err(|error| {
+                        DomainError::Storage(format!("解析 SSH 模块设置失败：{error}"))
+                    })?
                 }
-                serde_json::from_str(&json).map_err(|error| {
-                    DomainError::Storage(format!("解析 SSH 模块设置失败：{error}"))
-                })?
+                None => SshModuleSettings::default(),
+            };
+            *self.module_settings.lock() = settings;
+            self.module_settings_loaded.store(true, Ordering::Release);
+            Ok(settings)
+        }
+        .await;
+        match result {
+            Ok(settings) => {
+                tracing::info!(
+                    operation = "ssh_module_settings_load",
+                    windows_sftp_compatibility = settings.windows_sftp_compatibility,
+                    "ssh module settings loaded"
+                );
+                Ok(())
             }
-            None => SshModuleSettings::default(),
-        };
-        *self.module_settings.lock() = settings;
-        self.module_settings_loaded.store(true, Ordering::Release);
-        tracing::info!(
-            operation = "ssh_module_settings_load",
-            windows_sftp_compatibility = settings.windows_sftp_compatibility,
-            "ssh module settings loaded"
-        );
-        Ok(())
+            Err(error) => {
+                tracing::warn!(
+                    operation = "ssh_module_settings_load",
+                    error = %error,
+                    "load ssh module settings failed"
+                );
+                Err(error)
+            }
+        }
     }
 
     pub(super) fn apply_module_settings(&self, profile: &SshProfile) -> SshProfile {

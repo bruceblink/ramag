@@ -119,8 +119,8 @@ pub(super) fn database_context_menu(
             ramag_ui::open_import_options_dialog(
                 "导入库",
                 format!(
-                    "选择冲突策略与 .jsonl 文件（可多选），将导入到库 {d}。重复导入同一文件：\
-                         「跳过」按集合断点续传，「合并」按文档去重补齐，「覆盖」完全重建（幂等）。"
+                    "选择 .jsonl 文件（可多选）导入到库 {d}。\
+                     「跳过」按集合续传，「合并」按文档补齐，「覆盖」重建集合。"
                 ),
                 true,
                 ("JSONL", &["jsonl", "json"]),
@@ -142,7 +142,7 @@ pub(super) fn database_context_menu(
                 ramag_ui::open_import_options_dialog(
                     "导入集合",
                     format!(
-                        "选择由 Ramag 集合节点“导出”生成的 .jsonl 文件（可多选），将集合创建选项、索引和全部文档恢复到库 {d}。集合名取自文件。"
+                        "选择由 Ramag 导出的集合 .jsonl 文件（可多选），恢复选项、索引和文档到库 {d}；集合名来自文件。"
                     ),
                     true,
                     ("JSONL", &["jsonl", "json"]),

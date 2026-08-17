@@ -147,7 +147,11 @@ impl VcsView {
         let muted_fg = theme.muted_foreground;
         let hover_bg = theme.muted;
         let id = SharedString::from(format!("vcs-ch-dir-{i}"));
-        let icon = if is_collapsed { "▸" } else { "▾" };
+        let chevron = if is_collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        };
         let dir_clone = dir_path.to_string();
         h_flex()
             .id(id)
@@ -167,10 +171,8 @@ impl VcsView {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.0))
-                    .text_xs()
-                    .text_color(muted_fg)
-                    .child(icon),
+                    .w(px(14.0))
+                    .child(Icon::new(chevron).xsmall().text_color(muted_fg)),
             )
             .child(
                 Icon::new(if is_collapsed {

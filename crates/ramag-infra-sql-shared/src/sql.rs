@@ -1,11 +1,11 @@
-//! SQL 文本工具：多语句切分 / LIMIT 注入 / 用户标记识别。方言中性
+//! 方言中性的 SQL 文本工具。
 
 use ramag_domain::error::{DomainError, Result};
 
 /// 单次最多执行 5,000 条业务语句，并为 MySQL 外键前缀预留 1 条。
 pub const MAX_SQL_STATEMENTS: usize = ramag_domain::entities::TRANSFER_BATCH_ITEMS + 1;
 
-/// 多语句切分选项
+/// 多语句切分选项。
 #[derive(Debug, Clone, Copy)]
 pub struct SplitOptions {
     /// 识别 PG dollar-quoted：`$$..$$` / `$tag$..$tag$`
@@ -26,7 +26,6 @@ impl SplitOptions {
     }
 }
 
-/// 按 `;` 切分，跳过字符串 / 行注释 / 块注释 / dollar-quoted 内的 `;`
 #[cfg(test)]
 fn split_statements(sql: &str, opts: SplitOptions) -> Vec<String> {
     split_statements_with_limit(sql, opts, usize::MAX).unwrap_or_default()
@@ -116,8 +115,7 @@ fn split_statements_with_limit(
     Ok(out)
 }
 
-/// 扫 dollar-quoted，返回闭合 tag 后的字节位置；非 dollar-quoted 返回 None。
-/// 不处理嵌套（PG 也不允许同 tag 嵌套）。pub 给 UI 的「光标处取语句」用
+/// 返回 dollar-quoted 闭合标签后的字节位置；不支持嵌套。
 pub fn scan_dollar_quoted(bytes: &[u8], start: usize) -> Option<usize> {
     debug_assert_eq!(bytes[start], b'$');
     let mut p = start + 1;
@@ -141,7 +139,7 @@ pub fn scan_dollar_quoted(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// 按首关键字粗判 SQL 是否返回结果集
+/// 按首关键字粗判 SQL 是否返回结果集。
 pub fn is_query_returning_rows(sql: &str) -> bool {
     let code = sql_code_for_write_check(sql);
     let Some(keyword) = first_keyword(&code) else {
@@ -154,8 +152,7 @@ pub fn is_query_returning_rows(sql: &str) -> bool {
         && contains_word(&code.to_ascii_uppercase(), "RETURNING"))
 }
 
-/// 取语句首关键字（大写）：跳过前导空白 / 行注释 / 块注释，取第一段连续字母。
-/// 纯注释或非字母开头（如 `(SELECT ...)`）返回 None
+/// 返回首关键字（大写），跳过前导空白和注释。
 pub fn first_keyword(stmt: &str) -> Option<String> {
     let bytes = stmt.as_bytes();
     let mut i = 0usize;
@@ -163,14 +160,12 @@ pub fn first_keyword(stmt: &str) -> Option<String> {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        // 行注释 --... 到行尾
         if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
             continue;
         }
-        // 块注释 /* ... */
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
             i += 2;
             while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
@@ -188,17 +183,14 @@ pub fn first_keyword(stmt: &str) -> Option<String> {
     (i > start).then(|| stmt[start..i].to_ascii_uppercase())
 }
 
-/// 单条语句是否为写操作：生产模式只读保护用。**默认拒绝**语义——
-/// 只有能明确认定为只读 / 无害的语句才返回 false，其余一律当写拦截。
-/// 黑名单式（命中写动词才拦）会被 MySQL 可执行注释 `/*! DELETE */`、
-/// PG 匿名代码块 `DO $$ ... $$`、`SELECT ... INTO/OUTFILE` 等绕过。
+/// 生产模式只读保护：无法确认只读时一律拦截。
+/// 白名单避免可执行注释、匿名代码块及 `SELECT INTO/OUTFILE` 绕过。
 pub fn is_write_statement(stmt: &str) -> bool {
-    // 只读首关键字白名单：会修改会话或事务状态的命令也不放行，避免污染复用连接。
+    // 白名单不含会修改会话或事务状态的命令。
     const SAFE_LEADING: &[&str] = &[
         "SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "WITH", "VALUES", "TABLE",
     ];
-    // 即便首词安全，语句体内出现这些写动词也视为写（覆盖 WITH ... DELETE /
-    // EXPLAIN ANALYZE INSERT / SELECT ... INTO 建表 / SELECT ... INTO OUTFILE）
+    // 安全首词仍扫描写动词，覆盖 WITH、EXPLAIN 和 SELECT INTO 等嵌套写入。
     const WRITE_INNER: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "CREATE", "DROP", "ALTER", "TRUNCATE",
         "GRANT", "REVOKE", "OUTFILE", "DUMPFILE",
@@ -206,23 +198,21 @@ pub fn is_write_statement(stmt: &str) -> bool {
     let code = sql_code_for_write_check(stmt);
     let upper = code.to_ascii_uppercase();
     let Some(kw) = first_keyword(&upper) else {
-        // 无法提取首关键字（纯空白 / 纯注释 / `/*! ... */` 可执行注释 / 括号开头）：
-        // 空白与纯注释不含写动词→放行；`/*! DELETE */` 含写动词→拦截
+        // 可执行注释含写动词时仍须拦截。
         return WRITE_INNER.iter().any(|w| contains_word(&upper, w));
     };
     if !SAFE_LEADING.contains(&kw.as_str()) {
-        // 首词不在安全白名单（所有写动词、CALL、DO、COPY、LOCK、VACUUM、LOAD 等）：当写
+        // 非白名单语句一律视为写。
         return true;
     }
-    // SHOW CREATE TABLE 只读取元数据，其中的 CREATE 是结果类型而非执行动作；
-    // 其余写关键字仍继续拦截，避免可执行注释等内容绕过保护。
+    // SHOW CREATE TABLE 的 CREATE 是结果类型，不是执行动作。
     let show_create = kw == "SHOW"
         && upper
             .trim_start()
             .get(kw.len()..)
             .and_then(first_keyword)
             .is_some_and(|second| second == "CREATE");
-    // 首词安全，再扫语句体：含写动词则升级为写（INTO 单列判定，避免误伤 SELECT INTO @var）
+    // 安全首词的语句体含写动词时仍视为写。
     if WRITE_INNER
         .iter()
         .any(|word| !(show_create && *word == "CREATE") && contains_word(&upper, word))
@@ -279,7 +269,7 @@ fn sql_code_for_write_check(stmt: &str) -> String {
                 }
             }
             b'/' if i + 2 < bytes.len() && bytes[i + 1] == b'*' && bytes[i + 2] == b'!' => {
-                // 仅移除注释标记；正文由后续循环继续扫描，字符串仍会被屏蔽。
+                // 保留可执行注释正文参与检测。
                 code[i..i + 3].fill(b' ');
                 i += 3;
             }
@@ -296,7 +286,6 @@ fn sql_code_for_write_check(stmt: &str) -> String {
         }
     }
 
-    // 被屏蔽的片段会逐字节替换为空格，未屏蔽片段保持原始 UTF-8。
     String::from_utf8_lossy(&code).into_owned()
 }
 
@@ -349,7 +338,7 @@ pub fn inject_limit_if_needed(stmt: &str, limit: Option<u32>) -> Option<String> 
     Some(out)
 }
 
-/// 是否含 `-- ramag:no-limit` 跳过开关（大小写不敏感）
+/// 是否含大小写不敏感的 `-- ramag:no-limit` 标记。
 pub fn sql_has_no_limit_marker(sql: &str) -> bool {
     sql.lines().any(|line| {
         let trimmed = line.trim_start();
@@ -363,7 +352,7 @@ pub fn sql_has_no_limit_marker(sql: &str) -> bool {
     })
 }
 
-/// 全词匹配（前后非字母数字下划线）
+/// 全词匹配。
 pub fn contains_word(haystack_upper: &str, word: &str) -> bool {
     let bytes = haystack_upper.as_bytes();
     let target = word.as_bytes();

@@ -33,8 +33,8 @@ pub struct ActivityBar {
 
 /// 应用内更新角标状态；新版本可用时显示 1，否则隐藏。
 #[derive(Clone, Copy, Default)]
-struct UpdateIndicatorGlobal {
-    available: bool,
+pub(crate) struct UpdateIndicatorGlobal {
+    pub(crate) available: bool,
 }
 
 impl Global for UpdateIndicatorGlobal {}
@@ -67,7 +67,8 @@ pub fn sync_update_indicator(result: &UpdateCheckResult, cx: &mut App) {
 fn indicator_value(result: &UpdateCheckResult) -> bool {
     match result {
         UpdateCheckResult::UpToDate { .. } => false,
-        UpdateCheckResult::Available(_) | UpdateCheckResult::UnsupportedPlatform(_) => true,
+        UpdateCheckResult::Available(_) => true,
+        UpdateCheckResult::UnsupportedPlatform(_) => false,
     }
 }
 
@@ -304,6 +305,13 @@ mod tests {
             current_version: "0.0.2".into(),
             latest_version: "0.0.2".into(),
         }));
-        assert!(indicator_value(&available_result()));
+        let available = available_result();
+        assert!(indicator_value(&available));
+        let UpdateCheckResult::Available(update) = available else {
+            unreachable!();
+        };
+        assert!(!indicator_value(&UpdateCheckResult::UnsupportedPlatform(
+            update
+        )));
     }
 }

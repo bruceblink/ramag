@@ -42,6 +42,10 @@ impl SettingsView {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("设置"),
             );
+        let update_available =
+            cx.read_global::<crate::activity_bar::UpdateIndicatorGlobal, _>(|state, _| {
+                state.available
+            });
 
         for &page in SettingsPage::ALL
             .iter()
@@ -51,6 +55,7 @@ impl SettingsView {
             navigation = navigation.child(settings_navigation_item(
                 page,
                 selected,
+                update_available && page == SettingsPage::Update,
                 cx.listener(move |this, _: &ClickEvent, window, cx| {
                     if this.selected_page != page {
                         if this
@@ -75,13 +80,13 @@ impl SettingsView {
             SettingsPage::Database => self.render_database_page(cx),
             SettingsPage::VersionControl => managed_in_module_card(
                 "Git 配置",
-                "Ramag 复用系统 Git、SSH Agent 与已有凭据；仓库和远程地址请在版本管理页面中维护。",
+                "复用系统 Git、SSH Agent 和已有凭据；仓库及远程地址在版本管理页面维护。",
                 cx,
             ),
             SettingsPage::Ssh => self.render_ssh_page(cx),
             SettingsPage::ObjectStorage => managed_in_module_card(
                 "账号与 Bucket",
-                "云存储账号、访问凭据、生产模式和 Bucket 挂载请在云存储页面中维护。",
+                "账号、凭据、生产模式和 Bucket 挂载在云存储页面维护。",
                 cx,
             ),
             SettingsPage::Update => self.render_update_page(cx),
@@ -124,6 +129,7 @@ impl SettingsView {
 fn settings_navigation_item(
     page: SettingsPage,
     selected: bool,
+    show_update_badge: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
     cx: &Context<SettingsView>,
 ) -> impl IntoElement {
@@ -155,6 +161,16 @@ fn settings_navigation_item(
         .on_click(on_click)
         .child(page.icon().small())
         .child(div().text_sm().child(page.title()))
+        .when(show_update_badge, |item| {
+            item.child(
+                div()
+                    .ml_auto()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.accent)
+                    .child("新"),
+            )
+        })
 }
 
 pub(super) fn settings_card(title: &'static str, border: gpui::Hsla) -> gpui::Div {
@@ -185,7 +201,7 @@ fn managed_in_module_card(
             div()
                 .text_xs()
                 .text_color(muted)
-                .child("当前没有需要在此设置的模块级通用选项。"),
+                .child("此模块暂无通用设置。"),
         )
         .into_any_element()
 }

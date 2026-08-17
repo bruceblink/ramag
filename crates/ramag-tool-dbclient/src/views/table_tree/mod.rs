@@ -26,8 +26,8 @@ const MAX_EXPANDED_TABLE_COLUMNS: usize = 32;
 
 pub(crate) fn jsonl_import_description(schema: &str, table: &str) -> String {
     format!(
-        "选择 JSONL 文件，将每行对象按键名写入 {schema}.{table}。缺少列使用默认值，\
-         多余键忽略；冲突可跳过、覆盖（先清空表，不可恢复）或停止。只导入数据，不修改表结构。"
+        "选择 JSONL 文件，按键名写入 {schema}.{table}。缺列用默认值，多余键忽略；\
+         冲突可跳过、覆盖（清空表，不可恢复）或停止。仅导入数据。"
     )
 }
 

@@ -1,5 +1,5 @@
-//! 增量 SCAN 状态机：一次扫到底（资源上限兜底）+ 服务端 MATCH 下推 + 代际取消。
-//! 每批回包做（代际, db, 连接）三重身份校验，换代 / 切库 / 切连接后在途批次一律作废
+//! Redis 增量 SCAN：服务端 MATCH、代际取消与资源上限。
+//! 每批校验代际、数据库和连接，切换后丢弃旧结果。
 
 use gpui::Context;
 use ramag_domain::entities::{ConnectionConfig, KeyMeta};
@@ -7,20 +7,15 @@ use tracing::{error, info, warn};
 
 use super::{KeyTreePanel, MAX_LOADED_KEY_BYTES, MAX_LOADED_KEYS};
 
-/// 单批 SCAN 的 COUNT hint：总耗时 ≈ 往返数 × RTT，取大批减少往返
-/// （5000 时服务端单次阻塞仍 ~1-2ms，远程/隧道下百万 key 从分钟级降到秒级；
-/// 不顶格 10000 是给高负载共享实例留余量）
+/// 单批 SCAN 的 COUNT hint，减少高延迟连接的往返。
 const SCAN_BATCH: u32 = 5_000;
-/// 扫描期间 Trie 节流重建阈值：较上次重建新增 key 数达到该值才重建一次。
-/// 重建是 O(已加载数)，上限 100 万时该步长把全程重建控制在几十次内，
-/// 避免尾段单次重建造成明显 UI 卡顿
+/// 达到该增量后重建 Trie，避免频繁阻塞 UI。
 const REBUILD_STEP: usize = 25_000;
-/// 输入停顿后自动把过滤词下推到服务端，避免旧 MATCH 子集造成假“无结果”。
+/// 输入停顿后下推 MATCH，避免展示旧筛选结果。
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
 
 impl KeyTreePanel {
-    /// 重新扫描：换代作废在途批次，清空后从 cursor=0 起按当前 MATCH 模式一次扫到底
-    /// （扫完或达资源上限为止，可随时 ⏹ 停止）
+    /// 从 cursor=0 按当前 MATCH 重新扫描。
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
             return;
@@ -42,7 +37,7 @@ impl KeyTreePanel {
         self.scan_next_batch(config, 0, generation, cx);
     }
 
-    /// 停止扫描：换代终止续扫，保留并展示已加载部分（如实标注未扫完）
+    /// 停止扫描并保留已加载部分。
     pub(super) fn stop_scan(&mut self, cx: &mut Context<Self>) {
         self.scan_generation = self.scan_generation.wrapping_add(1);
         if self.loading {
@@ -61,7 +56,7 @@ impl KeyTreePanel {
         cx.notify();
     }
 
-    /// 输入停顿后自动应用服务端 MATCH；清空搜索立即回到全库，避免显示旧子集。
+    /// 输入停顿后应用服务端 MATCH。
     pub(super) fn schedule_server_match(&mut self, cx: &mut Context<Self>) {
         self.search_generation = self.search_generation.wrapping_add(1);
         let generation = self.search_generation;
@@ -90,13 +85,12 @@ impl KeyTreePanel {
         .detach();
     }
 
-    /// Enter 下推服务端 MATCH：普通关键字包成 `*kw*`，含 glob 元字符（* ? [）则原样使用；
-    /// 空关键字清除模式回到全库扫描
+    /// 应用服务端 MATCH 并重新扫描。
     pub(super) fn apply_server_match(&mut self, cx: &mut Context<Self>) {
         self.search_pending = false;
         let raw = self.search.read(cx).value().trim().to_string();
         let pattern = server_match_pattern(&raw);
-        // 模式未变且不在扫描中：无需重扫（扫描中按 Enter 视为「以此模式重来」）
+        // 空闲时重复模式无需重扫。
         if pattern == self.match_pattern && !self.loading {
             cx.notify();
             return;
@@ -105,7 +99,7 @@ impl KeyTreePanel {
         self.refresh(cx);
     }
 
-    /// 手动停止 / 批次出错后：从上次停止的 cursor 继续扫描，保留已加载 key 与树状态。
+    /// 从上次 cursor 继续扫描。
     pub(super) fn load_more(&mut self, cx: &mut Context<Self>) {
         if self.loading || self.resource_limited {
             return;
@@ -122,7 +116,7 @@ impl KeyTreePanel {
         self.scan_next_batch(config, cursor, generation, cx);
     }
 
-    /// 扫一批：回包三重校验通过则追加，按需节流重建 Trie 并续扫，扫完 / 达资源上限收尾
+    /// 扫描下一批并按需重建 Trie。
     fn scan_next_batch(
         &self,
         config: ConnectionConfig,
@@ -172,7 +166,7 @@ impl KeyTreePanel {
                 match result {
                     Ok(r) => {
                         this.has_loaded = true;
-                        // SCAN 弱一致：同一 key 可能跨批重复返回，按 key 名去重追加
+                        // SCAN 可能重复返回同一 key，按名称去重。
                         let mut resource_capped = false;
                         for meta in r.keys {
                             if !insert_key_with_budget(
@@ -191,7 +185,7 @@ impl KeyTreePanel {
                                 || this.key_bytes >= MAX_LOADED_KEY_BYTES);
                         this.resume_cursor = (!done && !resource_capped).then_some(r.cursor);
                         if resource_capped {
-                            // 资源上限是终态：不提供继续扫描，提示用 MATCH 缩小范围
+                            // 到达资源上限后不再继续扫描。
                             this.loading = false;
                             this.truncated = false;
                             this.resource_limited = true;
@@ -216,7 +210,7 @@ impl KeyTreePanel {
                                 "key scan completed"
                             );
                         } else {
-                            // 首批立即出树给首屏反馈，此后每积累 REBUILD_STEP 才重建一次
+                            // 首批立即展示，后续按阈值重建。
                             if this.last_rebuilt_count == 0
                                 || this.keys.len() - this.last_rebuilt_count >= REBUILD_STEP
                             {
@@ -241,7 +235,7 @@ impl KeyTreePanel {
                             this.clear_tree();
                             this.resume_cursor = None;
                         } else {
-                            // 后续页失败时保留已经可用的数据，并从失败批次的输入 cursor 重试。
+                            // 保留已加载数据，并从失败批次重试。
                             this.error = Some(format!(
                                 "扫描中断：{e}（已保留 {} 个 key，可继续重试）",
                                 this.keys.len()

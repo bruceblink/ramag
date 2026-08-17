@@ -1,118 +1,23 @@
-//! CLI 纯函数层：命令行 → argv 分词（含引号）+ RedisValue → redis-cli 风格多行文本。
-//! 无 UI、无 IO，全部可单测。
+//! Redis CLI 值的 redis-cli 风格多行格式化。
+
+mod tokenize;
+
+pub use tokenize::tokenize;
 
 use ramag_domain::entities::RedisValue;
 
 use crate::views::value_display::{self, ViewMode};
 
-/// 把一行命令切成 argv，仿 redis-cli sdssplitargs：
-/// - 空白分隔；`"双引号"` 支持 `\n \r \t \xHH \" \\` 转义；`'单引号'` 仅 `\'` 转义、余原样
-/// - 引号未闭合返回 Err（供前端就地提示，不发后端）
-pub fn tokenize(line: &str) -> Result<Vec<String>, String> {
-    let mut args = Vec::new();
-    let mut chars = line.chars().peekable();
-    loop {
-        while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
-            chars.next();
-        }
-        if chars.peek().is_none() {
-            break;
-        }
-        // 一个 token 可由裸段与引号段拼接（如 foo"bar" → foobar）
-        let mut cur = String::new();
-        loop {
-            match chars.peek().copied() {
-                None => break,
-                Some(c) if c.is_whitespace() => break,
-                Some('"') => {
-                    chars.next();
-                    parse_double_quoted(&mut chars, &mut cur)?;
-                }
-                Some('\'') => {
-                    chars.next();
-                    parse_single_quoted(&mut chars, &mut cur)?;
-                }
-                Some(c) => {
-                    cur.push(c);
-                    chars.next();
-                }
-            }
-        }
-        args.push(cur);
-    }
-    Ok(args)
-}
-
-type Chars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
-
-/// 双引号内：处理转义直到下一个未转义的 `"`
-fn parse_double_quoted(chars: &mut Chars, out: &mut String) -> Result<(), String> {
-    loop {
-        match chars.next() {
-            None => return Err("双引号未闭合".into()),
-            Some('"') => return Ok(()),
-            Some('\\') => match chars.next() {
-                None => return Err("双引号未闭合".into()),
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('x') => {
-                    let h1 = chars.next().ok_or("\\x 需两位十六进制")?;
-                    let h2 = chars.next().ok_or("\\x 需两位十六进制")?;
-                    let high =
-                        hex_nibble(h1).ok_or_else(|| "\\x 后须为两位十六进制".to_string())?;
-                    let low = hex_nibble(h2).ok_or_else(|| "\\x 后须为两位十六进制".to_string())?;
-                    let byte = (high << 4) | low;
-                    if !byte.is_ascii() {
-                        return Err(
-                            "当前命令行仅支持 UTF-8 参数，\\xHH 不能表示 80-FF 原始字节".into()
-                        );
-                    }
-                    out.push(byte as char);
-                }
-                Some(other) => out.push(other),
-            },
-            Some(c) => out.push(c),
-        }
-    }
-}
-
-fn hex_nibble(ch: char) -> Option<u8> {
-    match ch {
-        '0'..='9' => Some(ch as u8 - b'0'),
-        'a'..='f' => Some(ch as u8 - b'a' + 10),
-        'A'..='F' => Some(ch as u8 - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// 单引号内：原样直到下一个 `'`，仅 `\'` 转义为 `'`
-fn parse_single_quoted(chars: &mut Chars, out: &mut String) -> Result<(), String> {
-    loop {
-        match chars.next() {
-            None => return Err("单引号未闭合".into()),
-            Some('\'') => return Ok(()),
-            Some('\\') if matches!(chars.peek(), Some('\'')) => {
-                chars.next();
-                out.push('\'');
-            }
-            Some(c) => out.push(c),
-        }
-    }
-}
-
-/// RedisValue → 多行文本（仿 redis-cli），每行相对本层左对齐；嵌套由父层缩进。
-/// 标量返回单行；聚合用 `N)` 编号并递归缩进。
+/// 将 Redis 值格式化为 redis-cli 风格多行文本。
 pub fn lines_of(v: &RedisValue) -> Vec<String> {
     lines_of_inner(v, 0)
 }
 
-// 渲染层已行级虚拟化（uniform_list），上限只防内存失控。
-// 总预算须大于单标量上限 + 引号等包装，否则 8 MiB 标量会整行被截断标记顶掉
+// 渲染已虚拟化；上限仅防内存失控并为截断标记预留空间。
 const MAX_FORMAT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FORMAT_LINES: usize = 50_000;
 const MAX_FORMAT_DEPTH: usize = 16;
-/// 对齐值详情的 8 MiB 加载上限
+/// 与值详情一致的单标量加载上限。
 const MAX_SCALAR_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const TRUNCATION_LINE: &str = "… 响应过大，后续内容已截断";
 
@@ -139,8 +44,7 @@ impl LineBuffer {
         let cost = line.len().saturating_add(1);
         if cost > MAX_FORMAT_BYTES.saturating_sub(self.bytes) {
             let marker_cost = TRUNCATION_LINE.len().saturating_add(1);
-            // 额外 -1 是部分行自身的换行开销，否则 finish 里加截断标记正好越界 1 字节，
-            // 会把刚写入的唯一内容行再弹掉
+            // 预留截断标记空间，避免丢失唯一内容行。
             let available = MAX_FORMAT_BYTES
                 .saturating_sub(self.bytes)
                 .saturating_sub(marker_cost)
@@ -185,22 +89,21 @@ impl LineBuffer {
     }
 }
 
-/// 分段格式化结果：`cursor` 为续展开游标（标量=已消费字节偏移，顶层容器=已消费元素数），
-/// None 表示已全部展开。原始值仍在内存（driver 已整体拉回），续展开无需重新查询
+/// 分段格式化结果；cursor 为续展开位置，None 表示已完成。
 pub struct FormattedChunk {
     pub lines: Vec<String>,
     pub cursor: Option<usize>,
 }
 
-/// 标量续展开的单段原文字节数；escape 最坏 4 倍膨胀，段输出仍在 MAX_FORMAT_BYTES 内
+/// 标量续展开的单段原文字节数。
 const CONTINUE_SCALAR_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
-/// 首次格式化：未超限走完整路径（含 JSON 美化）；超限返回首段 + 游标
+/// 首次格式化；超限时返回首段和游标。
 pub fn lines_of_first(v: &RedisValue) -> FormattedChunk {
     format_chunk(v, 0)
 }
 
-/// 从游标继续格式化下一段（点击「继续展开」时调用）
+/// 从游标继续格式化。
 pub fn lines_of_more(v: &RedisValue, cursor: usize) -> FormattedChunk {
     format_chunk(v, cursor)
 }
@@ -211,7 +114,7 @@ fn format_chunk(v: &RedisValue, start: usize) -> FormattedChunk {
         RedisValue::Bytes(b) if b.len() > MAX_SCALAR_INPUT_BYTES => bytes_chunk(b, start),
         _ => match container_len(v) {
             Some(len) => container_chunk(v, len, start),
-            // 未超限标量 / 小值：完整格式化，一次到位
+            // 小值一次完整格式化。
             None => FormattedChunk {
                 lines: lines_of(v),
                 cursor: None,
@@ -220,8 +123,7 @@ fn format_chunk(v: &RedisValue, start: usize) -> FormattedChunk {
     }
 }
 
-/// 超限文本分段：每段一条原文大行（escape 后），渲染层再按显示宽硬切。
-/// 引号只在真正首尾；JSON 美化不适用于半截内容，超限值一律按原文展示
+/// 超限文本按原文分段；引号仅在首尾，半截内容不做 JSON 美化。
 fn text_chunk(s: &str, start: usize) -> FormattedChunk {
     let total = s.len();
     let mut end = (start.saturating_add(CONTINUE_SCALAR_CHUNK_BYTES)).min(total);
@@ -261,7 +163,7 @@ fn bytes_chunk(b: &[u8], start: usize) -> FormattedChunk {
     }
 }
 
-/// 顶层容器的元素数；非容器返回 None
+/// 顶层容器的元素数；非容器为 None。
 fn container_len(v: &RedisValue) -> Option<usize> {
     match v {
         RedisValue::List(items) | RedisValue::Set(items) | RedisValue::Array(items) => {
@@ -274,8 +176,7 @@ fn container_len(v: &RedisValue) -> Option<usize> {
     }
 }
 
-/// 容器分段：从 start 元素起按元素原子填充，段预算即格式化总预算；
-/// 单个超大元素独占一段（允许该段超预算，元素内部仍有自身截断保护）
+/// 容器按元素分段；单个超大元素独占一段。
 fn container_chunk(v: &RedisValue, len: usize, start: usize) -> FormattedChunk {
     if len == 0 {
         return FormattedChunk {
@@ -303,8 +204,7 @@ fn container_chunk(v: &RedisValue, len: usize, start: usize) -> FormattedChunk {
     }
 }
 
-/// 生成容器第 index 个元素的完整显示行（含全局编号与缩进）；
-/// lines_of 全量路径与 chunk 分段路径共用，保证两种入口输出一致
+/// 生成容器元素的完整显示行，供完整和分段入口共用。
 fn element_lines_for(v: &RedisValue, index: usize, depth: usize) -> Vec<String> {
     let head = format!("{}) ", index + 1);
     let pad = " ".repeat(head.len());
@@ -321,7 +221,7 @@ fn element_lines_for(v: &RedisValue, index: usize, depth: usize) -> Vec<String> 
                 if key_truncated { "…" } else { "" }
             );
             let vlines = lines_of_inner(val, depth + 1);
-            // 值单行时 inline 到 key 行；多行才另起缩进块
+            // 单行值内联，多行值另起缩进块。
             if vlines.len() == 1 {
                 let value = vlines.into_iter().next().unwrap_or_default();
                 vec![format!("{head}{key_part}{value}")]
@@ -404,7 +304,7 @@ fn lines_of_inner(v: &RedisValue, depth: usize) -> Vec<String> {
     }
 }
 
-/// String 值：内容是 JSON（含被字符串编码的 JSON）则多行美化，否则原样加引号
+/// JSON 字符串多行美化，其余原样加引号。
 fn text_lines(s: &str) -> Vec<String> {
     let (preview, truncated) = text_prefix(s, MAX_SCALAR_INPUT_BYTES);
     let mut out = LineBuffer::new();
@@ -432,7 +332,7 @@ fn bytes_lines(bytes: &[u8]) -> Vec<String> {
     out.finish()
 }
 
-/// 容器全量路径共用骨架：逐元素生成行（与 chunk 分段路径同源）入预算 buffer
+/// 容器完整格式化，逐元素写入预算缓冲区。
 fn container_lines(v: &RedisValue, len: usize, depth: usize) -> Vec<String> {
     if len == 0 {
         return vec!["(empty)".into()];
@@ -466,7 +366,7 @@ fn utf8_prefix(text: &str, limit: usize) -> &str {
     &text[..end]
 }
 
-/// 显示用转义：引号/反斜杠/控制符转义，可打印字符原样
+/// 显示用字符串转义。
 fn escape_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -483,7 +383,7 @@ fn escape_str(s: &str) -> String {
     out
 }
 
-/// 二进制值转义：可打印 ASCII 原样，其余转 `\xHH`（仿 redis-cli）
+/// 二进制值转义：可打印 ASCII 原样，其余转 `\xHH`。
 fn escape_bytes(b: &[u8]) -> String {
     let mut out = String::with_capacity(b.len());
     for &byte in b {

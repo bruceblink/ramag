@@ -1,5 +1,6 @@
 //! Split diff：左 gutter+content、中间列（回滚/blame）、右 gutter+content 共 5 个 uniform_list。
-//! 5 个 list 共享 `UniformListScrollHandle` 行级 Y 同步；content 各自独立 X 滚；gutter / 中间列在 overflow_x_scroll 之外保持可见。
+//! 分栏 diff 的滚动协调。
+//! 五列共享纵向滚动，内容列独立横向滚动，gutter 和中间列保持可见。
 //! `h_flex` 默认 items_center，必须显式 `.items_stretch()` 否则子栏会被压成内容高
 mod middle;
 

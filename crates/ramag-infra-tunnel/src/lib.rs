@@ -1,7 +1,4 @@
-//! SSH 隧道管理器：系统 ssh 子进程做本地端口转发（`ssh -N -L`）。
-//! 与 infra-git 同哲学——密钥 / agent / known_hosts / `~/.ssh/config` 别名全由系统 ssh
-//! 处理，不引入 Rust SSH 实现。按 `ConnectionId` 缓存隧道；参数变更或进程死亡自动重建。
-//! driver 只在建连处调 `ensure`，把 DB 目标地址换成 `127.0.0.1:本地端口`
+//! 基于系统 OpenSSH 的本地端口转发管理。
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -15,17 +12,17 @@ use ramag_domain::entities::{ConnectionConfig, ConnectionId};
 use ramag_domain::error::{DomainError, Result};
 use tracing::{info, warn};
 
-/// 隧道就绪探测总时长（含 ssh 认证握手，密钥 / agent 场景通常 1-3s）
+/// 隧道就绪探测总时长。
 const READY_TIMEOUT: Duration = Duration::from_secs(12);
-/// 就绪探测轮询间隔
+/// 就绪探测轮询间隔。
 const PROBE_INTERVAL: Duration = Duration::from_millis(200);
 /// 建连失败时最多回传的 ssh stderr，防异常子进程输出导致无界内存与超长提示。
 const MAX_ERROR_OUTPUT_BYTES: usize = 16 * 1024;
-/// 自定义 CA 证书文件上限；连接驱动通常会整文件读入内存。
+/// 自定义 CA 证书文件上限。
 pub const MAX_CA_CERT_BYTES: usize = 1024 * 1024;
 const MAX_ACTIVE_TUNNELS: usize = 64;
 
-/// 在启动 SSH 或网络连接前校验自定义 CA，避免驱动整读异常文件。
+/// 在连接前校验自定义 CA 文件。
 pub fn validate_ca_certificate_file(path: &str) -> Result<()> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         DomainError::InvalidConfig(format!("读取 CA 证书元数据失败（{path}）：{error}"))
@@ -52,9 +49,9 @@ pub fn validate_ca_certificate_file(path: &str) -> Result<()> {
 struct Tunnel {
     child: Child,
     local_port: u16,
-    /// 参数指纹：target / ssh 端口 / 转发目的地任一变更即重建
+    /// 连接参数变化时重建隧道。
     fingerprint: String,
-    /// 持续排空 ssh stderr，防止管道写满后反向阻塞隧道进程。
+    /// 排空 stderr，防止子进程阻塞。
     stderr_drain: Option<JoinHandle<()>>,
 }
 
@@ -125,8 +122,7 @@ fn fingerprint(config: &ConnectionConfig) -> String {
     )
 }
 
-/// 确保该连接的 SSH 隧道就绪。未启用隧道返回 `None`；
-/// 启用则返回应改连的本地地址 `("127.0.0.1", 本地端口)`
+/// 确保 SSH 隧道就绪，并返回本地转发地址。
 pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
     config.validate().map_err(DomainError::InvalidConfig)?;
     let Some(target) = config
@@ -139,14 +135,12 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
     };
 
     let want = fingerprint(config);
-    // 全局锁只负责 ConnectionId → slot 索引；耗时握手仅锁当前连接，
-    // 不让一个慢跳板机拖住其它连接的 ensure / evict。
+    // 全局锁仅管理索引，握手只锁当前连接。
     let slot = slot_for(&config.id)?;
     let mut current = slot
         .lock()
         .map_err(|_| DomainError::QueryFailed("SSH 隧道连接锁失效".into()))?;
 
-    // 命中：指纹一致且进程仍活着（try_wait None）
     let reusable = current
         .as_mut()
         .is_some_and(|t| matches!(t.child.try_wait(), Ok(None)) && t.fingerprint == want);
@@ -154,7 +148,6 @@ pub fn ensure(config: &ConnectionConfig) -> Result<Option<(String, u16)>> {
         return Ok(Some(("127.0.0.1".into(), t.local_port)));
     }
     if let Some(mut stale) = current.take() {
-        // 参数变了或进程已死：拆掉重建
         stale.stop();
         info!(operation = "ssh_tunnel_ensure", stage = "rebuild", connection_id = %config.id, "ssh tunnel rebuilt (stale or dead)");
     }
@@ -181,7 +174,7 @@ fn remove_unused_slot(id: &ConnectionId, slot: &TunnelSlot) {
     let is_current = map
         .get(id)
         .is_some_and(|registered| Arc::ptr_eq(registered, slot));
-    // registry + 当前调用者各持一个 Arc；更多引用表示已有并发 ensure/evict，不能移除。
+    // 额外 Arc 表示仍有并发 ensure/evict，不能移除。
     let is_empty = slot.lock().is_ok_and(|current| current.is_none());
     if is_current && Arc::strong_count(slot) == 2 && is_empty {
         map.remove(id);
@@ -193,7 +186,7 @@ fn build_tunnel(config: &ConnectionConfig, target: &str, fingerprint: String) ->
     let forward = format!("127.0.0.1:{local_port}:{}:{}", config.host, config.port);
     let mut cmd = ssh_command();
     cmd.args(["-N", "-L", &forward])
-        // GUI 无 tty：禁交互提问（密码认证会挂死，须用密钥 / agent，报错里已提示）
+        // GUI 无 TTY，禁用交互认证以避免挂起。
         .args(["-o", "BatchMode=yes"])
         .args(["-o", "ExitOnForwardFailure=yes"])
         .args(["-o", "ServerAliveInterval=15"])
@@ -210,7 +203,7 @@ fn build_tunnel(config: &ConnectionConfig, target: &str, fingerprint: String) ->
         DomainError::QueryFailed(format!("启动 ssh 失败（请确认系统已安装 OpenSSH）：{e}"))
     })?;
 
-    // 就绪探测：本地端口可连即成；ssh 提前退出则读 stderr 给出可定位原因
+    // 本地端口可连即就绪；提前退出时返回 stderr。
     let start = Instant::now();
     loop {
         if TcpStream::connect(("127.0.0.1", local_port)).is_ok() {
@@ -257,11 +250,11 @@ fn build_tunnel(config: &ConnectionConfig, target: &str, fingerprint: String) ->
 }
 
 fn append_destination(command: &mut Command, target: &str) {
-    // 防止以 `-o` 开头的目标被 OpenSSH 继续解析为选项（尤其是 ProxyCommand）。
+    // 防止目标被 OpenSSH 解析为选项。
     command.arg("--").arg(target);
 }
 
-/// 关闭并移除该连接的隧道（driver evict_pool 时调，编辑配置后下次建连按新参数重建）
+/// 关闭并移除连接的隧道。
 pub fn evict(id: &ConnectionId) {
     let slot = match registry().lock() {
         Ok(mut map) => map.remove(id),
@@ -285,7 +278,7 @@ pub fn evict(id: &ConnectionId) {
     }
 }
 
-/// 关闭全部隧道（应用退出时调，避免残留孤儿 ssh 进程）
+/// 关闭全部隧道。
 pub fn shutdown_all() {
     let slots: Vec<TunnelSlot> = match registry().lock() {
         Ok(mut map) => map.drain().map(|(_, slot)| slot).collect(),
@@ -323,7 +316,7 @@ pub fn shutdown_all() {
     }
 }
 
-/// 绑 :0 让系统分配空闲端口。释放到 ssh 监听之间存在极小竞态窗口，实践可接受
+/// 让系统分配临时端口；释放到监听间存在极小竞态窗口。
 fn pick_free_port() -> Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| DomainError::QueryFailed(format!("分配本地端口失败：{e}")))?;
@@ -380,7 +373,7 @@ fn read_stderr(child: &mut Child) -> String {
     out
 }
 
-/// Windows 上禁止 ssh.exe 弹控制台闪窗（与 git_cmd 同处理）
+/// Windows 上禁止 ssh.exe 弹出控制台窗口。
 fn ssh_command() -> Command {
     #[cfg(target_os = "windows")]
     {

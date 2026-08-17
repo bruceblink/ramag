@@ -1,12 +1,7 @@
-//! Redis 写命令识别：生产模式只读保护用。
-//! 黑名单覆盖全部主流写命令；带可选写参数的命令（SORT / EVAL / GEORADIUS / BITFIELD / GETEX）
-//! 保守归写，其 `_RO` 只读变体不在名单内，自动放行。
-//! 管理类命令（CONFIG / CLUSTER / ACL / SCRIPT 等）整体归写——子命令不细分，
-//! 少量只读子命令被一并拦截，但生产只读场景本就不应使用，符合保守封死原则
+//! Redis 写命令识别，用于生产只读保护。
+//! 未知、模块和管理命令均保守视为写；仅明确只读变体放行。
 
-/// 命令名（大小写不敏感）是否为写命令。
-/// 除固定黑名单外，还拦截：① 模块写命令（RedisJSON/TS/Search/Graph/Bloom 等，
-/// 按 `点号 + 非只读后缀` 识别）；② 会把复用连接卡在特殊模式或危险的管理命令
+/// 命令名（不区分大小写）是否应按写命令拦截。
 pub fn is_write_command(cmd: &str) -> bool {
     let upper = cmd.to_ascii_uppercase();
     if WRITE_COMMANDS.contains(&upper.as_str()) || BLOCKING_OR_UNSAFE.contains(&upper.as_str()) {
@@ -15,7 +10,7 @@ pub fn is_write_command(cmd: &str) -> bool {
     if upper.contains('.') {
         return is_module_write_command(&upper);
     }
-    // 生产只读保护采用白名单：未知核心命令按写操作处理，避免新命令默认绕过保护。
+    // 未知核心命令按写操作处理，避免绕过生产只读保护。
     !READ_COMMANDS.contains(&upper.as_str())
 }
 
@@ -109,8 +104,7 @@ const READ_COMMANDS: &[&str] = &[
     "ZUNION",
 ];
 
-/// 模块命令形如 `JSON.SET` / `TS.ADD` / `FT.DROPINDEX`。无法穷举各模块的读命令，
-/// 故采用保守策略：已知只读后缀（GET/MGET/RANGE/INFO 等）放行，其余点号命令一律当写。
+/// 模块命令按只读后缀白名单放行，其余点号命令视为写。
 fn is_module_write_command(upper: &str) -> bool {
     let Some((namespace, sub)) = upper.split_once('.') else {
         return false;
@@ -122,7 +116,7 @@ fn is_module_write_command(upper: &str) -> bool {
     if !MODULE_NAMESPACES.contains(&namespace) {
         return true;
     }
-    // 只读子命令后缀白名单：命中放行，其余（SET/DEL/ADD/INCRBY/CREATE/DROP…）当写
+    // 只读后缀白名单；其余子命令视为写。
     const READ_SUFFIXES: &[&str] = &[
         "GET",
         "MGET",
@@ -294,9 +288,7 @@ const WRITE_COMMANDS: &[&str] = &[
     "LATENCY",
 ];
 
-/// 会把复用的 ConnectionManager 卡在特殊模式或有危险副作用的命令：
-/// MONITOR/SUBSCRIBE 类会让连接进入不可逆的接收模式，CLIENT KILL 可断别的连接。
-/// 生产只读连接一律拦截（连非生产也不该经值编辑面板发这些）。
+/// 会占用复用连接或有危险副作用的命令，生产只读连接中统一拦截。
 const BLOCKING_OR_UNSAFE: &[&str] = &[
     "MONITOR",
     "SUBSCRIBE",

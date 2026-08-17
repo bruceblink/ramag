@@ -99,9 +99,7 @@ impl VcsView {
         open_confirm_dialog(
             view,
             "执行交互式 Rebase？",
-            format!(
-                "将按计划改写 {total} 个提交{drop_part}。提交哈希会变化；若已推送，之后需要强推。"
-            ),
+            format!("将改写 {total} 个提交{drop_part}；若已推送，之后需强推。"),
             "执行",
             true,
             move |this, cx| this.execute_interactive_rebase(cx),
@@ -167,7 +165,7 @@ impl VcsView {
         open_confirm_dialog(
             view,
             "修订上一次提交？",
-            "将用当前暂存区和新提交信息替换最近一次提交。若已推送，之后需要强推。".into(),
+            "将用当前暂存区和提交说明替换上一次提交；若已推送，之后需强推。".into(),
             "修订",
             false,
             move |this, cx| this.run_commit(cx),

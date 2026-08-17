@@ -222,7 +222,7 @@ pub fn transfer_progress_row<V: 'static>(
                     .danger()
                     .xsmall()
                     .icon(IconName::Close)
-                    .tooltip("取消任务")
+                    .tooltip("取消")
                     .disabled(cancelling)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         state_of(view).request_cancel();

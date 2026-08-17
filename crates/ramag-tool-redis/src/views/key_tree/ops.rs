@@ -94,7 +94,7 @@ pub(super) fn node_context_menu(
                 open_confirm(
                     "删除前缀下全部 Key",
                     format!(
-                        "将删除匹配「{}:*」的全部 key（按服务端实际扫描，含未加载部分），此操作不可恢复。",
+                        "将删除服务端所有匹配「{}:*」的 Key（包括未加载项），不可恢复。",
                         truncate_label(&prefix, 60)
                     ),
                     "删除",
@@ -137,9 +137,8 @@ pub(super) fn toolbar_more_menu(
             ramag_ui::open_import_options_dialog(
                 "导入整个 Redis DB",
                 format!(
-                    "选择冲突策略与 .jsonl 文件（可多选），将导入到 DB {db}。重复导入同一文件：\
-                     「跳过」按 key 断点续传，「覆盖」完全重建（幂等）。\
-                     （list / string 无法条目级去重，Redis 不提供合并）"
+                    "选择冲突策略与 .jsonl 文件（可多选），导入到 DB {db}。\
+                     「跳过」保留已有 Key，「覆盖」重建 Key；Redis 不支持「合并」。"
                 ),
                 false,
                 ("JSONL", &["jsonl", "json"]),
@@ -158,7 +157,7 @@ pub(super) fn toolbar_more_menu(
                 ramag_ui::open_import_options_dialog(
                     "导入对象",
                     format!(
-                        "选择由 Ramag Key 或前缀节点“导出”生成的 .jsonl 文件（可多选），将 Key 类型、TTL 和全部值恢复到 DB {db}。Key 名取自文件。"
+                        "选择由 Ramag 导出的 Key/前缀 .jsonl 文件（可多选），恢复 Key 的类型、TTL 和值到 DB {db}；Key 名来自文件。"
                     ),
                     false,
                     ("JSONL", &["jsonl", "json"]),

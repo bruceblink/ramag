@@ -1,4 +1,4 @@
-//! VcsView Remote 异步操作：fetch / pull / push（含 force-with-lease）
+//! VCS 远程操作。
 
 use gpui::Context;
 use ramag_domain::entities::RepoId;
@@ -8,12 +8,12 @@ use super::super::helpers::{RemoteOp, default_remote_name, is_current_arc_slot};
 use super::super::vcs_view::VcsView;
 
 impl VcsView {
-    /// fetch=`--all --prune`；push 无 upstream 自动 -u；pull 无 upstream 引导先 push
+    /// 执行 Fetch、Pull 或 Push。
     pub(in crate::views) fn run_remote_op(&mut self, op: RemoteOp, cx: &mut Context<Self>) {
         self.run_remote_op_to(op, None, cx);
     }
 
-    /// `selected_remote` 仅用于首次 Push 的显式选择；已有 upstream 时仍严格跟随 upstream。
+    /// 已有上游时始终使用上游；仅首次推送使用选择的远端。
     pub(in crate::views) fn run_remote_op_to(
         &mut self,
         op: RemoteOp,
@@ -50,16 +50,15 @@ impl VcsView {
             cx.notify();
             return;
         }
-        // Fetch 与 HEAD 无关；detached HEAD 下仍应允许更新远端引用。
+        // Fetch 无需 HEAD。
         let local_branch = local_branch.unwrap_or_default();
-        // 从 local_branches 找当前 head 的 upstream（"origin/main"）
         let upstream = self
             .local_branches
             .iter()
             .find(|b| b.is_head)
             .and_then(|b| b.upstream.clone());
         let need_set_upstream = upstream.is_none();
-        // pull 模式下若没有 upstream 直接报错引导（避免提示「fatal: no tracking info」）
+        // Pull 必须跟踪上游。
         if matches!(op, RemoteOp::Pull) && need_set_upstream {
             self.error =
                 Some("当前分支没有上游分支：先点 Push（会自动设置 upstream）再 Pull".into());
@@ -88,13 +87,12 @@ impl VcsView {
                 };
                 (remote, local_branch.clone())
             }
-            // Fetch 拉所有 remote，不使用参数中的名字。
             None => (String::new(), local_branch.clone()),
         };
-        // PushForce → 走 --force-with-lease；其他 op 忽略
+        // 仅强推使用 force-with-lease。
         let this_force_lease = matches!(op, RemoteOp::PushForce);
         let driver = self.driver.clone();
-        // 操作前的 ahead/behind：完成后据此区分「真的推/拉了 N 个」与「本来就是最新」
+        // 用于区分传输与已最新。
         let pre_ahead = self.status.as_ref().and_then(|s| s.ahead).unwrap_or(0);
         let pre_behind = self.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
         let op_label = match op {
@@ -112,12 +110,12 @@ impl VcsView {
         if !self.begin_op(label, cx) {
             return;
         }
-        // 进度槽 + 取消位：streaming 变体持续写进度、监听取消；存入 self 供工具栏展示 / 取消按钮
+        // 保存进度与取消位。
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let progress = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         self.remote_op_cancel = Some(cancel.clone());
         self.remote_op_progress = Some(progress.clone());
-        // 进度轮询：每 120ms notify 让工具栏刷新最新进度行，操作结束（槽被清）即退出
+        // 定期刷新工具栏进度。
         let poll_cancel = cancel.clone();
         cx.spawn(async move |this, cx| {
             loop {
@@ -143,7 +141,6 @@ impl VcsView {
 
         cx.spawn(async move |this, cx| {
             let result = match op {
-                // 空 remote 让 driver 拉所有 remote
                 RemoteOp::Fetch => {
                     driver
                         .fetch_streaming(&repo, "", cancel.clone(), progress.clone())
@@ -175,8 +172,7 @@ impl VcsView {
                         .await
                 }
             };
-            // 不论成功失败都刷新一次 status（pull 后 ahead/behind 必变）；
-            // remote 分支同刷：fetch/pull 更新远端 refs，push -u 会新建 origin/<branch>
+            // 完成后刷新状态和远端分支。
             let (new_status, branches) = futures::future::join(
                 driver.status(&repo),
                 driver.list_all_branches(&repo),
@@ -193,13 +189,13 @@ impl VcsView {
                 "branches",
             );
             let _ = this.update(cx, |this, cx| {
-                // 只允许发起该任务的操作收尾，避免迟到回调清掉后续操作的状态槽。
+                // 仅发起任务可收尾。
                 if !is_current_arc_slot(this.remote_op_cancel.as_ref(), &cancel) {
                     return;
                 }
                 this.busy = false;
                 this.busy_label = None;
-                // 清进度 / 取消槽（也让轮询任务下一拍退出）
+                // 清除进度和取消状态。
                 let was_cancelled = cancel.load(std::sync::atomic::Ordering::Relaxed);
                 this.remote_op_cancel = None;
                 this.remote_op_progress = None;
@@ -207,7 +203,7 @@ impl VcsView {
                     cx.notify();
                     return;
                 }
-                // 用户主动取消：不当作失败刷错误横幅，给中性提示
+                // 用户取消显示中性提示。
                 if was_cancelled {
                     if let Some(s) = new_status {
                         this.status = Some(s);
@@ -257,7 +253,6 @@ impl VcsView {
                             branch = %remote_branch,
                             "remote operation completed"
                         );
-                        // fetch 后 behind 增加 = 远端有新 commit 被发现
                         let post_behind =
                             this.status.as_ref().and_then(|s| s.behind).unwrap_or(0);
                         let msg = match op {
@@ -285,7 +280,7 @@ impl VcsView {
                             }
                         };
                         this.notify_success(msg, cx);
-                        // Pull 可能带来新 commit：HEAD 内容变了，缓存全失效 + history 刷新
+                        // Pull 后刷新缓存和历史。
                         if matches!(op, RemoteOp::Pull) {
                             this.refresh_after_head_change(cx);
                             if this.history_pane_visible || !this.history_commits.is_empty() {
@@ -300,8 +295,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 取消进行中的远端操作：置取消位，infra watcher kill git 子进程；
-    /// 收尾在异步完成回调里统一清槽 + 中性提示
+    /// 请求取消正在执行的远端操作。
     pub(in crate::views) fn cancel_remote_op(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = &self.remote_op_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -315,7 +309,7 @@ impl VcsView {
         }
     }
 
-    /// 远端操作进行中的最新进度行（工具栏展示用）；无操作时 None
+    /// 返回当前远端操作进度。
     pub(in crate::views) fn remote_op_progress_line(&self) -> Option<String> {
         let slot = self.remote_op_progress.as_ref()?;
         let text = match slot.try_lock() {
@@ -332,7 +326,7 @@ impl VcsView {
         if text.is_empty() { None } else { Some(text) }
     }
 
-    /// 「添加远程」按钮：读双输入 → 校验非空 → add_remote_op
+    /// 校验并添加远端。
     pub(in crate::views) fn handle_create_remote(&mut self, cx: &mut Context<Self>) {
         let name = self
             .create_remote_name_input
@@ -354,7 +348,7 @@ impl VcsView {
         self.add_remote_op(name, url, cx);
     }
 
-    /// git remote add；成功后清空创建输入并刷新列表
+    /// 添加远端并刷新列表。
     pub(in crate::views) fn add_remote_op(
         &mut self,
         name: String,
@@ -394,7 +388,7 @@ impl VcsView {
         .detach();
     }
 
-    /// git remote set-url（改 fetch URL）
+    /// 修改远端 URL。
     pub(in crate::views) fn set_remote_url_op(
         &mut self,
         name: String,
@@ -451,8 +445,7 @@ impl VcsView {
         .detach();
     }
 
-    /// 远程 CRUD 统一收尾：复位忙碌 → 归属校验 → 成功刷新列表+toast / 失败错误横幅。
-    /// clear_inputs=true 时（仅添加）经 pending 标志清空创建输入
+    /// 统一完成远端配置操作。
     fn finish_remote_crud(
         &mut self,
         repo: &RepoId,

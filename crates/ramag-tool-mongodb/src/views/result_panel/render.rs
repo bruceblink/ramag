@@ -326,7 +326,7 @@ fn render_status_bar(
                     .ghost()
                     .small()
                     .label("下页")
-                    .tooltip("未指定 sort 时分页顺序不固定")
+                    .tooltip("无排序时顺序不固定")
                     .disabled(!pagination.has_more)
                     .on_click(move |_, _, app| {
                         panel_for_next.update(app, |_, cx| {

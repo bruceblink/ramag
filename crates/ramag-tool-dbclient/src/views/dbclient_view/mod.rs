@@ -23,7 +23,7 @@ pub(super) enum CenterMode {
     ConnectionPicker,
 }
 
-/// 各数据库会话的统一视图句柄。
+/// 数据库会话视图句柄。
 pub(super) enum SessionEntity {
     Sql(Entity<ConnectionSession>),
     Redis(Entity<RedisSessionPanel>),
@@ -31,7 +31,7 @@ pub(super) enum SessionEntity {
 }
 
 impl SessionEntity {
-    /// 元数据树状态 (loading, has_error)：不能等同于实时连接健康。
+    /// 元数据加载状态，不代表实时连接健康。
     pub(super) fn health(&self, cx: &App) -> (bool, bool) {
         match self {
             SessionEntity::Sql(e) => e.read(cx).health(cx),
@@ -46,7 +46,7 @@ impl SessionEntity {
             SessionEntity::Mongo(e) => e.clone().into(),
         }
     }
-    /// 仅在元数据尚未成功加载时补拉。
+    /// 未成功加载元数据时补拉。
     pub(super) fn ensure_loaded(&self, cx: &mut App) {
         match self {
             SessionEntity::Sql(e) => e.update(cx, |s, cx| s.ensure_loaded(cx)),
@@ -76,7 +76,7 @@ impl SessionEntity {
     }
 }
 
-/// 会话实体首次激活才创建；配置变化后须由用户重连。
+/// 首次激活时创建会话；配置变化后需重连。
 pub(super) struct SessionSlot {
     pub(super) entity: Option<SessionEntity>,
     pub(super) config: ConnectionConfig,
@@ -98,7 +98,7 @@ pub(super) fn evict_connection_resources(
     mongo_service: &MongoService,
     id: &ConnectionId,
 ) {
-    // 连接配置允许切换 driver；关闭或更新时必须清理旧、新所有类型的缓存。
+    // 连接可切换 driver，需清理所有类型的资源。
     service.evict_all_pools(id);
     redis_service.evict_pool(id);
     mongo_service.evict_pool(id);
@@ -115,15 +115,14 @@ pub struct DbClientView {
     pub(super) center: CenterMode,
     pub(super) picker: Entity<ConnectionListPanel>,
     pub(super) sessions_scroll: ScrollHandle,
-    /// 异步回调无法访问 Window，通知由 Render 延后推送。
+    /// 异步通知由 Render 延后推送。
     pub(super) pending_notification: Option<gpui_component::notification::Notification>,
-    /// 跨重启恢复：启动异步读回上次打开的连接（按保存顺序）与上次激活的连接 id，
-    /// render 首帧消费逐个重开（render 才有 Window；不自动连库，树惰性拉取）
+    /// 启动后按保存顺序恢复标签；渲染时才创建视图。
     pub(super) pending_restore: Option<(
         Vec<ConnectionConfig>,
         Option<ramag_domain::entities::ConnectionId>,
     )>,
-    /// 启动恢复只在用户尚未手动改动标签时生效；慢回包不得覆盖用户刚做出的选择。
+    /// 用户操作后不再应用延迟恢复。
     pub(super) restore_allowed: bool,
     pub(super) form_subscription: Option<Subscription>,
     pub(super) focus_handle: FocusHandle,
@@ -137,9 +136,9 @@ impl Focusable for DbClientView {
 }
 
 const OPEN_SESSIONS_PREF: &str = "dbclient_open_sessions";
-/// 单窗口连接会话上限；每个实体都可能持有连接池、元数据树、编辑器与后台订阅。
+/// 单窗口连接会话上限。
 const MAX_CONNECTION_SESSIONS: usize = 32;
-/// 恢复偏好只应包含少量 UUID；先限制原始 JSON，避免异常数据放大反序列化成本。
+/// 恢复偏好原始数据上限。
 const MAX_OPEN_SESSIONS_PREF_BYTES: usize = 64 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -149,8 +148,7 @@ struct OpenSessionsPref {
     active: Option<ramag_domain::entities::ConnectionId>,
 }
 
-/// 解析并归一化偏好：兼容旧版数组，去重并只保留前 N 个有效槽位。
-/// 返回值第二项表示输入包含重复、超限或失效 active，调用方应给用户提示。
+/// 解析恢复偏好，并报告是否已规整。
 fn parse_open_sessions(json: &str) -> Result<(OpenSessionsPref, bool), String> {
     if json.len() > MAX_OPEN_SESSIONS_PREF_BYTES {
         return Err(format!("连接标签恢复数据过大：{} bytes", json.len()));
@@ -185,7 +183,7 @@ fn parse_open_sessions(json: &str) -> Result<(OpenSessionsPref, bool), String> {
 }
 
 impl DbClientView {
-    /// 把当前打开的连接 id 列表落 prefs；同 key 串行且只保留最新快照，避免快速切换写乱序。
+    /// 持久化打开标签，仅保留最新快照。
     fn persist_open_sessions(&self, cx: &mut Context<Self>) {
         let ids: Vec<ramag_domain::entities::ConnectionId> =
             self.sessions.iter().map(|s| s.config.id.clone()).collect();
@@ -295,7 +293,7 @@ impl DbClientView {
         }
     }
 
-    /// 惰性占位槽首次激活：按槽内配置建实体并聚焦（stale 槽不在此建，由重连按钮触发）
+    /// 首次激活惰性槽时创建实体。
     pub(super) fn materialize_slot(
         &mut self,
         idx: usize,
@@ -313,7 +311,7 @@ impl DbClientView {
         entity.focus(window, cx);
         self.sessions[idx].entity = Some(entity);
         self.sync_result_activity(cx);
-        // 真正连库时才异步探测版本（占位标签不建池 / 不试连）
+        // 仅在实际打开时预取版本。
         self.picker
             .update(cx, |p, cx| p.prefetch_version(&config, cx));
         cx.notify();
@@ -341,7 +339,7 @@ impl DbClientView {
     ) {
         self.restore_allowed = false;
         self.pending_restore = None;
-        // 已开过的话直接切过去；stale 槽视为用户明确要求按新配置连接，直接重连
+        // 已打开时切换；stale 槽按新配置重连。
         if let Some(idx) = self.sessions.iter().position(|s| s.config.id == config.id) {
             self.active_session = Some(idx);
             self.center = CenterMode::Session;
@@ -350,9 +348,8 @@ impl DbClientView {
             } else if self.sessions[idx].entity.is_none() {
                 self.materialize_slot(idx, window, cx);
             } else if let Some(entity) = &self.sessions[idx].entity {
-                // 重新激活已打开的连接：树为空则补拉（含首次加载失败后的重试）
+                // 补拉未加载元数据并聚焦内容。
                 entity.ensure_loaded(cx);
-                // 聚焦内容，cmd-e 等快捷键无需先点内容区
                 entity.focus(window, cx);
             }
             self.sync_result_activity(cx);
@@ -372,10 +369,8 @@ impl DbClientView {
             return;
         }
 
-        // 在 config 被 move 进 session 之前保留版本探测快照。
         let version_config = config.clone();
         let entity = self.build_session_entity(config.clone(), window, cx);
-        // 新会话立即聚焦内容，cmd-e 等快捷键无需先点内容区
         entity.focus(window, cx);
         self.sessions.push(SessionSlot {
             entity: Some(entity),
@@ -385,10 +380,10 @@ impl DbClientView {
         self.active_session = Some(self.sessions.len() - 1);
         self.center = CenterMode::Session;
         self.sync_result_activity(cx);
-        // tab 多溢出时让新连接 tab 滚入视图（GPUI 自动 clamp 到 max_offset）
+        // 将新标签滚入视图。
         self.sessions_scroll
             .set_offset(Point::new(px(-99999.0), px(0.0)));
-        // 用户主动打开后才异步探测版本（不打开的连接不会去建池/试连）
+        // 仅用户打开的连接预取版本。
         self.picker
             .update(cx, |p, cx| p.prefetch_version(&version_config, cx));
         self.persist_open_sessions(cx);
@@ -406,7 +401,7 @@ impl DbClientView {
             config,
             stale: _,
         } = self.sessions.remove(idx);
-        // 先释放视图及其后台 ticker，再清连接池 / SSH 隧道。
+        // 先释放视图，再清理连接资源。
         drop(entity);
         self.picker
             .update(cx, |picker, _| picker.cancel_version_prefetch(&config.id));
@@ -441,18 +436,17 @@ impl DbClientView {
             self.active_session = Some(idx);
             self.center = CenterMode::Session;
             if self.sessions[idx].stale {
-                // 配置已更新：不建实体不聚焦，中央区显示"重新连接"面板
+                // stale 槽显示重新连接面板。
             } else if self.sessions[idx].entity.is_none() {
-                // 惰性占位首次激活：此刻才建会话连库
+                // 首次激活时创建实体。
                 self.materialize_slot(idx, window, cx);
             } else if let Some(entity) = &self.sessions[idx].entity {
-                // 切到该 Tab：树为空则补拉（含首次加载失败后的重试）
+                // 补拉未加载元数据并聚焦内容。
                 entity.ensure_loaded(cx);
-                // 聚焦内容，cmd-e 等快捷键无需先点内容区
                 entity.focus(window, cx);
             }
             self.sync_result_activity(cx);
-            // active 变化也入偏好：重启后回到上次停留的连接
+            // 保存活动标签，供重启恢复。
             self.persist_open_sessions(cx);
             cx.notify();
         }

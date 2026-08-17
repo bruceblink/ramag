@@ -84,7 +84,7 @@ impl Render for ClipboardView {
 fn clipboard_status_label(count: usize, total_bytes: u64, search_truncated: bool) -> String {
     let usage = format_bytes(total_bytes);
     if search_truncated {
-        format!("显示 {count} 条 · 占用 {usage} · 历史匹配至少 500 条，仅加载前 500 条")
+        format!("显示 {count} 条 · {usage} · 历史至少 500 条（仅加载前 500 条）")
     } else {
         format!("{count} 条 · 占用 {usage}")
     }
@@ -229,7 +229,7 @@ mod tests {
     fn truncated_search_status_keeps_size_and_limit_hint() {
         assert_eq!(
             clipboard_status_label(500, 2048, true),
-            "显示 500 条 · 占用 2 KiB · 历史匹配至少 500 条，仅加载前 500 条"
+            "显示 500 条 · 2 KiB · 历史至少 500 条（仅加载前 500 条）"
         );
     }
 }
