@@ -43,6 +43,17 @@ pub fn apply_theme(mode: Mode, cx: &mut App) {
     }
     // 命令编辑器背景对齐主背景：gpui 默认 editor.background 是纯黑，浮在主背景上显突兀
     normalize_editor_highlight_theme(mode, cx);
+    // 保留 TextView / Input / List 的虚拟化滚动，只隐藏 gpui-component 绘制的滚动条图层。
+    // 不能把长文改成普通 overflow 容器，否则会一次性布局整篇内容，滚动会明显掉帧。
+    hide_scrollbar_paint(Theme::global_mut(cx));
+}
+
+/// 全局隐藏组件滚动条的绘制，但不改变滚轮、触控板和拖拽滚动状态。
+fn hide_scrollbar_paint(theme: &mut Theme) {
+    let transparent = theme.transparent;
+    theme.scrollbar = transparent;
+    theme.scrollbar_thumb = transparent;
+    theme.scrollbar_thumb_hover = transparent;
 }
 
 /// 编辑器背景对齐主背景；浅色默认主题的亮蓝色注释改为更常见的绿色。
@@ -219,6 +230,7 @@ impl Opacity for Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_component::ThemeColor;
 
     #[test]
     fn light_editor_comments_are_readable_and_background_matches_app() {
@@ -249,5 +261,24 @@ mod tests {
             normalized.style.syntax.comment_doc,
             source.style.syntax.comment_doc
         );
+    }
+
+    #[test]
+    fn scrollbar_paint_is_transparent_without_disabling_scroll_state() {
+        let mut theme = Theme {
+            colors: ThemeColor {
+                scrollbar: hsl(0.0, 0.0, 50.0),
+                scrollbar_thumb: hsl(0.0, 0.0, 50.0),
+                scrollbar_thumb_hover: hsl(0.0, 0.0, 50.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        hide_scrollbar_paint(&mut theme);
+
+        assert_eq!(theme.scrollbar.a, 0.0);
+        assert_eq!(theme.scrollbar_thumb.a, 0.0);
+        assert_eq!(theme.scrollbar_thumb_hover.a, 0.0);
     }
 }

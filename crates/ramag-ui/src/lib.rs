@@ -11,6 +11,7 @@ pub mod database_search;
 pub mod editor_workspace;
 pub mod home_view;
 pub mod icons;
+pub mod markdown;
 pub mod mutation_gate;
 pub mod platform;
 pub mod pointer_menu;
@@ -54,6 +55,7 @@ pub use editor_workspace::{
     MAX_EDITOR_WORKSPACE_PREF_BYTES, MAX_EDITOR_WORKSPACE_TEXT_BYTES, can_open_editor_tab,
 };
 pub use home_view::{HomeEvent, HomeView};
+pub use markdown::{markdown_preview, markdown_preview_at_path};
 pub use mutation_gate::{AsyncMutationGate, MutationToken};
 pub use pointer_menu::PointerDropdownMenu;
 pub use result_memory::{

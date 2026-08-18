@@ -1,10 +1,6 @@
-//! GPUI 渲染测试：headless 在内存渲染 VcsView（含 diff session 态），
-//! 验证整条 diff 渲染管线（FileDiff → build_split_keys → element → 布局 → paint）不 panic。
-//! 截图被 macOS 屏幕录制权限挡，本测试是 UI 渲染层的可重复真机验证替代。
+//! GPUI 渲染测试：headless 在内存渲染 VcsView（含 diff session 态）。
+//! 验证整条 diff 渲染管线不 panic；截图被 macOS 屏幕录制权限挡，本测试是可重复真机验证替代。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-use std::path::Path;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use gpui::{
@@ -18,10 +14,10 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{GitDriver, Storage};
+use std::{path::Path, sync::Arc};
 
 use super::super::helpers::{ActiveView, FileContentSnapshot, FileTab, FileTabSource, GroupKind};
 use super::VcsView;
-
 /// 空壳 GitDriver：render 是纯展示、不调 driver，方法只需可编译且不 panic
 struct MockGit;
 

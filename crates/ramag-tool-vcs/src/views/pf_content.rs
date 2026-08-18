@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard, h_flex,
-    input::Input, text, v_flex,
+    input::Input, v_flex,
 };
 
 use super::vcs_view::VcsView;
@@ -52,6 +52,10 @@ impl VcsView {
         });
         let snapshot_text = snapshot.text.clone();
         let editor_for_copy = self.pf_editor.clone();
+        let markdown_document_path = self
+            .repo
+            .as_ref()
+            .map(|repo| std::path::Path::new(&repo.path).join(&snapshot.path));
         let copy_button = Clipboard::new("vcs-pf-copy")
             .tooltip("复制")
             .value_fn(move |_, app| {
@@ -85,7 +89,12 @@ impl VcsView {
                 .p(px(20.0))
                 // 让 TextView 自己使用 ListState 滚动，只布局可视区域，避免长文滚动时
                 // 每一帧都重新处理整篇 Markdown。预览区通过顶部复制按钮复制全文。
-                .child(text::markdown(snapshot.text.as_str().to_string()).scrollable(true))
+                .child(ramag_ui::markdown_preview_at_path(
+                    snapshot.text.as_str().to_string(),
+                    markdown_document_path
+                        .as_deref()
+                        .unwrap_or_else(|| std::path::Path::new(&snapshot.path)),
+                ))
                 .into_any_element()
         } else if editor_ready {
             Input::new(&self.pf_editor)

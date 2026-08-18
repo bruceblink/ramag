@@ -90,6 +90,9 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", feature
 ] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 
+# Markdown 预览中解析仓库内相对链接与图片路径
+url = "2.5"
+
 # SQL 数据库驱动
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
