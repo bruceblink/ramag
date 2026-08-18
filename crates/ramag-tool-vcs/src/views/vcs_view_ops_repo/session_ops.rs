@@ -25,7 +25,7 @@ impl VcsView {
             {
                 return;
             }
-            // 关闭前保留会话。
+            // 关闭前立即落盘草稿；关闭失败时仍可继续当前会话。
             self.save_current_session_to_cache(cx);
         }
         self.loading = true;
@@ -49,12 +49,17 @@ impl VcsView {
                 match result {
                     Ok(()) => {
                         this.open_repos.retain(|repo| repo.path != path);
+                        // 与数据库连接标签一致：关闭即销毁该标签的布局会话，
+                        // 再次打开从默认分栏宽度开始。
+                        this.repo_session_cache.remove(&path);
+                        this.repo_session_order.retain(|entry| entry != &path);
                         this.persist_open_repos(cx);
                         if is_current {
-                            if let Some(next) = this.open_repos.first().cloned() {
+                            let next = this.open_repos.first().cloned();
+                            // 先清掉当前仓库，避免打开相邻标签时再次缓存刚关闭的会话。
+                            this.reset_session_state(cx);
+                            if let Some(next) = next {
                                 this.open_recent_repo(next.path, cx);
-                            } else {
-                                this.reset_session_state(cx);
                             }
                         } else {
                             cx.notify();

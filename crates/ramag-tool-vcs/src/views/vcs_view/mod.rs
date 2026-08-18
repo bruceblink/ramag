@@ -154,7 +154,6 @@ pub struct VcsView {
     pub(super) reflog_request_seq: u64,
     pub(super) showing_reflog: bool,
     pub(super) ide_left_resize: Entity<ResizableState>,
-    pub(super) ide_left_width: f32,
     pub(super) ide_files_resize: Entity<ResizableState>,
     pub(super) detail_resize: Entity<ResizableState>,
     pub(super) active_view: ActiveView,

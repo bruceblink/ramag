@@ -18,9 +18,8 @@ const TOP_HEIGHT_INITIAL: f32 = 600.0;
 const TOP_HEIGHT_MIN: f32 = 200.0;
 const TOP_HEIGHT_MAX: f32 = 1400.0;
 pub(super) const LEFT_WIDTH_INITIAL: f32 = 280.0;
-const LEFT_WIDTH_MIN: f32 = 220.0;
-const LEFT_WIDTH_MAX: f32 = 600.0;
-const LEFT_WIDTH_PREFERENCE: &str = "git.ide_left_width";
+pub(super) const LEFT_WIDTH_MIN: f32 = 180.0;
+pub(super) const LEFT_WIDTH_MAX: f32 = 600.0;
 
 impl VcsView {
     pub(super) fn render_ide_layout(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -68,16 +67,11 @@ impl VcsView {
     fn render_top_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let border = theme.border;
-        let storage = self.storage.clone();
-        let view = cx.entity();
         h_resizable("vcs-ide-top")
             .with_state(&self.ide_left_resize)
-            .on_resize(move |state, _, cx| {
-                persist_ide_left_width(view.clone(), storage.clone(), state, cx);
-            })
             .child(
                 resizable_panel()
-                    .size(px(self.ide_left_width))
+                    .size(px(LEFT_WIDTH_INITIAL))
                     .size_range(px(LEFT_WIDTH_MIN)..px(LEFT_WIDTH_MAX))
                     .child(
                         div()
@@ -402,37 +396,6 @@ impl VcsView {
         .into_any_element()
     }
 
-    pub(super) fn load_ide_left_width_async(
-        storage: std::sync::Arc<dyn ramag_domain::traits::Storage>,
-        cx: &mut Context<Self>,
-    ) {
-        cx.spawn(async move |this, cx| {
-            let stored = match storage.get_preference(LEFT_WIDTH_PREFERENCE).await {
-                Ok(value) => value,
-                Err(error) => {
-                    tracing::warn!(
-                        operation = "git_layout_width_load",
-                        error = %error,
-                        "load git layout width failed"
-                    );
-                    return;
-                }
-            };
-            let width = parse_left_width(stored.as_deref());
-            _ = this.update(cx, |this, cx| {
-                if (this.ide_left_width - width).abs() < f32::EPSILON {
-                    return;
-                }
-                this.ide_left_width = width;
-                // 新状态会在下一次布局时使用持久化宽度初始化面板。
-                this.ide_left_resize =
-                    cx.new(|_| gpui_component::resizable::ResizableState::default());
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn render_stash_save_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_changes = self
             .status
@@ -502,54 +465,5 @@ impl VcsView {
             .child(self.render_file_tab_bar(cx))
             .child(div().flex_1().min_h_0().min_w_0().w_full().child(body))
             .into_any_element()
-    }
-}
-
-fn parse_left_width(stored: Option<&str>) -> f32 {
-    stored
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| value.is_finite())
-        .unwrap_or(LEFT_WIDTH_INITIAL)
-        .clamp(LEFT_WIDTH_MIN, LEFT_WIDTH_MAX)
-}
-
-pub(super) fn persist_ide_left_width(
-    view: gpui::Entity<VcsView>,
-    storage: std::sync::Arc<dyn ramag_domain::traits::Storage>,
-    state: &gpui::Entity<gpui_component::resizable::ResizableState>,
-    cx: &mut gpui::App,
-) {
-    let Some(width) = state.read(cx).sizes().first().copied() else {
-        return;
-    };
-    let width = f32::from(width).clamp(LEFT_WIDTH_MIN, LEFT_WIDTH_MAX);
-    view.update(cx, |this, _| this.ide_left_width = width);
-    cx.background_spawn(async move {
-        if let Err(error) = storage
-            .set_preference(LEFT_WIDTH_PREFERENCE, &format!("{width:.1}"))
-            .await
-        {
-            tracing::warn!(
-                operation = "git_layout_width_save",
-                error = %error,
-                "persist git layout width failed"
-            );
-        }
-    })
-    .detach();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{LEFT_WIDTH_INITIAL, LEFT_WIDTH_MAX, LEFT_WIDTH_MIN, parse_left_width};
-
-    #[test]
-    fn persisted_left_width_is_validated_and_clamped() {
-        assert_eq!(parse_left_width(Some("420.5")), 420.5);
-        assert_eq!(parse_left_width(Some("100")), LEFT_WIDTH_MIN);
-        assert_eq!(parse_left_width(Some("900")), LEFT_WIDTH_MAX);
-        assert_eq!(parse_left_width(Some("invalid")), LEFT_WIDTH_INITIAL);
-        assert_eq!(parse_left_width(Some("NaN")), LEFT_WIDTH_INITIAL);
-        assert_eq!(parse_left_width(None), LEFT_WIDTH_INITIAL);
     }
 }

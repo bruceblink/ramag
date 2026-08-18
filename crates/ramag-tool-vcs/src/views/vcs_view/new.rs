@@ -292,7 +292,6 @@ impl VcsView {
             reflog_request_seq: 0,
             showing_reflog: false,
             ide_left_resize,
-            ide_left_width: super::super::ide_layout::LEFT_WIDTH_INITIAL,
             ide_files_resize,
             detail_resize,
             active_view: ActiveView::RepoList,
@@ -363,7 +362,6 @@ impl VcsView {
             focus_handle: cx.focus_handle(),
         };
         Self::load_recent_repos_async(cx);
-        Self::load_ide_left_width_async(this.storage.clone(), cx);
         this
     }
 }

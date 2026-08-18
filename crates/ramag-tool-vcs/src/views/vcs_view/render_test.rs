@@ -316,6 +316,50 @@ fn history_left_column_aligns_with_files_column(cx: &mut TestAppContext) {
     assert_eq!(files.right(), history.right());
 }
 
+/// 与数据库资源树保持相同的 180–600 px 可拖动范围。
+#[gpui::test]
+fn files_column_matches_database_tree_resize_range(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    view.update(cx, |view, cx| {
+        inject_diff_session(view);
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(1200.0), px(800.0)));
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.ide_left_resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(100.0), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("vcs-files-column")
+            .expect("文件栏应保持显示")
+            .size
+            .width,
+        px(180.0)
+    );
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.ide_left_resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(700.0), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("vcs-files-column")
+            .expect("文件栏应保持显示")
+            .size
+            .width,
+        px(600.0)
+    );
+}
+
 #[gpui::test]
 fn repository_resize_is_isolated_by_tab(cx: &mut TestAppContext) {
     let (view, cx) = add_vcs_window(cx);
@@ -380,6 +424,55 @@ fn repository_resize_is_isolated_by_tab(cx: &mut TestAppContext) {
             .width,
         px(360.0),
         "切回首个仓库应保留当前会话内自己的宽度"
+    );
+}
+
+/// 关闭仓库标签会销毁其布局会话，再次打开不得恢复旧宽度。
+#[gpui::test]
+fn closed_repository_does_not_restore_resized_left_column(cx: &mut TestAppContext) {
+    let (view, cx) = add_vcs_window(cx);
+    let repo = mock_repo();
+    view.update(cx, |view, cx| {
+        inject_diff_session(view);
+        view.repo = Some(repo.clone());
+        view.open_repos = vec![repo.clone()];
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(1200.0), px(800.0)));
+    cx.run_until_parked();
+
+    cx.update(|window, app| {
+        view.update(app, |view, cx| {
+            view.ide_left_resize.update(cx, |state, cx| {
+                state.resize_panel(0, px(520.0), window, cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        view.remove_open_repo(repo.path.clone(), cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(!view.repo_session_cache.contains_key(&repo.path));
+        assert!(!view.repo_session_order.contains(&repo.path));
+    });
+
+    view.update(cx, |view, cx| {
+        view.repo = Some(repo.clone());
+        view.open_repos = vec![repo.clone()];
+        view.active_view = ActiveView::Session;
+        assert!(!view.restore_session_from_cache(&repo.path, cx));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("vcs-files-column")
+            .expect("重新打开后应显示文件栏")
+            .size
+            .width,
+        px(280.0)
     );
 }
 
