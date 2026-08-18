@@ -4,12 +4,12 @@ set -euo pipefail
 readonly max_lines=600
 failed=0
 
-while IFS= read -r file; do
+while IFS= read -r -d '' file; do
     lines=$(wc -l < "$file")
     if (( lines > max_lines )); then
         printf '%s: %d lines (max %d)\n' "$file" "$lines" "$max_lines" >&2
         failed=1
     fi
-done < <(rg --files crates -g '*.rs')
+done < <(find crates -type f -name '*.rs' -print0)
 
 exit "$failed"
