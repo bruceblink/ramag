@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/v0.0.2/home-light.png" alt="Ramag v0.0.2 首页：数据库、Git 与 SSH 统一工作台">
+  <img src="docs/screenshots/v0.0.5/home-light.png" alt="Ramag v0.0.5 首页：数据库、Git、SSH、云存储与剪贴板统一工作台">
 </p>
 
 ---
@@ -121,7 +121,7 @@ Linux 源码构建和打包所需系统依赖见[桌面端构建与发布](docs/
 
 从连接、结构浏览、查询，到结果编辑和完整迁移，四类数据库共用一套清晰的工作流。
 
-![MySQL、PostgreSQL、Redis 与 MongoDB 统一连接管理](docs/screenshots/v0.0.1/database-connections-light.png)
+![MySQL、PostgreSQL、Redis 与 MongoDB 统一连接管理](docs/screenshots/v0.0.5/database-connections-light.png)
 
 ### MySQL 与 PostgreSQL
 
@@ -132,10 +132,7 @@ Linux 源码构建和打包所需系统依赖见[桌面端构建与发布](docs/
 - 大整数、高精度数值、JSON/JSONB、二进制、时间以及 PostgreSQL 原生类型保真展示。
 - 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/v0.0.1/database-mysql-query-dark.png">
-  <img src="docs/screenshots/v0.0.1/database-mysql-query-light.png" alt="Ramag MySQL 查询编辑器与十万行结果分页">
-</picture>
+![Ramag MySQL 查询编辑器与十万行结果分页](docs/screenshots/v0.0.5/database-mysql-query-light.png)
 
 ### Redis
 
@@ -161,6 +158,8 @@ Linux 源码构建和打包所需系统依赖见[桌面端构建与发布](docs/
 - 连接可标记为生产环境：写查询、结果编辑和导入入口统一进入只读保护。
 - 结果搜索支持字符串 ID 与整数 ID 双向转换，内置 Base10、Base16、Base36、Base58 Bitcoin、Base58 Flickr 和自定义字符表，也可调用经过路径、超时与输出上限校验的外部转换器。
 - SQL、Redis、MongoDB 使用独立执行 runtime，某个慢查询不会直接挤占其他数据库的任务线程。
+
+![Ramag 数据库客户端设置与连接配置](docs/screenshots/v0.0.5/settings-database-light.png)
 
 ### 统一操作与快捷键
 
@@ -198,10 +197,9 @@ Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，
 
 写操作与网络认证直接复用系统 Git、SSH Agent 和用户已有配置，不在应用中再造一套不兼容的凭据体系。
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/v0.0.1/git-workspace-dark.png">
-  <img src="docs/screenshots/v0.0.1/git-workspace-light.png" alt="Ramag Git 工作区、文件编辑与提交历史">
-</picture>
+![Ramag Git 仓库管理与仓库列表](docs/screenshots/v0.0.5/git-repositories-light.png)
+
+![Ramag Git 工作区、项目文件与 SQL 编辑器](docs/screenshots/v0.0.5/git-workspace-light.png)
 
 ### SSH 管理
 

@@ -12,6 +12,22 @@ Ramag 基于 Rust + GPUI 构建，定位是本地优先的开发者桌面工作�
 - 变更记录：https://github.com/tools-rs/ramag/blob/main/CHANGELOG.md
 - v0.0.4…v0.0.5 对比：https://github.com/tools-rs/ramag/compare/v0.0.4...v0.0.5
 
+## v0.0.5 界面截图
+
+以下截图来自 v0.0.5 当前工作区，展示统一首页、数据库、Git 和设置页面。
+
+| 首页 | 数据库连接管理 |
+|---|---|
+| ![Ramag v0.0.5 首页](screenshots/v0.0.5/home-light.png) | ![Ramag v0.0.5 数据库连接管理](screenshots/v0.0.5/database-connections-light.png) |
+
+| MySQL 查询与结果 | Git 仓库管理 |
+|---|---|
+| ![Ramag v0.0.5 MySQL 查询与结果](screenshots/v0.0.5/database-mysql-query-light.png) | ![Ramag v0.0.5 Git 仓库管理](screenshots/v0.0.5/git-repositories-light.png) |
+
+| Git 工作区 | 数据库客户端设置 |
+|---|---|
+| ![Ramag v0.0.5 Git 工作区](screenshots/v0.0.5/git-workspace-light.png) | ![Ramag v0.0.5 数据库客户端设置](screenshots/v0.0.5/settings-database-light.png) |
+
 ## 四大工作台：已有能力
 
 这些能力在此前版本已经提供，v0.0.5 继续围绕稳定性和交互一致性打磨，并不把它们包装成本版首次新增功能。
