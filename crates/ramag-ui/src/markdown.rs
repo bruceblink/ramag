@@ -335,14 +335,18 @@ mod tests {
         let guide: String = guide.into();
         assert!(resolved.contains(&guide));
 
-        // 图片与 HTML 引用直接拼接平台路径字符串。
+        // 图片与 HTML 引用直接拼接平台路径字符串；逐段构造以保持 Windows 分隔符一致。
         let group_qr = base
-            .join("docs/community/group-qr.png")
+            .join("docs")
+            .join("community")
+            .join("group-qr.png")
             .to_string_lossy()
             .into_owned();
         assert!(resolved.contains(&format!("![二维码]({group_qr})")));
         let personal_qr = base
-            .join("docs/community/personal-qr.png")
+            .join("docs")
+            .join("community")
+            .join("personal-qr.png")
             .to_string_lossy()
             .into_owned();
         assert!(resolved.contains(&format!("<img src=\"{personal_qr}\">")));
