@@ -1,92 +1,79 @@
-# Ramag v0.0.4 发布：表设计器、快捷键中心与统一复制交互
+# Ramag v0.0.5：把数据库、代码和远程环境放在同一个本地工作台
 
-大家好，Ramag v0.0.4 已经发布。
+大家好，Ramag v0.0.5 是一次面向日常开发的稳定性与体验更新。
 
-Ramag 是一个基于 Rust + GPUI 构建的本地优先开发者桌面工作台，将数据库、Git、SSH、云存储和剪贴板放进同一个原生应用。
+Ramag 基于 Rust + GPUI 构建，定位是本地优先的开发者桌面工作台：连接数据库、检查 Git 改动、管理 SSH / SFTP 远程文件、浏览云端对象，都在同一个原生窗口中完成。
 
 ```text
 数据库 ↔ Git ↔ SSH / SFTP ↔ 云存储 ↔ 剪贴板
 ```
 
 - GitHub：https://github.com/tools-rs/ramag
-- 下载：https://github.com/tools-rs/ramag/releases/tag/v0.0.4
-- 更新记录：https://github.com/tools-rs/ramag/blob/main/CHANGELOG.md
+- 变更记录：https://github.com/tools-rs/ramag/blob/main/CHANGELOG.md
+- v0.0.4…v0.0.5 对比：https://github.com/tools-rs/ramag/compare/v0.0.4...v0.0.5
 
-## v0.0.4 主要更新
+## 四大工作台：已有能力
 
-### MySQL / PostgreSQL 图形化表设计器
+这些能力在此前版本已经提供，v0.0.5 继续围绕稳定性和交互一致性打磨，并不把它们包装成本版首次新增功能。
 
-MySQL 与 PostgreSQL 新增图形化表设计器，可在界面中：
+### 数据库
 
-- 创建新表或修改已有表；
-- 修改表名和字段结构；
-- 在实际执行前预览 DDL；
-- 获得明确的执行耗时与错误反馈。
+- 支持 MySQL、PostgreSQL、Redis 和 MongoDB 的连接、查询、结构浏览、结果编辑与数据导入导出。
+- 提供 SQL / 文档 / Key 数据查看，分页、筛选、搜索和格式化等高频操作。
+- 支持四引擎之间的数据同步；生产连接对写操作提供保护。
 
-这让常见的表结构调整不必完全依赖手写 DDL，同时仍保留执行前可审阅的 SQL 边界。
+### Git
 
-### 快捷键中心与统一复制交互
+- 在仓库内查看 Changes、Project Files、历史、Diff、Blame、Reflog 和提交详情。
+- 支持暂存、提交、分支、Tag、Stash、Merge、Rebase 与 Cherry-pick 等工作流。
+- Markdown 文件可在预览和原文之间切换，写操作继续复用系统 Git 与 SSH 配置。
 
-新增快捷键中心，可查看、修改和重置应用快捷键；数据库、Git、SSH、云存储等工作台也提供统一的快速切换入口。
+### SSH / SFTP
 
-数据展示区域统一支持复制当前已加载的完整值：
+- 复用系统 OpenSSH 的连接、认证和主机校验能力，提供内嵌终端与多标签会话。
+- 支持 SFTP 目录浏览、路径导航、文件预览编辑、日志跟随和上传下载传输队列。
+- 支持 JumpServer 导入；生产连接默认禁止 SFTP 上传、编辑、重命名和删除。
 
-```text
-macOS：⌘ + 双击
-Windows / Linux：Ctrl + 双击
-```
+### 云存储
 
-该行为覆盖 SQL、MongoDB、Redis、Git Diff/项目文件、SSH/SFTP、对象存储和剪贴板等高频场景。普通双击仍保留原有的打开、编辑或下钻语义，复制成功会给出明确提示。
+- 支持腾讯云 COS 与阿里云 OSS，按用户明确配置的 Bucket 浏览对象。
+- 提供目录导航、搜索、收藏、对象详情、常见文本预览和上传下载进度。
+- 生产模式保留只读浏览、查看与下载，凭据和工作区状态在本机加密保存。
 
-### Redis Key 树更清晰、更适合大 Keyspace
+## v0.0.5 本版更新
 
-Redis Key 树本次重点改善层级展示和类型识别：
+### Git 工作区更容易读懂
 
-- 批量获取 Key 类型，避免逐 Key 请求；
-- 使用紧凑类型标签显示 String、Hash、List、Set、ZSet、Stream；
-- 改进树引导线、层级和文件夹/文件图标；
-- 新增“同名 Key 下沉展示”设置，解决路径节点同时又是实际 Key 时的展示歧义。
+- 优化 Git 左栏布局和仓库级会话布局，切换仓库后仍保持清晰、独立的工作区状态。
+- 统一 Changes 与 Project Files 的文件树图标体验，查看目录和文件改动时更容易建立层级感。
 
-### 稳定性与体验改进
+### Markdown 预览更稳定
 
-- 修复 MySQL 事务中的 `SHOW WARNINGS` 读取，以及 MySQL/PostgreSQL 表结构变更的执行反馈问题。
-- 修复全局唤醒快捷键、剪贴板悬浮框重复唤醒和 Git 文件树文件行对齐。
-- Git 的 Changes 与 Project Files 树统一使用文件夹和文件图标。
-- 所有可滚动区域保留滚轮与触控板滚动，但不显示可见滚动条。
-- Linux 桌面端补全 X11 与 Wayland 后端支持。
-- 改进更新检查、剪贴板容量显示、图标按钮提示，并在关于页加入官方交流群入口。
+- 修复预览资源与样式引用问题，覆盖跨平台路径与引用场景的回归测试。
+- Markdown 预览在不同系统和工作区中使用一致的资源解析边界。
+
+### 跨工作台交互更一致
+
+- 统一复制成功反馈与相关界面文案，减少数据库、Git、SSH / SFTP、云存储和剪贴板之间的操作差异。
+- 补充窗口打开闸门、VCS 布局更新和终端测试的可见性校验，并修复对应的 Clippy 问题。
+
+### 更容易在本地验证
+
+- 检查脚本兼容没有 `rg` 的环境，减少运行质量门禁时的额外工具要求。
+- README、贡献指南和安全资料补充使用边界、开发流程与问题反馈方式。
 
 ## 本地优先与安全边界
 
-Ramag 不要求登录账号，也不会把数据库连接、SSH 凭据、Git 仓库、对象存储配置或剪贴板内容上传到 Ramag 服务。
+Ramag 不要求登录账号，也不把数据库连接、SSH 凭据、Git 仓库、对象存储配置或剪贴板内容上传到 Ramag 服务。
 
 - 敏感配置使用 AES-256-GCM 加密，主密钥由系统凭据库保存。
-- SSH 认证、主机校验和 Git 网络操作复用系统已有配置。
-- 数据库、SSH 和对象存储的生产模式继续限制界面中的写操作。
-- “复制完整值”仅复制当前已成功加载到客户端的数据，不会绕过后端读取上限或暗中发起额外网络读取。
+- 数据库写操作、Git 写操作和远程终端命令仍需用户在执行前确认目标与影响范围。
+- 复制操作只处理当前已经加载到客户端的数据，不会绕过读取上限或暗中发起额外网络读取。
+- Git 仍处于试验阶段；请在生产环境中先确认账号权限、仓库状态和远程命令影响。
 
-Git 功能仍处于试验阶段。生产数据库操作、Git 写操作和远程终端命令仍需在执行前确认目标环境与影响范围。
+## 下载与发布状态
 
-## 下载
-
-v0.0.4 Release：
-
-https://github.com/tools-rs/ramag/releases/tag/v0.0.4
-
-提供：
-
-```text
-Ramag-0.0.4-macos-arm64.dmg
-Ramag-0.0.4-macos-x86_64.dmg
-Ramag-0.0.4-windows-x64-setup.exe
-Ramag-0.0.4-linux-amd64.deb
-Ramag-0.0.4-linux-x86_64.AppImage
-SHA256SUMS.txt
-```
-
-支持 macOS 12+（Apple Silicon / Intel）、Windows 10/11 x64 和 Linux x86_64（X11 / Wayland）。
-
-当前 Windows 安装包尚未做 Authenticode 签名；macOS 安装包尚未完成 Developer ID 签名与 Apple 公证；Linux 包未做独立代码签名。请只从本仓库 Releases 下载，并使用同一页面的 `SHA256SUMS.txt` 校验文件。
+v0.0.5 的版本信息、变更记录和发布流程见仓库中的 [CHANGELOG.md](../CHANGELOG.md) 与[桌面端构建与发布](desktop-release.md)。对外安装包是否生成、签名、公证或发布，以 GitHub Release 页面中可验证的实际产物为准；本公告不提前宣称尚未完成的构建结果。
 
 从源码运行：
 
