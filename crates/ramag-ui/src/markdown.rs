@@ -334,9 +334,15 @@ mod tests {
         assert!(resolved.contains(&guide));
 
         // 图片与 HTML 引用直接拼接平台路径字符串。
-        let group_qr = base.join("docs/community/group-qr.png").to_string_lossy().into_owned();
+        let group_qr = base
+            .join("docs/community/group-qr.png")
+            .to_string_lossy()
+            .into_owned();
         assert!(resolved.contains(&format!("![二维码]({group_qr})")));
-        let personal_qr = base.join("docs/community/personal-qr.png").to_string_lossy().into_owned();
+        let personal_qr = base
+            .join("docs/community/personal-qr.png")
+            .to_string_lossy()
+            .into_owned();
         assert!(resolved.contains(&format!("<img src=\"{personal_qr}\">")));
 
         assert!(resolved.contains("[官网](https://example.com/docs)"));
