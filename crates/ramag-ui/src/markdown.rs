@@ -317,14 +317,28 @@ mod tests {
 <a href='docs/development-guide.md'>架构</a>
 [官网](https://example.com/docs)"#;
 
-        let resolved = resolve_local_references(source, Path::new("/repo/README.md"));
+        // 基准用真实存在的绝对路径：硬编码 Unix 路径（/repo/...）在 Windows 上不是绝对
+        // 路径，Url::from_file_path 会失败，导致链接无法解析、断言不稳定。
+        let base = std::env::temp_dir().join("ramag-md-preview");
+        let document_path = base.join("README.md");
+        let resolved = resolve_local_references(source, &document_path);
 
-        assert!(resolved.contains(
-            "file:///repo/docs/desktop-release.md#%E6%9C%AC%E5%9C%B0-linux-%E6%89%93%E5%8C%85"
-        ));
-        assert!(resolved.contains("![二维码](/repo/docs/community/group-qr.png)"));
-        assert!(resolved.contains("<img src=\"/repo/docs/community/personal-qr.png\">"));
-        assert!(resolved.contains("file:///repo/docs/development-guide.md"));
+        // 链接期望值交给 Url 自身序列化（片段随之百分号编码），与实现一致、跨平台稳定。
+        let mut desktop = Url::from_file_path(base.join("docs/desktop-release.md")).unwrap();
+        desktop.set_fragment(Some("本地-linux-打包"));
+        let desktop: String = desktop.into();
+        assert!(resolved.contains(&desktop));
+
+        let guide = Url::from_file_path(base.join("docs/development-guide.md")).unwrap();
+        let guide: String = guide.into();
+        assert!(resolved.contains(&guide));
+
+        // 图片与 HTML 引用直接拼接平台路径字符串。
+        let group_qr = base.join("docs/community/group-qr.png").to_string_lossy().into_owned();
+        assert!(resolved.contains(&format!("![二维码]({group_qr})")));
+        let personal_qr = base.join("docs/community/personal-qr.png").to_string_lossy().into_owned();
+        assert!(resolved.contains(&format!("<img src=\"{personal_qr}\">")));
+
         assert!(resolved.contains("[官网](https://example.com/docs)"));
     }
 }
