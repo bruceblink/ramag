@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn local_markdown_references_use_the_document_directory() {
+    fn local_markdown_references_use_the_document_directory() -> Result<(), String> {
         let source = r#"[构建](docs/desktop-release.md#本地-linux-打包)
 ![二维码](docs/community/group-qr.png)
 <img src="docs/community/personal-qr.png">
@@ -324,12 +324,14 @@ mod tests {
         let resolved = resolve_local_references(source, &document_path);
 
         // 链接期望值交给 Url 自身序列化（片段随之百分号编码），与实现一致、跨平台稳定。
-        let mut desktop = Url::from_file_path(base.join("docs/desktop-release.md")).unwrap();
+        let mut desktop = Url::from_file_path(base.join("docs/desktop-release.md"))
+            .map_err(|_| "failed to convert desktop release path to URL".to_owned())?;
         desktop.set_fragment(Some("本地-linux-打包"));
         let desktop: String = desktop.into();
         assert!(resolved.contains(&desktop));
 
-        let guide = Url::from_file_path(base.join("docs/development-guide.md")).unwrap();
+        let guide = Url::from_file_path(base.join("docs/development-guide.md"))
+            .map_err(|_| "failed to convert development guide path to URL".to_owned())?;
         let guide: String = guide.into();
         assert!(resolved.contains(&guide));
 
@@ -346,5 +348,6 @@ mod tests {
         assert!(resolved.contains(&format!("<img src=\"{personal_qr}\">")));
 
         assert!(resolved.contains("[官网](https://example.com/docs)"));
+        Ok(())
     }
 }
