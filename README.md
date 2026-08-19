@@ -9,7 +9,11 @@
 </p>
 
 <p align="center">
-  MySQL · PostgreSQL · Redis · MongoDB · Git（试验性） · SSH / SFTP · COS / OSS · Clipboard
+  A local-first developer desktop workspace for databases, Git, SSH, object storage, and clipboard history.
+</p>
+
+<p align="center">
+  MySQL · PostgreSQL · Redis · MongoDB · Git · SSH / SFTP · COS / OSS · Clipboard
 </p>
 
 <p align="center">
@@ -21,7 +25,9 @@
   <a href="CHANGELOG.md">版本</a> ·
   <a href="docs/architecture.md">架构</a> ·
   <a href="docs/performance.md">性能</a> ·
-  <a href="docs/desktop-release.md">构建与发布</a>
+  <a href="docs/desktop-release.md">构建与发布</a> ·
+  <a href="CONTRIBUTING.md">贡献</a> ·
+  <a href="SECURITY.md">安全</a>
 </p>
 
 <p align="center">
@@ -29,6 +35,14 @@
 </p>
 
 ---
+
+## 项目状态 / Project status
+
+Ramag 的四个主工作台——数据库、Git、SSH / SFTP 和云存储——已完成核心工作流并可用于日常开发工作；剪贴板为可选的本地效率工具。当前公开的 `0.0.x` 版本是功能预览 Release，项目正在整理稳定版发布所需的兼容性、签名和社区反馈。
+
+The four primary workspaces—database, Git, SSH / SFTP, and object storage—are feature-complete for their core daily workflows. Current `0.0.x` releases are public feature-preview releases while Ramag prepares compatibility, signing, and community feedback for a stable release.
+
+Ramag is actively maintained. Releases are built and verified on Linux, macOS, and Windows by GitHub Actions. Contributions, reproducible feedback, and security reports are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## 快速开始
 
@@ -145,11 +159,11 @@ Ramag 把开发中频繁切换的上下文收进一个原生窗口：查数据�
 - PostgreSQL 同步保留枚举与自定义类型依赖；Redis 保留类型与 TTL；MongoDB 保留 BSON 类型语义。
 - 任务完成后汇总成功、跳过与失败对象，错误信息保留到具体对象和阶段。
 
-## Git 工作台（试验性）
+## Git 工作台
 
 Ramag 的 Git 体验围绕“看清改动，然后安全完成操作”展开，而不是把命令行按钮化。
 
-> 当前 VCS 能力处于试验阶段，适合体验和反馈；执行关键写操作前，建议确认工作区状态并保留可恢复点。
+> 执行关键 Git 写操作前，建议确认工作区状态并保留可恢复点。
 
 ```text
 打开仓库 → 检查工作区 → 对照 Diff → Stage → Commit → Push / Pull
@@ -315,6 +329,9 @@ Ramag 支持 Linux x86_64、macOS 12+（Apple Silicon / Intel）和 Windows 10/1
 - [架构说明](docs/architecture.md)
 - [桌面端构建与发布](docs/desktop-release.md)
 - [版本变更记录](CHANGELOG.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
+- [社区行为准则](CODE_OF_CONDUCT.md)
 
 发现问题时，请在 [GitHub Issues](https://github.com/tools-rs/ramag/issues) 中附上操作系统、Ramag 版本、复现步骤和必要日志；提交前请移除连接地址、用户名、密码和业务数据。
 

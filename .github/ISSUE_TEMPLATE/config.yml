@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞报告
+    url: https://github.com/tools-rs/ramag/security/advisories/new
+    about: 请勿公开披露漏洞、凭据或敏感业务数据。
+  - name: 开发与构建说明
+    url: https://github.com/tools-rs/ramag/blob/main/docs/development-guide.md
+    about: 查看首次构建、测试和调试说明。
