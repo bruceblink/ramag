@@ -18,15 +18,15 @@ Ramag 基于 Rust + GPUI 构建，定位是本地优先的开发者桌面工作�
 
 | 首页 | 数据库连接管理 |
 |---|---|
-| ![Ramag v0.0.5 首页](screenshots/v0.0.5/home-light.png) | ![Ramag v0.0.5 数据库连接管理](screenshots/v0.0.5/database-connections-light.png) |
+| ![Ramag v0.0.5 首页](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/v0.0.5/home-light.png) | ![Ramag v0.0.5 数据库连接管理](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/v0.0.5/database-connections-light.png) |
 
 | MySQL 查询与结果 | Git 仓库管理 |
 |---|---|
-| ![Ramag v0.0.5 MySQL 查询与结果](screenshots/v0.0.5/database-mysql-query-light.png) | ![Ramag v0.0.5 Git 仓库管理](screenshots/v0.0.5/git-repositories-light.png) |
+| ![Ramag v0.0.5 MySQL 查询与结果](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/v0.0.5/database-mysql-query-light.png) | ![Ramag v0.0.5 Git 仓库管理](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/v0.0.5/git-repositories-light.png) |
 
 | Git 工作区 | 数据库客户端设置 |
 |---|---|
-| ![Ramag v0.0.5 Git 工作区](screenshots/v0.0.5/git-workspace-light.png) | ![Ramag v0.0.5 数据库客户端设置](screenshots/v0.0.5/settings-database-light.png) |
+| ![Ramag v0.0.5 Git 工作区](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/v0.0.5/git-workspace-light.png) | ![Ramag v0.0.5 数据库客户端设置](https://raw.githubusercontent.com/tools-rs/ramag/main/docs/screenshots/v0.0.5/settings-database-light.png) |
 
 ## 四大工作台：已有能力
 
