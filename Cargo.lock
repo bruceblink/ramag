@@ -7011,6 +7011,7 @@ name = "ramag-tool-dbclient"
 version = "0.0.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "futures",
  "gpui",
