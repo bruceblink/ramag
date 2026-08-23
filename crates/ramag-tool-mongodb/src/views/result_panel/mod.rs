@@ -105,6 +105,7 @@ pub enum ResultEvent {
     /// 仅取消客户端等待，服务端操作仍可能继续。
     Cancel,
     PageRequested(usize),
+    PageSizeChanged(usize),
     CollectionImportRequested {
         db: String,
         collection: String,

@@ -87,23 +87,23 @@ impl MongoQueryTab {
             return;
         }
         let response_kind = command_response_kind(&cmd);
-        let (effective_command, page_request) = if let Some(pager) = MongoPager::from_command(&cmd)
-        {
-            let page = match pager.command_for_page(0) {
-                Ok(page) => page,
-                Err(message) => {
-                    self.result.update(cx, |panel, cx| {
-                        panel.set_error(format!("MongoDB 分页初始化失败：{message}"), cx)
-                    });
-                    return;
-                }
+        let (effective_command, page_request) =
+            if let Some(pager) = MongoPager::from_command(&cmd, self.page_size) {
+                let page = match pager.command_for_page(0) {
+                    Ok(page) => page,
+                    Err(message) => {
+                        self.result.update(cx, |panel, cx| {
+                            panel.set_error(format!("MongoDB 分页初始化失败：{message}"), cx)
+                        });
+                        return;
+                    }
+                };
+                self.pager = Some(pager);
+                (page.0, Some(page.1))
+            } else {
+                self.pager = None;
+                (cmd.clone(), None)
             };
-            self.pager = Some(pager);
-            (page.0, Some(page.1))
-        } else {
-            self.pager = None;
-            (cmd.clone(), None)
-        };
         self.execute_command(
             cmd,
             effective_command,
@@ -141,6 +141,51 @@ impl MongoQueryTab {
             base_command,
             effective_command,
             response_kind,
+            None,
+            Some(page_request),
+            cx,
+        );
+    }
+
+    /// Re-runs the current ordinary `find` from page one with a bounded page size.
+    pub(super) fn handle_page_size(&mut self, requested_size: usize, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
+        let (base_command, effective_command, page_request) = {
+            let Some(pager) = self.pager.as_mut() else {
+                return;
+            };
+            let changed = match pager.set_page_size(requested_size) {
+                Ok(changed) => changed,
+                Err(message) => {
+                    self.pending_notification = Some(Notification::error(message).autohide(true));
+                    cx.notify();
+                    return;
+                }
+            };
+            if !changed {
+                return;
+            }
+            let base_command = pager.base_command().clone();
+            let (effective_command, page_request) = match pager.command_for_page(0) {
+                Ok(page) => page,
+                Err(message) => {
+                    self.pending_notification = Some(
+                        Notification::error(format!("加载 MongoDB 分页失败：{message}"))
+                            .autohide(true),
+                    );
+                    cx.notify();
+                    return;
+                }
+            };
+            (base_command, effective_command, page_request)
+        };
+        self.page_size = requested_size;
+        self.execute_command(
+            base_command.clone(),
+            effective_command,
+            command_response_kind(&base_command),
             None,
             Some(page_request),
             cx,

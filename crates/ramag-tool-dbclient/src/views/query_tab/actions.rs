@@ -9,9 +9,7 @@ use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query, QueryResult, Value};
 use ramag_domain::error::DomainError;
 use tracing::{error, info, warn};
 
-use super::paging::{
-    PAGE_SIZE, PageRequest, Pager, count_sql, page_sql, paging_base_sql, trim_page_sentinel,
-};
+use super::paging::{PageRequest, Pager, count_sql, page_sql, paging_base_sql, trim_page_sentinel};
 use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line, strip_leading_comments,
@@ -197,7 +195,7 @@ impl QueryTab {
                 base_sql,
                 page: 0,
                 has_more: false,
-                page_size: PAGE_SIZE,
+                page_size: self.page_size,
                 total: TotalRows::Counting,
             })
         } else {

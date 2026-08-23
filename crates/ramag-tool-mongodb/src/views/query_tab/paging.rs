@@ -3,13 +3,14 @@
 use ramag_domain::entities::MongoQueryResult;
 use serde_json::{Value, json};
 
-pub(super) const MONGO_PAGE_SIZE: usize = 10_000;
+pub(super) const MONGO_PAGE_SIZE: usize = ramag_ui::DEFAULT_RESULT_PAGE_SIZE;
 
 #[derive(Clone)]
 pub(super) struct MongoPager {
     base_command: Value,
     base_skip: u64,
     user_limit: Option<u64>,
+    page_size: usize,
     /// 各页相对原始 `skip` 的实际偏移，支持按截断点续页。
     page_offsets: Vec<u64>,
     pub(super) page: usize,
@@ -27,7 +28,8 @@ pub(super) struct PageRequest {
 
 impl MongoPager {
     /// 仅为普通 `find` 启用自动分页。
-    pub(super) fn from_command(command: &Value) -> Option<Self> {
+    pub(super) fn from_command(command: &Value, page_size: usize) -> Option<Self> {
+        ramag_ui::validate_result_page_size(page_size).ok()?;
         let object = command.as_object()?;
         object.get("find")?.as_str()?;
         if ["tailable", "awaitData", "singleBatch"]
@@ -49,6 +51,7 @@ impl MongoPager {
             base_command: command.clone(),
             base_skip,
             user_limit,
+            page_size,
             page_offsets: vec![0],
             page: 0,
             has_more: false,
@@ -68,8 +71,8 @@ impl MongoPager {
             return Err("已达到原命令 limit 指定的末尾".into());
         }
         let visible_limit = remaining
-            .map(|remaining| remaining.min(MONGO_PAGE_SIZE as u64) as usize)
-            .unwrap_or(MONGO_PAGE_SIZE);
+            .map(|remaining| remaining.min(self.page_size as u64) as usize)
+            .unwrap_or(self.page_size);
         let uses_sentinel = remaining.is_none_or(|remaining| remaining > visible_limit as u64);
         let fetch_limit = visible_limit
             .checked_add(usize::from(uses_sentinel))
@@ -91,7 +94,7 @@ impl MongoPager {
             command,
             PageRequest {
                 page,
-                page_size: MONGO_PAGE_SIZE,
+                page_size: self.page_size,
                 relative_offset,
                 visible_limit,
                 uses_sentinel,
@@ -101,6 +104,19 @@ impl MongoPager {
 
     pub(super) fn base_command(&self) -> &Value {
         &self.base_command
+    }
+
+    /// Updates the page-size preference and returns whether a new request is needed.
+    pub(super) fn set_page_size(&mut self, page_size: usize) -> Result<bool, &'static str> {
+        ramag_ui::validate_result_page_size(page_size)?;
+        if self.page_size == page_size {
+            return Ok(false);
+        }
+        self.page_size = page_size;
+        self.page_offsets = vec![0];
+        self.page = 0;
+        self.has_more = false;
+        Ok(true)
     }
 
     /// 记录实际消费数，生成下一页偏移。
@@ -166,23 +182,26 @@ mod tests {
 
     #[test]
     fn unlimited_find_uses_ten_thousand_plus_sentinel() {
-        let pager = MongoPager::from_command(&json!({"find": "users", "filter": {}})).unwrap();
+        let pager = MongoPager::from_command(&json!({"find": "users", "filter": {}}), 100).unwrap();
 
         let (command, request) = pager.command_for_page(0).unwrap();
 
         assert_eq!(command["skip"], 0);
-        assert_eq!(command["limit"], 10_001);
-        assert_eq!(request.visible_limit, 10_000);
+        assert_eq!(command["limit"], 101);
+        assert_eq!(request.visible_limit, 100);
         assert!(request.uses_sentinel);
     }
 
     #[test]
     fn original_skip_and_limit_are_preserved_across_pages() {
-        let mut pager = MongoPager::from_command(&json!({
-            "find": "users",
-            "skip": 7,
-            "limit": 15_000
-        }))
+        let mut pager = MongoPager::from_command(
+            &json!({
+                "find": "users",
+                "skip": 7,
+                "limit": 15_000
+            }),
+            10_000,
+        )
         .unwrap();
 
         let (first, first_request) = pager.command_for_page(0).unwrap();
@@ -200,7 +219,8 @@ mod tests {
 
     #[test]
     fn memory_truncated_page_continues_after_actual_documents() {
-        let mut pager = MongoPager::from_command(&json!({"find": "users", "skip": 7})).unwrap();
+        let mut pager =
+            MongoPager::from_command(&json!({"find": "users", "skip": 7}), 100).unwrap();
         let (_, request) = pager.command_for_page(0).unwrap();
         let mut result = MongoQueryResult::read_maybe_truncated(
             (0..321).map(|id| json!({"_id": id})).collect(),
@@ -212,19 +232,23 @@ mod tests {
 
         let (second, _) = pager.command_for_page(1).unwrap();
 
-        assert_eq!(second["skip"], 328);
+        assert_eq!(second["skip"], 107);
     }
 
     #[test]
     fn special_find_modes_are_not_rewritten() {
-        assert!(MongoPager::from_command(&json!({"find": "events", "tailable": true})).is_none());
-        assert!(MongoPager::from_command(&json!({"find": "users", "limit": -10})).is_none());
-        assert!(MongoPager::from_command(&json!({"find": "users", "skip": u64::MAX})).is_none());
+        assert!(
+            MongoPager::from_command(&json!({"find": "events", "tailable": true}), 100).is_none()
+        );
+        assert!(MongoPager::from_command(&json!({"find": "users", "limit": -10}), 100).is_none());
+        assert!(
+            MongoPager::from_command(&json!({"find": "users", "skip": u64::MAX}), 100).is_none()
+        );
     }
 
     #[test]
     fn sentinel_is_removed_before_display() {
-        let pager = MongoPager::from_command(&json!({"find": "users"})).unwrap();
+        let pager = MongoPager::from_command(&json!({"find": "users"}), 10_000).unwrap();
         let (_, request) = pager.command_for_page(0).unwrap();
         let mut result =
             MongoQueryResult::read((0..10_001).map(|id| json!({"_id": id})).collect(), 1);
@@ -232,5 +256,21 @@ mod tests {
         assert!(finish_page(&mut result, request));
         assert_eq!(result.documents.len(), 10_000);
         assert_eq!(result.summary, "10000 docs, 1ms");
+    }
+
+    #[test]
+    fn changing_page_size_resets_the_loaded_page_offset() {
+        let mut pager = MongoPager::from_command(&json!({"find": "users"}), 100).unwrap();
+        let (_, request) = pager.command_for_page(0).unwrap();
+        pager.finish_request(request, 100, true);
+        let (_, next_request) = pager.command_for_page(1).unwrap();
+        pager.finish_request(next_request, 100, true);
+
+        assert!(pager.set_page_size(500).unwrap());
+        let (command, request) = pager.command_for_page(0).unwrap();
+        assert_eq!(command["skip"], 0);
+        assert_eq!(command["limit"], 501);
+        assert_eq!(request.visible_limit, 500);
+        assert!(!pager.set_page_size(500).unwrap());
     }
 }
