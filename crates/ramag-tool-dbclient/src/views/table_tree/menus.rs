@@ -165,6 +165,15 @@ pub(super) fn schema_context_menu(
         )
         .separator();
 
+    let (schema_for_diagram, entity_for_diagram) = (schema.clone(), entity.clone());
+    let menu = menu.item(
+        ramag_ui::menu_item("Schema Diagram").on_click(move |_, _, app| {
+            entity_for_diagram.update(app, |this, cx| {
+                this.handle_show_schema_diagram(schema_for_diagram.clone(), cx);
+            });
+        }),
+    );
+
     let menu = if driver == DriverKind::Postgres {
         let (schema, entity) = (schema.clone(), entity.clone());
         menu.item(ramag_ui::menu_item("改名").on_click(move |_, window, app| {

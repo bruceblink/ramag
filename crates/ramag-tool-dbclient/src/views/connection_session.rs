@@ -6,7 +6,7 @@ use gpui::{
     div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, h_flex,
+    ActiveTheme, WindowExt as _, h_flex,
     resizable::{ResizableState, h_resizable, resizable_panel},
 };
 use parking_lot::RwLock;
@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 use crate::sql_completion::{SchemaCache, is_system_schema};
 use crate::views::query_panel::{QueryPanel, QueryPanelEvent};
+use crate::views::schema_diagram::SchemaDiagramPanel;
 use crate::views::table_tree::{TableTreePanel, TreeEvent};
 
 /// 元数据缓存刷新间隔，用于同步外部结构变更。
@@ -133,6 +134,9 @@ impl ConnectionSession {
                     queries_clone.update(cx, |q, cx| {
                         q.open_in_new_tab_and_run(sql, window, cx);
                     });
+                }
+                TreeEvent::ShowSchemaDiagram { schema } => {
+                    this.open_schema_diagram(schema.clone(), window, cx);
                 }
                 TreeEvent::ModifyTable { schema, table } => {
                     this.tree.update(cx, |tree, cx| {
@@ -272,6 +276,22 @@ impl ConnectionSession {
             window.focus(&self.focus_handle, cx);
         }
         cx.notify();
+    }
+
+    /// Opens a read-only relationship preview built from the current SQL metadata.
+    fn open_schema_diagram(&mut self, schema: String, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.tree.read(cx).service.clone();
+        let panel = cx.new(|cx| {
+            SchemaDiagramPanel::new(service, self.config.clone(), schema.clone(), window, cx)
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            let panel = panel.clone();
+            dialog
+                .title(format!("Schema Diagram · {schema}"))
+                .width(px(1240.0))
+                .margin_top(px(32.0))
+                .content(move |content, _, _| content.child(panel.clone()))
+        });
     }
 }
 

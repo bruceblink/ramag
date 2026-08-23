@@ -12,6 +12,7 @@ pub mod query_tab;
 mod recent_connections_dialog;
 pub mod result_panel;
 pub mod result_table;
+mod schema_diagram;
 mod table_designer;
 pub mod table_tree;
 pub mod tree_helpers;

@@ -342,6 +342,10 @@ impl TableTreePanel {
         });
     }
 
+    pub(super) fn handle_show_schema_diagram(&mut self, schema: String, cx: &mut Context<Self>) {
+        cx.emit(TreeEvent::ShowSchemaDiagram { schema });
+    }
+
     pub(super) fn toggle_table_columns(
         &mut self,
         schema: String,
