@@ -56,6 +56,8 @@ pub struct MongoQueryTab {
     last_injected_cmd: Option<String>,
     /// `find` 分页状态。
     pager: Option<MongoPager>,
+    /// 当前查询标签的页大小偏好；新查询复用上次选择的值。
+    page_size: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -115,6 +117,7 @@ impl MongoQueryTab {
                 ResultEvent::Refresh => this.request_run(window, cx),
                 ResultEvent::Cancel => this.cancel_if_running(cx),
                 ResultEvent::PageRequested(page) => this.handle_page(*page, cx),
+                ResultEvent::PageSizeChanged(page_size) => this.handle_page_size(*page_size, cx),
                 ResultEvent::CollectionImportRequested {
                     db,
                     collection,
@@ -170,6 +173,7 @@ impl MongoQueryTab {
             pending_notification: None,
             last_injected_cmd: Some(default_command_template()),
             pager: None,
+            page_size: paging::MONGO_PAGE_SIZE,
             _subscriptions: vec![refresh_sub, editor_sub],
         }
     }

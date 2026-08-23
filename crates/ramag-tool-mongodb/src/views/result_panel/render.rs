@@ -1,4 +1,57 @@
 use super::*;
+use gpui_component::notification::Notification;
+use ramag_ui::PointerDropdownMenu as _;
+
+/// Builds the MongoDB page-size menu and emits a bounded pager update event.
+fn render_page_size_selector(current: usize, panel: Entity<ResultPanel>) -> impl IntoElement {
+    let menu_panel = panel.clone();
+    ramag_ui::clickable_button("mongo-result-page-size")
+        .ghost()
+        .small()
+        .label(format!("每页 {current} 行"))
+        .dropdown_caret(true)
+        .pointer_dropdown_menu(move |mut menu, _, _| {
+            for size in ramag_ui::RESULT_PAGE_SIZE_PRESETS {
+                let panel = menu_panel.clone();
+                menu = menu.item(
+                    ramag_ui::menu_item(format!("每页 {size} 行"))
+                        .checked(size == current)
+                        .on_click(move |_, _, app| {
+                            panel.update(app, |_, cx| {
+                                cx.emit(ResultEvent::PageSizeChanged(size));
+                            });
+                        }),
+                );
+            }
+            let panel = menu_panel.clone();
+            menu.separator().item(
+                ramag_ui::menu_item("自定义…")
+                    .checked(!ramag_ui::RESULT_PAGE_SIZE_PRESETS.contains(&current))
+                    .on_click(move |_, window, app| {
+                        let panel = panel.clone();
+                        ramag_ui::open_bounded_prompt(
+                            "自定义每页行数",
+                            "输入 1-10000 的整数",
+                            &current.to_string(),
+                            "应用",
+                            16,
+                            move |value, _, app| match ramag_ui::parse_result_page_size(&value) {
+                                Ok(size) => panel.update(app, |_, cx| {
+                                    cx.emit(ResultEvent::PageSizeChanged(size));
+                                }),
+                                Err(message) => panel.update(app, |panel, cx| {
+                                    panel.pending_notification =
+                                        Some(Notification::error(message).autohide(true));
+                                    cx.notify();
+                                }),
+                            },
+                            window,
+                            app,
+                        );
+                    }),
+            )
+        })
+}
 
 impl Render for ResultPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -304,7 +357,11 @@ fn render_status_bar(
             let next_page = pagination.page.saturating_add(1);
             let panel_for_previous = panel.clone();
             let panel_for_next = panel.clone();
-            this.child(
+            this.child(render_page_size_selector(
+                pagination.page_size,
+                panel.clone(),
+            ))
+            .child(
                 ramag_ui::clickable_button("mongo-result-page-previous")
                     .ghost()
                     .small()
