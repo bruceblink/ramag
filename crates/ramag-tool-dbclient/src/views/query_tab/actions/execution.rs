@@ -183,6 +183,7 @@ impl QueryTab {
 
     /// Executes one query against the requested result panel and drops callbacks
     /// whose data or plan generation no longer matches the current query context.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_query(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
