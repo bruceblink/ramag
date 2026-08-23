@@ -123,6 +123,21 @@ async fn execute_select_one() {
     );
 }
 
+/// Verifies that the MySQL driver exposes EXPLAIN output as a normal result set.
+#[tokio::test(flavor = "multi_thread")]
+async fn explain_select_returns_plan_rows() {
+    let config = require_env!();
+    let driver = MysqlDriver::new();
+
+    let result = driver
+        .execute(&config, &Query::new("EXPLAIN SELECT 1 AS one"))
+        .await
+        .expect("EXPLAIN 执行失败");
+
+    assert!(!result.columns.is_empty(), "EXPLAIN 应返回计划列");
+    assert!(!result.rows.is_empty(), "EXPLAIN 应返回至少一行计划");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_select_with_types() {
     let config = require_env!();

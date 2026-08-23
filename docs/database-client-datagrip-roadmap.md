@@ -1,6 +1,6 @@
 # 数据库查询工具 DataGrip-like 开发路线图
 
-> 状态：M1 结果数据编辑器与 M2-A SQL 查询上下文隔离已落地，后续迭代中
+> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离与 M4-A 原始执行计划结果视图已落地，后续迭代中
 > 更新日期：2026-08-23
 > 适用范围：`ramag-tool-dbclient`、`ramag-tool-mongodb`、`ramag-domain`、`ramag-app` 及对应基础设施驱动
 
@@ -52,7 +52,7 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - M2-A 已为 SQL 查询代次和 COUNT 代次增加上下文隔离；多标签并行执行、连接断开和服务端取消仍需继续补充集成验证。
 - 服务端分页目前只覆盖可安全识别的查询形状，深分页、服务端排序和服务端过滤仍需要明确边界。
 - `Driver` 目前覆盖执行、取消和元数据读取，但没有统一的事务控制、结构化执行计划或会话能力接口。
-- 当前能力尚不足以提供 DataGrip 风格的图形化执行计划、Schema Diagram、数据/结构对比和迁移工作流。
+- 当前已支持独立的原始 EXPLAIN 结果视图；结构化计划树、图形化执行计划、Schema Diagram、数据/结构对比和迁移工作流仍在后续迭代中。
 
 ## 3. 产品边界与原则
 
@@ -160,9 +160,20 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 
 目标：补齐高级数据库开发辅助能力，但不阻塞核心查询流程。
 
+#### M4-A：独立执行计划结果视图（已落地）
+
+实现范围：
+
+- 生成 EXPLAIN 时写入独立的执行计划结果面板，不替换数据结果面板中的内容。
+- 在“数据结果”和“执行计划”视图之间切换；切回数据结果时保留原查询结果及分页状态。
+- 计划失败只更新计划面板，并保留可用的数据结果错误或成功状态。
+- 为数据查询和执行计划分别维护执行代次，旧的异步响应不能覆盖当前视图。
+
+对应测试覆盖独立面板渲染、数据/计划切换、计划错误隔离和过期响应保护。
+
 功能清单：
 
-- EXPLAIN 结果先支持原始文本和结构化树，再评估图形化执行计划。DataGrip 将 Query Plan 作为独立结果页，并支持树、原始计划、图形和火焰图展示，可作为交互参考：[Query Execution Plan](https://www.jetbrains.com/help/datagrip/query-execution-plan.html)。
+- EXPLAIN 结果先支持原始文本，再增加结构化树并评估图形化执行计划。DataGrip 将 Query Plan 作为独立结果页，并支持树、原始计划、图形和火焰图展示，可作为交互参考：[Query Execution Plan](https://www.jetbrains.com/help/datagrip/query-execution-plan.html)。
 - 基于现有表、列、索引和外键元数据生成 Schema Diagram。
 - 表结构和 DDL diff，展示变更预览后再执行。
 - 数据网格之间的基础差异比较；DataGrip 的数据编辑器也提供网格对比能力，可作为交互参考：[Explore data in the data editor](https://www.jetbrains.com/help/datagrip/explore-data-in-data-editor.html)。

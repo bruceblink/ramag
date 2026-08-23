@@ -32,9 +32,17 @@ pub struct QueryTab {
     pub(super) active_schema: Option<String>,
     pub(super) editor: Entity<InputState>,
     pub(super) result: Entity<ResultPanel>,
+    /// 独立的执行计划结果面板；生成计划不会覆盖数据结果。
+    pub(super) plan_result: Entity<ResultPanel>,
+    /// 当前是否显示执行计划结果。
+    pub(super) show_plan: bool,
+    /// 当前查询标签是否可见，用于在两个结果面板之间转移内存活跃状态。
+    pub(super) result_active: bool,
     pub(super) running: bool,
     /// 查询代际，忽略取消后的旧回包和计时。
     pub(super) run_seq: u64,
+    /// 执行计划代际；SQL 上下文变化后旧计划回包不能重新出现。
+    pub(super) plan_seq: u64,
     /// COUNT 代际；新查询使旧回包失效，翻页不变。
     pub(super) count_seq: u64,
     pub(super) formatting: bool,
@@ -126,6 +134,21 @@ impl QueryTab {
         });
         result.update(cx, |panel, _| panel.attach_result_memory(lease));
 
+        let cache_for_plan = schema_cache.clone();
+        let plan_result = cx.new(|cx| {
+            let mut panel = ResultPanel::new(window, cx);
+            panel.set_executor(Some(service.clone()), connection.clone());
+            panel.set_schema_cache(Some(cache_for_plan));
+            panel
+        });
+        let weak_plan_result = plan_result.downgrade();
+        let plan_lease = result_memory.register(move |app| {
+            weak_plan_result
+                .update(app, |panel, cx| panel.evict_result_for_budget(cx))
+                .is_ok()
+        });
+        plan_result.update(cx, |panel, _| panel.attach_result_memory(plan_lease));
+
         let editor_for_sub = editor.clone();
         let editor_sub = cx.subscribe_in(
             &editor,
@@ -180,8 +203,12 @@ impl QueryTab {
             active_schema: initial_schema,
             editor,
             result,
+            plan_result,
+            show_plan: false,
+            result_active: false,
             running: false,
             run_seq: 0,
+            plan_seq: 0,
             count_seq: 0,
             formatting: false,
             current_task: None,
@@ -205,9 +232,44 @@ impl QueryTab {
         }
     }
 
-    pub fn set_result_active(&self, active: bool, cx: &mut Context<Self>) {
-        self.result
-            .update(cx, |result, _| result.set_result_active(active));
+    pub fn set_result_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.result_active = active;
+        self.result.update(cx, |result, _| {
+            result.set_result_active(active && !self.show_plan)
+        });
+        self.plan_result.update(cx, |result, _| {
+            result.set_result_active(active && self.show_plan)
+        });
+    }
+
+    /// Switches between data and plan results without changing either panel's stored state.
+    pub(super) fn set_plan_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if visible && self.plan_result_is_empty(cx) {
+            return;
+        }
+        if self.show_plan == visible {
+            return;
+        }
+        self.show_plan = visible;
+        self.set_result_active(self.result_active, cx);
+        cx.notify();
+    }
+
+    /// Returns the panel currently visible to result-toolbar actions.
+    pub(super) fn active_result(&self) -> Entity<ResultPanel> {
+        if self.show_plan {
+            self.plan_result.clone()
+        } else {
+            self.result.clone()
+        }
+    }
+
+    /// Reports whether a plan has been generated and can be selected.
+    pub(super) fn plan_result_is_empty(&self, cx: &gpui::App) -> bool {
+        matches!(
+            self.plan_result.read(cx).state(),
+            ResultState::Empty | ResultState::Released(_)
+        )
     }
 
     pub fn has_user_draft(&self, cx: &gpui::App) -> bool {
@@ -274,6 +336,11 @@ impl QueryTab {
         let svc = self.service.clone();
         self.result.update(cx, |r, _| {
             r.set_executor(Some(svc), conn);
+        });
+        let svc = self.service.clone();
+        let conn_for_plan = self.connection.clone();
+        self.plan_result.update(cx, |r, _| {
+            r.set_executor(Some(svc), conn_for_plan);
         });
         cx.notify();
     }
@@ -363,12 +430,21 @@ impl QueryTab {
     pub(super) fn invalidate_query_context(&mut self, cx: &mut Context<Self>) {
         self.run_seq = self.run_seq.wrapping_add(1);
         self.count_seq = self.count_seq.wrapping_add(1);
+        self.show_plan = false;
+        self.plan_seq = self.plan_seq.wrapping_add(1);
         self.running = false;
         self.current_task = None;
         self.cancel_handle = None;
         self.query_start = None;
+        let result_active = self.result_active;
+        self.set_result_active(result_active, cx);
         self.result.update(cx, |result, cx| {
             if matches!(result.state(), ResultState::Running) {
+                result.set_state(ResultState::Empty, cx);
+            }
+        });
+        self.plan_result.update(cx, |result, cx| {
+            if !matches!(result.state(), ResultState::Empty) {
                 result.set_state(ResultState::Empty, cx);
             }
         });

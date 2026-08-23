@@ -41,11 +41,14 @@ impl Render for QueryTab {
         let transaction_active = self.transaction.is_some();
         let transaction_dirty = self.transaction_is_dirty();
         let transaction_label = self.transaction_label();
+        let result_entity = self.active_result();
+        let plan_visible = self.show_plan;
+        let plan_available = !self.plan_result_is_empty(cx);
 
         // 仅"执行中"状态在工具条显示实时耗时，其他状态由结果面板底部 status_bar 展示
         let running_elapsed = self.query_start.map(|t| t.elapsed()).map(format_elapsed);
         let (result_summary, has_result): (Option<String>, bool) =
-            match self.result.read(cx).state() {
+            match result_entity.read(cx).state() {
                 ResultState::Ok(qr) => (None, !qr.rows.is_empty()),
                 ResultState::Error(_) | ResultState::Released(_) => (None, false),
                 ResultState::Running => (
@@ -57,7 +60,7 @@ impl Render for QueryTab {
                 ),
                 ResultState::Empty => (None, false),
             };
-        let panel_for_btn = self.result.read(cx);
+        let panel_for_btn = result_entity.read(cx);
         let has_selected =
             !panel_for_btn.selected_rows().is_empty() || panel_for_btn.selected_cell().is_some();
         // 写入口共用单表、视图、定位键和只读校验。
@@ -131,6 +134,57 @@ impl Render for QueryTab {
                 .into_any_element()
         };
 
+        let query_tab_entity = cx.entity();
+        let result_view_tabs = h_flex()
+            .id("sql-result-view-tabs")
+            .debug_selector(|| "sql-result-view-tabs".into())
+            .w_full()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py(px(3.0))
+            .border_b_1()
+            .border_color(border)
+            .bg(secondary_bg)
+            .child(
+                ramag_ui::clickable_button("sql-data-result-tab")
+                    .ghost()
+                    .small()
+                    .label("数据结果")
+                    .when(!plan_visible, |button| button.primary())
+                    .on_click({
+                        let query_tab_entity = query_tab_entity.clone();
+                        move |_, _, app| {
+                            query_tab_entity.update(app, |tab, cx| {
+                                tab.set_plan_visible(false, cx);
+                            });
+                        }
+                    }),
+            )
+            .child(
+                ramag_ui::clickable_button("sql-plan-result-tab")
+                    .ghost()
+                    .small()
+                    .label("执行计划")
+                    .tooltip(if plan_available {
+                        "查看最近一次执行计划"
+                    } else {
+                        "先点击工具栏中的执行计划"
+                    })
+                    .disabled(!plan_available)
+                    .when(plan_visible, |button| button.primary())
+                    .on_click({
+                        let query_tab_entity = query_tab_entity.clone();
+                        move |_, _, app| {
+                            query_tab_entity.update(app, |tab, cx| {
+                                tab.set_plan_visible(true, cx);
+                            });
+                        }
+                    }),
+            )
+            .child(div().flex_1());
+
         v_flex()
             .size_full()
             .bg(bg)
@@ -174,16 +228,15 @@ impl Render for QueryTab {
                     .border_color(border)
                     .bg(secondary_bg)
                     .child({
-                        let col_input = self.result.read(cx).column_filter_entity().clone();
-                        let row_input = self.result.read(cx).row_filter_entity().clone();
-                        let row_search_mode = self.result.read(cx).row_search_mode();
-                        let row_search_status = self
-                            .result
+                        let col_input = result_entity.read(cx).column_filter_entity().clone();
+                        let row_input = result_entity.read(cx).row_filter_entity().clone();
+                        let row_search_mode = result_entity.read(cx).row_search_mode();
+                        let row_search_status = result_entity
                             .read(cx)
                             .row_search_conversion_status(cx);
                         let row_filter_has_value = !row_input.read(cx).value().is_empty();
                         let id_conversion_ready = ramag_ui::database_search_settings(cx).is_ready();
-                        let result_for_row_mode = self.result.clone();
+                        let result_for_row_mode = result_entity.clone();
                         let col_for_up = col_input.clone();
                         let col_for_down = col_input.clone();
                         h_flex()
@@ -290,7 +343,9 @@ impl Render for QueryTab {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
                     })
                     .child({
-                        let can_insert = insert_reason.is_none() && !has_pending_insert;
+                        let can_insert = !plan_visible
+                            && insert_reason.is_none()
+                            && !has_pending_insert;
                         let insert_tip: Option<gpui::SharedString> =
                             match (insert_reason, has_pending_insert) {
                                 (Some(reason), _) => Some(reason.into()),
@@ -311,7 +366,7 @@ impl Render for QueryTab {
                                     return;
                                 };
                                 let svc = this.service.clone();
-                                let panel = this.result.clone();
+                                let panel = this.active_result();
                                 let handle = window.window_handle();
                                 cx.spawn(async move |_, cx| {
                                     let cols = svc.list_columns(&conn, &schema, &table).await;
@@ -386,9 +441,9 @@ impl Render for QueryTab {
                                 },
                                 |button, tip| button.tooltip(tip),
                             )
-                            .disabled(!has_selected || modify_reason.is_some())
+                            .disabled(plan_visible || !has_selected || modify_reason.is_some())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                let panel_ref = this.result.read(cx);
+                                let panel_ref = this.active_result().read(cx);
                                 let multi = panel_ref.delete_preview_multi(cx);
                                 let single = if multi.is_none() {
                                     panel_ref.delete_preview(cx)
@@ -397,13 +452,13 @@ impl Render for QueryTab {
                                 };
                                 let _ = panel_ref;
                                 if let Some((indices, _)) = &multi
-                                    && !this.result.update(cx, |panel, cx| {
+                                    && !this.active_result().update(cx, |panel, cx| {
                                         panel.guard_batch_delete_count(indices.len(), cx)
                                     })
                                 {
                                     return;
                                 }
-                                let result = this.result.clone();
+                                let result = this.active_result();
                                 let (title, preview, on_ok_indices, on_ok_single): (
                                     &'static str,
                                     String,
@@ -488,7 +543,7 @@ impl Render for QueryTab {
                             .when(self.pinned_target.is_none(), |button| {
                                 button.tooltip("请先打开表")
                             })
-                            .disabled(self.pinned_target.is_none())
+                            .disabled(plan_visible || self.pinned_target.is_none())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.open_table_import_dialog(window, cx);
                             })),
@@ -501,7 +556,7 @@ impl Render for QueryTab {
                     .tooltip("导出")
                     .disabled(!has_result)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.result.update(cx, |r, cx| r.export(cx));
+                                this.active_result().update(cx, |r, cx| r.export(cx));
                             })),
                     )
                     .when(running && self.cancel_handle.is_some(), |this| {
@@ -530,12 +585,13 @@ impl Render for QueryTab {
                         )
                     }),
             )
+            .child(result_view_tabs)
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .child(self.result.clone()),
+                    .child(result_entity),
             )
     }
 }

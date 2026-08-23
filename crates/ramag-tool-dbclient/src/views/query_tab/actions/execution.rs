@@ -117,6 +117,8 @@ impl QueryTab {
                 page: requested_page,
                 page_size,
             }),
+            self.result.clone(),
+            None,
             cx,
         );
     }
@@ -172,11 +174,15 @@ impl QueryTab {
             base_sql.clone(),
             false,
             Some(PageRequest { page: 0, page_size }),
+            self.result.clone(),
+            None,
             cx,
         );
         self.spawn_total_count(conn, base_sql, cx);
     }
 
+    /// Executes one query against the requested result panel and drops callbacks
+    /// whose data or plan generation no longer matches the current query context.
     pub(super) fn execute_query(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
@@ -184,6 +190,8 @@ impl QueryTab {
         title_sql: String,
         is_run: bool,
         page_request: Option<PageRequest>,
+        result_handle: gpui::Entity<crate::views::result_panel::ResultPanel>,
+        plan_seq: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         if self.transaction_busy {
@@ -193,9 +201,10 @@ impl QueryTab {
         self.run_seq = self.run_seq.wrapping_add(1);
         let request_seq = self.run_seq;
         self.query_start = Some(Instant::now());
+        let plan_request_seq = plan_seq;
         // 只读拦截时恢复原结果，避免一直显示执行中。
-        let prev_state = self.result.read(cx).state().clone();
-        self.result.update(cx, |r, cx| {
+        let prev_state = result_handle.read(cx).state().clone();
+        result_handle.update(cx, |r, cx| {
             r.set_state(ResultState::Running, cx);
         });
         cx.notify();
@@ -223,13 +232,15 @@ impl QueryTab {
         .detach();
 
         let svc = self.service.clone();
-        let result_handle = self.result.clone();
         let active_schema = self.active_schema.clone();
         let transaction_id = self.transaction.as_ref().map(|session| session.id.clone());
         let transaction_writes = transaction_id.is_some()
             && ramag_infra_sql_shared::sql::is_write_statement(&sql_to_run);
         // 结果的可编辑目标必须绑定到“发起查询时”的表，不能在回包时读取用户后来点击的表。
-        let request_pinned_target = self.pinned_target.clone();
+        let request_pinned_target = plan_seq
+            .is_none()
+            .then(|| self.pinned_target.clone())
+            .flatten();
         let cancel_handle = transaction_id.is_none().then(|| {
             Arc::new(std::sync::atomic::AtomicU64::new(0)) as ramag_domain::traits::CancelHandle
         });
@@ -264,7 +275,9 @@ impl QueryTab {
                 );
             }
             let _ = this.update(cx, |this, cx| {
-                if this.run_seq != request_seq {
+                if this.run_seq != request_seq
+                    || plan_request_seq.is_some_and(|seq| this.plan_seq != seq)
+                {
                     return;
                 }
                 this.running = false;

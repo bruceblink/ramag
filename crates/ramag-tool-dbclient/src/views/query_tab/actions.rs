@@ -2,7 +2,7 @@ mod execution;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext as _, Context, Window};
+use gpui::{AppContext as _, Context, Entity, Window};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query, QueryResult, Value};
@@ -32,7 +32,7 @@ impl QueryTab {
         if sql.len() <= MAX_SQL_QUERY_BYTES {
             return Some(sql);
         }
-        self.result.update(cx, |result, cx| {
+        self.active_result().update(cx, |result, cx| {
             result.set_state(
                 ResultState::Error(format!(
                     "SQL 内容超过 {} MiB 安全上限，无法{operation}；请拆分脚本后重试",
@@ -45,15 +45,33 @@ impl QueryTab {
     }
 
     pub(super) fn handle_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running || self.transaction_busy {
+            return;
+        }
+        self.show_plan = false;
+        self.set_result_active(self.result_active, cx);
         let Some(sql) = self.checked_current_sql("运行", cx) else {
             return;
         };
         let trimmed = sql.trim().to_string();
         let title_sql = trimmed.clone();
-        self.submit_sql(trimmed, title_sql, true, window, cx);
+        self.submit_sql(
+            trimmed,
+            title_sql,
+            true,
+            self.result.clone(),
+            None,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_run_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running || self.transaction_busy {
+            return;
+        }
+        self.show_plan = false;
+        self.set_result_active(self.result_active, cx);
         let Some(sql) = self.checked_current_sql("运行", cx) else {
             return;
         };
@@ -65,10 +83,21 @@ impl QueryTab {
             return;
         }
         let title_sql = trimmed.clone();
-        self.submit_sql(trimmed, title_sql, true, window, cx);
+        self.submit_sql(
+            trimmed,
+            title_sql,
+            true,
+            self.result.clone(),
+            None,
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn handle_explain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running || self.transaction_busy {
+            return;
+        }
         let Some(sql) = self.checked_current_sql("生成执行计划", cx) else {
             return;
         };
@@ -82,7 +111,18 @@ impl QueryTab {
         } else {
             format!("EXPLAIN {trimmed}")
         };
-        self.submit_sql(to_run, trimmed, false, window, cx);
+        self.plan_seq = self.plan_seq.wrapping_add(1);
+        self.show_plan = true;
+        self.set_result_active(self.result_active, cx);
+        self.submit_sql(
+            to_run,
+            trimmed,
+            false,
+            self.plan_result.clone(),
+            Some(self.plan_seq),
+            window,
+            cx,
+        );
     }
 
     pub(super) fn submit_sql(
@@ -90,6 +130,8 @@ impl QueryTab {
         sql_to_run: String,
         title_sql: String,
         is_run: bool,
+        result_handle: Entity<crate::views::result_panel::ResultPanel>,
+        plan_seq: Option<u64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -97,18 +139,18 @@ impl QueryTab {
             return;
         }
         let Some(conn) = self.connection.clone() else {
-            self.result.update(cx, |r, cx| {
+            result_handle.update(cx, |r, cx| {
                 r.set_state(ResultState::Error("尚未选择连接".to_string()), cx);
             });
             return;
         };
         if sql_to_run.trim().is_empty() {
-            self.result.update(cx, |r, cx| {
+            result_handle.update(cx, |r, cx| {
                 r.set_state(ResultState::Error("SQL 为空".to_string()), cx);
             });
             return;
         }
-        let risks = if is_run && !conn.production {
+        let risks = if (is_run || plan_seq.is_some()) && !conn.production {
             detect_dangerous_statements(&sql_to_run, conn.driver)
         } else {
             Vec::new()
@@ -118,6 +160,7 @@ impl QueryTab {
             let confirmed_connection_id = conn.id.clone();
             let confirmed_schema = self.active_schema.clone();
             let confirmed_editor = self.current_sql(cx);
+            let result_handle_for_confirm = result_handle.clone();
             let message =
                 build_danger_prompt(&conn, self.active_schema.as_deref(), &risks, &sql_to_run);
             ramag_ui::open_confirm(
@@ -132,7 +175,8 @@ impl QueryTab {
                             .as_ref()
                             .is_none_or(|current| current.id != confirmed_connection_id)
                             || this.active_schema != confirmed_schema
-                            || this.current_sql(cx) != confirmed_editor;
+                            || this.current_sql(cx) != confirmed_editor
+                            || plan_seq.is_some_and(|seq| this.plan_seq != seq);
                         if context_changed {
                             this.pending_notification = Some(
                                 Notification::warning(
@@ -143,7 +187,15 @@ impl QueryTab {
                             cx.notify();
                             return;
                         }
-                        this.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
+                        this.submit_prepared(
+                            conn,
+                            sql_to_run,
+                            title_sql,
+                            is_run,
+                            result_handle_for_confirm,
+                            plan_seq,
+                            cx,
+                        );
                     });
                 },
                 window,
@@ -151,7 +203,15 @@ impl QueryTab {
             );
             return;
         }
-        self.submit_prepared(conn, sql_to_run, title_sql, is_run, cx);
+        self.submit_prepared(
+            conn,
+            sql_to_run,
+            title_sql,
+            is_run,
+            result_handle,
+            plan_seq,
+            cx,
+        );
     }
 
     pub(super) fn open_table_import_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -185,6 +245,8 @@ impl QueryTab {
         sql_to_run: String,
         title_sql: String,
         is_run: bool,
+        result_handle: Entity<crate::views::result_panel::ResultPanel>,
+        plan_seq: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         if self.running || self.transaction_busy {
@@ -221,14 +283,22 @@ impl QueryTab {
         } else {
             (sql_to_run, None)
         };
-        self.pager = pager;
-        let count_base = self.pager.as_ref().map(|pager| pager.base_sql.clone());
+        // An explain request has its own result panel and must not discard the data result's
+        // current page; only a normal data query replaces the query tab pager.
+        if is_run {
+            self.pager = pager;
+        }
+        let count_base = is_run
+            .then(|| self.pager.as_ref().map(|pager| pager.base_sql.clone()))
+            .flatten();
         self.execute_query(
             conn.clone(),
             effective_sql,
             title_sql,
             is_run,
             page_request,
+            result_handle,
+            plan_seq,
             cx,
         );
         if let Some(base_sql) = count_base {
