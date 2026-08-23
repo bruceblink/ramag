@@ -20,6 +20,7 @@ pub mod prompt_dialog;
 pub mod recent_items_dialog;
 pub mod redis_tree_settings;
 pub mod result_memory;
+pub mod result_paging;
 pub mod settings_view;
 pub mod shell;
 pub mod shortcuts_dialog;
@@ -61,6 +62,10 @@ pub use pointer_menu::PointerDropdownMenu;
 pub use result_memory::{
     GLOBAL_RESULT_WARNING_BYTES, MAX_GLOBAL_RESULT_BYTES, ResultMemoryBudget, ResultMemoryLease,
     ResultMemoryUpdate,
+};
+pub use result_paging::{
+    DEFAULT_RESULT_PAGE_SIZE, MAX_RESULT_PAGE_SIZE, RESULT_PAGE_SIZE_PRESETS,
+    parse_result_page_size, validate_result_page_size,
 };
 pub use settings_view::SettingsView;
 pub use shell::{Shell, WindowBoundsPref};

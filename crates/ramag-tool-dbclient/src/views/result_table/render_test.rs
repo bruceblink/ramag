@@ -62,10 +62,19 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     panel.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
 
-    let position = cx
+    let bounds = cx
         .debug_bounds("result-h-scroll")
-        .expect("result table should be rendered")
-        .center();
+        .expect("result table should be rendered");
+    assert!(
+        cx.debug_bounds("result-v-scrollbar").is_some(),
+        "result table should expose a draggable vertical scrollbar"
+    );
+    // Keep the gesture away from the fixed vertical scrollbar rail at the right edge.
+    let position = point(bounds.origin.x + px(80.0), bounds.origin.y + px(80.0));
+    assert!(
+        cx.debug_bounds("result-h-scrollbar").is_some(),
+        "result table should expose a draggable horizontal scrollbar"
+    );
     cx.simulate_event(ScrollWheelEvent {
         position,
         delta: ScrollDelta::Pixels(point(px(-80.0), px(-8.0))),

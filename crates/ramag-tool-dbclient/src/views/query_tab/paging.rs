@@ -7,9 +7,7 @@ use ramag_infra_sql_shared::sql::{
 };
 
 use super::sql_utils::{has_top_level_keyword, strip_leading_comments};
-use crate::views::result_panel::{MAX_ROWS_DISPLAY, TotalRows};
-
-pub(super) const PAGE_SIZE: usize = MAX_ROWS_DISPLAY;
+use crate::views::result_panel::TotalRows;
 
 #[derive(Debug, Clone)]
 pub(super) struct Pager {
@@ -169,6 +167,12 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn page_sql_uses_the_selected_page_size() {
+        let sql = page_sql("SELECT * FROM t", 100, 2).unwrap();
+        assert!(sql.ends_with("LIMIT 101 OFFSET 200"));
     }
 
     #[test]

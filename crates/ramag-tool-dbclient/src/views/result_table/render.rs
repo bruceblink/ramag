@@ -1,5 +1,56 @@
 use super::*;
+use ramag_ui::PointerDropdownMenu as _;
 
+/// Builds the page-size menu and keeps custom input bounded before emitting a query event.
+fn render_page_size_selector(current: usize, panel: gpui::Entity<ResultPanel>) -> impl IntoElement {
+    let menu_panel = panel.clone();
+    ramag_ui::clickable_button("result-page-size")
+        .ghost()
+        .small()
+        .label(format!("每页 {current} 行"))
+        .dropdown_caret(true)
+        .pointer_dropdown_menu(move |mut menu, _, _| {
+            for size in ramag_ui::RESULT_PAGE_SIZE_PRESETS {
+                let panel = menu_panel.clone();
+                menu = menu.item(
+                    ramag_ui::menu_item(format!("每页 {size} 行"))
+                        .checked(size == current)
+                        .on_click(move |_, _, app| {
+                            panel.update(app, |_, cx| {
+                                cx.emit(ResultPanelEvent::PageSizeChanged(size));
+                            });
+                        }),
+                );
+            }
+            let panel = menu_panel.clone();
+            menu.separator().item(
+                ramag_ui::menu_item("自定义…")
+                    .checked(!ramag_ui::RESULT_PAGE_SIZE_PRESETS.contains(&current))
+                    .on_click(move |_, window, app| {
+                        let panel = panel.clone();
+                        ramag_ui::open_bounded_prompt(
+                            "自定义每页行数",
+                            "输入 1-10000 的整数",
+                            &current.to_string(),
+                            "应用",
+                            16,
+                            move |value, _, app| match ramag_ui::parse_result_page_size(&value) {
+                                Ok(size) => panel.update(app, |_, cx| {
+                                    cx.emit(ResultPanelEvent::PageSizeChanged(size));
+                                }),
+                                Err(message) => panel.update(app, |panel, cx| {
+                                    panel.notify_page_size_error(message, cx);
+                                }),
+                            },
+                            window,
+                            app,
+                        );
+                    }),
+            )
+        })
+}
+
+/// 构建 SQL 结果表：复用虚拟行列表，并把宽列内容交给可拖拽的横向滚动条浏览。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::views) fn render_table(
     panel: &mut ResultPanel,
@@ -293,7 +344,7 @@ pub(in crate::views) fn render_table(
             "显示 {visible_cols_count} / {total_cols} 列（已截断）"
         ));
     }
-    let pagination_ui = pagination.filter(|pagination| pagination.page > 0 || pagination.has_more);
+    let pagination_ui = pagination;
     let total_summary: Option<String> = pagination_ui.and_then(|p| match p.total {
         TotalRows::Counting => Some("总行数计算中…".to_string()),
         TotalRows::Known(n) => Some(format!("共 {n} 行")),
@@ -362,7 +413,11 @@ pub(in crate::views) fn render_table(
             let next_page = pagination.page.saturating_add(1);
             let panel_for_previous = panel_entity.clone();
             let panel_for_next = panel_entity.clone();
-            this.child(
+            this.child(render_page_size_selector(
+                pagination.page_size,
+                panel_entity.clone(),
+            ))
+            .child(
                 ramag_ui::clickable_button("result-page-previous")
                     .ghost()
                     .small()
@@ -417,40 +472,79 @@ pub(in crate::views) fn render_table(
             )
         });
 
-    // 外层横向滚动，虚拟列表纵向滚动；透明输入层统一锁定一次手势的主轴。
-    v_flex()
-        .size_full()
+    // 外层横向滚动，虚拟列表纵向滚动；滚动条使用固定底部布局行，避免被结果内容覆盖。
+    let table_view = div()
+        .relative()
+        .flex_1()
+        .min_h_0()
         .min_w_0()
         .child(
             div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
+                .id("result-h-scroll")
+                .debug_selector(|| "result-h-scroll".into())
+                .size_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .track_scroll(panel.h_scroll())
                 .child(
-                    div()
-                        .id("result-h-scroll")
-                        .debug_selector(|| "result-h-scroll".into())
-                        .size_full()
-                        .overflow_x_scroll()
-                        .restrict_scroll_to_axis()
-                        .track_scroll(panel.h_scroll())
-                        .child(
-                            v_flex()
-                                .w(frame.total_content_width)
-                                .h_full()
-                                .child(header)
-                                .child(body),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("result-scroll-input")
-                        .absolute()
-                        .inset_0()
-                        .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
+                    v_flex()
+                        .w(frame.total_content_width)
+                        .h_full()
+                        .child(header)
+                        .child(body),
                 ),
         )
+        .child(
+            div()
+                .id("result-scroll-input")
+                .absolute()
+                .inset_0()
+                .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
+        )
+        .child(
+            div()
+                .id("result-v-scrollbar")
+                .debug_selector(|| "result-v-scrollbar".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(16.0))
+                .bg(cx.theme().scrollbar)
+                .child(
+                    Scrollbar::vertical(panel.uniform_scroll())
+                        .id("result-v-scrollbar-control")
+                        .scrollbar_show(ScrollbarShow::Always),
+                ),
+        );
+
+    let table_container = v_flex()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .child(table_view)
+        .child(
+            div()
+                .id("result-h-scrollbar")
+                .debug_selector(|| "result-h-scrollbar".into())
+                .flex_none()
+                .w_full()
+                .h(px(16.0))
+                .relative()
+                .bg(cx.theme().scrollbar)
+                .child(
+                    Scrollbar::horizontal(panel.h_scroll())
+                        .id("result-h-scrollbar-control")
+                        .scroll_size(gpui::size(frame.total_content_width, px(16.0)))
+                        .scrollbar_show(ScrollbarShow::Always),
+                ),
+        );
+
+    v_flex()
+        .size_full()
+        .min_w_0()
+        .child(table_container)
         .child(status_bar)
         .into_any_element()
 }

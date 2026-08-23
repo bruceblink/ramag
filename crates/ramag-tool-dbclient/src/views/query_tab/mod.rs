@@ -48,6 +48,8 @@ pub struct QueryTab {
     pub(super) show_editor: bool,
     /// 未手写 LIMIT 的单条 SELECT 分页状态。
     pager: Option<paging::Pager>,
+    /// 当前查询标签的页大小偏好；新查询复用上次选择的值。
+    page_size: usize,
     /// 上次自动注入的 SQL；不同即视为用户草稿。
     pub(super) last_injected_sql: Option<String>,
     pub(super) _editor_sub: gpui::Subscription,
@@ -143,6 +145,9 @@ impl QueryTab {
             &result,
             |this: &mut Self, _, event: &ResultPanelEvent, cx| match event {
                 ResultPanelEvent::PageRequested(page) => this.handle_page(*page, cx),
+                ResultPanelEvent::PageSizeChanged(page_size) => {
+                    this.handle_page_size(*page_size, cx)
+                }
                 ResultPanelEvent::RowSearchChanged => cx.notify(),
             },
         );
@@ -172,6 +177,7 @@ impl QueryTab {
             pinned_target: None,
             show_editor: true,
             pager: None,
+            page_size: ramag_ui::DEFAULT_RESULT_PAGE_SIZE,
             last_injected_sql: None,
             _editor_sub: editor_sub,
             _result_sub: result_sub,
