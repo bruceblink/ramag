@@ -2,6 +2,7 @@ mod actions;
 mod examples;
 mod paging;
 mod render;
+mod render_helpers;
 mod sql_utils;
 mod transaction;
 
