@@ -297,6 +297,7 @@ impl QueryTab {
                     }
                     Ok(formatted) if formatted != source_sql => {
                         this.clear_pager(cx);
+                        this.invalidate_query_context(cx);
                         this.editor.update(cx, |state, cx| {
                             state.set_value(formatted, window, cx);
                         });

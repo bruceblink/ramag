@@ -21,7 +21,10 @@ use ramag_ui::ResultMemoryBudget;
 use ramag_ui::platform::primary_shortcut;
 
 use crate::sql_completion::SchemaCache;
-use crate::views::result_panel::{ResultPanel, ResultPanelEvent};
+use crate::views::result_panel::{ResultPanel, ResultPanelEvent, ResultState};
+
+#[cfg(test)]
+mod tests;
 
 pub struct QueryTab {
     pub(super) service: Arc<ConnectionService>,
@@ -150,6 +153,7 @@ impl QueryTab {
                     this.pinned_target = None;
                     this.result.update(cx, |r, cx| r.clear_editable_target(cx));
                 }
+                this.invalidate_query_context(cx);
                 this.schedule_column_prefetch(cx);
                 cx.emit(QueryTabEvent::DraftChanged);
             },
@@ -266,6 +270,7 @@ impl QueryTab {
             .filter(|s| !s.is_empty());
         self.connection = conn.clone();
         self.clear_pager(cx);
+        self.invalidate_query_context(cx);
         let svc = self.service.clone();
         self.result.update(cx, |r, _| {
             r.set_executor(Some(svc), conn);
@@ -281,6 +286,7 @@ impl QueryTab {
             }
             self.active_schema = normalized;
             self.clear_pager(cx);
+            self.invalidate_query_context(cx);
             cx.notify();
         }
     }
@@ -293,6 +299,7 @@ impl QueryTab {
     ) {
         let sql = sql.into();
         self.clear_pager(cx);
+        self.invalidate_query_context(cx);
         if sql.len() > MAX_SQL_QUERY_BYTES {
             self.result.update(cx, |result, cx| {
                 result.set_state(
@@ -331,6 +338,7 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) {
         self.clear_pager(cx);
+        self.invalidate_query_context(cx);
         self.editor.update(cx, |state, cx| {
             state.set_value(sql.to_string(), window, cx);
             state.focus(window, cx);
@@ -344,8 +352,27 @@ impl QueryTab {
 
     pub(super) fn clear_pager(&mut self, cx: &mut Context<Self>) {
         self.pager = None;
+        self.count_seq = self.count_seq.wrapping_add(1);
         self.result
             .update(cx, |result, cx| result.set_pagination(None, cx));
+    }
+
+    /// Invalidates in-flight query and COUNT responses when the console context changes.
+    /// Completed results remain visible, while a running placeholder is cleared so the tab
+    /// cannot stay blocked by a request that no longer belongs to the current SQL context.
+    pub(super) fn invalidate_query_context(&mut self, cx: &mut Context<Self>) {
+        self.run_seq = self.run_seq.wrapping_add(1);
+        self.count_seq = self.count_seq.wrapping_add(1);
+        self.running = false;
+        self.current_task = None;
+        self.cancel_handle = None;
+        self.query_start = None;
+        self.result.update(cx, |result, cx| {
+            if matches!(result.state(), ResultState::Running) {
+                result.set_state(ResultState::Empty, cx);
+            }
+        });
+        cx.notify();
     }
 
     pub fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {

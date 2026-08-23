@@ -29,6 +29,7 @@ gpui-component = { workspace = true }
 # 异步
 futures = { workspace = true }
 smol = { workspace = true }
+async-trait = { workspace = true }
 
 # Action 派生需要
 serde = { workspace = true }

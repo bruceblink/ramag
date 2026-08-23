@@ -1,0 +1,122 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+
+use gpui::TestAppContext;
+use ramag_app::ConnectionService;
+use ramag_domain::entities::{
+    ConnectionConfig, ConnectionId, QueryRecord, QueryResult, Row, Value,
+};
+use ramag_domain::error::Result;
+use ramag_domain::traits::Storage;
+
+use super::{QueryTab, ResultState};
+use crate::sql_completion::SchemaCache;
+
+struct NoopStorage;
+
+#[async_trait::async_trait]
+impl Storage for NoopStorage {
+    async fn list_connections(&self) -> Result<Vec<ConnectionConfig>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_connection(&self, _id: &ConnectionId) -> Result<Option<ConnectionConfig>> {
+        Ok(None)
+    }
+
+    async fn save_connection(&self, _config: &ConnectionConfig) -> Result<()> {
+        Ok(())
+    }
+
+    async fn delete_connection(&self, _id: &ConnectionId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn append_history(&self, _record: &QueryRecord) -> Result<()> {
+        Ok(())
+    }
+
+    async fn list_history(
+        &self,
+        _connection_id: Option<&ConnectionId>,
+        _limit: usize,
+    ) -> Result<Vec<QueryRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn delete_history(&self, _id: &ramag_domain::entities::QueryRecordId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn clear_history(&self, _connection_id: Option<&ConnectionId>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_preference(&self, _key: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    async fn set_preference(&self, _key: &str, _value: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Context invalidation must release the UI wait state without deleting a completed result.
+#[gpui::test]
+fn invalidating_query_context_discards_running_state_but_keeps_ready_result(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let service = Arc::new(ConnectionService::new(
+        HashMap::new(),
+        Arc::new(NoopStorage),
+    ));
+    let schema_cache = SchemaCache::new_shared();
+    let (tab, cx) = cx.add_window_view(|window, cx| {
+        QueryTab::new(
+            service,
+            "查询 1",
+            None,
+            schema_cache,
+            ramag_ui::ResultMemoryBudget::default(),
+            window,
+            cx,
+        )
+    });
+
+    tab.update(cx, |tab, cx| {
+        let result = QueryResult {
+            columns: vec!["id".into()],
+            column_types: vec!["BIGINT".into()],
+            rows: vec![Row {
+                values: vec![Value::Int(1)],
+            }],
+            affected_rows: 0,
+            elapsed_ms: 1,
+            warnings: Vec::new(),
+            truncated: false,
+        };
+        tab.result.update(cx, |panel, cx| {
+            panel.set_state(ResultState::Ok(Arc::new(result)), cx);
+        });
+        tab.running = true;
+        tab.run_seq = 7;
+        tab.count_seq = 3;
+        tab.query_start = Some(Instant::now());
+        tab.invalidate_query_context(cx);
+
+        assert!(!tab.running);
+        assert!(tab.current_task.is_none());
+        assert!(tab.query_start.is_none());
+        assert!(tab.run_seq != 7 && tab.count_seq != 3);
+        assert!(matches!(tab.result.read(cx).state(), ResultState::Ok(_)));
+
+        tab.running = true;
+        tab.result.update(cx, |panel, cx| {
+            panel.set_state(ResultState::Running, cx);
+        });
+        tab.invalidate_query_context(cx);
+        assert!(matches!(tab.result.read(cx).state(), ResultState::Empty));
+    });
+}
