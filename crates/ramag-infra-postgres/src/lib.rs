@@ -14,9 +14,9 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::CancelHandle;
-use ramag_infra_sql_shared::PoolCache;
 use ramag_infra_sql_shared::SqlBackend;
 use ramag_infra_sql_shared::sql::SplitOptions;
+use ramag_infra_sql_shared::{PoolCache, TransactionStore};
 use sqlx::postgres::{PgPool, PgQueryResult, PgRow, Postgres};
 use sqlx::{Column as _, Row as _, TypeInfo as _};
 
@@ -24,6 +24,7 @@ use sqlx::{Column as _, Row as _, TypeInfo as _};
 #[derive(Clone, Default)]
 pub struct PostgresDriver {
     pools: PoolCache<Postgres>,
+    transactions: TransactionStore<Postgres>,
 }
 
 impl PostgresDriver {
@@ -46,6 +47,10 @@ impl SqlBackend for PostgresDriver {
 
     fn cache(&self) -> &PoolCache<Self::Db> {
         &self.pools
+    }
+
+    fn transaction_store(&self) -> &TransactionStore<Self::Db> {
+        &self.transactions
     }
 
     fn quote_identifier(&self, ident: &str) -> String {

@@ -13,7 +13,7 @@ impl ResultPanel {
         let Some(identity) = self.guard_modify("删除", cx) else {
             return false;
         };
-        let Some((svc, conn)) = self.dml_conn("删除", cx) else {
+        let Some((svc, conn, transaction)) = self.dml_conn("删除", cx) else {
             return false;
         };
         let ResultState::Ok(result) = &self.state else {
@@ -87,7 +87,8 @@ impl ResultPanel {
             let mut anomalous_affected = None;
             let mut last_err: Option<ramag_domain::error::DomainError> = None;
             for (ri, query) in plans {
-                match svc.execute_with_history(&conn, &query).await {
+                match ResultPanel::execute_mutation(&svc, &conn, transaction.as_ref(), &query).await
+                {
                     Ok(qr) if qr.affected_rows > 0 => {
                         affected_rows = affected_rows.saturating_add(qr.affected_rows);
                         deleted.push(ri);
@@ -114,6 +115,9 @@ impl ResultPanel {
             }
             let _ = this.update(cx, |this, cx| {
                 this.dml_busy = false;
+                if affected_rows > 0 {
+                    cx.emit(crate::views::result_panel::ResultPanelEvent::MutationCompleted);
+                }
                 let same_result = this.result_revision == result_revision;
                 let mut result_changed = false;
                 if same_result {
@@ -182,7 +186,7 @@ impl ResultPanel {
             cx.notify();
             return false;
         }
-        let Some((svc, conn)) = self.dml_conn("新增", cx) else {
+        let Some((svc, conn, transaction)) = self.dml_conn("新增", cx) else {
             return false;
         };
         let table_ref = match self.current_table_ref() {
@@ -236,11 +240,13 @@ impl ResultPanel {
         self.dml_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let outcome = svc.execute_with_history(&conn, &q).await;
+            let outcome =
+                ResultPanel::execute_mutation(&svc, &conn, transaction.as_ref(), &q).await;
             let _ = this.update(cx, |this, cx| {
                 this.dml_busy = false;
                 match outcome {
                     Ok(qr) => {
+                        cx.emit(crate::views::result_panel::ResultPanelEvent::MutationCompleted);
                         if qr.affected_rows == 0 {
                             this.pending_notification = Some(
                                 Notification::warning("INSERT 未影响任何行（请检查约束）")

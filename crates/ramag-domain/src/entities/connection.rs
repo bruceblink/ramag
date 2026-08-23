@@ -41,6 +41,11 @@ pub enum DriverKind {
 }
 
 impl DriverKind {
+    /// Returns whether the driver can keep a connection leased for manual transactions.
+    pub fn supports_transactions(self) -> bool {
+        matches!(self, DriverKind::Mysql | DriverKind::Postgres)
+    }
+
     pub fn quote_identifier(&self, ident: &str) -> String {
         match self {
             DriverKind::Mysql => format!("`{}`", ident.replace('`', "``")),

@@ -29,12 +29,20 @@ impl QueryTab {
         let svc = self.service.clone();
         let result_handle = self.result.clone();
         let active_schema = self.active_schema.clone();
+        let transaction_id = self.transaction.as_ref().map(|session| session.id.clone());
         cx.spawn(async move |this, cx| {
             let mut query = Query::new(counting_sql);
             if let Some(schema) = active_schema {
                 query = query.with_schema(schema);
             }
-            let total = match svc.execute(&conn, &query).await {
+            let outcome = match transaction_id.as_ref() {
+                Some(transaction_id) => {
+                    svc.execute_in_transaction_without_history(&conn, transaction_id, &query)
+                        .await
+                }
+                None => svc.execute(&conn, &query).await,
+            };
+            let total = match outcome {
                 Ok(result) => parse_count_result(&result)
                     .map(TotalRows::Known)
                     .unwrap_or(TotalRows::Unavailable),
@@ -67,7 +75,7 @@ impl QueryTab {
     }
 
     pub(crate) fn handle_page(&mut self, requested_page: usize, cx: &mut Context<Self>) {
-        if self.running {
+        if self.running || self.transaction_busy {
             return;
         }
         let Some(conn) = self.connection.clone() else {
@@ -122,6 +130,9 @@ impl QueryTab {
         page_request: Option<PageRequest>,
         cx: &mut Context<Self>,
     ) {
+        if self.transaction_busy {
+            return;
+        }
         self.running = true;
         self.run_seq = self.run_seq.wrapping_add(1);
         let request_seq = self.run_seq;
@@ -158,19 +169,33 @@ impl QueryTab {
         let svc = self.service.clone();
         let result_handle = self.result.clone();
         let active_schema = self.active_schema.clone();
+        let transaction_id = self.transaction.as_ref().map(|session| session.id.clone());
+        let transaction_writes = transaction_id.is_some()
+            && ramag_infra_sql_shared::sql::is_write_statement(&sql_to_run);
         // 结果的可编辑目标必须绑定到“发起查询时”的表，不能在回包时读取用户后来点击的表。
         let request_pinned_target = self.pinned_target.clone();
-        let handle: ramag_domain::traits::CancelHandle =
-            Arc::new(std::sync::atomic::AtomicU64::new(0));
-        self.cancel_handle = Some(handle.clone());
+        let cancel_handle = transaction_id.is_none().then(|| {
+            Arc::new(std::sync::atomic::AtomicU64::new(0)) as ramag_domain::traits::CancelHandle
+        });
+        self.cancel_handle = cancel_handle.clone();
         let task = cx.spawn(async move |this, cx| {
             let mut query = Query::new(sql_to_run);
             if let Some(s) = active_schema {
                 query = query.with_schema(s);
             }
-            let outcome = svc
-                .execute_cancellable_with_history(&conn, &query, handle)
-                .await;
+            let outcome = match transaction_id.as_ref() {
+                Some(transaction_id) => {
+                    svc.execute_in_transaction(&conn, transaction_id, &query)
+                        .await
+                }
+                None => {
+                    let Some(cancel_handle) = cancel_handle else {
+                        return;
+                    };
+                    svc.execute_cancellable_with_history(&conn, &query, cancel_handle)
+                        .await
+                }
+            };
             if let Err(error) = &outcome {
                 error!(
                     operation = "sql_query",
@@ -221,8 +246,11 @@ impl QueryTab {
                         );
                         this.clear_sql_diagnostics(cx);
                         this.short_title = Some(make_short_title(&title_sql));
-                        if is_run {
+                        if is_run && !transaction_writes {
                             this.maybe_refresh_cache_after_ddl(&title_sql, cx);
+                        }
+                        if transaction_writes {
+                            this.mark_transaction_dirty(cx);
                         }
                         let target_for_result = request_pinned_target
                             .as_ref()

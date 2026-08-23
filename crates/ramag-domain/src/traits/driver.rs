@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use crate::entities::{
     Column, ConnectionConfig, ConnectionId, ForeignKey, Index, Query, QueryResult, Schema, Table,
+    TransactionId,
 };
 use crate::error::Result;
 
@@ -37,6 +38,47 @@ pub trait Driver: Send + Sync {
         _handle: CancelHandle,
     ) -> Result<QueryResult> {
         self.execute(config, query).await
+    }
+
+    /// Opens a driver-owned transaction session for the SQL query console.
+    async fn begin_transaction(&self, _config: &ConnectionConfig) -> Result<TransactionId> {
+        Err(crate::error::DomainError::NotImplemented(
+            "begin_transaction".into(),
+        ))
+    }
+
+    /// Executes SQL on a previously opened transaction without committing it.
+    async fn execute_in_transaction(
+        &self,
+        _config: &ConnectionConfig,
+        _transaction: &TransactionId,
+        _query: &Query,
+    ) -> Result<QueryResult> {
+        Err(crate::error::DomainError::NotImplemented(
+            "execute_in_transaction".into(),
+        ))
+    }
+
+    /// Commits and closes a driver-owned transaction session.
+    async fn commit_transaction(
+        &self,
+        _config: &ConnectionConfig,
+        _transaction: &TransactionId,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "commit_transaction".into(),
+        ))
+    }
+
+    /// Rolls back and closes a driver-owned transaction session.
+    async fn rollback_transaction(
+        &self,
+        _config: &ConnectionConfig,
+        _transaction: &TransactionId,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "rollback_transaction".into(),
+        ))
     }
 
     /// 取消正在执行的查询。MySQL 走 `KILL QUERY`，PG 走 `pg_cancel_backend`

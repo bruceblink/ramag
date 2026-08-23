@@ -1,7 +1,8 @@
 use super::{
     MAX_QUERY_RESULT_BYTES, MAX_QUERY_WARNINGS, QUERY_RESULT_MEMORY_WARNING_BYTES,
-    QueryResultLimit, append_warnings_bounded, query_result_memory_warning, try_push_query_row,
-    validate_backend_config, validate_metadata_identifier, validate_query_columns_with_limits,
+    QueryResultLimit, append_warnings_bounded, is_transaction_control_statement,
+    query_result_memory_warning, try_push_query_row, validate_backend_config,
+    validate_metadata_identifier, validate_query_columns_with_limits,
 };
 use ramag_domain::entities::{ConnectionConfig, DriverKind, Row, Value, Warning};
 
@@ -168,4 +169,14 @@ fn metadata_identifiers_are_validated_before_pool_lookup() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn manual_transaction_rejects_nested_transaction_control() {
+    assert!(is_transaction_control_statement("BEGIN"));
+    assert!(is_transaction_control_statement("START TRANSACTION"));
+    assert!(is_transaction_control_statement("ROLLBACK TO savepoint_1"));
+    assert!(is_transaction_control_statement("COMMIT"));
+    assert!(is_transaction_control_statement("RELEASE SAVEPOINT x"));
+    assert!(!is_transaction_control_statement("SELECT 1"));
 }

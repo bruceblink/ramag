@@ -3,6 +3,7 @@ mod examples;
 mod paging;
 mod render;
 mod sql_utils;
+mod transaction;
 
 pub(crate) use examples::sql_examples;
 
@@ -15,7 +16,7 @@ use gpui_component::notification::Notification;
 use parking_lot::RwLock;
 
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES};
+use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES, TransactionId};
 use ramag_ui::ResultMemoryBudget;
 use ramag_ui::platform::primary_shortcut;
 
@@ -39,6 +40,12 @@ pub struct QueryTab {
     pub(super) column_prefetch_task: Option<Task<()>>,
     /// 取消句柄；acquire 后写入 MySQL 后端线程 ID。
     pub(super) cancel_handle: Option<ramag_domain::traits::CancelHandle>,
+    /// Open manual transaction for generated row mutations.
+    pub(super) transaction: Option<TransactionSession>,
+    /// Prevents row mutations while transaction control is in flight.
+    pub(super) transaction_busy: bool,
+    /// Invalidates late begin/commit/rollback responses after context changes.
+    pub(super) transaction_seq: u64,
     pub(super) query_start: Option<Instant>,
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) title: String,
@@ -52,6 +59,12 @@ pub struct QueryTab {
     pub(super) last_injected_sql: Option<String>,
     pub(super) _editor_sub: gpui::Subscription,
     pub(super) _result_sub: gpui::Subscription,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TransactionSession {
+    pub(super) id: TransactionId,
+    pub(super) dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +157,7 @@ impl QueryTab {
             |this: &mut Self, _, event: &ResultPanelEvent, cx| match event {
                 ResultPanelEvent::PageRequested(page) => this.handle_page(*page, cx),
                 ResultPanelEvent::RowSearchChanged => cx.notify(),
+                ResultPanelEvent::MutationCompleted => this.mark_transaction_dirty(cx),
             },
         );
 
@@ -164,6 +178,9 @@ impl QueryTab {
             current_task: None,
             column_prefetch_task: None,
             cancel_handle: None,
+            transaction: None,
+            transaction_busy: false,
+            transaction_seq: 0,
             query_start: None,
             schema_cache,
             title: title.into(),
@@ -234,6 +251,9 @@ impl QueryTab {
     }
 
     pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
+        if self.has_open_transaction() {
+            self.rollback_transaction_detached(cx);
+        }
         self.active_schema = conn
             .as_ref()
             .and_then(|c| c.database.clone())
@@ -250,6 +270,9 @@ impl QueryTab {
     pub fn set_active_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
         let normalized = schema.filter(|s| !s.is_empty());
         if self.active_schema != normalized {
+            if self.has_open_transaction() {
+                self.rollback_transaction_detached(cx);
+            }
             self.active_schema = normalized;
             self.clear_pager(cx);
             cx.notify();
