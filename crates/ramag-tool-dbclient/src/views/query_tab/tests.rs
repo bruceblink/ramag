@@ -100,6 +100,20 @@ fn invalidating_query_context_discards_running_state_but_keeps_ready_result(
         tab.result.update(cx, |panel, cx| {
             panel.set_state(ResultState::Ok(Arc::new(result)), cx);
         });
+        tab.plan_result.update(cx, |panel, cx| {
+            panel.set_state(ResultState::Error("执行计划失败".into()), cx);
+        });
+        tab.set_plan_visible(true, cx);
+        assert!(tab.show_plan);
+        assert!(matches!(
+            tab.active_result().read(cx).state(),
+            ResultState::Error(_)
+        ));
+        tab.set_plan_visible(false, cx);
+        assert!(!tab.show_plan);
+    });
+
+    tab.update(cx, |tab, cx| {
         tab.running = true;
         tab.run_seq = 7;
         tab.count_seq = 3;
@@ -118,5 +132,52 @@ fn invalidating_query_context_discards_running_state_but_keeps_ready_result(
         });
         tab.invalidate_query_context(cx);
         assert!(matches!(tab.result.read(cx).state(), ResultState::Empty));
+    });
+}
+
+/// The plan tab must render independently even when the data result already exists.
+#[gpui::test]
+fn plan_result_tabs_render_without_replacing_data_panel(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let service = Arc::new(ConnectionService::new(
+        HashMap::new(),
+        Arc::new(NoopStorage),
+    ));
+    let schema_cache = SchemaCache::new_shared();
+    let (tab, cx) = cx.add_window_view(|window, cx| {
+        QueryTab::new(
+            service,
+            "查询 1",
+            None,
+            schema_cache,
+            ramag_ui::ResultMemoryBudget::default(),
+            window,
+            cx,
+        )
+    });
+
+    tab.update(cx, |tab, cx| {
+        tab.result.update(cx, |panel, cx| {
+            panel.set_state(ResultState::Error("数据结果".into()), cx)
+        });
+        tab.plan_result.update(cx, |panel, cx| {
+            panel.set_state(ResultState::Error("执行计划".into()), cx);
+        });
+        tab.set_plan_visible(true, cx);
+    });
+    tab.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    assert!(
+        cx.debug_bounds("sql-result-view-tabs").is_some(),
+        "SQL query tab should expose data/plan result tabs"
+    );
+    tab.read_with(cx, |tab, cx| {
+        assert!(tab.show_plan);
+        assert!(matches!(tab.result.read(cx).state(), ResultState::Error(_)));
+        assert!(matches!(
+            tab.active_result().read(cx).state(),
+            ResultState::Error(_)
+        ));
     });
 }
