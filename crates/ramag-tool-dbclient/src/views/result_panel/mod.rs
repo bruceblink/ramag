@@ -22,7 +22,7 @@ use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
-    Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, Value, Warning,
+    Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, TransactionId, Value, Warning,
 };
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease, ResultMemoryUpdate};
 
@@ -77,6 +77,7 @@ pub(crate) struct ResultPagination {
 pub(crate) enum ResultPanelEvent {
     PageRequested(usize),
     RowSearchChanged,
+    MutationCompleted,
 }
 
 impl EventEmitter<ResultPanelEvent> for ResultPanel {}
@@ -102,6 +103,10 @@ pub struct ResultPanel {
     pub(super) row_identity: Option<RowIdentity>,
     pub(super) col_width_overrides: Vec<Option<gpui::Pixels>>,
     pub(super) dml_busy: bool,
+    /// Blocks generated mutations while a transaction is opening or finishing.
+    pub(super) transaction_busy: bool,
+    /// Driver-owned transaction used by generated row mutations.
+    pub(super) transaction_id: Option<TransactionId>,
     pub(super) exporting: bool,
     pub(super) sort_by: Option<(usize, SortDir)>,
     /// 当前服务端结果页；None 表示不支持安全分页。
@@ -172,6 +177,8 @@ impl ResultPanel {
             source_sql: None,
             col_width_overrides: Vec::new(),
             dml_busy: false,
+            transaction_busy: false,
+            transaction_id: None,
             exporting: false,
             sort_by: None,
             pagination: None,
@@ -384,6 +391,18 @@ impl ResultPanel {
     ) {
         self.service = service;
         self.connection = connection;
+    }
+
+    /// Updates the transaction context used by generated INSERT/UPDATE/DELETE statements.
+    pub fn set_transaction(
+        &mut self,
+        transaction_id: Option<TransactionId>,
+        busy: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.transaction_id = transaction_id;
+        self.transaction_busy = busy;
+        cx.notify();
     }
 
     pub fn set_schema_cache(&mut self, cache: Option<Arc<RwLock<SchemaCache>>>) {

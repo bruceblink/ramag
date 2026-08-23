@@ -6,12 +6,13 @@ use ramag_domain::entities::{
 };
 use ramag_domain::error::Result;
 use ramag_infra_sql_shared::sql::SplitOptions;
-use ramag_infra_sql_shared::{PoolCache, SqlBackend};
+use ramag_infra_sql_shared::{PoolCache, SqlBackend, TransactionStore};
 use sqlx::{MySql, MySqlConnection, Pool};
 
 #[derive(Clone)]
 struct StubMysqlBackend {
     pools: PoolCache<MySql>,
+    transactions: TransactionStore<MySql>,
 }
 
 ramag_infra_sql_shared::impl_driver_for!(StubMysqlBackend);
@@ -30,6 +31,10 @@ impl SqlBackend for StubMysqlBackend {
 
     fn cache(&self) -> &PoolCache<Self::Db> {
         &self.pools
+    }
+
+    fn transaction_store(&self) -> &TransactionStore<Self::Db> {
+        &self.transactions
     }
 
     fn quote_identifier(&self, ident: &str) -> String {
@@ -116,6 +121,7 @@ impl SqlBackend for StubMysqlBackend {
 fn type_check_template_functions() {
     let backend = StubMysqlBackend {
         pools: PoolCache::new(),
+        transactions: TransactionStore::new(),
     };
     let config = ConnectionConfig::new_mysql("dummy", "127.0.0.1", 3306, "root");
 

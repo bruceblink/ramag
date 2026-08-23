@@ -6,7 +6,9 @@ use std::sync::Arc;
 use gpui::Context;
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{ConnectionConfig, MAX_SQL_QUERY_BYTES, Query, Value};
+use ramag_domain::entities::{
+    ConnectionConfig, MAX_SQL_QUERY_BYTES, Query, QueryResult, TransactionId, Value,
+};
 use tracing::error;
 
 use super::ResultPanel;
@@ -60,11 +62,21 @@ impl ResultPanel {
         &mut self,
         action: &str,
         cx: &mut Context<Self>,
-    ) -> Option<(Arc<ConnectionService>, ConnectionConfig)> {
+    ) -> Option<(
+        Arc<ConnectionService>,
+        ConnectionConfig,
+        Option<TransactionId>,
+    )> {
         if self.dml_busy {
             self.pending_notification = Some(
                 Notification::warning(format!("上一操作尚未完成，请稍候再{action}")).autohide(true),
             );
+            cx.notify();
+            return None;
+        }
+        if self.transaction_busy {
+            self.pending_notification =
+                Some(Notification::info(format!("事务正在切换，暂时无法{action}")).autohide(true));
             cx.notify();
             return None;
         }
@@ -74,7 +86,24 @@ impl ResultPanel {
             cx.notify();
             return None;
         };
-        Some((svc, conn))
+        Some((svc, conn, self.transaction_id.clone()))
+    }
+
+    /// Routes generated mutations through the active manual transaction when present.
+    pub(super) async fn execute_mutation(
+        service: &ConnectionService,
+        connection: &ConnectionConfig,
+        transaction: Option<&TransactionId>,
+        query: &Query,
+    ) -> ramag_domain::error::Result<QueryResult> {
+        match transaction {
+            Some(transaction) => {
+                service
+                    .execute_in_transaction(connection, transaction, query)
+                    .await
+            }
+            None => service.execute_with_history(connection, query).await,
+        }
     }
 
     /// 检查行内写操作。
@@ -172,7 +201,7 @@ impl ResultPanel {
         let Some(identity) = self.guard_modify("删除", cx) else {
             return false;
         };
-        let Some((svc, conn)) = self.dml_conn("删除", cx) else {
+        let Some((svc, conn, transaction)) = self.dml_conn("删除", cx) else {
             return false;
         };
         let ResultState::Ok(result) = &self.state else {
@@ -214,7 +243,7 @@ impl ResultPanel {
         self.dml_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let outcome = svc.execute_with_history(&conn, &q).await;
+            let outcome = Self::execute_mutation(&svc, &conn, transaction.as_ref(), &q).await;
             if let Err(error) = &outcome {
                 error!(
                     operation = "sql_delete",
@@ -229,6 +258,7 @@ impl ResultPanel {
                 this.dml_busy = false;
                 match outcome {
                     Ok(qr) => {
+                        cx.emit(super::ResultPanelEvent::MutationCompleted);
                         if qr.affected_rows == 0 {
                             this.pending_notification = Some(
                                 Notification::warning(
@@ -307,7 +337,7 @@ impl ResultPanel {
         let Some(identity) = self.guard_modify("修改", cx) else {
             return false;
         };
-        let Some((svc, conn)) = self.dml_conn("修改", cx) else {
+        let Some((svc, conn, transaction)) = self.dml_conn("修改", cx) else {
             return false;
         };
         let ResultState::Ok(result) = &self.state else {
@@ -382,7 +412,7 @@ impl ResultPanel {
         self.dml_busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let outcome = svc.execute_with_history(&conn, &q).await;
+            let outcome = Self::execute_mutation(&svc, &conn, transaction.as_ref(), &q).await;
             if let Err(error) = &outcome {
                 error!(
                     operation = "sql_update",
@@ -398,6 +428,7 @@ impl ResultPanel {
                 this.dml_busy = false;
                 match outcome {
                     Ok(qr) => {
+                        cx.emit(super::ResultPanelEvent::MutationCompleted);
                         if qr.affected_rows == 0 {
                             this.pending_notification = Some(
                                 Notification::warning("UPDATE 未匹配到记录（请检查主键）")

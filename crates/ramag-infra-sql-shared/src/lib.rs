@@ -9,14 +9,17 @@ pub mod macros;
 pub mod pool;
 pub mod runtime;
 pub mod sql;
+pub mod transaction;
 
 pub use backend::{
-    MAX_QUERY_WARNINGS, SqlBackend, cancel_query_impl, execute_impl, list_columns_impl,
+    MAX_QUERY_WARNINGS, SqlBackend, begin_transaction_impl, cancel_query_impl,
+    commit_transaction_impl, execute_impl, execute_in_transaction_impl, list_columns_impl,
     list_foreign_keys_impl, list_indexes_impl, list_schemas_impl, list_tables_impl,
-    server_version_impl, test_connection_impl,
+    rollback_transaction_impl, server_version_impl, test_connection_impl,
 };
 pub use pool::PoolCache;
 pub use runtime::run_in_tokio;
+pub use transaction::{MAX_ACTIVE_TRANSACTIONS_PER_CONNECTION, TransactionStore};
 
 pub use ramag_domain::entities::MAX_METADATA_ITEMS;
 pub const METADATA_FETCH_LIMIT: i64 = (MAX_METADATA_ITEMS + 1) as i64;

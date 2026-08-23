@@ -64,6 +64,62 @@ macro_rules! impl_driver_for {
                 .await
             }
 
+            async fn begin_transaction(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+            ) -> ::ramag_domain::error::Result<::ramag_domain::entities::TransactionId> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                $crate::run_in_tokio(async move {
+                    $crate::begin_transaction_impl(&this, &config).await
+                })
+                .await
+            }
+
+            async fn execute_in_transaction(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                transaction: &::ramag_domain::entities::TransactionId,
+                query: &::ramag_domain::entities::Query,
+            ) -> ::ramag_domain::error::Result<::ramag_domain::entities::QueryResult> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let transaction = transaction.clone();
+                let query = query.clone();
+                $crate::run_in_tokio(async move {
+                    $crate::execute_in_transaction_impl(&this, &config, &transaction, &query).await
+                })
+                .await
+            }
+
+            async fn commit_transaction(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                transaction: &::ramag_domain::entities::TransactionId,
+            ) -> ::ramag_domain::error::Result<()> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let transaction = transaction.clone();
+                $crate::run_in_tokio(async move {
+                    $crate::commit_transaction_impl(&this, &config, &transaction).await
+                })
+                .await
+            }
+
+            async fn rollback_transaction(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                transaction: &::ramag_domain::entities::TransactionId,
+            ) -> ::ramag_domain::error::Result<()> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let transaction = transaction.clone();
+                $crate::run_in_tokio(async move {
+                    $crate::rollback_transaction_impl(&this, &config, &transaction).await
+                })
+                .await
+            }
+
             async fn cancel_query(
                 &self,
                 config: &::ramag_domain::entities::ConnectionConfig,
@@ -160,6 +216,7 @@ macro_rules! impl_driver_for {
             fn evict_pool(&self, id: &::ramag_domain::entities::ConnectionId) {
                 // PoolCache 内部 DashMap，同步操作，不走 tokio
                 <$ty as $crate::SqlBackend>::cache(self).evict(id);
+                <$ty as $crate::SqlBackend>::transaction_store(self).clear_connection(id);
                 // 该连接的 SSH 隧道一并关闭（编辑配置后下次建连按新参数重建）
                 ::ramag_infra_tunnel::evict(id);
             }

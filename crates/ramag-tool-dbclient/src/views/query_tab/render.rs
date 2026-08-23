@@ -38,6 +38,9 @@ impl Render for QueryTab {
 
         let running = self.running;
         let has_connection = self.connection.is_some();
+        let transaction_active = self.transaction.is_some();
+        let transaction_dirty = self.transaction_is_dirty();
+        let transaction_label = self.transaction_label();
 
         // 仅"执行中"状态在工具条显示实时耗时，其他状态由结果面板底部 status_bar 展示
         let running_elapsed = self.query_start.map(|t| t.elapsed()).map(format_elapsed);
@@ -61,9 +64,72 @@ impl Render for QueryTab {
         let insert_reason = panel_for_btn.insert_block_reason();
         let modify_reason = panel_for_btn.modify_block_reason();
         let has_pending_insert = panel_for_btn.pending_insert().is_some();
+        let dml_busy = panel_for_btn.dml_busy();
         let _ = panel_for_btn;
         let is_production = self.connection.as_ref().is_some_and(|c| c.production);
         let warning = theme.warning;
+        let transaction_controls = if transaction_active {
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .child(
+                    ramag_ui::clickable_button("transaction-commit")
+                        .primary()
+                        .small()
+                        .icon(IconName::Check)
+                        .label("提交")
+                        .tooltip("提交当前事务")
+                        .disabled(self.transaction_busy || running || dml_busy)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.finish_transaction(true, cx);
+                        })),
+                )
+                .child(
+                    ramag_ui::clickable_button("transaction-rollback")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Undo2)
+                        .label("回滚")
+                        .tooltip("回滚当前事务")
+                        .disabled(self.transaction_busy || running || dml_busy)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.finish_transaction(false, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(if transaction_dirty { warning } else { muted_fg })
+                        .child(if transaction_dirty {
+                            "未提交"
+                        } else {
+                            "已开启"
+                        }),
+                )
+                .into_any_element()
+        } else {
+            ramag_ui::clickable_button("transaction-begin")
+                .ghost()
+                .small()
+                .icon(IconName::Play)
+                .label("开始事务")
+                .tooltip("开启手动提交事务")
+                .disabled(
+                    !has_connection
+                        || self
+                            .connection
+                            .as_ref()
+                            .is_some_and(|connection| !connection.driver.supports_transactions())
+                        || self.transaction_busy
+                        || running,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.begin_transaction(cx);
+                }))
+                .into_any_element()
+        };
 
         v_flex()
             .size_full()
@@ -207,6 +273,19 @@ impl Render for QueryTab {
                                 .child("生产 · 只读"),
                         )
                     })
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted_fg)
+                                    .child(transaction_label),
+                            )
+                            .child(transaction_controls),
+                    )
                     .when_some(result_summary, |this, summary| {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
                     })
@@ -425,7 +504,7 @@ impl Render for QueryTab {
                                 this.result.update(cx, |r, cx| r.export(cx));
                             })),
                     )
-                    .when(running, |this| {
+                    .when(running && self.cancel_handle.is_some(), |this| {
                         this.child(
                             ramag_ui::clickable_button("cancel-query")
                     .danger()
@@ -444,7 +523,7 @@ impl Render for QueryTab {
                     .small()
                     .icon(IconName::Play)
                     .tooltip("运行")
-                    .disabled(!has_connection)
+                    .disabled(!has_connection || self.transaction_busy)
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_run(window, cx);
                                 })),

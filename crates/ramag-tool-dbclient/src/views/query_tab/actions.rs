@@ -95,7 +95,7 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.running {
+        if self.running || self.transaction_busy {
             return;
         }
         let Some(conn) = self.connection.clone() else {
@@ -189,7 +189,7 @@ impl QueryTab {
         is_run: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.running {
+        if self.running || self.transaction_busy {
             return;
         }
         let pager = if is_run {

@@ -216,11 +216,21 @@ impl QueryPanel {
             .tabs
             .get(index)
             .is_some_and(|t| t.read(cx).has_user_draft(cx));
-        if has_draft {
+        let has_transaction = self
+            .tabs
+            .get(index)
+            .is_some_and(|t| t.read(cx).has_open_transaction());
+        if has_draft || has_transaction {
             let entity = cx.entity();
+            let message = match (has_draft, has_transaction) {
+                (true, true) => "未保存内容将丢失，打开的事务将回滚。".to_string(),
+                (true, false) => "未保存内容将丢失。".to_string(),
+                (false, true) => "打开的事务将回滚，未提交修改会丢失。".to_string(),
+                (false, false) => String::new(),
+            };
             ramag_ui::open_confirm(
                 "关闭查询标签？",
-                "未保存内容将丢失。".to_string(),
+                message,
                 "关闭",
                 true,
                 move |window, app| {
@@ -242,7 +252,10 @@ impl QueryPanel {
         self.remember_closed_draft(index, cx);
         // 先取消执行中的查询。
         if let Some(tab) = self.tabs.get(index) {
-            tab.update(cx, |t, cx| t.cancel_if_running(window, cx));
+            tab.update(cx, |t, cx| {
+                t.cancel_if_running(window, cx);
+                t.rollback_transaction_detached(cx);
+            });
         }
         self.tabs.remove(index);
         self.titles.remove(index);

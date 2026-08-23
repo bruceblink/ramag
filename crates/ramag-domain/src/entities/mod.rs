@@ -16,6 +16,7 @@ pub mod schema;
 pub mod ssh;
 pub mod ssh_diagnostic;
 pub mod ssh_remote_path;
+pub mod transaction;
 pub mod transfer;
 pub mod update;
 
@@ -142,6 +143,7 @@ pub use ssh_diagnostic::{
 pub use ssh_remote_path::{
     RemotePath, SftpNamespaceKind, infer_sftp_namespace, validate_remote_name_for_namespace,
 };
+pub use transaction::TransactionId;
 pub use transfer::{
     ConflictPolicy, MAX_TRANSFER_WARNINGS, ProgressFn, TransferProgress, TransferSummary,
     format_bytes,

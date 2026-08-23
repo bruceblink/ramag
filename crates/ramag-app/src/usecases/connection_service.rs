@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ramag_domain::entities::{
     Column, ConnectionConfig, ConnectionId, DriverKind, ForeignKey, Index, Query, QueryResult,
-    Schema, Table,
+    Schema, Table, TransactionId,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{CancelHandle, Driver, Storage};
@@ -407,6 +407,88 @@ impl ConnectionService {
             Err(e) => Err(e),
         };
         self.append_history(config, query, &result, false).await;
+        result
+    }
+
+    /// Starts a SQL transaction and returns an opaque handle owned by the driver.
+    pub async fn begin_transaction(&self, config: &ConnectionConfig) -> Result<TransactionId> {
+        let result = match self.driver_for(config) {
+            Ok(driver) => driver.begin_transaction(config).await,
+            Err(error) => Err(error),
+        };
+        log_connection_result("sql_transaction_begin", config, None, None, &result);
+        result
+    }
+
+    /// Executes SQL on an open transaction without committing it or changing other sessions.
+    pub async fn execute_in_transaction(
+        &self,
+        config: &ConnectionConfig,
+        transaction: &TransactionId,
+        query: &Query,
+    ) -> Result<QueryResult> {
+        self.execute_in_transaction_inner(config, transaction, query, true)
+            .await
+    }
+
+    /// Executes an internal transaction query without adding it to user-visible history.
+    pub async fn execute_in_transaction_without_history(
+        &self,
+        config: &ConnectionConfig,
+        transaction: &TransactionId,
+        query: &Query,
+    ) -> Result<QueryResult> {
+        self.execute_in_transaction_inner(config, transaction, query, false)
+            .await
+    }
+
+    async fn execute_in_transaction_inner(
+        &self,
+        config: &ConnectionConfig,
+        transaction: &TransactionId,
+        query: &Query,
+        record_history: bool,
+    ) -> Result<QueryResult> {
+        let result = match self.driver_for(config) {
+            Ok(driver) => {
+                driver
+                    .execute_in_transaction(config, transaction, query)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        log_query_result(config, query, &result, false);
+        if record_history {
+            self.append_history(config, query, &result, false).await;
+        }
+        result
+    }
+
+    /// Commits an open SQL transaction and releases its driver-owned connection.
+    pub async fn commit_transaction(
+        &self,
+        config: &ConnectionConfig,
+        transaction: &TransactionId,
+    ) -> Result<()> {
+        let result = match self.driver_for(config) {
+            Ok(driver) => driver.commit_transaction(config, transaction).await,
+            Err(error) => Err(error),
+        };
+        log_connection_result("sql_transaction_commit", config, None, None, &result);
+        result
+    }
+
+    /// Rolls back an open SQL transaction and releases its driver-owned connection.
+    pub async fn rollback_transaction(
+        &self,
+        config: &ConnectionConfig,
+        transaction: &TransactionId,
+    ) -> Result<()> {
+        let result = match self.driver_for(config) {
+            Ok(driver) => driver.rollback_transaction(config, transaction).await,
+            Err(error) => Err(error),
+        };
+        log_connection_result("sql_transaction_rollback", config, None, None, &result);
         result
     }
 }
