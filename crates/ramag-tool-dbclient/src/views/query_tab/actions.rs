@@ -125,6 +125,7 @@ impl QueryTab {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn submit_sql(
         &mut self,
         sql_to_run: String,
@@ -239,6 +240,7 @@ impl QueryTab {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn submit_prepared(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,
