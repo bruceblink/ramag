@@ -66,6 +66,10 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         .debug_bounds("result-h-scroll")
         .expect("result table should be rendered")
         .center();
+    assert!(
+        cx.debug_bounds("result-h-scrollbar").is_some(),
+        "result table should expose a draggable horizontal scrollbar"
+    );
     cx.simulate_event(ScrollWheelEvent {
         position,
         delta: ScrollDelta::Pixels(point(px(-80.0), px(-8.0))),

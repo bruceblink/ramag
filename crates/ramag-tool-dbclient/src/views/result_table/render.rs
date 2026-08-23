@@ -1,5 +1,6 @@
 use super::*;
 
+/// 构建 SQL 结果表：复用虚拟行列表，并把宽列内容交给可拖拽的横向滚动条浏览。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::views) fn render_table(
     panel: &mut ResultPanel,
@@ -417,40 +418,56 @@ pub(in crate::views) fn render_table(
             )
         });
 
-    // 外层横向滚动，虚拟列表纵向滚动；透明输入层统一锁定一次手势的主轴。
-    v_flex()
-        .size_full()
+    // 外层横向滚动，虚拟列表纵向滚动；滚动条置于输入层之后，保证可以直接拖拽。
+    let table_container = div()
+        .relative()
+        .flex_1()
+        .min_h_0()
         .min_w_0()
         .child(
             div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
+                .id("result-h-scroll")
+                .debug_selector(|| "result-h-scroll".into())
+                .size_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .track_scroll(panel.h_scroll())
                 .child(
-                    div()
-                        .id("result-h-scroll")
-                        .debug_selector(|| "result-h-scroll".into())
-                        .size_full()
-                        .overflow_x_scroll()
-                        .restrict_scroll_to_axis()
-                        .track_scroll(panel.h_scroll())
-                        .child(
-                            v_flex()
-                                .w(frame.total_content_width)
-                                .h_full()
-                                .child(header)
-                                .child(body),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("result-scroll-input")
-                        .absolute()
-                        .inset_0()
-                        .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
+                    v_flex()
+                        .w(frame.total_content_width)
+                        .h_full()
+                        .child(header)
+                        .child(body),
                 ),
         )
+        .child(
+            div()
+                .id("result-scroll-input")
+                .absolute()
+                .inset_0()
+                .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
+        )
+        .child(
+            div()
+                .id("result-h-scrollbar")
+                .debug_selector(|| "result-h-scrollbar".into())
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(16.0))
+                .relative()
+                .child(
+                    Scrollbar::horizontal(panel.h_scroll())
+                        .id("result-h-scrollbar-control")
+                        .scrollbar_show(ScrollbarShow::Always),
+                ),
+        );
+
+    v_flex()
+        .size_full()
+        .min_w_0()
+        .child(table_container)
         .child(status_bar)
         .into_any_element()
 }

@@ -5,6 +5,7 @@ use gpui::{
     Context, Hsla, InteractiveElement as _, IntoElement, ParentElement, ScrollWheelEvent,
     SharedString, Window, div, prelude::*, px, uniform_list,
 };
+use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
 use ramag_ui::RestrictScrollToAxisExt as _;
 
@@ -17,6 +18,7 @@ const HEADER_HEIGHT: f32 = 34.0;
 pub(super) const CELL_PREVIEW_MAX: usize = 80;
 const CHECKBOX_WIDTH: f32 = 32.0;
 
+/// 构建 MongoDB 结果表：保持行虚拟化，并为扁平化后的宽文档提供横向浏览入口。
 pub(super) fn render(
     panel: &mut ResultPanel,
     table: Arc<FlatTable>,
@@ -156,37 +158,53 @@ pub(super) fn render(
     .flex_1()
     .restrict_scroll_to_axis();
 
-    // 外层横向滚动，内层纵向虚拟化；透明输入层保证一次手势只移动一个轴。
-    v_flex().size_full().min_w_0().child(
-        div()
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .child(
-                div()
-                    .id("mongo-table-h-scroll")
-                    .debug_selector(|| "mongo-table-h-scroll".into())
-                    .size_full()
-                    .overflow_x_scroll()
-                    .restrict_scroll_to_axis()
-                    .track_scroll(&panel.h_scroll)
-                    .child(
-                        v_flex()
-                            .w(total_width)
-                            .h_full()
-                            .child(header_row.flex_none())
-                            .child(body),
-                    ),
-            )
-            .child(
-                div()
-                    .id("mongo-table-scroll-input")
-                    .absolute()
-                    .inset_0()
-                    .on_scroll_wheel(cx.listener(ResultPanel::on_table_scroll)),
-            ),
-    )
+    // 外层横向滚动，内层纵向虚拟化；滚动条置于输入层之后，保证可以直接拖拽。
+    let table_container = div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .child(
+            div()
+                .id("mongo-table-h-scroll")
+                .debug_selector(|| "mongo-table-h-scroll".into())
+                .size_full()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .track_scroll(&panel.h_scroll)
+                .child(
+                    v_flex()
+                        .w(total_width)
+                        .h_full()
+                        .child(header_row.flex_none())
+                        .child(body),
+                ),
+        )
+        .child(
+            div()
+                .id("mongo-table-scroll-input")
+                .absolute()
+                .inset_0()
+                .on_scroll_wheel(cx.listener(ResultPanel::on_table_scroll)),
+        )
+        .child(
+            div()
+                .id("mongo-table-h-scrollbar")
+                .debug_selector(|| "mongo-table-h-scrollbar".into())
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(16.0))
+                .relative()
+                .child(
+                    Scrollbar::horizontal(&panel.h_scroll)
+                        .id("mongo-table-h-scrollbar-control")
+                        .scrollbar_show(ScrollbarShow::Always),
+                ),
+        );
+
+    v_flex().size_full().min_w_0().child(table_container)
 }
 
 impl ResultPanel {
