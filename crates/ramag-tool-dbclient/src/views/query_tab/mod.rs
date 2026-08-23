@@ -315,8 +315,10 @@ impl QueryTab {
             .update(cx, |r, cx| r.clear_column_filter(window, cx));
     }
 
-    pub fn set_pinned_target(&mut self, target: Option<(String, String)>) {
+    /// Updates the pinned table target and invalidates stale query/plan state.
+    pub fn set_pinned_target(&mut self, target: Option<(String, String)>, cx: &mut Context<Self>) {
         self.pinned_target = target;
+        self.invalidate_query_context(cx);
     }
 
     pub fn display_title(&self) -> &str {

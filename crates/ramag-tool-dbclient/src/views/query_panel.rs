@@ -420,7 +420,7 @@ impl QueryPanel {
                 // set_sql 会清除 target，须先调用。
                 t.set_sql(sql.clone(), window, cx);
                 t.mark_injected(sql);
-                t.set_pinned_target(target);
+                t.set_pinned_target(target, cx);
                 // 表结构变化，清除列筛选。
                 t.clear_result_column_filter(window, cx);
                 t.run(window, cx);
