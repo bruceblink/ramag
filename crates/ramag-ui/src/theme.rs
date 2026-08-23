@@ -43,8 +43,21 @@ pub fn apply_theme(mode: Mode, cx: &mut App) {
     }
     // 命令编辑器背景对齐主背景：gpui 默认 editor.background 是纯黑，浮在主背景上显突兀
     normalize_editor_highlight_theme(mode, cx);
-    // 结果表和其它需要明确可发现性的内容区域会自行挂载滚动条；保留主题颜色，
-    // 这样滚动条既能响应触控板，也能被鼠标直接拖动。
+    // 结果表和其它需要明确可发现性的内容区域会自行挂载滚动条；统一恢复可见轨道和滑块。
+    configure_scrollbar_paint(Theme::global_mut(cx));
+}
+
+/// 为可拖拽滚动条提供稳定的对比度，避免主题配置中的透明色让滚动条只剩滚动状态而不可见。
+fn configure_scrollbar_paint(theme: &mut Theme) {
+    let mut track = theme.border;
+    track.a = 0.45;
+    let mut thumb = theme.muted_foreground;
+    thumb.a = 0.68;
+    let mut thumb_hover = theme.foreground;
+    thumb_hover.a = 0.82;
+    theme.scrollbar = track;
+    theme.scrollbar_thumb = thumb;
+    theme.scrollbar_thumb_hover = thumb_hover;
 }
 
 /// 编辑器背景对齐主背景；浅色默认主题的亮蓝色注释改为更常见的绿色。

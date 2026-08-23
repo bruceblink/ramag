@@ -418,8 +418,8 @@ pub(in crate::views) fn render_table(
             )
         });
 
-    // 外层横向滚动，虚拟列表纵向滚动；滚动条置于输入层之后，保证可以直接拖拽。
-    let table_container = div()
+    // 外层横向滚动，虚拟列表纵向滚动；滚动条使用固定底部布局行，避免被结果内容覆盖。
+    let table_view = div()
         .relative()
         .flex_1()
         .min_h_0()
@@ -446,20 +446,27 @@ pub(in crate::views) fn render_table(
                 .absolute()
                 .inset_0()
                 .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
-        )
+        );
+
+    let table_container = v_flex()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .child(table_view)
         .child(
             div()
                 .id("result-h-scrollbar")
                 .debug_selector(|| "result-h-scrollbar".into())
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
+                .flex_none()
+                .w_full()
                 .h(px(16.0))
                 .relative()
+                .bg(cx.theme().scrollbar)
                 .child(
                     Scrollbar::horizontal(panel.h_scroll())
                         .id("result-h-scrollbar-control")
+                        .scroll_size(gpui::size(frame.total_content_width, px(16.0)))
                         .scrollbar_show(ScrollbarShow::Always),
                 ),
         );
