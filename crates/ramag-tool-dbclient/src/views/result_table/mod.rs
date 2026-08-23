@@ -10,6 +10,7 @@ use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement, SharedString, div,
     prelude::*, px, uniform_list,
 };
+use gpui_component::scroll::{Scrollbar, ScrollbarShow};
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
