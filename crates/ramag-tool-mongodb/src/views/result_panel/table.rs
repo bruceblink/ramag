@@ -158,8 +158,8 @@ pub(super) fn render(
     .flex_1()
     .restrict_scroll_to_axis();
 
-    // 外层横向滚动，内层纵向虚拟化；滚动条置于输入层之后，保证可以直接拖拽。
-    let table_container = div()
+    // 外层横向滚动，内层纵向虚拟化；滚动条使用固定底部布局行，避免被结果内容覆盖。
+    let table_view = div()
         .relative()
         .flex_1()
         .min_h_0()
@@ -186,20 +186,27 @@ pub(super) fn render(
                 .absolute()
                 .inset_0()
                 .on_scroll_wheel(cx.listener(ResultPanel::on_table_scroll)),
-        )
+        );
+
+    let table_container = v_flex()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .child(table_view)
         .child(
             div()
                 .id("mongo-table-h-scrollbar")
                 .debug_selector(|| "mongo-table-h-scrollbar".into())
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
+                .flex_none()
+                .w_full()
                 .h(px(16.0))
                 .relative()
+                .bg(cx.theme().scrollbar)
                 .child(
                     Scrollbar::horizontal(&panel.h_scroll)
                         .id("mongo-table-h-scrollbar-control")
+                        .scroll_size(gpui::size(total_width, px(16.0)))
                         .scrollbar_show(ScrollbarShow::Always),
                 ),
         );
