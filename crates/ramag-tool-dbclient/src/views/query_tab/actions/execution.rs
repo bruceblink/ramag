@@ -121,6 +121,62 @@ impl QueryTab {
         );
     }
 
+    /// Re-runs the current safe read-only query from page one with a bounded page size.
+    pub(crate) fn handle_page_size(&mut self, requested_size: usize, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
+        let page_size = match ramag_ui::validate_result_page_size(requested_size) {
+            Ok(size) => size,
+            Err(message) => {
+                self.pending_notification = Some(Notification::error(message).autohide(true));
+                cx.notify();
+                return;
+            }
+        };
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        let Some(is_changed) = self
+            .pager
+            .as_ref()
+            .map(|pager| pager.page_size != page_size)
+        else {
+            return;
+        };
+        if !is_changed {
+            return;
+        }
+        let Some(pager) = self.pager.as_mut() else {
+            return;
+        };
+        pager.page_size = page_size;
+        pager.page = 0;
+        pager.has_more = false;
+        pager.total = TotalRows::Counting;
+        let base_sql = pager.base_sql.clone();
+        self.page_size = page_size;
+        let effective_sql = match page_sql(&base_sql, page_size, 0) {
+            Ok(sql) => sql,
+            Err(message) => {
+                self.pending_notification =
+                    Some(Notification::error(format!("加载分页失败：{message}")).autohide(true));
+                self.clear_pager(cx);
+                cx.notify();
+                return;
+            }
+        };
+        self.execute_query(
+            conn.clone(),
+            effective_sql,
+            base_sql.clone(),
+            false,
+            Some(PageRequest { page: 0, page_size }),
+            cx,
+        );
+        self.spawn_total_count(conn, base_sql, cx);
+    }
+
     pub(super) fn execute_query(
         &mut self,
         conn: ramag_domain::entities::ConnectionConfig,

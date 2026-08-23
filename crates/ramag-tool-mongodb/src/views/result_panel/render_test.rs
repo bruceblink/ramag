@@ -57,10 +57,15 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     });
     cx.run_until_parked();
 
-    let position = cx
+    let bounds = cx
         .debug_bounds("mongo-table-h-scroll")
-        .expect("MongoDB result table should be rendered")
-        .center();
+        .expect("MongoDB result table should be rendered");
+    assert!(
+        cx.debug_bounds("mongo-table-v-scrollbar").is_some(),
+        "MongoDB result table should expose a draggable vertical scrollbar"
+    );
+    // Keep the gesture away from the fixed vertical scrollbar rail at the right edge.
+    let position = point(bounds.origin.x + px(80.0), bounds.origin.y + px(80.0));
     assert!(
         cx.debug_bounds("mongo-table-h-scrollbar").is_some(),
         "MongoDB result table should expose a draggable horizontal scrollbar"

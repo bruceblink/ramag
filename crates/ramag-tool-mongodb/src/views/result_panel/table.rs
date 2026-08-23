@@ -186,6 +186,22 @@ pub(super) fn render(
                 .absolute()
                 .inset_0()
                 .on_scroll_wheel(cx.listener(ResultPanel::on_table_scroll)),
+        )
+        .child(
+            div()
+                .id("mongo-table-v-scrollbar")
+                .debug_selector(|| "mongo-table-v-scrollbar".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(16.0))
+                .bg(cx.theme().scrollbar)
+                .child(
+                    Scrollbar::vertical(&panel.uniform_scroll)
+                        .id("mongo-table-v-scrollbar-control")
+                        .scrollbar_show(ScrollbarShow::Always),
+                ),
         );
 
     let show_horizontal_scrollbar =
