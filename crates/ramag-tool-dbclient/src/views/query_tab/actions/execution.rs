@@ -199,6 +199,7 @@ impl QueryTab {
             return;
         }
         self.running = true;
+        self.running_target = Some(QueryResultTarget::from_plan_request(plan_seq));
         self.run_seq = self.run_seq.wrapping_add(1);
         let request_seq = self.run_seq;
         self.query_start = Some(Instant::now());
@@ -283,6 +284,7 @@ impl QueryTab {
                     return;
                 }
                 this.running = false;
+                this.running_target = None;
                 this.current_task = None;
                 this.cancel_handle = None;
                 this.query_start = None;

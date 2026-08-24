@@ -15,7 +15,7 @@ use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line, strip_leading_comments,
 };
-use super::{QueryTab, QueryTabEvent};
+use super::{QueryResultTarget, QueryTab, QueryTabEvent};
 use crate::views::result_panel::{ResultPagination, ResultState, TotalRows};
 
 impl QueryTab {
@@ -428,7 +428,9 @@ impl QueryTab {
         if self.current_task.take().is_none() {
             return;
         }
-        self.run_seq = self.run_seq.wrapping_add(1);
+        let cancel_seq = self.run_seq.wrapping_add(1);
+        self.run_seq = cancel_seq;
+        self.clear_cancelled_result(cx);
         let cancel_target = self.cancel_handle.take().and_then(|h| {
             let tid = h.load(std::sync::atomic::Ordering::SeqCst);
             if tid > 0 { Some(tid) } else { None }
@@ -442,6 +444,9 @@ impl QueryTab {
             cx.spawn(async move |this, cx| {
                 let outcome = svc.cancel_query(&conn, tid).await;
                 let _ = this.update(cx, |this, cx| {
+                    if this.run_seq != cancel_seq {
+                        return;
+                    }
                     this.pending_notification = Some(match &outcome {
                         Ok(()) => Notification::success("服务器已确认取消查询").autohide(true),
                         Err(e) => Notification::warning(format!(
@@ -479,15 +484,29 @@ impl QueryTab {
         }
         self.running = false;
         self.query_start = None;
-        self.pager = None;
-        self.result.update(cx, |r, cx| {
-            r.set_state(ResultState::Empty, cx);
-        });
         info!(
             operation = "sql_query_cancel",
             "client query wait cancelled"
         );
         cx.notify();
+    }
+
+    /// Clears only the result panel owned by the cancelled request.
+    pub(super) fn clear_cancelled_result(&mut self, cx: &mut Context<Self>) {
+        match self.running_target.take() {
+            Some(QueryResultTarget::Data) => {
+                self.pager = None;
+                self.result.update(cx, |result, cx| {
+                    result.set_state(ResultState::Empty, cx);
+                });
+            }
+            Some(QueryResultTarget::Plan) => {
+                self.plan_result.update(cx, |result, cx| {
+                    result.set_state(ResultState::Empty, cx);
+                });
+            }
+            None => {}
+        }
     }
 }
 

@@ -40,6 +40,8 @@ pub struct QueryTab {
     /// 当前查询标签是否可见，用于在两个结果面板之间转移内存活跃状态。
     pub(super) result_active: bool,
     pub(super) running: bool,
+    /// 当前异步请求写入的数据或计划面板；取消时只清理这个面板。
+    pub(super) running_target: Option<QueryResultTarget>,
     /// 查询代际，忽略取消后的旧回包和计时。
     pub(super) run_seq: u64,
     /// 执行计划代际；SQL 上下文变化后旧计划回包不能重新出现。
@@ -75,6 +77,23 @@ pub struct QueryTab {
     pub(super) last_injected_sql: Option<String>,
     pub(super) _editor_sub: gpui::Subscription,
     pub(super) _result_sub: gpui::Subscription,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QueryResultTarget {
+    Data,
+    Plan,
+}
+
+impl QueryResultTarget {
+    /// Maps an execution request to the result panel it owns.
+    pub(super) fn from_plan_request(plan_seq: Option<u64>) -> Self {
+        if plan_seq.is_some() {
+            Self::Plan
+        } else {
+            Self::Data
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +232,7 @@ impl QueryTab {
             show_plan: false,
             result_active: false,
             running: false,
+            running_target: None,
             run_seq: 0,
             plan_seq: 0,
             count_seq: 0,
@@ -446,6 +466,7 @@ impl QueryTab {
         self.show_plan = false;
         self.plan_seq = self.plan_seq.wrapping_add(1);
         self.running = false;
+        self.running_target = None;
         self.current_task = None;
         self.cancel_handle = None;
         self.query_start = None;

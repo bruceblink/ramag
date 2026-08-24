@@ -10,7 +10,7 @@ use ramag_domain::entities::{
 use ramag_domain::error::Result;
 use ramag_domain::traits::Storage;
 
-use super::{QueryTab, ResultState};
+use super::{QueryResultTarget, QueryTab, ResultState};
 use crate::sql_completion::SchemaCache;
 
 struct NoopStorage;
@@ -210,4 +210,17 @@ fn transaction_failure_status_is_explicit(cx: &mut TestAppContext) {
         tab.transaction_busy = true;
         assert_eq!(tab.transaction_label(), "事务处理中");
     });
+}
+
+/// A plan request owns only the plan panel; normal requests own the data panel.
+#[test]
+fn query_result_target_matches_request_kind() {
+    assert_eq!(
+        QueryResultTarget::from_plan_request(None),
+        QueryResultTarget::Data
+    );
+    assert_eq!(
+        QueryResultTarget::from_plan_request(Some(1)),
+        QueryResultTarget::Plan
+    );
 }
