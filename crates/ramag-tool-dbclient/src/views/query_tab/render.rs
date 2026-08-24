@@ -344,17 +344,17 @@ impl Render for QueryTab {
                         let can_insert = !plan_visible
                             && insert_reason.is_none()
                             && !has_pending_insert;
-                        let insert_tip: Option<gpui::SharedString> =
+                        let insert_tip: gpui::SharedString =
                             match (insert_reason, has_pending_insert) {
-                                (Some(reason), _) => Some(reason.into()),
-                                (None, true) => Some("请先处理草稿".into()),
-                                (None, false) => None,
+                                (Some(reason), _) => reason.into(),
+                                (None, true) => "请先处理草稿".into(),
+                                (None, false) => "新增行".into(),
                             };
                         ramag_ui::clickable_button("toolbar-insert")
                             .ghost()
                             .small()
                             .icon(IconName::Plus)
-                            .when_some(insert_tip, |button, tip| button.tooltip(tip))
+                            .tooltip(insert_tip)
                             .disabled(!can_insert)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let Some(conn) = this.connection.clone() else {
@@ -427,18 +427,17 @@ impl Render for QueryTab {
                             }))
                     })
                     .child(
-                        ramag_ui::clickable_button("toolbar-delete")
+                        {
+                            let delete_tip: gpui::SharedString = match (modify_reason, has_selected) {
+                                (Some(reason), _) => reason.into(),
+                                (None, false) => "请先选择数据".into(),
+                                (None, true) => "删除选中行".into(),
+                            };
+                            ramag_ui::clickable_button("toolbar-delete")
                             .ghost()
                             .small()
                             .icon(IconName::Minus)
-                            .when_some(
-                                match (modify_reason, has_selected) {
-                                    (Some(reason), _) => Some(gpui::SharedString::from(reason)),
-                                    (None, false) => Some("请先选择数据".into()),
-                                    (None, true) => None,
-                                },
-                                |button, tip| button.tooltip(tip),
-                            )
+                            .tooltip(delete_tip)
                             .disabled(plan_visible || !has_selected || modify_reason.is_some())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 let panel_ref = this.active_result().read(cx);
@@ -530,7 +529,8 @@ impl Render for QueryTab {
                                                 .child(ok),
                                         )
                                 });
-                            })),
+                            }))
+                        },
                     )
                     .child(
                         // 与导出配对：仅表树打开的单表结果可导入（pinned 表即目标）
@@ -538,8 +538,10 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::download())
-                            .when(self.pinned_target.is_none(), |button| {
-                                button.tooltip("请先打开表")
+                            .tooltip(if self.pinned_target.is_some() {
+                                "导入数据"
+                            } else {
+                                "请先打开表"
                             })
                             .disabled(plan_visible || self.pinned_target.is_none())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
