@@ -235,6 +235,7 @@ impl QueryTab {
         let svc = self.service.clone();
         let active_schema = self.active_schema.clone();
         let transaction_id = self.transaction.as_ref().map(|session| session.id.clone());
+        let transaction_active = transaction_id.is_some();
         let transaction_writes = transaction_id.is_some()
             && ramag_infra_sql_shared::sql::is_write_statement(&sql_to_run);
         // 结果的可编辑目标必须绑定到“发起查询时”的表，不能在回包时读取用户后来点击的表。
@@ -315,6 +316,9 @@ impl QueryTab {
                             "query completed"
                         );
                         this.clear_sql_diagnostics(cx);
+                        if transaction_active {
+                            this.transaction_error = None;
+                        }
                         this.short_title = Some(make_short_title(&title_sql));
                         if is_run && !transaction_writes {
                             this.maybe_refresh_cache_after_ddl(&title_sql, cx);
@@ -338,6 +342,12 @@ impl QueryTab {
                     }
                     Err(e) => {
                         let err_msg = e.to_string();
+                        if transaction_active && !matches!(e, DomainError::Forbidden(_)) {
+                            this.mark_transaction_error(
+                                e.write_hint("事务语句失败；请回滚或修正后重试"),
+                                cx,
+                            );
+                        }
                         // 只读拦截恢复执行前结果，其余错误显示在结果区。
                         if matches!(e, DomainError::Forbidden(_)) {
                             this.pending_notification =

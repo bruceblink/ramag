@@ -56,6 +56,8 @@ pub struct QueryTab {
     pub(super) transaction: Option<TransactionSession>,
     /// Prevents row mutations while transaction control is in flight.
     pub(super) transaction_busy: bool,
+    /// Last transaction error that still needs an explicit rollback or restart.
+    pub(super) transaction_error: Option<String>,
     /// Invalidates late begin/commit/rollback responses after context changes.
     pub(super) transaction_seq: u64,
     pub(super) query_start: Option<Instant>,
@@ -191,6 +193,9 @@ impl QueryTab {
                 }
                 ResultPanelEvent::RowSearchChanged => cx.notify(),
                 ResultPanelEvent::MutationCompleted => this.mark_transaction_dirty(cx),
+                ResultPanelEvent::MutationFailed(message) => {
+                    this.mark_transaction_error(message.clone(), cx)
+                }
             },
         );
 
@@ -217,6 +222,7 @@ impl QueryTab {
             cancel_handle: None,
             transaction: None,
             transaction_busy: false,
+            transaction_error: None,
             transaction_seq: 0,
             query_start: None,
             schema_cache,
@@ -328,6 +334,8 @@ impl QueryTab {
     pub fn set_connection(&mut self, conn: Option<ConnectionConfig>, cx: &mut Context<Self>) {
         if self.has_open_transaction() {
             self.rollback_transaction_detached(cx);
+        } else {
+            self.transaction_error = None;
         }
         self.active_schema = conn
             .as_ref()
@@ -353,6 +361,8 @@ impl QueryTab {
         if self.active_schema != normalized {
             if self.has_open_transaction() {
                 self.rollback_transaction_detached(cx);
+            } else {
+                self.transaction_error = None;
             }
             self.active_schema = normalized;
             self.clear_pager(cx);

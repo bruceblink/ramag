@@ -73,12 +73,13 @@ pub(crate) struct ResultPagination {
     pub(crate) total: TotalRows,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResultPanelEvent {
     PageRequested(usize),
     PageSizeChanged(usize),
     RowSearchChanged,
     MutationCompleted,
+    MutationFailed(String),
 }
 
 impl EventEmitter<ResultPanelEvent> for ResultPanel {}

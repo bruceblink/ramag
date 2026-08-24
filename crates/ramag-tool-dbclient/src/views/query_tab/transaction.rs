@@ -14,6 +14,18 @@ impl QueryTab {
         }
     }
 
+    /// Keeps the latest failed transaction operation visible until the user finishes it.
+    pub(super) fn mark_transaction_error(
+        &mut self,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transaction.is_some() || self.transaction_busy {
+            self.transaction_error = Some(message.into());
+            cx.notify();
+        }
+    }
+
     pub(crate) fn has_open_transaction(&self) -> bool {
         self.transaction.is_some() || self.transaction_busy
     }
@@ -27,6 +39,8 @@ impl QueryTab {
     pub(super) fn transaction_label(&self) -> &'static str {
         if self.transaction_busy {
             "事务处理中"
+        } else if self.transaction_error.is_some() {
+            "事务异常"
         } else if self.transaction.is_some() {
             "手动提交"
         } else {
@@ -46,6 +60,7 @@ impl QueryTab {
         };
         let service = self.service.clone();
         self.transaction_busy = true;
+        self.transaction_error = None;
         self.transaction_seq = self.transaction_seq.wrapping_add(1);
         let request_seq = self.transaction_seq;
         self.sync_transaction_to_result(cx);
@@ -76,9 +91,10 @@ impl QueryTab {
                         );
                     }
                     Err(error) => {
-                        this.pending_notification = Some(
-                            Notification::error(error.write_hint("开启事务失败")).autohide(true),
-                        );
+                        let message = error.write_hint("开启事务失败");
+                        this.transaction_error = Some(message.clone());
+                        this.pending_notification =
+                            Some(Notification::error(message).autohide(true));
                     }
                 }
                 this.sync_transaction_to_result(cx);
@@ -138,14 +154,24 @@ impl QueryTab {
                 this.transaction = None;
                 this.sync_transaction_to_result(cx);
                 this.pending_notification = Some(match outcome {
-                    Ok(()) if commit => Notification::success("事务已提交").autohide(true),
-                    Ok(()) => Notification::success("事务已回滚").autohide(true),
-                    Err(error) if commit => {
-                        Notification::error(error.write_hint("提交事务失败，事务已结束"))
-                            .autohide(false)
+                    Ok(()) if commit => {
+                        this.transaction_error = None;
+                        Notification::success("事务已提交").autohide(true)
                     }
-                    Err(error) => Notification::error(error.write_hint("回滚事务失败，事务已结束"))
-                        .autohide(false),
+                    Ok(()) => {
+                        this.transaction_error = None;
+                        Notification::success("事务已回滚").autohide(true)
+                    }
+                    Err(error) if commit => {
+                        let message = error.write_hint("提交事务失败，事务已结束");
+                        this.transaction_error = Some(message.clone());
+                        Notification::error(message).autohide(false)
+                    }
+                    Err(error) => {
+                        let message = error.write_hint("回滚事务失败，事务已结束");
+                        this.transaction_error = Some(message.clone());
+                        Notification::error(message).autohide(false)
+                    }
                 });
                 cx.notify();
             });
@@ -158,6 +184,7 @@ impl QueryTab {
         let was_busy = self.transaction_busy;
         let session = self.transaction.take();
         self.transaction_busy = false;
+        self.transaction_error = None;
         self.transaction_seq = self.transaction_seq.wrapping_add(1);
         self.sync_transaction_to_result(cx);
         // A commit/rollback request already owns the driver slot; invalidating the

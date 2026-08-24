@@ -144,10 +144,15 @@ impl ResultPanel {
                     } else {
                         "；当前结果已变化"
                     };
-                    Notification::error(e.write_hint(&format!(
+                    let message = e.write_hint(&format!(
                         "已影响 {affected_rows} 行、{not_matched} 行未匹配后出错{stale_note}"
-                    )))
-                    .autohide(true)
+                    ));
+                    cx.emit(
+                        crate::views::result_panel::ResultPanelEvent::MutationFailed(
+                            message.clone(),
+                        ),
+                    );
+                    Notification::error(message).autohide(true)
                 } else {
                     let notice = batch_delete_notice(
                         deleted.len(),
@@ -278,8 +283,14 @@ impl ResultPanel {
                             error = %e,
                             "insert row failed"
                         );
+                        let message = e.write_hint("新增失败");
+                        cx.emit(
+                            crate::views::result_panel::ResultPanelEvent::MutationFailed(
+                                message.clone(),
+                            ),
+                        );
                         this.pending_notification =
-                            Some(Notification::error(e.write_hint("新增失败")).autohide(true));
+                            Some(Notification::error(message).autohide(true));
                     }
                 }
                 cx.notify();

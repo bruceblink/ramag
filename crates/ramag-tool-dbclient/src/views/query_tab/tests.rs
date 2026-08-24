@@ -181,3 +181,33 @@ fn plan_result_tabs_render_without_replacing_data_panel(cx: &mut TestAppContext)
         ));
     });
 }
+
+/// A failed transaction operation must have a distinct status from normal auto-commit mode.
+#[gpui::test]
+fn transaction_failure_status_is_explicit(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let service = Arc::new(ConnectionService::new(
+        HashMap::new(),
+        Arc::new(NoopStorage),
+    ));
+    let schema_cache = SchemaCache::new_shared();
+    let (tab, cx) = cx.add_window_view(|window, cx| {
+        QueryTab::new(
+            service,
+            "查询 1",
+            None,
+            schema_cache,
+            ramag_ui::ResultMemoryBudget::default(),
+            window,
+            cx,
+        )
+    });
+
+    tab.update(cx, |tab, _cx| {
+        assert_eq!(tab.transaction_label(), "自动提交");
+        tab.transaction_error = Some("事务语句失败".into());
+        assert_eq!(tab.transaction_label(), "事务异常");
+        tab.transaction_busy = true;
+        assert_eq!(tab.transaction_label(), "事务处理中");
+    });
+}

@@ -39,6 +39,7 @@ impl Render for QueryTab {
         let transaction_active = self.transaction.is_some();
         let transaction_dirty = self.transaction_is_dirty();
         let transaction_label = self.transaction_label();
+        let transaction_error = self.transaction_error.is_some();
         let result_entity = self.active_result();
         let plan_visible = self.show_plan;
         let plan_available = !self.plan_result_is_empty(cx);
@@ -102,8 +103,16 @@ impl Render for QueryTab {
                     div()
                         .flex_none()
                         .text_xs()
-                        .text_color(if transaction_dirty { warning } else { muted_fg })
-                        .child(if transaction_dirty {
+                        .text_color(if transaction_error {
+                            danger
+                        } else if transaction_dirty {
+                            warning
+                        } else {
+                            muted_fg
+                        })
+                        .child(if transaction_error {
+                            "请回滚或重试"
+                        } else if transaction_dirty {
                             "未提交"
                         } else {
                             "已开启"
@@ -111,24 +120,38 @@ impl Render for QueryTab {
                 )
                 .into_any_element()
         } else {
-            ramag_ui::clickable_button("transaction-begin")
-                .ghost()
-                .small()
-                .icon(IconName::Play)
-                .label("开始事务")
-                .tooltip("开启手动提交事务")
-                .disabled(
-                    !has_connection
-                        || self
-                            .connection
-                            .as_ref()
-                            .is_some_and(|connection| !connection.driver.supports_transactions())
-                        || self.transaction_busy
-                        || running,
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .child(
+                    ramag_ui::clickable_button("transaction-begin")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Play)
+                        .label("开始事务")
+                        .tooltip("开启手动提交事务")
+                        .disabled(
+                            !has_connection
+                                || self.connection.as_ref().is_some_and(|connection| {
+                                    !connection.driver.supports_transactions()
+                                })
+                                || self.transaction_busy
+                                || running,
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.begin_transaction(cx);
+                        })),
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.begin_transaction(cx);
-                }))
+                .when(transaction_error, |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(danger)
+                            .child("事务已结束，请重新开启"),
+                    )
+                })
                 .into_any_element()
         };
 

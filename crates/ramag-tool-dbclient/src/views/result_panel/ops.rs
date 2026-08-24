@@ -316,8 +316,10 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
+                        let message = e.write_hint("删除失败");
+                        cx.emit(super::ResultPanelEvent::MutationFailed(message.clone()));
                         this.pending_notification =
-                            Some(Notification::error(e.write_hint("删除失败")).autohide(true));
+                            Some(Notification::error(message).autohide(true));
                     }
                 }
                 cx.notify();
@@ -485,8 +487,10 @@ impl ResultPanel {
                         }
                     }
                     Err(e) => {
+                        let message = e.write_hint("更新失败");
+                        cx.emit(super::ResultPanelEvent::MutationFailed(message.clone()));
                         this.pending_notification =
-                            Some(Notification::error(e.write_hint("更新失败")).autohide(true));
+                            Some(Notification::error(message).autohide(true));
                     }
                 }
                 cx.notify();
