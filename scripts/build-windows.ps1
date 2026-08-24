@@ -150,8 +150,57 @@ if ($Release) {
     $CargoArgs += "--release"
 }
 
-& cargo @CargoArgs
-if ($LASTEXITCODE -ne 0) {
+$TargetEnvSuffix = $Target.Replace("-", "_")
+$CompilerEnvironmentNames = @(
+    "CC",
+    "CXX",
+    "AR",
+    "HOST_CC",
+    "HOST_CXX",
+    "HOST_AR",
+    "CC_$Target",
+    "CC_$TargetEnvSuffix",
+    "CXX_$Target",
+    "CXX_$TargetEnvSuffix",
+    "AR_$Target",
+    "AR_$TargetEnvSuffix",
+    "CFLAGS",
+    "CXXFLAGS",
+    "ARFLAGS",
+    "CFLAGS_$Target",
+    "CFLAGS_$TargetEnvSuffix",
+    "CXXFLAGS_$Target",
+    "CXXFLAGS_$TargetEnvSuffix",
+    "ARFLAGS_$Target",
+    "ARFLAGS_$TargetEnvSuffix"
+)
+$SavedCompilerEnvironment = @{}
+foreach ($Name in $CompilerEnvironmentNames) {
+    $Variable = Get-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+    if ($null -ne $Variable) {
+        $SavedCompilerEnvironment[$Name] = $Variable.Value
+    }
+    Remove-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+}
+
+try {
+    # tree-sitter and other C build scripts must use the MSVC ABI for this target;
+    # inherited GNU compiler variables would produce MinGW objects for link.exe.
+    & cargo @CargoArgs
+    $CargoExitCode = $LASTEXITCODE
+}
+finally {
+    foreach ($Name in $CompilerEnvironmentNames) {
+        if ($SavedCompilerEnvironment.ContainsKey($Name)) {
+            Set-Item -Path "Env:$Name" -Value $SavedCompilerEnvironment[$Name]
+        }
+        else {
+            Remove-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+if ($CargoExitCode -ne 0) {
     throw "Windows $BuildProfile build failed. Install Visual Studio C++ Build Tools and the Windows 10/11 SDK, then retry."
 }
 
