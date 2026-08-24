@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::views::table_designer::diff::{format_field_diff, render_field_diff_lines};
+
 impl Render for TableDesigner {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -152,6 +154,11 @@ impl Render for TableDesigner {
         } else {
             self.preview_sql.clone()
         };
+        let preview_diff = if discard_confirming {
+            None
+        } else {
+            self.preview_diff.clone()
+        };
         v_flex()
             .w_full()
             .gap_3()
@@ -294,7 +301,39 @@ impl Render for TableDesigner {
             })
             .when_some(preview_sql, |designer, sql| {
                 let mono = theme.mono_font_family.clone();
+                let sql_for_copy = sql.clone();
                 let highlighted_sql = highlight_sql(sql, &theme.highlight_theme);
+                let diff = preview_diff.clone().unwrap_or_default();
+                let diff_for_copy = format_field_diff(&diff);
+                let diff_header = h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("字段结构差异"),
+                    )
+                    .child(
+                        ramag_ui::clickable_button("table-designer-copy-diff")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Copy)
+                            .tooltip("复制字段差异")
+                            .on_click(move |_: &ClickEvent, window, app| {
+                                ramag_ui::copy_text_with_notification(
+                                    diff_for_copy.clone(),
+                                    window,
+                                    app,
+                                );
+                            }),
+                    );
+                let diff_body = v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(diff_header)
+                    .child(render_field_diff_lines(&diff, theme));
                 designer.child(
                     v_flex()
                         .w_full()
@@ -318,10 +357,22 @@ impl Render for TableDesigner {
                                                 .child("SQL 预览"),
                                         )
                                         .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(muted_fg)
-                                                .child("确认后执行"),
+                                            h_flex().items_center().gap_2().child(
+                                                ramag_ui::clickable_button(
+                                                    "table-designer-copy-sql",
+                                                )
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Copy)
+                                                .tooltip("复制 SQL")
+                                                .on_click(move |_: &ClickEvent, window, app| {
+                                                    ramag_ui::copy_text_with_notification(
+                                                        sql_for_copy.clone(),
+                                                        window,
+                                                        app,
+                                                    );
+                                                }),
+                                            ),
                                         ),
                                 )
                                 .child(
@@ -341,7 +392,13 @@ impl Render for TableDesigner {
                                         .line_height(px(SQL_PREVIEW_LINE_HEIGHT))
                                         .font_family(mono)
                                         .whitespace_normal()
-                                        .child(highlighted_sql),
+                                        .child(
+                                            v_flex()
+                                                .w_full()
+                                                .gap_3()
+                                                .child(highlighted_sql)
+                                                .child(diff_body),
+                                        ),
                                 )
                                 .child(
                                     h_flex()
