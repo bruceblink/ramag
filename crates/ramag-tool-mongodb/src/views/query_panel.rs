@@ -109,6 +109,7 @@ impl MongoQueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_pending_queries(cx);
         if let Some(c) = &conn
             && let Some(db) = c.database.clone().filter(|s| !s.is_empty())
         {
@@ -122,6 +123,15 @@ impl MongoQueryPanel {
         self.active = 0;
         self.load_persisted_drafts(window, cx);
         cx.notify();
+    }
+
+    /// Stops every MongoDB tab before its connection session is discarded.
+    /// MongoDB has no reliable server-side kill handle here, so the tab generation
+    /// guard prevents late client responses from reaching a replacement context.
+    pub(crate) fn cancel_pending_queries(&mut self, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| tab.cancel_if_running(cx));
+        }
     }
 
     pub fn set_database(&mut self, db: String, cx: &mut Context<Self>) {

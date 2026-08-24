@@ -72,6 +72,19 @@ impl SessionEntity {
             SessionEntity::Redis(_) => {}
         }
     }
+
+    /// Invalidates in-flight work before a session is discarded or marked stale.
+    pub(super) fn cancel_pending_queries(&self, cx: &mut App) {
+        match self {
+            SessionEntity::Sql(entity) => {
+                entity.update(cx, |session, cx| session.cancel_pending_queries(cx))
+            }
+            SessionEntity::Mongo(entity) => {
+                entity.update(cx, |session, cx| session.cancel_pending_queries(cx))
+            }
+            SessionEntity::Redis(_) => {}
+        }
+    }
 }
 
 pub(super) struct SessionSlot {
@@ -236,13 +249,15 @@ impl DbClientView {
             ListEvent::ConnectionsChanged(configs) => {
                 let mut any_stale = false;
                 for config in configs {
+                    // 先让旧实体读取旧连接配置并发出取消，再清理连接池；否则配置更新后
+                    // 取消请求可能只拿到新主机的连接，无法终止旧主机上的查询。
+                    any_stale |= self.mark_sessions_stale(config, cx);
                     evict_connection_resources(
                         &self.service,
                         &self.redis_service,
                         &self.mongo_service,
                         &config.id,
                     );
-                    any_stale |= self.mark_sessions_stale(config);
                 }
                 if any_stale {
                     self.pending_notification = Some(
@@ -386,6 +401,9 @@ impl DbClientView {
             config,
             stale: _,
         } = self.sessions.remove(idx);
+        if let Some(entity) = &entity {
+            entity.cancel_pending_queries(cx);
+        }
         drop(entity);
         self.picker
             .update(cx, |picker, _| picker.cancel_version_prefetch(&config.id));

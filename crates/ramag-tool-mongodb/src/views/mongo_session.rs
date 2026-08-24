@@ -163,6 +163,12 @@ impl MongoSessionPanel {
             .update(cx, |queries, cx| queries.set_session_active(active, cx));
     }
 
+    /// Invalidates pending MongoDB requests before the session entity is replaced or dropped.
+    pub fn cancel_pending_queries(&self, cx: &mut Context<Self>) {
+        self.queries
+            .update(cx, |queries, cx| queries.cancel_pending_queries(cx));
+    }
+
     /// Tab 激活时聚焦查询面板，让 cmd-e（ToggleMongoEditor）的 handler 立即在焦点链上
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.queries.update(cx, |q, cx| q.focus(window, cx));

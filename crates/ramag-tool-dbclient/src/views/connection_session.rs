@@ -267,6 +267,12 @@ impl ConnectionSession {
             .update(cx, |queries, cx| queries.set_session_active(active, cx));
     }
 
+    /// Invalidates pending SQL requests before the session entity is replaced or dropped.
+    pub(crate) fn cancel_pending_queries(&self, cx: &mut Context<Self>) {
+        self.queries
+            .update(cx, |queries, cx| queries.cancel_pending_queries(cx));
+    }
+
     /// 激活标签时把焦点放回当前可交互区域。
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.queries.read(cx).is_editor_visible() {

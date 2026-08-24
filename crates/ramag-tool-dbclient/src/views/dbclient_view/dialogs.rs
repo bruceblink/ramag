@@ -160,17 +160,18 @@ impl DbClientView {
                 });
                 // 失效 driver 内的连接池缓存：池按 ConnectionId 索引，旧 config 建的池
                 // 还指向旧 host/db，必须丢弃，下次访问按新 config 重建
+                // 编辑场景：旧标签的实体仍持旧配置（host / 库 / production 只读态都可能已变），
+                // 继续使用存在按旧配置读写的风险。立即丢弃旧实体（终止其后台元数据刷新与
+                // 在途等待，与关标签同语义）并置 stale，中央区显示"重新连接"面板；
+                // 手写草稿按连接 id 持久化，重连后自动恢复，不会丢失
+                let any_stale = self.mark_sessions_stale(conn, cx);
+                // 旧实体已经发出取消后再清理连接池，避免取消请求落到新配置的主机。
                 evict_connection_resources(
                     &self.service,
                     &self.redis_service,
                     &self.mongo_service,
                     &conn.id,
                 );
-                // 编辑场景：旧标签的实体仍持旧配置（host / 库 / production 只读态都可能已变），
-                // 继续使用存在按旧配置读写的风险。立即丢弃旧实体（终止其后台元数据刷新与
-                // 在途等待，与关标签同语义）并置 stale，中央区显示"重新连接"面板；
-                // 手写草稿按连接 id 持久化，重连后自动恢复，不会丢失
-                let any_stale = self.mark_sessions_stale(conn);
                 if any_stale {
                     self.pending_notification = Some(
                         gpui_component::notification::Notification::info(
@@ -189,9 +190,16 @@ impl DbClientView {
 
     /// 保存连接后同步新配置到同 id 的打开槽位：有实体的丢弃实体并置 stale（暂停使用），
     /// 惰性占位只更新配置（下次激活自然按新配置连）。返回是否有槽位被置 stale
-    pub(super) fn mark_sessions_stale(&mut self, conn: &ConnectionConfig) -> bool {
+    pub(super) fn mark_sessions_stale(
+        &mut self,
+        conn: &ConnectionConfig,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let mut any_stale = false;
         for slot in self.sessions.iter_mut().filter(|s| s.config.id == conn.id) {
+            if let Some(entity) = slot.entity.as_ref() {
+                entity.cancel_pending_queries(cx);
+            }
             slot.config = conn.clone();
             if slot.entity.take().is_some() || slot.stale {
                 slot.stale = true;

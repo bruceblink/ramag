@@ -130,6 +130,15 @@ impl QueryPanel {
         cx.notify();
     }
 
+    /// Invalidates every SQL tab before its owning connection session is discarded.
+    /// Each tab keeps its draft text, but running requests lose their generation and
+    /// best-effort server cancellation is issued by the tab itself.
+    pub(crate) fn cancel_pending_queries(&mut self, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| tab.invalidate_query_context(cx));
+        }
+    }
+
     pub fn set_active_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
         let normalized = schema.filter(|s| !s.is_empty());
         if self.active_schema == normalized {
