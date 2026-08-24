@@ -91,6 +91,77 @@ async fn list_tables_for_public() {
     // 不强制有表，只验证调用成功
 }
 
+/// 验证结构对比依赖的列、索引和外键元数据能从真实 PostgreSQL 读取。
+#[tokio::test(flavor = "multi_thread")]
+async fn list_schema_metadata_for_comparison_tables() {
+    let config = require_env!();
+    let driver = PostgresDriver::new();
+    let schema = "public";
+    let suffix = std::process::id();
+    let source = format!("ramag_metadata_source_{suffix}");
+    let target = format!("ramag_metadata_target_{suffix}");
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "DROP TABLE IF EXISTS \"{target}\"; DROP TABLE IF EXISTS \"{source}\"; \
+                 CREATE TABLE \"{source}\" (id integer NOT NULL PRIMARY KEY, name varchar(64) NOT NULL); \
+                 CREATE INDEX \"idx_metadata_source_name\" ON \"{source}\" (name)"
+            )),
+        )
+        .await
+        .expect("创建 PostgreSQL 元数据源表失败");
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "CREATE TABLE \"{target}\" (id integer NOT NULL PRIMARY KEY, name varchar(128) NOT NULL, email varchar(128)); \
+                 CREATE INDEX \"idx_metadata_target_email\" ON \"{target}\" (email); \
+                 ALTER TABLE \"{target}\" ADD CONSTRAINT \"fk_metadata_target_source\" \
+                 FOREIGN KEY (id) REFERENCES \"{source}\" (id)"
+            )),
+        )
+        .await
+        .expect("创建 PostgreSQL 元数据目标表失败");
+
+    let source_columns = driver
+        .list_columns(&config, schema, &source)
+        .await
+        .expect("读取 PostgreSQL 源表列失败");
+    let target_indexes = driver
+        .list_indexes(&config, schema, &target)
+        .await
+        .expect("读取 PostgreSQL 目标表索引失败");
+    let target_foreign_keys = driver
+        .list_foreign_keys(&config, schema, &target)
+        .await
+        .expect("读取 PostgreSQL 目标表外键失败");
+
+    assert!(source_columns.iter().any(|column| column.name == "name"));
+    assert!(
+        target_indexes
+            .iter()
+            .any(|index| index.name == "idx_metadata_target_email")
+    );
+    assert!(target_foreign_keys.iter().any(|foreign_key| {
+        foreign_key.name == "fk_metadata_target_source"
+            && foreign_key.ref_table == source
+            && foreign_key.columns == ["id"]
+            && foreign_key.ref_columns == ["id"]
+    }));
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "DROP TABLE IF EXISTS \"{target}\"; DROP TABLE IF EXISTS \"{source}\";"
+            )),
+        )
+        .await
+        .expect("清理 PostgreSQL 元数据测试表失败");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_select_one() {
     let config = require_env!();

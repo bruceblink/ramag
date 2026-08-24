@@ -1,3 +1,4 @@
+mod compare;
 mod ddl;
 mod load;
 mod menus;

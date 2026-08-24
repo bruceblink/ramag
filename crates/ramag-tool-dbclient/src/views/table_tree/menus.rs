@@ -31,11 +31,25 @@ pub(super) fn table_context_menu(
         }));
         let (modify_schema, modify_table, modify_entity) =
             (schema.clone(), table.clone(), entity.clone());
-        menu.item(ramag_ui::menu_item("修改表").on_click(move |_, _, app| {
+        let menu = menu.item(ramag_ui::menu_item("修改表").on_click(move |_, _, app| {
             modify_entity.update(app, |this, cx| {
                 this.handle_modify_table(modify_schema.clone(), modify_table.clone(), cx)
             });
-        }))
+        }));
+        let (compare_schema, compare_table, compare_entity) =
+            (schema.clone(), table.clone(), entity.clone());
+        menu.item(
+            ramag_ui::menu_item("比较表结构").on_click(move |_, window, app| {
+                compare_entity.update(app, |this, cx| {
+                    this.prompt_compare_table(
+                        compare_schema.clone(),
+                        compare_table.clone(),
+                        window,
+                        cx,
+                    )
+                });
+            }),
+        )
     }
     .separator();
 

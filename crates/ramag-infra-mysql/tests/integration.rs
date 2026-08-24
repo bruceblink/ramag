@@ -104,6 +104,79 @@ async fn list_columns_for_first_table() {
     }
 }
 
+/// 验证结构对比依赖的列、索引和外键元数据能从真实 MySQL 读取。
+#[tokio::test(flavor = "multi_thread")]
+async fn list_schema_metadata_for_comparison_tables() {
+    let config = require_env!();
+    let driver = MysqlDriver::new();
+    let schema = config
+        .database
+        .clone()
+        .unwrap_or_else(|| "midas_storage".into());
+    let suffix = std::process::id();
+    let source = format!("ramag_metadata_source_{suffix}");
+    let target = format!("ramag_metadata_target_{suffix}");
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "DROP TABLE IF EXISTS `{target}`; DROP TABLE IF EXISTS `{source}`; \
+                 CREATE TABLE `{source}` (id INT NOT NULL PRIMARY KEY, name VARCHAR(64) NOT NULL, \
+                 INDEX idx_metadata_source_name (name))"
+            )),
+        )
+        .await
+        .expect("创建 MySQL 元数据源表失败");
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "CREATE TABLE `{target}` (id INT NOT NULL PRIMARY KEY, name VARCHAR(128) NOT NULL, \
+                 email VARCHAR(128), INDEX idx_metadata_target_email (email), \
+                 CONSTRAINT fk_metadata_target_source FOREIGN KEY (id) REFERENCES `{source}` (id))"
+            )),
+        )
+        .await
+        .expect("创建 MySQL 元数据目标表失败");
+
+    let source_columns = driver
+        .list_columns(&config, &schema, &source)
+        .await
+        .expect("读取 MySQL 源表列失败");
+    let target_indexes = driver
+        .list_indexes(&config, &schema, &target)
+        .await
+        .expect("读取 MySQL 目标表索引失败");
+    let target_foreign_keys = driver
+        .list_foreign_keys(&config, &schema, &target)
+        .await
+        .expect("读取 MySQL 目标表外键失败");
+
+    assert!(source_columns.iter().any(|column| column.name == "name"));
+    assert!(
+        target_indexes
+            .iter()
+            .any(|index| index.name == "idx_metadata_target_email")
+    );
+    assert!(target_foreign_keys.iter().any(|foreign_key| {
+        foreign_key.name == "fk_metadata_target_source"
+            && foreign_key.ref_table == source
+            && foreign_key.columns == ["id"]
+            && foreign_key.ref_columns == ["id"]
+    }));
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "DROP TABLE IF EXISTS `{target}`; DROP TABLE IF EXISTS `{source}`;"
+            )),
+        )
+        .await
+        .expect("清理 MySQL 元数据测试表失败");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_select_one() {
     let config = require_env!();
