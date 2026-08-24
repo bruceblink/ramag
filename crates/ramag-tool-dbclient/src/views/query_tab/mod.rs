@@ -357,13 +357,13 @@ impl QueryTab {
         } else {
             self.transaction_error = None;
         }
+        self.clear_pager(cx);
+        self.invalidate_query_context(cx);
         self.active_schema = conn
             .as_ref()
             .and_then(|c| c.database.clone())
             .filter(|s| !s.is_empty());
         self.connection = conn.clone();
-        self.clear_pager(cx);
-        self.invalidate_query_context(cx);
         let svc = self.service.clone();
         self.result.update(cx, |r, _| {
             r.set_executor(Some(svc), conn);
@@ -461,6 +461,7 @@ impl QueryTab {
     /// Completed results remain visible, while a running placeholder is cleared so the tab
     /// cannot stay blocked by a request that no longer belongs to the current SQL context.
     pub(super) fn invalidate_query_context(&mut self, cx: &mut Context<Self>) {
+        self.cancel_inflight_query(cx);
         self.run_seq = self.run_seq.wrapping_add(1);
         self.count_seq = self.count_seq.wrapping_add(1);
         self.show_plan = false;
@@ -483,6 +484,47 @@ impl QueryTab {
             }
         });
         cx.notify();
+    }
+
+    /// Requests server-side cancellation before dropping an invalidated SQL request.
+    /// The UI still relies on `run_seq` to reject any late response, while this best-effort
+    /// request prevents a query from continuing after its console context was replaced.
+    fn cancel_inflight_query(&mut self, cx: &mut Context<Self>) {
+        if !self.running {
+            return;
+        }
+        let _ = self.current_task.take();
+        let Some(cancel_handle) = self.cancel_handle.take() else {
+            return;
+        };
+        let thread_id = cancel_handle.load(std::sync::atomic::Ordering::SeqCst);
+        let Some(conn) = self.connection.clone() else {
+            return;
+        };
+        if thread_id == 0 {
+            return;
+        }
+        let service = self.service.clone();
+        cx.background_spawn(async move {
+            match service.cancel_query(&conn, thread_id).await {
+                Ok(()) => tracing::info!(
+                    operation = "sql_query_context_cancel",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    thread_id,
+                    "invalidated query cancellation confirmed"
+                ),
+                Err(error) => tracing::warn!(
+                    operation = "sql_query_context_cancel",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    thread_id,
+                    error = %error,
+                    "invalidated query cancellation failed"
+                ),
+            }
+        })
+        .detach();
     }
 
     pub fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {

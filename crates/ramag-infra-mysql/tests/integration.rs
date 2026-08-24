@@ -2,6 +2,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use ramag_domain::entities::{ConnectionConfig, Query, Value};
 use ramag_domain::traits::Driver;
 use ramag_infra_mysql::MysqlDriver;
@@ -209,6 +213,71 @@ async fn explain_select_returns_plan_rows() {
 
     assert!(!result.columns.is_empty(), "EXPLAIN 应返回计划列");
     assert!(!result.rows.is_empty(), "EXPLAIN 应返回至少一行计划");
+}
+
+/// Verifies that a backend ID exposed by a cancellable query can stop that query.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancellable_query_can_be_stopped_by_backend_id() {
+    let config = require_env!();
+    let driver = MysqlDriver::new();
+    let handle = Arc::new(AtomicU64::new(0));
+    let query_handle = handle.clone();
+    let worker_driver = driver.clone();
+    let worker_config = config.clone();
+    let mut task = tokio::spawn(async move {
+        worker_driver
+            .execute_cancellable(
+                &worker_config,
+                &Query::new("SELECT SLEEP(30)"),
+                query_handle,
+            )
+            .await
+    });
+
+    let backend_id = match tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let id = handle.load(Ordering::SeqCst);
+            if id != 0 {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    {
+        Ok(id) => id,
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            panic!("MySQL 查询未及时暴露后端线程 ID");
+        }
+    };
+
+    let cancel_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        driver.cancel_query(&config, backend_id),
+    )
+    .await;
+    assert!(
+        cancel_result.is_ok(),
+        "MySQL 后端取消请求超时：{backend_id}"
+    );
+    cancel_result
+        .expect("MySQL 后端取消请求超时")
+        .expect("MySQL 后端取消请求失败");
+
+    let execution = tokio::time::timeout(Duration::from_secs(10), &mut task)
+        .await
+        .expect("MySQL 查询取消后仍未结束")
+        .expect("MySQL 查询任务异常退出");
+    // MySQL may return a scalar interruption marker instead of an error for SLEEP().
+    // Completion within the bounded timeout proves that KILL QUERY stopped the work.
+    let result = execution.expect("MySQL 被取消的查询应返回可识别的结果");
+    assert!(
+        result.elapsed_ms < 10_000,
+        "MySQL 查询没有在取消后及时结束：{}ms",
+        result.elapsed_ms
+    );
 }
 
 /// 验证手动事务中的写入可在同一会话内读取，并分别支持回滚和提交。
