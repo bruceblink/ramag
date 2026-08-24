@@ -18,6 +18,11 @@ use gpui_component::{
 use ramag_app::ConnectionService;
 use ramag_domain::entities::ConnectionConfig;
 
+mod load;
+mod relations;
+
+use load::load_diagram;
+
 const MAX_DIAGRAM_TABLES: usize = 128;
 const MAX_DIAGRAM_COLUMNS: usize = 64;
 const MAX_DIAGRAM_RELATIONS_PER_TABLE: usize = 64;
@@ -378,99 +383,6 @@ impl SchemaDiagramPanel {
 
         card
     }
-
-    /// Renders the relation list below the grid so edges remain readable without a canvas.
-    fn render_relation_summary(
-        &self,
-        relations: &[DiagramRelation],
-        visible_table_names: &HashSet<&str>,
-        theme: &Theme,
-    ) -> impl IntoElement {
-        let muted_fg = theme.muted_foreground;
-        let border = theme.border;
-        let fg = theme.foreground;
-        let visible_relations: Vec<&DiagramRelation> = relations
-            .iter()
-            .filter(|relation| visible_table_names.contains(relation.source_table.as_str()))
-            .collect();
-        let mut section = v_flex()
-            .w_full()
-            .mt(px(16.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .px_2()
-                    .py(px(6.0))
-                    .bg(theme.secondary)
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(fg)
-                            .child(format!("关系 ({})", visible_relations.len())),
-                    ),
-            );
-        for relation in visible_relations.iter().take(64) {
-            section = section.child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py(px(4.0))
-                    .child(
-                        div()
-                            .w(px(190.0))
-                            .flex_none()
-                            .text_xs()
-                            .text_color(fg)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(format!("{}.{}", relation.source_table, relation.name)),
-                    )
-                    .child(
-                        Icon::new(IconName::ArrowRight)
-                            .xsmall()
-                            .text_color(muted_fg),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(muted_fg)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(format!(
-                                "{}.{} ({}) → ({})",
-                                relation.ref_schema,
-                                relation.ref_table,
-                                relation.columns.join(", "),
-                                relation.ref_columns.join(", ")
-                            )),
-                    ),
-            );
-        }
-        if visible_relations.len() > 64 {
-            section = section.child(
-                div()
-                    .px_2()
-                    .py(px(4.0))
-                    .text_xs()
-                    .text_color(muted_fg)
-                    .child(format!("… 还有 {} 个关系", visible_relations.len() - 64)),
-            );
-        }
-        section
-    }
 }
 
 impl Render for SchemaDiagramPanel {
@@ -650,112 +562,5 @@ impl Render for SchemaDiagramPanel {
             .min_h_0()
             .child(toolbar)
             .child(content)
-    }
-}
-
-/// Loads bounded table metadata concurrently and returns nodes plus metadata-backed edges.
-async fn load_diagram(
-    service: Arc<ConnectionService>,
-    connection: ConnectionConfig,
-    schema: String,
-) -> Result<LoadedDiagram, String> {
-    let tables = service
-        .list_tables(&connection, &schema)
-        .await
-        .map_err(|error| error.to_string())?;
-    let omitted_tables = tables.len().saturating_sub(MAX_DIAGRAM_TABLES);
-    let tables = tables.into_iter().take(MAX_DIAGRAM_TABLES);
-    let futures = tables.map(|table| {
-        let service = service.clone();
-        let connection = connection.clone();
-        let schema = schema.clone();
-        async move {
-            let table_name = table.name.clone();
-            let (columns_result, foreign_keys_result) = futures::join!(
-                service.list_columns(&connection, &schema, &table_name),
-                service.list_foreign_keys(&connection, &schema, &table_name)
-            );
-            let mut metadata_errors = Vec::new();
-            let columns = match columns_result {
-                Ok(columns) => columns,
-                Err(error) => {
-                    metadata_errors.push(format!("列：{error}"));
-                    Vec::new()
-                }
-            };
-            let foreign_keys = match foreign_keys_result {
-                Ok(keys) => keys,
-                Err(error) => {
-                    metadata_errors.push(format!("外键：{error}"));
-                    Vec::new()
-                }
-            };
-            let relations: Vec<DiagramRelation> = foreign_keys
-                .into_iter()
-                .take(MAX_DIAGRAM_RELATIONS_PER_TABLE)
-                .map(|foreign_key| DiagramRelation {
-                    source_table: table.name.clone(),
-                    name: foreign_key.name,
-                    columns: foreign_key.columns,
-                    ref_schema: foreign_key.ref_schema,
-                    ref_table: foreign_key.ref_table,
-                    ref_columns: foreign_key.ref_columns,
-                })
-                .collect();
-            let columns = columns
-                .into_iter()
-                .take(MAX_DIAGRAM_COLUMNS)
-                .map(|column| DiagramColumn {
-                    name: column.name,
-                    raw_type: column.data_type.raw_type,
-                    nullable: column.nullable,
-                    primary: column.is_primary_key,
-                })
-                .collect();
-            DiagramTable {
-                name: table.name,
-                is_view: table.is_view,
-                comment: table.comment,
-                columns,
-                relations,
-                metadata_error: (!metadata_errors.is_empty()).then(|| metadata_errors.join("；")),
-            }
-        }
-    });
-    let tables: Vec<DiagramTable> = futures::future::join_all(futures).await;
-    let relations = tables
-        .iter()
-        .flat_map(|table| table.relations.iter().cloned())
-        .collect();
-    Ok(LoadedDiagram {
-        tables,
-        relations,
-        omitted_tables,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CARD_GAP, CARD_WIDTH, GRID_COLUMNS};
-
-    #[test]
-    fn diagram_width_keeps_a_wide_schema_scrollable() {
-        let visible_tables = 9usize;
-        let columns = visible_tables.clamp(1, GRID_COLUMNS);
-        let width =
-            (columns as f32 * CARD_WIDTH + columns.saturating_sub(1) as f32 * CARD_GAP + 24.0)
-                .max(640.0);
-        assert!(width > 640.0);
-        assert_eq!(columns, GRID_COLUMNS);
-    }
-
-    #[test]
-    fn empty_diagram_still_has_a_stable_minimum_canvas() {
-        let columns = 0usize.clamp(1, GRID_COLUMNS);
-        let width =
-            (columns as f32 * CARD_WIDTH + columns.saturating_sub(1) as f32 * CARD_GAP + 24.0)
-                .max(640.0);
-        assert_eq!(columns, 1);
-        assert_eq!(width, 640.0);
     }
 }
