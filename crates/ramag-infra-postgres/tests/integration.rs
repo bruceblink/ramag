@@ -196,6 +196,114 @@ async fn explain_select_returns_plan_rows() {
     assert!(!result.rows.is_empty(), "EXPLAIN 应返回至少一行计划");
 }
 
+/// 验证手动事务中的写入可在同一会话内读取，并分别支持回滚和提交。
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_transaction_commit_and_rollback() {
+    let config = require_env!();
+    let driver = PostgresDriver::new();
+    let table = format!("ramag_transaction_probe_{}", std::process::id());
+    let quoted_table = format!("\"{table}\"");
+    let qualified_table = format!("public.{quoted_table}");
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "DROP TABLE IF EXISTS {qualified_table}; CREATE TABLE {qualified_table} (id integer PRIMARY KEY, value integer NOT NULL)"
+            )),
+        )
+        .await
+        .expect("创建 PostgreSQL 事务测试表失败");
+    let created = driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "SELECT to_regclass('public.{table}') IS NOT NULL AS created_table"
+            )),
+        )
+        .await
+        .expect("检查 PostgreSQL 事务测试表失败");
+    assert!(
+        matches!(created.rows[0].values.first(), Some(Value::Bool(true))),
+        "事务测试表未创建：{:?}",
+        created.rows
+    );
+
+    let rollback_id = driver
+        .begin_transaction(&config)
+        .await
+        .expect("开启 PostgreSQL 回滚事务失败");
+    let inserted = driver
+        .execute_in_transaction(
+            &config,
+            &rollback_id,
+            &Query::new(format!("INSERT INTO {qualified_table} VALUES (1, 10)")),
+        )
+        .await
+        .expect("PostgreSQL 事务内插入失败");
+    assert_eq!(inserted.affected_rows, 1);
+    let inside = driver
+        .execute_in_transaction(
+            &config,
+            &rollback_id,
+            &Query::new(format!("SELECT value FROM {qualified_table} WHERE id = 1")),
+        )
+        .await
+        .expect("PostgreSQL 事务内读取失败");
+    assert!(matches!(
+        inside.rows[0].values.first(),
+        Some(Value::Int(10))
+    ));
+    driver
+        .rollback_transaction(&config, &rollback_id)
+        .await
+        .expect("PostgreSQL 回滚事务失败");
+
+    let committed_id = driver
+        .begin_transaction(&config)
+        .await
+        .expect("开启 PostgreSQL 提交事务失败");
+    driver
+        .execute_in_transaction(
+            &config,
+            &committed_id,
+            &Query::new(format!("INSERT INTO {qualified_table} VALUES (2, 20)")),
+        )
+        .await
+        .expect("PostgreSQL 提交事务内插入失败");
+    driver
+        .commit_transaction(&config, &committed_id)
+        .await
+        .expect("PostgreSQL 提交事务失败");
+
+    let outside = driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "SELECT id, value FROM {qualified_table} ORDER BY id"
+            )),
+        )
+        .await
+        .expect("读取 PostgreSQL 事务最终结果失败");
+    assert_eq!(outside.rows.len(), 1);
+    assert!(matches!(
+        outside.rows[0].values.first(),
+        Some(Value::Int(2))
+    ));
+    assert!(matches!(
+        outside.rows[0].values.get(1),
+        Some(Value::Int(20))
+    ));
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!("DROP TABLE IF EXISTS {qualified_table}")),
+        )
+        .await
+        .expect("清理 PostgreSQL 事务测试表失败");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_select_with_pg_types() {
     let config = require_env!();

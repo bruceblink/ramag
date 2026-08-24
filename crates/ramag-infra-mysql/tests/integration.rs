@@ -211,6 +211,97 @@ async fn explain_select_returns_plan_rows() {
     assert!(!result.rows.is_empty(), "EXPLAIN 应返回至少一行计划");
 }
 
+/// 验证手动事务中的写入可在同一会话内读取，并分别支持回滚和提交。
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_transaction_commit_and_rollback() {
+    let config = require_env!();
+    let driver = MysqlDriver::new();
+    let table = format!("ramag_transaction_probe_{}", std::process::id());
+    let quoted_table = format!("`{table}`");
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "DROP TABLE IF EXISTS {quoted_table}; CREATE TABLE {quoted_table} (id INT PRIMARY KEY, value INT NOT NULL)"
+            )),
+        )
+        .await
+        .expect("创建 MySQL 事务测试表失败");
+
+    let rollback_id = driver
+        .begin_transaction(&config)
+        .await
+        .expect("开启 MySQL 回滚事务失败");
+    let inserted = driver
+        .execute_in_transaction(
+            &config,
+            &rollback_id,
+            &Query::new(format!("INSERT INTO {quoted_table} VALUES (1, 10)")),
+        )
+        .await
+        .expect("MySQL 事务内插入失败");
+    assert_eq!(inserted.affected_rows, 1);
+    let inside = driver
+        .execute_in_transaction(
+            &config,
+            &rollback_id,
+            &Query::new(format!("SELECT value FROM {quoted_table} WHERE id = 1")),
+        )
+        .await
+        .expect("MySQL 事务内读取失败");
+    assert!(matches!(
+        inside.rows[0].values.first(),
+        Some(Value::Int(10))
+    ));
+    driver
+        .rollback_transaction(&config, &rollback_id)
+        .await
+        .expect("MySQL 回滚事务失败");
+
+    let committed_id = driver
+        .begin_transaction(&config)
+        .await
+        .expect("开启 MySQL 提交事务失败");
+    driver
+        .execute_in_transaction(
+            &config,
+            &committed_id,
+            &Query::new(format!("INSERT INTO {quoted_table} VALUES (2, 20)")),
+        )
+        .await
+        .expect("MySQL 提交事务内插入失败");
+    driver
+        .commit_transaction(&config, &committed_id)
+        .await
+        .expect("MySQL 提交事务失败");
+
+    let outside = driver
+        .execute(
+            &config,
+            &Query::new(format!("SELECT id, value FROM {quoted_table} ORDER BY id")),
+        )
+        .await
+        .expect("读取 MySQL 事务最终结果失败");
+    assert_eq!(outside.rows.len(), 1);
+    assert!(matches!(
+        outside.rows[0].values.first(),
+        Some(Value::Int(2))
+    ));
+    assert!(matches!(
+        outside.rows[0].values.get(1),
+        Some(Value::Int(20))
+    ));
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!("DROP TABLE IF EXISTS {quoted_table}")),
+        )
+        .await
+        .expect("清理 MySQL 事务测试表失败");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn execute_write_is_visible_to_an_independent_connection() {
     let config = require_env!();
