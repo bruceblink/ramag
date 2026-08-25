@@ -98,23 +98,31 @@ fn terminal_resource_and_clipboard_policies_are_explicit() {
 #[test]
 fn local_pty_drains_output_and_reports_child_exit() {
     let mut core = TerminalCore::start(TerminalCommand::new(
-        "/bin/echo",
-        vec!["ramag-pty-ok".into()],
+        "/bin/sh",
+        vec![
+            "-c".into(),
+            "printf 'ramag-pty-ok\\n'; IFS= read -r _".into(),
+        ],
     ))
     .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    // PTY exit and the final output are delivered independently; wait for both.
-    while std::time::Instant::now() < deadline {
-        let exited_successfully = core.exit_status().is_some_and(|status| status.success);
-        let output_received = row_text(&core.snapshot(), 0).contains("ramag-pty-ok");
-        if exited_successfully && output_received {
+    // Keep the child alive until its output is observed. Immediate PTY EOF/read ordering differs
+    // across Unix hosts, so an immediately exiting process makes this test flaky.
+    let output_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < output_deadline {
+        if row_text(&core.snapshot(), 0).contains("ramag-pty-ok") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    assert!(core.exit_status().is_some_and(|status| status.success));
     assert!(row_text(&core.snapshot(), 0).contains("ramag-pty-ok"));
+    core.send(b"\n".to_vec()).unwrap();
+    let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while core.exit_status().is_none() && std::time::Instant::now() < exit_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(core.exit_status().is_some_and(|status| status.success));
     core.close();
     assert!(core.is_closed());
 }
