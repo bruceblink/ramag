@@ -21,6 +21,7 @@ impl ResultPanel {
         self.state = state;
         self.pagination = None;
         self.mark_result_changed();
+        self.clear_cell_edit_state();
         self.selected_cell = None;
         self.clear_selected_rows();
         self.sort_by = None;
@@ -46,6 +47,7 @@ impl ResultPanel {
         }
         self.state = state;
         self.mark_result_changed();
+        self.clear_cell_edit_state();
         cx.notify();
     }
 
@@ -94,6 +96,7 @@ impl ResultPanel {
         self.column_completion_source.write().clear();
         self.pagination = None;
         self.mark_result_changed();
+        self.clear_cell_edit_state();
         self.selected_cell = None;
         self.clear_selected_rows();
         self.sort_by = None;
@@ -106,7 +109,7 @@ impl ResultPanel {
     pub(crate) fn clear_released_result_context(&mut self) {
         self.source_sql = None;
         self.pinned_target = None;
-        self.cell_edit_input = None;
+        self.clear_cell_edit_state();
         self.row_identity = None;
     }
 
@@ -205,6 +208,7 @@ impl ResultPanel {
             Some((ci, SortDir::Desc)) if ci == col_idx => None,
             _ => Some((col_idx, SortDir::Asc)),
         };
+        self.clear_cell_edit_state();
         self.selected_cell = None;
         self.invalidate_display_view();
         cx.notify();

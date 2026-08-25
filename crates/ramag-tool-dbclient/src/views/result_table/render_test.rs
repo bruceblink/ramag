@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px};
+use gpui::{AppContext as _, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px};
 use ramag_domain::entities::{QueryResult, Row, Value};
 
 use super::{DisplayViewCache, DisplayViewCacheKey, build_display_view, cached_display_view};
@@ -99,5 +99,65 @@ fn clearing_table_filter_preserves_content_search(cx: &mut TestAppContext) {
     panel.read_with(cx, |panel, cx| {
         assert!(panel.column_filter_entity().read(cx).value().is_empty());
         assert_eq!(panel.row_filter_entity().read(cx).value().as_ref(), "0");
+    });
+}
+
+/// 可写单元格进入行内编辑后应保留源坐标和初始值，并能完整取消。
+#[gpui::test]
+fn inline_cell_edit_keeps_target_and_clears_on_cancel(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let result = Arc::new(QueryResult {
+        columns: vec!["id".into(), "status".into()],
+        column_types: vec!["INT".into(), "TEXT".into()],
+        rows: vec![Row {
+            values: vec![Value::Int(1), Value::Text("pending".into())],
+        }],
+        affected_rows: 0,
+        elapsed_ms: 1,
+        warnings: Vec::new(),
+        truncated: false,
+    });
+    let display_view = build_display_view(&result, None, "", "");
+    let display_view_key = DisplayViewCacheKey {
+        result_identity: Arc::as_ptr(&result) as usize,
+        result_revision: 0,
+        sort_by: None,
+        column_filter: String::new(),
+        row_filter: super::RowFilter::Text(String::new()),
+    };
+    let mut panel_entity = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = ResultPanel::new(window, cx);
+            panel.state = ResultState::Ok(result);
+            panel.display_view_cache = Some(DisplayViewCache {
+                key: display_view_key,
+                view: display_view,
+            });
+            panel
+        });
+        panel_entity = Some(panel.clone());
+        gpui_component::Root::new(panel, window, cx)
+    });
+    let panel = panel_entity.expect("result panel should be initialized");
+    cx.run_until_parked();
+    panel.update_in(cx, |panel, window, cx| {
+        panel.begin_cell_edit(0, 1, "pending".into(), window, cx);
+    });
+
+    panel.read_with(cx, |panel, cx| {
+        assert_eq!(panel.editing_cell, Some((0, 1)));
+        let input = panel
+            .cell_edit_input
+            .as_ref()
+            .expect("inline editor should be allocated");
+        assert_eq!(input.read(cx).value().as_ref(), "pending");
+    });
+
+    panel.update(cx, |panel, cx| panel.cancel_inline_cell_edit(cx));
+    panel.read_with(cx, |panel, _| {
+        assert!(panel.editing_cell.is_none());
+        assert!(panel.cell_edit_input.is_none());
+        assert!(panel.cell_edit_subscription.is_none());
     });
 }

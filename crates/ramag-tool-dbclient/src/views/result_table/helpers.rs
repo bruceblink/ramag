@@ -113,7 +113,7 @@ pub(super) fn detect_numeric_column(
     has_num && all_num
 }
 
-/// 同步打开单元格编辑弹框：必须在 listener 内调（已持 ResultPanel mut ref）
+/// 可写单元格直接切换为行内输入；只读单元格继续用弹框查看完整内容。
 pub(super) fn open_cell_editor(
     panel: &mut ResultPanel,
     ri: usize,
@@ -134,6 +134,10 @@ pub(super) fn open_cell_editor(
     } else {
         panel.cell_edit_block_reason(ri, ci)
     };
+    if read_only_reason.is_none() {
+        panel.begin_cell_edit(ri, ci, initial_text, window, cx);
+        return;
+    }
     let locate_label = panel.identity_label();
     let input = cx.new(|cx_inner| {
         InputState::new(window, cx_inner)

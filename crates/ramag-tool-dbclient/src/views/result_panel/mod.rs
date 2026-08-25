@@ -16,9 +16,9 @@ use parking_lot::RwLock;
 
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, Point, ScrollHandle, ScrollStrategy,
-    UniformListScrollHandle, Window, px,
+    Subscription, UniformListScrollHandle, Window, px,
 };
-use gpui_component::input::InputState;
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
@@ -91,6 +91,8 @@ pub struct ResultPanel {
     pub(super) state: ResultState,
     pub(super) pending_notification: Option<Notification>,
     pub(super) selected_cell: Option<(usize, usize)>,
+    /// 当前正在单元格内编辑的源行和列。
+    pub(super) editing_cell: Option<(usize, usize)>,
     pub(super) selected_rows: BTreeSet<usize>,
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
@@ -119,6 +121,7 @@ pub struct ResultPanel {
     pub(super) row_filter_input: Entity<InputState>,
     row_search: RowSearchState,
     pub(super) cell_edit_input: Option<Entity<InputState>>,
+    pub(super) cell_edit_subscription: Option<Subscription>,
     pub(super) service: Option<Arc<ConnectionService>>,
     pub(super) connection: Option<ConnectionConfig>,
     pub(super) schema_cache: Option<Arc<RwLock<SchemaCache>>>,
@@ -163,6 +166,7 @@ impl ResultPanel {
             state: ResultState::Empty,
             pending_notification: None,
             selected_cell: None,
+            editing_cell: None,
             source_sql: None,
             col_width_overrides: Vec::new(),
             dml_busy: false,
@@ -180,6 +184,7 @@ impl ResultPanel {
             row_filter_input,
             row_search: RowSearchState::default(),
             cell_edit_input: None,
+            cell_edit_subscription: None,
             service: None,
             connection: None,
             schema_cache: None,
@@ -400,8 +405,69 @@ impl ResultPanel {
         cache.read().is_view(schema.as_deref(), &table)
     }
 
+    /// 为可写单元格创建行内输入框；回车提交，失焦取消且不写库。
+    pub(super) fn begin_cell_edit(
+        &mut self,
+        ri: usize,
+        ci: usize,
+        initial_text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_cell_edit_state();
+        let input =
+            cx.new(|cx_inner| InputState::new(window, cx_inner).default_value(initial_text));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, _window, cx| match event {
+                InputEvent::PressEnter { .. } => this.commit_cell_edit(cx),
+                InputEvent::Blur => this.cancel_inline_cell_edit(cx),
+                InputEvent::Change | InputEvent::Focus => {}
+            },
+        );
+        self.editing_cell = Some((ri, ci));
+        self.cell_edit_input = Some(input.clone());
+        self.cell_edit_subscription = Some(subscription);
+        input.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// 取消行内编辑并释放输入框，避免结果刷新后继续持有旧编辑器。
+    pub(super) fn cancel_inline_cell_edit(&mut self, cx: &mut Context<Self>) {
+        if self.editing_cell.is_none() {
+            return;
+        }
+        self.clear_cell_edit_state();
+        cx.notify();
+    }
+
+    /// 读取输入框文本并复用现有 UPDATE 安全链；校验失败时保留输入框供修正。
+    fn commit_cell_edit(&mut self, cx: &mut Context<Self>) {
+        let Some((ri, ci)) = self.editing_cell else {
+            return;
+        };
+        let Some(input) = self.cell_edit_input.clone() else {
+            return;
+        };
+        let new_text = input.read(cx).value().to_string();
+        if self.apply_cell_update_async(ri, ci, new_text, cx) {
+            self.clear_cell_edit_state();
+            cx.notify();
+        }
+    }
+
+    fn clear_cell_edit_state(&mut self) {
+        self.cell_edit_subscription = None;
+        self.cell_edit_input = None;
+        self.editing_cell = None;
+    }
+
     pub(super) fn set_cell_edit_input(&mut self, input: Option<Entity<InputState>>) {
-        self.cell_edit_input = input;
+        match input {
+            Some(input) => self.cell_edit_input = Some(input),
+            None => self.clear_cell_edit_state(),
+        }
     }
 
     pub(super) fn cell_info(&self, ri: usize, ci: usize) -> Option<(String, String, bool)> {
