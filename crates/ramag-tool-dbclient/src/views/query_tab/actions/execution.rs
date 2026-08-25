@@ -262,10 +262,15 @@ impl QueryTab {
         let request_seq = self.run_seq;
         self.query_start = Some(Instant::now());
         let plan_request_seq = plan_seq;
+        let preserved_sort =
+            (!is_run && page_request.is_some()).then(|| result_handle.read(cx).sort_by());
         // 只读拦截时恢复原结果，避免一直显示执行中。
         let prev_state = result_handle.read(cx).state().clone();
         result_handle.update(cx, |r, cx| {
             r.set_state(ResultState::Running, cx);
+            if let Some(sort_by) = preserved_sort.flatten() {
+                r.restore_sort(Some(sort_by), cx);
+            }
         });
         cx.notify();
 
@@ -394,6 +399,9 @@ impl QueryTab {
                             r.set_pinned_target(target_for_result);
                             r.set_state(ResultState::Ok(Arc::new(qr)), cx);
                             r.set_pagination(pagination, cx);
+                            if let Some(sort_by) = preserved_sort.flatten() {
+                                r.restore_sort(Some(sort_by), cx);
+                            }
                         });
                         // 就绪前禁用行写操作，绝不按列名猜定位键。
                         if let Some((schema, table)) = request_pinned_target {

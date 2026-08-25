@@ -7,12 +7,14 @@ use ramag_infra_sql_shared::sql::{
 };
 
 use super::sql_utils::{has_top_level_keyword, strip_leading_comments};
-use crate::views::result_panel::TotalRows;
+use crate::views::result_panel::{SortDir, TotalRows};
 
 #[derive(Debug, Clone)]
 pub(super) struct Pager {
-    /// 去掉末尾分号但未注入分页语句的原始单条查询。
+    /// 当前用于分页的只读查询，不含 LIMIT/OFFSET，可能包含服务端排序包装。
     pub(super) base_sql: String,
+    /// 当前分页查询在服务端排序前的基准 SQL；保留结果筛选但不包含排序包装。
+    pub(super) sort_base_sql: String,
     /// 从 0 开始的当前页码。
     pub(super) page: usize,
     pub(super) has_more: bool,
@@ -96,6 +98,45 @@ pub(super) fn page_sql(base_sql: &str, page_size: usize, page: usize) -> Result<
     let mut generated = String::with_capacity(generated_len);
     generated.push_str(base_sql);
     generated.push_str(&suffix);
+    Ok(generated)
+}
+
+/// 将结果列排序下推到数据库，并用列序号避免重复列名和标识符拼接风险。
+pub(super) fn sort_sql(
+    base_sql: &str,
+    column_index: usize,
+    direction: SortDir,
+    driver: DriverKind,
+) -> Result<String, String> {
+    let base = paging_base_sql(base_sql, driver)
+        .ok_or_else(|| "结果集排序只支持安全分页的单条 SELECT 或 WITH 查询".to_string())?;
+    let order_position = column_index
+        .checked_add(1)
+        .ok_or_else(|| "排序列序号溢出".to_string())?;
+    let direction = match direction {
+        SortDir::Asc => "ASC",
+        SortDir::Desc => "DESC",
+    };
+    let prefix = "SELECT * FROM (\n";
+    let middle = "\n) AS ramag_result_sort\nORDER BY ";
+    let order_clause = format!("{order_position} {direction}");
+    let generated_len = prefix
+        .len()
+        .checked_add(base.len())
+        .and_then(|len| len.checked_add(middle.len()))
+        .and_then(|len| len.checked_add(order_clause.len()))
+        .ok_or_else(|| "排序 SQL 长度溢出".to_string())?;
+    if generated_len > MAX_SQL_QUERY_BYTES {
+        return Err(format!(
+            "排序 SQL 超过 {} MiB 安全上限，请缩短原查询",
+            MAX_SQL_QUERY_BYTES / 1024 / 1024
+        ));
+    }
+    let mut generated = String::with_capacity(generated_len);
+    generated.push_str(prefix);
+    generated.push_str(&base);
+    generated.push_str(middle);
+    generated.push_str(&order_clause);
     Ok(generated)
 }
 
@@ -326,6 +367,56 @@ mod tests {
         assert_eq!(
             count_sql("SELECT * FROM t WHERE a > 1").as_deref(),
             Ok("SELECT COUNT(*) FROM (\nSELECT * FROM t WHERE a > 1\n) AS ramag_total_count")
+        );
+    }
+
+    #[test]
+    fn sort_sql_orders_by_result_column_position() {
+        assert_eq!(
+            sort_sql(
+                "SELECT id, name FROM users ORDER BY name;",
+                1,
+                SortDir::Desc,
+                DriverKind::Mysql,
+            )
+            .as_deref(),
+            Ok(
+                "SELECT * FROM (\nSELECT id, name FROM users ORDER BY name\n) AS ramag_result_sort\nORDER BY 2 DESC"
+            )
+        );
+        assert!(
+            sort_sql(
+                "WITH users AS (SELECT id FROM source) SELECT id FROM users",
+                0,
+                SortDir::Asc,
+                DriverKind::Postgres,
+            )
+            .unwrap()
+            .ends_with("ORDER BY 1 ASC")
+        );
+    }
+
+    #[test]
+    fn sort_sql_rejects_unsafe_query_shapes() {
+        for sql in [
+            "SELECT * FROM users LIMIT 10",
+            "SELECT 1; SELECT 2",
+            "UPDATE users SET name = 'x'",
+            "-- ramag:no-limit\nSELECT * FROM users",
+        ] {
+            assert!(
+                sort_sql(sql, 0, SortDir::Asc, DriverKind::Mysql,).is_err(),
+                "{sql}"
+            );
+        }
+        assert!(
+            sort_sql(
+                "SELECT * FROM users",
+                usize::MAX,
+                SortDir::Asc,
+                DriverKind::Mysql,
+            )
+            .is_err()
         );
     }
 

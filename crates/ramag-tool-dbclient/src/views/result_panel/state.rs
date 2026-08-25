@@ -203,13 +203,29 @@ impl ResultPanel {
     }
 
     pub(crate) fn toggle_sort(&mut self, col_idx: usize, cx: &mut Context<Self>) {
-        self.sort_by = match self.sort_by {
+        let previous = self.sort_by;
+        let current = match previous {
             Some((ci, SortDir::Asc)) if ci == col_idx => Some((col_idx, SortDir::Desc)),
             Some((ci, SortDir::Desc)) if ci == col_idx => None,
             _ => Some((col_idx, SortDir::Asc)),
         };
+        self.sort_by = current;
         self.clear_cell_edit_state();
         self.selected_cell = None;
+        self.invalidate_display_view();
+        cx.emit(super::ResultPanelEvent::SortChanged { previous, current });
+        cx.notify();
+    }
+
+    pub(crate) fn restore_sort(
+        &mut self,
+        sort_by: Option<(usize, SortDir)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sort_by == sort_by {
+            return;
+        }
+        self.sort_by = sort_by;
         self.invalidate_display_view();
         cx.notify();
     }

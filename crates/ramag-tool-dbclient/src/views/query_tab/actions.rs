@@ -1,5 +1,6 @@
 mod execution;
 mod prefetch;
+mod sorting;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -263,7 +264,8 @@ impl QueryTab {
         }
         let pager = if is_run {
             paging_base_sql(&sql_to_run, conn.driver).map(|base_sql| Pager {
-                base_sql,
+                base_sql: base_sql.clone(),
+                sort_base_sql: base_sql,
                 page: 0,
                 has_more: false,
                 page_size: self.page_size,

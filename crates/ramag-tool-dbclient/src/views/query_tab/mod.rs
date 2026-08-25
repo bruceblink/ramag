@@ -211,6 +211,9 @@ impl QueryTab {
                 ResultPanelEvent::PageSizeChanged(page_size) => {
                     this.handle_page_size(*page_size, cx)
                 }
+                ResultPanelEvent::SortChanged { previous, current } => {
+                    this.handle_sort_changed(*previous, *current, cx)
+                }
                 ResultPanelEvent::RowSearchChanged => cx.notify(),
                 ResultPanelEvent::RowFilterApply => this.handle_row_filter_apply(window, cx),
                 ResultPanelEvent::MutationCompleted => this.mark_transaction_dirty(cx),

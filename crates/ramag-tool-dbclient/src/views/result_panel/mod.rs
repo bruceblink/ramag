@@ -78,6 +78,10 @@ pub(crate) struct ResultPagination {
 pub(crate) enum ResultPanelEvent {
     PageRequested(usize),
     PageSizeChanged(usize),
+    SortChanged {
+        previous: Option<(usize, SortDir)>,
+        current: Option<(usize, SortDir)>,
+    },
     RowSearchChanged,
     RowFilterApply,
     MutationCompleted,
