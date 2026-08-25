@@ -103,7 +103,13 @@ fn local_pty_drains_output_and_reports_child_exit() {
     ))
     .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while core.exit_status().is_none() && std::time::Instant::now() < deadline {
+    // PTY exit and the final output are delivered independently; wait for both.
+    while std::time::Instant::now() < deadline {
+        let exited_successfully = core.exit_status().is_some_and(|status| status.success);
+        let output_received = row_text(&core.snapshot(), 0).contains("ramag-pty-ok");
+        if exited_successfully && output_received {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
