@@ -29,10 +29,11 @@ fn identity_where_error_message(error: IdentityWhereError) -> &'static str {
 }
 
 fn auto_commit_hint(transaction: Option<&TransactionId>) -> &'static str {
-    transaction
-        .is_none()
-        .then_some("（已自动提交）")
-        .unwrap_or_default()
+    if transaction.is_none() {
+        "（已自动提交）"
+    } else {
+        ""
+    }
 }
 
 impl ResultPanel {
