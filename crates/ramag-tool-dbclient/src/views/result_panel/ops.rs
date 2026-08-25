@@ -28,6 +28,13 @@ fn identity_where_error_message(error: IdentityWhereError) -> &'static str {
     }
 }
 
+fn auto_commit_hint(transaction: Option<&TransactionId>) -> &'static str {
+    transaction
+        .is_none()
+        .then_some("（已自动提交）")
+        .unwrap_or_default()
+}
+
 impl ResultPanel {
     fn guard_generated_query(&mut self, query: &Query, cx: &mut Context<Self>) -> bool {
         if let Err(error) = query.validate() {
@@ -238,6 +245,7 @@ impl ResultPanel {
         if !self.guard_generated_query(&q, cx) {
             return false;
         }
+        let commit_hint = auto_commit_hint(transaction.as_ref());
 
         let result_revision = self.result_revision;
         self.dml_busy = true;
@@ -291,7 +299,7 @@ impl ResultPanel {
                                 };
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），定位键可能已失效{stale_note}，请重新查询核对",
+                                        "注意：本次 DELETE 影响了 {} 行（{strategy}），定位键可能已失效{commit_hint}{stale_note}，请重新查询核对",
                                         qr.affected_rows,
                                     ))
                                     .autohide(false),
@@ -299,16 +307,16 @@ impl ResultPanel {
                             } else if !same_result {
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "已删除 {} 行（{strategy}匹配）；当前结果已变化，请重新查询核对",
-                                        qr.affected_rows
+                                        "已删除 {} 行（{strategy}匹配）{commit_hint}；当前结果已变化，请重新查询核对",
+                                        qr.affected_rows,
                                     ))
                                     .autohide(false),
                                 );
                             } else {
                                 this.pending_notification = Some(
                                     Notification::success(format!(
-                                        "已删除 {} 行（{strategy}匹配）",
-                                        qr.affected_rows
+                                        "已删除 {} 行（{strategy}匹配）{commit_hint}",
+                                        qr.affected_rows,
                                     ))
                                     .autohide(true),
                                 );
@@ -409,6 +417,7 @@ impl ResultPanel {
         if !self.guard_generated_query(&q, cx) {
             return false;
         }
+        let commit_hint = auto_commit_hint(transaction.as_ref());
 
         let result_revision = self.result_revision;
         self.dml_busy = true;
@@ -462,7 +471,7 @@ impl ResultPanel {
                                 };
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），定位键可能已失效{stale_note}，请重新查询核对",
+                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），定位键可能已失效{commit_hint}{stale_note}，请重新查询核对",
                                         qr.affected_rows,
                                     ))
                                     .autohide(false),
@@ -470,16 +479,16 @@ impl ResultPanel {
                             } else if !same_result {
                                 this.pending_notification = Some(
                                     Notification::warning(format!(
-                                        "已更新 {} 行（{strategy}匹配）；当前结果已变化，请重新查询核对",
-                                        qr.affected_rows
+                                        "已更新 {} 行（{strategy}匹配）{commit_hint}；当前结果已变化，请重新查询核对",
+                                        qr.affected_rows,
                                     ))
                                     .autohide(false),
                                 );
                             } else {
                                 this.pending_notification = Some(
                                     Notification::success(format!(
-                                        "已更新 {} 行（{strategy}匹配）",
-                                        qr.affected_rows
+                                        "已更新 {} 行（{strategy}匹配）{commit_hint}",
+                                        qr.affected_rows,
                                     ))
                                     .autohide(true),
                                 );

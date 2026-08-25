@@ -32,6 +32,7 @@ impl ResultPanel {
 
         let strategy = format!("按{}", identity.label);
         let driver = conn.driver;
+        let commit_hint = super::auto_commit_hint(transaction.as_ref());
         let limit_clause = dml_row_limit(driver);
         let mut plans: Vec<(usize, Query)> = Vec::with_capacity(indices.len());
         let mut total_sql_bytes = 0usize;
@@ -162,10 +163,11 @@ impl ResultPanel {
                         &strategy,
                         same_result,
                     );
+                    let message = format!("{}{commit_hint}", notice.message);
                     if notice.persistent {
-                        Notification::warning(notice.message).autohide(false)
+                        Notification::warning(message).autohide(false)
                     } else {
-                        Notification::success(notice.message).autohide(true)
+                        Notification::success(message).autohide(true)
                     }
                 });
                 cx.notify();
@@ -206,6 +208,7 @@ impl ResultPanel {
         };
 
         let driver = conn.driver;
+        let commit_hint = super::auto_commit_hint(transaction.as_ref());
         let cols_sql = values
             .iter()
             .map(|(c, _)| driver.quote_identifier(c))
@@ -261,14 +264,14 @@ impl ResultPanel {
                             let same_result = this.result_revision == result_revision;
                             this.pending_notification = Some(if same_result {
                                 Notification::success(format!(
-                                    "已新增 {} 行；请重新查询查看数据库默认值和生成字段",
-                                    qr.affected_rows
+                                    "已新增 {} 行{commit_hint}；请重新查询查看数据库默认值和生成字段",
+                                    qr.affected_rows,
                                 ))
                                 .autohide(true)
                             } else {
                                 Notification::warning(format!(
-                                    "已新增 {} 行；当前结果已变化，请重新查询核对",
-                                    qr.affected_rows
+                                    "已新增 {} 行{commit_hint}；当前结果已变化，请重新查询核对",
+                                    qr.affected_rows,
                                 ))
                                 .autohide(false)
                             });
