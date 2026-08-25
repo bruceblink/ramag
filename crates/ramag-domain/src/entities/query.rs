@@ -5,6 +5,7 @@ pub use formatting::json_pretty_bounded;
 use formatting::*;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::contains_case_insensitive;
 
@@ -239,7 +240,9 @@ impl Value {
             Value::Int(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Text(s) => sanitize_inline(&truncate(s, max_len)),
-            Value::Bytes(b) => format!("[{} bytes]", b.len()),
+            Value::Bytes(b) => {
+                uuid_preview(b, max_len).unwrap_or_else(|| format!("[{} bytes]", b.len()))
+            }
             Value::DateTime(dt) => dt.to_rfc3339(),
             Value::Json(v) => {
                 let byte_limit = max_len.saturating_mul(4).saturating_add(1);
@@ -371,6 +374,16 @@ impl Value {
             Value::Json(v) => v.to_string(),
         }
     }
+}
+
+/// Formats a 16-byte value with the same byte order as MySQL `BIN_TO_UUID(value, 0)`.
+/// Values with another length remain compact binary previews.
+fn uuid_preview(bytes: &[u8], max_len: usize) -> Option<String> {
+    if bytes.len() != 16 {
+        return None;
+    }
+    let raw: [u8; 16] = bytes.try_into().ok()?;
+    Some(truncate(&Uuid::from_bytes(raw).to_string(), max_len))
 }
 
 #[cfg(test)]

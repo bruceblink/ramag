@@ -149,6 +149,26 @@ fn preview_text_strips_newlines() {
 }
 
 #[test]
+fn preview_formats_uuid_bytes_but_keeps_other_binary_payloads_compact() {
+    let uuid_bytes = [
+        0x01, 0x9f, 0xeb, 0x23, 0xf4, 0xb0, 0x71, 0x73, 0x93, 0x7d, 0x07, 0x2d, 0x15, 0x24, 0x8b,
+        0x70,
+    ];
+    assert_eq!(
+        Value::Bytes(uuid_bytes.to_vec()).display_preview(60),
+        "019feb23-f4b0-7173-937d-072d15248b70"
+    );
+    assert_eq!(
+        Value::Bytes(vec![0xaa; 16]).display_preview(60),
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    );
+    assert_eq!(
+        Value::Bytes(vec![0xaa; 15]).display_preview(60),
+        "[15 bytes]"
+    );
+}
+
+#[test]
 fn clipboard_json_minified() {
     let v = Value::Json(serde_json::json!({"a": 1, "b": [2, 3]}));
     let s = v.to_clipboard_string();
