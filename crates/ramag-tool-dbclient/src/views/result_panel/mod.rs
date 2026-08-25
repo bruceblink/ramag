@@ -158,7 +158,7 @@ impl ResultPanel {
             state
         });
         let row_filter_input = cx.new(|cx| {
-            ramag_ui::bounded_search_input(window, cx).placeholder("WHERE 条件（按 Enter 执行）")
+            ramag_ui::bounded_search_input(window, cx).placeholder("条件（按 Enter 执行）")
         });
         cx.observe(&column_filter_input, |_, _, cx| cx.notify())
             .detach();
