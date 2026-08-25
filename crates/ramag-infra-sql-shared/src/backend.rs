@@ -85,6 +85,15 @@ where
     ) {
     }
 
+    /// Prepares a pooled connection for one-shot execution. Interactive
+    /// transactions intentionally bypass this hook and keep their own state.
+    async fn prepare_for_auto_commit(
+        &self,
+        _conn: &mut <Self::Db as Database>::Connection,
+    ) -> std::result::Result<(), sqlx::Error> {
+        Ok(())
+    }
+
     async fn fetch_warnings(&self, _conn: &mut <Self::Db as Database>::Connection) -> Vec<Warning> {
         Vec::new()
     }
@@ -331,6 +340,10 @@ where
     let start = Instant::now();
     let pool = get_pool(b, config).await?;
     let mut conn: PoolConnection<B::Db> = pool.acquire().await.map_err(|e| map_err(b, e))?;
+
+    b.prepare_for_auto_commit(&mut conn)
+        .await
+        .map_err(|e| map_err(b, e))?;
 
     if let Some(h) = &handle {
         b.record_backend_id(&mut conn, h).await;

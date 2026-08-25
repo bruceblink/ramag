@@ -124,6 +124,69 @@ async fn execute_select_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn execute_write_is_visible_to_an_independent_connection() {
+    let config = require_env!();
+    let driver = MysqlDriver::new();
+    let observer = MysqlDriver::new();
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时间应晚于 Unix epoch")
+        .as_nanos();
+    let table = format!(
+        "ramag_autocommit_result_edit_{}_{}",
+        std::process::id(),
+        suffix
+    );
+    let quoted_table = format!("`{table}`");
+
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "CREATE TABLE {quoted_table} (id BIGINT PRIMARY KEY, value VARCHAR(255) NOT NULL)"
+            )),
+        )
+        .await
+        .expect("创建临时测试表失败");
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "INSERT INTO {quoted_table} (id, value) VALUES (1, 'before')"
+            )),
+        )
+        .await
+        .expect("写入临时测试行失败");
+    driver
+        .execute(
+            &config,
+            &Query::new(format!(
+                "UPDATE {quoted_table} SET value = 'after' WHERE id = 1"
+            )),
+        )
+        .await
+        .expect("更新临时测试行失败");
+
+    let result = observer
+        .execute(
+            &config,
+            &Query::new(format!("SELECT value FROM {quoted_table} WHERE id = 1")),
+        )
+        .await
+        .expect("独立连接查询临时测试行失败");
+    assert_eq!(result.rows.len(), 1, "更新后的行应对独立连接可见");
+    assert!(matches!(
+        &result.rows[0].values[0],
+        Value::Text(value) if value == "after"
+    ));
+
+    driver
+        .execute(&config, &Query::new(format!("DROP TABLE {quoted_table}")))
+        .await
+        .expect("清理临时测试表失败");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn execute_select_with_types() {
     let config = require_env!();
     let driver = MysqlDriver::new();
