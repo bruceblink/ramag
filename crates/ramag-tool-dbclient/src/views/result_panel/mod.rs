@@ -30,9 +30,10 @@ use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
-pub(crate) use row_search::RowSearchConversionStatus;
 use row_search::RowSearchState;
-pub(crate) use row_search::{RowFilter, RowSearchBlocker, RowSearchMode};
+pub(crate) use row_search::{
+    RowFilter, RowSearchBlocker, RowSearchConversionStatus, RowSearchMode,
+};
 
 /// 服务端分页的可见页大小，也是未分页结果的 UI 渲染上限。
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
@@ -78,6 +79,7 @@ pub(crate) enum ResultPanelEvent {
     PageRequested(usize),
     PageSizeChanged(usize),
     RowSearchChanged,
+    RowFilterApply,
     MutationCompleted,
     MutationFailed(String),
 }
@@ -156,7 +158,7 @@ impl ResultPanel {
             state
         });
         let row_filter_input = cx.new(|cx| {
-            ramag_ui::bounded_search_input(window, cx).placeholder("过滤行（任意单元格包含）")
+            ramag_ui::bounded_search_input(window, cx).placeholder("WHERE 条件（按 Enter 执行）")
         });
         cx.observe(&column_filter_input, |_, _, cx| cx.notify())
             .detach();
@@ -171,6 +173,20 @@ impl ResultPanel {
         cx.observe_global::<ramag_ui::DatabaseResultSettingsGlobal>(|_, cx| cx.notify())
             .detach();
 
+        cx.subscribe_in(
+            &row_filter_input,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::PressEnter { .. })
+                    && matches!(this.row_search_mode(), RowSearchMode::Normal)
+                    && !this.row_filter_text(cx).is_empty()
+                {
+                    cx.emit(ResultPanelEvent::RowFilterApply);
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
         Self {
             state: ResultState::Empty,
             pending_notification: None,
@@ -548,6 +564,10 @@ impl ResultPanel {
 
     pub fn set_source_sql(&mut self, sql: Option<String>) {
         self.source_sql = sql;
+    }
+
+    pub(super) fn source_sql(&self) -> Option<String> {
+        self.source_sql.clone()
     }
 }
 

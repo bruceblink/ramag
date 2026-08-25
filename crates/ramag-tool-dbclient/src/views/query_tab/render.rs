@@ -15,7 +15,7 @@ use gpui_component::{
 use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
 
 use super::QueryTab;
-use super::render_helpers::{row_search_input_suffix, row_search_mode_button};
+use super::render_helpers::{row_filter_prefix, row_search_input_suffix};
 use super::sql_utils::format_elapsed;
 
 use crate::actions::{ExplainQuery, FormatSql, RunQuery, RunStatementAtCursor};
@@ -256,7 +256,8 @@ impl Render for QueryTab {
                             .read(cx)
                             .row_search_conversion_status(cx);
                         let row_filter_has_value = !row_input.read(cx).value().is_empty();
-                        let id_conversion_ready = ramag_ui::database_search_settings(cx).is_ready();
+                        let id_conversion_ready =
+                            ramag_ui::database_search_settings(cx).is_ready();
                         let result_for_row_mode = result_entity.clone();
                         let col_for_up = col_input.clone();
                         let col_for_down = col_input.clone();
@@ -307,18 +308,25 @@ impl Render for QueryTab {
                                     ),
                             )
                             .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(1.0))
+                                    .h(px(20.0))
+                                    .bg(border),
+                            )
+                            .child(
                                 div().flex_1().min_w_0().child(
                                     Input::new(&row_input)
                                         .small()
                                         .bordered(false)
                                         .focus_bordered(false)
-                                        .when(id_conversion_ready, |input| {
-                                            input.prefix(row_search_mode_button(
-                                                row_search_mode,
-                                                result_for_row_mode,
-                                                accent,
-                                            ))
-                                        })
+                                        .prefix(row_filter_prefix(
+                                            row_search_mode,
+                                            result_for_row_mode,
+                                            accent,
+                                            muted_fg,
+                                            id_conversion_ready,
+                                        ))
                                         .when(row_filter_has_value, |input| {
                                             input.suffix(row_search_input_suffix(
                                                 row_input,

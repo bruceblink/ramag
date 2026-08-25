@@ -203,14 +203,16 @@ impl QueryTab {
                 cx.emit(QueryTabEvent::DraftChanged);
             },
         );
-        let result_sub = cx.subscribe(
+        let result_sub = cx.subscribe_in(
             &result,
-            |this: &mut Self, _, event: &ResultPanelEvent, cx| match event {
+            window,
+            |this: &mut Self, _, event: &ResultPanelEvent, window, cx| match event {
                 ResultPanelEvent::PageRequested(page) => this.handle_page(*page, cx),
                 ResultPanelEvent::PageSizeChanged(page_size) => {
                     this.handle_page_size(*page_size, cx)
                 }
                 ResultPanelEvent::RowSearchChanged => cx.notify(),
+                ResultPanelEvent::RowFilterApply => this.handle_row_filter_apply(window, cx),
                 ResultPanelEvent::MutationCompleted => this.mark_transaction_dirty(cx),
                 ResultPanelEvent::MutationFailed(message) => {
                     this.mark_transaction_error(message.clone(), cx)

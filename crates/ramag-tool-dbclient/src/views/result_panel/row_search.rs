@@ -1,4 +1,6 @@
 //! 结果行搜索模式与双向 ID 转换状态机。
+//!
+//! 普通模式把输入交给查询标签执行服务端 WHERE；ID 模式保留已有的本地精确匹配能力。
 
 use std::time::Duration;
 
@@ -22,7 +24,7 @@ impl RowSearchMode {
 
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Normal => "@TEXT",
+            Self::Normal => "WHERE",
             Self::IdToInteger => "@ID -> I",
             Self::IdToString => "@ID -> S",
         }
@@ -202,6 +204,10 @@ impl ResultPanel {
             self.schedule_id_conversion(input, cx);
         }
         cx.emit(ResultPanelEvent::RowSearchChanged);
+        if matches!(mode, RowSearchMode::Normal) {
+            // 普通模式的输入由数据库重新执行，不能继续沿用 ID 模式的本地视图。
+            cx.emit(ResultPanelEvent::RowFilterApply);
+        }
         cx.notify();
     }
 
@@ -213,9 +219,12 @@ impl ResultPanel {
             return;
         }
         self.row_search.last_input = input.clone();
-        self.invalidate_display_view();
         if self.row_search.mode.uses_id_conversion() {
-            self.schedule_id_conversion(input, cx);
+            self.invalidate_display_view();
+            self.schedule_id_conversion(input.clone(), cx);
+        } else if input.is_empty() {
+            // 清空按钮没有 Enter 事件，清空普通 WHERE 后立即恢复原查询结果。
+            cx.emit(ResultPanelEvent::RowFilterApply);
         }
         cx.emit(ResultPanelEvent::RowSearchChanged);
         cx.notify();
@@ -224,11 +233,15 @@ impl ResultPanel {
     pub(super) fn on_database_search_settings_changed(&mut self, cx: &mut Context<Self>) {
         let settings = ramag_ui::database_search_settings(cx);
         if !settings.is_ready() {
+            let reset_to_normal = self.row_search.mode.uses_id_conversion();
             if self.row_search.mode.uses_id_conversion() {
                 self.cancel_id_conversion();
                 self.row_search.mode = RowSearchMode::Normal;
                 self.row_search.conversion = IdConversionState::Idle;
                 self.invalidate_display_view();
+            }
+            if reset_to_normal {
+                cx.emit(ResultPanelEvent::RowFilterApply);
             }
             cx.emit(ResultPanelEvent::RowSearchChanged);
             cx.notify();
@@ -244,8 +257,12 @@ impl ResultPanel {
 
     pub(crate) fn effective_row_filter(&self, cx: &gpui::App) -> RowFilter {
         let input = self.row_filter_text(cx);
-        if input.is_empty() || !self.row_search.mode.uses_id_conversion() {
-            return RowFilter::Text(input.to_lowercase());
+        if !self.row_search.mode.uses_id_conversion() {
+            // 普通模式由查询标签执行 WHERE，结果表不能再对当前快照做本地过滤。
+            return RowFilter::Text(String::new());
+        }
+        if input.is_empty() {
+            return RowFilter::Text(String::new());
         }
         match &self.row_search.conversion {
             IdConversionState::Ready {
@@ -404,7 +421,7 @@ mod tests {
 
     #[test]
     fn search_mode_labels_use_explicit_tags() {
-        assert_eq!(RowSearchMode::Normal.label(), "@TEXT");
+        assert_eq!(RowSearchMode::Normal.label(), "WHERE");
         assert_eq!(RowSearchMode::IdToInteger.label(), "@ID -> I");
         assert_eq!(RowSearchMode::IdToString.label(), "@ID -> S");
     }

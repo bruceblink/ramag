@@ -132,6 +132,99 @@ pub(super) fn count_sql(base_sql: &str) -> Result<String, String> {
     Ok(generated)
 }
 
+/// 将结果栏中的 WHERE 条件作为服务端查询的一部分执行。
+/// 原查询先包成派生表，避免破坏原查询已有的 JOIN、聚合、排序和 LIMIT。
+pub(super) fn filter_sql(
+    base_sql: &str,
+    filter: &str,
+    driver: DriverKind,
+) -> Result<String, String> {
+    let base = single_read_query(base_sql, driver)?;
+    let condition = strip_where_prefix(filter)?;
+    if condition.is_empty() {
+        return Ok(base);
+    }
+    ensure_single_filter_condition(condition, driver)?;
+
+    let prefix = "SELECT * FROM (\n";
+    let middle = "\n) AS ramag_result_filter\nWHERE ";
+    let generated_len = prefix
+        .len()
+        .checked_add(base.len())
+        .and_then(|len| len.checked_add(middle.len()))
+        .and_then(|len| len.checked_add(condition.len()))
+        .ok_or_else(|| "筛选 SQL 长度溢出".to_string())?;
+    if generated_len > MAX_SQL_QUERY_BYTES {
+        return Err(format!(
+            "筛选 SQL 超过 {} MiB 安全上限，请缩短原查询或筛选条件",
+            MAX_SQL_QUERY_BYTES / 1024 / 1024
+        ));
+    }
+    let mut generated = String::with_capacity(generated_len);
+    generated.push_str(prefix);
+    generated.push_str(&base);
+    generated.push_str(middle);
+    generated.push_str(condition);
+    Ok(generated)
+}
+
+fn ensure_single_filter_condition(condition: &str, driver: DriverKind) -> Result<(), String> {
+    let options = match driver {
+        DriverKind::Postgres => SplitOptions::postgres(),
+        _ => SplitOptions::mysql(),
+    };
+    // 复用 SQL 切分器，只拒绝条件中的顶层第二条语句；字符串和注释中的分号合法。
+    let probe = format!("SELECT 1 WHERE {condition}");
+    let statements = split_statements_bounded(&probe, options, 2)
+        .map_err(|_| "WHERE 条件只能包含一个条件表达式".to_string())?;
+    if statements.len() > 1 {
+        return Err("WHERE 条件只能包含一个条件表达式".to_string());
+    }
+    Ok(())
+}
+
+fn single_read_query(sql: &str, driver: DriverKind) -> Result<String, String> {
+    let options = match driver {
+        DriverKind::Postgres => SplitOptions::postgres(),
+        _ => SplitOptions::mysql(),
+    };
+    let statements = split_statements_bounded(sql, options, MAX_SQL_STATEMENTS)
+        .map_err(|_| "结果集筛选只支持一条 SQL 查询".to_string())?;
+    let [statement] = statements.as_slice() else {
+        return Err("结果集筛选只支持一条 SQL 查询".to_string());
+    };
+    let trimmed = statement.trim().trim_end_matches(';').trim_end();
+    let body = strip_leading_comments(trimmed, driver);
+    if !matches!(first_keyword(body).as_deref(), Some("SELECT" | "WITH"))
+        || is_write_statement(body)
+    {
+        return Err("结果集筛选只支持只读 SELECT 或 WITH 查询".to_string());
+    }
+    if trimmed.is_empty() {
+        return Err("原查询为空".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn strip_where_prefix(filter: &str) -> Result<&str, String> {
+    let filter = filter.trim();
+    let Some(prefix) = filter.get(..5) else {
+        return Ok(filter);
+    };
+    if !prefix.eq_ignore_ascii_case("WHERE") {
+        return Ok(filter);
+    }
+    let next = filter.as_bytes().get(5);
+    if next.is_some_and(|value| !value.is_ascii_whitespace() && *value != b'(') {
+        return Ok(filter);
+    }
+    let condition = filter[5..].trim();
+    if condition.is_empty() {
+        return Err("WHERE 后需要筛选条件".to_string());
+    }
+    Ok(condition)
+}
+
 #[cfg(test)]
 mod tests {
     use ramag_domain::entities::{Row, Value};
@@ -234,6 +327,43 @@ mod tests {
             count_sql("SELECT * FROM t WHERE a > 1").as_deref(),
             Ok("SELECT COUNT(*) FROM (\nSELECT * FROM t WHERE a > 1\n) AS ramag_total_count")
         );
+    }
+
+    #[test]
+    fn filter_sql_wraps_select_and_accepts_optional_where_prefix() {
+        assert_eq!(
+            filter_sql(
+                "SELECT id, name FROM users;",
+                "WHERE id = 7",
+                DriverKind::Mysql
+            )
+            .unwrap(),
+            "SELECT * FROM (\nSELECT id, name FROM users\n) AS ramag_result_filter\nWHERE id = 7"
+        );
+        assert!(
+            filter_sql(
+                "WITH users AS (SELECT 1) SELECT * FROM users",
+                "id > 0",
+                DriverKind::Postgres
+            )
+            .unwrap()
+            .contains("WHERE id > 0")
+        );
+    }
+
+    #[test]
+    fn filter_sql_rejects_write_and_multi_statement_input() {
+        for (base, filter) in [
+            ("UPDATE users SET name = 'x'", "id = 1"),
+            ("SELECT 1; SELECT 2", "id = 1"),
+            ("SELECT 1", "id = 1; DROP TABLE users"),
+        ] {
+            assert!(
+                filter_sql(base, filter, DriverKind::Mysql).is_err(),
+                "{base} / {filter}"
+            );
+        }
+        assert!(filter_sql("SELECT 1", "name = 'a;b'", DriverKind::Mysql).is_ok());
     }
 
     #[test]

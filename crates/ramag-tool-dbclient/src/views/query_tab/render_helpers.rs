@@ -6,20 +6,44 @@ use ramag_ui::PointerDropdownMenu as _;
 
 use crate::views::result_panel::{ResultPanel, RowSearchConversionStatus, RowSearchMode};
 
+pub(super) fn row_filter_prefix(
+    current: RowSearchMode,
+    result: Entity<ResultPanel>,
+    accent: gpui::Hsla,
+    muted: gpui::Hsla,
+    id_conversion_ready: bool,
+) -> gpui::AnyElement {
+    if id_conversion_ready {
+        row_search_mode_button(current, result, accent).into_any_element()
+    } else {
+        div()
+            .flex_none()
+            .text_xs()
+            .text_color(muted)
+            .child("WHERE")
+            .into_any_element()
+    }
+}
+
 pub(super) fn row_search_mode_button(
     current: RowSearchMode,
     result: Entity<ResultPanel>,
     accent: gpui::Hsla,
 ) -> impl IntoElement {
+    let display_label = match current {
+        RowSearchMode::Normal => "WHERE",
+        RowSearchMode::IdToInteger => current.label(),
+        RowSearchMode::IdToString => current.label(),
+    };
     ramag_ui::clickable_button("sql-row-search-mode")
         .text()
         .small()
         // 文本自带显式颜色，避免 Text 按下态短暂继承主题前景色。
-        .child(div().flex_none().text_color(accent).child(current.label()))
+        .child(div().flex_none().text_color(accent).child(display_label))
         .dropdown_caret(true)
         .text_color(accent)
         .tooltip(match current {
-            RowSearchMode::Normal => "@TEXT：按单元格展示文本包含搜索",
+            RowSearchMode::Normal => "WHERE：按 Enter 将条件发送到数据库执行",
             RowSearchMode::IdToInteger => "@ID -> I：将字符串转为整数，精确匹配整数单元格",
             RowSearchMode::IdToString => "@ID -> S：将非负十进制整数转为字符串，精确匹配文本单元格",
         })

@@ -181,6 +181,64 @@ impl QueryTab {
         self.spawn_total_count(conn, base_sql, cx);
     }
 
+    /// 把结果栏中的 WHERE 条件重新提交给数据库，结果表只展示数据库返回的新结果。
+    pub(crate) fn handle_row_filter_apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running || self.transaction_busy {
+            return;
+        }
+        let Some(conn) = self.connection.clone() else {
+            self.pending_notification = Some(Notification::warning("尚未选择连接").autohide(true));
+            cx.notify();
+            return;
+        };
+        let (base_sql, filter, row_search_mode) = {
+            let result = self.result.read(cx);
+            let Some(base_sql) = result.source_sql() else {
+                self.pending_notification = Some(
+                    Notification::warning("当前结果没有可筛选的 SQL，请先运行 SELECT 或 WITH")
+                        .autohide(true),
+                );
+                cx.notify();
+                return;
+            };
+            (
+                base_sql,
+                result.row_filter_text(cx),
+                result.row_search_mode(),
+            )
+        };
+        if !matches!(
+            row_search_mode,
+            crate::views::result_panel::RowSearchMode::Normal
+        ) {
+            return;
+        };
+        if self.current_sql(cx).trim() != base_sql.trim() {
+            self.pending_notification = Some(
+                Notification::warning("SQL 已修改，请先运行当前 SQL 后再筛选结果").autohide(true),
+            );
+            cx.notify();
+            return;
+        }
+        let filtered_sql = match filter_sql(&base_sql, &filter, conn.driver) {
+            Ok(sql) => sql,
+            Err(message) => {
+                self.pending_notification = Some(Notification::error(message).autohide(true));
+                cx.notify();
+                return;
+            }
+        };
+        self.submit_sql(
+            filtered_sql,
+            base_sql,
+            true,
+            self.result.clone(),
+            None,
+            window,
+            cx,
+        );
+    }
+
     /// Executes one query against the requested result panel and drops callbacks
     /// whose data or plan generation no longer matches the current query context.
     #[allow(clippy::too_many_arguments)]

@@ -10,7 +10,9 @@ use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query, QueryResult, Value};
 use ramag_domain::error::DomainError;
 use tracing::{error, info, warn};
 
-use super::paging::{PageRequest, Pager, count_sql, page_sql, paging_base_sql, trim_page_sentinel};
+use super::paging::{
+    PageRequest, Pager, count_sql, filter_sql, page_sql, paging_base_sql, trim_page_sentinel,
+};
 use super::sql_utils::{
     detect_dangerous_statements, extract_statement_at_cursor, make_short_title,
     parse_mysql_error_line, strip_leading_comments,
