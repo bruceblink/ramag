@@ -1,4 +1,4 @@
-//! 同一 Schema 下两张 SQL 表的只读结构对比对话框。
+//! 两张 SQL 表的只读结构对比对话框。
 
 use std::sync::Arc;
 
@@ -34,8 +34,9 @@ struct LoadedMetadata {
 pub(crate) struct SchemaDiffDialog {
     service: Arc<ConnectionService>,
     connection: ConnectionConfig,
-    schema: String,
+    source_schema: String,
     source_table: String,
+    target_schema: String,
     target_table: String,
     source: Option<LoadedMetadata>,
     target: Option<LoadedMetadata>,
@@ -51,16 +52,18 @@ impl SchemaDiffDialog {
     pub(crate) fn new(
         service: Arc<ConnectionService>,
         connection: ConnectionConfig,
-        schema: String,
+        source_schema: String,
         source_table: String,
+        target_schema: String,
         target_table: String,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
             service,
             connection,
-            schema,
+            source_schema,
             source_table,
+            target_schema,
             target_table,
             source: None,
             target: None,
@@ -80,8 +83,9 @@ impl SchemaDiffDialog {
         let request_generation = self.request_generation;
         let service = self.service.clone();
         let connection = self.connection.clone();
-        let schema = self.schema.clone();
+        let source_schema = self.source_schema.clone();
         let source_table = self.source_table.clone();
+        let target_schema = self.target_schema.clone();
         let target_table = self.target_table.clone();
         self.loading = true;
         self.error = None;
@@ -92,21 +96,22 @@ impl SchemaDiffDialog {
                 load_table_metadata(
                     service.clone(),
                     connection.clone(),
-                    schema.clone(),
+                    source_schema.clone(),
                     source_table.clone(),
                 ),
                 load_table_metadata(
                     service,
                     connection.clone(),
-                    schema.clone(),
+                    target_schema.clone(),
                     target_table.clone(),
                 ),
             );
             let _ = this.update(cx, |this, cx| {
                 if this.request_generation != request_generation
                     || this.connection.id != connection.id
-                    || this.schema != schema
+                    || this.source_schema != source_schema
                     || this.source_table != source_table
+                    || this.target_schema != target_schema
                     || this.target_table != target_table
                 {
                     return;
@@ -336,7 +341,13 @@ impl Render for SchemaDiffDialog {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(format!("Schema：{} · 源表 → 目标表", self.schema)),
+                            .child(format!(
+                                "源：{}.{} · 目标：{}.{}",
+                                self.source_schema,
+                                self.source_table,
+                                self.target_schema,
+                                self.target_table
+                            )),
                     ),
             )
             .child(
