@@ -243,6 +243,9 @@ impl DbClientView {
             ListEvent::RequestEdit(conn) => {
                 self.open_form_edit(conn.clone(), window, cx);
             }
+            ListEvent::RequestDuplicate(conn) => {
+                self.open_form_duplicate(conn.clone(), window, cx);
+            }
             ListEvent::RequestDelete(id) => {
                 self.confirm_delete(id.clone(), window, cx);
             }

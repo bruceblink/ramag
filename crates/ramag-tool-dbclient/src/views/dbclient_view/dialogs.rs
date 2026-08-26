@@ -79,6 +79,21 @@ impl DbClientView {
         self.subscribe_form_and_open_dialog(form, window, cx);
     }
 
+    pub(super) fn open_form_duplicate(
+        &mut self,
+        conn: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let svc = self.service.clone();
+        let redis_svc = self.redis_service.clone();
+        let mongo_svc = self.mongo_service.clone();
+        let form = cx.new(|cx| {
+            ConnectionFormPanel::new_duplicate(svc, redis_svc, mongo_svc, conn, window, cx)
+        });
+        self.subscribe_form_and_open_dialog(form, window, cx);
+    }
+
     /// 订阅表单事件并通过 dialog 系统弹出
     fn subscribe_form_and_open_dialog(
         &mut self,

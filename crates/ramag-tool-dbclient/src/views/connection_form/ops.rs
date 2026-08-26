@@ -179,6 +179,7 @@ impl ConnectionFormPanel {
         let id = match &self.mode {
             FormMode::Create => ConnectionId::new(),
             FormMode::Edit(id) => id.clone(),
+            FormMode::Duplicate(id) => id.clone(),
         };
 
         let ca_cert_path = if self.tls {

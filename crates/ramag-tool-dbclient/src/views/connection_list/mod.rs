@@ -76,6 +76,7 @@ pub enum ListEvent {
     RequestNew,
     RequestSync(ConnectionConfig),
     RequestEdit(ConnectionConfig),
+    RequestDuplicate(ConnectionConfig),
     RequestDelete(ConnectionId),
     /// 通知根视图清理旧连接资源。
     ConnectionsChanged(Vec<ConnectionConfig>),

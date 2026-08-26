@@ -20,6 +20,7 @@ use ramag_domain::entities::{
 pub enum FormMode {
     Create,
     Edit(ConnectionId),
+    Duplicate(ConnectionId),
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,28 @@ const DRIVERS: &[(&str, &str, bool)] = &[
 ];
 
 const MAX_PORT_TEXT_BYTES: usize = 5;
+const DUPLICATE_NAME_SUFFIX: &str = " (Copy)";
+
+fn duplicate_connection(mut existing: ConnectionConfig) -> (ConnectionId, ConnectionConfig) {
+    let id = ConnectionId::new();
+    existing.id = id.clone();
+    existing.name = duplicate_name(&existing.name);
+    (id, existing)
+}
+
+fn duplicate_name(name: &str) -> String {
+    let base = name.trim();
+    if base.is_empty() {
+        return "Copy".to_string();
+    }
+
+    let max_base_bytes = MAX_CONNECTION_NAME_BYTES.saturating_sub(DUPLICATE_NAME_SUFFIX.len());
+    let mut end = base.len().min(max_base_bytes);
+    while end > 0 && !base.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &base[..end], DUPLICATE_NAME_SUFFIX)
+}
 
 fn bounded_input(
     max_bytes: usize,
@@ -133,6 +156,26 @@ impl ConnectionFormPanel {
             mongo_service,
             mode,
             Some(existing),
+            window,
+            cx,
+        )
+    }
+
+    pub fn new_duplicate(
+        service: Arc<ConnectionService>,
+        redis_service: Arc<RedisService>,
+        mongo_service: Arc<MongoService>,
+        existing: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (id, duplicate) = duplicate_connection(existing);
+        Self::build(
+            service,
+            redis_service,
+            mongo_service,
+            FormMode::Duplicate(id),
+            Some(duplicate),
             window,
             cx,
         )
@@ -381,6 +424,48 @@ pub fn dialog_title(mode: &FormMode) -> &'static str {
     match mode {
         FormMode::Create => "新建连接",
         FormMode::Edit(_) => "编辑连接",
+        FormMode::Duplicate(_) => "复制连接",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ramag_domain::entities::TlsVerify;
+
+    #[test]
+    fn duplicate_connection_gets_new_id_and_preserves_settings() {
+        let mut original = ConnectionConfig::new_mysql("ship-db", "db.internal", 3306, "admin");
+        original.password = "secret".into();
+        original.database = Some("operations".into());
+        original.auth_source = Some("admin".into());
+        original.remark = Some("production copy source".into());
+        original.environment = Some("prod".into());
+        original.production = true;
+        original.tls = true;
+        original.tls_verify = TlsVerify::Ca;
+        original.ca_cert_path = Some("C:\\certs\\db.pem".into());
+        original.ssh_target = Some("ops@bastion".into());
+        original.ssh_port = Some(2222);
+
+        let original_id = original.id.clone();
+        let mut expected = original.clone();
+        let (duplicate_id, duplicate) = duplicate_connection(original);
+        expected.id = duplicate_id.clone();
+        expected.name = "ship-db (Copy)".into();
+
+        assert_ne!(duplicate_id, original_id);
+        assert_eq!(duplicate.id, duplicate_id);
+        assert_eq!(duplicate, expected);
+    }
+
+    #[test]
+    fn duplicate_name_stays_within_name_limit_and_respects_utf8_boundaries() {
+        let duplicate = duplicate_name(&"中".repeat(MAX_CONNECTION_NAME_BYTES));
+
+        assert!(duplicate.len() <= MAX_CONNECTION_NAME_BYTES);
+        assert!(duplicate.ends_with(DUPLICATE_NAME_SUFFIX));
+        assert_eq!(duplicate_name(""), "Copy");
     }
 }
 

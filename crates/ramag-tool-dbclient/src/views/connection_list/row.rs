@@ -3,7 +3,12 @@
 use gpui::{
     ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div, img, prelude::*, px,
 };
-use gpui_component::{Sizable as _, button::ButtonVariants as _, h_flex};
+use gpui_component::{
+    Sizable as _,
+    button::ButtonVariants as _,
+    h_flex,
+    menu::{ContextMenuExt as _, PopupMenu},
+};
 use ramag_domain::entities::{ConnectionConfig, DriverKind};
 
 use super::{ConnectionListPanel, ListEvent};
@@ -64,7 +69,9 @@ pub(super) fn connection_row(
     let conn_for_open = conn.clone();
     let conn_for_edit = conn.clone();
     let conn_for_sync = conn.clone();
+    let conn_for_duplicate = conn.clone();
     let conn_id_for_del = conn.id.clone();
+    let entity_for_menu = cx.entity().clone();
     let is_production = conn.production;
     let environment = conn.environment.clone().unwrap_or_default();
 
@@ -249,7 +256,15 @@ pub(super) fn connection_row(
         row = row.bg(sel_bg);
     }
 
-    row
+    row.context_menu(move |menu: PopupMenu, _, _| {
+        let entity = entity_for_menu.clone();
+        let connection = conn_for_duplicate.clone();
+        menu.item(ramag_ui::menu_item("Duplicate").on_click(move |_, _, app| {
+            entity.update(app, |_this, cx| {
+                cx.emit(ListEvent::RequestDuplicate(connection.clone()));
+            });
+        }))
+    })
 }
 
 fn environment_badge_colors(
