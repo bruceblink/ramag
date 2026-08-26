@@ -282,7 +282,10 @@ impl DbClientView {
             DriverKind::Mysql | DriverKind::Postgres => {
                 let svc = self.service.clone();
                 let budget = self.result_memory.clone();
-                let entity = cx.new(|cx| ConnectionSession::new(config, svc, budget, window, cx));
+                let connection_list = self.picker.clone();
+                let entity = cx.new(|cx| {
+                    ConnectionSession::new(config, svc, budget, connection_list, window, cx)
+                });
                 SessionEntity::Sql(entity)
             }
             DriverKind::Redis => {

@@ -15,6 +15,7 @@ use ramag_domain::entities::{ConnectionConfig, DriverKind};
 use tracing::{info, warn};
 
 use crate::sql_completion::{SchemaCache, is_system_schema};
+use crate::views::connection_list::ConnectionListPanel;
 use crate::views::query_panel::{QueryPanel, QueryPanelEvent};
 use crate::views::schema_diagram::SchemaDiagramPanel;
 use crate::views::table_tree::{TableTreePanel, TreeEvent};
@@ -43,14 +44,22 @@ impl ConnectionSession {
         config: ConnectionConfig,
         service: Arc<ConnectionService>,
         result_memory: ramag_ui::ResultMemoryBudget,
+        connection_list: Entity<ConnectionListPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let schema_cache = SchemaCache::new_shared();
         schema_cache.write().default_schema = config.database.clone();
 
-        let tree =
-            cx.new(|cx| TableTreePanel::new(service.clone(), schema_cache.clone(), window, cx));
+        let tree = cx.new(|cx| {
+            TableTreePanel::new(
+                service.clone(),
+                schema_cache.clone(),
+                connection_list,
+                window,
+                cx,
+            )
+        });
         let queries = cx.new(|cx| {
             QueryPanel::new(
                 service.clone(),

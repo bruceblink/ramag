@@ -33,7 +33,8 @@ struct LoadedMetadata {
 
 pub(crate) struct SchemaDiffDialog {
     service: Arc<ConnectionService>,
-    connection: ConnectionConfig,
+    source_connection: ConnectionConfig,
+    target_connection: ConnectionConfig,
     source_schema: String,
     source_table: String,
     target_schema: String,
@@ -51,7 +52,8 @@ impl SchemaDiffDialog {
     /// 初始化空的对比状态，并立即启动一次列、索引和外键元数据读取。
     pub(crate) fn new(
         service: Arc<ConnectionService>,
-        connection: ConnectionConfig,
+        source_connection: ConnectionConfig,
+        target_connection: ConnectionConfig,
         source_schema: String,
         source_table: String,
         target_schema: String,
@@ -60,7 +62,8 @@ impl SchemaDiffDialog {
     ) -> Self {
         let mut this = Self {
             service,
-            connection,
+            source_connection,
+            target_connection,
             source_schema,
             source_table,
             target_schema,
@@ -82,7 +85,8 @@ impl SchemaDiffDialog {
         self.request_generation = self.request_generation.wrapping_add(1);
         let request_generation = self.request_generation;
         let service = self.service.clone();
-        let connection = self.connection.clone();
+        let source_connection = self.source_connection.clone();
+        let target_connection = self.target_connection.clone();
         let source_schema = self.source_schema.clone();
         let source_table = self.source_table.clone();
         let target_schema = self.target_schema.clone();
@@ -95,20 +99,21 @@ impl SchemaDiffDialog {
             let (source, target) = futures::join!(
                 load_table_metadata(
                     service.clone(),
-                    connection.clone(),
+                    source_connection.clone(),
                     source_schema.clone(),
                     source_table.clone(),
                 ),
                 load_table_metadata(
                     service,
-                    connection.clone(),
+                    target_connection.clone(),
                     target_schema.clone(),
                     target_table.clone(),
                 ),
             );
             let _ = this.update(cx, |this, cx| {
                 if this.request_generation != request_generation
-                    || this.connection.id != connection.id
+                    || this.source_connection.id != source_connection.id
+                    || this.target_connection.id != target_connection.id
                     || this.source_schema != source_schema
                     || this.source_table != source_table
                     || this.target_schema != target_schema
@@ -342,9 +347,11 @@ impl Render for SchemaDiffDialog {
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .child(format!(
-                                "源：{}.{} · 目标：{}.{}",
+                                "源：{} / {}.{} · 目标：{} / {}.{}",
+                                self.source_connection.name,
                                 self.source_schema,
                                 self.source_table,
+                                self.target_connection.name,
                                 self.target_schema,
                                 self.target_table
                             )),

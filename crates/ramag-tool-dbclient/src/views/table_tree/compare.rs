@@ -7,6 +7,9 @@ use ramag_ui::open_bounded_prompt;
 
 use super::TableTreePanel;
 
+const TARGET_CONNECTION_SEPARATOR: &str = "::";
+const MAX_COMPARE_CONNECTION_HINTS: usize = 12;
+
 #[derive(Debug, PartialEq, Eq)]
 struct CompareTableRef {
     schema: String,
@@ -39,6 +42,91 @@ fn parse_compare_target(input: &str, source_schema: &str) -> Result<CompareTable
     })
 }
 
+fn parse_compare_request(
+    input: &str,
+    source_schema: &str,
+    source_connection: &ConnectionConfig,
+    available_connections: &[ConnectionConfig],
+) -> Result<(ConnectionConfig, CompareTableRef), &'static str> {
+    let (connection_selector, table_input) = match input.split_once(TARGET_CONNECTION_SEPARATOR) {
+        Some((selector, table_input)) => (Some(selector.trim()), table_input),
+        None => (None, input),
+    };
+    let target_connection = match connection_selector {
+        None => source_connection.clone(),
+        Some(selector) if selector.is_empty() => return Err("目标连接不能为空"),
+        Some(selector) => {
+            let mut matches = Vec::new();
+            if matches!(
+                source_connection.driver,
+                DriverKind::Mysql | DriverKind::Postgres
+            ) && (source_connection.name.eq_ignore_ascii_case(selector)
+                || source_connection
+                    .id
+                    .to_string()
+                    .eq_ignore_ascii_case(selector))
+            {
+                matches.push(source_connection);
+            }
+            for connection in available_connections {
+                if connection.id != source_connection.id
+                    && connection.driver == source_connection.driver
+                    && (connection.name.eq_ignore_ascii_case(selector)
+                        || connection.id.to_string().eq_ignore_ascii_case(selector))
+                {
+                    matches.push(connection);
+                }
+            }
+            match matches.as_slice() {
+                [] => return Err("找不到同类型的目标连接"),
+                [connection] => (*connection).clone(),
+                _ => return Err("目标连接名称不唯一，请改用连接 ID"),
+            }
+        }
+    };
+    let target = parse_compare_target(table_input, source_schema)?;
+    Ok((target_connection, target))
+}
+
+fn compare_connection_hint(
+    source: &ConnectionConfig,
+    available_connections: &[ConnectionConfig],
+) -> String {
+    let mut labels = vec![format!(
+        "{}（当前连接，ID {}）",
+        crate::views::inline_text_preview(&source.name, 64),
+        source.id
+    )];
+    labels.extend(
+        available_connections
+            .iter()
+            .filter(|connection| connection.id != source.id && connection.driver == source.driver)
+            .take(MAX_COMPARE_CONNECTION_HINTS)
+            .map(|connection| {
+                format!(
+                    "{}（ID {}）",
+                    crate::views::inline_text_preview(&connection.name, 64),
+                    connection.id
+                )
+            }),
+    );
+    let suffix = if available_connections
+        .iter()
+        .filter(|connection| connection.id != source.id && connection.driver == source.driver)
+        .count()
+        > MAX_COMPARE_CONNECTION_HINTS
+    {
+        " 等"
+    } else {
+        ""
+    };
+    format!(
+        "输入目标表名或 schema.table；跨连接时输入 连接名::schema.table。可用连接：{}{}",
+        labels.join("、"),
+        suffix
+    )
+}
+
 impl TableTreePanel {
     /// 校验驱动后收集目标表引用，并在输入弹窗关闭后打开只读结构对比视图。
     pub(super) fn prompt_compare_table(
@@ -57,24 +145,34 @@ impl TableTreePanel {
             cx.notify();
             return;
         }
+        let available_connections = self.connection_list.read(cx).connections().to_vec();
+        let connection_hint = compare_connection_hint(&connection, &available_connections);
+        let source_connection = connection.clone();
+        let source_schema = schema.clone();
         let tree = cx.entity().clone();
         let window_handle = window.window_handle();
         open_bounded_prompt(
             "比较表结构",
-            format!("输入目标表名，或输入 schema.table；不带 Schema 时使用 {schema}"),
+            format!("{connection_hint} 不带 Schema 时使用 {schema}"),
             "",
             "比较",
             MAX_CONNECTION_IDENTIFIER_BYTES,
             move |target_input, window, app| {
-                let target = match parse_compare_target(&target_input, &schema) {
-                    Ok(target) => target,
+                let (target_connection, target) = match parse_compare_request(
+                    &target_input,
+                    &source_schema,
+                    &source_connection,
+                    &available_connections,
+                ) {
+                    Ok(result) => result,
                     Err(message) => {
                         window
                             .push_notification(Notification::warning(message).autohide(true), app);
                         return;
                     }
                 };
-                if target.schema.eq_ignore_ascii_case(&schema)
+                if target_connection.id == source_connection.id
+                    && target.schema.eq_ignore_ascii_case(&source_schema)
                     && target.table.eq_ignore_ascii_case(&source_table)
                 {
                     window.push_notification(
@@ -88,9 +186,10 @@ impl TableTreePanel {
                     let _ = window_handle.update(app, |_, window, app| {
                         tree.update(app, |this, cx| {
                             this.open_schema_diff_dialog(
-                                connection,
+                                source_connection.clone(),
+                                target_connection,
                                 CompareTableRef {
-                                    schema,
+                                    schema: source_schema,
                                     table: source_table,
                                 },
                                 target,
@@ -109,7 +208,8 @@ impl TableTreePanel {
     /// 创建对比面板；面板随后异步读取两张表的元数据并负责渲染滚动内容。
     fn open_schema_diff_dialog(
         &mut self,
-        connection: ConnectionConfig,
+        source_connection: ConnectionConfig,
+        target_connection: ConnectionConfig,
         source: CompareTableRef,
         target: CompareTableRef,
         window: &mut Window,
@@ -118,7 +218,8 @@ impl TableTreePanel {
         let panel = cx.new(|cx| {
             crate::views::schema_diff_dialog::SchemaDiffDialog::new(
                 self.service.clone(),
-                connection,
+                source_connection.clone(),
+                target_connection.clone(),
                 source.schema.clone(),
                 source.table.clone(),
                 target.schema.clone(),
@@ -130,8 +231,13 @@ impl TableTreePanel {
             let panel_for_content = panel.clone();
             dialog
                 .title(format!(
-                    "比较表结构 · {}.{} → {}.{}",
-                    source.schema, source.table, target.schema, target.table
+                    "比较表结构 · {} / {}.{} → {} / {}.{}",
+                    source_connection.name,
+                    source.schema,
+                    source.table,
+                    target_connection.name,
+                    target.schema,
+                    target.table
                 ))
                 .width(px(1120.0))
                 .margin_top(px(55.0))
@@ -143,6 +249,12 @@ impl TableTreePanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn postgres_connection(name: &str, host: &str) -> ConnectionConfig {
+        let mut connection = ConnectionConfig::new_mysql(name, host, 5432, "postgres");
+        connection.driver = DriverKind::Postgres;
+        connection
+    }
 
     #[test]
     fn unqualified_target_uses_source_schema() {
@@ -182,5 +294,60 @@ mod tests {
     #[test]
     fn control_characters_are_rejected() {
         assert!(parse_compare_target("archive.ord\ners", "public").is_err());
+    }
+
+    #[test]
+    fn qualified_request_selects_a_same_driver_connection() {
+        let source = ConnectionConfig::new_mysql("source", "mysql-a", 3306, "root");
+        let target = ConnectionConfig::new_mysql("archive", "mysql-b", 3306, "root");
+
+        let (selected, table) = parse_compare_request(
+            "archive::history.orders",
+            "public",
+            &source,
+            &[source.clone(), target.clone()],
+        )
+        .expect("target connection should resolve");
+
+        assert_eq!(selected.id, target.id);
+        assert_eq!(table.schema, "history");
+        assert_eq!(table.table, "orders");
+    }
+
+    #[test]
+    fn connection_id_can_disambiguate_duplicate_names() {
+        let source = postgres_connection("source", "pg-a");
+        let first = postgres_connection("same", "pg-b");
+        let second = postgres_connection("same", "pg-c");
+
+        assert!(
+            parse_compare_request(
+                "same::public.orders",
+                "public",
+                &source,
+                &[source.clone(), first.clone(), second.clone()],
+            )
+            .is_err()
+        );
+
+        let (selected, _) = parse_compare_request(
+            &format!("{}::orders", second.id),
+            "public",
+            &source,
+            &[source.clone(), first, second.clone()],
+        )
+        .expect("connection id should resolve");
+        assert_eq!(selected.id, second.id);
+    }
+
+    #[test]
+    fn cross_connection_request_rejects_another_driver() {
+        let source = ConnectionConfig::new_mysql("source", "mysql-a", 3306, "root");
+        let target = postgres_connection("pg", "pg-a");
+
+        assert_eq!(
+            parse_compare_request("pg::public.orders", "public", &source, &[target],),
+            Err("找不到同类型的目标连接")
+        );
     }
 }

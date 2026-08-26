@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gpui::{AppContext as _, Context, EventEmitter, UniformListScrollHandle, Window};
+use gpui::{AppContext as _, Context, Entity, EventEmitter, UniformListScrollHandle, Window};
 use gpui_component::input::InputState;
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
@@ -21,6 +21,7 @@ use tracing::error;
 
 use self::row::TreeRowsCacheEntry;
 use crate::sql_completion::{SchemaCache, is_system_schema};
+use crate::views::connection_list::ConnectionListPanel;
 
 const MAX_LOADED_SCHEMA_TABLES: usize = 64;
 const MAX_EXPANDED_TABLE_COLUMNS: usize = 32;
@@ -33,6 +34,7 @@ pub(crate) fn jsonl_import_description(schema: &str, table: &str) -> String {
 
 pub struct TableTreePanel {
     pub(super) service: Arc<ConnectionService>,
+    pub(super) connection_list: Entity<ConnectionListPanel>,
     pub(super) connection: Option<ConnectionConfig>,
     pub(super) loading_schemas: bool,
     pub(super) schemas: Vec<Schema>,
@@ -127,6 +129,7 @@ impl TableTreePanel {
     pub fn new(
         service: Arc<ConnectionService>,
         schema_cache: Arc<RwLock<SchemaCache>>,
+        connection_list: Entity<ConnectionListPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -152,6 +155,7 @@ impl TableTreePanel {
 
         Self {
             service,
+            connection_list,
             connection: None,
             loading_schemas: false,
             schemas: Vec::new(),
