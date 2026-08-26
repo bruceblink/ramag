@@ -106,6 +106,18 @@ impl Render for ResultPanel {
                 .child(msg)
                 .into_any_element(),
 
+            ResultState::Ok(result) if self.plan.enabled => super::plan::render_plan(
+                self,
+                &result,
+                fg,
+                muted_fg,
+                secondary_bg,
+                border,
+                muted_bg,
+                accent,
+                cx,
+            ),
+
             ResultState::Ok(result) => render_table(
                 self,
                 &result,

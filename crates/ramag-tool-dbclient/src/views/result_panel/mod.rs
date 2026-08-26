@@ -2,10 +2,10 @@ mod export;
 mod helpers;
 mod lifecycle;
 mod ops;
+mod plan;
 mod render;
 mod row_search;
 mod scroll;
-
 mod state;
 use std::collections::BTreeSet;
 use std::sync::{
@@ -149,6 +149,7 @@ pub struct ResultPanel {
     pub(super) warnings_expanded: bool,
     /// 当前标签的结果内存登记。
     result_memory: Option<ResultMemoryLease>,
+    plan: plan::PlanState,
 }
 
 impl ResultPanel {
@@ -233,6 +234,7 @@ impl ResultPanel {
             column_completion_source,
             warnings_expanded: false,
             result_memory: None,
+            plan: plan::PlanState::new(),
         }
     }
 
@@ -359,6 +361,9 @@ impl ResultPanel {
     }
 
     pub(crate) fn insert_block_reason(&self) -> Option<&'static str> {
+        if self.plan.enabled {
+            return Some("执行计划只读，仅可查看和复制");
+        }
         if self.dml_busy {
             return Some("上一写操作尚未完成");
         }

@@ -27,6 +27,7 @@ impl ResultPanel {
         self.sort_by = None;
         self.col_width_overrides.clear();
         self.pending_insert = None;
+        self.plan.reset_result();
         // 客户端资源警告直接展开，避免用户把已截断结果误认为完整结果。
         self.warnings_expanded = has_client_warning;
         self.row_identity = None;
@@ -103,6 +104,9 @@ impl ResultPanel {
         self.col_width_overrides.clear();
         self.pending_insert = None;
         self.row_identity = None;
+        if self.plan.enabled {
+            self.plan.reset_result();
+        }
         cx.notify();
     }
 

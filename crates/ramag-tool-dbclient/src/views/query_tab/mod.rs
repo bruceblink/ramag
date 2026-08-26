@@ -160,6 +160,7 @@ impl QueryTab {
         let cache_for_plan = schema_cache.clone();
         let plan_result = cx.new(|cx| {
             let mut panel = ResultPanel::new(window, cx);
+            panel.set_plan_mode(true);
             panel.set_executor(Some(service.clone()), connection.clone());
             panel.set_schema_cache(Some(cache_for_plan));
             panel
