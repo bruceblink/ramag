@@ -5,10 +5,11 @@ use gpui_component::{WindowExt as _, notification::Notification};
 use ramag_domain::entities::{ConnectionConfig, DriverKind, MAX_CONNECTION_IDENTIFIER_BYTES};
 use ramag_ui::open_bounded_prompt;
 
-use super::TableTreePanel;
+use crate::views::connection_target::{
+    SQL_CONNECTION_SEPARATOR, resolve_sql_connection, sql_connection_hint,
+};
 
-const TARGET_CONNECTION_SEPARATOR: &str = "::";
-const MAX_COMPARE_CONNECTION_HINTS: usize = 12;
+use super::TableTreePanel;
 
 #[derive(Debug, PartialEq, Eq)]
 struct CompareTableRef {
@@ -48,7 +49,7 @@ fn parse_compare_request(
     source_connection: &ConnectionConfig,
     available_connections: &[ConnectionConfig],
 ) -> Result<(ConnectionConfig, CompareTableRef), &'static str> {
-    let (connection_selector, table_input) = match input.split_once(TARGET_CONNECTION_SEPARATOR) {
+    let (connection_selector, table_input) = match input.split_once(SQL_CONNECTION_SEPARATOR) {
         Some((selector, table_input)) => (Some(selector.trim()), table_input),
         None => (None, input),
     };
@@ -56,32 +57,7 @@ fn parse_compare_request(
         None => source_connection.clone(),
         Some(selector) if selector.is_empty() => return Err("目标连接不能为空"),
         Some(selector) => {
-            let mut matches = Vec::new();
-            if matches!(
-                source_connection.driver,
-                DriverKind::Mysql | DriverKind::Postgres
-            ) && (source_connection.name.eq_ignore_ascii_case(selector)
-                || source_connection
-                    .id
-                    .to_string()
-                    .eq_ignore_ascii_case(selector))
-            {
-                matches.push(source_connection);
-            }
-            for connection in available_connections {
-                if connection.id != source_connection.id
-                    && connection.driver == source_connection.driver
-                    && (connection.name.eq_ignore_ascii_case(selector)
-                        || connection.id.to_string().eq_ignore_ascii_case(selector))
-                {
-                    matches.push(connection);
-                }
-            }
-            match matches.as_slice() {
-                [] => return Err("找不到同类型的目标连接"),
-                [connection] => (*connection).clone(),
-                _ => return Err("目标连接名称不唯一，请改用连接 ID"),
-            }
+            resolve_sql_connection(selector, source_connection, available_connections)?
         }
     };
     let target = parse_compare_target(table_input, source_schema)?;
@@ -92,38 +68,9 @@ fn compare_connection_hint(
     source: &ConnectionConfig,
     available_connections: &[ConnectionConfig],
 ) -> String {
-    let mut labels = vec![format!(
-        "{}（当前连接，ID {}）",
-        crate::views::inline_text_preview(&source.name, 64),
-        source.id
-    )];
-    labels.extend(
-        available_connections
-            .iter()
-            .filter(|connection| connection.id != source.id && connection.driver == source.driver)
-            .take(MAX_COMPARE_CONNECTION_HINTS)
-            .map(|connection| {
-                format!(
-                    "{}（ID {}）",
-                    crate::views::inline_text_preview(&connection.name, 64),
-                    connection.id
-                )
-            }),
-    );
-    let suffix = if available_connections
-        .iter()
-        .filter(|connection| connection.id != source.id && connection.driver == source.driver)
-        .count()
-        > MAX_COMPARE_CONNECTION_HINTS
-    {
-        " 等"
-    } else {
-        ""
-    };
     format!(
-        "输入目标表名或 schema.table；跨连接时输入 连接名::schema.table。可用连接：{}{}",
-        labels.join("、"),
-        suffix
+        "输入目标表名或 schema.table；跨连接时输入 连接名::schema.table。可用连接：{}",
+        sql_connection_hint(source, available_connections),
     )
 }
 

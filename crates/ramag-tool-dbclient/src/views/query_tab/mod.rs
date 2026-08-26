@@ -1,4 +1,5 @@
 mod actions;
+mod comparison;
 mod comparison_toolbar;
 mod examples;
 mod paging;
@@ -24,6 +25,7 @@ use ramag_ui::ResultMemoryBudget;
 use ramag_ui::platform::primary_shortcut;
 
 use crate::sql_completion::SchemaCache;
+use crate::views::connection_list::ConnectionListPanel;
 use crate::views::result_panel::{ResultPanel, ResultPanelEvent, ResultState};
 
 #[cfg(test)]
@@ -32,6 +34,7 @@ mod tests;
 pub struct QueryTab {
     pub(super) service: Arc<ConnectionService>,
     pub(super) connection: Option<ConnectionConfig>,
+    pub(super) connection_list: Option<Entity<ConnectionListPanel>>,
     pub(super) active_schema: Option<String>,
     pub(super) editor: Entity<InputState>,
     pub(super) result: Entity<ResultPanel>,
@@ -65,6 +68,9 @@ pub struct QueryTab {
     /// Invalidates late begin/commit/rollback responses after context changes.
     pub(super) transaction_seq: u64,
     pub(super) query_start: Option<Instant>,
+    /// 跨连接结果查询代次；上下文变化后丢弃目标连接的迟到回包。
+    pub(super) cross_compare_seq: u64,
+    pub(super) cross_compare_running: bool,
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) title: String,
     pub(super) short_title: Option<String>,
@@ -233,6 +239,7 @@ impl QueryTab {
         Self {
             service,
             connection,
+            connection_list: None,
             active_schema: initial_schema,
             editor,
             result,
@@ -253,6 +260,8 @@ impl QueryTab {
             transaction_error: None,
             transaction_seq: 0,
             query_start: None,
+            cross_compare_seq: 0,
+            cross_compare_running: false,
             schema_cache,
             title: title.into(),
             short_title: None,
@@ -384,6 +393,13 @@ impl QueryTab {
         cx.notify();
     }
 
+    pub(super) fn set_connection_list(
+        &mut self,
+        connection_list: Option<Entity<ConnectionListPanel>>,
+    ) {
+        self.connection_list = connection_list;
+    }
+
     pub fn set_active_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
         let normalized = schema.filter(|s| !s.is_empty());
         if self.active_schema != normalized {
@@ -479,6 +495,8 @@ impl QueryTab {
         self.current_task = None;
         self.cancel_handle = None;
         self.query_start = None;
+        self.cross_compare_seq = self.cross_compare_seq.wrapping_add(1);
+        self.cross_compare_running = false;
         let result_active = self.result_active;
         self.set_result_active(result_active, cx);
         self.result.update(cx, |result, cx| {

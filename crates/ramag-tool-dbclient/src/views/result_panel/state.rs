@@ -107,6 +107,7 @@ impl ResultPanel {
 
     pub(crate) fn clear_released_result_context(&mut self) {
         self.source_sql = None;
+        self.source_schema = None;
         self.comparison_baseline = None;
         self.pinned_target = None;
         self.clear_cell_edit_state();

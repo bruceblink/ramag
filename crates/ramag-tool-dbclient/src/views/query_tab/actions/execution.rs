@@ -396,6 +396,7 @@ impl QueryTab {
                             .map(|(s, t)| (Some(s.clone()), t.clone()));
                         result_handle.update(cx, |r, cx| {
                             r.set_source_sql(Some(title_sql.clone()));
+                            r.set_source_schema(query.default_schema.clone());
                             r.set_pinned_target(target_for_result);
                             r.set_state(ResultState::Ok(Arc::new(qr)), cx);
                             r.set_pagination(pagination, cx);

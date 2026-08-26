@@ -23,6 +23,7 @@ use ramag_ui::PointerDropdownMenu as _;
 use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_tab};
 
 use crate::sql_completion::SchemaCache;
+use crate::views::connection_list::ConnectionListPanel;
 use crate::views::query_tab::{QueryTab, QueryTabEvent};
 
 const MAX_CLOSED_QUERY_DRAFTS: usize = 10;
@@ -48,6 +49,7 @@ pub struct QueryPanel {
     active: usize,
     session_active: bool,
     connection: Option<ConnectionConfig>,
+    connection_list: Option<Entity<ConnectionListPanel>>,
     active_schema: Option<String>,
     show_editor: bool,
     tabs_scroll: ScrollHandle,
@@ -91,6 +93,7 @@ impl QueryPanel {
             active: 0,
             session_active: false,
             connection: None,
+            connection_list: None,
             active_schema: None,
             show_editor: false,
             tabs_scroll: ScrollHandle::new(),
@@ -128,6 +131,19 @@ impl QueryPanel {
         }
         self.load_persisted_drafts(window, cx);
         cx.notify();
+    }
+
+    pub(crate) fn set_connection_list(
+        &mut self,
+        connection_list: Option<Entity<ConnectionListPanel>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.connection_list = connection_list.clone();
+        for tab in &self.tabs {
+            tab.update(cx, |tab, _| {
+                tab.set_connection_list(connection_list.clone())
+            });
+        }
     }
 
     /// Invalidates every SQL tab before its owning connection session is discarded.

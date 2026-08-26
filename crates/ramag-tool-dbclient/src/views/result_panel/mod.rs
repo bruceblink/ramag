@@ -106,6 +106,7 @@ pub struct ResultPanel {
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
     pub(super) source_sql: Option<String>,
+    pub(super) source_schema: Option<String>,
     pub(super) comparison_baseline: Option<crate::views::result_diff::ResultSnapshot>,
     pub(super) pinned_target: Option<(Option<String>, String)>,
     /// 行定位键（主键或全非空唯一索引）；未就绪时禁用行内修改和删除。
@@ -199,6 +200,7 @@ impl ResultPanel {
             selected_cell: None,
             editing_cell: None,
             source_sql: None,
+            source_schema: None,
             comparison_baseline: None,
             col_width_overrides: Vec::new(),
             dml_busy: false,
@@ -571,14 +573,6 @@ impl ResultPanel {
             result.rows.get(ri).and_then(|r| r.values.get(ci)),
             Some(ramag_domain::entities::Value::Bytes(_))
         )
-    }
-
-    pub fn set_source_sql(&mut self, sql: Option<String>) {
-        self.source_sql = sql;
-    }
-
-    pub(super) fn source_sql(&self) -> Option<String> {
-        self.source_sql.clone()
     }
 }
 

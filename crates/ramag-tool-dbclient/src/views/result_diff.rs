@@ -1,8 +1,13 @@
 //! 已加载查询结果的有界行列差异计算。
 
-use std::{fmt::Write as _, sync::Arc};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write as _,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
-use ramag_domain::entities::{ConnectionId, QueryResult};
+use ramag_domain::entities::{ConnectionConfig, ConnectionId, QueryResult};
 
 /// 单次结果比较最多处理当前已加载的这些行，避免比较动作阻塞界面线程。
 pub(crate) const MAX_COMPARE_ROWS: usize = 10_000;
@@ -15,6 +20,7 @@ const MAX_ROW_PREVIEW_CHARS: usize = 4_096;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ResultContext {
     pub(crate) connection_id: Option<ConnectionId>,
+    pub(crate) default_schema: Option<String>,
     pub(crate) sql_hash: Option<u64>,
     pub(crate) pinned_target: Option<(Option<String>, String)>,
 }
@@ -34,6 +40,41 @@ pub(crate) struct ResultSnapshot {
     pub(crate) context: ResultContext,
     pub(crate) scope_key: ResultScopeKey,
     pub(crate) identity_columns: Option<Vec<String>>,
+}
+
+impl ResultSnapshot {
+    pub(crate) fn from_query(
+        result: Arc<QueryResult>,
+        role: &str,
+        connection: Option<&ConnectionConfig>,
+        source_sql: Option<&str>,
+        scope: String,
+        scope_key: ResultScopeKey,
+        pinned_target: Option<(Option<String>, String)>,
+        identity_columns: Option<Vec<String>>,
+        default_schema: Option<String>,
+    ) -> Self {
+        let query_label = source_sql
+            .filter(|sql| !sql.trim().is_empty())
+            .map(|sql| crate::views::inline_text_preview(sql, 96))
+            .unwrap_or_else(|| "未命名查询".to_string());
+        let connection_label = connection
+            .map(|connection| crate::views::inline_text_preview(&connection.name, 64))
+            .unwrap_or_else(|| "未连接".to_string());
+        Self {
+            result,
+            label: format!("{role} · {connection_label} · SQL · {query_label}"),
+            scope,
+            context: ResultContext {
+                connection_id: connection.map(|connection| connection.id.clone()),
+                default_schema,
+                sql_hash: source_sql.map(hash_text),
+                pinned_target,
+            },
+            scope_key,
+            identity_columns,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +291,12 @@ fn append_lines(output: &mut String, title: &str, lines: &[ResultDiffLine], omit
     if omitted_lines > 0 {
         let _ = writeln!(output, "… 还有 {omitted_lines} 行未显示");
     }
+}
+
+fn hash_text(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]

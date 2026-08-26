@@ -1,21 +1,37 @@
 //! 查询结果基准快照、范围说明和内存登记。
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, ParentElement as _, Window, px};
 use gpui_component::{WindowExt as _, notification::Notification};
 use ramag_domain::entities::QueryResult;
 
-use crate::views::result_diff::{ResultContext, ResultScopeKey, ResultSnapshot};
+use crate::views::result_diff::{ResultScopeKey, ResultSnapshot};
 use crate::views::result_diff_dialog::ResultDiffDialog;
 
 use super::{ResultPanel, ResultState, TotalRows};
 
 impl ResultPanel {
+    pub fn set_source_sql(&mut self, sql: Option<String>) {
+        self.source_sql = sql;
+    }
+
+    pub(crate) fn set_source_schema(&mut self, schema: Option<String>) {
+        self.source_schema = schema;
+    }
+
+    pub(crate) fn source_sql(&self) -> Option<String> {
+        self.source_sql.clone()
+    }
+
+    pub(crate) fn source_schema(&self) -> Option<String> {
+        self.source_schema.clone()
+    }
+
+    pub(crate) fn result_revision(&self) -> u64 {
+        self.result_revision
+    }
+
     pub(crate) fn can_capture_comparison_baseline(&self) -> bool {
         matches!(&self.state, ResultState::Ok(_))
     }
@@ -50,6 +66,13 @@ impl ResultPanel {
             baseline,
             self.build_result_snapshot(current.clone(), "当前"),
         ))
+    }
+
+    pub(crate) fn current_comparison_snapshot(&self, role: &str) -> Option<ResultSnapshot> {
+        let ResultState::Ok(result) = &self.state else {
+            return None;
+        };
+        Some(self.build_result_snapshot(result.clone(), role))
     }
 
     pub(crate) fn open_comparison_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -109,32 +132,20 @@ impl ResultPanel {
     }
 
     fn build_result_snapshot(&self, result: Arc<QueryResult>, role: &str) -> ResultSnapshot {
-        let query_label = self
-            .source_sql
-            .as_deref()
-            .filter(|sql| !sql.trim().is_empty())
-            .map(|sql| crate::views::inline_text_preview(sql, 96))
-            .unwrap_or_else(|| "未命名查询".to_string());
-        let label = format!("{role} · SQL · {query_label}");
         let (scope, scope_key) = self.result_scope(&result);
-        ResultSnapshot {
+        ResultSnapshot::from_query(
             result,
-            label,
+            role,
+            self.connection.as_ref(),
+            self.source_sql.as_deref(),
             scope,
-            context: ResultContext {
-                connection_id: self
-                    .connection
-                    .as_ref()
-                    .map(|connection| connection.id.clone()),
-                sql_hash: self.source_sql.as_deref().map(hash_text),
-                pinned_target: self.pinned_target.clone(),
-            },
             scope_key,
-            identity_columns: self
-                .row_identity
+            self.pinned_target.clone(),
+            self.row_identity
                 .as_ref()
                 .map(|identity| identity.columns.clone()),
-        }
+            self.source_schema.clone(),
+        )
     }
 
     fn result_scope(&self, result: &QueryResult) -> (String, ResultScopeKey) {
@@ -176,10 +187,4 @@ impl ResultPanel {
             ),
         }
     }
-}
-
-fn hash_text(text: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
 }

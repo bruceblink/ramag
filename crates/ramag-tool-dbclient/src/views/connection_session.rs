@@ -51,11 +51,12 @@ impl ConnectionSession {
         let schema_cache = SchemaCache::new_shared();
         schema_cache.write().default_schema = config.database.clone();
 
+        let tree_connection_list = connection_list.clone();
         let tree = cx.new(|cx| {
             TableTreePanel::new(
                 service.clone(),
                 schema_cache.clone(),
-                connection_list,
+                tree_connection_list,
                 window,
                 cx,
             )
@@ -68,6 +69,9 @@ impl ConnectionSession {
                 window,
                 cx,
             )
+        });
+        queries.update(cx, |queries, query_cx| {
+            queries.set_connection_list(Some(connection_list), query_cx);
         });
 
         let conn_for_tree = config.clone();

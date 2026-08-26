@@ -4,14 +4,17 @@ use gpui::{ClickEvent, Entity, IntoElement};
 use gpui_component::{Disableable as _, Sizable as _, button::ButtonVariants as _};
 use ramag_ui::PointerDropdownMenu as _;
 
+use super::QueryTab;
 use crate::views::result_panel::ResultPanel;
 
 pub(super) fn result_comparison_menu(
+    query_tab: Entity<QueryTab>,
     result: Entity<ResultPanel>,
     can_capture: bool,
     has_baseline: bool,
+    can_cross_compare: bool,
 ) -> impl IntoElement {
-    let disabled = !can_capture && !has_baseline;
+    let disabled = !can_capture && !has_baseline && !can_cross_compare;
     ramag_ui::clickable_button("result-comparison-menu")
         .ghost()
         .small()
@@ -49,6 +52,17 @@ pub(super) fn result_comparison_menu(
                 }),
             );
 
+            let query_tab_for_cross = query_tab.clone();
+            menu = menu.item(
+                ramag_ui::menu_item_with_disabled("与其他连接比较结果", !can_cross_compare)
+                    .on_click(move |_: &ClickEvent, window, app| {
+                        query_tab_for_cross.update(app, |tab, cx| {
+                            tab.prompt_cross_connection_result_compare(window, cx);
+                        });
+                    }),
+            );
+
+            menu = menu.separator();
             let result_for_clear = result.clone();
             menu.item(
                 ramag_ui::menu_item_with_disabled("清除对比基准", !has_baseline).on_click(

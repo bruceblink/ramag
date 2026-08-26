@@ -25,8 +25,10 @@ impl QueryPanel {
         let active_schema = self.active_schema.clone();
         let show_editor = self.show_editor;
         let result_memory = self.result_memory.clone();
+        let connection_list = self.connection_list.clone();
         cx.new(|cx| {
             let mut tab = QueryTab::new(svc, title, conn, cache, result_memory, window, cx);
+            tab.set_connection_list(connection_list);
             tab.set_active_schema(active_schema, cx);
             tab.set_show_editor(show_editor, cx);
             tab

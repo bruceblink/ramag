@@ -52,6 +52,7 @@ impl Render for QueryTab {
             )
         };
         let plan_visible = self.show_plan;
+        let can_cross_connection_compare = !plan_visible && self.can_compare_cross_connection(cx);
         let plan_available = !self.plan_result_is_empty(cx);
 
         // 仅"执行中"状态在工具条显示实时耗时，其他状态由结果面板底部 status_bar 展示
@@ -382,9 +383,11 @@ impl Render for QueryTab {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
                     })
                     .child(result_comparison_menu(
+                        query_tab_entity.clone(),
                         data_result_entity,
                         can_capture_comparison,
                         has_comparison_baseline,
+                        can_cross_connection_compare,
                     ))
                     .child({
                         let can_insert = !plan_visible
