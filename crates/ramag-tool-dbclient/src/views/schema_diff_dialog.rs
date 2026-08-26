@@ -7,9 +7,10 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, Theme,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, Theme, WindowExt as _,
     button::ButtonVariants as _,
     h_flex,
+    notification::Notification,
     scroll::{Scrollbar, ScrollbarShow},
     spinner::Spinner,
     v_flex,
@@ -21,6 +22,9 @@ use super::schema_diff::{
     MetadataDiffKind, MetadataDiffLine, MetadataDiffSection, TableMetadata, build_table_diff,
     format_table_diff,
 };
+use super::schema_migration::build_migration_script;
+
+mod migration;
 
 const DIFF_VIEW_WIDTH: f32 = 980.0;
 const DIFF_VIEW_HEIGHT: f32 = 520.0;
@@ -46,6 +50,11 @@ pub(crate) struct SchemaDiffDialog {
     error: Option<String>,
     vertical_scroll: ScrollHandle,
     horizontal_scroll: ScrollHandle,
+    migration_vertical_scroll: ScrollHandle,
+    migration_horizontal_scroll: ScrollHandle,
+    migration_visible: bool,
+    saving_migration: bool,
+    pending_notification: Option<Notification>,
 }
 
 impl SchemaDiffDialog {
@@ -75,6 +84,11 @@ impl SchemaDiffDialog {
             error: None,
             vertical_scroll: ScrollHandle::new(),
             horizontal_scroll: ScrollHandle::new(),
+            migration_vertical_scroll: ScrollHandle::new(),
+            migration_horizontal_scroll: ScrollHandle::new(),
+            migration_visible: false,
+            saving_migration: false,
+            pending_notification: None,
         };
         this.refresh(cx);
         this
@@ -93,6 +107,7 @@ impl SchemaDiffDialog {
         let target_table = self.target_table.clone();
         self.loading = true;
         self.error = None;
+        self.migration_visible = false;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -224,14 +239,44 @@ impl SchemaDiffDialog {
 }
 
 impl Render for SchemaDiffDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(notification) = self.pending_notification.take() {
+            window.push_notification(notification, cx);
+        }
+        let theme = cx.theme().clone();
+        let theme = &theme;
         let sections = self
             .source
             .as_ref()
             .zip(self.target.as_ref())
             .map(|(source, target)| build_table_diff(&source.metadata, &target.metadata));
         let has_sections = sections.is_some();
+        let metadata_complete =
+            self.source
+                .as_ref()
+                .zip(self.target.as_ref())
+                .is_some_and(|(source, target)| {
+                    source.warnings.is_empty() && target.warnings.is_empty()
+                });
+        let migration = self
+            .source
+            .as_ref()
+            .zip(self.target.as_ref())
+            .map(|(source, target)| {
+                if metadata_complete {
+                    build_migration_script(
+                        self.target_connection.driver,
+                        &self.source_schema,
+                        &self.source_table,
+                        &self.target_schema,
+                        &self.target_table,
+                        &source.metadata,
+                        &target.metadata,
+                    )
+                } else {
+                    Err("源表或目标表的元数据未完整加载，无法生成迁移 SQL；请刷新后重试".into())
+                }
+            });
         let copy_text = sections
             .as_deref()
             .map(format_table_diff)
@@ -241,7 +286,9 @@ impl Render for SchemaDiffDialog {
             .as_ref()
             .zip(self.target.as_ref())
             .and_then(|(source, target)| self.render_warnings(source, target, theme));
-        let body = if self.loading && sections.is_none() {
+        let body = if self.migration_visible {
+            self.render_migration_panel(migration.as_ref(), theme, cx)
+        } else if self.loading && sections.is_none() {
             v_flex()
                 .h(px(DIFF_VIEW_HEIGHT))
                 .items_center()
@@ -356,6 +403,25 @@ impl Render for SchemaDiffDialog {
                                 self.target_table
                             )),
                     ),
+            )
+            .child(
+                ramag_ui::clickable_button("schema-diff-migration")
+                    .ghost()
+                    .small()
+                    .icon(if self.migration_visible {
+                        IconName::ArrowLeft
+                    } else {
+                        IconName::File
+                    })
+                    .tooltip(if self.migration_visible {
+                        "返回结构差异"
+                    } else if !metadata_complete {
+                        "元数据未完整加载，无法预览迁移 SQL"
+                    } else {
+                        "预览迁移 SQL"
+                    })
+                    .disabled(self.loading || !has_sections || !metadata_complete)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_migration(cx))),
             )
             .child(
                 ramag_ui::clickable_button("schema-diff-copy")

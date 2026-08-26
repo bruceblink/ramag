@@ -18,6 +18,7 @@ pub mod result_table;
 mod schema_diagram;
 mod schema_diff;
 mod schema_diff_dialog;
+mod schema_migration;
 mod table_designer;
 pub mod table_tree;
 pub mod tree_helpers;
