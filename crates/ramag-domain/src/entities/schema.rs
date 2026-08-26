@@ -59,6 +59,51 @@ pub struct Index {
     pub columns: Vec<String>,
 }
 
+/// 外键在被引用行删除或更新时采用的数据库动作。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ForeignKeyAction {
+    /// 数据库默认动作：不自动级联，按约束检查失败。
+    #[default]
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull,
+    SetDefault,
+}
+
+impl ForeignKeyAction {
+    /// 将数据库元数据中的动作名称转换为跨驱动的规范值；未知值返回 None 以阻止信息丢失。
+    pub fn parse_sql(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("NO ACTION") || value.eq_ignore_ascii_case("NO_ACTION") {
+            Some(Self::NoAction)
+        } else if value.eq_ignore_ascii_case("RESTRICT") {
+            Some(Self::Restrict)
+        } else if value.eq_ignore_ascii_case("CASCADE") {
+            Some(Self::Cascade)
+        } else if value.eq_ignore_ascii_case("SET NULL") || value.eq_ignore_ascii_case("SET_NULL") {
+            Some(Self::SetNull)
+        } else if value.eq_ignore_ascii_case("SET DEFAULT")
+            || value.eq_ignore_ascii_case("SET_DEFAULT")
+        {
+            Some(Self::SetDefault)
+        } else {
+            None
+        }
+    }
+
+    /// 返回可直接放入 MySQL/PostgreSQL 外键定义的规范 SQL 片段。
+    pub const fn as_sql(self) -> &'static str {
+        match self {
+            Self::NoAction => "NO ACTION",
+            Self::Restrict => "RESTRICT",
+            Self::Cascade => "CASCADE",
+            Self::SetNull => "SET NULL",
+            Self::SetDefault => "SET DEFAULT",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForeignKey {
     pub name: String,
@@ -67,4 +112,34 @@ pub struct ForeignKey {
     pub ref_table: String,
     /// 与 `columns` 一一对应。
     pub ref_columns: Vec<String>,
+    /// 引用行被删除时的动作；缺少该字段的旧记录按数据库默认行为处理。
+    #[serde(default)]
+    pub on_delete: ForeignKeyAction,
+    /// 引用键被更新时的动作；缺少该字段的旧记录按数据库默认行为处理。
+    #[serde(default)]
+    pub on_update: ForeignKeyAction,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ForeignKeyAction;
+
+    #[test]
+    fn parses_sql_actions_without_losing_unknown_values() {
+        assert_eq!(
+            ForeignKeyAction::parse_sql(" set null "),
+            Some(ForeignKeyAction::SetNull)
+        );
+        assert_eq!(
+            ForeignKeyAction::parse_sql("NO_ACTION"),
+            Some(ForeignKeyAction::NoAction)
+        );
+        assert_eq!(ForeignKeyAction::parse_sql("MATCH FULL"), None);
+    }
+
+    #[test]
+    fn renders_canonical_sql_actions() {
+        assert_eq!(ForeignKeyAction::Cascade.as_sql(), "CASCADE");
+        assert_eq!(ForeignKeyAction::SetDefault.as_sql(), "SET DEFAULT");
+    }
 }

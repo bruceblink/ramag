@@ -1,6 +1,6 @@
 # 数据库查询工具 DataGrip-like 开发路线图
 
-> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比、M4-E 查询结果数据网格差异比较、M4-F 跨连接表结构对比、M4-G 跨连接查询结果比较、M4-H 表结构迁移 SQL 预览与 M4-I 表结构迁移执行与回读已落地，后续迭代中
+> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比、M4-E 查询结果数据网格差异比较、M4-F 跨连接表结构对比、M4-G 跨连接查询结果比较、M4-H 表结构迁移 SQL 预览、M4-I 表结构迁移执行与回读和 M4-J 外键动作元数据与迁移保真度已落地，后续迭代中
 > 更新日期：2026-08-26
 > 适用范围：`ramag-tool-dbclient`、`ramag-tool-mongodb`、`ramag-domain`、`ramag-app` 及对应基础设施驱动
 
@@ -53,7 +53,7 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - 服务端分页目前只覆盖可安全识别的查询形状；单条只读 SELECT/WITH 已支持结果列服务端排序和结果筛选，深分页仍需要明确边界。
 - `Driver` 已提供 SQL 手动事务会话的最小接口（开启、事务内执行、提交和回滚）；隔离级别、保存点和跨驱动会话能力仍不统一。
 - M3-B 已将事务语句和结果表写操作失败纳入查询控制台状态；事务句柄失效后不会继续显示正常手动提交，下一次成功开启事务会恢复正常状态。
-- 当前已支持独立的 EXPLAIN 结果视图、MySQL/PostgreSQL 常见文本计划的结构化树、只读 Schema Diagram 元数据预览、表设计器中的字段级结构差异预览、同一连接内或跨连接的 SQL 表列/索引/外键结构对比、同类型 SQL 连接之间的查询结果数据网格差异比较，以及经过显式确认的表结构迁移执行与回读；图形化执行计划、更细的方言适配和迁移审批记录仍在后续迭代中。
+- 当前已支持独立的 EXPLAIN 结果视图、MySQL/PostgreSQL 常见文本计划的结构化树、只读 Schema Diagram 元数据预览、表设计器中的字段级结构差异预览、同一连接内或跨连接的 SQL 表列/索引/外键结构对比、同类型 SQL 连接之间的查询结果数据网格差异比较、外键动作读取与迁移脚本保留，以及经过显式确认的表结构迁移执行与回读；图形化执行计划、更细的方言适配和迁移审批记录仍在后续迭代中。
 
 ## 3. 产品边界与原则
 
@@ -373,7 +373,7 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - 通过复制按钮复制完整脚本，通过保存按钮使用 `.sql` 文件保存；保存使用现有原子写入流程，取消保存不会产生文件。
 - 默认值、类型和 PostgreSQL 索引表达式仅接受经过安全检查的 SQL 片段；控制字符、未闭合引号、分号和注释注入片段会拒绝生成。
 - 源表或目标表的列、索引、外键元数据任一类别加载失败时，迁移预览入口保持禁用，避免把不完整的读取结果误判为删除操作。
-- 当前元数据不包含列顺序、生成列、自增属性和外键动作（`ON DELETE`/`ON UPDATE`），预览会显示人工复核提示；M4-I 只允许用户在目标连接上显式确认后执行，保存的脚本不会自动执行。
+- 当前元数据仍不包含列顺序、生成列和自增属性，预览会显示人工复核提示；外键动作（`ON DELETE`/`ON UPDATE`）已由 M4-J 纳入驱动读取、差异比较和迁移脚本；M4-I 只允许用户在目标连接上显式确认后执行，保存的脚本不会自动执行。
 
 验收证据：
 
@@ -398,11 +398,29 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - `crates/ramag-infra-mysql/tests/migration_replay.rs` 和 `crates/ramag-infra-postgres/tests/migration_replay.rs` 覆盖 Docker 数据库中的成功回放；PostgreSQL 额外验证失败迁移不会留下部分结构。
 - `cargo check -p ramag-tool-dbclient --all-targets`、数据库驱动集成测试、格式检查、`git diff --check` 和源码尺寸检查通过；真实窗口截图仍需补充。
 
+#### M4-J：外键动作元数据与迁移保真度（已落地切片）
+
+设计目标：补齐 MySQL 和 PostgreSQL 外键的 `ON DELETE`/`ON UPDATE` 元数据，使结构差异和迁移脚本不再把已有约束动作静默降级为数据库默认行为。
+
+实现边界：
+
+- `ForeignKeyAction` 使用跨驱动的规范枚举表示 `NO ACTION`、`RESTRICT`、`CASCADE`、`SET NULL` 和 `SET DEFAULT`；旧的外键序列化记录缺少动作字段时兼容为 `NO ACTION`。
+- MySQL 从 `INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` 读取动作，PostgreSQL 从 `pg_constraint` 的更新/删除动作码读取动作；无法识别的数据库值直接返回元数据错误。
+- 表结构差异和 Schema 树显示两类动作；迁移生成器把非默认动作写入 `ON DELETE`/`ON UPDATE` 子句，并把动作变化视为外键定义变化。
+- 本切片不改变 M4-I 的生产连接只读、显式确认、PostgreSQL 事务和 MySQL 部分变更提示；列顺序、生成列、自增属性仍需人工复核。
+
+验收证据：
+
+- `cargo test -p ramag-domain` 覆盖动作名称解析、规范 SQL 输出和未知值拒绝。
+- `cargo test -p ramag-tool-dbclient --lib` 覆盖动作差异文本、动作变化触发的外键重建和迁移 SQL 输出。
+- MySQL/PostgreSQL Docker 集成测试覆盖真实 `CASCADE` 元数据读取以及迁移回放后的动作回读；格式检查、差异检查和源码尺寸检查继续执行。
+- 真实 Windows 窗口截图仍需补充；本切片不将代码测试视为原生窗口验收。
+
 功能清单：
 
 - EXPLAIN 结果支持原始文本和常见格式的结构化树，后续再评估图形化执行计划。DataGrip 将 Query Plan 作为独立结果页，并支持树、原始计划、图形和火焰图展示，可作为交互参考：[Query Execution Plan](https://www.jetbrains.com/help/datagrip/query-execution-plan.html)。
 - 基于现有表、列、索引和外键元数据生成 Schema Diagram。
-- 表结构和 DDL diff，已落地表设计器字段级差异预览、同连接或跨连接的表级列/索引/外键对比，以及带显式确认和执行后回读的迁移 SQL 工作流；后续再评估审批记录和更细的方言适配。
+- 表结构和 DDL diff，已落地表设计器字段级差异预览、同连接或跨连接的表级列/索引/外键对比，以及带显式确认、外键动作保留和执行后回读的迁移 SQL 工作流；后续再评估审批记录和更细的方言适配。
 - 查询结果数据网格已支持基准快照、基础差异比较和同类型 SQL 连接之间的只读结果比较；表结构已支持同类型 SQL 连接之间的只读对比，后续扩展迁移工作流和更细的单元格定位。DataGrip 的数据编辑器也提供网格对比能力，可作为交互参考：[Explore data in the data editor](https://www.jetbrains.com/help/datagrip/explore-data-in-data-editor.html)。
 - 为 MySQL/PostgreSQL 增加更精确的方言检查、对象导航和补全；MongoDB 单独设计文档查询辅助。
 

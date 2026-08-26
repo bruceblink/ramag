@@ -1,7 +1,7 @@
 //! PostgreSQL 元数据读取。优先使用 information_schema，索引和列注释使用 pg_catalog。
 
-use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
-use ramag_domain::error::Result;
+use ramag_domain::entities::{Column, ForeignKey, ForeignKeyAction, Index, Schema, Table};
+use ramag_domain::error::{DomainError, Result};
 use ramag_infra_sql_shared::{
     METADATA_FETCH_LIMIT, ensure_metadata_item_limit, ensure_metadata_result_limit,
 };
@@ -285,14 +285,30 @@ pub async fn list_foreign_keys(
         "listing foreign keys"
     );
 
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
         r#"
         SELECT
             con.conname::text,
             local_column.attname::text,
             ref_schema.nspname::text,
             ref_table.relname::text,
-            ref_column.attname::text
+            ref_column.attname::text,
+            CASE con.confupdtype
+                WHEN 'a' THEN 'NO ACTION'
+                WHEN 'r' THEN 'RESTRICT'
+                WHEN 'c' THEN 'CASCADE'
+                WHEN 'n' THEN 'SET NULL'
+                WHEN 'd' THEN 'SET DEFAULT'
+                ELSE 'UNKNOWN'
+            END,
+            CASE con.confdeltype
+                WHEN 'a' THEN 'NO ACTION'
+                WHEN 'r' THEN 'RESTRICT'
+                WHEN 'c' THEN 'CASCADE'
+                WHEN 'n' THEN 'SET NULL'
+                WHEN 'd' THEN 'SET DEFAULT'
+                ELSE 'UNKNOWN'
+            END
         FROM pg_constraint con
         JOIN pg_class local_table ON local_table.oid = con.conrelid
         JOIN pg_namespace local_schema ON local_schema.oid = local_table.relnamespace
@@ -321,13 +337,21 @@ pub async fn list_foreign_keys(
 
     let mut grouped: std::collections::BTreeMap<String, ForeignKey> =
         std::collections::BTreeMap::new();
-    for (name, col, ref_schema, ref_table, ref_col) in rows {
+    for (name, col, ref_schema, ref_table, ref_col, update_rule, delete_rule) in rows {
+        let on_update = ForeignKeyAction::parse_sql(&update_rule).ok_or_else(|| {
+            DomainError::QueryFailed(format!("PostgreSQL 外键 {name} 的 ON UPDATE 规则无法识别"))
+        })?;
+        let on_delete = ForeignKeyAction::parse_sql(&delete_rule).ok_or_else(|| {
+            DomainError::QueryFailed(format!("PostgreSQL 外键 {name} 的 ON DELETE 规则无法识别"))
+        })?;
         let entry = grouped.entry(name.clone()).or_insert_with(|| ForeignKey {
             name,
             columns: Vec::new(),
             ref_schema,
             ref_table,
             ref_columns: Vec::new(),
+            on_delete,
+            on_update,
         });
         entry.columns.push(col);
         entry.ref_columns.push(ref_col);

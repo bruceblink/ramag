@@ -1,8 +1,8 @@
 //! 元数据查询：基于 INFORMATION_SCHEMA，避免 SHOW 语法的版本差异。
 //! 字符串列统一 `CONVERT(... USING utf8mb4)`，避开 sqlx 把某些环境的回包识为 VARBINARY 导致解码失败
 
-use ramag_domain::entities::{Column, ForeignKey, Index, Schema, Table};
-use ramag_domain::error::Result;
+use ramag_domain::entities::{Column, ForeignKey, ForeignKeyAction, Index, Schema, Table};
+use ramag_domain::error::{DomainError, Result};
 use ramag_infra_sql_shared::{
     METADATA_FETCH_LIMIT, ensure_metadata_item_limit, ensure_metadata_result_limit,
 };
@@ -214,18 +214,24 @@ pub async fn list_foreign_keys(
         "listing foreign keys"
     );
 
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
         r#"
         SELECT
-            CONVERT(CONSTRAINT_NAME USING utf8mb4),
-            CONVERT(COLUMN_NAME USING utf8mb4),
-            CONVERT(REFERENCED_TABLE_SCHEMA USING utf8mb4),
-            CONVERT(REFERENCED_TABLE_NAME USING utf8mb4),
-            CONVERT(REFERENCED_COLUMN_NAME USING utf8mb4)
-        FROM information_schema.KEY_COLUMN_USAGE
-        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-          AND REFERENCED_TABLE_NAME IS NOT NULL
-        ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
+            CONVERT(kcu.CONSTRAINT_NAME USING utf8mb4),
+            CONVERT(kcu.COLUMN_NAME USING utf8mb4),
+            CONVERT(kcu.REFERENCED_TABLE_SCHEMA USING utf8mb4),
+            CONVERT(kcu.REFERENCED_TABLE_NAME USING utf8mb4),
+            CONVERT(kcu.REFERENCED_COLUMN_NAME USING utf8mb4),
+            CONVERT(rc.UPDATE_RULE USING utf8mb4),
+            CONVERT(rc.DELETE_RULE USING utf8mb4)
+        FROM information_schema.KEY_COLUMN_USAGE AS kcu
+        INNER JOIN information_schema.REFERENTIAL_CONSTRAINTS AS rc
+          ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+         AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+         AND rc.TABLE_NAME = kcu.TABLE_NAME
+        WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ?
+          AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+        ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
         LIMIT ?
         "#,
     )
@@ -239,13 +245,21 @@ pub async fn list_foreign_keys(
 
     let mut grouped: std::collections::BTreeMap<String, ForeignKey> =
         std::collections::BTreeMap::new();
-    for (name, col, ref_schema, ref_table, ref_col) in rows {
+    for (name, col, ref_schema, ref_table, ref_col, update_rule, delete_rule) in rows {
+        let on_update = ForeignKeyAction::parse_sql(&update_rule).ok_or_else(|| {
+            DomainError::QueryFailed(format!("MySQL 外键 {name} 的 ON UPDATE 规则无法识别"))
+        })?;
+        let on_delete = ForeignKeyAction::parse_sql(&delete_rule).ok_or_else(|| {
+            DomainError::QueryFailed(format!("MySQL 外键 {name} 的 ON DELETE 规则无法识别"))
+        })?;
         let entry = grouped.entry(name.clone()).or_insert_with(|| ForeignKey {
             name,
             columns: Vec::new(),
             ref_schema,
             ref_table,
             ref_columns: Vec::new(),
+            on_delete,
+            on_update,
         });
         entry.columns.push(col);
         entry.ref_columns.push(ref_col);

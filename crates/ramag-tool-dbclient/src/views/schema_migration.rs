@@ -76,17 +76,6 @@ pub(crate) fn build_migration_script(
         &mut statements,
     )?;
 
-    if source.foreign_keys.iter().any(|foreign_key| {
-        target
-            .foreign_keys
-            .iter()
-            .find(|old| generator::same_name(&old.name, &foreign_key.name))
-            .is_none_or(|old| !generator::foreign_key_equivalent(old, foreign_key))
-    }) {
-        warnings.push(
-            "外键动作（ON DELETE / ON UPDATE）不在当前元数据中，生成脚本采用数据库默认行为".into(),
-        );
-    }
     if generator::has_column_changes(&source.columns, &target.columns) {
         warnings.push("列顺序、自动生成属性和自增属性不在当前元数据中，执行前请人工复核".into());
     }
@@ -124,7 +113,9 @@ pub(crate) fn build_migration_script(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ramag_domain::entities::{Column, ColumnKind, ColumnType, Index};
+    use ramag_domain::entities::{
+        Column, ColumnKind, ColumnType, ForeignKey, ForeignKeyAction, Index,
+    };
 
     fn column(name: &str, raw_type: &str) -> Column {
         Column {
@@ -271,5 +262,47 @@ mod tests {
         )
         .expect_err("unsafe type should be rejected");
         assert!(error.contains("字段类型"));
+    }
+
+    #[test]
+    fn migration_preserves_foreign_key_actions() {
+        let source = TableMetadata {
+            foreign_keys: vec![ForeignKey {
+                name: "fk_project".into(),
+                columns: vec!["project_id".into()],
+                ref_schema: "app".into(),
+                ref_table: "projects".into(),
+                ref_columns: vec!["id".into()],
+                on_delete: ForeignKeyAction::Cascade,
+                on_update: ForeignKeyAction::SetNull,
+            }],
+            ..TableMetadata::default()
+        };
+        let target = TableMetadata {
+            foreign_keys: vec![ForeignKey {
+                on_delete: ForeignKeyAction::NoAction,
+                on_update: ForeignKeyAction::NoAction,
+                ..source.foreign_keys[0].clone()
+            }],
+            ..TableMetadata::default()
+        };
+
+        let script = build_migration_script(
+            DriverKind::Postgres,
+            "app",
+            "projects",
+            "app",
+            "projects_copy",
+            &source,
+            &target,
+        )
+        .expect("migration script");
+        assert!(script.sql.contains("ON DELETE CASCADE ON UPDATE SET NULL"));
+        assert!(
+            !script
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("外键动作"))
+        );
     }
 }

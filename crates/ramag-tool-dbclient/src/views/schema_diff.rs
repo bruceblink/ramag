@@ -189,7 +189,7 @@ fn foreign_key_entry(foreign_key: &ForeignKey) -> NamedMetadata {
     NamedMetadata {
         key: foreign_key.name.to_ascii_lowercase(),
         text: format!(
-            "{} ({}) -> {}.{} ({})",
+            "{} ({}) -> {}.{} ({}) | ON DELETE {} | ON UPDATE {}",
             compact(&foreign_key.name),
             foreign_key
                 .columns
@@ -205,6 +205,8 @@ fn foreign_key_entry(foreign_key: &ForeignKey) -> NamedMetadata {
                 .map(|column| compact(column))
                 .collect::<Vec<_>>()
                 .join(", "),
+            foreign_key.on_delete.as_sql(),
+            foreign_key.on_update.as_sql(),
         ),
     }
 }
@@ -226,7 +228,7 @@ fn compact(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ramag_domain::entities::{ColumnKind, ColumnType};
+    use ramag_domain::entities::{ColumnKind, ColumnType, ForeignKeyAction};
 
     fn column(name: &str, raw_type: &str) -> Column {
         Column {
@@ -248,6 +250,18 @@ mod tests {
             unique: false,
             primary: false,
             columns: columns.iter().map(|column| (*column).into()).collect(),
+        }
+    }
+
+    fn foreign_key(name: &str, on_delete: ForeignKeyAction) -> ForeignKey {
+        ForeignKey {
+            name: name.into(),
+            columns: vec!["project_id".into()],
+            ref_schema: "app".into(),
+            ref_table: "projects".into(),
+            ref_columns: vec!["id".into()],
+            on_delete,
+            on_update: ForeignKeyAction::NoAction,
         }
     }
 
@@ -296,5 +310,25 @@ mod tests {
         assert!(text.contains("- UserName | text"));
         assert!(text.contains("+ username | text"));
         assert!(text.contains("索引\n  （无对象）"));
+    }
+
+    #[test]
+    fn foreign_key_actions_are_part_of_diff_text() {
+        let source = TableMetadata {
+            foreign_keys: vec![foreign_key("fk_project", ForeignKeyAction::Cascade)],
+            ..TableMetadata::default()
+        };
+        let target = TableMetadata {
+            foreign_keys: vec![foreign_key("fk_project", ForeignKeyAction::NoAction)],
+            ..TableMetadata::default()
+        };
+
+        let text = format_table_diff(&build_table_diff(&source, &target));
+        assert!(
+            text.contains("- fk_project (project_id) -> app.projects (id) | ON DELETE CASCADE")
+        );
+        assert!(
+            text.contains("+ fk_project (project_id) -> app.projects (id) | ON DELETE NO ACTION")
+        );
     }
 }

@@ -543,12 +543,14 @@ fn build_tree_rows(
                             table.name, foreign_key.name
                         )),
                         text: format!(
-                            "↗ {} ({}) → {}.{}({})",
+                            "↗ {} ({}) → {}.{}({}) [ON DELETE {}, ON UPDATE {}]",
                             foreign_key.name,
                             foreign_key.columns.join(", "),
                             foreign_key.ref_schema,
                             foreign_key.ref_table,
-                            foreign_key.ref_columns.join(", ")
+                            foreign_key.ref_columns.join(", "),
+                            foreign_key.on_delete.as_sql(),
+                            foreign_key.on_update.as_sql()
                         ),
                         copy_value: foreign_key.name.clone(),
                     });

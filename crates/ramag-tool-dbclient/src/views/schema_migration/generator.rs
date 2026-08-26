@@ -1,4 +1,4 @@
-use ramag_domain::entities::{Column, DriverKind, ForeignKey, Index};
+use ramag_domain::entities::{Column, DriverKind, ForeignKey, ForeignKeyAction, Index};
 
 pub(super) struct MigrationStatement {
     pub(super) sql: String,
@@ -66,6 +66,7 @@ pub(super) fn append_foreign_key_additions(
     Ok(())
 }
 
+/// 生成外键定义；省略默认的 `NO ACTION`，其他动作显式写入 SQL 以保留约束行为。
 fn foreign_key_add_sql(
     driver: DriverKind,
     target_name: &str,
@@ -83,8 +84,17 @@ fn foreign_key_add_sql(
     let ref_columns = identifiers(driver, &foreign_key.ref_columns, "外键引用字段")?;
     let ref_schema = identifier(driver, &foreign_key.ref_schema, "外键引用 Schema")?;
     let ref_table = identifier(driver, &foreign_key.ref_table, "外键引用表")?;
+    let mut actions = String::new();
+    if foreign_key.on_delete != ForeignKeyAction::NoAction {
+        actions.push_str(" ON DELETE ");
+        actions.push_str(foreign_key.on_delete.as_sql());
+    }
+    if foreign_key.on_update != ForeignKeyAction::NoAction {
+        actions.push_str(" ON UPDATE ");
+        actions.push_str(foreign_key.on_update.as_sql());
+    }
     Ok(format!(
-        "ALTER TABLE {target_name} ADD CONSTRAINT {name} FOREIGN KEY ({columns}) REFERENCES {ref_schema}.{ref_table} ({ref_columns});"
+        "ALTER TABLE {target_name} ADD CONSTRAINT {name} FOREIGN KEY ({columns}) REFERENCES {ref_schema}.{ref_table} ({ref_columns}){actions};"
     ))
 }
 
@@ -508,6 +518,8 @@ pub(super) fn foreign_key_equivalent(left: &ForeignKey, right: &ForeignKey) -> b
         && same_name(&left.ref_schema, &right.ref_schema)
         && same_name(&left.ref_table, &right.ref_table)
         && same_names(&left.ref_columns, &right.ref_columns)
+        && left.on_delete == right.on_delete
+        && left.on_update == right.on_update
 }
 
 pub(super) fn has_column_changes(source: &[Column], target: &[Column]) -> bool {

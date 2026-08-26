@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ramag_domain::entities::{ConnectionConfig, DriverKind, Query, Value};
+use ramag_domain::entities::{ConnectionConfig, DriverKind, ForeignKeyAction, Query, Value};
 use ramag_domain::traits::Driver;
 use ramag_infra_postgres::PostgresDriver;
 
@@ -123,7 +123,7 @@ async fn list_schema_metadata_for_comparison_tables() {
                 "CREATE TABLE \"{target}\" (id integer NOT NULL PRIMARY KEY, name varchar(128) NOT NULL, email varchar(128)); \
                  CREATE INDEX \"idx_metadata_target_email\" ON \"{target}\" (email); \
                  ALTER TABLE \"{target}\" ADD CONSTRAINT \"fk_metadata_target_source\" \
-                 FOREIGN KEY (id) REFERENCES \"{source}\" (id)"
+                 FOREIGN KEY (id) REFERENCES \"{source}\" (id) ON DELETE CASCADE ON UPDATE CASCADE"
             )),
         )
         .await
@@ -153,6 +153,8 @@ async fn list_schema_metadata_for_comparison_tables() {
             && foreign_key.ref_table == source
             && foreign_key.columns == ["id"]
             && foreign_key.ref_columns == ["id"]
+            && foreign_key.on_delete == ForeignKeyAction::Cascade
+            && foreign_key.on_update == ForeignKeyAction::Cascade
     }));
 
     driver

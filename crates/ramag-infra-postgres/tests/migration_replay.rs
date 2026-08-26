@@ -37,19 +37,24 @@ async fn reviewed_migration_script_replays_on_postgres() {
     let source_index = format!("ramag_source_idx_name_{suffix}");
     let target_primary = format!("ramag_target_pkey_{suffix}");
     let target_index = format!("ramag_target_idx_legacy_{suffix}");
+    let parent = format!("ramag_migration_parent_{suffix}");
     let qualified_source = format!("\"{source_schema}\".\"{source}\"");
     let qualified_target = format!("\"{target_schema}\".\"{target}\"");
+    let qualified_parent = format!("\"{target_schema}\".\"{parent}\"");
 
     driver
         .execute(
             &config,
             &Query::new(format!(
-                "DROP TABLE IF EXISTS {qualified_target} CASCADE; DROP SCHEMA IF EXISTS \"{source_schema}\" CASCADE; CREATE SCHEMA \"{source_schema}\"; \
-                 CREATE TABLE {qualified_source} (\"id\" integer NOT NULL, \"name\" text NOT NULL, \
+                "DROP TABLE IF EXISTS {qualified_target} CASCADE; DROP TABLE IF EXISTS {qualified_parent} CASCADE; DROP SCHEMA IF EXISTS \"{source_schema}\" CASCADE; CREATE SCHEMA \"{source_schema}\"; \
+                 CREATE TABLE {qualified_parent} (\"id\" integer NOT NULL PRIMARY KEY); \
+                 CREATE TABLE {qualified_source} (\"id\" integer NOT NULL, \"parent_id\" integer, \"name\" text NOT NULL, \
                  CONSTRAINT \"{source_primary}\" PRIMARY KEY (\"id\")); \
                  CREATE INDEX \"{source_index}\" ON {qualified_source} (\"name\"); \
-                 CREATE TABLE {qualified_target} (\"id\" bigint NULL, \"legacy\" text, \
-                 CONSTRAINT \"{target_primary}\" PRIMARY KEY (\"id\")); \
+                 CREATE TABLE {qualified_target} (\"id\" bigint NULL, \"parent_id\" integer, \"legacy\" text, \
+                 CONSTRAINT \"{target_primary}\" PRIMARY KEY (\"id\"), \
+                 CONSTRAINT \"fk_migration_replay_parent\" FOREIGN KEY (\"parent_id\") REFERENCES {qualified_parent} (\"id\") \
+                 ON DELETE RESTRICT ON UPDATE RESTRICT); \
                  CREATE INDEX \"{target_index}\" ON {qualified_target} (\"legacy\")"
             )),
         )
@@ -58,6 +63,7 @@ async fn reviewed_migration_script_replays_on_postgres() {
 
     let migration_sql = format!(
         "-- Ramag migration preview\n\
+         ALTER TABLE {qualified_target} DROP CONSTRAINT \"fk_migration_replay_parent\";\n\
          DROP INDEX \"{target_schema}\".\"{target_index}\";\n\
          ALTER TABLE {qualified_target} DROP CONSTRAINT \"{target_primary}\";\n\
          ALTER TABLE {qualified_target} DROP COLUMN \"legacy\";\n\
@@ -65,7 +71,9 @@ async fn reviewed_migration_script_replays_on_postgres() {
          ALTER TABLE {qualified_target} ALTER COLUMN \"id\" SET NOT NULL;\n\
          ALTER TABLE {qualified_target} ADD COLUMN \"name\" text NOT NULL;\n\
          CREATE INDEX \"{source_index}\" ON {qualified_target} (\"name\");\n\
-         ALTER TABLE {qualified_target} ADD CONSTRAINT \"{source_primary}\" PRIMARY KEY (\"id\");"
+         ALTER TABLE {qualified_target} ADD CONSTRAINT \"{source_primary}\" PRIMARY KEY (\"id\");\n\
+         ALTER TABLE {qualified_target} ADD CONSTRAINT \"fk_migration_replay_parent\" FOREIGN KEY (\"parent_id\") \
+         REFERENCES {qualified_parent} (\"id\") ON DELETE CASCADE ON UPDATE CASCADE;"
     );
     driver
         .execute(
@@ -94,11 +102,21 @@ async fn reviewed_migration_script_replays_on_postgres() {
     assert!(!indexes.iter().any(|index| index.name == target_index));
     assert!(!indexes.iter().any(|index| index.name == target_primary));
 
+    let foreign_keys = driver
+        .list_foreign_keys(&config, target_schema, &target)
+        .await
+        .expect("读取 PostgreSQL 迁移回放外键失败");
+    assert!(foreign_keys.iter().any(|foreign_key| {
+        foreign_key.name == "fk_migration_replay_parent"
+            && foreign_key.on_delete == ramag_domain::entities::ForeignKeyAction::Cascade
+            && foreign_key.on_update == ramag_domain::entities::ForeignKeyAction::Cascade
+    }));
+
     driver
         .execute(
             &config,
             &Query::new(format!(
-                "DROP TABLE IF EXISTS {qualified_target} CASCADE; DROP SCHEMA IF EXISTS \"{source_schema}\" CASCADE;"
+                "DROP TABLE IF EXISTS {qualified_target} CASCADE; DROP TABLE IF EXISTS {qualified_parent} CASCADE; DROP SCHEMA IF EXISTS \"{source_schema}\" CASCADE;"
             )),
         )
         .await

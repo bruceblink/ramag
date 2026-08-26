@@ -1,4 +1,6 @@
-use ramag_domain::entities::{Column, ColumnKind, ColumnType, ForeignKey, Index, Table};
+use ramag_domain::entities::{
+    Column, ColumnKind, ColumnType, ForeignKey, ForeignKeyAction, Index, Table,
+};
 
 use super::*;
 
@@ -47,6 +49,8 @@ fn metadata_rows_keep_exact_copy_targets() {
                 ref_schema: "gewu".into(),
                 ref_table: "company_project".into(),
                 ref_columns: vec!["id".into()],
+                on_delete: ForeignKeyAction::Cascade,
+                on_update: ForeignKeyAction::SetNull,
             }],
             ..Default::default()
         },
@@ -72,6 +76,10 @@ fn metadata_rows_keep_exact_copy_targets() {
     assert!(view.rows.iter().any(|row| {
         matches!(row, TreeRow::DetailLine { copy_value, .. }
             if copy_value == "fk_project")
+    }));
+    assert!(view.rows.iter().any(|row| {
+        matches!(row, TreeRow::DetailLine { text, .. }
+            if text.contains("ON DELETE CASCADE") && text.contains("ON UPDATE SET NULL"))
     }));
 }
 

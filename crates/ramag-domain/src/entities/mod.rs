@@ -111,7 +111,9 @@ pub use resource_limits::{
     INTERACTIVE_RESULT_WARNING_BYTES, MAX_INTERACTIVE_RESULT_BYTES, MAX_METADATA_BYTES,
     MAX_METADATA_ITEMS, TRANSFER_BATCH_BYTES, TRANSFER_BATCH_ITEMS,
 };
-pub use schema::{Column, ColumnKind, ColumnType, ForeignKey, Index, Schema, Table};
+pub use schema::{
+    Column, ColumnKind, ColumnType, ForeignKey, ForeignKeyAction, Index, Schema, Table,
+};
 pub use ssh::{
     MAX_CONCURRENT_PRODUCTION_DOWNLOADS, MAX_CONCURRENT_TRANSFERS,
     MAX_PRODUCTION_DIRECTORY_ENTRIES, MAX_PRODUCTION_DOWNLOAD_BYTES,
