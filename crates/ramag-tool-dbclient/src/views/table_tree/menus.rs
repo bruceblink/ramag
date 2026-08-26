@@ -14,6 +14,13 @@ pub(super) fn table_context_menu(
     table: String,
     is_view: bool,
 ) -> PopupMenu {
+    let table_for_copy = table.clone();
+    let menu = menu.item(
+        ramag_ui::menu_item("复制表名").on_click(move |_, window, app| {
+            ramag_ui::copy_text_with_notification(table_for_copy.clone(), window, app);
+        }),
+    );
+
     let menu = if is_view {
         let (schema, table, entity) = (schema.clone(), table.clone(), entity.clone());
         menu.item(ramag_ui::menu_item("视图定义").on_click(move |_, _, app| {
@@ -83,11 +90,12 @@ pub(super) fn table_context_menu(
         menu.item(
             ramag_ui::menu_item("清空表").on_click(move |_, window, app| {
                 let (schema, table, entity) = (schema.clone(), table.clone(), entity.clone());
-                open_confirm(
+                open_double_confirm(
                     "清空表",
                     format!("将删除 {schema}.{table} 的全部数据，此操作不可恢复。"),
-                    "清空",
-                    true,
+                    "再次确认清空表",
+                    format!("请再次确认：永久删除 {schema}.{table} 的全部数据。"),
+                    "确认清空",
                     move |_, app| {
                         entity.update(app, |this, cx| this.truncate_table(schema, table, cx));
                     },
@@ -111,11 +119,27 @@ pub(super) fn table_context_menu(
     };
     menu.item(ramag_ui::menu_item(label).on_click(move |_, window, app| {
         let (schema, table, entity) = (schema.clone(), table.clone(), entity.clone());
-        open_confirm(
+        let second_title = if is_view {
+            "再次确认删除视图"
+        } else {
+            "再次确认删除表"
+        };
+        let second_description = if is_view {
+            format!("请再次确认：永久删除视图 {schema}.{table}。")
+        } else {
+            format!("请再次确认：永久删除表 {schema}.{table} 及其数据。")
+        };
+        let second_confirm_label = if is_view {
+            "确认删除视图"
+        } else {
+            "确认删除表"
+        };
+        open_double_confirm(
             label,
             description.clone(),
-            "删除",
-            true,
+            second_title,
+            second_description,
+            second_confirm_label,
             move |_, app| {
                 entity.update(app, |this, cx| this.drop_table(schema, table, is_view, cx));
             },
@@ -123,6 +147,50 @@ pub(super) fn table_context_menu(
             app,
         );
     }))
+}
+
+/// 先关闭第一次确认，再打开第二次确认，避免弹窗关闭动作误关掉第二个弹窗。
+fn open_double_confirm(
+    first_title: impl Into<gpui::SharedString>,
+    first_description: impl Into<gpui::SharedString>,
+    second_title: impl Into<gpui::SharedString>,
+    second_description: impl Into<gpui::SharedString>,
+    second_confirm_label: impl Into<gpui::SharedString>,
+    on_confirm: impl FnOnce(&mut gpui::Window, &mut gpui::App) + 'static,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let second_title = second_title.into();
+    let second_description = second_description.into();
+    let second_confirm_label = second_confirm_label.into();
+    let window_handle = window.window_handle();
+
+    open_confirm(
+        first_title,
+        first_description,
+        "继续",
+        true,
+        move |_, app| {
+            let second_title = second_title.clone();
+            let second_description = second_description.clone();
+            let second_confirm_label = second_confirm_label.clone();
+            app.defer(move |app| {
+                let _ = window_handle.update(app, move |_, window, app| {
+                    open_confirm(
+                        second_title,
+                        second_description,
+                        second_confirm_label,
+                        true,
+                        on_confirm,
+                        window,
+                        app,
+                    );
+                });
+            });
+        },
+        window,
+        cx,
+    );
 }
 
 pub(super) fn schema_context_menu(
