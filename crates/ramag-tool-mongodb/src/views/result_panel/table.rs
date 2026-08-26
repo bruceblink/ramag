@@ -188,28 +188,32 @@ pub(super) fn render(
                 .on_scroll_wheel(cx.listener(ResultPanel::on_table_scroll)),
         );
 
+    let show_horizontal_scrollbar =
+        ramag_ui::database_result_settings(cx).show_horizontal_scrollbar;
+    let horizontal_scrollbar = div()
+        .id("mongo-table-h-scrollbar")
+        .debug_selector(|| "mongo-table-h-scrollbar".into())
+        .flex_none()
+        .w_full()
+        .h(px(16.0))
+        .relative()
+        .bg(cx.theme().scrollbar)
+        .child(
+            Scrollbar::horizontal(&panel.h_scroll)
+                .id("mongo-table-h-scrollbar-control")
+                .scroll_size(gpui::size(total_width, px(16.0)))
+                .scrollbar_show(ScrollbarShow::Always),
+        );
+
     let table_container = v_flex()
         .relative()
         .flex_1()
         .min_h_0()
         .min_w_0()
         .child(table_view)
-        .child(
-            div()
-                .id("mongo-table-h-scrollbar")
-                .debug_selector(|| "mongo-table-h-scrollbar".into())
-                .flex_none()
-                .w_full()
-                .h(px(16.0))
-                .relative()
-                .bg(cx.theme().scrollbar)
-                .child(
-                    Scrollbar::horizontal(&panel.h_scroll)
-                        .id("mongo-table-h-scrollbar-control")
-                        .scroll_size(gpui::size(total_width, px(16.0)))
-                        .scrollbar_show(ScrollbarShow::Always),
-                ),
-        );
+        .when(show_horizontal_scrollbar, |container| {
+            container.child(horizontal_scrollbar)
+        });
 
     v_flex().size_full().min_w_0().child(table_container)
 }

@@ -448,28 +448,32 @@ pub(in crate::views) fn render_table(
                 .on_scroll_wheel(cx.listener(ResultPanel::on_result_scroll)),
         );
 
+    let show_horizontal_scrollbar =
+        ramag_ui::database_result_settings(cx).show_horizontal_scrollbar;
+    let horizontal_scrollbar = div()
+        .id("result-h-scrollbar")
+        .debug_selector(|| "result-h-scrollbar".into())
+        .flex_none()
+        .w_full()
+        .h(px(16.0))
+        .relative()
+        .bg(cx.theme().scrollbar)
+        .child(
+            Scrollbar::horizontal(panel.h_scroll())
+                .id("result-h-scrollbar-control")
+                .scroll_size(gpui::size(frame.total_content_width, px(16.0)))
+                .scrollbar_show(ScrollbarShow::Always),
+        );
+
     let table_container = v_flex()
         .relative()
         .flex_1()
         .min_h_0()
         .min_w_0()
         .child(table_view)
-        .child(
-            div()
-                .id("result-h-scrollbar")
-                .debug_selector(|| "result-h-scrollbar".into())
-                .flex_none()
-                .w_full()
-                .h(px(16.0))
-                .relative()
-                .bg(cx.theme().scrollbar)
-                .child(
-                    Scrollbar::horizontal(panel.h_scroll())
-                        .id("result-h-scrollbar-control")
-                        .scroll_size(gpui::size(frame.total_content_width, px(16.0)))
-                        .scrollbar_show(ScrollbarShow::Always),
-                ),
-        );
+        .when(show_horizontal_scrollbar, |container| {
+            container.child(horizontal_scrollbar)
+        });
 
     v_flex()
         .size_full()

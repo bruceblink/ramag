@@ -78,6 +78,28 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         assert!(horizontal.x < px(0.0), "横向手势应移动结果列");
         assert_eq!(vertical.y, px(0.0), "横向手势不应移动结果行");
     });
+
+    cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
+        ramag_ui::DatabaseResultSettings {
+            show_horizontal_scrollbar: false,
+        },
+    ));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("mongo-table-h-scrollbar").is_none(),
+        "关闭设置后 MongoDB 结果表不应渲染水平滚动条"
+    );
+
+    cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
+        ramag_ui::DatabaseResultSettings {
+            show_horizontal_scrollbar: true,
+        },
+    ));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("mongo-table-h-scrollbar").is_some(),
+        "重新开启设置后 MongoDB 结果表应恢复水平滚动条"
+    );
 }
 
 #[gpui::test]

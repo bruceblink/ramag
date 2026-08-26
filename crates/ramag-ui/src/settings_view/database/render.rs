@@ -243,6 +243,35 @@ impl SettingsView {
                 ),
             )
             .child(
+                super::super::pages::settings_card("结果显示", theme.border).child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(16.0))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(2.0))
+                                .child(div().text_sm().child("显示水平滚动条"))
+                                .child(
+                                    div().text_xs().text_color(muted).child(
+                                        "控制所有数据库结果表底部水平滚动条的显示，默认开启。",
+                                    ),
+                                ),
+                        )
+                        .child(
+                            crate::clickable_switch("settings-db-result-horizontal-scrollbar")
+                                .flex_none()
+                                .checked(self.show_database_result_horizontal_scrollbar)
+                                .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                    this.toggle_database_result_horizontal_scrollbar(cx);
+                                })),
+                        ),
+                ),
+            )
+            .child(
                 super::super::pages::settings_card("搜索配置", theme.border)
                     .child(
                         h_flex()
