@@ -57,12 +57,7 @@ impl ResultPanel {
         mut state: ResultState,
         cx: &mut Context<Self>,
     ) -> ResultState {
-        let bytes = match &state {
-            ResultState::Ok(result) => {
-                usize::try_from(result.retained_bytes()).unwrap_or(usize::MAX)
-            }
-            _ => 0,
-        };
+        let bytes = self.retained_bytes_with_comparison(&state);
         let Some(lease) = &self.result_memory else {
             return state;
         };
@@ -112,6 +107,7 @@ impl ResultPanel {
 
     pub(crate) fn clear_released_result_context(&mut self) {
         self.source_sql = None;
+        self.comparison_baseline = None;
         self.pinned_target = None;
         self.clear_cell_edit_state();
         self.row_identity = None;

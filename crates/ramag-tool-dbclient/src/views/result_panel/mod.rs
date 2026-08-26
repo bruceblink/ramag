@@ -1,3 +1,4 @@
+mod comparison;
 mod export;
 mod helpers;
 mod lifecycle;
@@ -7,28 +8,26 @@ mod render;
 mod row_search;
 mod scroll;
 mod state;
+use parking_lot::RwLock;
 use std::collections::BTreeSet;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
-use parking_lot::RwLock;
-
+use crate::sql_completion::SchemaCache;
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, Point, ScrollHandle, ScrollStrategy,
     Subscription, UniformListScrollHandle, Window, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
+use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
     Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, TransactionId, Value,
 };
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease};
-
-use crate::sql_completion::SchemaCache;
-use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
 pub(super) use lifecycle::global_memory_warning;
@@ -36,7 +35,6 @@ use row_search::RowSearchState;
 pub(crate) use row_search::{
     RowFilter, RowSearchBlocker, RowSearchConversionStatus, RowSearchMode,
 };
-
 /// 服务端分页的可见页大小，也是未分页结果的 UI 渲染上限。
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
 /// 行内新增最多创建的输入框数量，避免异常元数据一次生成数万控件。
@@ -108,6 +106,7 @@ pub struct ResultPanel {
     selection_revision: u64,
     visible_selection_cache: Option<VisibleSelectionCache>,
     pub(super) source_sql: Option<String>,
+    pub(super) comparison_baseline: Option<crate::views::result_diff::ResultSnapshot>,
     pub(super) pinned_target: Option<(Option<String>, String)>,
     /// 行定位键（主键或全非空唯一索引）；未就绪时禁用行内修改和删除。
     pub(super) row_identity: Option<RowIdentity>,
@@ -200,6 +199,7 @@ impl ResultPanel {
             selected_cell: None,
             editing_cell: None,
             source_sql: None,
+            comparison_baseline: None,
             col_width_overrides: Vec::new(),
             dml_busy: false,
             transaction_busy: false,

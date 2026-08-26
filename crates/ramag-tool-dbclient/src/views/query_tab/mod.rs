@@ -1,4 +1,5 @@
 mod actions;
+mod comparison_toolbar;
 mod examples;
 mod paging;
 mod render;

@@ -15,6 +15,7 @@ use gpui_component::{
 use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
 
 use super::QueryTab;
+use super::comparison_toolbar::result_comparison_menu;
 use super::render_helpers::{row_filter_prefix, row_search_input_suffix};
 use super::sql_utils::format_elapsed;
 use super::toolbar::render_delete_button;
@@ -42,6 +43,14 @@ impl Render for QueryTab {
         let transaction_label = self.transaction_label();
         let transaction_error = self.transaction_error.is_some();
         let result_entity = self.active_result();
+        let data_result_entity = self.result.clone();
+        let (can_capture_comparison, has_comparison_baseline) = {
+            let data_result_panel = data_result_entity.read(cx);
+            (
+                data_result_panel.can_capture_comparison_baseline(),
+                data_result_panel.has_comparison_baseline(),
+            )
+        };
         let plan_visible = self.show_plan;
         let plan_available = !self.plan_result_is_empty(cx);
 
@@ -372,6 +381,11 @@ impl Render for QueryTab {
                     .when_some(result_summary, |this, summary| {
                         this.child(div().text_xs().text_color(muted_fg).child(summary))
                     })
+                    .child(result_comparison_menu(
+                        data_result_entity,
+                        can_capture_comparison,
+                        has_comparison_baseline,
+                    ))
                     .child({
                         let can_insert = !plan_visible
                             && insert_reason.is_none()
