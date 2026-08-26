@@ -25,6 +25,7 @@ use super::schema_diff::{
 use super::schema_migration::build_migration_script;
 
 mod migration;
+use migration::MigrationApprovalRecord;
 
 const DIFF_VIEW_WIDTH: f32 = 980.0;
 const DIFF_VIEW_HEIGHT: f32 = 520.0;
@@ -56,6 +57,7 @@ pub(crate) struct SchemaDiffDialog {
     saving_migration: bool,
     executing_migration: bool,
     migration_execution_generation: u64,
+    migration_approvals: Vec<MigrationApprovalRecord>,
     pending_notification: Option<Notification>,
 }
 
@@ -93,9 +95,11 @@ impl SchemaDiffDialog {
             saving_migration: false,
             executing_migration: false,
             migration_execution_generation: 0,
+            migration_approvals: Vec::new(),
             pending_notification: None,
         };
         this.refresh(cx);
+        migration::load_migration_approvals(cx);
         this
     }
 

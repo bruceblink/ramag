@@ -39,6 +39,9 @@ schemars = { workspace = true }
 
 # 时间显示（历史面板）
 chrono = { workspace = true }
+# 迁移审批记录只保存 SQL 的 SHA-256 指纹，不保存脚本正文
+sha2 = { workspace = true }
+hex = { workspace = true }
 # 系统文件对话框（导出 CSV / JSON）
 rfd = { workspace = true }
 

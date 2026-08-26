@@ -1,6 +1,6 @@
 # 数据库查询工具 DataGrip-like 开发路线图
 
-> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比、M4-E 查询结果数据网格差异比较、M4-F 跨连接表结构对比、M4-G 跨连接查询结果比较、M4-H 表结构迁移 SQL 预览、M4-I 表结构迁移执行与回读和 M4-J 外键动作元数据与迁移保真度已落地，后续迭代中
+> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比、M4-E 查询结果数据网格差异比较、M4-F 跨连接表结构对比、M4-G 跨连接查询结果比较、M4-H 表结构迁移 SQL 预览、M4-I 表结构迁移执行与回读、M4-J 外键动作元数据与迁移保真度和 M4-K 迁移审批记录已落地，后续迭代中
 > 更新日期：2026-08-26
 > 适用范围：`ramag-tool-dbclient`、`ramag-tool-mongodb`、`ramag-domain`、`ramag-app` 及对应基础设施驱动
 
@@ -15,6 +15,7 @@
 | 服务端分页 | Server-side Pagination | 通过 `LIMIT/OFFSET`、MongoDB `skip/limit` 等方式只读取当前数据页 | 不代表客户端只隐藏已加载数据 |
 | 数据库驱动 | Database Driver | `ramag-domain` 定义的能力接口及 MySQL、PostgreSQL、MongoDB 等具体适配器 | 不强行把 SQL、文档和 Key-Value 能力合并成一个接口 |
 | DataGrip-like | DataGrip-like Core Workflow | 参考 DataGrip 的核心数据库浏览、查询、编辑和分析工作流 | 不承诺复制 DataGrip 的全部方言、插件和 IDE 能力 |
+| 迁移审批记录 | Migration Approval Record | 记录用户确认的迁移上下文、脚本指纹和数据库执行结果 | 不保存 SQL 正文、连接凭据或替代数据库审计日志 |
 
 ## 1. 背景与目标
 
@@ -416,11 +417,28 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - MySQL/PostgreSQL Docker 集成测试覆盖真实 `CASCADE` 元数据读取以及迁移回放后的动作回读；格式检查、差异检查和源码尺寸检查继续执行。
 - 真实 Windows 窗口截图仍需补充；本切片不将代码测试视为原生窗口验收。
 
+#### M4-K：迁移审批记录（已落地切片）
+
+设计目标：为 M4-I 的“复核、确认、执行、回读”流程保留本地可回看的迁移审批记录，使用户能确认哪一次脚本在何时针对哪个目标表执行，以及执行是否成功。
+
+实现边界：
+
+- 用户在确认对话框中接受当前脚本后立即创建记录，记录源/目标连接与表、数据库驱动、语句数量、破坏性语句数量、审批时间和 SQL SHA-256 指纹。
+- 迁移成功时记录执行耗时和数据库警告数量；迁移失败时记录有界错误摘要；执行中断或应用关闭时保留“已确认”状态，避免把未完成操作误标记为成功。
+- 记录保存在现有本地偏好存储中，最多保留最近 50 条并限制 JSON 大小；加载时去重、校验指纹和文本边界。SQL 正文、密码和其他连接凭据不进入审批记录。
+- 迁移预览面板展示最近 5 条记录及状态、目标表、时间、脚本指纹、语句计数和结果摘要；生产连接仍不可执行，也不会生成审批记录。
+
+验收证据：
+
+- `cargo test -p ramag-tool-dbclient --lib schema_diff_dialog` 覆盖脚本指纹稳定性、记录去重/数量上限、偏好大小上限和非法指纹拒绝。
+- `cargo check -p ramag-tool-dbclient --all-targets`、`cargo fmt --all -- --check`、`git diff --check` 和源码尺寸检查通过。
+- 启动桌面程序并打开表结构迁移预览，检查迁移工具栏、审批记录区域、长文本滚动和生产连接按钮状态；真实数据库执行仍使用 M4-I 的 Docker 回放证据。
+
 功能清单：
 
 - EXPLAIN 结果支持原始文本和常见格式的结构化树，后续再评估图形化执行计划。DataGrip 将 Query Plan 作为独立结果页，并支持树、原始计划、图形和火焰图展示，可作为交互参考：[Query Execution Plan](https://www.jetbrains.com/help/datagrip/query-execution-plan.html)。
 - 基于现有表、列、索引和外键元数据生成 Schema Diagram。
-- 表结构和 DDL diff，已落地表设计器字段级差异预览、同连接或跨连接的表级列/索引/外键对比，以及带显式确认、外键动作保留和执行后回读的迁移 SQL 工作流；后续再评估审批记录和更细的方言适配。
+- 表结构和 DDL diff，已落地表设计器字段级差异预览、同连接或跨连接的表级列/索引/外键对比，以及带显式确认、外键动作保留、执行后回读和本地审批记录的迁移 SQL 工作流；后续再评估更细的方言适配。
 - 查询结果数据网格已支持基准快照、基础差异比较和同类型 SQL 连接之间的只读结果比较；表结构已支持同类型 SQL 连接之间的只读对比，后续扩展迁移工作流和更细的单元格定位。DataGrip 的数据编辑器也提供网格对比能力，可作为交互参考：[Explore data in the data editor](https://www.jetbrains.com/help/datagrip/explore-data-in-data-editor.html)。
 - 为 MySQL/PostgreSQL 增加更精确的方言检查、对象导航和补全；MongoDB 单独设计文档查询辅助。
 
