@@ -54,11 +54,14 @@ pub(crate) struct SchemaDiffDialog {
     migration_horizontal_scroll: ScrollHandle,
     migration_visible: bool,
     saving_migration: bool,
+    executing_migration: bool,
+    migration_execution_generation: u64,
     pending_notification: Option<Notification>,
 }
 
 impl SchemaDiffDialog {
     /// 初始化空的对比状态，并立即启动一次列、索引和外键元数据读取。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         service: Arc<ConnectionService>,
         source_connection: ConnectionConfig,
@@ -88,6 +91,8 @@ impl SchemaDiffDialog {
             migration_horizontal_scroll: ScrollHandle::new(),
             migration_visible: false,
             saving_migration: false,
+            executing_migration: false,
+            migration_execution_generation: 0,
             pending_notification: None,
         };
         this.refresh(cx);
@@ -96,6 +101,9 @@ impl SchemaDiffDialog {
 
     /// 读取两张表的列、索引和外键；单类元数据失败时保留其他类别并显示警告。
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.executing_migration {
+            return;
+        }
         self.request_generation = self.request_generation.wrapping_add(1);
         let request_generation = self.request_generation;
         let service = self.service.clone();
@@ -420,7 +428,12 @@ impl Render for SchemaDiffDialog {
                     } else {
                         "预览迁移 SQL"
                     })
-                    .disabled(self.loading || !has_sections || !metadata_complete)
+                    .disabled(
+                        self.loading
+                            || self.executing_migration
+                            || !has_sections
+                            || !metadata_complete,
+                    )
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_migration(cx))),
             )
             .child(
@@ -440,7 +453,7 @@ impl Render for SchemaDiffDialog {
                     .small()
                     .icon(ramag_ui::icons::refresh_cw())
                     .tooltip("重新加载元数据")
-                    .disabled(self.loading)
+                    .disabled(self.loading || self.executing_migration)
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             );
 

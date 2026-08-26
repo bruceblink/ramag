@@ -98,6 +98,10 @@ pub(crate) fn build_migration_script(
         warnings
             .push("唯一索引与唯一约束在当前元数据中无法区分，PostgreSQL 将按唯一索引生成".into());
     }
+    if driver == DriverKind::Mysql && !statements.is_empty() {
+        warnings
+            .push("MySQL DDL 可能隐式提交；执行失败时目标表可能已部分变更，请先人工复核".into());
+    }
 
     let destructive_statements = statements
         .iter()

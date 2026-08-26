@@ -377,7 +377,7 @@ pub(super) fn format_script<'a>(
     statements: impl IntoIterator<Item = &'a str>,
 ) -> String {
     let mut output = format!(
-        "-- Ramag migration preview\n-- Make target {target_name} match source {source_name}.\n-- Review this script before manual execution; Ramag does not execute it.\n"
+        "-- Ramag migration preview\n-- Make target {target_name} match source {source_name}.\n-- Review this script before execution; Ramag runs it only after explicit confirmation.\n"
     );
     let mut has_statement = false;
     for statement in statements {
