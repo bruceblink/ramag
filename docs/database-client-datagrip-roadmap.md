@@ -1,6 +1,6 @@
 # 数据库查询工具 DataGrip-like 开发路线图
 
-> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比与 M4-E 查询结果数据网格差异比较已落地，后续迭代中
+> 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比、M4-E 查询结果数据网格差异比较与 M4-F 跨连接表结构对比已落地，后续迭代中
 > 更新日期：2026-08-26
 > 适用范围：`ramag-tool-dbclient`、`ramag-tool-mongodb`、`ramag-domain`、`ramag-app` 及对应基础设施驱动
 
@@ -53,7 +53,7 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - 服务端分页目前只覆盖可安全识别的查询形状；单条只读 SELECT/WITH 已支持结果列服务端排序和结果筛选，深分页仍需要明确边界。
 - `Driver` 已提供 SQL 手动事务会话的最小接口（开启、事务内执行、提交和回滚）；隔离级别、保存点和跨驱动会话能力仍不统一。
 - M3-B 已将事务语句和结果表写操作失败纳入查询控制台状态；事务句柄失效后不会继续显示正常手动提交，下一次成功开启事务会恢复正常状态。
- - 当前已支持独立的 EXPLAIN 结果视图、MySQL/PostgreSQL 常见文本计划的结构化树、只读 Schema Diagram 元数据预览、表设计器中的字段级结构差异预览、同一连接内两张 SQL 表的列/索引/外键结构对比，以及查询结果数据网格差异比较；图形化执行计划、跨连接对象对比和迁移工作流仍在后续迭代中。
+- 当前已支持独立的 EXPLAIN 结果视图、MySQL/PostgreSQL 常见文本计划的结构化树、只读 Schema Diagram 元数据预览、表设计器中的字段级结构差异预览、同一连接内或跨连接的 SQL 表列/索引/外键结构对比，以及查询结果数据网格差异比较；图形化执行计划和迁移工作流仍在后续迭代中。
 
 ## 3. 产品边界与原则
 
@@ -294,7 +294,7 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 
 实现边界：
 
-- 仅支持 MySQL 和 PostgreSQL 的同一连接；目标表名不带 Schema 时使用源表所在 Schema，也可以输入 `schema.table` 进行跨 Schema 对比。MongoDB、Redis、跨连接对比和迁移脚本保留为后续能力。
+- M4-D 仅支持 MySQL 和 PostgreSQL 的同一连接；目标表名不带 Schema 时使用源表所在 Schema，也可以输入 `schema.table` 进行跨 Schema 对比。跨连接对比由后续 M4-F 扩展，MongoDB、Redis 和迁移脚本不在本切片范围内。
 - 差异来源为驱动返回的 `Column`、`Index` 和 `ForeignKey`，不解析 UI 文本，也不执行任何迁移 SQL。
 - 同名对象按大小写不敏感方式匹配；定义变化显示为删除旧定义和新增新定义，索引列顺序与外键引用列顺序保留。
 - 对话框提供复制差异、刷新元数据以及水平/垂直滚动；单类元数据读取失败时保留其他结果并显示按源表/目标表区分的警告，同时在标题中显示两侧完整的 Schema 和表名。
@@ -326,12 +326,29 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - `cargo fmt --all -- --check` 和 `git diff --check` 通过。
 - 真实 Windows 窗口截图仍需补充，重点确认比较菜单、固定宽度差异内容和双轴滚动条在实际查询结果下不重叠。
 
+#### M4-F：跨连接表结构对比（已落地切片）
+
+设计目标：在现有表结构对比的只读流程中允许选择另一个同类型 SQL 连接，读取源连接和目标连接的真实表元数据，帮助开发者检查不同环境之间的结构差异。
+
+实现边界：
+
+- MySQL 只能与 MySQL 对比，PostgreSQL 只能与 PostgreSQL 对比；MongoDB、Redis 和跨数据库引擎对比仍不进入本切片。
+- 表树对比入口保留当前连接作为源；目标输入支持 `连接名::schema.table`，连接名重复时使用连接 ID，省略 Schema 时沿用源 Schema。
+- 源表和目标表分别使用各自的 `ConnectionConfig` 读取列、索引和外键；后台回包同时校验两侧连接 ID、Schema、表名和请求代次，旧回包不能覆盖当前对比内容。
+- 对比窗口显示两侧连接和完整 Schema/表名，差异只读并继续支持复制、刷新和双轴滚动，不生成或执行 DDL。
+
+验收证据：
+
+- `cargo test -p ramag-tool-dbclient --lib`：210 个测试通过，包含同类型连接选择、重复连接名消歧、连接 ID 选择和跨驱动拒绝测试。
+- `cargo check -p ramag-tool-dbclient --all-targets`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。
+- 所有 Rust 源文件仍不超过 600 行；真实 MySQL/PostgreSQL 跨环境窗口截图和连接失败集成验证仍需补充。
+
 功能清单：
 
 - EXPLAIN 结果支持原始文本和常见格式的结构化树，后续再评估图形化执行计划。DataGrip 将 Query Plan 作为独立结果页，并支持树、原始计划、图形和火焰图展示，可作为交互参考：[Query Execution Plan](https://www.jetbrains.com/help/datagrip/query-execution-plan.html)。
 - 基于现有表、列、索引和外键元数据生成 Schema Diagram。
-- 表结构和 DDL diff，已落地表设计器字段级差异预览与同连接内表级列/索引/外键对比，后续扩展到跨连接对象对比和迁移工作流。
-- 查询结果数据网格已支持基准快照和基础差异比较；后续扩展跨连接结果比较与更细的单元格定位。DataGrip 的数据编辑器也提供网格对比能力，可作为交互参考：[Explore data in the data editor](https://www.jetbrains.com/help/datagrip/explore-data-in-data-editor.html)。
+- 表结构和 DDL diff，已落地表设计器字段级差异预览与同连接或跨连接的表级列/索引/外键对比，后续扩展到迁移工作流。
+- 查询结果数据网格已支持基准快照和基础差异比较；表结构已支持同类型 SQL 连接之间的只读对比，后续扩展跨连接结果比较、迁移工作流和更细的单元格定位。DataGrip 的数据编辑器也提供网格对比能力，可作为交互参考：[Explore data in the data editor](https://www.jetbrains.com/help/datagrip/explore-data-in-data-editor.html)。
 - 为 MySQL/PostgreSQL 增加更精确的方言检查、对象导航和补全；MongoDB 单独设计文档查询辅助。
 
 验收标准：
