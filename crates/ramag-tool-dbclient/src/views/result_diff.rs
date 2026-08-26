@@ -43,6 +43,7 @@ pub(crate) struct ResultSnapshot {
 }
 
 impl ResultSnapshot {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_query(
         result: Arc<QueryResult>,
         role: &str,

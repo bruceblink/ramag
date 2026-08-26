@@ -63,9 +63,11 @@ pub(super) fn sql_connection_hint(
         .iter()
         .filter(|connection| connection.id != source.id && connection.driver == source.driver)
         .count();
-    let suffix = (other_count > MAX_SQL_CONNECTION_HINTS)
-        .then_some(" 等")
-        .unwrap_or("");
+    let suffix = if other_count > MAX_SQL_CONNECTION_HINTS {
+        " 等"
+    } else {
+        ""
+    };
     format!("{}{}", labels.join("、"), suffix)
 }
 

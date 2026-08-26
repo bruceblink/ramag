@@ -229,7 +229,7 @@ fn compare_keyed_rows(
     let mut target_for_source = vec![None; source_count];
     let mut target_matched = vec![false; target_count];
     let mut unkeyed_target = 0;
-    for target_index in 0..target_count {
+    for (target_index, target_matched) in target_matched.iter_mut().enumerate().take(target_count) {
         let key = identity_key(target.rows.get(target_index), identity_columns, false);
         let Some(key) = key else {
             unkeyed_target += 1;
@@ -249,7 +249,7 @@ fn compare_keyed_rows(
         });
         if let Some(source_index) = source_index {
             target_for_source[source_index] = Some(target_index);
-            target_matched[target_index] = true;
+            *target_matched = true;
         }
     }
 
@@ -259,8 +259,13 @@ fn compare_keyed_rows(
     let mut changed = 0;
     let mut unchanged = 0;
     let mut omitted_lines = 0;
-    for source_index in 0..source_count {
-        match target_for_source[source_index] {
+    for (source_index, target_index) in target_for_source
+        .iter()
+        .copied()
+        .enumerate()
+        .take(source_count)
+    {
+        match target_index {
             Some(target_index)
                 if rows_equal(
                     source.rows.get(source_index),
@@ -293,8 +298,8 @@ fn compare_keyed_rows(
             }
         }
     }
-    for target_index in 0..target_count {
-        if !target_matched[target_index] {
+    for (target_index, matched) in target_matched.iter().enumerate().take(target_count) {
+        if !*matched {
             added += 1;
             push_line(
                 &mut lines,
@@ -338,7 +343,7 @@ fn compare_content_rows(
 
     let mut source_matched = vec![false; source_count];
     let mut target_matched = vec![false; target_count];
-    for target_index in 0..target_count {
+    for (target_index, target_matched) in target_matched.iter_mut().enumerate().take(target_count) {
         let key = content_key(target.rows.get(target_index), common_columns, false);
         let Some(source_candidates) = source_buckets.get(&key) else {
             continue;
@@ -353,7 +358,7 @@ fn compare_content_rows(
         });
         if let Some(source_index) = source_index {
             source_matched[source_index] = true;
-            target_matched[target_index] = true;
+            *target_matched = true;
         }
     }
 

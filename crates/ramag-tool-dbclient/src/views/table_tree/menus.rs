@@ -150,6 +150,7 @@ pub(super) fn table_context_menu(
 }
 
 /// 先关闭第一次确认，再打开第二次确认，避免弹窗关闭动作误关掉第二个弹窗。
+#[allow(clippy::too_many_arguments)]
 fn open_double_confirm(
     first_title: impl Into<gpui::SharedString>,
     first_description: impl Into<gpui::SharedString>,

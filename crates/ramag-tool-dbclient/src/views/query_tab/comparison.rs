@@ -137,7 +137,7 @@ impl QueryTab {
         if is_write_statement(&source_sql) {
             return Err("当前结果来自写操作，不能在其他连接上重放".into());
         }
-        let page = self.cross_compare_page(&result, source.scope_key);
+        let page = self.cross_compare_page(result, source.scope_key);
         Ok(CrossCompareRequest {
             source_result_revision: result.result_revision(),
             source_schema: result.source_schema(),

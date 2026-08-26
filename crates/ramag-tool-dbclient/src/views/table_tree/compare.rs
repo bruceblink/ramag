@@ -55,7 +55,7 @@ fn parse_compare_request(
     };
     let target_connection = match connection_selector {
         None => source_connection.clone(),
-        Some(selector) if selector.is_empty() => return Err("目标连接不能为空"),
+        Some("") => return Err("目标连接不能为空"),
         Some(selector) => {
             resolve_sql_connection(selector, source_connection, available_connections)?
         }

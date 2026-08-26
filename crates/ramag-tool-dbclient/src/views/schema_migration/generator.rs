@@ -88,6 +88,7 @@ fn foreign_key_add_sql(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn append_index_drops(
     driver: DriverKind,
     target_name: &str,
@@ -447,9 +448,10 @@ fn contains_unquoted_unsafe_token(value: &str) -> bool {
         }
         if matches!(character, '\'' | '"' | '`') {
             quote = Some(character);
-        } else if character == ';' || (character == '-' && chars.peek() == Some(&'-')) {
-            return true;
-        } else if character == '/' && chars.peek() == Some(&'*') {
+        } else if character == ';'
+            || (character == '-' && chars.peek() == Some(&'-'))
+            || (character == '/' && chars.peek() == Some(&'*'))
+        {
             return true;
         }
     }
