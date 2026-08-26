@@ -4,6 +4,7 @@ mod paging;
 mod render;
 mod render_helpers;
 mod sql_utils;
+mod toolbar;
 mod transaction;
 
 pub(crate) use examples::sql_examples;

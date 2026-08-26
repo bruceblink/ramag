@@ -1,5 +1,6 @@
 mod export;
 mod helpers;
+mod lifecycle;
 mod ops;
 mod render;
 mod row_search;
@@ -22,14 +23,15 @@ use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
-    Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, TransactionId, Value, Warning,
+    Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, TransactionId, Value,
 };
-use ramag_ui::{AxisScrollGesture, ResultMemoryLease, ResultMemoryUpdate};
+use ramag_ui::{AxisScrollGesture, ResultMemoryLease};
 
 use crate::sql_completion::SchemaCache;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
 
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
+pub(super) use lifecycle::global_memory_warning;
 use row_search::RowSearchState;
 pub(crate) use row_search::{
     RowFilter, RowSearchBlocker, RowSearchConversionStatus, RowSearchMode,
@@ -572,32 +574,6 @@ impl ResultPanel {
 
     pub(super) fn source_sql(&self) -> Option<String> {
         self.source_sql.clone()
-    }
-}
-
-fn global_memory_warning(outcome: ResultMemoryUpdate) -> Warning {
-    let total_mib = outcome.total_bytes / 1024 / 1024;
-    let message = if outcome.evicted_results > 0 {
-        format!(
-            "全部查询标签结果达到全局预算，已按 LRU 释放 {} 个非活动标签的旧结果；当前保留约 {total_mib} MiB",
-            outcome.evicted_results
-        )
-    } else {
-        format!(
-            "全部查询标签结果已达到 384 MiB 提示线（当前约 {total_mib} MiB），建议关闭旧结果或收窄查询"
-        )
-    };
-    Warning {
-        level: "Client".into(),
-        code: 0,
-        message,
-    }
-}
-
-impl Drop for ResultPanel {
-    fn drop(&mut self) {
-        self.cancel_id_conversion();
-        self.cancel_display_view_build();
     }
 }
 
