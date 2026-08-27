@@ -85,15 +85,7 @@ impl QueryTab {
         let Some(pager) = self.pager.as_ref() else {
             return;
         };
-        let is_previous = requested_page
-            .checked_add(1)
-            .is_some_and(|page| page == pager.page);
-        let is_next = pager
-            .page
-            .checked_add(1)
-            .is_some_and(|page| page == requested_page)
-            && pager.has_more;
-        if !is_previous && !is_next {
+        if !pager.accepts_page(requested_page) {
             return;
         }
         let base_sql = pager.base_sql.clone();

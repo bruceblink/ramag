@@ -1,3 +1,4 @@
+use super::pagination::parse_result_page;
 use super::*;
 use ramag_ui::PointerDropdownMenu as _;
 
@@ -433,6 +434,43 @@ pub(in crate::views) fn render_table(
                 Some(pages) => format!("第 {} / {} 页", pagination.page + 1, pages),
                 None => format!("第 {} 页", pagination.page + 1),
             }))
+            .when_some(
+                total_pages.filter(|pages| *pages > 1),
+                |this, total_pages| {
+                    let panel_for_jump = panel_entity.clone();
+                    let current_page = pagination.page.saturating_add(1);
+                    this.child(
+                        ramag_ui::clickable_button("result-page-jump")
+                            .ghost()
+                            .small()
+                            .label("跳页")
+                            .tooltip(format!("输入 1-{total_pages} 的页码"))
+                            .on_click(move |_, window, app| {
+                                let panel = panel_for_jump.clone();
+                                ramag_ui::open_bounded_prompt(
+                                    "跳转到结果页",
+                                    format!("输入 1-{total_pages} 的页码"),
+                                    &current_page.to_string(),
+                                    "跳转",
+                                    32,
+                                    move |value, _, app| match parse_result_page(
+                                        &value,
+                                        total_pages,
+                                    ) {
+                                        Ok(page) => panel.update(app, |_, cx| {
+                                            cx.emit(ResultPanelEvent::PageRequested(page));
+                                        }),
+                                        Err(message) => panel.update(app, |panel, cx| {
+                                            panel.notify_result_error(message, cx);
+                                        }),
+                                    },
+                                    window,
+                                    app,
+                                );
+                            }),
+                    )
+                },
+            )
             .child(
                 ramag_ui::clickable_button("result-page-next")
                     .ghost()

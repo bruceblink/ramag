@@ -263,14 +263,22 @@ impl ResultPanel {
         cx.notify();
     }
 
-    /// Shows a bounded page-size error in the result toolbar without starting a database request.
-    pub(crate) fn notify_page_size_error(
+    /// Shows a bounded result-toolbar error without starting a database request.
+    pub(crate) fn notify_result_error(
         &mut self,
         message: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
         self.pending_notification = Some(Notification::error(message.into()).autohide(true));
         cx.notify();
+    }
+
+    pub(crate) fn notify_page_size_error(
+        &mut self,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.notify_result_error(message, cx);
     }
 
     pub(crate) fn selected_cell(&self) -> Option<(usize, usize)> {

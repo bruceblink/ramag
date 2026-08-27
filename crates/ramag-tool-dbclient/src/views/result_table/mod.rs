@@ -360,6 +360,7 @@ fn build_display_view_cancellable(
 }
 
 mod cells;
+mod pagination;
 mod render;
 
 pub(super) use render::render_table;

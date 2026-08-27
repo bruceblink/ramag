@@ -29,6 +29,38 @@ pub(super) struct PageRequest {
     pub(super) page_size: usize,
 }
 
+impl Pager {
+    /// 精确总数可用时允许跳到任意有效页；否则只接受已加载页和下一页。
+    pub(super) fn accepts_page(&self, requested_page: usize) -> bool {
+        if requested_page == self.page {
+            return false;
+        }
+        if let Some(total_pages) = self.total_pages() {
+            return u64::try_from(requested_page).is_ok_and(|page| page < total_pages);
+        }
+        self.accepts_adjacent_page(requested_page)
+    }
+
+    pub(super) fn total_pages(&self) -> Option<u64> {
+        let TotalRows::Known(total_rows) = self.total else {
+            return None;
+        };
+        let page_size = u64::try_from(self.page_size).ok()?;
+        (page_size > 0).then(|| total_rows.div_ceil(page_size).max(1))
+    }
+
+    fn accepts_adjacent_page(&self, requested_page: usize) -> bool {
+        requested_page
+            .checked_add(1)
+            .is_some_and(|page| page == self.page)
+            || (self
+                .page
+                .checked_add(1)
+                .is_some_and(|page| page == requested_page)
+                && self.has_more)
+    }
+}
+
 /// 仅允许单条、只读且未显式分页的 SELECT/WITH 自动分页。
 pub(super) fn paging_base_sql(sql: &str, driver: DriverKind) -> Option<String> {
     if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) || sql_has_no_limit_marker(sql) {
@@ -466,5 +498,40 @@ mod tests {
         let mut with_sentinel = query_result(3);
         assert!(trim_page_sentinel(&mut with_sentinel, 2));
         assert_eq!(with_sentinel.rows.len(), 2);
+    }
+
+    #[test]
+    fn known_total_allows_valid_page_jumps() {
+        let pager = Pager {
+            base_sql: "SELECT * FROM t".into(),
+            sort_base_sql: "SELECT * FROM t".into(),
+            page: 0,
+            has_more: true,
+            page_size: 100,
+            total: TotalRows::Known(250),
+        };
+
+        assert!(pager.accepts_page(1));
+        assert!(pager.accepts_page(2));
+        assert!(!pager.accepts_page(3));
+        assert!(!pager.accepts_page(0));
+        assert_eq!(pager.total_pages(), Some(3));
+    }
+
+    #[test]
+    fn unknown_total_keeps_paging_adjacent() {
+        let pager = Pager {
+            base_sql: "SELECT * FROM t".into(),
+            sort_base_sql: "SELECT * FROM t".into(),
+            page: 1,
+            has_more: true,
+            page_size: 100,
+            total: TotalRows::Counting,
+        };
+
+        assert!(pager.accepts_page(0));
+        assert!(pager.accepts_page(2));
+        assert!(!pager.accepts_page(3));
+        assert_eq!(pager.total_pages(), None);
     }
 }
