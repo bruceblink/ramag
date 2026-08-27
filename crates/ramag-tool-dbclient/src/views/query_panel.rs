@@ -25,6 +25,8 @@ use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_ta
 use crate::sql_completion::SchemaCache;
 use crate::views::query_tab::{QueryTab, QueryTabEvent};
 
+const MAX_CLOSED_QUERY_DRAFTS: usize = 10;
+
 #[derive(Debug, Clone)]
 pub enum QueryPanelEvent {
     TableImportRequested {
@@ -61,6 +63,15 @@ pub struct QueryPanel {
     restoring_drafts: bool,
     /// 最近草稿落盘错误，显示在顶部。
     pub(super) draft_persist_error: Option<String>,
+    /// 当前连接下最近关闭的手写查询草稿，按后进先出恢复。
+    closed_drafts: Vec<ClosedQueryDraft>,
+}
+
+#[derive(Clone, Debug)]
+struct ClosedQueryDraft {
+    title: String,
+    text: SharedString,
+    context: Option<String>,
 }
 
 impl QueryPanel {
@@ -90,6 +101,7 @@ impl QueryPanel {
             draft_load_pending: false,
             restoring_drafts: false,
             draft_persist_error: None,
+            closed_drafts: Vec::new(),
         };
         this.add_tab(window, cx);
         this
@@ -101,6 +113,11 @@ impl QueryPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.connection.as_ref().map(|current| &current.id)
+            != conn.as_ref().map(|current| &current.id)
+        {
+            self.closed_drafts.clear();
+        }
         self.connection = conn.clone();
         self.active_schema = conn
             .as_ref()
@@ -222,6 +239,7 @@ impl QueryPanel {
             return;
         }
         self.draft_load_pending = false;
+        self.remember_closed_draft(index, cx);
         // 先取消执行中的查询。
         if let Some(tab) = self.tabs.get(index) {
             tab.update(cx, |t, cx| t.cancel_if_running(window, cx));
@@ -237,6 +255,74 @@ impl QueryPanel {
             return;
         }
         self.active = active_index_after_close(self.active, index, self.tabs.len());
+        self.sync_result_activity(cx);
+        self.focus_active_editor(window, cx);
+        self.schedule_draft_persist(cx);
+        cx.notify();
+    }
+
+    /// 保存关闭标签中的用户草稿；结果数据、运行任务和事务不进入恢复栈。
+    fn remember_closed_draft(&mut self, index: usize, cx: &Context<Self>) {
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        let tab_state = tab.read(cx);
+        let Some(text) = tab_state.draft_text(cx) else {
+            return;
+        };
+        let title = self
+            .titles
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| format!("查询 {}", index + 1));
+        push_closed_draft(
+            &mut self.closed_drafts,
+            ClosedQueryDraft {
+                title,
+                text,
+                context: tab_state.active_schema.clone(),
+            },
+        );
+    }
+
+    /// 恢复最近关闭的草稿并让新标签成为当前活动标签。
+    pub(super) fn reopen_last_closed_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !can_open_editor_tab(self.tabs.len()) {
+            window.push_notification(
+                Notification::warning(format!(
+                    "查询标签已达上限（{MAX_EDITOR_TABS} 个），请先关闭不需要的标签"
+                ))
+                .autohide(true),
+                cx,
+            );
+            return;
+        }
+        let Some(draft) = self.closed_drafts.pop() else {
+            return;
+        };
+        self.draft_load_pending = false;
+        let tab = self.build_tab(draft.title.clone(), window, cx);
+        tab.update(cx, |tab, cx| {
+            tab.restore_draft(draft.text, draft.context, window, cx);
+        });
+        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| match e {
+            QueryTabEvent::DraftChanged => this.schedule_draft_persist(cx),
+            QueryTabEvent::TableImportRequested {
+                schema,
+                table,
+                policy,
+                files,
+            } => cx.emit(QueryPanelEvent::TableImportRequested {
+                schema: schema.clone(),
+                table: table.clone(),
+                policy: *policy,
+                files: files.clone(),
+            }),
+        });
+        self.tabs.push(tab);
+        self.titles.push(draft.title);
+        self.draft_subscriptions.push(sub);
+        self.active = self.tabs.len() - 1;
         self.sync_result_activity(cx);
         self.focus_active_editor(window, cx);
         self.schedule_draft_persist(cx);
@@ -382,6 +468,13 @@ impl QueryPanel {
         self.schedule_draft_persist(cx);
         cx.notify();
     }
+}
+
+fn push_closed_draft(stack: &mut Vec<ClosedQueryDraft>, draft: ClosedQueryDraft) {
+    if stack.len() >= MAX_CLOSED_QUERY_DRAFTS {
+        stack.remove(0);
+    }
+    stack.push(draft);
 }
 
 fn theme_active_bg(_secondary: gpui::Hsla, accent: gpui::Hsla) -> gpui::Hsla {

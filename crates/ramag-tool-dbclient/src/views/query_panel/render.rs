@@ -264,8 +264,21 @@ impl Render for QueryPanel {
                                                 }
                                             },
                                         )),
+                                )
+                                .child(
+                                    ramag_ui::clickable_button("tab-reopen")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Undo2)
+                                        .tooltip("重新打开最近关闭的查询")
+                                        .disabled(self.closed_drafts.is_empty())
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.reopen_last_closed_draft(window, cx);
+                                            },
+                                        )),
                                 ),
-                        ),
+                        )
                 )
             })
             .child(
