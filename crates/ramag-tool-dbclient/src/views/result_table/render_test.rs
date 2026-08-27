@@ -2,11 +2,14 @@
 
 use std::sync::Arc;
 
-use gpui::{AppContext as _, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px};
+use gpui::{
+    AppContext as _, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point,
+    px,
+};
 use ramag_domain::entities::{QueryResult, Row, Value};
 
 use super::{DisplayViewCache, DisplayViewCacheKey, build_display_view, cached_display_view};
-use crate::views::result_panel::{ResultPanel, ResultState};
+use crate::views::result_panel::{ResultPanel, ResultState, ResultViewMode};
 
 /// Windows 触控板会同时上报少量另一轴位移；横向浏览列时不能带着行上下移动。
 #[gpui::test]
@@ -109,6 +112,110 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     assert!(
         cx.debug_bounds("result-h-scrollbar").is_some(),
         "重新开启设置后 SQL 结果表应恢复水平滚动条"
+    );
+}
+
+/// Result display modes should switch local renderers without replacing the loaded result.
+#[gpui::test]
+fn result_view_modes_keep_loaded_selection_and_render_each_surface(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
+        ramag_ui::DatabaseResultSettings {
+            show_horizontal_scrollbar: true,
+        },
+    ));
+    let result = Arc::new(QueryResult {
+        columns: vec!["id".into(), "name".into()],
+        column_types: vec!["BIGINT".into(), "TEXT".into()],
+        rows: vec![
+            Row {
+                values: vec![Value::Int(1), Value::Text("alpha".into())],
+            },
+            Row {
+                values: vec![Value::Int(2), Value::Text("beta".into())],
+            },
+        ],
+        affected_rows: 0,
+        elapsed_ms: 1,
+        warnings: Vec::new(),
+        truncated: false,
+    });
+    let display_view = build_display_view(&result, None, "", "");
+    let display_view_key = DisplayViewCacheKey {
+        result_identity: Arc::as_ptr(&result) as usize,
+        result_revision: 0,
+        sort_by: None,
+        column_filter: String::new(),
+        row_filter: super::RowFilter::Text(String::new()),
+    };
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let mut panel = ResultPanel::new(window, cx);
+        panel.state = ResultState::Ok(result.clone());
+        panel.selected_cell = Some((1, 1));
+        panel.display_view_cache = Some(DisplayViewCache {
+            key: display_view_key,
+            view: display_view,
+        });
+        panel
+    });
+    panel.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    for (selector, mode, surface) in [
+        (
+            "result-view-mode-tree",
+            ResultViewMode::Tree,
+            "result-tree-scroll",
+        ),
+        (
+            "result-view-mode-text",
+            ResultViewMode::Text,
+            "result-text-scroll",
+        ),
+        (
+            "result-view-mode-transpose",
+            ResultViewMode::Transpose,
+            "result-transpose-scroll",
+        ),
+        (
+            "result-view-mode-table",
+            ResultViewMode::Table,
+            "result-h-scroll",
+        ),
+    ] {
+        let button = cx
+            .debug_bounds(selector)
+            .expect("result view mode button should be rendered");
+        cx.simulate_click(button.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds(surface).is_some(),
+            "selected result mode should render its surface"
+        );
+        panel.read_with(cx, |panel, _cx| {
+            assert_eq!(panel.view_mode(), mode);
+            assert_eq!(panel.selected_cell(), Some((1, 1)));
+            let ResultState::Ok(current) = panel.state() else {
+                panic!("result mode switching should keep the loaded result");
+            };
+            assert!(Arc::ptr_eq(current, &result));
+        });
+    }
+
+    cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
+        ramag_ui::DatabaseResultSettings {
+            show_horizontal_scrollbar: false,
+        },
+    ));
+    cx.run_until_parked();
+    let text_button = cx
+        .debug_bounds("result-view-mode-text")
+        .expect("text mode button should remain available");
+    cx.simulate_click(text_button.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("result-text-h-scrollbar").is_none(),
+        "alternate result views should honor the global horizontal scrollbar setting"
     );
 }
 

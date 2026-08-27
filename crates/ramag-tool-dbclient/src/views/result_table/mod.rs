@@ -127,7 +127,7 @@ pub(crate) fn cached_display_view(
 }
 
 /// 确保当前排序 / 筛选视图在受限工作池中计算。缓存未就绪时返回 None，渲染层显示进度态。
-fn ensure_display_view(
+pub(super) fn ensure_display_view(
     panel: &mut ResultPanel,
     result: &Arc<QueryResult>,
     cx: &mut Context<ResultPanel>,
@@ -360,10 +360,12 @@ fn build_display_view_cancellable(
 }
 
 mod cells;
+mod modes;
 mod pagination;
 mod render;
 
-pub(super) use render::render_table;
+pub(super) use modes::render_result_view;
+pub(super) use render::{render_page_size_selector, render_table};
 mod helpers;
 #[cfg(test)]
 mod render_test;

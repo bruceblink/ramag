@@ -13,7 +13,7 @@ use ramag_ui::platform::primary_shortcut;
 use super::ResultPanel;
 use super::ResultState;
 use crate::actions::{CopyCellValue, CopySelectedColumn, FindInResults};
-use crate::views::result_table::render_table;
+use crate::views::result_table::render_result_view;
 
 impl Render for ResultPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -118,18 +118,7 @@ impl Render for ResultPanel {
                 cx,
             ),
 
-            ResultState::Ok(result) => render_table(
-                self,
-                &result,
-                fg,
-                muted_fg,
-                secondary_bg,
-                border,
-                muted_bg,
-                accent,
-                cx,
-            )
-            .into_any_element(),
+            ResultState::Ok(result) => render_result_view(self, &result, cx),
         };
 
         let warnings_banner = self.render_warnings_banner(cx);

@@ -8,13 +8,6 @@ mod render;
 mod row_search;
 mod scroll;
 mod state;
-use parking_lot::RwLock;
-use std::collections::BTreeSet;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
 use crate::sql_completion::SchemaCache;
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, Point, ScrollHandle, ScrollStrategy,
@@ -23,11 +16,18 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
 use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
+use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
     Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, TransactionId, Value,
 };
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease};
+pub(crate) use state::ResultViewMode;
+use std::collections::BTreeSet;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub(crate) use helpers::{RowIdentity, derive_row_identity};
 pub(super) use lifecycle::global_memory_warning;
@@ -39,7 +39,6 @@ pub(crate) use row_search::{
 pub(super) const MAX_ROWS_DISPLAY: usize = 10_000;
 /// 行内新增最多创建的输入框数量，避免异常元数据一次生成数万控件。
 pub(super) const MAX_INSERT_COLUMNS: usize = 512;
-
 #[derive(Debug, Clone, Default)]
 pub enum ResultState {
     #[default]
@@ -50,13 +49,11 @@ pub enum ResultState {
     Released(String),
     Ok(Arc<QueryResult>),
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDir {
     Asc,
     Desc,
 }
-
 /// 异步精确总行数状态；分页用哨兵判断下一页，COUNT(*) 后台回填。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TotalRows {
@@ -89,7 +86,6 @@ pub(crate) enum ResultPanelEvent {
 }
 
 impl EventEmitter<ResultPanelEvent> for ResultPanel {}
-
 struct VisibleSelectionCache {
     rows: Arc<Vec<usize>>,
     selection_revision: u64,
@@ -123,6 +119,10 @@ pub struct ResultPanel {
     pub(super) pagination: Option<ResultPagination>,
     /// 结果代际，供派生缓存和异步回包校验。
     pub(super) result_revision: u64,
+    /// 当前结果的展示模式；模式切换只改变本地渲染，不重新查询。
+    pub(super) view_mode: ResultViewMode,
+    /// 树形视图中展开的源行，按源行索引保存以跨排序/筛选保持上下文。
+    pub(super) tree_expanded_rows: BTreeSet<usize>,
     /// 排序、筛选和列布局缓存。
     pub(super) display_view_cache: Option<crate::views::result_table::DisplayViewCache>,
     /// 当前后台派生视图条件，避免重复排队。
@@ -210,6 +210,8 @@ impl ResultPanel {
             sort_by: None,
             pagination: None,
             result_revision: 0,
+            view_mode: ResultViewMode::Table,
+            tree_expanded_rows: BTreeSet::new(),
             display_view_cache: None,
             display_view_build_key: None,
             display_view_building: false,

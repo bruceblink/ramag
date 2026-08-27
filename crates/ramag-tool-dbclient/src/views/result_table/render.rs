@@ -3,7 +3,10 @@ use super::*;
 use ramag_ui::PointerDropdownMenu as _;
 
 /// Builds the page-size menu and keeps custom input bounded before emitting a query event.
-fn render_page_size_selector(current: usize, panel: gpui::Entity<ResultPanel>) -> impl IntoElement {
+pub(in crate::views) fn render_page_size_selector(
+    current: usize,
+    panel: gpui::Entity<ResultPanel>,
+) -> impl IntoElement {
     let menu_panel = panel.clone();
     ramag_ui::clickable_button("result-page-size")
         .ghost()
