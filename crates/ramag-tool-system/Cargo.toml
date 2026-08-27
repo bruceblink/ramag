@@ -1,0 +1,18 @@
+[package]
+name = "ramag-tool-system"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ramag 本机系统监控与任务管理器工具"
+
+[lints]
+workspace = true
+
+[dependencies]
+ramag-domain = { workspace = true }
+ramag-ui = { workspace = true }
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+parking_lot = { workspace = true }
+sysinfo = { workspace = true }
