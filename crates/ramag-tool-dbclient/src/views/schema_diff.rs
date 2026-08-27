@@ -1,6 +1,8 @@
 //! SQL 表结构对比的纯元数据模型与差异计算。
 
-use ramag_domain::entities::{Column, ForeignKey, Index};
+use ramag_domain::entities::{
+    Column, ForeignKey, GeneratedColumnStorage, IdentityGeneration, Index,
+};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TableMetadata {
@@ -147,17 +149,53 @@ fn column_entry(column: &Column) -> NamedMetadata {
     } else {
         ""
     };
+    let generation = column_generation_text(column);
+    let position = column.ordinal_position.map_or_else(
+        || "POSITION -".to_string(),
+        |position| format!("POSITION {position}"),
+    );
     NamedMetadata {
         key: column.name.to_ascii_lowercase(),
         text: format!(
-            "{} | {} | {}{} | DEFAULT {} | COMMENT {}",
+            "{} | {} | {}{} | DEFAULT {} | COMMENT {} | {} | {}",
             compact(&column.name),
             compact(&column.data_type.raw_type),
             nullable,
             primary,
             default,
-            comment
+            comment,
+            generation,
+            position,
         ),
+    }
+}
+
+fn column_generation_text(column: &Column) -> String {
+    if let Some(mode) = column.identity_generation {
+        return format!(
+            "IDENTITY {}",
+            match mode {
+                IdentityGeneration::Always => "ALWAYS",
+                IdentityGeneration::ByDefault => "BY DEFAULT",
+            }
+        );
+    }
+    if let Some(storage) = column.generated_storage {
+        let storage = match storage {
+            GeneratedColumnStorage::Virtual => "VIRTUAL",
+            GeneratedColumnStorage::Stored => "STORED",
+        };
+        let expression = column
+            .generation_expression
+            .as_deref()
+            .map(compact)
+            .unwrap_or_else(|| "-".into());
+        return format!("GENERATED {storage} AS ({expression})");
+    }
+    if column.is_auto_increment {
+        "AUTO_INCREMENT".into()
+    } else {
+        "GENERATED -".into()
     }
 }
 
@@ -228,7 +266,9 @@ fn compact(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ramag_domain::entities::{ColumnKind, ColumnType, ForeignKeyAction};
+    use ramag_domain::entities::{
+        ColumnKind, ColumnType, ForeignKeyAction, GeneratedColumnStorage, IdentityGeneration,
+    };
 
     fn column(name: &str, raw_type: &str) -> Column {
         Column {
@@ -241,6 +281,11 @@ mod tests {
             default_value: None,
             is_primary_key: false,
             comment: None,
+            ordinal_position: None,
+            is_auto_increment: false,
+            generation_expression: None,
+            generated_storage: None,
+            identity_generation: None,
         }
     }
 
@@ -330,5 +375,29 @@ mod tests {
         assert!(
             text.contains("+ fk_project (project_id) -> app.projects (id) | ON DELETE NO ACTION")
         );
+    }
+
+    #[test]
+    fn column_diff_text_includes_generation_and_position_metadata() {
+        let mut source = column("total", "integer");
+        source.ordinal_position = Some(2);
+        source.generation_expression = Some("price * 2".into());
+        source.generated_storage = Some(GeneratedColumnStorage::Stored);
+        let mut target = column("total", "integer");
+        target.ordinal_position = Some(3);
+        target.identity_generation = Some(IdentityGeneration::ByDefault);
+
+        let text = format_table_diff(&build_table_diff(
+            &TableMetadata {
+                columns: vec![source],
+                ..TableMetadata::default()
+            },
+            &TableMetadata {
+                columns: vec![target],
+                ..TableMetadata::default()
+            },
+        ));
+        assert!(text.contains("GENERATED STORED AS (price * 2) | POSITION 2"));
+        assert!(text.contains("IDENTITY BY DEFAULT | POSITION 3"));
     }
 }

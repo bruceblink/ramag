@@ -1,5 +1,14 @@
 use ramag_domain::entities::{Column, DriverKind, ForeignKey, ForeignKeyAction, Index};
 
+#[path = "columns.rs"]
+mod columns;
+
+pub(super) use columns::{
+    append_column_changes, changed_column, has_auto_generation_changes, has_column_changes,
+    has_column_order_changes, has_generated_column_changes, has_generated_column_rebuilds,
+    has_incomplete_column_metadata,
+};
+
 pub(super) struct MigrationStatement {
     pub(super) sql: String,
     pub(super) destructive: bool,
@@ -207,159 +216,6 @@ fn index_add_sql(driver: DriverKind, target_name: &str, index: &Index) -> Result
     })
 }
 
-pub(super) fn append_column_changes(
-    driver: DriverKind,
-    target_name: &str,
-    source: &[Column],
-    target: &[Column],
-    statements: &mut Vec<MigrationStatement>,
-) -> Result<(), String> {
-    for old in target {
-        if !source.iter().any(|new| same_name(&new.name, &old.name)) {
-            let name = identifier(driver, &old.name, "字段名")?;
-            statements.push(MigrationStatement {
-                sql: format!("ALTER TABLE {target_name} DROP COLUMN {name};"),
-                destructive: true,
-            });
-        }
-    }
-
-    for new in source {
-        let Some(old) = target.iter().find(|old| same_name(&old.name, &new.name)) else {
-            for sql in column_add_sql(driver, target_name, new)? {
-                statements.push(MigrationStatement {
-                    sql,
-                    destructive: false,
-                });
-            }
-            continue;
-        };
-        if column_equivalent(old, new) {
-            continue;
-        }
-        for sql in column_change_sql(driver, target_name, old, new)? {
-            statements.push(MigrationStatement {
-                sql,
-                destructive: true,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn column_add_sql(
-    driver: DriverKind,
-    target_name: &str,
-    column: &Column,
-) -> Result<Vec<String>, String> {
-    let definition = column_definition(driver, column, true)?;
-    if driver == DriverKind::Mysql {
-        return Ok(vec![format!(
-            "ALTER TABLE {target_name} ADD COLUMN {definition};"
-        )]);
-    }
-
-    let mut sql = vec![format!(
-        "ALTER TABLE {target_name} ADD COLUMN {definition};"
-    )];
-    if let Some(comment) = non_empty(column.comment.as_deref()) {
-        let name = identifier(driver, &column.name, "字段名")?;
-        sql.push(format!(
-            "COMMENT ON COLUMN {target_name}.{name} IS '{}';",
-            escape_literal(comment)
-        ));
-    }
-    Ok(sql)
-}
-
-fn column_change_sql(
-    driver: DriverKind,
-    target_name: &str,
-    old: &Column,
-    new: &Column,
-) -> Result<Vec<String>, String> {
-    if driver == DriverKind::Mysql {
-        let old_name = identifier(driver, &old.name, "字段名")?;
-        let definition = column_definition(driver, new, true)?;
-        return Ok(vec![format!(
-            "ALTER TABLE {target_name} CHANGE COLUMN {old_name} {definition};"
-        )]);
-    }
-
-    let mut sql = Vec::new();
-    let old_name = identifier(driver, &old.name, "字段名")?;
-    let new_name = identifier(driver, &new.name, "字段名")?;
-    if old.name != new.name {
-        sql.push(format!(
-            "ALTER TABLE {target_name} RENAME COLUMN {old_name} TO {new_name};"
-        ));
-    }
-    if old.data_type.raw_type != new.data_type.raw_type {
-        let data_type = fragment(&new.data_type.raw_type, "字段类型")?;
-        sql.push(format!(
-            "ALTER TABLE {target_name} ALTER COLUMN {new_name} TYPE {data_type};"
-        ));
-    }
-    if old.nullable != new.nullable {
-        sql.push(format!(
-            "ALTER TABLE {target_name} ALTER COLUMN {new_name} {};",
-            if new.nullable {
-                "DROP NOT NULL"
-            } else {
-                "SET NOT NULL"
-            }
-        ));
-    }
-    if normalized_optional(old.default_value.as_deref())
-        != normalized_optional(new.default_value.as_deref())
-    {
-        let clause = match non_empty(new.default_value.as_deref()) {
-            Some(value) => format!("SET DEFAULT {}", fragment(value, "默认值")?),
-            None => "DROP DEFAULT".to_string(),
-        };
-        sql.push(format!(
-            "ALTER TABLE {target_name} ALTER COLUMN {new_name} {clause};"
-        ));
-    }
-    if normalized_optional(old.comment.as_deref()) != normalized_optional(new.comment.as_deref()) {
-        let value = new.comment.as_deref().and_then(non_empty_str).map_or_else(
-            || "NULL".to_string(),
-            |comment| format!("'{}'", escape_literal(comment)),
-        );
-        sql.push(format!(
-            "COMMENT ON COLUMN {target_name}.{new_name} IS {value};"
-        ));
-    }
-    Ok(sql)
-}
-
-fn column_definition(
-    driver: DriverKind,
-    column: &Column,
-    include_comment: bool,
-) -> Result<String, String> {
-    let name = identifier(driver, &column.name, "字段名")?;
-    let data_type = fragment(&column.data_type.raw_type, "字段类型")?;
-    let nullability = if column.nullable {
-        " NULL"
-    } else {
-        " NOT NULL"
-    };
-    let default = match non_empty(column.default_value.as_deref()) {
-        Some(value) => format!(" DEFAULT {}", fragment(value, "默认值")?),
-        None => String::new(),
-    };
-    let comment = if include_comment && driver == DriverKind::Mysql {
-        match column.comment.as_deref().and_then(non_empty_str) {
-            Some(value) => format!(" COMMENT '{}'", escape_literal(value)),
-            None => String::new(),
-        }
-    } else {
-        String::new()
-    };
-    Ok(format!("{name} {data_type}{nullability}{default}{comment}"))
-}
-
 fn index_columns(driver: DriverKind, index: &Index) -> Result<String, String> {
     if index.columns.is_empty() {
         return Err(format!("索引 {} 没有字段，无法生成迁移 SQL", index.name));
@@ -497,16 +353,6 @@ fn same_names(left: &[String], right: &[String]) -> bool {
             .all(|(left, right)| same_name(left, right))
 }
 
-fn column_equivalent(left: &Column, right: &Column) -> bool {
-    left.name == right.name
-        && left.data_type.raw_type == right.data_type.raw_type
-        && left.nullable == right.nullable
-        && normalized_optional(left.default_value.as_deref())
-            == normalized_optional(right.default_value.as_deref())
-        && normalized_optional(left.comment.as_deref())
-            == normalized_optional(right.comment.as_deref())
-}
-
 fn index_equivalent(left: &Index, right: &Index) -> bool {
     left.primary == right.primary
         && left.unique == right.unique
@@ -520,27 +366,6 @@ pub(super) fn foreign_key_equivalent(left: &ForeignKey, right: &ForeignKey) -> b
         && same_names(&left.ref_columns, &right.ref_columns)
         && left.on_delete == right.on_delete
         && left.on_update == right.on_update
-}
-
-pub(super) fn has_column_changes(source: &[Column], target: &[Column]) -> bool {
-    source.iter().any(|new| {
-        target
-            .iter()
-            .find(|old| same_name(&old.name, &new.name))
-            .is_none_or(|old| !column_equivalent(old, new))
-    }) || target
-        .iter()
-        .any(|old| !source.iter().any(|new| same_name(&new.name, &old.name)))
-}
-
-fn changed_column(name: &str, source: &[Column], target: &[Column]) -> bool {
-    let Some(old) = target.iter().find(|column| same_name(&column.name, name)) else {
-        return false;
-    };
-    source
-        .iter()
-        .find(|column| same_name(&column.name, name))
-        .is_none_or(|new| !column_equivalent(old, new))
 }
 
 fn is_simple_identifier(value: &str) -> bool {

@@ -96,6 +96,7 @@ impl MetadataRetainedBytes for Column {
             .saturating_add(self.name.capacity())
             .saturating_add(self.data_type.raw_type.capacity())
             .saturating_add(optional_string_retained_bytes(&self.default_value))
+            .saturating_add(optional_string_retained_bytes(&self.generation_expression))
             .saturating_add(optional_string_retained_bytes(&self.comment))
     }
 }

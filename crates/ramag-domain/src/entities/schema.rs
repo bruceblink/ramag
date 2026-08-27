@@ -28,6 +28,33 @@ pub struct Column {
     pub default_value: Option<String>,
     pub is_primary_key: bool,
     pub comment: Option<String>,
+    /// 数据库中的 1-based 列序号；旧记录或不完整元数据可能没有该值。
+    #[serde(default)]
+    pub ordinal_position: Option<u32>,
+    /// MySQL `AUTO_INCREMENT` 列标记。
+    #[serde(default)]
+    pub is_auto_increment: bool,
+    /// 生成列表达式，不包含外围的 `AS (...)` 子句。
+    #[serde(default)]
+    pub generation_expression: Option<String>,
+    /// 生成列的存储方式；具体驱动决定可读取和可生成的存储方式。
+    #[serde(default)]
+    pub generated_storage: Option<GeneratedColumnStorage>,
+    /// PostgreSQL `IDENTITY` 列的生成模式。
+    #[serde(default)]
+    pub identity_generation: Option<IdentityGeneration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GeneratedColumnStorage {
+    Virtual,
+    Stored,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdentityGeneration {
+    Always,
+    ByDefault,
 }
 
 /// `raw_type` 保留 `VARCHAR(255)` 等数据库原始类型。
@@ -122,7 +149,30 @@ pub struct ForeignKey {
 
 #[cfg(test)]
 mod tests {
-    use super::ForeignKeyAction;
+    use super::{Column, ColumnKind, ForeignKeyAction};
+
+    #[test]
+    fn column_deserializes_legacy_records_without_new_metadata() {
+        let result = serde_json::from_str::<Column>(
+            r#"{
+                "name":"id",
+                "data_type":{"kind":"Integer","raw_type":"int"},
+                "nullable":false,
+                "default_value":null,
+                "is_primary_key":true,
+                "comment":null
+            }"#,
+        );
+        assert!(result.is_ok(), "legacy column should deserialize");
+        let Some(column) = result.ok() else { return };
+        assert_eq!(column.name, "id");
+        assert_eq!(column.data_type.kind, ColumnKind::Integer);
+        assert_eq!(column.ordinal_position, None);
+        assert!(!column.is_auto_increment);
+        assert_eq!(column.generation_expression, None);
+        assert_eq!(column.generated_storage, None);
+        assert_eq!(column.identity_generation, None);
+    }
 
     #[test]
     fn parses_sql_actions_without_losing_unknown_values() {

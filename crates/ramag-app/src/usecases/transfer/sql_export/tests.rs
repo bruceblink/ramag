@@ -12,6 +12,11 @@ fn pk_col(name: &str) -> Column {
         default_value: None,
         is_primary_key: true,
         comment: None,
+        ordinal_position: None,
+        is_auto_increment: false,
+        generation_expression: None,
+        generated_storage: None,
+        identity_generation: None,
     }
 }
 

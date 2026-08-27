@@ -1,6 +1,9 @@
 //! PostgreSQL 元数据读取。优先使用 information_schema，索引和列注释使用 pg_catalog。
 
-use ramag_domain::entities::{Column, ForeignKey, ForeignKeyAction, Index, Schema, Table};
+use ramag_domain::entities::{
+    Column, ForeignKey, ForeignKeyAction, GeneratedColumnStorage, IdentityGeneration, Index,
+    Schema, Table,
+};
 use ramag_domain::error::{DomainError, Result};
 use ramag_infra_sql_shared::{
     METADATA_FETCH_LIMIT, ensure_metadata_item_limit, ensure_metadata_result_limit,
@@ -97,7 +100,7 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
     Ok(tables)
 }
 
-/// COLUMNS 一行：column_name / data_type / udt_name / default / comment / char_max_len / nullable
+/// COLUMNS 一行：基础类型、默认值、注释、顺序、IDENTITY 和生成列表达式。
 type PgColumnRow = (
     String,
     String,
@@ -107,6 +110,11 @@ type PgColumnRow = (
     Option<i32>,
     bool,
     String,
+    i32,
+    bool,
+    Option<String>,
+    String,
+    Option<String>,
 );
 
 /// 列注释走 pg_catalog.col_description，其他走 information_schema.columns
@@ -134,7 +142,12 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
             (
                 pg_catalog.format_type(a.atttypid, a.atttypmod)
                 || substr(sync_settings.configured, 1, 0)
-            )::text AS exact_type
+            )::text AS exact_type,
+            c.ordinal_position::int,
+            (c.is_identity = 'YES') AS is_identity,
+            c.identity_generation::text,
+            a.attgenerated::text,
+            LEFT(c.generation_expression, 4096)
         FROM information_schema.columns c
         LEFT JOIN pg_namespace n ON n.nspname = c.table_schema
         LEFT JOIN pg_class pgc ON pgc.relnamespace = n.oid AND pgc.relname = c.table_name
@@ -189,6 +202,11 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
                 char_max_len,
                 nullable,
                 exact_type,
+                ordinal_position,
+                is_identity,
+                identity_generation,
+                is_generated,
+                generation_expression,
             )| {
                 // format_type 保留 numeric 精度、timestamp 精度、数组和自定义类型限定。
                 let full_type = if exact_type.is_empty() {
@@ -196,19 +214,67 @@ pub async fn list_columns(pool: &PgPool, schema: &str, table: &str) -> Result<Ve
                 } else {
                     exact_type
                 };
-                Column {
+                let ordinal_position = u32::try_from(ordinal_position).map_err(|_| {
+                    DomainError::QueryFailed(format!("PostgreSQL 列 {name} 的序号无效"))
+                })?;
+                let identity_generation =
+                    parse_identity_generation(is_identity, identity_generation.as_deref(), &name)?;
+                let generated_storage = parse_generated_storage(&is_generated, &name)?;
+                Ok(Column {
                     name: name.clone(),
                     data_type: map_column_kind(&data_type, &full_type),
                     nullable,
                     default_value,
                     is_primary_key: pk_names.contains(&name),
                     comment: comment.filter(|c| !c.is_empty()),
-                }
+                    ordinal_position: Some(ordinal_position),
+                    is_auto_increment: is_identity,
+                    generation_expression: generation_expression
+                        .filter(|value| !value.trim().is_empty()),
+                    generated_storage,
+                    identity_generation,
+                })
             },
         )
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     ensure_metadata_result_limit(&columns, "列")?;
     Ok(columns)
+}
+
+fn parse_identity_generation(
+    is_identity: bool,
+    generation: Option<&str>,
+    column_name: &str,
+) -> Result<Option<IdentityGeneration>> {
+    if !is_identity {
+        return Ok(None);
+    }
+    match generation.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("ALWAYS") => Ok(Some(IdentityGeneration::Always)),
+        Some(value) if value.eq_ignore_ascii_case("BY DEFAULT") => {
+            Ok(Some(IdentityGeneration::ByDefault))
+        }
+        _ => Err(DomainError::QueryFailed(format!(
+            "PostgreSQL 列 {column_name} 的 IDENTITY 模式无法识别"
+        ))),
+    }
+}
+
+fn parse_generated_storage(
+    generated: &str,
+    column_name: &str,
+) -> Result<Option<GeneratedColumnStorage>> {
+    if generated.is_empty() {
+        Ok(None)
+    } else if generated.eq_ignore_ascii_case("s") {
+        Ok(Some(GeneratedColumnStorage::Stored))
+    } else if generated.eq_ignore_ascii_case("v") {
+        Ok(Some(GeneratedColumnStorage::Virtual))
+    } else {
+        Err(DomainError::QueryFailed(format!(
+            "PostgreSQL 列 {column_name} 的 attgenerated 属性无法识别"
+        )))
+    }
 }
 
 /// 组合完整类型，例如将 varchar 和长度 255 组合为 varchar(255)。
@@ -368,4 +434,41 @@ pub async fn server_version(pool: &PgPool) -> Result<String> {
         .await
         .map_err(|e| map_postgres_error(&e))?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_generated_storage, parse_identity_generation};
+    use ramag_domain::entities::{GeneratedColumnStorage, IdentityGeneration};
+
+    #[test]
+    fn parses_postgres_identity_modes() {
+        assert_eq!(
+            parse_identity_generation(true, Some("ALWAYS"), "id").ok(),
+            Some(Some(IdentityGeneration::Always))
+        );
+        assert_eq!(
+            parse_identity_generation(true, Some("BY DEFAULT"), "id").ok(),
+            Some(Some(IdentityGeneration::ByDefault))
+        );
+        assert!(parse_identity_generation(true, Some("UNKNOWN"), "id").is_err());
+        assert_eq!(
+            parse_identity_generation(false, None, "id").ok(),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn parses_postgres_generated_column_storage() {
+        assert_eq!(
+            parse_generated_storage("s", "total").ok(),
+            Some(Some(GeneratedColumnStorage::Stored))
+        );
+        assert_eq!(parse_generated_storage("", "total").ok(), Some(None));
+        assert_eq!(
+            parse_generated_storage("v", "total").ok(),
+            Some(Some(GeneratedColumnStorage::Virtual))
+        );
+        assert!(parse_generated_storage("?", "total").is_err());
+    }
 }

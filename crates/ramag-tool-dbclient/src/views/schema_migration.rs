@@ -76,8 +76,34 @@ pub(crate) fn build_migration_script(
         &mut statements,
     )?;
 
-    if generator::has_column_changes(&source.columns, &target.columns) {
-        warnings.push("列顺序、自动生成属性和自增属性不在当前元数据中，执行前请人工复核".into());
+    let has_column_changes = generator::has_column_changes(&source.columns, &target.columns);
+    if has_column_changes
+        && generator::has_incomplete_column_metadata(&source.columns, &target.columns)
+    {
+        warnings.push(
+            "列顺序元数据不完整（缺少数据库列序号），迁移不会根据缺失信息推断，执行前请人工复核"
+                .into(),
+        );
+    }
+    if driver == DriverKind::Postgres
+        && generator::has_column_order_changes(&source.columns, &target.columns)
+    {
+        warnings
+            .push("PostgreSQL 不支持直接调整现有列顺序，脚本不会自动重排，执行前请人工复核".into());
+    }
+    if driver == DriverKind::Postgres
+        && generator::has_generated_column_rebuilds(&source.columns, &target.columns)
+    {
+        warnings.push(
+            "生成列表达式变化会删除并重建目标列，可能丢失该列现有值，执行前请人工复核".into(),
+        );
+    } else if generator::has_generated_column_changes(&source.columns, &target.columns) {
+        warnings.push("生成列属性变化会写入迁移 SQL，执行前请人工复核".into());
+    }
+    if generator::has_auto_generation_changes(&source.columns, &target.columns) {
+        warnings.push(
+            "自增或 IDENTITY 属性发生变化，迁移会显式写入新的生成规则，请确认序列行为".into(),
+        );
     }
     if source
         .indexes
@@ -114,7 +140,8 @@ pub(crate) fn build_migration_script(
 mod tests {
     use super::*;
     use ramag_domain::entities::{
-        Column, ColumnKind, ColumnType, ForeignKey, ForeignKeyAction, Index,
+        Column, ColumnKind, ColumnType, ForeignKey, ForeignKeyAction, GeneratedColumnStorage,
+        IdentityGeneration, Index,
     };
 
     fn column(name: &str, raw_type: &str) -> Column {
@@ -128,6 +155,11 @@ mod tests {
             default_value: None,
             is_primary_key: false,
             comment: None,
+            ordinal_position: None,
+            is_auto_increment: false,
+            generation_expression: None,
+            generated_storage: None,
+            identity_generation: None,
         }
     }
 
@@ -303,6 +335,258 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("外键动作"))
+        );
+    }
+
+    #[test]
+    fn mysql_migration_preserves_column_order_auto_increment_and_generated_columns() {
+        let mut source_id = column("id", "INT");
+        source_id.ordinal_position = Some(1);
+        source_id.is_auto_increment = true;
+        let mut source_total = column("total", "INT");
+        source_total.ordinal_position = Some(2);
+        source_total.generation_expression = Some("price + 1".into());
+        source_total.generated_storage = Some(GeneratedColumnStorage::Stored);
+        let mut source_price = column("price", "INT");
+        source_price.ordinal_position = Some(3);
+
+        let mut target_id = column("id", "INT");
+        target_id.ordinal_position = Some(1);
+        let mut target_price = column("price", "INT");
+        target_price.ordinal_position = Some(2);
+        let script = build_migration_script(
+            DriverKind::Mysql,
+            "app",
+            "orders",
+            "app",
+            "orders",
+            &TableMetadata {
+                columns: vec![source_id, source_total, source_price],
+                ..TableMetadata::default()
+            },
+            &TableMetadata {
+                columns: vec![target_id, target_price],
+                ..TableMetadata::default()
+            },
+        )
+        .expect("migration script");
+
+        assert!(
+            script
+                .sql
+                .contains("CHANGE COLUMN `id` `id` INT NULL AUTO_INCREMENT FIRST;")
+        );
+        assert!(script.sql.contains(
+            "ADD COLUMN `total` INT GENERATED ALWAYS AS (price + 1) STORED NULL AFTER `id`;"
+        ));
+        assert!(
+            script
+                .sql
+                .contains("CHANGE COLUMN `price` `price` INT NULL AFTER `total`;")
+        );
+        assert!(
+            script
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("自增"))
+        );
+    }
+
+    #[test]
+    fn postgres_migration_emits_identity_and_rebuilds_generated_column() {
+        let mut source_id = column("id", "bigint");
+        source_id.ordinal_position = Some(1);
+        source_id.is_auto_increment = true;
+        source_id.identity_generation = Some(IdentityGeneration::Always);
+        let mut source_total = column("total", "integer");
+        source_total.ordinal_position = Some(2);
+        source_total.generation_expression = Some("price * 2".into());
+        source_total.generated_storage = Some(GeneratedColumnStorage::Stored);
+
+        let mut target_id = column("id", "bigint");
+        target_id.ordinal_position = Some(1);
+        let mut target_total = column("total", "integer");
+        target_total.ordinal_position = Some(2);
+        let script = build_migration_script(
+            DriverKind::Postgres,
+            "app",
+            "orders",
+            "app",
+            "orders",
+            &TableMetadata {
+                columns: vec![source_id, source_total],
+                ..TableMetadata::default()
+            },
+            &TableMetadata {
+                columns: vec![target_id, target_total],
+                ..TableMetadata::default()
+            },
+        )
+        .expect("migration script");
+
+        assert!(script.sql.contains(
+            "ALTER TABLE \"app\".\"orders\" ALTER COLUMN \"id\" ADD GENERATED ALWAYS AS IDENTITY;"
+        ));
+        assert!(
+            script
+                .sql
+                .contains("ALTER TABLE \"app\".\"orders\" DROP COLUMN \"total\";")
+        );
+        assert!(script.sql.contains(
+            "ALTER TABLE \"app\".\"orders\" ADD COLUMN \"total\" integer GENERATED ALWAYS AS (price * 2) STORED NULL;"
+        ));
+        assert!(
+            script
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("重建目标列"))
+        );
+    }
+
+    #[test]
+    fn mysql_generated_column_change_uses_change_column_warning() {
+        let mut source_total = column("total", "integer");
+        source_total.generation_expression = Some("price + 2".into());
+        source_total.generated_storage = Some(GeneratedColumnStorage::Stored);
+        let mut target_total = column("total", "integer");
+        target_total.generation_expression = Some("price + 1".into());
+        target_total.generated_storage = Some(GeneratedColumnStorage::Stored);
+        let script = build_migration_script(
+            DriverKind::Mysql,
+            "app",
+            "orders",
+            "app",
+            "orders",
+            &TableMetadata {
+                columns: vec![source_total],
+                ..TableMetadata::default()
+            },
+            &TableMetadata {
+                columns: vec![target_total],
+                ..TableMetadata::default()
+            },
+        )
+        .expect("migration script");
+
+        assert!(script.sql.contains("CHANGE COLUMN `total`"));
+        assert!(
+            script
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("生成列属性变化"))
+        );
+        assert!(
+            script
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("删除并重建"))
+        );
+    }
+
+    #[test]
+    fn postgres_column_order_change_is_reported_without_fake_reordering_sql() {
+        let mut source_id = column("id", "integer");
+        source_id.ordinal_position = Some(1);
+        let mut source_name = column("name", "text");
+        source_name.ordinal_position = Some(2);
+        let mut target_id = column("id", "integer");
+        target_id.ordinal_position = Some(2);
+        let mut target_name = column("name", "text");
+        target_name.ordinal_position = Some(1);
+        let script = build_migration_script(
+            DriverKind::Postgres,
+            "app",
+            "users",
+            "app",
+            "users",
+            &TableMetadata {
+                columns: vec![source_id, source_name],
+                ..TableMetadata::default()
+            },
+            &TableMetadata {
+                columns: vec![target_name, target_id],
+                ..TableMetadata::default()
+            },
+        )
+        .expect("migration script");
+
+        assert_eq!(script.statement_count, 0);
+        assert!(
+            script
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("不会自动重排"))
+        );
+    }
+
+    #[test]
+    fn column_order_change_does_not_rebuild_indexes_or_foreign_keys() {
+        let mut source_id = column("id", "integer");
+        source_id.ordinal_position = Some(1);
+        let mut source_name = column("name", "text");
+        source_name.ordinal_position = Some(2);
+        let mut target_id = column("id", "integer");
+        target_id.ordinal_position = Some(2);
+        let mut target_name = column("name", "text");
+        target_name.ordinal_position = Some(1);
+        let source = TableMetadata {
+            columns: vec![source_id, source_name],
+            indexes: vec![Index {
+                name: "idx_name".into(),
+                columns: vec!["name".into()],
+                ..index("idx_name", &[])
+            }],
+            foreign_keys: vec![],
+        };
+        let target = TableMetadata {
+            columns: vec![target_name, target_id],
+            indexes: source.indexes.clone(),
+            foreign_keys: vec![],
+        };
+
+        let script = build_migration_script(
+            DriverKind::Postgres,
+            "app",
+            "users",
+            "app",
+            "users",
+            &source,
+            &target,
+        )
+        .expect("migration script");
+
+        assert_eq!(script.statement_count, 0);
+        assert!(
+            script
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("不会自动重排"))
+        );
+        assert!(!script.sql.contains("DROP INDEX"));
+        assert!(!script.sql.contains("CREATE INDEX"));
+    }
+
+    #[test]
+    fn plain_added_column_does_not_report_generation_attribute_changes() {
+        let script = build_migration_script(
+            DriverKind::Mysql,
+            "app",
+            "users",
+            "app",
+            "users",
+            &TableMetadata {
+                columns: vec![column("name", "VARCHAR(64)")],
+                ..TableMetadata::default()
+            },
+            &TableMetadata::default(),
+        )
+        .expect("migration script");
+
+        assert!(
+            script
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("自动生成") && !warning.contains("自增"))
         );
     }
 }

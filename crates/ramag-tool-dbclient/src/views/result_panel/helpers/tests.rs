@@ -143,6 +143,11 @@ fn make_col(name: &str, nullable: bool, is_pk: bool) -> Column {
         default_value: None,
         is_primary_key: is_pk,
         comment: None,
+        ordinal_position: None,
+        is_auto_increment: false,
+        generation_expression: None,
+        generated_storage: None,
+        identity_generation: None,
     }
 }
 

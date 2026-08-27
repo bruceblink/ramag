@@ -1,7 +1,9 @@
 //! 元数据查询：基于 INFORMATION_SCHEMA，避免 SHOW 语法的版本差异。
 //! 字符串列统一 `CONVERT(... USING utf8mb4)`，避开 sqlx 把某些环境的回包识为 VARBINARY 导致解码失败
 
-use ramag_domain::entities::{Column, ForeignKey, ForeignKeyAction, Index, Schema, Table};
+use ramag_domain::entities::{
+    Column, ForeignKey, ForeignKeyAction, GeneratedColumnStorage, Index, Schema, Table,
+};
 use ramag_domain::error::{DomainError, Result};
 use ramag_infra_sql_shared::{
     METADATA_FETCH_LIMIT, ensure_metadata_item_limit, ensure_metadata_result_limit,
@@ -96,6 +98,9 @@ type ColumnRow = (
     Option<String>,
     Option<String>,
     String,
+    i64,
+    String,
+    Option<String>,
 );
 
 pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Column>> {
@@ -115,7 +120,10 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
                 CONVERT(IS_NULLABLE USING utf8mb4),
                 LEFT(CONVERT(COLUMN_DEFAULT USING utf8mb4), 4096),
                 LEFT(CONVERT(COLUMN_COMMENT USING utf8mb4), 4096),
-                CONVERT(COLUMN_KEY USING utf8mb4)
+                CONVERT(COLUMN_KEY USING utf8mb4),
+                CAST(ORDINAL_POSITION AS SIGNED),
+                CONVERT(EXTRA USING utf8mb4),
+                LEFT(CONVERT(GENERATION_EXPRESSION USING utf8mb4), 4096)
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
             ORDER BY ORDINAL_POSITION
@@ -133,20 +141,55 @@ pub async fn list_columns(pool: &MySqlPool, schema: &str, table: &str) -> Result
     let columns = rows
         .into_iter()
         .map(
-            |(name, data_type, column_type, is_nullable, default_value, comment, column_key)| {
-                Column {
+            |(
+                name,
+                data_type,
+                column_type,
+                is_nullable,
+                default_value,
+                comment,
+                column_key,
+                ordinal_position,
+                extra,
+                generation_expression,
+            )| {
+                let ordinal_position = u32::try_from(ordinal_position)
+                    .map_err(|_| DomainError::QueryFailed(format!("MySQL 列 {name} 的序号无效")))?;
+                Ok(Column {
                     name,
                     data_type: map_column_type(&data_type, &column_type),
                     nullable: is_nullable.eq_ignore_ascii_case("YES"),
                     default_value,
                     is_primary_key: column_key == "PRI",
                     comment: comment.filter(|c| !c.is_empty()),
-                }
+                    ordinal_position: Some(ordinal_position),
+                    is_auto_increment: has_extra_token(&extra, "AUTO_INCREMENT"),
+                    generation_expression: generation_expression
+                        .filter(|value| !value.trim().is_empty()),
+                    generated_storage: parse_generated_storage(&extra),
+                    identity_generation: None,
+                })
             },
         )
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     ensure_metadata_result_limit(&columns, "列")?;
     Ok(columns)
+}
+
+fn has_extra_token(extra: &str, expected: &str) -> bool {
+    extra
+        .split_whitespace()
+        .any(|token| token.eq_ignore_ascii_case(expected))
+}
+
+fn parse_generated_storage(extra: &str) -> Option<GeneratedColumnStorage> {
+    if has_extra_token(extra, "VIRTUAL") {
+        Some(GeneratedColumnStorage::Virtual)
+    } else if has_extra_token(extra, "STORED") {
+        Some(GeneratedColumnStorage::Stored)
+    } else {
+        None
+    }
 }
 
 /// 列出主键、唯一索引和普通索引。
@@ -276,4 +319,27 @@ pub async fn server_version(pool: &MySqlPool) -> Result<String> {
         .await
         .map_err(|e| map_mysql_error(&e))?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_extra_token, parse_generated_storage};
+    use ramag_domain::entities::GeneratedColumnStorage;
+
+    #[test]
+    fn parses_mysql_column_extra_without_substring_matches() {
+        assert!(has_extra_token(
+            "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
+            "DEFAULT_GENERATED"
+        ));
+        assert!(!has_extra_token("STORAGE DISK", "STORED"));
+        assert_eq!(
+            parse_generated_storage("VIRTUAL GENERATED"),
+            Some(GeneratedColumnStorage::Virtual)
+        );
+        assert_eq!(
+            parse_generated_storage("STORED GENERATED"),
+            Some(GeneratedColumnStorage::Stored)
+        );
+    }
 }
