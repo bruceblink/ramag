@@ -1,5 +1,8 @@
 use super::*;
 
+/// Bounds generated savepoint identifiers before they are placed in SQL control statements.
+pub const MAX_SAVEPOINT_NAME_BYTES: usize = 64;
+
 /// Begins a transaction on one pool connection and keeps that connection leased until finish.
 pub async fn begin_transaction_impl<B>(
     b: &B,
@@ -34,6 +37,131 @@ where
         "transaction started"
     );
     Ok(transaction_id)
+}
+
+/// Creates a savepoint without releasing the connection held by the transaction.
+pub async fn create_savepoint_impl<B>(
+    b: &B,
+    config: &ConnectionConfig,
+    transaction_id: &ramag_domain::entities::TransactionId,
+    name: &str,
+) -> Result<()>
+where
+    B: SqlBackend,
+    for<'q> <B::Db as Database>::Arguments<'q>: IntoArguments<'q, B::Db>,
+    for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
+    for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
+{
+    execute_savepoint_command(
+        b,
+        config,
+        transaction_id,
+        name,
+        "SAVEPOINT",
+        "sql_transaction_savepoint_create",
+    )
+    .await
+}
+
+/// Rolls back to a savepoint and leaves the surrounding transaction open.
+pub async fn rollback_to_savepoint_impl<B>(
+    b: &B,
+    config: &ConnectionConfig,
+    transaction_id: &ramag_domain::entities::TransactionId,
+    name: &str,
+) -> Result<()>
+where
+    B: SqlBackend,
+    for<'q> <B::Db as Database>::Arguments<'q>: IntoArguments<'q, B::Db>,
+    for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
+    for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
+{
+    execute_savepoint_command(
+        b,
+        config,
+        transaction_id,
+        name,
+        "ROLLBACK TO SAVEPOINT",
+        "sql_transaction_savepoint_rollback",
+    )
+    .await
+}
+
+/// Releases a savepoint and leaves the surrounding transaction open.
+pub async fn release_savepoint_impl<B>(
+    b: &B,
+    config: &ConnectionConfig,
+    transaction_id: &ramag_domain::entities::TransactionId,
+    name: &str,
+) -> Result<()>
+where
+    B: SqlBackend,
+    for<'q> <B::Db as Database>::Arguments<'q>: IntoArguments<'q, B::Db>,
+    for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
+    for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
+{
+    execute_savepoint_command(
+        b,
+        config,
+        transaction_id,
+        name,
+        "RELEASE SAVEPOINT",
+        "sql_transaction_savepoint_release",
+    )
+    .await
+}
+
+async fn execute_savepoint_command<B>(
+    b: &B,
+    config: &ConnectionConfig,
+    transaction_id: &ramag_domain::entities::TransactionId,
+    name: &str,
+    sql_prefix: &str,
+    operation: &'static str,
+) -> Result<()>
+where
+    B: SqlBackend,
+    for<'q> <B::Db as Database>::Arguments<'q>: IntoArguments<'q, B::Db>,
+    for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
+    for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
+{
+    validate_savepoint_name(name)?;
+    let sql = format!("{sql_prefix} {name}");
+    let slot = b
+        .transaction_store()
+        .get(&config.id, transaction_id)
+        .ok_or_else(|| DomainError::QueryFailed("事务不存在或不属于当前连接".into()))?;
+    let mut guard = slot.lock().await;
+    let transaction = guard
+        .as_mut()
+        .ok_or_else(|| DomainError::QueryFailed("事务已经结束".into()))?;
+    sqlx::query(&sql)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| map_err(b, error))?;
+    info!(
+        operation,
+        connection_id = %config.id,
+        transaction_id = %transaction_id,
+        savepoint = name,
+        "transaction savepoint command completed"
+    );
+    Ok(())
+}
+
+fn validate_savepoint_name(name: &str) -> Result<()> {
+    let bytes = name.as_bytes();
+    let valid_first = bytes.first().is_some_and(|byte| byte.is_ascii_alphabetic());
+    let valid_rest = bytes.get(1..).is_some_and(|rest| {
+        rest.iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    });
+    if bytes.is_empty() || bytes.len() > MAX_SAVEPOINT_NAME_BYTES || !valid_first || !valid_rest {
+        return Err(DomainError::InvalidConfig(format!(
+            "保存点名称必须以字母开头且只包含 ASCII 字母、数字和下划线，长度不超过 {MAX_SAVEPOINT_NAME_BYTES} 字节"
+        )));
+    }
+    Ok(())
 }
 
 /// Executes one or more statements on a leased transaction without committing it.
@@ -73,7 +201,7 @@ where
         .any(|statement| is_transaction_control_statement(statement))
     {
         return Err(DomainError::InvalidConfig(
-            "手动事务内请使用事务控制按钮，不要执行 BEGIN、COMMIT 或 ROLLBACK".into(),
+            "手动事务内请使用事务控制按钮，不要直接执行事务控制语句".into(),
         ));
     }
     if config.production
@@ -214,5 +342,32 @@ fn empty_query_result(start: Instant) -> QueryResult {
         elapsed_ms: start.elapsed().as_millis() as u64,
         warnings: Vec::new(),
         truncated: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SAVEPOINT_NAME_BYTES, validate_savepoint_name};
+
+    #[test]
+    fn savepoint_names_accept_safe_identifiers() {
+        assert!(validate_savepoint_name("ramag_sp_1").is_ok());
+        assert!(validate_savepoint_name("S1").is_ok());
+        assert!(validate_savepoint_name(&"a".repeat(MAX_SAVEPOINT_NAME_BYTES)).is_ok());
+    }
+
+    #[test]
+    fn savepoint_names_reject_sql_fragments_and_oversized_values() {
+        for name in [
+            "",
+            "1savepoint",
+            "save-point",
+            "save point",
+            "savepoint;DROP TABLE",
+        ] {
+            assert!(validate_savepoint_name(name).is_err(), "accepted {name:?}");
+        }
+        assert!(validate_savepoint_name("保存点").is_err());
+        assert!(validate_savepoint_name(&"a".repeat(MAX_SAVEPOINT_NAME_BYTES + 1)).is_err());
     }
 }

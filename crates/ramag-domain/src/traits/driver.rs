@@ -81,6 +81,42 @@ pub trait Driver: Send + Sync {
         ))
     }
 
+    /// Creates a savepoint inside a driver-owned transaction session.
+    async fn create_savepoint(
+        &self,
+        _config: &ConnectionConfig,
+        _transaction: &TransactionId,
+        _name: &str,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "create_savepoint".into(),
+        ))
+    }
+
+    /// Rolls back the active transaction to a previously created savepoint.
+    async fn rollback_to_savepoint(
+        &self,
+        _config: &ConnectionConfig,
+        _transaction: &TransactionId,
+        _name: &str,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "rollback_to_savepoint".into(),
+        ))
+    }
+
+    /// Releases a savepoint without closing the surrounding transaction.
+    async fn release_savepoint(
+        &self,
+        _config: &ConnectionConfig,
+        _transaction: &TransactionId,
+        _name: &str,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "release_savepoint".into(),
+        ))
+    }
+
     /// 取消正在执行的查询。MySQL 走 `KILL QUERY`，PG 走 `pg_cancel_backend`
     async fn cancel_query(&self, _config: &ConnectionConfig, _thread_id: u64) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(

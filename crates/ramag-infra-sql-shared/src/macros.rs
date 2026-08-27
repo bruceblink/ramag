@@ -120,6 +120,54 @@ macro_rules! impl_driver_for {
                 .await
             }
 
+            async fn create_savepoint(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                transaction: &::ramag_domain::entities::TransactionId,
+                name: &str,
+            ) -> ::ramag_domain::error::Result<()> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let transaction = transaction.clone();
+                let name = name.to_owned();
+                $crate::run_in_tokio(async move {
+                    $crate::create_savepoint_impl(&this, &config, &transaction, &name).await
+                })
+                .await
+            }
+
+            async fn rollback_to_savepoint(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                transaction: &::ramag_domain::entities::TransactionId,
+                name: &str,
+            ) -> ::ramag_domain::error::Result<()> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let transaction = transaction.clone();
+                let name = name.to_owned();
+                $crate::run_in_tokio(async move {
+                    $crate::rollback_to_savepoint_impl(&this, &config, &transaction, &name).await
+                })
+                .await
+            }
+
+            async fn release_savepoint(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                transaction: &::ramag_domain::entities::TransactionId,
+                name: &str,
+            ) -> ::ramag_domain::error::Result<()> {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let transaction = transaction.clone();
+                let name = name.to_owned();
+                $crate::run_in_tokio(async move {
+                    $crate::release_savepoint_impl(&this, &config, &transaction, &name).await
+                })
+                .await
+            }
+
             async fn cancel_query(
                 &self,
                 config: &::ramag_domain::entities::ConnectionConfig,

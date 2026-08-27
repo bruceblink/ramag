@@ -16,9 +16,12 @@ use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
 
 use super::QueryTab;
 use super::comparison_toolbar::result_comparison_menu;
-use super::render_helpers::{row_filter_prefix, row_search_input_suffix};
+use super::render_helpers::{
+    row_filter_prefix, row_search_input_suffix, transaction_savepoint_controls,
+};
 use super::sql_utils::format_elapsed;
 use super::toolbar::render_delete_button;
+use super::transaction::MAX_TRANSACTION_SAVEPOINTS;
 
 use crate::actions::{ExplainQuery, FormatSql, RunQuery, RunStatementAtCursor};
 use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultState};
@@ -40,6 +43,10 @@ impl Render for QueryTab {
         let has_connection = self.connection.is_some();
         let transaction_active = self.transaction.is_some();
         let transaction_dirty = self.transaction_is_dirty();
+        let transaction_savepoints = self.transaction_savepoints();
+        let latest_savepoint = transaction_savepoints
+            .last()
+            .map(|savepoint| savepoint.name.clone());
         let transaction_label = self.transaction_label();
         let transaction_error = self.transaction_error.is_some();
         let result_entity = self.active_result();
@@ -81,6 +88,7 @@ impl Render for QueryTab {
         let _ = panel_for_btn;
         let is_production = self.connection.as_ref().is_some_and(|c| c.production);
         let warning = theme.warning;
+        let query_tab_entity = cx.entity();
         let transaction_controls = if transaction_active {
             h_flex()
                 .flex_none()
@@ -110,6 +118,16 @@ impl Render for QueryTab {
                             this.finish_transaction(false, cx);
                         })),
                 )
+                .child(transaction_savepoint_controls(
+                    query_tab_entity.clone(),
+                    self.transaction_busy,
+                    running,
+                    dml_busy,
+                    transaction_savepoints.len(),
+                    latest_savepoint,
+                    MAX_TRANSACTION_SAVEPOINTS,
+                    muted_fg,
+                ))
                 .child(
                     div()
                         .flex_none()
@@ -166,7 +184,6 @@ impl Render for QueryTab {
                 .into_any_element()
         };
 
-        let query_tab_entity = cx.entity();
         let result_view_tabs = h_flex()
             .id("sql-result-view-tabs")
             .debug_selector(|| "sql-result-view-tabs".into())

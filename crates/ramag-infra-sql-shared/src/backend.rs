@@ -6,8 +6,9 @@ use query::*;
 use std::time::Instant;
 
 pub use transaction::{
-    begin_transaction_impl, commit_transaction_impl, execute_in_transaction_impl,
-    rollback_transaction_impl,
+    MAX_SAVEPOINT_NAME_BYTES, begin_transaction_impl, commit_transaction_impl,
+    create_savepoint_impl, execute_in_transaction_impl, release_savepoint_impl,
+    rollback_to_savepoint_impl, rollback_transaction_impl,
 };
 
 use async_trait::async_trait;

@@ -1,10 +1,76 @@
 use gpui::{ClickEvent, Entity, IntoElement, ParentElement, Styled, div, prelude::*};
 use gpui_component::{
-    IconName, Sizable as _, button::ButtonVariants as _, h_flex, input::InputState,
+    Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    input::InputState,
 };
 use ramag_ui::PointerDropdownMenu as _;
 
+use super::QueryTab;
 use crate::views::result_panel::{ResultPanel, RowSearchConversionStatus, RowSearchMode};
+
+pub(super) fn transaction_savepoint_controls(
+    query_tab: Entity<QueryTab>,
+    transaction_busy: bool,
+    running: bool,
+    dml_busy: bool,
+    savepoint_count: usize,
+    latest_savepoint: Option<String>,
+    max_savepoints: usize,
+    muted: gpui::Hsla,
+) -> impl IntoElement {
+    let has_latest = latest_savepoint.is_some();
+    let create_tab = query_tab.clone();
+    let rollback_tab = query_tab.clone();
+    let release_tab = query_tab.clone();
+    h_flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .child(
+            ramag_ui::clickable_button("transaction-savepoint-create")
+                .ghost()
+                .small()
+                .label("保存点")
+                .tooltip("创建保存点")
+                .disabled(
+                    transaction_busy || running || dml_busy || savepoint_count >= max_savepoints,
+                )
+                .on_click(move |_: &ClickEvent, _, app| {
+                    create_tab.update(app, |tab, cx| tab.create_savepoint(cx));
+                }),
+        )
+        .child(
+            ramag_ui::clickable_button("transaction-savepoint-rollback")
+                .ghost()
+                .small()
+                .label("回滚最近")
+                .tooltip("回滚到最近的保存点")
+                .disabled(transaction_busy || running || dml_busy || !has_latest)
+                .on_click(move |_: &ClickEvent, _, app| {
+                    rollback_tab.update(app, |tab, cx| tab.rollback_to_latest_savepoint(cx));
+                }),
+        )
+        .child(
+            ramag_ui::clickable_button("transaction-savepoint-release")
+                .ghost()
+                .small()
+                .label("释放最近")
+                .tooltip("释放最近的保存点")
+                .disabled(transaction_busy || running || dml_busy || !has_latest)
+                .on_click(move |_: &ClickEvent, _, app| {
+                    release_tab.update(app, |tab, cx| tab.release_latest_savepoint(cx));
+                }),
+        )
+        .when_some(latest_savepoint, |controls, name| {
+            controls.child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(format!("最近 {name}")),
+            )
+        })
+}
 
 pub(super) fn row_filter_prefix(
     current: RowSearchMode,

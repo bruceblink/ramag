@@ -108,6 +108,14 @@ impl QueryResultTarget {
 pub(super) struct TransactionSession {
     pub(super) id: TransactionId,
     pub(super) dirty: bool,
+    pub(super) savepoints: Vec<TransactionSavepoint>,
+    pub(super) next_savepoint: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TransactionSavepoint {
+    pub(super) name: String,
+    pub(super) dirty: bool,
 }
 
 #[derive(Debug, Clone)]
