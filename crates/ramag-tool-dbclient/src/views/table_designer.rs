@@ -1,11 +1,13 @@
 //! MySQL / PostgreSQL 表结构编辑器。
 
+mod diff;
 mod preview;
 mod render;
 mod sql;
 #[cfg(test)]
 mod tests;
 
+use self::diff::{FieldDiffLine, build_field_diff};
 use self::preview::{default_value_color, highlight_sql, render_ddl_panel, syntax_color};
 
 use std::{collections::HashSet, rc::Rc};
@@ -93,6 +95,7 @@ pub(super) struct TableDesigner {
     ddl_text: Option<String>,
     ddl_error: Option<String>,
     preview_sql: Option<String>,
+    preview_diff: Option<Vec<FieldDiffLine>>,
     discard_confirming: bool,
     executing: bool,
     on_execute: ExecuteHandler,
@@ -128,6 +131,7 @@ impl TableDesigner {
             ddl_text: None,
             ddl_error: None,
             preview_sql: None,
+            preview_diff: None,
             discard_confirming: false,
             executing: false,
             on_execute: config.on_execute,
@@ -144,6 +148,7 @@ impl TableDesigner {
         cx.subscribe(input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.preview_sql = None;
+                this.preview_diff = None;
                 this.discard_confirming = false;
                 cx.notify();
             }
@@ -203,6 +208,7 @@ impl TableDesigner {
         self.fields
             .push(Self::new_field(&name, "VARCHAR(255)", true, window, cx));
         self.preview_sql = None;
+        self.preview_diff = None;
         self.discard_confirming = false;
         self.field_scroll.scroll_to_bottom();
         cx.notify();
@@ -241,6 +247,7 @@ impl TableDesigner {
         self.loading = false;
         self.load_error = None;
         self.preview_sql = None;
+        self.preview_diff = None;
         self.discard_confirming = false;
         cx.notify();
     }
@@ -265,7 +272,9 @@ impl TableDesigner {
     }
 
     fn build_preview(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        self.preview_sql = Some(self.change_sql(cx)?);
+        let sql = self.change_sql(cx)?;
+        self.preview_diff = Some(build_field_diff(&self.fields, cx));
+        self.preview_sql = Some(sql);
         self.discard_confirming = false;
         cx.notify();
         Ok(())
@@ -302,6 +311,7 @@ impl TableDesigner {
         if success {
             self.original_table = new_table;
             self.preview_sql = None;
+            self.preview_diff = None;
             self.ddl_loading = true;
             self.ddl_text = None;
             self.ddl_error = None;
