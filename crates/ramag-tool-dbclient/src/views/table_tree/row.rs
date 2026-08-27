@@ -325,9 +325,11 @@ impl TableTreePanel {
                                 .flex_none()
                                 .px(px(3.0))
                                 .rounded(px(2.0))
-                                .bg(muted_bg.opacity(0.35))
+                                .border_1()
+                                .border_color(muted_fg.opacity(0.35))
+                                .bg(muted_bg)
                                 .text_xs()
-                                .text_color(if is_selected { accent_fg } else { muted_fg })
+                                .text_color(if is_selected { accent_fg } else { fg })
                                 .child(size),
                         )
                     });
