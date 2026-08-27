@@ -46,6 +46,7 @@ pub(super) fn metric_card(
     v_flex()
         .flex_1()
         .min_w(px(180.0))
+        .h(px(102.0))
         .min_h(px(102.0))
         .gap(px(6.0))
         .p(px(12.0))
@@ -55,6 +56,7 @@ pub(super) fn metric_card(
         .rounded(px(6.0))
         .child(
             h_flex()
+                .min_w_0()
                 .items_center()
                 .gap(px(6.0))
                 .child(icon.text_color(accent))
@@ -65,11 +67,23 @@ pub(super) fn metric_card(
                         .child(title),
                 ),
         )
-        .child(div().text_base().child(value))
         .child(
             div()
+                .min_w_0()
+                .text_base()
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(value),
+        )
+        .child(
+            div()
+                .min_w_0()
                 .text_xs()
                 .text_color(theme.muted_foreground)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
                 .child(detail),
         )
 }
@@ -80,20 +94,38 @@ pub(super) fn panel_heading(
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
     h_flex()
+        .w_full()
+        .flex_none()
+        .min_w_0()
         .items_center()
         .justify_between()
+        .gap(px(8.0))
         .child(
             div()
+                .flex_1()
+                .min_w_0()
                 .text_sm()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(title),
         )
         .child(
             div()
+                .flex_none()
                 .text_xs()
                 .text_color(theme.muted_foreground)
+                .whitespace_nowrap()
                 .child(detail),
         )
+}
+
+/// 将读写速率共用一个单位，避免指标卡因两个单位重复而换行。
+pub(super) fn format_rate_pair(
+    first_label: &'static str,
+    first: f64,
+    second_label: &'static str,
+    second: f64,
+) -> String {
+    format!("{first_label} {first:.1} / {second_label} {second:.1} MB/s")
 }
 
 pub(super) fn render_core_row(
@@ -309,10 +341,6 @@ pub(super) fn format_percent(value: f64) -> String {
     format!("{:.1}%", value.clamp(0.0, 100.0))
 }
 
-pub(super) fn format_rate(value: f64) -> String {
-    format!("{value:.1} MB/s")
-}
-
 pub(super) fn format_bytes(value: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = value as f64;
@@ -330,7 +358,7 @@ pub(super) fn format_bytes(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes, format_percent, history_max, ratio_percent};
+    use super::{format_bytes, format_percent, format_rate_pair, history_max, ratio_percent};
 
     #[test]
     fn formatters_keep_units_and_bounds() {
@@ -339,5 +367,13 @@ mod tests {
         assert_eq!(format_percent(150.0), "100.0%");
         assert_eq!(ratio_percent(5, 10), 50.0);
         assert_eq!(history_max(&[[0.0, 2.0], [1.0, 8.0]]), 8.0);
+    }
+
+    #[test]
+    fn rate_pairs_use_one_shared_unit() {
+        assert_eq!(
+            format_rate_pair("读", 27.3, "写", 27.0),
+            "读 27.3 / 写 27.0 MB/s"
+        );
     }
 }

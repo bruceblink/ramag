@@ -10,7 +10,7 @@ use gpui_component::{
 };
 
 use super::helpers::{
-    empty_state, format_bytes, format_percent, format_rate, history_max, metric_card,
+    empty_state, format_bytes, format_percent, format_rate_pair, history_max, metric_card,
     panel_heading, process_header, ratio_percent, render_core_row, render_disk_row, render_history,
     render_meter_row,
 };
@@ -255,10 +255,11 @@ impl SystemView {
         ));
         overview = overview.child(metric_card(
             "磁盘 I/O",
-            format!(
-                "读 {} / 写 {}",
-                format_rate(snapshot.disk_read_rate_mb),
-                format_rate(snapshot.disk_write_rate_mb)
+            format_rate_pair(
+                "读",
+                snapshot.disk_read_rate_mb,
+                "写",
+                snapshot.disk_write_rate_mb,
             ),
             "所有进程累计速率".to_owned(),
             Icon::new(IconName::HardDrive),
@@ -267,10 +268,11 @@ impl SystemView {
         ));
         overview = overview.child(metric_card(
             "网络",
-            format!(
-                "收 {} / 发 {}",
-                format_rate(snapshot.network_received_rate_mb),
-                format_rate(snapshot.network_transmitted_rate_mb)
+            format_rate_pair(
+                "收",
+                snapshot.network_received_rate_mb,
+                "发",
+                snapshot.network_transmitted_rate_mb,
             ),
             "所有接口累计速率".to_owned(),
             Icon::new(IconName::Network),
@@ -278,29 +280,40 @@ impl SystemView {
             theme,
         ));
 
-        let mut cores = v_flex()
+        let mut core_rows = v_flex().gap(px(6.0));
+        if snapshot.core_usages.is_empty() {
+            core_rows = core_rows.child(empty_state("暂时没有 CPU 核心数据", theme));
+        } else {
+            for (index, usage) in snapshot.core_usages.iter().enumerate() {
+                core_rows = core_rows.child(render_core_row(index, *usage, theme));
+            }
+        }
+
+        let cores = v_flex()
             .flex_1()
             .min_w(px(300.0))
-            .h(px(190.0))
+            .h(px(205.0))
             .gap(px(6.0))
             .p(px(12.0))
             .bg(theme.secondary)
             .border_1()
             .border_color(theme.border)
             .rounded(px(6.0))
-            .child(panel_heading("CPU 核心", "实时使用率", theme));
-        if snapshot.core_usages.is_empty() {
-            cores = cores.child(empty_state("暂时没有 CPU 核心数据", theme));
-        } else {
-            for (index, usage) in snapshot.core_usages.iter().enumerate() {
-                cores = cores.child(render_core_row(index, *usage, theme));
-            }
-        }
+            .child(panel_heading("CPU 核心", "实时使用率", theme))
+            // 固定面板高度；核心数较多时只滚动列表，避免遮挡后续面板。
+            .child(
+                div()
+                    .id("system-core-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(core_rows),
+            );
 
         let mut memory_panel = v_flex()
             .flex_1()
             .min_w(px(300.0))
-            .h(px(190.0))
+            .h(px(205.0))
             .gap(px(8.0))
             .p(px(12.0))
             .bg(theme.secondary)
