@@ -156,9 +156,10 @@ mod tests {
 
     #[test]
     fn table_deserializes_legacy_records_without_size() {
-        let table =
-            serde_json::from_str::<Table>(r#"{"name":"users","schema":"public","comment":null}"#)
-                .expect("旧表记录应继续可反序列化");
+        let result =
+            serde_json::from_str::<Table>(r#"{"name":"users","schema":"public","comment":null}"#);
+        assert!(result.is_ok(), "旧表记录应继续可反序列化");
+        let Some(table) = result.ok() else { return };
         assert!(!table.is_view);
         assert_eq!(table.size_bytes, None);
     }

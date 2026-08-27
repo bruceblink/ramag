@@ -8,17 +8,22 @@ use ramag_ui::PointerDropdownMenu as _;
 use super::QueryTab;
 use crate::views::result_panel::{ResultPanel, RowSearchConversionStatus, RowSearchMode};
 
+pub(super) struct TransactionSavepointState {
+    pub(super) transaction_busy: bool,
+    pub(super) running: bool,
+    pub(super) dml_busy: bool,
+    pub(super) savepoint_count: usize,
+    pub(super) latest_savepoint: Option<String>,
+    pub(super) max_savepoints: usize,
+}
+
+/// Renders savepoint actions and disables them while related work is active.
 pub(super) fn transaction_savepoint_controls(
     query_tab: Entity<QueryTab>,
-    transaction_busy: bool,
-    running: bool,
-    dml_busy: bool,
-    savepoint_count: usize,
-    latest_savepoint: Option<String>,
-    max_savepoints: usize,
+    state: TransactionSavepointState,
     muted: gpui::Hsla,
 ) -> impl IntoElement {
-    let has_latest = latest_savepoint.is_some();
+    let has_latest = state.latest_savepoint.is_some();
     let create_tab = query_tab.clone();
     let rollback_tab = query_tab.clone();
     let release_tab = query_tab.clone();
@@ -33,7 +38,10 @@ pub(super) fn transaction_savepoint_controls(
                 .label("保存点")
                 .tooltip("创建保存点")
                 .disabled(
-                    transaction_busy || running || dml_busy || savepoint_count >= max_savepoints,
+                    state.transaction_busy
+                        || state.running
+                        || state.dml_busy
+                        || state.savepoint_count >= state.max_savepoints,
                 )
                 .on_click(move |_: &ClickEvent, _, app| {
                     create_tab.update(app, |tab, cx| tab.create_savepoint(cx));
@@ -45,7 +53,7 @@ pub(super) fn transaction_savepoint_controls(
                 .small()
                 .label("回滚最近")
                 .tooltip("回滚到最近的保存点")
-                .disabled(transaction_busy || running || dml_busy || !has_latest)
+                .disabled(state.transaction_busy || state.running || state.dml_busy || !has_latest)
                 .on_click(move |_: &ClickEvent, _, app| {
                     rollback_tab.update(app, |tab, cx| tab.rollback_to_latest_savepoint(cx));
                 }),
@@ -56,12 +64,12 @@ pub(super) fn transaction_savepoint_controls(
                 .small()
                 .label("释放最近")
                 .tooltip("释放最近的保存点")
-                .disabled(transaction_busy || running || dml_busy || !has_latest)
+                .disabled(state.transaction_busy || state.running || state.dml_busy || !has_latest)
                 .on_click(move |_: &ClickEvent, _, app| {
                     release_tab.update(app, |tab, cx| tab.release_latest_savepoint(cx));
                 }),
         )
-        .when_some(latest_savepoint, |controls, name| {
+        .when_some(state.latest_savepoint, |controls, name| {
             controls.child(
                 div()
                     .flex_none()

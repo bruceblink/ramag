@@ -17,7 +17,8 @@ use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
 use super::QueryTab;
 use super::comparison_toolbar::result_comparison_menu;
 use super::render_helpers::{
-    row_filter_prefix, row_search_input_suffix, transaction_savepoint_controls,
+    TransactionSavepointState, row_filter_prefix, row_search_input_suffix,
+    transaction_savepoint_controls,
 };
 use super::sql_utils::format_elapsed;
 use super::toolbar::render_delete_button;
@@ -120,12 +121,14 @@ impl Render for QueryTab {
                 )
                 .child(transaction_savepoint_controls(
                     query_tab_entity.clone(),
-                    self.transaction_busy,
-                    running,
-                    dml_busy,
-                    transaction_savepoints.len(),
-                    latest_savepoint,
-                    MAX_TRANSACTION_SAVEPOINTS,
+                    TransactionSavepointState {
+                        transaction_busy: self.transaction_busy,
+                        running,
+                        dml_busy,
+                        savepoint_count: transaction_savepoints.len(),
+                        latest_savepoint,
+                        max_savepoints: MAX_TRANSACTION_SAVEPOINTS,
+                    },
                     muted_fg,
                 ))
                 .child(
