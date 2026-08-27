@@ -61,6 +61,7 @@ use ramag_tool_dbclient::{
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
 use ramag_tool_object_storage::{ObjectStorageTool, create_object_storage_view};
 use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, SshTool, create_ssh_view};
+use ramag_tool_system::{SystemTool, create_system_view};
 use ramag_tool_vcs::{CommitNow, PullNow, PushNow, ToggleHistoryPane, VcsTool, create_vcs_view};
 use ramag_ui::{
     CloseTab, DATABASE_RESULT_SETTINGS_PREF_KEY, DATABASE_SEARCH_SETTINGS_PREF_KEY,

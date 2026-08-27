@@ -65,6 +65,7 @@ pub(super) fn build_tool_registry() -> Arc<ToolRegistry> {
     registry.register(Arc::new(VcsTool::new()));
     registry.register(Arc::new(SshTool::new()));
     registry.register(Arc::new(ObjectStorageTool::new()));
+    registry.register(Arc::new(SystemTool::new()));
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     registry.register(Arc::new(ClipboardTool::new()));
     registry

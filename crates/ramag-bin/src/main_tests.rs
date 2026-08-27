@@ -65,7 +65,14 @@ fn clipboard_tool_is_registered_last() {
 
     assert_eq!(
         ids,
-        ["dbclient", "vcs", "ssh", "object_storage", "clipboard"]
+        [
+            "dbclient",
+            "vcs",
+            "ssh",
+            "object_storage",
+            "system",
+            "clipboard"
+        ]
     );
 }
 
@@ -78,5 +85,5 @@ fn clipboard_tool_is_not_registered_on_linux() {
         .map(|tool| tool.meta().id.clone())
         .collect::<Vec<_>>();
 
-    assert_eq!(ids, ["dbclient", "vcs", "ssh", "object_storage"]);
+    assert_eq!(ids, ["dbclient", "vcs", "ssh", "object_storage", "system"]);
 }

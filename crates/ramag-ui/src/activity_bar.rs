@@ -106,6 +106,7 @@ impl ActivityBar {
             "vcs" => icons::git_branch(),
             "clipboard" => icons::clipboard(),
             "ssh" => Icon::new(IconName::SquareTerminal),
+            "system" => icons::gauge(),
             "jsonfmt" => Icon::new(IconName::File),
             "url" => Icon::new(IconName::Globe),
             "hash" => Icon::new(IconName::MemoryStick),
