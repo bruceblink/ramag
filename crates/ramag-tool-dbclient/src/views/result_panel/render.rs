@@ -12,8 +12,12 @@ use ramag_ui::platform::primary_shortcut;
 
 use super::ResultPanel;
 use super::ResultState;
-use crate::actions::{CopyCellValue, CopySelectedColumn, FindInResults};
+use crate::actions::{
+    CopyCellAsCsv, CopyCellAsJson, CopyCellAsSql, CopyCellValue, CopySelectedColumn, FindInResults,
+    OpenCellValueViewer,
+};
 use crate::views::result_table::render_result_view;
+use crate::views::result_value::{CellCopyFormat, format_cell_value};
 
 impl Render for ResultPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -136,6 +140,18 @@ impl Render for ResultPanel {
             }))
             .on_action(cx.listener(|this, _: &CopySelectedColumn, _, cx| {
                 this.copy_selected_column_name(cx);
+            }))
+            .on_action(cx.listener(|this, _: &CopyCellAsCsv, _, cx| {
+                this.copy_selected_cell_as(CellCopyFormat::Csv, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CopyCellAsJson, _, cx| {
+                this.copy_selected_cell_as(CellCopyFormat::Json, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CopyCellAsSql, _, cx| {
+                this.copy_selected_cell_as(CellCopyFormat::Sql, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenCellValueViewer, window, cx| {
+                this.open_selected_cell_viewer(window, cx);
             }));
         if let Some(banner) = warnings_banner {
             root = root.child(banner);
@@ -235,18 +251,50 @@ impl ResultPanel {
 
     /// 复制选中单元格完整值
     pub(crate) fn copy_selected_cell(&mut self, cx: &mut Context<Self>) {
+        self.copy_selected_cell_as(CellCopyFormat::Text, cx);
+    }
+
+    /// 按指定格式复制选中单元格，只处理当前行列而不遍历整个结果集。
+    pub(crate) fn copy_selected_cell_as(&mut self, format: CellCopyFormat, cx: &mut Context<Self>) {
         let Some((ri, ci)) = self.selected_cell else {
             return;
         };
         let ResultState::Ok(result) = &self.state else {
             return;
         };
-        let Some(val) = result.rows.get(ri).and_then(|r| r.values.get(ci)) else {
-            return;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(val.to_clipboard_string()));
+        let driver = self
+            .connection
+            .as_ref()
+            .map(|connection| connection.driver)
+            .unwrap_or(ramag_domain::entities::DriverKind::Mysql);
+        let text = format_cell_value(
+            result.rows.get(ri).and_then(|row| row.values.get(ci)),
+            format,
+            driver,
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.pending_notification = Some(ramag_ui::copy_success_notification());
         cx.notify();
+    }
+
+    /// 打开当前单元格的有界查看器；查看动作只保留结果 Arc 和源坐标。
+    pub(crate) fn open_selected_cell_viewer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((ri, ci)) = self.selected_cell else {
+            return;
+        };
+        let ResultState::Ok(result) = &self.state else {
+            return;
+        };
+        let driver = self
+            .connection
+            .as_ref()
+            .map(|connection| connection.driver)
+            .unwrap_or(ramag_domain::entities::DriverKind::Mysql);
+        crate::views::result_value_dialog::open(result.clone(), ri, ci, driver, window, cx);
     }
 
     /// 复制选中列的列名

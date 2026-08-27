@@ -10,6 +10,7 @@ use ramag_domain::entities::{QueryResult, Value};
 use ramag_ui::RestrictScrollToAxisExt as _;
 
 use crate::views::result_panel::ResultPanel;
+use crate::views::result_value::display_cell_value;
 
 use super::super::DisplayView;
 use super::{AlternateFrame, scroll::wrap_alternate_scroll};
@@ -183,10 +184,7 @@ fn render_transpose_field(
         .get(column_index)
         .filter(|value| !value.is_empty())
         .cloned();
-    let value = row
-        .values
-        .get(column_index)
-        .map_or_else(|| "NULL".to_string(), |value| value.display_preview(400));
+    let value = display_cell_value(row.values.get(column_index), 400);
     let selected = panel.selected_cell() == Some((row_index, column_index));
     let panel_entity = cx.entity();
     h_flex()

@@ -15,6 +15,8 @@ mod result_diff;
 mod result_diff_dialog;
 pub mod result_panel;
 pub mod result_table;
+mod result_value;
+mod result_value_dialog;
 mod schema_diagram;
 mod schema_diff;
 mod schema_diff_dialog;

@@ -7,8 +7,9 @@ pub mod sql_completion;
 pub mod views;
 
 pub use actions::{
-    CopyCellValue, CopySelectedColumn, ExplainQuery, FindInResults, FormatSql, NewQueryTab,
-    RunQuery, RunStatementAtCursor, ToggleSqlEditor,
+    CopyCellAsCsv, CopyCellAsJson, CopyCellAsSql, CopyCellValue, CopySelectedColumn, ExplainQuery,
+    FindInResults, FormatSql, NewQueryTab, OpenCellValueViewer, RunQuery, RunStatementAtCursor,
+    ToggleSqlEditor,
 };
 pub use views::DbClientView;
 // Redis 命令行控制台快捷键 Action：经本 facade 透传给 bin 绑键（bin 不直接依赖 redis）

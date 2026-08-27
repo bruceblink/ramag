@@ -9,6 +9,7 @@ use gpui_component::v_flex;
 use ramag_ui::RestrictScrollToAxisExt as _;
 
 use crate::views::result_panel::ResultPanel;
+use crate::views::result_value::display_cell_value;
 
 use super::{AlternateFrame, scroll::wrap_alternate_scroll};
 
@@ -32,9 +33,10 @@ pub(super) fn render_text_view(
     .w(frame.content_width)
     .flex_1()
     .restrict_scroll_to_axis();
+    let scroll_body = v_flex().w(frame.content_width).h_full().child(body);
     let scroll = wrap_alternate_scroll(
         panel,
-        body.into_any_element(),
+        scroll_body.into_any_element(),
         frame.content_width,
         "result-text-scroll",
         "result-text-v-scrollbar",
@@ -69,10 +71,7 @@ fn render_text_row(
         .iter()
         .filter_map(|&column_index| {
             let name = frame.result.columns.get(column_index)?;
-            let value = row
-                .values
-                .get(column_index)
-                .map_or_else(|| "NULL".to_string(), |value| value.display_preview(180));
+            let value = display_cell_value(row.values.get(column_index), 180);
             Some(format!("{name}={value}"))
         })
         .collect::<Vec<_>>();

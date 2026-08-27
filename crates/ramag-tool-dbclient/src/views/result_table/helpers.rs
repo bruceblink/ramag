@@ -8,6 +8,7 @@ use gpui_component::input::InputState;
 use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, QueryResult, Value};
 
 use crate::views::result_panel::ResultPanel;
+use crate::views::result_value::display_cell_value;
 
 pub(super) fn estimate_col_width(
     ci: usize,
@@ -37,7 +38,7 @@ pub(super) fn estimate_col_width(
             continue;
         };
         if let Some(v) = row.values.get(ci) {
-            let chars = v.display_preview(60).chars().count();
+            let chars = display_cell_value(Some(v), 60).chars().count();
             if chars > max_chars {
                 max_chars = chars;
             }

@@ -11,8 +11,12 @@ use ramag_domain::entities::Value;
 
 use super::TableRowFrame;
 use super::helpers::{OpacityExt as _, open_cell_editor, render_col_resize_handle};
-use crate::actions::{CopyCellValue, CopySelectedColumn};
+use crate::actions::{
+    CopyCellAsCsv, CopyCellAsJson, CopyCellAsSql, CopyCellValue, CopySelectedColumn,
+    OpenCellValueViewer,
+};
 use crate::views::result_panel::{ResultPanel, SortDir};
+use crate::views::result_value::display_cell_value;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_header_cell(
@@ -119,8 +123,7 @@ pub(super) fn render_data_row(
         .iter()
         .map(|&ci| {
             let value = row.values.get(ci);
-            let display =
-                value.map_or_else(|| "NULL".to_string(), |value| value.display_preview(60));
+            let display = display_cell_value(value, 60);
             let is_null = value.is_none_or(|value| matches!(value, Value::Null));
             // 选择状态使用源行下标，不能使用排序后的可见下标。
             let is_selected = selected == Some((source_idx, ci));
@@ -199,9 +202,30 @@ pub(super) fn render_data_row(
                 })
                 .context_menu(|menu, _, _| {
                     menu.item(
-                        ramag_ui::menu_item("复制")
+                        ramag_ui::menu_item("复制为文本")
                             .icon(IconName::Copy)
                             .action(Box::new(CopyCellValue)),
+                    )
+                    .item(
+                        ramag_ui::menu_item("复制为 CSV")
+                            .icon(IconName::Copy)
+                            .action(Box::new(CopyCellAsCsv)),
+                    )
+                    .item(
+                        ramag_ui::menu_item("复制为 JSON")
+                            .icon(IconName::Copy)
+                            .action(Box::new(CopyCellAsJson)),
+                    )
+                    .item(
+                        ramag_ui::menu_item("复制为 SQL 值")
+                            .icon(IconName::Copy)
+                            .action(Box::new(CopyCellAsSql)),
+                    )
+                    .separator()
+                    .item(
+                        ramag_ui::menu_item("查看值")
+                            .icon(IconName::Eye)
+                            .action(Box::new(OpenCellValueViewer)),
                     )
                     .item(
                         ramag_ui::menu_item("复制列名")

@@ -3,13 +3,29 @@
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point,
-    px,
+    AppContext as _, Context, Entity, IntoElement, Modifiers, ParentElement as _, Render,
+    ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, TouchPhase, Window, div, point, px,
 };
 use ramag_domain::entities::{QueryResult, Row, Value};
 
 use super::{DisplayViewCache, DisplayViewCacheKey, build_display_view, cached_display_view};
 use crate::views::result_panel::{ResultPanel, ResultState, ResultViewMode};
+
+/// 测试宿主同时渲染结果面板和 GPUI Component 的对话框浮层。
+struct ResultDialogTestHost {
+    panel: Entity<ResultPanel>,
+}
+
+impl Render for ResultDialogTestHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
+        div()
+            .relative()
+            .size_full()
+            .child(self.panel.clone())
+            .children(dialog_layer)
+    }
+}
 
 /// Windows 触控板会同时上报少量另一轴位移；横向浏览列时不能带着行上下移动。
 #[gpui::test]
@@ -216,6 +232,79 @@ fn result_view_modes_keep_loaded_selection_and_render_each_surface(cx: &mut Test
     assert!(
         cx.debug_bounds("result-text-h-scrollbar").is_none(),
         "alternate result views should honor the global horizontal scrollbar setting"
+    );
+}
+
+/// The value viewer should render only the selected cell and remain closable as a dialog.
+#[gpui::test]
+fn selected_cell_opens_bounded_value_viewer(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let result = Arc::new(QueryResult {
+        columns: vec!["id".into(), "payload".into()],
+        column_types: vec!["INT".into(), "TEXT".into()],
+        rows: vec![Row {
+            values: vec![Value::Int(1), Value::Text("line one\nline two".into())],
+        }],
+        affected_rows: 0,
+        elapsed_ms: 1,
+        warnings: Vec::new(),
+        truncated: false,
+    });
+    let display_view = build_display_view(&result, None, "", "");
+    let display_view_key = DisplayViewCacheKey {
+        result_identity: Arc::as_ptr(&result) as usize,
+        result_revision: 0,
+        sort_by: None,
+        column_filter: String::new(),
+        row_filter: super::RowFilter::Text(String::new()),
+    };
+    let mut panel_entity = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = ResultPanel::new(window, cx);
+            panel.state = ResultState::Ok(result.clone());
+            panel.selected_cell = Some((0, 1));
+            panel.display_view_cache = Some(DisplayViewCache {
+                key: display_view_key,
+                view: display_view,
+            });
+            panel
+        });
+        panel_entity = Some(panel.clone());
+        let host = cx.new(|_| ResultDialogTestHost {
+            panel: panel.clone(),
+        });
+        gpui_component::Root::new(host, window, cx)
+    });
+    let panel = panel_entity.expect("result panel should be initialized");
+    cx.run_until_parked();
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.open_selected_cell_viewer(window, cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("result-value-viewer").is_some(),
+        "selected cell should open the value viewer"
+    );
+    assert!(
+        cx.debug_bounds("result-value-viewer-content-frame")
+            .is_some(),
+        "value viewer should render a selectable bounded content area"
+    );
+    assert!(
+        cx.debug_bounds("result-value-viewer-h-scrollbar").is_some(),
+        "value viewer should provide horizontal scrolling for long lines"
+    );
+
+    let close = cx
+        .debug_bounds("result-value-viewer-close")
+        .expect("value viewer should expose a close action");
+    cx.simulate_click(close.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("result-value-viewer").is_none(),
+        "closing the value viewer should remove the dialog"
     );
 }
 

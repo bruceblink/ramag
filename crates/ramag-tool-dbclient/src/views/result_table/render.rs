@@ -2,6 +2,8 @@ use super::pagination::parse_result_page;
 use super::*;
 use ramag_ui::PointerDropdownMenu as _;
 
+use crate::views::result_value::display_cell_value;
+
 /// Builds the page-size menu and keeps custom input bounded before emitting a query event.
 pub(in crate::views) fn render_page_size_selector(
     current: usize,
@@ -308,7 +310,7 @@ pub(in crate::views) fn render_table(
     let selected_info: Option<String> = panel.selected_cell().and_then(|(ri, ci)| {
         let col_name = columns.get(ci)?.clone();
         let val = result.rows.get(ri)?.values.get(ci)?;
-        let preview = val.display_preview(40);
+        let preview = display_cell_value(Some(val), 40);
         let hidden_note = if visible_row_indices.contains(&ri) {
             ""
         } else {

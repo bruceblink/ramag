@@ -44,6 +44,26 @@ pub struct CopyCellValue;
 #[action(namespace = ramag_dbclient)]
 pub struct CopySelectedColumn;
 
+/// 结果单元格上下文菜单：按 CSV 字段复制当前值
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag_dbclient)]
+pub struct CopyCellAsCsv;
+
+/// 结果单元格上下文菜单：按 JSON 值复制当前值
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag_dbclient)]
+pub struct CopyCellAsJson;
+
+/// 结果单元格上下文菜单：按当前 SQL 方言复制字面量
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag_dbclient)]
+pub struct CopyCellAsSql;
+
+/// 打开选中单元格的有界值查看器
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = ramag_dbclient)]
+pub struct OpenCellValueViewer;
+
 /// 切换 SQL 编辑器显隐（默认主修饰键+E；仅控编辑器，工具条 / 结果保留）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = ramag_dbclient)]

@@ -7,10 +7,12 @@ use gpui_component::{
     button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_domain::entities::QueryResult;
+use ramag_ui::PointerDropdownMenu as _;
 
 use crate::views::result_panel::{
     ResultPanel, ResultPanelEvent, ResultViewMode, RowSearchBlocker, TotalRows,
 };
+use crate::views::result_value::{CellCopyFormat, display_cell_value};
 
 use super::{DisplayView, ensure_display_view};
 
@@ -85,6 +87,7 @@ fn render_mode_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> An
         }));
     }
 
+    let value_actions = render_result_value_actions(panel, cx);
     let theme = cx.theme();
     h_flex()
         .id("result-view-toolbar")
@@ -111,6 +114,7 @@ fn render_mode_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> An
                 .child("结果视图"),
         )
         .child(modes)
+        .child(value_actions)
         .child(div().flex_1())
         .child(
             div()
@@ -119,6 +123,44 @@ fn render_mode_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> An
                 .text_color(theme.muted_foreground)
                 .child(current.description()),
         )
+        .into_any_element()
+}
+
+/// Builds copy/view actions shared by all result modes and disabled until a cell is selected.
+fn render_result_value_actions(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> AnyElement {
+    let panel_entity = cx.entity();
+    let has_selection = panel.selected_cell().is_some();
+    let trigger = ramag_ui::clickable_button("result-value-actions")
+        .ghost()
+        .small()
+        .icon(IconName::Copy)
+        .label("复制")
+        .dropdown_caret(true)
+        .disabled(!has_selection);
+    trigger
+        .pointer_dropdown_menu(move |mut menu, _, _| {
+            for format in CellCopyFormat::ALL {
+                let panel = panel_entity.clone();
+                menu = menu.item(
+                    ramag_ui::menu_item(format!("复制为 {}", format.label()))
+                        .icon(IconName::Copy)
+                        .on_click(move |_, _, app| {
+                            panel.update(app, |panel, cx| {
+                                panel.copy_selected_cell_as(format, cx);
+                            });
+                        }),
+                );
+            }
+            let panel = panel_entity.clone();
+            menu.separator()
+                .item(ramag_ui::menu_item("查看值").icon(IconName::Eye).on_click(
+                    move |_, window, app| {
+                        panel.update(app, |panel, cx| {
+                            panel.open_selected_cell_viewer(window, cx);
+                        });
+                    },
+                ))
+        })
         .into_any_element()
 }
 
@@ -295,7 +337,10 @@ fn render_alternate_footer(
         && let Some(name) = result.columns.get(column)
         && let Some(value) = result.rows.get(row).and_then(|row| row.values.get(column))
     {
-        status.push_str(&format!(" · [{name}] = {}", value.display_preview(40)));
+        status.push_str(&format!(
+            " · [{name}] = {}",
+            display_cell_value(Some(value), 40)
+        ));
     }
     let mut footer = h_flex()
         .id("result-alternate-status")
