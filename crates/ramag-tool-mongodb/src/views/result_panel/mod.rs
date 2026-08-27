@@ -204,6 +204,7 @@ impl ResultPanel {
             cx.observe_global::<ramag_ui::DatabaseSearchSettingsGlobal>(|this, cx| {
                 this.on_database_search_settings_changed(cx);
             }),
+            cx.observe_global::<ramag_ui::DatabaseResultSettingsGlobal>(|_, cx| cx.notify()),
         ];
 
         Self {

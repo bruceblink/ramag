@@ -35,6 +35,36 @@ pub(super) fn id_converter_kind_label(kind: IdConverterKind) -> &'static str {
 }
 
 impl SettingsView {
+    /// 切换数据库结果表水平滚动条，并立即更新全局状态后异步持久化。
+    pub(super) fn toggle_database_result_horizontal_scrollbar(&mut self, cx: &mut Context<Self>) {
+        self.show_database_result_horizontal_scrollbar =
+            !self.show_database_result_horizontal_scrollbar;
+        let settings = crate::DatabaseResultSettings {
+            show_horizontal_scrollbar: self.show_database_result_horizontal_scrollbar,
+        };
+        match settings.to_json() {
+            Ok(json) => {
+                crate::set_database_result_settings(settings, cx);
+                crate::preferences::persist_preference_latest(
+                    crate::DATABASE_RESULT_SETTINGS_PREF_KEY,
+                    json,
+                    cx,
+                );
+            }
+            Err(error) => {
+                error!(
+                    operation = "database_result_settings_save",
+                    error = %error,
+                    "serialize database result settings failed"
+                );
+                self.show_database_result_horizontal_scrollbar =
+                    crate::database_result_settings(cx).show_horizontal_scrollbar;
+                self.pending_notification = Some(Notification::error(error));
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn toggle_redis_key_sink(&mut self, cx: &mut Context<Self>) {
         self.redis_sink_same_name_keys = !self.redis_sink_same_name_keys;
         let settings = crate::RedisTreeSettings {

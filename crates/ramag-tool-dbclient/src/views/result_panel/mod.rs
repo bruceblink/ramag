@@ -158,6 +158,8 @@ impl ResultPanel {
             this.on_database_search_settings_changed(cx);
         })
         .detach();
+        cx.observe_global::<ramag_ui::DatabaseResultSettingsGlobal>(|_, cx| cx.notify())
+            .detach();
 
         Self {
             state: ResultState::Empty,
