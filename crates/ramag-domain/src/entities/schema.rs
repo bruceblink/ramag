@@ -18,6 +18,9 @@ pub struct Table {
     /// 兼容缺少该字段的旧记录。
     #[serde(default)]
     pub is_view: bool,
+    /// 物理存储大小（字节）；视图或驱动暂时无法取得统计时为空。
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,7 +152,16 @@ pub struct ForeignKey {
 
 #[cfg(test)]
 mod tests {
-    use super::{Column, ColumnKind, ForeignKeyAction};
+    use super::{Column, ColumnKind, ForeignKeyAction, Table};
+
+    #[test]
+    fn table_deserializes_legacy_records_without_size() {
+        let table =
+            serde_json::from_str::<Table>(r#"{"name":"users","schema":"public","comment":null}"#)
+                .expect("旧表记录应继续可反序列化");
+        assert!(!table.is_view);
+        assert_eq!(table.size_bytes, None);
+    }
 
     #[test]
     fn column_deserializes_legacy_records_without_new_metadata() {

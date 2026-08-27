@@ -13,7 +13,7 @@ use gpui_component::{
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
-use ramag_domain::entities::{Schema, contains_case_insensitive};
+use ramag_domain::entities::{Schema, contains_case_insensitive, format_bytes};
 
 use super::{SchemaTables, TableColumns, TableTreePanel};
 use crate::sql_completion::is_system_schema;
@@ -39,6 +39,7 @@ pub(super) enum TreeRow {
         key: Rc<(String, String)>,
         is_view: bool,
         is_cols_expanded: bool,
+        size_bytes: Option<u64>,
     },
     TablePlaceholder {
         text: String,
@@ -216,6 +217,7 @@ impl TableTreePanel {
                 key,
                 is_view,
                 is_cols_expanded,
+                size_bytes,
             } => {
                 let schema = &key.0;
                 let name = &key.1;
@@ -229,6 +231,7 @@ impl TableTreePanel {
                 let name = name.clone();
                 let is_view = *is_view;
                 let is_cols_expanded = *is_cols_expanded;
+                let size_label = size_bytes.map(format_bytes);
 
                 let row_id = SharedString::from(format!("table-{}-{}", schema, name));
                 let s_for_click = schema.clone();
@@ -314,7 +317,20 @@ impl TableTreePanel {
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .child(name.clone()),
-                    );
+                    )
+                    .when_some(size_label, |row, size| {
+                        row.child(
+                            div()
+                                .ml_auto()
+                                .flex_none()
+                                .px(px(3.0))
+                                .rounded(px(2.0))
+                                .bg(muted_bg.opacity(0.35))
+                                .text_xs()
+                                .text_color(if is_selected { accent_fg } else { muted_fg })
+                                .child(size),
+                        )
+                    });
                 if is_selected {
                     row = row.bg(accent_bg);
                 }
@@ -484,6 +500,7 @@ fn build_tree_rows(
                 key: columns_key.clone(),
                 is_view: table.is_view,
                 is_cols_expanded: columns.is_some(),
+                size_bytes: table.size_bytes,
             });
 
             let Some(columns) = columns else {

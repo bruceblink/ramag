@@ -55,12 +55,20 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
         "listing tables"
     );
 
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(String, String, Option<String>, Option<u64>)> = sqlx::query_as(
         r#"
         SELECT
             CONVERT(TABLE_NAME USING utf8mb4),
             CONVERT(TABLE_TYPE USING utf8mb4),
-            LEFT(CONVERT(TABLE_COMMENT USING utf8mb4), 4096)
+            LEFT(CONVERT(TABLE_COMMENT USING utf8mb4), 4096),
+            CASE
+                WHEN TABLE_TYPE = 'BASE TABLE'
+                THEN CAST(
+                    COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0)
+                    AS UNSIGNED
+                )
+                ELSE NULL
+            END
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'SYSTEM VIEW')
         ORDER BY TABLE_TYPE, TABLE_NAME
@@ -76,13 +84,14 @@ pub async fn list_tables(pool: &MySqlPool, schema: &str) -> Result<Vec<Table>> {
 
     let tables = rows
         .into_iter()
-        .map(|(name, table_type, comment)| {
+        .map(|(name, table_type, comment, size_bytes)| {
             let is_view = !table_type.eq_ignore_ascii_case("BASE TABLE");
             Table {
                 name,
                 schema: schema.to_string(),
                 comment: comment.filter(|c| !c.is_empty()),
                 is_view,
+                size_bytes,
             }
         })
         .collect::<Vec<_>>();

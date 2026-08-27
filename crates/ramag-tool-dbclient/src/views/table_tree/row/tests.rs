@@ -19,6 +19,7 @@ fn metadata_rows_keep_exact_copy_targets() {
                 schema: "gewu".into(),
                 comment: None,
                 is_view: false,
+                size_bytes: Some(12_345),
             }],
             ..Default::default()
         },
@@ -75,6 +76,10 @@ fn metadata_rows_keep_exact_copy_targets() {
             if key.0 == "gewu" && key.1 == "company_project_member_rel")
     }));
     assert!(view.rows.iter().any(|row| {
+        matches!(row, TreeRow::Table { key, size_bytes: Some(12_345), .. }
+            if key.0 == "gewu" && key.1 == "company_project_member_rel")
+    }));
+    assert!(view.rows.iter().any(|row| {
         matches!(row, TreeRow::DetailLine { copy_value, .. }
             if copy_value == "uk_project_user")
     }));
@@ -103,6 +108,7 @@ fn tree_rows_match_unicode_table_names_without_lowercase_copies() {
                 schema: "public".into(),
                 comment: None,
                 is_view: false,
+                size_bytes: None,
             }],
             ..Default::default()
         },

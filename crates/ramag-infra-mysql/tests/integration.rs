@@ -79,7 +79,20 @@ async fn list_tables_for_db() {
         .await
         .expect("list_tables 失败");
     println!("tables in {}: {:#?}", schema, tables);
-    // 不强制有表，只验证调用成功
+    assert!(
+        tables
+            .iter()
+            .filter(|table| !table.is_view)
+            .all(|table| table.size_bytes.is_some()),
+        "普通表应返回物理大小"
+    );
+    assert!(
+        tables
+            .iter()
+            .filter(|table| table.is_view)
+            .all(|table| table.size_bytes.is_none()),
+        "视图不应伪造表大小"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

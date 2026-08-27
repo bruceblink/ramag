@@ -53,12 +53,16 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
         "listing tables"
     );
 
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
         r#"
         SELECT
             t.table_name::text,
             t.table_type::text,
-            LEFT(obj_description(c.oid, 'pg_class'), 4096) AS table_comment
+            LEFT(obj_description(c.oid, 'pg_class'), 4096) AS table_comment,
+            CASE
+                WHEN t.table_type = 'BASE TABLE' THEN pg_total_relation_size(c.oid)
+                ELSE NULL::bigint
+            END AS size_bytes
         FROM information_schema.tables t
         LEFT JOIN pg_namespace n ON n.nspname = t.table_schema
         LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
@@ -68,7 +72,8 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
         SELECT
             mv.matviewname::text AS table_name,
             'MATERIALIZED VIEW'::text AS table_type,
-            LEFT(obj_description(c.oid, 'pg_class'), 4096) AS table_comment
+            LEFT(obj_description(c.oid, 'pg_class'), 4096) AS table_comment,
+            NULL::bigint AS size_bytes
         FROM pg_matviews mv
         LEFT JOIN pg_namespace n ON n.nspname = mv.schemaname
         LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = mv.matviewname
@@ -86,13 +91,14 @@ pub async fn list_tables(pool: &PgPool, schema: &str) -> Result<Vec<Table>> {
 
     let tables = rows
         .into_iter()
-        .map(|(name, table_type, comment)| {
+        .map(|(name, table_type, comment, size_bytes)| {
             let is_view = !table_type.eq_ignore_ascii_case("BASE TABLE");
             Table {
                 name,
                 schema: schema.to_string(),
                 comment: comment.filter(|c| !c.is_empty()),
                 is_view,
+                size_bytes: size_bytes.and_then(|size| u64::try_from(size).ok()),
             }
         })
         .collect::<Vec<_>>();
