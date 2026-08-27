@@ -2,7 +2,11 @@ use gpui::{
     AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement, SharedString, Styled, div, prelude::*, px,
 };
-use gpui_component::{IconName, Sizable as _, h_flex, input::Input, menu::ContextMenuExt as _};
+use gpui_component::{
+    IconName, Sizable as _, h_flex,
+    input::{Escape, Input},
+    menu::ContextMenuExt as _,
+};
 use ramag_domain::entities::Value;
 
 use super::TableRowFrame;
@@ -128,7 +132,35 @@ pub(super) fn render_data_row(
             let muted_fg = frame.muted_fg;
             let border = frame.border;
             let accent = frame.accent;
-            div()
+            let is_editing = panel.editing_cell == Some((source_idx, ci));
+            let inline_input = is_editing.then(|| panel.cell_edit_input.clone()).flatten();
+            let cell_content: AnyElement = match inline_input {
+                Some(state) => div()
+                    .w_full()
+                    .h_full()
+                    .px_1()
+                    .child(
+                        Input::new(&state)
+                            .small()
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false),
+                    )
+                    .into_any_element(),
+                None => div()
+                    .w_full()
+                    .px_3()
+                    .text_xs()
+                    .font_family(mono_font)
+                    .text_color(if is_null { muted_fg } else { fg })
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .when(is_right, |this| this.text_right())
+                    .child(SharedString::from(display))
+                    .into_any_element(),
+            };
+            let cell = div()
                 .id(SharedString::from(format!("cell-{idx}-{ci}")))
                 .w(cw)
                 .min_w(cw)
@@ -141,6 +173,9 @@ pub(super) fn render_data_row(
                 .when(is_selected, |this| this.bg(accent.opacity(0.22)))
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.set_selected_cell(Some((row_idx, ci)));
+                    if this.editing_cell == Some((row_idx, ci)) {
+                        return;
+                    }
                     if ramag_ui::is_primary_modifier_double_click(e) {
                         this.copy_selected_cell(cx);
                         return;
@@ -157,6 +192,11 @@ pub(super) fn render_data_row(
                         cx.notify();
                     }),
                 )
+                .when(is_editing, |this| {
+                    this.on_action(cx.listener(|this, _: &Escape, _, cx| {
+                        this.cancel_inline_cell_edit(cx);
+                    }))
+                })
                 .context_menu(|menu, _, _| {
                     menu.item(
                         ramag_ui::menu_item("复制")
@@ -169,20 +209,8 @@ pub(super) fn render_data_row(
                             .action(Box::new(CopySelectedColumn)),
                     )
                 })
-                .child(
-                    div()
-                        .w_full()
-                        .px_3()
-                        .text_xs()
-                        .font_family(mono_font)
-                        .text_color(if is_null { muted_fg } else { fg })
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .when(is_right, |this| this.text_right())
-                        .child(SharedString::from(display)),
-                )
-                .into_any_element()
+                .child(cell_content);
+            cell.into_any_element()
         })
         .collect();
 

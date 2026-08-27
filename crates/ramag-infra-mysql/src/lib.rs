@@ -97,6 +97,19 @@ impl SqlBackend for MysqlDriver {
         execute::record_backend_id(conn, handle).await
     }
 
+    async fn prepare_for_auto_commit(
+        &self,
+        conn: &mut MySqlConnection,
+    ) -> std::result::Result<(), sqlx::Error> {
+        // A pooled session can retain autocommit=0 after an interrupted manual
+        // transaction. Restore the one-shot execution contract before running
+        // result-table UPDATE/DELETE/INSERT statements.
+        sqlx::query("SET SESSION autocommit = 1")
+            .execute(conn)
+            .await
+            .map(|_| ())
+    }
+
     async fn fetch_warnings(&self, conn: &mut MySqlConnection) -> Vec<Warning> {
         execute::fetch_warnings(conn).await
     }
