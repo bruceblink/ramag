@@ -1,0 +1,4 @@
+/.githooks/pre-commit text eol=lf
+/scripts/check-source-size.sh text eol=lf
+/scripts/install-githooks.sh text eol=lf
+/scripts/install-githooks.ps1 text eol=lf

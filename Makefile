@@ -3,6 +3,7 @@
 
 .PHONY: help \
         develop release \
+        install-hooks \
         check size-check log-check fmt fmt-check clippy test \
         db-test db-test-up db-test-seed db-test-run db-test-workspace \
         db-test-status db-test-down db-test-clean \
@@ -20,6 +21,7 @@ help:
 	@printf "  \033[36m开发\033[0m\n"
 	@printf "    make develop        cargo run -p ramag-bin（debug，编译快）\n"
 	@printf "    make release        本地运行优化构建，不创建或发布安装包\n"
+	@printf "    make install-hooks  启用提交前源码尺寸检查\n"
 	@printf "\n  \033[36m检查\033[0m\n"
 	@printf "    make check          cargo check --all-targets\n"
 	@printf "    make size-check     检查 Rust 文件不超过 600 行\n"
@@ -61,6 +63,14 @@ develop:
 
 release:
 	cargo run --release -p ramag-bin
+
+ifeq ($(OS),Windows_NT)
+install-hooks:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-githooks.ps1
+else
+install-hooks:
+	./scripts/install-githooks.sh
+endif
 
 # === 检查 ============================================================
 check: size-check log-check

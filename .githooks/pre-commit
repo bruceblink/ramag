@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+printf '%s\n' 'pre-commit: checking Rust source file sizes'
+# Windows checkouts may expose the tracked script as CRLF; normalize it in the
+# pipe so the same hook works from Git Bash, WSL, and Linux.
+sed 's/\r$//' "$repo_root/scripts/check-source-size.sh" | bash

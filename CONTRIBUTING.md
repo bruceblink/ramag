@@ -22,6 +22,22 @@ make clippy
 make test
 ```
 
+首次克隆或切换到新的工作区后，启用提交前源码尺寸检查：
+
+Linux/macOS：
+
+```bash
+./scripts/install-githooks.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\install-githooks.ps1
+```
+
+安装了 Make 的环境可以执行 `make install-hooks`，该目标会根据当前系统调用对应脚本。安装后，hook 会在每次提交前运行 `scripts/check-source-size.sh`；如果 Rust 源文件超过 600 行，提交会被拒绝。
+
 数据库基础设施改动需要真实环境验证时，运行 `make db-test`。该命令会启动专用 Docker 容器并写入测试数据；`make db-test-clean` 会删除这些测试容器、卷和凭据。
 
 ## 提交 Pull Request
@@ -36,4 +52,4 @@ CI 会在 Linux、macOS 和 Windows 上检查格式、编译、Clippy、测试�
 
 ## English summary
 
-Contributions are welcome. Please use public issues for reproducible bugs and feature discussions, keep pull requests focused, run the relevant checks, and never include credentials or private data. Report security-sensitive issues through [SECURITY.md](SECURITY.md).
+Contributions are welcome. Please use public issues for reproducible bugs and feature discussions, keep pull requests focused, run the relevant checks, enable the repository pre-commit hook with `scripts/install-githooks.sh` or `scripts/install-githooks.ps1`, and never include credentials or private data. Report security-sensitive issues through [SECURITY.md](SECURITY.md).
