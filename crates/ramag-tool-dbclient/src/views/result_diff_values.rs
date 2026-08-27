@@ -82,7 +82,7 @@ pub(super) fn rows_equal(
     })
 }
 
-fn values_equal(source: Option<&Value>, target: Option<&Value>) -> bool {
+pub(super) fn values_equal(source: Option<&Value>, target: Option<&Value>) -> bool {
     match (source, target) {
         (Some(Value::Null), Some(Value::Null)) => true,
         (Some(Value::Bool(source)), Some(Value::Bool(target))) => source == target,

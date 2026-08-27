@@ -14,8 +14,8 @@ use gpui_component::{
 };
 
 use super::result_diff::{
-    ResultDiff, ResultDiffKind, ResultDiffLine, ResultSnapshot, RowMatchMode, build_result_diff,
-    format_result_diff,
+    MAX_CELL_DIFFS, ResultCellDiff, ResultDiff, ResultDiffKind, ResultDiffLine, ResultSnapshot,
+    RowMatchMode, build_result_diff, format_result_diff,
 };
 
 const DIFF_VIEW_WIDTH: f32 = 1_080.0;
@@ -154,6 +154,90 @@ impl ResultDiffDialog {
         body.into_any_element()
     }
 
+    fn render_cell_diff(&self, diff: &ResultCellDiff, theme: &Theme) -> impl IntoElement {
+        h_flex()
+            .w(px(DIFF_VIEW_WIDTH))
+            .items_start()
+            .gap(px(8.0))
+            .px(px(6.0))
+            .py(px(4.0))
+            .rounded_sm()
+            .bg(theme.warning.opacity(0.08))
+            .text_xs()
+            .whitespace_nowrap()
+            .child(
+                v_flex()
+                    .flex_none()
+                    .w(px(250.0))
+                    .gap(px(2.0))
+                    .child(div().text_color(theme.muted_foreground).child(format!(
+                        "基准：第 {} 行，第 {} 列",
+                        diff.source_row + 1,
+                        diff.source_column + 1
+                    )))
+                    .child(div().text_color(theme.muted_foreground).child(format!(
+                        "当前：第 {} 行，第 {} 列",
+                        diff.target_row + 1,
+                        diff.target_column + 1
+                    ))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(180.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(diff.column_name.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.danger)
+                    .child(format!("旧值：{}", diff.source_value)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.success)
+                    .child(format!("新值：{}", diff.target_value)),
+            )
+    }
+
+    fn render_cell_section(
+        &self,
+        diffs: &[ResultCellDiff],
+        omitted_diffs: usize,
+        theme: &Theme,
+    ) -> AnyElement {
+        let total = diffs.len().saturating_add(omitted_diffs);
+        let mut body = v_flex()
+            .w(px(DIFF_VIEW_WIDTH))
+            .gap(px(2.0))
+            .p(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .rounded(px(6.0))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(format!("单元格变化（{total} 处）")),
+            );
+        for diff in diffs {
+            body = body.child(self.render_cell_diff(diff, theme));
+        }
+        if omitted_diffs > 0 {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(format!(
+                        "… 还有 {omitted_diffs} 个单元格变化未显示（上限 {MAX_CELL_DIFFS}）"
+                    )),
+            );
+        }
+        body.into_any_element()
+    }
+
     fn render_summary(&self, diff: &ResultDiff, theme: &Theme) -> AnyElement {
         let status_color = if diff.has_changes() {
             theme.warning
@@ -184,6 +268,12 @@ impl ResultDiffDialog {
             .child(div().text_color(theme.muted_foreground).child(format!(
                 "行 变更 {} · 新增 {} · 删除 {} · 未变化 {}",
                 diff.rows_changed, diff.rows_added, diff.rows_removed, diff.rows_unchanged
+            )))
+            .child(div().text_color(theme.muted_foreground).child(format!(
+                "单元格 变化 {}",
+                diff.cell_diffs
+                    .len()
+                    .saturating_add(diff.omitted_cell_diffs)
             )))
             .child(
                 div()
@@ -224,6 +314,12 @@ impl ResultDiffDialog {
             notes.push(format!(
                 "差异行较多，已省略 {} 个字段行和 {} 个数据行；复制内容也遵循此显示上限",
                 diff.omitted_column_lines, diff.omitted_row_lines
+            ));
+        }
+        if diff.omitted_cell_diffs > 0 {
+            notes.push(format!(
+                "单元格变化超过 {} 处，已省略 {} 处；复制内容也遵循此显示上限",
+                MAX_CELL_DIFFS, diff.omitted_cell_diffs
             ));
         }
         if notes.is_empty() {
@@ -406,6 +502,13 @@ impl Render for ResultDiffDialog {
                     diff.omitted_row_lines,
                     theme,
                 ));
+            if !diff.cell_diffs.is_empty() || diff.omitted_cell_diffs > 0 {
+                content = content.child(self.render_cell_section(
+                    &diff.cell_diffs,
+                    diff.omitted_cell_diffs,
+                    theme,
+                ));
+            }
             self.render_scrollable(content, theme)
         } else {
             v_flex()

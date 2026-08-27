@@ -4,11 +4,12 @@ use ramag_domain::entities::QueryResult;
 
 use super::values::{
     content_key, format_column, format_row, identity_key, identity_values_equal, push_line,
-    push_row_pair, rows_equal,
+    push_row_pair, rows_equal, values_equal,
 };
 use super::{
-    ColumnPair, ColumnStats, MAX_COLUMN_LINES, MAX_COMPARE_ROWS, MAX_ROW_LINES, ResultDiff,
-    ResultDiffKind, ResultDiffLine, ResultSnapshot, RowComparison, RowKey, RowMatchMode,
+    ColumnPair, ColumnStats, MAX_CELL_DIFFS, MAX_COLUMN_LINES, MAX_COMPARE_ROWS, MAX_ROW_LINES,
+    MAX_VALUE_PREVIEW_CHARS, ResultCellDiff, ResultDiff, ResultDiffKind, ResultDiffLine,
+    ResultSnapshot, RowComparison, RowKey, RowMatchMode,
 };
 
 /// 比较两次查询结果；只读取快照中的已加载行，不重新访问数据库。
@@ -19,6 +20,8 @@ pub(crate) fn build_result_diff(source: &ResultSnapshot, target: &ResultSnapshot
         RowComparison {
             lines: Vec::new(),
             omitted_lines: 0,
+            cell_diffs: Vec::new(),
+            omitted_cell_diffs: 0,
             source_rows_compared: 0,
             target_rows_compared: 0,
             added: 0,
@@ -42,6 +45,7 @@ pub(crate) fn build_result_diff(source: &ResultSnapshot, target: &ResultSnapshot
     ResultDiff {
         column_lines,
         row_lines: row_comparison.lines,
+        cell_diffs: row_comparison.cell_diffs,
         columns_added: column_stats.added,
         columns_removed: column_stats.removed,
         columns_changed: column_stats.changed,
@@ -57,6 +61,7 @@ pub(crate) fn build_result_diff(source: &ResultSnapshot, target: &ResultSnapshot
         unkeyed_target_rows: row_comparison.unkeyed_target,
         omitted_column_lines,
         omitted_row_lines: row_comparison.omitted_lines,
+        omitted_cell_diffs: row_comparison.omitted_cell_diffs,
         row_mode: row_comparison.mode,
         context_mismatch: source.context != target.context,
         scope_mismatch: source.scope_key != target.scope_key,
@@ -259,6 +264,8 @@ fn compare_keyed_rows(
     let mut changed = 0;
     let mut unchanged = 0;
     let mut omitted_lines = 0;
+    let mut cell_diffs = Vec::new();
+    let mut omitted_cell_diffs = 0;
     for (source_index, target_index) in target_for_source
         .iter()
         .copied()
@@ -266,25 +273,29 @@ fn compare_keyed_rows(
         .take(source_count)
     {
         match target_index {
-            Some(target_index)
-                if rows_equal(
-                    source.rows.get(source_index),
-                    target.rows.get(target_index),
-                    common_columns,
-                ) =>
-            {
-                unchanged += 1;
-            }
             Some(target_index) => {
-                changed += 1;
-                push_row_pair(
-                    &mut lines,
-                    &mut omitted_lines,
+                let changed_cells = append_cell_diffs(
+                    &mut cell_diffs,
+                    &mut omitted_cell_diffs,
                     source,
                     target,
                     source_index,
                     target_index,
+                    common_columns,
                 );
+                if changed_cells == 0 {
+                    unchanged += 1;
+                } else {
+                    changed += 1;
+                    push_row_pair(
+                        &mut lines,
+                        &mut omitted_lines,
+                        source,
+                        target,
+                        source_index,
+                        target_index,
+                    );
+                }
             }
             None => {
                 removed += 1;
@@ -314,6 +325,8 @@ fn compare_keyed_rows(
     RowComparison {
         lines,
         omitted_lines,
+        cell_diffs,
+        omitted_cell_diffs,
         source_rows_compared: source_count,
         target_rows_compared: target_count,
         added,
@@ -397,6 +410,8 @@ fn compare_content_rows(
     RowComparison {
         lines,
         omitted_lines,
+        cell_diffs: Vec::new(),
+        omitted_cell_diffs: 0,
         source_rows_compared: source_count,
         target_rows_compared: target_count,
         added,
@@ -407,4 +422,58 @@ fn compare_content_rows(
         unkeyed_target: 0,
         mode: RowMatchMode::Content,
     }
+}
+
+fn append_cell_diffs(
+    diffs: &mut Vec<ResultCellDiff>,
+    omitted_diffs: &mut usize,
+    source: &QueryResult,
+    target: &QueryResult,
+    source_row: usize,
+    target_row: usize,
+    common_columns: &[ColumnPair],
+) -> usize {
+    let mut changed_cells = 0;
+    for column in common_columns {
+        let source_value = source
+            .rows
+            .get(source_row)
+            .and_then(|row| row.values.get(column.source));
+        let target_value = target
+            .rows
+            .get(target_row)
+            .and_then(|row| row.values.get(column.target));
+        if values_equal(source_value, target_value) {
+            continue;
+        }
+        changed_cells += 1;
+        if diffs.len() >= MAX_CELL_DIFFS {
+            *omitted_diffs = omitted_diffs.saturating_add(1);
+            continue;
+        }
+
+        let column_name = target
+            .columns
+            .get(column.target)
+            .or_else(|| source.columns.get(column.source))
+            .cloned()
+            .unwrap_or_else(|| format!("列 {}", column.target + 1));
+        let cell_diff = ResultCellDiff {
+            source_row,
+            target_row,
+            source_column: column.source,
+            target_column: column.target,
+            column_name,
+            source_value: format_cell_value(source_value),
+            target_value: format_cell_value(target_value),
+        };
+        diffs.push(cell_diff);
+    }
+    changed_cells
+}
+
+fn format_cell_value(value: Option<&ramag_domain::entities::Value>) -> String {
+    value
+        .map(|value| value.display_preview(MAX_VALUE_PREVIEW_CHARS))
+        .unwrap_or_else(|| "<缺失>".into())
 }

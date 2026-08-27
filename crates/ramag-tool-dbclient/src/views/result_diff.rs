@@ -13,6 +13,7 @@ use ramag_domain::entities::{ConnectionConfig, ConnectionId, QueryResult};
 pub(crate) const MAX_COMPARE_ROWS: usize = 10_000;
 const MAX_COLUMN_LINES: usize = 512;
 const MAX_ROW_LINES: usize = 800;
+pub(crate) const MAX_CELL_DIFFS: usize = 2_000;
 const MAX_ROW_FIELDS: usize = 32;
 const MAX_VALUE_PREVIEW_CHARS: usize = 120;
 const MAX_ROW_PREVIEW_CHARS: usize = 4_096;
@@ -101,6 +102,17 @@ pub(crate) struct ResultDiffLine {
     pub(crate) text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResultCellDiff {
+    pub(crate) source_row: usize,
+    pub(crate) target_row: usize,
+    pub(crate) source_column: usize,
+    pub(crate) target_column: usize,
+    pub(crate) column_name: String,
+    pub(crate) source_value: String,
+    pub(crate) target_value: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RowMatchMode {
     Identity,
@@ -122,6 +134,7 @@ impl RowMatchMode {
 pub(crate) struct ResultDiff {
     pub(crate) column_lines: Vec<ResultDiffLine>,
     pub(crate) row_lines: Vec<ResultDiffLine>,
+    pub(crate) cell_diffs: Vec<ResultCellDiff>,
     pub(crate) columns_added: usize,
     pub(crate) columns_removed: usize,
     pub(crate) columns_changed: usize,
@@ -137,6 +150,7 @@ pub(crate) struct ResultDiff {
     pub(crate) unkeyed_target_rows: usize,
     pub(crate) omitted_column_lines: usize,
     pub(crate) omitted_row_lines: usize,
+    pub(crate) omitted_cell_diffs: usize,
     pub(crate) row_mode: RowMatchMode,
     pub(crate) context_mismatch: bool,
     pub(crate) scope_mismatch: bool,
@@ -157,6 +171,7 @@ impl ResultDiff {
             || self.target_rows_compared < self.target_rows
             || self.unkeyed_source_rows > 0
             || self.unkeyed_target_rows > 0
+            || self.omitted_cell_diffs > 0
     }
 }
 
@@ -177,6 +192,8 @@ struct ColumnStats {
 struct RowComparison {
     lines: Vec<ResultDiffLine>,
     omitted_lines: usize,
+    cell_diffs: Vec<ResultCellDiff>,
+    omitted_cell_diffs: usize,
     source_rows_compared: usize,
     target_rows_compared: usize,
     added: usize,
@@ -212,7 +229,7 @@ pub(crate) fn format_result_diff(
     let _ = writeln!(output, "当前范围：{}", target.scope);
     let _ = writeln!(
         output,
-        "字段：修改 {}，新增 {}，删除 {}；行：变更 {}，新增 {}，删除 {}，未变化 {}",
+        "字段：修改 {}，新增 {}，删除 {}；行：变更 {}，新增 {}，删除 {}，未变化 {}；单元格：变化 {}",
         diff.columns_changed,
         diff.columns_added,
         diff.columns_removed,
@@ -220,6 +237,9 @@ pub(crate) fn format_result_diff(
         diff.rows_added,
         diff.rows_removed,
         diff.rows_unchanged,
+        diff.cell_diffs
+            .len()
+            .saturating_add(diff.omitted_cell_diffs),
     );
     let _ = writeln!(output, "行匹配：{}", diff.row_mode.label());
 
@@ -260,6 +280,13 @@ pub(crate) fn format_result_diff(
                 diff.unkeyed_source_rows, diff.unkeyed_target_rows
             );
         }
+        if diff.omitted_cell_diffs > 0 {
+            let _ = writeln!(
+                output,
+                "提示：单元格变化超过 {} 处，已省略 {} 处",
+                MAX_CELL_DIFFS, diff.omitted_cell_diffs
+            );
+        }
     }
 
     append_lines(
@@ -274,6 +301,9 @@ pub(crate) fn format_result_diff(
         &diff.row_lines,
         diff.omitted_row_lines,
     );
+    if !diff.cell_diffs.is_empty() || diff.omitted_cell_diffs > 0 {
+        append_cell_diffs(&mut output, &diff.cell_diffs, diff.omitted_cell_diffs);
+    }
     if !diff.has_changes() {
         let _ = writeln!(output, "\n结果一致（在上述已加载范围内）");
     }
@@ -291,6 +321,29 @@ fn append_lines(output: &mut String, title: &str, lines: &[ResultDiffLine], omit
     }
     if omitted_lines > 0 {
         let _ = writeln!(output, "… 还有 {omitted_lines} 行未显示");
+    }
+}
+
+fn append_cell_diffs(output: &mut String, diffs: &[ResultCellDiff], omitted_diffs: usize) {
+    let _ = writeln!(output, "\n单元格变化");
+    for diff in diffs {
+        let _ = writeln!(
+            output,
+            "基准[第 {} 行，第 {} 列] -> 当前[第 {} 行，第 {} 列]；列：{}；旧值：{}；新值：{}",
+            diff.source_row + 1,
+            diff.source_column + 1,
+            diff.target_row + 1,
+            diff.target_column + 1,
+            diff.column_name,
+            diff.source_value,
+            diff.target_value,
+        );
+    }
+    if omitted_diffs > 0 {
+        let _ = writeln!(
+            output,
+            "… 还有 {omitted_diffs} 个单元格变化未显示（上限 {MAX_CELL_DIFFS}）"
+        );
     }
 }
 
@@ -361,12 +414,24 @@ mod tests {
         assert_eq!(diff.rows_removed, 1);
         assert_eq!(diff.rows_added, 1);
         assert_eq!(diff.rows_unchanged, 0);
+        assert_eq!(diff.cell_diffs.len(), 1);
+        let cell = &diff.cell_diffs[0];
+        assert_eq!(cell.source_row, 0);
+        assert_eq!(cell.target_row, 0);
+        assert_eq!(cell.source_column, 1);
+        assert_eq!(cell.target_column, 1);
+        assert_eq!(cell.column_name, "name");
+        assert_eq!(cell.source_value, "old");
+        assert_eq!(cell.target_value, "new");
         assert!(diff.row_lines.iter().any(|line| line.text.contains("old")));
         assert!(
             diff.row_lines
                 .iter()
                 .any(|line| line.text.contains("added"))
         );
+        let copied = format_result_diff(&source, &target, &diff);
+        assert!(copied.contains("基准[第 1 行，第 2 列] -> 当前[第 1 行，第 2 列]"));
+        assert!(copied.contains("旧值：old；新值：new"));
     }
 
     #[test]
@@ -429,6 +494,8 @@ mod tests {
         assert_eq!(diff.rows_removed, 1);
         assert_eq!(diff.rows_added, 1);
         assert_eq!(diff.rows_changed, 0);
+        assert!(diff.cell_diffs.is_empty());
+        assert_eq!(diff.omitted_cell_diffs, 0);
     }
 
     #[test]
@@ -447,6 +514,7 @@ mod tests {
         assert_eq!(diff.source_rows_compared, 0);
         assert_eq!(diff.target_rows_compared, 0);
         assert!(diff.row_lines.is_empty());
+        assert!(diff.cell_diffs.is_empty());
     }
 
     #[test]
@@ -462,5 +530,56 @@ mod tests {
         assert_eq!(diff.source_rows, MAX_COMPARE_ROWS + 1);
         assert_eq!(diff.source_rows_compared, MAX_COMPARE_ROWS);
         assert!(diff.comparison_limited());
+    }
+
+    #[test]
+    fn cell_comparison_is_bounded_to_changed_cells() {
+        let mut columns = vec!["id".to_string()];
+        columns.extend((1..=(MAX_CELL_DIFFS + 1)).map(|index| format!("column_{index}")));
+        let column_names: Vec<&str> = columns.iter().map(String::as_str).collect();
+        let types: Vec<String> = columns
+            .iter()
+            .enumerate()
+            .map(|(index, _)| if index == 0 { "BIGINT" } else { "TEXT" }.into())
+            .collect();
+        let type_names: Vec<&str> = types.iter().map(String::as_str).collect();
+        let source_values: Vec<Value> = (0..columns.len())
+            .map(|index| {
+                if index == 0 {
+                    Value::Int(1)
+                } else {
+                    Value::Text("old".into())
+                }
+            })
+            .collect();
+        let target_values: Vec<Value> = (0..columns.len())
+            .map(|index| {
+                if index == 0 {
+                    Value::Int(1)
+                } else {
+                    Value::Text("new".into())
+                }
+            })
+            .collect();
+        let source = snapshot(
+            &column_names,
+            &type_names,
+            vec![source_values],
+            Some(&["id"]),
+        );
+        let target = snapshot(
+            &column_names,
+            &type_names,
+            vec![target_values],
+            Some(&["id"]),
+        );
+
+        let diff = build_result_diff(&source, &target);
+
+        assert_eq!(diff.cell_diffs.len(), MAX_CELL_DIFFS);
+        assert_eq!(diff.omitted_cell_diffs, 1);
+        assert!(diff.comparison_limited());
+        let copied = format_result_diff(&source, &target, &diff);
+        assert!(copied.contains("单元格变化超过 2000 处，已省略 1 处"));
     }
 }
