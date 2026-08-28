@@ -36,7 +36,7 @@ Windows PowerShell：
 .\scripts\install-githooks.ps1
 ```
 
-安装了 Make 的环境可以执行 `make install-hooks`，该目标会根据当前系统调用对应脚本。安装后，hook 会在每次提交前运行 `scripts/check-source-size.sh`；如果 Rust 源文件超过 600 行，提交会被拒绝。
+安装了 Make 的环境可以执行 `make install-hooks`，该目标会根据当前系统调用对应脚本。安装后，hook 会在每次提交前检查 Rust 源文件是否超过 600 行，并运行 `cargo clippy --workspace --all-targets -- -D warnings`；任一检查失败，提交会被拒绝。
 
 数据库基础设施改动需要真实环境验证时，运行 `make db-test`。该命令会启动专用 Docker 容器并写入测试数据；`make db-test-clean` 会删除这些测试容器、卷和凭据。
 

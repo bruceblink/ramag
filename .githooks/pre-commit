@@ -8,3 +8,14 @@ printf '%s\n' 'pre-commit: checking Rust source file sizes'
 # Windows checkouts may expose the tracked script as CRLF; normalize it in the
 # pipe so the same hook works from Git Bash, WSL, and Linux.
 sed 's/\r$//' "$repo_root/scripts/check-source-size.sh" | bash
+
+printf '%s\n' 'pre-commit: running workspace Clippy'
+if command -v cargo >/dev/null 2>&1; then
+    cargo clippy --workspace --all-targets -- -D warnings
+elif command -v cargo.exe >/dev/null 2>&1; then
+    # WSL and some Git Bash installations expose the Windows toolchain as cargo.exe.
+    cargo.exe clippy --workspace --all-targets -- -D warnings
+else
+    printf '%s\n' 'pre-commit: cargo is required for the Clippy check' >&2
+    exit 1
+fi
