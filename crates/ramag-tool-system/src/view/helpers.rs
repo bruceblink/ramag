@@ -135,7 +135,9 @@ pub(super) fn core_grid_dimensions(core_count: usize) -> (usize, usize) {
     if core_count == 0 {
         return (1, 1);
     }
-    let columns = (core_count as f64).sqrt().ceil() as usize;
+    // 超过 32 个核心时增加列数，优先压低行数；固定面板才能为每个图表保留可见高度。
+    let target_area = core_count.saturating_mul(if core_count > 32 { 2 } else { 1 });
+    let columns = (target_area as f64).sqrt().ceil() as usize;
     (columns, core_count.div_ceil(columns))
 }
 
@@ -152,14 +154,20 @@ pub(super) fn render_core_grid(
     let compact = usages.len() > 32;
     let mut grid = v_flex()
         .debug_selector(|| "system-core-grid".to_owned())
-        .size_full()
+        .w_full()
+        .flex_1()
+        .min_w_0()
         .min_h_0()
-        .gap(px(6.0));
+        .gap(px(if compact { 2.0 } else { 6.0 }));
 
     for row_index in 0..rows {
         let first = row_index * columns;
         let last = (first + columns).min(usages.len());
-        let mut row = h_flex().w_full().flex_1().min_h_0().gap(px(6.0));
+        let mut row = h_flex()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .gap(px(if compact { 2.0 } else { 6.0 }));
         for index in first..last {
             row = row.child(render_core_tile(
                 index,
@@ -197,7 +205,7 @@ fn render_core_tile(
         Some(format_percent(usage as f64))
     };
 
-    let mut header = h_flex().w_full().flex_none().min_w_0().gap(px(3.0)).child(
+    let header = h_flex().w_full().flex_none().min_w_0().gap(px(3.0)).child(
         div()
             .min_w_0()
             .flex_1()
@@ -206,43 +214,73 @@ fn render_core_tile(
             .text_xs()
             .child(label),
     );
-    if let Some(detail) = detail {
-        header = header.child(
-            div()
-                .flex_none()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .whitespace_nowrap()
-                .child(detail),
-        );
-    }
-
-    v_flex()
+    let mut tile = v_flex()
         .debug_selector(|| format!("system-core-tile-{}", index + 1))
         .flex_1()
         .h_full()
         .min_w_0()
         .min_h_0()
-        .gap(px(3.0))
-        .p(px(5.0))
+        .gap(px(if compact { 0.0 } else { 3.0 }))
+        .p(px(if compact { 2.0 } else { 5.0 }))
         .overflow_hidden()
         .bg(theme.background)
         .border_1()
         .border_color(theme.border)
-        .rounded(px(3.0))
-        .child(header)
-        .child(render_core_history(history, usage, theme))
+        .rounded(px(3.0));
+
+    if compact {
+        // 核心很多时把编号叠放在图表上方，避免标题行挤掉图表高度。
+        tile = tile.child(
+            v_flex()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(render_core_history(history, usage, true, theme))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(1.0))
+                        .left(px(1.0))
+                        .px(px(1.0))
+                        .text_size(px(9.0))
+                        .line_height(px(10.0))
+                        .text_color(theme.foreground)
+                        .bg(theme.background)
+                        .child((index + 1).to_string()),
+                ),
+        );
+    } else {
+        let header = if let Some(detail) = detail {
+            header.child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .whitespace_nowrap()
+                    .child(detail),
+            )
+        } else {
+            header
+        };
+        tile = tile
+            .child(header)
+            .child(render_core_history(history, usage, false, theme));
+    }
+
+    tile
 }
 
 fn render_core_history(
     history: &[[f64; 2]],
     usage: f32,
+    compact: bool,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
     let mut samples = history
         .iter()
         .rev()
-        .take(24)
+        .take(if compact { 8 } else { 24 })
         .map(|point| point[1] as f32)
         .collect::<Vec<_>>();
     if samples.is_empty() {
@@ -465,10 +503,31 @@ pub(super) fn format_bytes(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use gpui::{
+        AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, div, px, size,
+    };
+    use gpui_component::{ActiveTheme as _, Root, v_flex};
+
     use super::{
         core_grid_dimensions, format_bytes, format_percent, format_rate_pair, history_max,
-        ratio_percent,
+        ratio_percent, render_core_grid,
     };
+
+    struct CoreGridTestHost;
+
+    impl Render for CoreGridTestHost {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let usages = (0..128)
+                .map(|index| (index % 100) as f32)
+                .collect::<Vec<_>>();
+            let histories = vec![Vec::new(); usages.len()];
+            v_flex()
+                .size_full()
+                .child(div().h(px(20.0)).flex_none())
+                .child(render_core_grid(&usages, &histories, cx.theme()))
+        }
+    }
 
     #[test]
     fn formatters_keep_units_and_bounds() {
@@ -492,9 +551,32 @@ mod tests {
         assert_eq!(core_grid_dimensions(0), (1, 1));
         assert_eq!(core_grid_dimensions(1), (1, 1));
         assert_eq!(core_grid_dimensions(12), (4, 3));
+        assert_eq!(core_grid_dimensions(33), (9, 4));
 
         let (columns, rows) = core_grid_dimensions(128);
-        assert_eq!((columns, rows), (12, 11));
+        assert_eq!((columns, rows), (16, 8));
         assert!(columns * rows >= 128);
+    }
+
+    #[gpui::test]
+    fn core_grid_last_tile_is_not_clipped_by_the_fixed_window(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let host = cx.new(|_| CoreGridTestHost);
+            Root::new(host, window, cx)
+        });
+        cx.simulate_resize(size(px(640.0), px(260.0)));
+        cx.run_until_parked();
+
+        let grid = cx
+            .debug_bounds("system-core-grid")
+            .expect("core grid should be rendered");
+        let last_tile = cx
+            .debug_bounds("system-core-tile-128")
+            .expect("last core tile should be rendered");
+        assert!(last_tile.size.width > px(0.0));
+        assert!(last_tile.size.height > px(0.0));
+        assert!(last_tile.origin.x + last_tile.size.width <= grid.origin.x + grid.size.width);
+        assert!(last_tile.origin.y + last_tile.size.height <= grid.origin.y + grid.size.height);
     }
 }
