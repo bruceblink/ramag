@@ -35,13 +35,11 @@ pub(super) fn id_converter_kind_label(kind: IdConverterKind) -> &'static str {
 }
 
 impl SettingsView {
-    /// 切换数据库结果表水平滚动条，并立即更新全局状态后异步持久化。
-    pub(super) fn toggle_database_result_horizontal_scrollbar(&mut self, cx: &mut Context<Self>) {
-        self.show_database_result_horizontal_scrollbar =
-            !self.show_database_result_horizontal_scrollbar;
-        let settings = crate::DatabaseResultSettings {
-            show_horizontal_scrollbar: self.show_database_result_horizontal_scrollbar,
-        };
+    fn persist_database_result_settings(
+        &mut self,
+        settings: crate::DatabaseResultSettings,
+        cx: &mut Context<Self>,
+    ) {
         match settings.to_json() {
             Ok(json) => {
                 crate::set_database_result_settings(settings, cx);
@@ -57,12 +55,30 @@ impl SettingsView {
                     error = %error,
                     "serialize database result settings failed"
                 );
-                self.show_database_result_horizontal_scrollbar =
-                    crate::database_result_settings(cx).show_horizontal_scrollbar;
+                let previous = crate::database_result_settings(cx);
+                self.show_database_result_horizontal_scrollbar = previous.show_horizontal_scrollbar;
+                self.display_database_binary_16_as_uuid = previous.display_binary_16_as_uuid;
                 self.pending_notification = Some(Notification::error(error));
             }
         }
         cx.notify();
+    }
+
+    /// 切换数据库结果表水平滚动条，并立即更新全局状态后异步持久化。
+    pub(super) fn toggle_database_result_horizontal_scrollbar(&mut self, cx: &mut Context<Self>) {
+        self.show_database_result_horizontal_scrollbar =
+            !self.show_database_result_horizontal_scrollbar;
+        let mut settings = crate::database_result_settings(cx);
+        settings.show_horizontal_scrollbar = self.show_database_result_horizontal_scrollbar;
+        self.persist_database_result_settings(settings, cx);
+    }
+
+    /// 切换 16 字节二进制值的 UUID 显示方式，并立即更新结果视图与本地偏好。
+    pub(super) fn toggle_database_binary_16_uuid(&mut self, cx: &mut Context<Self>) {
+        self.display_database_binary_16_as_uuid = !self.display_database_binary_16_as_uuid;
+        let mut settings = crate::database_result_settings(cx);
+        settings.display_binary_16_as_uuid = self.display_database_binary_16_as_uuid;
+        self.persist_database_result_settings(settings, cx);
     }
 
     pub(super) fn toggle_redis_key_sink(&mut self, cx: &mut Context<Self>) {

@@ -22,6 +22,32 @@ use super::{QueryResultTarget, QueryTab, QueryTabEvent};
 use crate::views::result_panel::{ResultPagination, ResultState, TotalRows};
 
 impl QueryTab {
+    /// Prevents query-side actions from racing a pending write or replacing staged edits.
+    pub(super) fn guard_no_pending_result_edits(
+        &mut self,
+        action: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let result = self.result.read(cx);
+        if result.dml_busy() {
+            self.pending_notification = Some(
+                Notification::warning(format!("上一写操作尚未完成，请稍候再{action}"))
+                    .autohide(true),
+            );
+            cx.notify();
+            return false;
+        }
+        if result.pending_cell_edit_count() == 0 {
+            return true;
+        }
+        self.pending_notification = Some(
+            Notification::warning(format!("请先提交或撤销未提交单元格修改，再{action}"))
+                .autohide(true),
+        );
+        cx.notify();
+        false
+    }
+
     pub(super) fn current_sql(&self, cx: &gpui::App) -> gpui::SharedString {
         self.editor.read(cx).value()
     }
@@ -51,6 +77,9 @@ impl QueryTab {
         if self.running || self.transaction_busy {
             return;
         }
+        if !self.guard_no_pending_result_edits("运行查询", cx) {
+            return;
+        }
         self.show_plan = false;
         self.set_result_active(self.result_active, cx);
         let Some(sql) = self.checked_current_sql("运行", cx) else {
@@ -71,6 +100,9 @@ impl QueryTab {
 
     pub(super) fn handle_run_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running || self.transaction_busy {
+            return;
+        }
+        if !self.guard_no_pending_result_edits("运行查询", cx) {
             return;
         }
         self.show_plan = false;
@@ -99,6 +131,9 @@ impl QueryTab {
 
     pub(crate) fn handle_explain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running || self.transaction_busy {
+            return;
+        }
+        if !self.guard_no_pending_result_edits("生成执行计划", cx) {
             return;
         }
         let Some(sql) = self.checked_current_sql("生成执行计划", cx) else {
@@ -262,6 +297,9 @@ impl QueryTab {
         if self.running || self.transaction_busy {
             return;
         }
+        if !self.guard_no_pending_result_edits("执行 SQL", cx) {
+            return;
+        }
         let pager = if is_run {
             paging_base_sql(&sql_to_run, conn.driver).map(|base_sql| Pager {
                 base_sql: base_sql.clone(),
@@ -322,6 +360,9 @@ impl QueryTab {
             self.pending_notification =
                 Some(Notification::info("SQL 格式化正在进行").autohide(true));
             cx.notify();
+            return;
+        }
+        if !self.guard_no_pending_result_edits("格式化 SQL", cx) {
             return;
         }
         let Some(sql) = self.checked_current_sql("格式化", cx) else {

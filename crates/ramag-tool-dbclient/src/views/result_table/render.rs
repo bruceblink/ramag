@@ -1,61 +1,8 @@
 use super::pagination::parse_result_page;
 use super::*;
-use ramag_ui::PointerDropdownMenu as _;
+use gpui_component::IconName;
 
 use crate::views::result_value::display_cell_value;
-
-/// Builds the page-size menu and keeps custom input bounded before emitting a query event.
-pub(in crate::views) fn render_page_size_selector(
-    current: usize,
-    panel: gpui::Entity<ResultPanel>,
-) -> impl IntoElement {
-    let menu_panel = panel.clone();
-    ramag_ui::clickable_button("result-page-size")
-        .ghost()
-        .small()
-        .label(format!("每页 {current} 行"))
-        .dropdown_caret(true)
-        .pointer_dropdown_menu(move |mut menu, _, _| {
-            for size in ramag_ui::RESULT_PAGE_SIZE_PRESETS {
-                let panel = menu_panel.clone();
-                menu = menu.item(
-                    ramag_ui::menu_item(format!("每页 {size} 行"))
-                        .checked(size == current)
-                        .on_click(move |_, _, app| {
-                            panel.update(app, |_, cx| {
-                                cx.emit(ResultPanelEvent::PageSizeChanged(size));
-                            });
-                        }),
-                );
-            }
-            let panel = menu_panel.clone();
-            menu.separator().item(
-                ramag_ui::menu_item("自定义…")
-                    .checked(!ramag_ui::RESULT_PAGE_SIZE_PRESETS.contains(&current))
-                    .on_click(move |_, window, app| {
-                        let panel = panel.clone();
-                        ramag_ui::open_bounded_prompt(
-                            "自定义每页行数",
-                            "输入 1-10000 的整数",
-                            &current.to_string(),
-                            "应用",
-                            16,
-                            move |value, _, app| match ramag_ui::parse_result_page_size(&value) {
-                                Ok(size) => panel.update(app, |_, cx| {
-                                    cx.emit(ResultPanelEvent::PageSizeChanged(size));
-                                }),
-                                Err(message) => panel.update(app, |panel, cx| {
-                                    panel.notify_page_size_error(message, cx);
-                                }),
-                            },
-                            window,
-                            app,
-                        );
-                    }),
-            )
-        })
-}
-
 /// 构建 SQL 结果表：复用虚拟行列表，并把宽列内容交给可拖拽的横向滚动条浏览。
 #[allow(clippy::too_many_arguments)]
 pub(in crate::views) fn render_table(
@@ -183,6 +130,8 @@ pub(in crate::views) fn render_table(
         .enumerate()
         .map(|(ci, &default_width)| panel.col_width_override(ci).unwrap_or(default_width))
         .collect();
+    let display_binary_16_as_uuid =
+        ramag_ui::database_result_settings(cx).display_binary_16_as_uuid;
     let last_row_number = row_number_offset.saturating_add(total_rows);
     let row_num_width =
         px((last_row_number.to_string().len() as f32 * 9.0 + 16.0).clamp(40.0, 70.0));
@@ -269,6 +218,7 @@ pub(in crate::views) fn render_table(
         display_indices,
         visible_col_indices: visible_col_indices.clone(),
         col_widths: col_widths.clone(),
+        display_binary_16_as_uuid,
         right_align,
         row_number_offset,
         row_num_width,
@@ -282,9 +232,10 @@ pub(in crate::views) fn render_table(
         accent,
     });
 
-    let has_pending = panel.pending_insert().is_some();
+    let has_pending_insert = panel.pending_insert().is_some();
+    let pending_edit_count = panel.pending_cell_edit_count();
     let dml_busy = panel.dml_busy();
-    let row_count = frame.display_indices.len() + if has_pending { 1 } else { 0 };
+    let row_count = frame.display_indices.len() + if has_pending_insert { 1 } else { 0 };
 
     let frame_for_rows = frame.clone();
     let body = uniform_list(
@@ -309,8 +260,8 @@ pub(in crate::views) fn render_table(
 
     let selected_info: Option<String> = panel.selected_cell().and_then(|(ri, ci)| {
         let col_name = columns.get(ci)?.clone();
-        let val = result.rows.get(ri)?.values.get(ci)?;
-        let preview = display_cell_value(Some(val), 40);
+        let val = panel.cell_value(ri, ci)?;
+        let preview = display_cell_value(Some(val), 40, display_binary_16_as_uuid);
         let hidden_note = if visible_row_indices.contains(&ri) {
             ""
         } else {
@@ -333,7 +284,10 @@ pub(in crate::views) fn render_table(
         }
     });
 
-    let mut status_parts = Vec::with_capacity(3);
+    let mut status_parts = Vec::with_capacity(4);
+    if pending_edit_count > 0 {
+        status_parts.push(format!("未提交 {pending_edit_count} 项修改"));
+    }
     if let Some((mode, output)) = panel.converted_row_search(cx) {
         status_parts.push(format!("{} → {}", mode.label(), output.display_preview(80)));
     }
@@ -422,13 +376,14 @@ pub(in crate::views) fn render_table(
             this.child(render_page_size_selector(
                 pagination.page_size,
                 panel_entity.clone(),
+                pending_edit_count > 0 || dml_busy,
             ))
             .child(
                 ramag_ui::clickable_button("result-page-previous")
                     .ghost()
                     .small()
                     .label("上页")
-                    .disabled(!has_previous_page)
+                    .disabled(!has_previous_page || pending_edit_count > 0 || dml_busy)
                     .on_click(move |_, _, app| {
                         panel_for_previous.update(app, |_, cx| {
                             cx.emit(ResultPanelEvent::PageRequested(previous_page));
@@ -450,6 +405,7 @@ pub(in crate::views) fn render_table(
                             .small()
                             .label("跳页")
                             .tooltip(format!("输入 1-{total_pages} 的页码"))
+                            .disabled(pending_edit_count > 0 || dml_busy)
                             .on_click(move |_, window, app| {
                                 let panel = panel_for_jump.clone();
                                 ramag_ui::open_bounded_prompt(
@@ -482,7 +438,7 @@ pub(in crate::views) fn render_table(
                     .small()
                     .label("下页")
                     .tooltip("无排序时顺序不固定")
-                    .disabled(!pagination.has_more)
+                    .disabled(!pagination.has_more || pending_edit_count > 0 || dml_busy)
                     .on_click(move |_, _, app| {
                         panel_for_next.update(app, |_, cx| {
                             cx.emit(ResultPanelEvent::PageRequested(next_page));
@@ -490,7 +446,7 @@ pub(in crate::views) fn render_table(
                     }),
             )
         })
-        .when(has_pending, |this| {
+        .when(has_pending_insert, |this| {
             let panel_for_cancel = panel_entity.clone();
             let panel_for_submit = panel_entity.clone();
             this.child(
@@ -511,6 +467,42 @@ pub(in crate::views) fn render_table(
                     .disabled(dml_busy)
                     .on_click(move |_, _, app| {
                         panel_for_submit.update(app, |r, cx| r.submit_insert(cx));
+                    }),
+            )
+        })
+        .when(pending_edit_count > 0, |this| {
+            let panel_for_cancel = panel_entity.clone();
+            let panel_for_submit = panel_entity.clone();
+            this.child(
+                ramag_ui::clickable_button("cell-edits-cancel-bar")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Undo2)
+                    .label("撤销修改")
+                    .tooltip("撤销当前结果中的未提交单元格修改")
+                    .disabled(dml_busy)
+                    .on_click(move |_, _, app| {
+                        panel_for_cancel.update(app, |panel, cx| {
+                            panel.clear_pending_cell_edits(cx);
+                        });
+                    }),
+            )
+            .child(
+                ramag_ui::clickable_button("cell-edits-submit-bar")
+                    .primary()
+                    .small()
+                    .icon(IconName::Check)
+                    .label(if dml_busy {
+                        "提交中…"
+                    } else {
+                        "提交修改"
+                    })
+                    .tooltip("按行提交当前结果中的未提交单元格修改")
+                    .disabled(dml_busy)
+                    .on_click(move |_, _, app| {
+                        panel_for_submit.update(app, |panel, cx| {
+                            panel.commit_pending_cell_edits_async(cx);
+                        });
                     }),
             )
         });

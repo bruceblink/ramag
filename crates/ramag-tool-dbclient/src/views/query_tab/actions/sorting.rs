@@ -18,6 +18,11 @@ impl QueryTab {
                 .update(cx, |result, cx| result.restore_sort(previous, cx));
             return;
         }
+        if !self.guard_no_pending_result_edits("重新排序结果", cx) {
+            self.result
+                .update(cx, |result, cx| result.restore_sort(previous, cx));
+            return;
+        }
         let Some(pager) = self.pager.as_ref().cloned() else {
             // Without server pagination, the existing local result sort remains usable offline.
             return;

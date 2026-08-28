@@ -7,6 +7,9 @@ impl ResultPanel {
         indices: Vec<usize>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if !self.guard_no_pending_cell_edits("删除", cx) {
+            return false;
+        }
         if !self.guard_batch_delete_count(indices.len(), cx) {
             return false;
         }
@@ -184,6 +187,9 @@ impl ResultPanel {
         cx: &mut Context<Self>,
     ) -> bool {
         if values.is_empty() {
+            return false;
+        }
+        if !self.guard_no_pending_cell_edits("新增", cx) {
             return false;
         }
         // 草稿期间的条件可能已变化。

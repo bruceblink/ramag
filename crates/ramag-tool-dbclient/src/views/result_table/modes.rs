@@ -64,11 +64,13 @@ pub(in crate::views) fn render_result_view(
 /// Builds the four local view buttons; clicking one changes only panel state.
 fn render_mode_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> AnyElement {
     let current = panel.view_mode();
+    let has_pending_edits = panel.pending_cell_edit_count() > 0;
     let panel_entity = cx.entity();
     let mut modes = h_flex().id("result-view-mode-segment").gap_1();
     for mode in ResultViewMode::ALL {
         let panel = panel_entity.clone();
         let selected = current == mode;
+        let blocked = has_pending_edits && mode != ResultViewMode::Table;
         let id = mode_id(mode);
         let mut button = ramag_ui::clickable_button(id)
             .debug_selector(move || id.into())
@@ -76,7 +78,12 @@ fn render_mode_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> An
             .icon(mode_icon(mode))
             .label(mode.label())
             .selected(selected)
-            .tooltip(mode.description());
+            .tooltip(if blocked {
+                "请先提交或撤销未提交单元格修改"
+            } else {
+                mode.description()
+            })
+            .disabled(blocked);
         button = if selected {
             button.primary()
         } else {
@@ -270,6 +277,7 @@ pub(super) struct AlternateFrame {
     visible_col_indices: Arc<Vec<usize>>,
     row_number_offset: usize,
     content_width: gpui::Pixels,
+    display_binary_16_as_uuid: bool,
     mono_font: gpui::SharedString,
     fg: gpui::Hsla,
     muted_fg: gpui::Hsla,
@@ -292,12 +300,15 @@ fn alternate_frame(
     let content_width = px(
         (view.visible_col_indices.len().saturating_mul(150) as f32 + 240.0).clamp(1_000.0, 8_000.0),
     );
+    let display_binary_16_as_uuid =
+        ramag_ui::database_result_settings(cx).display_binary_16_as_uuid;
     Rc::new(AlternateFrame {
         result: result.clone(),
         display_indices: view.display_indices.clone(),
         visible_col_indices: view.visible_col_indices.clone(),
         row_number_offset,
         content_width,
+        display_binary_16_as_uuid,
         mono_font: cx.theme().mono_font_family.clone(),
         fg: cx.theme().foreground,
         muted_fg: cx.theme().muted_foreground,
@@ -333,13 +344,15 @@ fn render_alternate_footer(
     if view.cols_filtered {
         status.push_str(&format!(" · 命中 {} 列", view.matched_col_count));
     }
+    let display_binary_16_as_uuid =
+        ramag_ui::database_result_settings(cx).display_binary_16_as_uuid;
     if let Some((row, column)) = panel.selected_cell()
         && let Some(name) = result.columns.get(column)
-        && let Some(value) = result.rows.get(row).and_then(|row| row.values.get(column))
+        && let Some(value) = panel.cell_value(row, column)
     {
         status.push_str(&format!(
             " · [{name}] = {}",
-            display_cell_value(Some(value), 40)
+            display_cell_value(Some(value), 40, display_binary_16_as_uuid)
         ));
     }
     let mut footer = h_flex()
@@ -382,6 +395,7 @@ fn render_alternate_footer(
             .child(super::render_page_size_selector(
                 pagination.page_size,
                 panel_entity.clone(),
+                panel.pending_cell_edit_count() > 0 || panel.dml_busy(),
             ))
             .child(
                 ramag_ui::clickable_button("result-alternate-page-previous")

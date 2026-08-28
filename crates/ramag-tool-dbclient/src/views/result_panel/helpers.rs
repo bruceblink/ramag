@@ -6,11 +6,34 @@ use ramag_domain::entities::{Column, ColumnKind, Index, MAX_SQL_QUERY_BYTES, Que
 
 pub(super) const MAX_BATCH_DELETE_ROWS: usize = 500;
 pub(super) const MAX_BATCH_DELETE_SQL_BYTES: usize = MAX_SQL_QUERY_BYTES;
+pub(super) const MAX_PENDING_CELL_EDITS: usize = 500;
+
+/// A staged cell keeps the value returned by the query so a rollback of the local
+/// edit can restore the exact original value instead of reconstructing it from text.
+pub(super) struct PendingCellEdit {
+    pub(super) original: Value,
+    pub(super) current: Value,
+}
 
 pub(super) fn reserve_batch_delete_sql_bytes(current: usize, added: usize) -> Option<usize> {
     current
         .checked_add(added)
         .filter(|total| *total <= MAX_BATCH_DELETE_SQL_BYTES)
+}
+
+/// Value deliberately has no derived equality because floating-point NaN needs an explicit rule.
+pub(super) fn values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(left), Value::Bool(right)) => left == right,
+        (Value::Int(left), Value::Int(right)) => left == right,
+        (Value::Float(left), Value::Float(right)) => left.to_bits() == right.to_bits(),
+        (Value::Text(left), Value::Text(right)) => left == right,
+        (Value::Bytes(left), Value::Bytes(right)) => left == right,
+        (Value::DateTime(left), Value::DateTime(right)) => left == right,
+        (Value::Json(left), Value::Json(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// 新增草稿行。表名在 INSERT 时由 `extract_first_table_ref` 从 SQL 反推，与 UPDATE/DELETE 一致
@@ -274,7 +297,7 @@ fn build_new_value_for_old(old: &Value, new_text: &str) -> Value {
     }
 }
 
-/// 公开版本：用于 ops::apply_cell_update_async 同步本地 cell
+/// 公开版本：用于 ops::stage_cell_update 同步本地 cell
 pub(super) fn build_new_value(old: &Value, new_text: &str) -> Value {
     build_new_value_for_old(old, new_text)
 }

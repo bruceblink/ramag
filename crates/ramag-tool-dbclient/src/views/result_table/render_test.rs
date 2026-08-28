@@ -59,6 +59,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
         sort_by: None,
         column_filter: String::new(),
         row_filter: super::RowFilter::Text(String::new()),
+        display_binary_16_as_uuid: true,
     };
     let (panel, cx) = cx.add_window_view(|window, cx| {
         let mut panel = ResultPanel::new(window, cx);
@@ -111,6 +112,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
         ramag_ui::DatabaseResultSettings {
             show_horizontal_scrollbar: false,
+            display_binary_16_as_uuid: true,
         },
     ));
     cx.run_until_parked();
@@ -122,6 +124,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
         ramag_ui::DatabaseResultSettings {
             show_horizontal_scrollbar: true,
+            display_binary_16_as_uuid: true,
         },
     ));
     cx.run_until_parked();
@@ -138,6 +141,7 @@ fn result_view_modes_keep_loaded_selection_and_render_each_surface(cx: &mut Test
     cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
         ramag_ui::DatabaseResultSettings {
             show_horizontal_scrollbar: true,
+            display_binary_16_as_uuid: true,
         },
     ));
     let result = Arc::new(QueryResult {
@@ -163,6 +167,7 @@ fn result_view_modes_keep_loaded_selection_and_render_each_surface(cx: &mut Test
         sort_by: None,
         column_filter: String::new(),
         row_filter: super::RowFilter::Text(String::new()),
+        display_binary_16_as_uuid: true,
     };
     let (panel, cx) = cx.add_window_view(|window, cx| {
         let mut panel = ResultPanel::new(window, cx);
@@ -221,6 +226,7 @@ fn result_view_modes_keep_loaded_selection_and_render_each_surface(cx: &mut Test
     cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
         ramag_ui::DatabaseResultSettings {
             show_horizontal_scrollbar: false,
+            display_binary_16_as_uuid: true,
         },
     ));
     cx.run_until_parked();
@@ -257,6 +263,7 @@ fn selected_cell_opens_bounded_value_viewer(cx: &mut TestAppContext) {
         sort_by: None,
         column_filter: String::new(),
         row_filter: super::RowFilter::Text(String::new()),
+        display_binary_16_as_uuid: true,
     };
     let mut panel_entity = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
@@ -351,6 +358,7 @@ fn inline_cell_edit_keeps_target_and_clears_on_cancel(cx: &mut TestAppContext) {
         sort_by: None,
         column_filter: String::new(),
         row_filter: super::RowFilter::Text(String::new()),
+        display_binary_16_as_uuid: true,
     };
     let mut panel_entity = None;
     let (_, cx) = cx.add_window_view(|window, cx| {

@@ -29,6 +29,7 @@ pub(crate) struct ResultValueDialog {
     row_index: usize,
     column_index: usize,
     driver: DriverKind,
+    value_override: Option<Value>,
     vertical_scroll: ScrollHandle,
     horizontal_scroll: ScrollHandle,
 }
@@ -39,22 +40,26 @@ impl ResultValueDialog {
         row_index: usize,
         column_index: usize,
         driver: DriverKind,
+        value_override: Option<Value>,
     ) -> Self {
         Self {
             result,
             row_index,
             column_index,
             driver,
+            value_override,
             vertical_scroll: ScrollHandle::new(),
             horizontal_scroll: ScrollHandle::new(),
         }
     }
 
     fn value(&self) -> Option<&Value> {
-        self.result
-            .rows
-            .get(self.row_index)
-            .and_then(|row| row.values.get(self.column_index))
+        self.value_override.as_ref().or_else(|| {
+            self.result
+                .rows
+                .get(self.row_index)
+                .and_then(|row| row.values.get(self.column_index))
+        })
     }
 
     /// 生成当前值的有界正文；长文本不会在打开查看器时复制整个结果集。
@@ -72,16 +77,19 @@ impl ResultValueDialog {
         let row_index = self.row_index;
         let column_index = self.column_index;
         let driver = self.driver;
+        let value_override = self.value_override.clone();
         ramag_ui::clickable_button(format!("result-value-copy-{:?}", format))
             .ghost()
             .small()
             .icon(IconName::Copy)
             .label(format.label())
             .on_click(move |_: &ClickEvent, window, app| {
-                let value = result
-                    .rows
-                    .get(row_index)
-                    .and_then(|row| row.values.get(column_index));
+                let value = value_override.as_ref().or_else(|| {
+                    result
+                        .rows
+                        .get(row_index)
+                        .and_then(|row| row.values.get(column_index))
+                });
                 let text = format_cell_value(value, format, driver);
                 ramag_ui::copy_text_with_notification(text, window, app);
             })
@@ -150,12 +158,13 @@ impl ResultValueDialog {
     }
 }
 
-/// Opens the value viewer for a stable row/column coordinate from the loaded result.
+/// Opens the value viewer for a stable row/column coordinate and an optional staged value.
 pub(crate) fn open(
     result: Arc<QueryResult>,
     row_index: usize,
     column_index: usize,
     driver: DriverKind,
+    value_override: Option<Value>,
     window: &mut Window,
     cx: &mut Context<ResultPanel>,
 ) {
@@ -163,7 +172,8 @@ pub(crate) fn open(
         return;
     };
     let title = format!("查看 行 {} · {}", row_index + 1, column_name);
-    let viewer = cx.new(|_| ResultValueDialog::new(result, row_index, column_index, driver));
+    let viewer =
+        cx.new(|_| ResultValueDialog::new(result, row_index, column_index, driver, value_override));
     let viewer_for_dialog = viewer.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         let viewer_for_content = viewer_for_dialog.clone();

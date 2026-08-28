@@ -60,7 +60,7 @@ fn render_text_row(
     let Some(&source_index) = frame.display_indices.get(index) else {
         return div().into_any_element();
     };
-    let Some(row) = frame.result.rows.get(source_index) else {
+    let Some(_) = frame.result.rows.get(source_index) else {
         return div().into_any_element();
     };
     let selected = panel
@@ -71,7 +71,11 @@ fn render_text_row(
         .iter()
         .filter_map(|&column_index| {
             let name = frame.result.columns.get(column_index)?;
-            let value = display_cell_value(row.values.get(column_index), 180);
+            let value = display_cell_value(
+                panel.cell_value(source_index, column_index),
+                180,
+                frame.display_binary_16_as_uuid,
+            );
             Some(format!("{name}={value}"))
         })
         .collect::<Vec<_>>();

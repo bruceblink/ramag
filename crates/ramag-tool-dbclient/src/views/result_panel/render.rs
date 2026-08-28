@@ -259,7 +259,7 @@ impl ResultPanel {
         let Some((ri, ci)) = self.selected_cell else {
             return;
         };
-        let ResultState::Ok(result) = &self.state else {
+        let Some(value) = self.cell_value(ri, ci) else {
             return;
         };
         let driver = self
@@ -267,17 +267,13 @@ impl ResultPanel {
             .as_ref()
             .map(|connection| connection.driver)
             .unwrap_or(ramag_domain::entities::DriverKind::Mysql);
-        let text = format_cell_value(
-            result.rows.get(ri).and_then(|row| row.values.get(ci)),
-            format,
-            driver,
-        );
+        let text = format_cell_value(Some(value), format, driver);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.pending_notification = Some(ramag_ui::copy_success_notification());
         cx.notify();
     }
 
-    /// 打开当前单元格的有界查看器；查看动作只保留结果 Arc 和源坐标。
+    /// 打开当前单元格的有界查看器；暂存值通过覆盖值传入，不读取旧结果快照。
     pub(crate) fn open_selected_cell_viewer(
         &mut self,
         window: &mut Window,
@@ -294,7 +290,19 @@ impl ResultPanel {
             .as_ref()
             .map(|connection| connection.driver)
             .unwrap_or(ramag_domain::entities::DriverKind::Mysql);
-        crate::views::result_value_dialog::open(result.clone(), ri, ci, driver, window, cx);
+        let value_override = self
+            .has_pending_cell_edit(ri, ci)
+            .then(|| self.cell_value(ri, ci).cloned())
+            .flatten();
+        crate::views::result_value_dialog::open(
+            result.clone(),
+            ri,
+            ci,
+            driver,
+            value_override,
+            window,
+            cx,
+        );
     }
 
     /// 复制选中列的列名

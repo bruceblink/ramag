@@ -93,7 +93,7 @@ fn render_tree_entry(
     entry: TreeEntry,
     cx: &mut Context<ResultPanel>,
 ) -> AnyElement {
-    let Some(row) = frame.result.rows.get(entry.row_index) else {
+    let Some(_) = frame.result.rows.get(entry.row_index) else {
         return div().into_any_element();
     };
     match entry.column_index {
@@ -105,9 +105,11 @@ fn render_tree_entry(
                 .iter()
                 .take(3)
                 .filter_map(|&column_index| {
-                    row.values
-                        .get(column_index)
-                        .map(|value| display_cell_value(Some(value), 48))
+                    panel
+                        .cell_value(entry.row_index, column_index)
+                        .map(|value| {
+                            display_cell_value(Some(value), 48, frame.display_binary_16_as_uuid)
+                        })
                 })
                 .collect::<Vec<_>>()
                 .join("  |  ");
@@ -179,9 +181,17 @@ fn render_tree_entry(
                 .get(column_index)
                 .filter(|value| !value.is_empty())
                 .cloned();
-            let value = display_cell_value(row.values.get(column_index), 400);
+            let value = display_cell_value(
+                panel.cell_value(entry.row_index, column_index),
+                400,
+                frame.display_binary_16_as_uuid,
+            );
+            let is_null = matches!(
+                panel.cell_value(entry.row_index, column_index),
+                Some(Value::Null)
+            );
             let row_index = entry.row_index;
-            let panel = cx.entity();
+            let panel_entity = cx.entity();
             h_flex()
                 .id(SharedString::from(format!(
                     "result-tree-cell-{row_index}-{column_index}"
@@ -197,7 +207,7 @@ fn render_tree_entry(
                 .border_color(frame.border)
                 .cursor_pointer()
                 .on_click(move |_: &ClickEvent, _, app| {
-                    panel.update(app, |panel, cx| {
+                    panel_entity.update(app, |panel, cx| {
                         panel.set_selected_cell(Some((row_index, column_index)));
                         cx.notify();
                     });
@@ -225,13 +235,7 @@ fn render_tree_entry(
                         .min_w_0()
                         .font_family(frame.mono_font.clone())
                         .text_xs()
-                        .text_color(
-                            if matches!(row.values.get(column_index), Some(Value::Null)) {
-                                frame.muted_fg
-                            } else {
-                                frame.fg
-                            },
-                        )
+                        .text_color(if is_null { frame.muted_fg } else { frame.fg })
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()

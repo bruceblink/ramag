@@ -16,6 +16,7 @@ pub(super) fn estimate_col_width(
     column_types: &[String],
     result: &QueryResult,
     row_indices: &[usize],
+    display_binary_16_as_uuid: bool,
 ) -> gpui::Pixels {
     const MIN_W: f32 = 100.0;
     const MAX_W: f32 = 380.0;
@@ -38,7 +39,9 @@ pub(super) fn estimate_col_width(
             continue;
         };
         if let Some(v) = row.values.get(ci) {
-            let chars = display_cell_value(Some(v), 60).chars().count();
+            let chars = display_cell_value(Some(v), 60, display_binary_16_as_uuid)
+                .chars()
+                .count();
             if chars > max_chars {
                 max_chars = chars;
             }

@@ -50,6 +50,7 @@ impl ResultPanel {
             }
         }
         self.state = state;
+        self.pending_cell_edits.clear();
         self.pagination = None;
         self.mark_result_changed();
         self.clear_cell_edit_state();
@@ -79,6 +80,7 @@ impl ResultPanel {
             *self.column_completion_source.write() = qr.columns.clone();
         }
         self.state = state;
+        self.pending_cell_edits.clear();
         self.mark_result_changed();
         self.clear_cell_edit_state();
         self.tree_expanded_rows.clear();
@@ -121,6 +123,7 @@ impl ResultPanel {
         self.state = ResultState::Released(
             "旧结果已按 LRU 释放，以保持全部标签结果不超过 512 MiB；查询文本仍保留".into(),
         );
+        self.pending_cell_edits.clear();
         self.clear_released_result_context();
         self.column_completion_source.write().clear();
         self.pagination = None;
@@ -144,6 +147,7 @@ impl ResultPanel {
         self.source_schema = None;
         self.comparison_baseline = None;
         self.pinned_target = None;
+        self.pending_cell_edits.clear();
         self.clear_cell_edit_state();
         self.row_identity = None;
     }
@@ -238,6 +242,19 @@ impl ResultPanel {
     }
 
     pub(crate) fn toggle_sort(&mut self, col_idx: usize, cx: &mut Context<Self>) {
+        if self.dml_busy {
+            self.pending_notification =
+                Some(Notification::warning("上一写操作尚未完成，请稍候再排序结果").autohide(true));
+            cx.notify();
+            return;
+        }
+        if !self.pending_cell_edits.is_empty() {
+            self.pending_notification = Some(
+                Notification::warning("请先提交或撤销未提交单元格修改，再排序结果").autohide(true),
+            );
+            cx.notify();
+            return;
+        }
         let previous = self.sort_by;
         let current = match previous {
             Some((ci, SortDir::Asc)) if ci == col_idx => Some((col_idx, SortDir::Desc)),
@@ -272,6 +289,14 @@ impl ResultPanel {
     /// Changes only the local result renderer and resets its scroll position.
     pub(crate) fn set_view_mode(&mut self, mode: ResultViewMode, cx: &mut Context<Self>) {
         if self.view_mode == mode {
+            return;
+        }
+        if mode != ResultViewMode::Table && !self.pending_cell_edits.is_empty() {
+            self.pending_notification = Some(
+                Notification::warning("请先提交或撤销未提交单元格修改，再切换结果视图")
+                    .autohide(true),
+            );
+            cx.notify();
             return;
         }
         self.view_mode = mode;

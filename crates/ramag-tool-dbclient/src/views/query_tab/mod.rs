@@ -213,7 +213,10 @@ impl QueryTab {
                 }
                 if this.pinned_target.is_some() && this.has_user_draft(cx) {
                     this.pinned_target = None;
-                    this.result.update(cx, |r, cx| r.clear_editable_target(cx));
+                    this.result.update(cx, |r, cx| {
+                        r.clear_pending_cell_edits(cx);
+                        r.clear_editable_target(cx);
+                    });
                 }
                 this.invalidate_query_context(cx);
                 this.schedule_column_prefetch(cx);
@@ -299,6 +302,9 @@ impl QueryTab {
         if visible && self.plan_result_is_empty(cx) {
             return;
         }
+        if visible && !self.guard_no_pending_result_edits("切换到执行计划", cx) {
+            return;
+        }
         if self.show_plan == visible {
             return;
         }
@@ -345,7 +351,9 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_sql(text, window, cx);
+        if !self.set_sql(text, window, cx) {
+            return;
+        }
         self.active_schema = schema.filter(|s| !s.is_empty());
         self.last_injected_sql = None;
     }
@@ -390,7 +398,9 @@ impl QueryTab {
             .filter(|s| !s.is_empty());
         self.connection = conn.clone();
         let svc = self.service.clone();
-        self.result.update(cx, |r, _| {
+        self.result.update(cx, |r, cx| {
+            r.clear_pending_cell_edits(cx);
+            r.clear_editable_target(cx);
             r.set_executor(Some(svc), conn);
         });
         let svc = self.service.clone();
@@ -419,6 +429,10 @@ impl QueryTab {
             self.active_schema = normalized;
             self.clear_pager(cx);
             self.invalidate_query_context(cx);
+            self.result.update(cx, |r, cx| {
+                r.clear_pending_cell_edits(cx);
+                r.clear_editable_target(cx);
+            });
             cx.notify();
         }
     }
@@ -428,8 +442,11 @@ impl QueryTab {
         sql: impl Into<gpui::SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let sql = sql.into();
+        if !self.guard_no_pending_result_edits("替换 SQL", cx) {
+            return false;
+        }
         self.clear_pager(cx);
         self.invalidate_query_context(cx);
         if sql.len() > MAX_SQL_QUERY_BYTES {
@@ -442,15 +459,20 @@ impl QueryTab {
                     cx,
                 );
             });
-            return;
+            return false;
         }
         self.editor
             .update(cx, |state, cx| state.set_value(sql, window, cx));
         self.pinned_target = None;
+        self.result.update(cx, |r, cx| {
+            r.clear_pending_cell_edits(cx);
+            r.clear_editable_target(cx);
+        });
         self.last_injected_sql = None;
         // set_value 不发 Change，需手动预取列结构。
         self.prefetch_columns_now(cx);
         cx.notify();
+        true
     }
 
     pub fn run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -469,6 +491,9 @@ impl QueryTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.guard_no_pending_result_edits("替换 SQL", cx) {
+            return;
+        }
         self.clear_pager(cx);
         self.invalidate_query_context(cx);
         self.editor.update(cx, |state, cx| {

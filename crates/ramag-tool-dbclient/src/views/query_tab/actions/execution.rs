@@ -78,6 +78,9 @@ impl QueryTab {
         if self.running || self.transaction_busy {
             return;
         }
+        if !self.guard_no_pending_result_edits("切换结果页", cx) {
+            return;
+        }
         let Some(conn) = self.connection.clone() else {
             self.clear_pager(cx);
             return;
@@ -118,6 +121,9 @@ impl QueryTab {
     /// Re-runs the current safe read-only query from page one with a bounded page size.
     pub(crate) fn handle_page_size(&mut self, requested_size: usize, cx: &mut Context<Self>) {
         if self.running {
+            return;
+        }
+        if !self.guard_no_pending_result_edits("切换每页行数", cx) {
             return;
         }
         let page_size = match ramag_ui::validate_result_page_size(requested_size) {
@@ -176,6 +182,9 @@ impl QueryTab {
     /// 把结果栏中的 WHERE 条件重新提交给数据库，结果表只展示数据库返回的新结果。
     pub(crate) fn handle_row_filter_apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running || self.transaction_busy {
+            return;
+        }
+        if !self.guard_no_pending_result_edits("重新筛选结果", cx) {
             return;
         }
         let Some(conn) = self.connection.clone() else {

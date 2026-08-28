@@ -4,10 +4,24 @@ use gpui::Context;
 use gpui_component::notification::Notification;
 
 use super::{QueryTab, TransactionSavepoint, TransactionSession};
+use crate::views::result_panel::ResultState;
 
 pub(super) const MAX_TRANSACTION_SAVEPOINTS: usize = 32;
 
 impl QueryTab {
+    /// A rollback can invalidate local row values; force the next read to come from the database.
+    fn mark_result_stale_after_transaction_change(&mut self, cx: &mut Context<Self>) {
+        self.clear_pager(cx);
+        self.result.update(cx, |result, cx| {
+            if matches!(result.state(), ResultState::Ok(_)) {
+                result.set_state(
+                    ResultState::Error("事务状态变化后当前结果已失效，请重新运行查询".to_string()),
+                    cx,
+                );
+            }
+        });
+    }
+
     /// Marks the active transaction dirty after a successful SQL mutation.
     pub(super) fn mark_transaction_dirty(&mut self, cx: &mut Context<Self>) {
         if let Some(transaction) = self.transaction.as_mut() {
@@ -59,6 +73,9 @@ impl QueryTab {
     /// Starts a driver-owned transaction and routes later row mutations to it.
     pub(super) fn begin_transaction(&mut self, cx: &mut Context<Self>) {
         if self.transaction.is_some() || self.transaction_busy || self.running {
+            return;
+        }
+        if !self.guard_no_pending_result_edits("开启事务", cx) {
             return;
         }
         let Some(connection) = self.connection.clone() else {
@@ -136,6 +153,9 @@ impl QueryTab {
         if self.transaction_busy || self.running {
             return;
         }
+        if !self.guard_no_pending_result_edits("创建保存点", cx) {
+            return;
+        }
         let Some(session) = self.transaction.clone() else {
             return;
         };
@@ -196,6 +216,9 @@ impl QueryTab {
 
     /// Rolls back to the most recent savepoint and keeps that savepoint available.
     pub(super) fn rollback_to_latest_savepoint(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_no_pending_result_edits("回滚到保存点", cx) {
+            return;
+        }
         let Some(savepoint) = self.transaction_savepoints().last().cloned() else {
             return;
         };
@@ -240,6 +263,7 @@ impl QueryTab {
                             current.savepoints.truncate(target_index + 1);
                             current.dirty = savepoint.dirty;
                         }
+                        this.mark_result_stale_after_transaction_change(cx);
                         this.pending_notification = Some(
                             Notification::success(format!("已回滚到保存点 {}", savepoint.name))
                                 .autohide(true),
@@ -260,6 +284,9 @@ impl QueryTab {
 
     /// Releases the most recent savepoint and any newer nested savepoints.
     pub(super) fn release_latest_savepoint(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_no_pending_result_edits("释放保存点", cx) {
+            return;
+        }
         let Some(savepoint) = self.transaction_savepoints().last().cloned() else {
             return;
         };
@@ -339,6 +366,16 @@ impl QueryTab {
         if self.transaction_busy || self.running {
             return;
         }
+        if !self.guard_no_pending_result_edits(
+            if commit {
+                "提交事务"
+            } else {
+                "回滚事务"
+            },
+            cx,
+        ) {
+            return;
+        }
         let Some(session) = self.transaction.clone() else {
             return;
         };
@@ -368,7 +405,11 @@ impl QueryTab {
                 }
                 this.transaction_busy = false;
                 this.transaction = None;
+                let result_stale = !commit || outcome.is_err();
                 this.sync_transaction_to_result(cx);
+                if result_stale {
+                    this.mark_result_stale_after_transaction_change(cx);
+                }
                 this.pending_notification = Some(match outcome {
                     Ok(()) if commit => {
                         this.transaction_error = None;

@@ -137,6 +137,7 @@ pub struct SettingsView {
     database_enabled_draft: bool,
     redis_sink_same_name_keys: bool,
     show_database_result_horizontal_scrollbar: bool,
+    display_database_binary_16_as_uuid: bool,
     database_converter_kind: IdConverterKind,
     database_custom_alphabet: Entity<InputState>,
     database_converter_program: Entity<InputState>,
@@ -173,8 +174,10 @@ impl SettingsView {
         let database = crate::database_search_settings(cx);
         let database_enabled_draft = database.id_conversion_enabled;
         let redis_sink_same_name_keys = crate::redis_tree_settings(cx).sink_same_name_keys;
+        let database_result_settings = crate::database_result_settings(cx);
         let show_database_result_horizontal_scrollbar =
-            crate::database_result_settings(cx).show_horizontal_scrollbar;
+            database_result_settings.show_horizontal_scrollbar;
+        let display_database_binary_16_as_uuid = database_result_settings.display_binary_16_as_uuid;
         let database_converter_kind = database.converter.kind;
         let custom_alphabet = database.converter.custom_alphabet.clone();
         let converter_program = database.converter.external_program.clone();
@@ -305,6 +308,7 @@ impl SettingsView {
             database_enabled_draft,
             redis_sink_same_name_keys,
             show_database_result_horizontal_scrollbar,
+            display_database_binary_16_as_uuid,
             database_converter_kind,
             database_custom_alphabet,
             database_converter_program,

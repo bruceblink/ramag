@@ -107,7 +107,7 @@ pub(super) fn render_data_row(
     cx: &mut Context<ResultPanel>,
 ) -> AnyElement {
     let source_idx = frame.display_indices[idx];
-    let Some(row) = frame.result.rows.get(source_idx) else {
+    let Some(_) = frame.result.rows.get(source_idx) else {
         return div().into_any_element();
     };
     let bg = if idx.is_multiple_of(2) {
@@ -122,8 +122,8 @@ pub(super) fn render_data_row(
         .visible_col_indices
         .iter()
         .map(|&ci| {
-            let value = row.values.get(ci);
-            let display = display_cell_value(value, 60);
+            let value = panel.cell_value(source_idx, ci);
+            let display = display_cell_value(value, 60, frame.display_binary_16_as_uuid);
             let is_null = value.is_none_or(|value| matches!(value, Value::Null));
             // 选择状态使用源行下标，不能使用排序后的可见下标。
             let is_selected = selected == Some((source_idx, ci));
@@ -136,6 +136,7 @@ pub(super) fn render_data_row(
             let border = frame.border;
             let accent = frame.accent;
             let is_editing = panel.editing_cell == Some((source_idx, ci));
+            let is_pending = panel.has_pending_cell_edit(source_idx, ci);
             let inline_input = is_editing.then(|| panel.cell_edit_input.clone()).flatten();
             let cell_content: AnyElement = match inline_input {
                 Some(state) => div()
@@ -174,6 +175,9 @@ pub(super) fn render_data_row(
                 .overflow_hidden()
                 .cursor_pointer()
                 .when(is_selected, |this| this.bg(accent.opacity(0.22)))
+                .when(is_pending && !is_selected, |this| {
+                    this.bg(accent.opacity(0.10))
+                })
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                     this.set_selected_cell(Some((row_idx, ci)));
                     if this.editing_cell == Some((row_idx, ci)) {

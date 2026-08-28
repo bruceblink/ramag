@@ -1,4 +1,4 @@
-//! 单元格编辑：双击触发，多行 InputState 编辑后异步 UPDATE。
+//! 单元格编辑：双击触发，输入先暂存，随后由结果面板统一批量提交 UPDATE。
 //! 调用方须在已持 ResultPanel mut ref 时传入预建好的数据，本函数不调 panel.read 避免二次借用 panic
 
 use gpui::{
@@ -76,7 +76,7 @@ pub(super) fn open(
                 move |_: &ClickEvent, window, app| {
                     let new_val = input.read(app).value().to_string();
                     let started = panel.update(app, |this, cx_inner| {
-                        let started = this.apply_cell_update_async(ri, ci, new_val, cx_inner);
+                        let started = this.stage_cell_update(ri, ci, new_val, cx_inner);
                         if started {
                             this.set_cell_edit_input(None);
                         }

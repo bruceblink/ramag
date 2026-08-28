@@ -24,15 +24,36 @@ impl CellCopyFormat {
     }
 }
 
-/// 为表格和其他结果视图提供一致的单元格预览，明确区分 NULL、空字符串和二进制。
-pub(crate) fn display_cell_value(value: Option<&Value>, max_chars: usize) -> String {
+/// 为表格和其他结果视图提供一致的单元格预览；16 字节二进制可按设置显示为 UUID 或原始 hex。
+pub(crate) fn display_cell_value(
+    value: Option<&Value>,
+    max_chars: usize,
+    display_binary_16_as_uuid: bool,
+) -> String {
     match value {
         None => "缺失".to_string(),
         Some(Value::Null) => "NULL".to_string(),
         Some(Value::Text(text)) if text.is_empty() => "\"\"".to_string(),
+        Some(value @ Value::Bytes(bytes)) if bytes.len() == 16 && display_binary_16_as_uuid => {
+            value.display_preview(max_chars)
+        }
+        Some(Value::Bytes(bytes)) if bytes.len() == 16 => hex_preview(bytes, max_chars),
         Some(Value::Bytes(bytes)) => format!("[二进制 · {} bytes]", bytes.len()),
         Some(value) => value.display_preview(max_chars),
     }
+}
+
+fn hex_preview(bytes: &[u8], max_chars: usize) -> String {
+    let mut hex = hex::encode(bytes);
+    if hex.len() <= max_chars {
+        return hex;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    hex.truncate(max_chars.saturating_sub(1));
+    hex.push('…');
+    hex
 }
 
 /// 返回结果面板上展示给用户的值状态。
@@ -126,14 +147,47 @@ mod tests {
 
     #[test]
     fn display_state_distinguishes_null_empty_and_binary() {
-        assert_eq!(display_cell_value(Some(&Value::Null), 20), "NULL");
+        assert_eq!(display_cell_value(Some(&Value::Null), 20, true), "NULL");
         assert_eq!(
-            display_cell_value(Some(&Value::Text(String::new())), 20),
+            display_cell_value(Some(&Value::Text(String::new())), 20, true),
             "\"\""
         );
         assert_eq!(
-            display_cell_value(Some(&Value::Bytes(vec![1, 2, 3])), 20),
+            display_cell_value(Some(&Value::Bytes(vec![1, 2, 3])), 20, true),
             "[二进制 · 3 bytes]"
+        );
+        assert_eq!(
+            display_cell_value(
+                Some(&Value::Bytes(vec![
+                    0x01, 0x9f, 0xeb, 0x23, 0xf4, 0xb0, 0x71, 0x73, 0x93, 0x7d, 0x07, 0x2d, 0x15,
+                    0x24, 0x8b, 0x70,
+                ])),
+                60,
+                true
+            ),
+            "019feb23-f4b0-7173-937d-072d15248b70"
+        );
+        assert_eq!(
+            display_cell_value(
+                Some(&Value::Bytes(vec![
+                    0x01, 0x9f, 0xeb, 0x23, 0xf4, 0xb0, 0x71, 0x73, 0x93, 0x7d, 0x07, 0x2d, 0x15,
+                    0x24, 0x8b, 0x70,
+                ])),
+                60,
+                false
+            ),
+            "019feb23f4b07173937d072d15248b70"
+        );
+        assert_eq!(
+            display_cell_value(
+                Some(&Value::Bytes(vec![
+                    0x01, 0x9f, 0xeb, 0x23, 0xf4, 0xb0, 0x71, 0x73, 0x93, 0x7d, 0x07, 0x2d, 0x15,
+                    0x24, 0x8b, 0x70,
+                ])),
+                9,
+                false
+            ),
+            "019feb23…"
         );
         assert_eq!(cell_status(None), "字段缺失");
         assert_eq!(cell_status(Some(&Value::Text(String::new()))), "空字符串");

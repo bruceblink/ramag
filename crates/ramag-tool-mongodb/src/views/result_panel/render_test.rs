@@ -87,6 +87,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
         ramag_ui::DatabaseResultSettings {
             show_horizontal_scrollbar: false,
+            display_binary_16_as_uuid: true,
         },
     ));
     cx.run_until_parked();
@@ -98,6 +99,7 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
         ramag_ui::DatabaseResultSettings {
             show_horizontal_scrollbar: true,
+            display_binary_16_as_uuid: true,
         },
     ));
     cx.run_until_parked();

@@ -414,7 +414,9 @@ impl QueryPanel {
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
                 t.cancel_if_running(window, cx);
-                t.set_sql(sql.clone(), window, cx);
+                if !t.set_sql(sql.clone(), window, cx) {
+                    return;
+                }
                 t.mark_injected(sql);
                 t.run(window, cx);
             });
@@ -443,7 +445,9 @@ impl QueryPanel {
             tab.update(cx, |t, cx| {
                 t.cancel_if_running(window, cx);
                 // set_sql 会清除 target，须先调用。
-                t.set_sql(sql.clone(), window, cx);
+                if !t.set_sql(sql.clone(), window, cx) {
+                    return;
+                }
                 t.mark_injected(sql);
                 t.set_pinned_target(target, cx);
                 // 表结构变化，清除列筛选。
@@ -499,7 +503,9 @@ impl QueryPanel {
         }
         if let Some(tab) = self.tabs.get(self.active) {
             tab.update(cx, |t, cx| {
-                t.set_sql(sql, window, cx);
+                if !t.set_sql(sql, window, cx) {
+                    return;
+                }
                 t.focus_editor(window, cx);
             });
         }

@@ -34,6 +34,7 @@ struct TableRowFrame {
     display_indices: Arc<Vec<usize>>,
     visible_col_indices: Arc<Vec<usize>>,
     col_widths: Vec<gpui::Pixels>,
+    display_binary_16_as_uuid: bool,
     right_align: Arc<Vec<bool>>,
     row_number_offset: usize,
     row_num_width: gpui::Pixels,
@@ -73,6 +74,7 @@ pub(crate) struct DisplayViewCacheKey {
     sort_by: Option<(usize, SortDir)>,
     column_filter: String,
     row_filter: RowFilter,
+    display_binary_16_as_uuid: bool,
 }
 
 /// SQL 结果表派生视图缓存。内容不持有 QueryResult，避免延长旧结果的生命周期。
@@ -92,6 +94,7 @@ impl DisplayViewCacheKey {
         self.result_identity == previous.result_identity
             && self.result_revision == previous.result_revision
             && self.sort_by == previous.sort_by
+            && self.display_binary_16_as_uuid == previous.display_binary_16_as_uuid
             && (self.column_filter != previous.column_filter
                 || self.row_filter != previous.row_filter)
     }
@@ -104,12 +107,15 @@ fn display_view_key(
 ) -> DisplayViewCacheKey {
     let column_filter = panel.column_filter_text(cx);
     let row_filter = panel.effective_row_filter(cx);
+    let display_binary_16_as_uuid =
+        ramag_ui::database_result_settings(cx).display_binary_16_as_uuid;
     DisplayViewCacheKey {
         result_identity: result as *const QueryResult as usize,
         result_revision: panel.result_revision,
         sort_by: panel.sort_by(),
         column_filter,
         row_filter,
+        display_binary_16_as_uuid,
     }
 }
 
@@ -187,6 +193,7 @@ pub(super) fn ensure_display_view(
                 worker_key.sort_by,
                 &worker_key.column_filter,
                 &worker_key.row_filter,
+                worker_key.display_binary_16_as_uuid,
                 &worker_cancelled,
             ))
         })
@@ -239,6 +246,7 @@ fn build_display_view(
         sort_by,
         column_filter,
         &row_filter,
+        true,
         &AtomicBool::new(false),
     )
     .expect("non-cancelled display view build should finish")
@@ -249,6 +257,7 @@ fn build_display_view_cancellable(
     sort_by: Option<(usize, SortDir)>,
     column_filter: &str,
     row_filter: &RowFilter,
+    display_binary_16_as_uuid: bool,
     cancelled: &AtomicBool,
 ) -> Option<DisplayView> {
     if cancelled.load(Ordering::Relaxed) {
@@ -341,6 +350,7 @@ fn build_display_view_cancellable(
             &result.column_types,
             result,
             &display_indices,
+            display_binary_16_as_uuid,
         );
         right_align[ci] = detect_numeric_column(ci, result, &display_indices);
     }
@@ -361,11 +371,13 @@ fn build_display_view_cancellable(
 
 mod cells;
 mod modes;
+mod page_size;
 mod pagination;
 mod render;
 
 pub(super) use modes::render_result_view;
-pub(super) use render::{render_page_size_selector, render_table};
+pub(super) use page_size::render_page_size_selector;
+pub(super) use render::render_table;
 mod helpers;
 #[cfg(test)]
 mod render_test;
@@ -417,9 +429,15 @@ mod tests {
     fn id_filter_matches_exact_integer_in_the_display_pipeline() {
         let result = sample_result();
         let filter = RowFilter::Integer(2);
-        let view =
-            build_display_view_cancellable(&result, None, "", &filter, &AtomicBool::new(false))
-                .unwrap();
+        let view = build_display_view_cancellable(
+            &result,
+            None,
+            "",
+            &filter,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
         assert_eq!(view.display_indices.as_slice(), &[0]);
         assert!(view.row_filtering);
@@ -435,6 +453,7 @@ mod tests {
                 Some((0, SortDir::Asc)),
                 "name",
                 &row_filter,
+                true,
                 &cancelled,
             )
             .is_none()
@@ -450,6 +469,7 @@ mod tests {
             sort_by: None,
             column_filter: String::new(),
             row_filter: RowFilter::Text(String::new()),
+            display_binary_16_as_uuid: true,
         };
         let cache = DisplayViewCache {
             key: key.clone(),
@@ -465,6 +485,10 @@ mod tests {
         let mut stale = key;
         stale.result_revision += 1;
         assert!(cache.get(&stale).is_none());
+
+        let mut display_changed = cache.key.clone();
+        display_changed.display_binary_16_as_uuid = false;
+        assert!(cache.get(&display_changed).is_none());
     }
 
     #[test]

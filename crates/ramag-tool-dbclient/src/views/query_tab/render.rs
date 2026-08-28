@@ -17,7 +17,7 @@ use ramag_domain::entities::MAX_SQL_QUERY_BYTES;
 use super::QueryTab;
 use super::comparison_toolbar::result_comparison_menu;
 use super::render_helpers::{
-    TransactionSavepointState, row_filter_prefix, row_search_input_suffix,
+    TransactionSavepointState, result_view_tabs, row_filter_prefix, row_search_input_suffix,
     transaction_savepoint_controls,
 };
 use super::sql_utils::format_elapsed;
@@ -78,13 +78,18 @@ impl Render for QueryTab {
                 ),
                 ResultState::Empty => (None, false),
             };
+        let pending_cell_edit_count = self.result.read(cx).pending_cell_edit_count();
         let panel_for_btn = result_entity.read(cx);
         let has_selected =
             !panel_for_btn.selected_rows().is_empty() || panel_for_btn.selected_cell().is_some();
         // 写入口共用单表、视图、定位键和只读校验。
         let insert_reason = panel_for_btn.insert_block_reason();
-        let modify_reason = panel_for_btn.modify_block_reason();
         let has_pending_insert = panel_for_btn.pending_insert().is_some();
+        let modify_reason = if pending_cell_edit_count > 0 {
+            Some("请先提交或撤销未提交单元格修改")
+        } else {
+            panel_for_btn.modify_block_reason()
+        };
         let dml_busy = panel_for_btn.dml_busy();
         let _ = panel_for_btn;
         let is_production = self.connection.as_ref().is_some_and(|c| c.production);
@@ -102,7 +107,12 @@ impl Render for QueryTab {
                         .icon(IconName::Check)
                         .label("提交")
                         .tooltip("提交当前事务")
-                        .disabled(self.transaction_busy || running || dml_busy)
+                        .disabled(
+                            self.transaction_busy
+                                || running
+                                || dml_busy
+                                || pending_cell_edit_count > 0,
+                        )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.finish_transaction(true, cx);
                         })),
@@ -114,7 +124,12 @@ impl Render for QueryTab {
                         .icon(IconName::Undo2)
                         .label("回滚")
                         .tooltip("回滚当前事务")
-                        .disabled(self.transaction_busy || running || dml_busy)
+                        .disabled(
+                            self.transaction_busy
+                                || running
+                                || dml_busy
+                                || pending_cell_edit_count > 0,
+                        )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.finish_transaction(false, cx);
                         })),
@@ -125,6 +140,7 @@ impl Render for QueryTab {
                         transaction_busy: self.transaction_busy,
                         running,
                         dml_busy,
+                        pending_cell_edits: pending_cell_edit_count > 0,
                         savepoint_count: transaction_savepoints.len(),
                         latest_savepoint,
                         max_savepoints: MAX_TRANSACTION_SAVEPOINTS,
@@ -162,14 +178,20 @@ impl Render for QueryTab {
                         .small()
                         .icon(IconName::Play)
                         .label("开始事务")
-                        .tooltip("开启手动提交事务")
+                        .tooltip(if dml_busy {
+                            "上一写操作尚未完成，请稍候"
+                        } else {
+                            "开启手动提交事务"
+                        })
                         .disabled(
                             !has_connection
                                 || self.connection.as_ref().is_some_and(|connection| {
                                     !connection.driver.supports_transactions()
                                 })
                                 || self.transaction_busy
-                                || running,
+                                || running
+                                || dml_busy
+                                || pending_cell_edit_count > 0,
                         )
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.begin_transaction(cx);
@@ -186,56 +208,6 @@ impl Render for QueryTab {
                 })
                 .into_any_element()
         };
-
-        let result_view_tabs = h_flex()
-            .id("sql-result-view-tabs")
-            .debug_selector(|| "sql-result-view-tabs".into())
-            .w_full()
-            .flex_none()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py(px(3.0))
-            .border_b_1()
-            .border_color(border)
-            .bg(secondary_bg)
-            .child(
-                ramag_ui::clickable_button("sql-data-result-tab")
-                    .ghost()
-                    .small()
-                    .label("数据结果")
-                    .when(!plan_visible, |button| button.primary())
-                    .on_click({
-                        let query_tab_entity = query_tab_entity.clone();
-                        move |_, _, app| {
-                            query_tab_entity.update(app, |tab, cx| {
-                                tab.set_plan_visible(false, cx);
-                            });
-                        }
-                    }),
-            )
-            .child(
-                ramag_ui::clickable_button("sql-plan-result-tab")
-                    .ghost()
-                    .small()
-                    .label("执行计划")
-                    .tooltip(if plan_available {
-                        "查看最近一次执行计划"
-                    } else {
-                        "先点击工具栏中的执行计划"
-                    })
-                    .disabled(!plan_available)
-                    .when(plan_visible, |button| button.primary())
-                    .on_click({
-                        let query_tab_entity = query_tab_entity.clone();
-                        move |_, _, app| {
-                            query_tab_entity.update(app, |tab, cx| {
-                                tab.set_plan_visible(true, cx);
-                            });
-                        }
-                    }),
-            )
-            .child(div().flex_1());
 
         v_flex()
             .size_full()
@@ -412,13 +384,17 @@ impl Render for QueryTab {
                     .child({
                         let can_insert = !plan_visible
                             && insert_reason.is_none()
-                            && !has_pending_insert;
-                        let insert_tip: gpui::SharedString =
-                            match (insert_reason, has_pending_insert) {
-                                (Some(reason), _) => reason.into(),
-                                (None, true) => "请先处理草稿".into(),
-                                (None, false) => "新增行".into(),
-                            };
+                            && !has_pending_insert
+                            && pending_cell_edit_count == 0;
+                        let insert_tip: gpui::SharedString = if let Some(reason) = insert_reason {
+                            reason.into()
+                        } else if has_pending_insert {
+                            "请先处理草稿".into()
+                        } else if pending_cell_edit_count > 0 {
+                            "请先提交或撤销未提交单元格修改".into()
+                        } else {
+                            "新增行".into()
+                        };
                         ramag_ui::clickable_button("toolbar-insert")
                             .ghost()
                             .small()
@@ -507,12 +483,18 @@ impl Render for QueryTab {
                             .ghost()
                             .small()
                             .icon(ramag_ui::icons::download())
-                            .tooltip(if self.pinned_target.is_some() {
+                            .tooltip(if pending_cell_edit_count > 0 {
+                                "请先提交或撤销未提交单元格修改"
+                            } else if self.pinned_target.is_some() {
                                 "导入数据"
                             } else {
                                 "请先打开表"
                             })
-                            .disabled(plan_visible || self.pinned_target.is_none())
+                            .disabled(
+                                plan_visible
+                                    || self.pinned_target.is_none()
+                                    || pending_cell_edit_count > 0,
+                            )
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.open_table_import_dialog(window, cx);
                             })),
@@ -546,15 +528,32 @@ impl Render for QueryTab {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .tooltip("运行")
-                    .disabled(!has_connection || self.transaction_busy)
+                            .tooltip(if pending_cell_edit_count > 0 {
+                                "请先提交或撤销未提交单元格修改"
+                            } else if dml_busy {
+                                "上一写操作尚未完成，请稍候"
+                            } else {
+                                "运行"
+                            })
+                        .disabled(
+                            !has_connection
+                                || self.transaction_busy
+                                || dml_busy
+                                || pending_cell_edit_count > 0,
+                        )
                                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                     this.handle_run(window, cx);
                                 })),
                         )
                     }),
             )
-            .child(result_view_tabs)
+            .child(result_view_tabs(
+                query_tab_entity,
+                plan_visible,
+                plan_available,
+                border,
+                secondary_bg,
+            ))
             .child(
                 div()
                     .flex_1()

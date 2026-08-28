@@ -169,7 +169,7 @@ fn render_transpose_field(
     let Some(&column_index) = frame.visible_col_indices.get(visible_position) else {
         return div().into_any_element();
     };
-    let Some(row) = frame.result.rows.get(row_index) else {
+    let Some(_) = frame.result.rows.get(row_index) else {
         return div().into_any_element();
     };
     let name = frame
@@ -184,7 +184,11 @@ fn render_transpose_field(
         .get(column_index)
         .filter(|value| !value.is_empty())
         .cloned();
-    let value = display_cell_value(row.values.get(column_index), 400);
+    let value = display_cell_value(
+        panel.cell_value(row_index, column_index),
+        400,
+        frame.display_binary_16_as_uuid,
+    );
     let selected = panel.selected_cell() == Some((row_index, column_index));
     let panel_entity = cx.entity();
     h_flex()
@@ -241,7 +245,7 @@ fn render_transpose_field(
                 .font_family(frame.mono_font.clone())
                 .text_xs()
                 .text_color(
-                    if matches!(row.values.get(column_index), Some(Value::Null)) {
+                    if matches!(panel.cell_value(row_index, column_index), Some(Value::Null)) {
                         frame.muted_fg
                     } else {
                         frame.fg

@@ -309,6 +309,27 @@ fn build_new_value_null_with_text() {
 }
 
 #[test]
+fn build_new_value_reuses_original_type_for_repeated_editing() {
+    let original = Value::Null;
+    let first = build_new_value_for_old(&original, "hello");
+    let reverted = build_new_value_for_old(&original, "");
+
+    assert!(matches!(first, Value::Text(value) if value == "hello"));
+    assert!(matches!(reverted, Value::Null));
+}
+
+#[test]
+fn values_equal_keeps_types_and_float_bits_explicit() {
+    assert!(values_equal(&Value::Int(1), &Value::Int(1)));
+    assert!(!values_equal(&Value::Int(1), &Value::Text("1".into())));
+    assert!(values_equal(
+        &Value::Float(f64::NAN),
+        &Value::Float(f64::NAN)
+    ));
+    assert!(!values_equal(&Value::Float(0.0), &Value::Float(-0.0)));
+}
+
+#[test]
 fn batch_delete_notice_reports_misses_and_stale_results() {
     let notice = batch_delete_notice(2, 2, 1, None, "主键", false);
 

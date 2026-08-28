@@ -1,5 +1,7 @@
 //! 结果集行内写操作。
 
+#[path = "cell_updates.rs"]
+mod cell_updates;
 mod delete;
 use std::sync::Arc;
 
@@ -7,17 +9,18 @@ use gpui::Context;
 use gpui_component::notification::Notification;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
-    ConnectionConfig, MAX_SQL_QUERY_BYTES, Query, QueryResult, TransactionId, Value,
+    ConnectionConfig, MAX_SQL_QUERY_BYTES, Query, QueryResult, Row, TransactionId, Value,
 };
 use tracing::error;
 
 use super::ResultPanel;
 use super::ResultState;
 use super::helpers::{
-    IdentityWhereError, MAX_BATCH_DELETE_ROWS, MAX_BATCH_DELETE_SQL_BYTES, RowIdentity,
-    batch_delete_notice, build_identity_where, build_new_value, dml_row_limit,
-    reserve_batch_delete_sql_bytes,
+    IdentityWhereError, MAX_BATCH_DELETE_ROWS, MAX_BATCH_DELETE_SQL_BYTES, MAX_PENDING_CELL_EDITS,
+    PendingCellEdit, RowIdentity, batch_delete_notice, build_identity_where, build_new_value,
+    dml_row_limit, reserve_batch_delete_sql_bytes, values_equal,
 };
+use cell_updates::{build_update_sql, cell_update_sql_error_message};
 
 fn identity_where_error_message(error: IdentityWhereError) -> &'static str {
     match error {
@@ -206,6 +209,9 @@ impl ResultPanel {
     }
 
     pub(crate) fn execute_delete_row_async(&mut self, ri: usize, cx: &mut Context<Self>) -> bool {
+        if !self.guard_no_pending_cell_edits("删除", cx) {
+            return false;
+        }
         let Some(identity) = self.guard_modify("删除", cx) else {
             return false;
         };
@@ -338,7 +344,8 @@ impl ResultPanel {
         true
     }
 
-    pub(crate) fn apply_cell_update_async(
+    /// Stages one cell locally after building the same safe UPDATE that batch submission will use.
+    pub(crate) fn stage_cell_update(
         &mut self,
         ri: usize,
         ci: usize,
@@ -348,7 +355,7 @@ impl ResultPanel {
         let Some(identity) = self.guard_modify("修改", cx) else {
             return false;
         };
-        let Some((svc, conn, transaction)) = self.dml_conn("修改", cx) else {
+        let Some((_, conn, _)) = self.dml_conn("修改", cx) else {
             return false;
         };
         let ResultState::Ok(result) = &self.state else {
@@ -360,9 +367,37 @@ impl ResultPanel {
         let Some(col_name) = result.columns.get(ci).cloned() else {
             return false;
         };
-        let Some(cell_val) = row.values.get(ci).cloned() else {
+        let Some(cell_val) = self.cell_value(ri, ci).cloned() else {
             return false;
         };
+        let driver = conn.driver;
+        let key = (ri, ci);
+        let original = self
+            .pending_cell_edits
+            .get(&key)
+            .map(|pending| pending.original.clone())
+            .unwrap_or_else(|| cell_val.clone());
+        let new_cell_val = build_new_value(&original, &new_text);
+        if values_equal(&cell_val, &new_cell_val) {
+            return true;
+        }
+        if values_equal(&original, &new_cell_val) {
+            self.pending_cell_edits.remove(&key);
+            cx.notify();
+            return true;
+        }
+        if !self.pending_cell_edits.contains_key(&key)
+            && self.pending_cell_edits.len() >= MAX_PENDING_CELL_EDITS
+        {
+            self.pending_notification = Some(
+                Notification::warning(format!(
+                    "单次最多保留 {MAX_PENDING_CELL_EDITS} 项未提交单元格修改，请先提交或撤销"
+                ))
+                .autohide(false),
+            );
+            cx.notify();
+            return false;
+        }
 
         let table_ref = match self.current_table_ref() {
             Some(t) => t,
@@ -374,139 +409,63 @@ impl ResultPanel {
                 return false;
             }
         };
-
-        let strategy = format!("按{}", identity.label);
-        let driver = conn.driver;
-        let where_clause = match build_identity_where(result, &row, &identity, driver) {
-            Ok(where_clause) => where_clause,
+        let identity_row = self.row_with_original_identity_values(result, ri, &row, &identity);
+        let sql = match build_update_sql(
+            result,
+            &identity_row,
+            &identity,
+            &table_ref,
+            &[(col_name.clone(), new_cell_val.clone())],
+            driver,
+        ) {
+            Ok(sql) => sql,
             Err(error) => {
                 self.pending_notification =
-                    Some(Notification::error(identity_where_error_message(error)).autohide(false));
+                    Some(Notification::error(cell_update_sql_error_message(error)).autohide(false));
                 cx.notify();
                 return false;
             }
         };
-        let new_cell_val = build_new_value(&cell_val, &new_text);
-        let limit_clause = dml_row_limit(driver);
-        let column = driver.quote_identifier(&col_name);
-        let fixed_sql_bytes = "UPDATE  SET  =  WHERE ;"
-            .len()
-            .saturating_add(table_ref.len())
-            .saturating_add(column.len())
-            .saturating_add(where_clause.len())
-            .saturating_add(limit_clause.len());
-        let remaining = MAX_SQL_QUERY_BYTES.saturating_sub(fixed_sql_bytes);
-        if new_cell_val
-            .bounded_sql_literal_len_for(driver, remaining)
-            .is_none()
-        {
-            self.pending_notification = Some(
-                Notification::error(format!(
-                    "UPDATE 生成的 SQL 超过 {} MiB 安全上限，请缩短单元格内容",
-                    MAX_SQL_QUERY_BYTES / 1024 / 1024
-                ))
-                .autohide(false),
-            );
-            cx.notify();
-            return false;
-        }
-        let new_literal = new_cell_val.to_sql_literal_for(driver);
-        let sql = format!(
-            "UPDATE {table_ref} SET {column} = {new_literal} WHERE {where_clause}{limit_clause};",
-        );
         let q = Query::new(sql);
         if !self.guard_generated_query(&q, cx) {
             return false;
         }
-        let commit_hint = auto_commit_hint(transaction.as_ref());
 
-        let result_revision = self.result_revision;
-        self.dml_busy = true;
+        self.pending_cell_edits.insert(
+            key,
+            PendingCellEdit {
+                original,
+                current: new_cell_val,
+            },
+        );
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let outcome = Self::execute_mutation(&svc, &conn, transaction.as_ref(), &q).await;
-            if let Err(error) = &outcome {
-                error!(
-                    operation = "sql_update",
-                    connection_id = %conn.id,
-                    driver = ?conn.driver,
-                    table = %table_ref,
-                    column = %col_name,
-                    error = %error,
-                    "apply cell update failed"
-                );
-            }
-            let _ = this.update(cx, |this, cx| {
-                this.dml_busy = false;
-                match outcome {
-                    Ok(qr) => {
-                        cx.emit(super::ResultPanelEvent::MutationCompleted);
-                        if qr.affected_rows == 0 {
-                            this.pending_notification = Some(
-                                Notification::warning("UPDATE 未匹配到记录（请检查主键）")
-                                    .autohide(true),
-                            );
-                        } else {
-                            let same_result = this.result_revision == result_revision;
-                            let mut result_changed = false;
-                            if same_result
-                                && let ResultState::Ok(r) = &mut this.state
-                            {
-                                let r = Arc::make_mut(r);
-                                if let Some(row) = r.rows.get_mut(ri)
-                                    && let Some(slot) = row.values.get_mut(ci)
-                                {
-                                    *slot = new_cell_val;
-                                    result_changed = true;
-                                }
-                            }
-                            if result_changed {
-                                this.mark_result_changed();
-                            }
-                            // 多行命中时本地结果可能失效。
-                            if qr.affected_rows > 1 {
-                                let stale_note = if same_result {
-                                    ""
-                                } else {
-                                    "；当前结果已变化"
-                                };
-                                this.pending_notification = Some(
-                                    Notification::warning(format!(
-                                        "注意：本次 UPDATE 影响了 {} 行（{strategy}），定位键可能已失效{commit_hint}{stale_note}，请重新查询核对",
-                                        qr.affected_rows,
-                                    ))
-                                    .autohide(false),
-                                );
-                            } else if !same_result {
-                                this.pending_notification = Some(
-                                    Notification::warning(format!(
-                                        "已更新 {} 行（{strategy}匹配）{commit_hint}；当前结果已变化，请重新查询核对",
-                                        qr.affected_rows,
-                                    ))
-                                    .autohide(false),
-                                );
-                            } else {
-                                this.pending_notification = Some(
-                                    Notification::success(format!(
-                                        "已更新 {} 行（{strategy}匹配）{commit_hint}",
-                                        qr.affected_rows,
-                                    ))
-                                    .autohide(true),
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let message = e.write_hint("更新失败");
-                        cx.emit(super::ResultPanelEvent::MutationFailed(message.clone()));
-                        this.pending_notification =
-                            Some(Notification::error(message).autohide(true));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
         true
+    }
+
+    fn row_with_original_identity_values(
+        &self,
+        result: &QueryResult,
+        ri: usize,
+        row: &Row,
+        identity: &RowIdentity,
+    ) -> Row {
+        let mut identity_row = row.clone();
+        for ((pending_ri, pending_ci), pending) in &self.pending_cell_edits {
+            if *pending_ri != ri {
+                continue;
+            }
+            let Some(column) = result.columns.get(*pending_ci) else {
+                continue;
+            };
+            if identity
+                .columns
+                .iter()
+                .any(|identity_column| identity_column.eq_ignore_ascii_case(column))
+                && let Some(slot) = identity_row.values.get_mut(*pending_ci)
+            {
+                *slot = pending.original.clone();
+            }
+        }
+        identity_row
     }
 }

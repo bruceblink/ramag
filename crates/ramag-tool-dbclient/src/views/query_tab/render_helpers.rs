@@ -1,4 +1,4 @@
-use gpui::{ClickEvent, Entity, IntoElement, ParentElement, Styled, div, prelude::*};
+use gpui::{ClickEvent, Entity, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
     Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
     input::InputState,
@@ -12,6 +12,7 @@ pub(super) struct TransactionSavepointState {
     pub(super) transaction_busy: bool,
     pub(super) running: bool,
     pub(super) dml_busy: bool,
+    pub(super) pending_cell_edits: bool,
     pub(super) savepoint_count: usize,
     pub(super) latest_savepoint: Option<String>,
     pub(super) max_savepoints: usize,
@@ -41,6 +42,7 @@ pub(super) fn transaction_savepoint_controls(
                     state.transaction_busy
                         || state.running
                         || state.dml_busy
+                        || state.pending_cell_edits
                         || state.savepoint_count >= state.max_savepoints,
                 )
                 .on_click(move |_: &ClickEvent, _, app| {
@@ -53,7 +55,13 @@ pub(super) fn transaction_savepoint_controls(
                 .small()
                 .label("回滚最近")
                 .tooltip("回滚到最近的保存点")
-                .disabled(state.transaction_busy || state.running || state.dml_busy || !has_latest)
+                .disabled(
+                    state.transaction_busy
+                        || state.running
+                        || state.dml_busy
+                        || state.pending_cell_edits
+                        || !has_latest,
+                )
                 .on_click(move |_: &ClickEvent, _, app| {
                     rollback_tab.update(app, |tab, cx| tab.rollback_to_latest_savepoint(cx));
                 }),
@@ -64,7 +72,13 @@ pub(super) fn transaction_savepoint_controls(
                 .small()
                 .label("释放最近")
                 .tooltip("释放最近的保存点")
-                .disabled(state.transaction_busy || state.running || state.dml_busy || !has_latest)
+                .disabled(
+                    state.transaction_busy
+                        || state.running
+                        || state.dml_busy
+                        || state.pending_cell_edits
+                        || !has_latest,
+                )
                 .on_click(move |_: &ClickEvent, _, app| {
                     release_tab.update(app, |tab, cx| tab.release_latest_savepoint(cx));
                 }),
@@ -78,6 +92,63 @@ pub(super) fn transaction_savepoint_controls(
                     .child(format!("最近 {name}")),
             )
         })
+}
+
+pub(super) fn result_view_tabs(
+    query_tab: Entity<QueryTab>,
+    plan_visible: bool,
+    plan_available: bool,
+    border: gpui::Hsla,
+    secondary_bg: gpui::Hsla,
+) -> impl IntoElement {
+    h_flex()
+        .id("sql-result-view-tabs")
+        .debug_selector(|| "sql-result-view-tabs".into())
+        .w_full()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py(px(3.0))
+        .border_b_1()
+        .border_color(border)
+        .bg(secondary_bg)
+        .child(
+            ramag_ui::clickable_button("sql-data-result-tab")
+                .ghost()
+                .small()
+                .label("数据结果")
+                .when(!plan_visible, |button| button.primary())
+                .on_click({
+                    let query_tab = query_tab.clone();
+                    move |_, _, app| {
+                        query_tab.update(app, |tab, cx| {
+                            tab.set_plan_visible(false, cx);
+                        });
+                    }
+                }),
+        )
+        .child(
+            ramag_ui::clickable_button("sql-plan-result-tab")
+                .ghost()
+                .small()
+                .label("执行计划")
+                .tooltip(if plan_available {
+                    "查看最近一次执行计划"
+                } else {
+                    "先点击工具栏中的执行计划"
+                })
+                .disabled(!plan_available)
+                .when(plan_visible, |button| button.primary())
+                .on_click({
+                    move |_, _, app| {
+                        query_tab.update(app, |tab, cx| {
+                            tab.set_plan_visible(true, cx);
+                        });
+                    }
+                }),
+        )
+        .child(div().flex_1())
 }
 
 pub(super) fn row_filter_prefix(

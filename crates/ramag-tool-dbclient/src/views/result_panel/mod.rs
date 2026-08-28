@@ -1,3 +1,4 @@
+mod cell_edit;
 mod comparison;
 mod export;
 mod helpers;
@@ -15,7 +16,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::notification::Notification;
-use helpers::{PendingInsert, extract_first_table_ref, parse_value_for_kind};
+use helpers::{PendingCellEdit, PendingInsert, extract_first_table_ref, parse_value_for_kind};
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
@@ -23,7 +24,7 @@ use ramag_domain::entities::{
 };
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease};
 pub(crate) use state::ResultViewMode;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -141,6 +142,8 @@ pub struct ResultPanel {
     pub(super) connection: Option<ConnectionConfig>,
     pub(super) schema_cache: Option<Arc<RwLock<SchemaCache>>>,
     pub(super) pending_insert: Option<PendingInsert>,
+    /// Locally edited cells that have not been sent to the database yet.
+    pending_cell_edits: BTreeMap<(usize, usize), PendingCellEdit>,
     pub(super) uniform_scroll: UniformListScrollHandle,
     pub(super) h_scroll: ScrollHandle,
     /// 结果表触控板手势的轴锁定状态。
@@ -232,6 +235,7 @@ impl ResultPanel {
             selection_revision: 0,
             visible_selection_cache: None,
             pending_insert: None,
+            pending_cell_edits: BTreeMap::new(),
             uniform_scroll: UniformListScrollHandle::new(),
             h_scroll: ScrollHandle::new(),
             result_scroll_gesture: AxisScrollGesture::default(),
@@ -266,6 +270,12 @@ impl ResultPanel {
         inputs: Vec<Entity<InputState>>,
         cx: &mut Context<Self>,
     ) {
+        if !self.pending_cell_edits.is_empty() {
+            self.pending_notification =
+                Some(Notification::warning("请先提交或撤销未提交单元格修改").autohide(true));
+            cx.notify();
+            return;
+        }
         self.pending_insert = Some(PendingInsert { columns, inputs });
         let pending_idx = if let ResultState::Ok(qr) = &self.state {
             qr.rows.len().min(MAX_ROWS_DISPLAY)
@@ -287,6 +297,9 @@ impl ResultPanel {
     }
 
     pub(super) fn submit_insert(&mut self, cx: &mut Context<Self>) {
+        if !self.guard_no_pending_cell_edits("新增", cx) {
+            return;
+        }
         let Some(pending) = self.pending_insert.as_ref() else {
             return;
         };
@@ -336,6 +349,9 @@ impl ResultPanel {
 
     /// 注入精确目标表，避免 SQL 解析误差。
     pub fn set_pinned_target(&mut self, target: Option<(Option<String>, String)>) {
+        if self.pinned_target != target {
+            self.discard_pending_cell_edits();
+        }
         self.pinned_target = target;
     }
 
@@ -358,6 +374,7 @@ impl ResultPanel {
 
     pub fn clear_editable_target(&mut self, cx: &mut Context<Self>) {
         if self.pinned_target.is_some() || self.row_identity.is_some() {
+            self.discard_pending_cell_edits();
             self.pinned_target = None;
             self.row_identity = None;
             cx.notify();
@@ -390,9 +407,63 @@ impl ResultPanel {
         self.dml_busy
     }
 
+    pub(super) fn pending_cell_edit_count(&self) -> usize {
+        self.pending_cell_edits.len()
+    }
+
+    pub(super) fn has_pending_cell_edit(&self, ri: usize, ci: usize) -> bool {
+        self.pending_cell_edits.contains_key(&(ri, ci))
+    }
+
+    /// Returns the value shown to users, including a local edit that is waiting for submission.
+    pub(in crate::views) fn cell_value(&self, ri: usize, ci: usize) -> Option<&Value> {
+        if let Some(pending) = self.pending_cell_edits.get(&(ri, ci)) {
+            return Some(&pending.current);
+        }
+        let ResultState::Ok(result) = &self.state else {
+            return None;
+        };
+        result.rows.get(ri).and_then(|row| row.values.get(ci))
+    }
+
+    pub(super) fn guard_no_pending_cell_edits(
+        &mut self,
+        action: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.pending_cell_edits.is_empty() {
+            return true;
+        }
+        self.pending_notification = Some(
+            Notification::warning(format!("请先提交或撤销未提交单元格修改，再{action}"))
+                .autohide(true),
+        );
+        cx.notify();
+        false
+    }
+
+    /// Drops staged edits; the loaded result remains the last confirmed database state.
+    pub(super) fn discard_pending_cell_edits(&mut self) -> usize {
+        let edits = std::mem::take(&mut self.pending_cell_edits);
+        edits.len()
+    }
+
+    pub(super) fn clear_pending_cell_edits(&mut self, cx: &mut Context<Self>) {
+        let count = self.discard_pending_cell_edits();
+        if count == 0 {
+            return;
+        }
+        self.pending_notification =
+            Some(Notification::info(format!("已撤销 {count} 项未提交单元格修改")).autohide(true));
+        cx.notify();
+    }
+
     pub(crate) fn modify_block_reason(&self) -> Option<&'static str> {
         if let Some(r) = self.insert_block_reason() {
             return Some(r);
+        }
+        if self.pending_insert.is_some() {
+            return Some("已有新增行草稿，请先提交或取消");
         }
         if self.row_identity.is_none() {
             return Some("该表无主键或全非空唯一索引，禁用行内修改 / 删除");
@@ -457,124 +528,6 @@ impl ResultPanel {
             return false;
         };
         cache.read().is_view(schema.as_deref(), &table)
-    }
-
-    /// 为可写单元格创建行内输入框；回车提交，失焦取消且不写库。
-    pub(super) fn begin_cell_edit(
-        &mut self,
-        ri: usize,
-        ci: usize,
-        initial_text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.clear_cell_edit_state();
-        let input =
-            cx.new(|cx_inner| InputState::new(window, cx_inner).default_value(initial_text));
-        let subscription = cx.subscribe_in(
-            &input,
-            window,
-            |this, _, event: &InputEvent, _window, cx| match event {
-                InputEvent::PressEnter { .. } => this.commit_cell_edit(cx),
-                InputEvent::Blur => this.cancel_inline_cell_edit(cx),
-                InputEvent::Change | InputEvent::Focus => {}
-            },
-        );
-        self.editing_cell = Some((ri, ci));
-        self.cell_edit_input = Some(input.clone());
-        self.cell_edit_subscription = Some(subscription);
-        input.update(cx, |state, cx| state.focus(window, cx));
-        cx.notify();
-    }
-
-    /// 取消行内编辑并释放输入框，避免结果刷新后继续持有旧编辑器。
-    pub(super) fn cancel_inline_cell_edit(&mut self, cx: &mut Context<Self>) {
-        if self.editing_cell.is_none() {
-            return;
-        }
-        self.clear_cell_edit_state();
-        cx.notify();
-    }
-
-    /// 读取输入框文本并复用现有 UPDATE 安全链；校验失败时保留输入框供修正。
-    fn commit_cell_edit(&mut self, cx: &mut Context<Self>) {
-        let Some((ri, ci)) = self.editing_cell else {
-            return;
-        };
-        let Some(input) = self.cell_edit_input.clone() else {
-            return;
-        };
-        let new_text = input.read(cx).value().to_string();
-        if self.apply_cell_update_async(ri, ci, new_text, cx) {
-            self.clear_cell_edit_state();
-            cx.notify();
-        }
-    }
-
-    fn clear_cell_edit_state(&mut self) {
-        self.cell_edit_subscription = None;
-        self.cell_edit_input = None;
-        self.editing_cell = None;
-    }
-
-    pub(super) fn set_cell_edit_input(&mut self, input: Option<Entity<InputState>>) {
-        match input {
-            Some(input) => self.cell_edit_input = Some(input),
-            None => self.clear_cell_edit_state(),
-        }
-    }
-
-    pub(super) fn cell_info(&self, ri: usize, ci: usize) -> Option<(String, String, bool)> {
-        let ResultState::Ok(result) = &self.state else {
-            return None;
-        };
-        let col_name = result.columns.get(ci)?.clone();
-        let val = result.rows.get(ri)?.values.get(ci)?;
-        let (display, truncated) = val.display_for_edit_bounded(MAX_SQL_QUERY_BYTES);
-        Some((col_name, display, truncated))
-    }
-
-    pub(super) fn cell_edit_block_reason(&self, ri: usize, ci: usize) -> Option<String> {
-        if let Some(reason) = self.modify_block_reason() {
-            return Some(reason.to_string());
-        }
-        if self.cell_is_binary(ri, ci) {
-            return Some(
-                "二进制内容显示为 hex 文本，直接保存会损坏原始字节，仅可查看 / 复制".to_string(),
-            );
-        }
-        None
-    }
-
-    pub(super) fn identity_label(&self) -> &'static str {
-        self.row_identity
-            .as_ref()
-            .map(|i| i.label)
-            .unwrap_or("主键")
-    }
-
-    fn preview_col_idx(&self, result: &QueryResult) -> usize {
-        self.row_identity
-            .as_ref()
-            .and_then(|ident| ident.columns.first())
-            .and_then(|key| {
-                result
-                    .columns
-                    .iter()
-                    .position(|c| c.eq_ignore_ascii_case(key))
-            })
-            .unwrap_or(0)
-    }
-
-    /// 二进制显示值无法无损回写，必须只读。
-    pub(super) fn cell_is_binary(&self, ri: usize, ci: usize) -> bool {
-        let ResultState::Ok(result) = &self.state else {
-            return false;
-        };
-        matches!(
-            result.rows.get(ri).and_then(|r| r.values.get(ci)),
-            Some(ramag_domain::entities::Value::Bytes(_))
-        )
     }
 }
 

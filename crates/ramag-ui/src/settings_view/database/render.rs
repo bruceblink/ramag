@@ -296,30 +296,67 @@ impl SettingsView {
             )
             .child(
                 super::super::pages::settings_card("结果显示", theme.border).child(
-                    h_flex()
+                    v_flex()
                         .w_full()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(16.0))
+                        .gap(px(12.0))
                         .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(px(2.0))
-                                .child(div().text_sm().child("显示水平滚动条"))
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(16.0))
                                 .child(
-                                    div().text_xs().text_color(muted).child(
-                                        "控制所有数据库结果表底部水平滚动条的显示，默认开启。",
-                                    ),
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap(px(2.0))
+                                        .child(div().text_sm().child("显示水平滚动条"))
+                                        .child(
+                                            div().text_xs().text_color(muted).child(
+                                                "控制所有数据库结果表底部水平滚动条的显示，默认开启。",
+                                            ),
+                                        ),
+                                )
+                                .child(
+                                    crate::clickable_switch(
+                                        "settings-db-result-horizontal-scrollbar",
+                                    )
+                                    .flex_none()
+                                    .checked(self.show_database_result_horizontal_scrollbar)
+                                    .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                        this.toggle_database_result_horizontal_scrollbar(cx);
+                                    })),
                                 ),
                         )
                         .child(
-                            crate::clickable_switch("settings-db-result-horizontal-scrollbar")
-                                .flex_none()
-                                .checked(self.show_database_result_horizontal_scrollbar)
-                                .on_click(cx.listener(|this, _: &bool, _, cx| {
-                                    this.toggle_database_result_horizontal_scrollbar(cx);
-                                })),
+                            h_flex()
+                                .w_full()
+                                .pt(px(12.0))
+                                .items_center()
+                                .justify_between()
+                                .gap(px(16.0))
+                                .border_t_1()
+                                .border_color(theme.border)
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap(px(2.0))
+                                        .child(div().text_sm().child("16 字节二进制显示为 UUID"))
+                                        .child(
+                                            div().text_xs().text_color(muted).child(
+                                                "将 BINARY(16) 等 16 字节值显示为 UUID；关闭后显示原始十六进制，默认开启。",
+                                            ),
+                                        ),
+                                )
+                                .child(
+                                    crate::clickable_switch("settings-db-binary-uuid-display")
+                                        .flex_none()
+                                        .checked(self.display_database_binary_16_as_uuid)
+                                        .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                            this.toggle_database_binary_16_uuid(cx);
+                                        })),
+                                ),
                         ),
                 ),
             )

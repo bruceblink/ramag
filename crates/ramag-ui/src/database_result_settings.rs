@@ -9,17 +9,25 @@ fn default_show_horizontal_scrollbar() -> bool {
     true
 }
 
+fn default_display_binary_16_as_uuid() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatabaseResultSettings {
     /// 显示数据库结果表底部的水平滚动条；关闭后仍可通过横向手势滚动结果。
     #[serde(default = "default_show_horizontal_scrollbar")]
     pub show_horizontal_scrollbar: bool,
+    /// 将 16 字节二进制值显示为 UUID；关闭后显示原始十六进制字符串。
+    #[serde(default = "default_display_binary_16_as_uuid")]
+    pub display_binary_16_as_uuid: bool,
 }
 
 impl Default for DatabaseResultSettings {
     fn default() -> Self {
         Self {
             show_horizontal_scrollbar: true,
+            display_binary_16_as_uuid: true,
         }
     }
 }
@@ -80,6 +88,15 @@ mod tests {
             DatabaseResultSettings::default()
         );
         assert!(DatabaseResultSettings::default().show_horizontal_scrollbar);
+        assert!(DatabaseResultSettings::default().display_binary_16_as_uuid);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_setting_defaults_to_uuid_display() -> Result<(), String> {
+        let settings = DatabaseResultSettings::parse(r#"{"show_horizontal_scrollbar":false}"#)?;
+        assert!(!settings.show_horizontal_scrollbar);
+        assert!(settings.display_binary_16_as_uuid);
         Ok(())
     }
 
@@ -87,6 +104,7 @@ mod tests {
     fn disabled_setting_round_trips() -> Result<(), String> {
         let settings = DatabaseResultSettings {
             show_horizontal_scrollbar: false,
+            display_binary_16_as_uuid: false,
         };
         assert_eq!(
             DatabaseResultSettings::parse(&settings.to_json()?)?,
