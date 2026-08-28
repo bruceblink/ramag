@@ -21,6 +21,19 @@ pub(super) fn table_context_menu(
         }),
     );
 
+    let (schema_for_properties, table_for_properties, entity_for_properties) =
+        (schema.clone(), table.clone(), entity.clone());
+    let menu = menu.item(ramag_ui::menu_item("属性").on_click(move |_, _, app| {
+        entity_for_properties.update(app, |this, cx| {
+            this.handle_show_table_properties(
+                schema_for_properties.clone(),
+                table_for_properties.clone(),
+                is_view,
+                cx,
+            )
+        });
+    }));
+
     let menu = if is_view {
         let (schema, table, entity) = (schema.clone(), table.clone(), entity.clone());
         menu.item(ramag_ui::menu_item("视图定义").on_click(move |_, _, app| {

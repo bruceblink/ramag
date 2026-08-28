@@ -112,6 +112,11 @@ pub enum TreeEvent {
     ShowSchemaDiagram {
         schema: String,
     },
+    ShowTableProperties {
+        schema: String,
+        table: String,
+        is_view: bool,
+    },
     ModifyTable {
         schema: String,
         table: String,

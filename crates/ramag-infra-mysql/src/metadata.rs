@@ -2,7 +2,7 @@
 //! 字符串列统一 `CONVERT(... USING utf8mb4)`，避开 sqlx 把某些环境的回包识为 VARBINARY 导致解码失败
 
 use ramag_domain::entities::{
-    Column, ForeignKey, ForeignKeyAction, GeneratedColumnStorage, Index, Schema, Table,
+    Column, ForeignKey, ForeignKeyAction, GeneratedColumnStorage, Index, Schema, Table, Trigger,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_infra_sql_shared::{
@@ -319,6 +319,49 @@ pub async fn list_foreign_keys(
     let foreign_keys = grouped.into_values().collect::<Vec<_>>();
     ensure_metadata_result_limit(&foreign_keys, "外键")?;
     Ok(foreign_keys)
+}
+
+/// 列出指定表的触发器定义，限制定义长度避免系统目录文本占用过多内存。
+pub async fn list_triggers(pool: &MySqlPool, schema: &str, table: &str) -> Result<Vec<Trigger>> {
+    debug!(
+        operation = "sql_metadata_list_triggers",
+        ?schema,
+        ?table,
+        "listing triggers"
+    );
+
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        r#"
+        SELECT
+            CONVERT(TRIGGER_NAME USING utf8mb4),
+            CONVERT(ACTION_TIMING USING utf8mb4),
+            CONVERT(EVENT_MANIPULATION USING utf8mb4),
+            LEFT(CONVERT(ACTION_STATEMENT USING utf8mb4), 4096)
+        FROM information_schema.TRIGGERS
+        WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?
+        ORDER BY ACTION_ORDER, TRIGGER_NAME
+        LIMIT ?
+        "#,
+    )
+    .bind(schema)
+    .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_mysql_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "触发器")?;
+
+    let triggers = rows
+        .into_iter()
+        .map(|(name, timing, event, definition)| Trigger {
+            name,
+            timing,
+            event,
+            definition,
+        })
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&triggers, "触发器")?;
+    Ok(triggers)
 }
 
 /// `SELECT VERSION()`，形如 "8.0.32"

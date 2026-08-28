@@ -18,6 +18,7 @@ use crate::sql_completion::{SchemaCache, is_system_schema};
 use crate::views::connection_list::ConnectionListPanel;
 use crate::views::query_panel::{QueryPanel, QueryPanelEvent};
 use crate::views::schema_diagram::SchemaDiagramPanel;
+use crate::views::table_properties::TablePropertiesDialog;
 use crate::views::table_tree::{TableTreePanel, TreeEvent};
 
 /// 元数据缓存刷新间隔，用于同步外部结构变更。
@@ -150,6 +151,13 @@ impl ConnectionSession {
                 }
                 TreeEvent::ShowSchemaDiagram { schema } => {
                     this.open_schema_diagram(schema.clone(), window, cx);
+                }
+                TreeEvent::ShowTableProperties {
+                    schema,
+                    table,
+                    is_view,
+                } => {
+                    this.open_table_properties(schema.clone(), table.clone(), *is_view, window, cx);
                 }
                 TreeEvent::ModifyTable { schema, table } => {
                     this.tree.update(cx, |tree, cx| {
@@ -309,6 +317,35 @@ impl ConnectionSession {
                 .title(format!("Schema Diagram · {schema}"))
                 .width(px(1240.0))
                 .margin_top(px(32.0))
+                .content(move |content, _, _| content.child(panel.clone()))
+        });
+    }
+
+    fn open_table_properties(
+        &mut self,
+        schema: String,
+        table: String,
+        is_view: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let service = self.tree.read(cx).service.clone();
+        let panel = cx.new(|cx| {
+            TablePropertiesDialog::new(
+                service,
+                self.config.clone(),
+                schema.clone(),
+                table.clone(),
+                is_view,
+                cx,
+            )
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            let panel = panel.clone();
+            dialog
+                .title(format!("表属性 · {schema}.{table}"))
+                .width(px(1160.0))
+                .margin_top(px(42.0))
                 .content(move |content, _, _| content.child(panel.clone()))
         });
     }

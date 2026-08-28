@@ -22,6 +22,7 @@ mod schema_diff;
 mod schema_diff_dialog;
 mod schema_migration;
 mod table_designer;
+mod table_properties;
 pub mod table_tree;
 pub mod tree_helpers;
 

@@ -261,6 +261,24 @@ macro_rules! impl_driver_for {
                 .await
             }
 
+            async fn list_triggers(
+                &self,
+                config: &::ramag_domain::entities::ConnectionConfig,
+                schema: &str,
+                table: &str,
+            ) -> ::ramag_domain::error::Result<
+                ::std::vec::Vec<::ramag_domain::entities::Trigger>,
+            > {
+                let this = <$ty as ::std::clone::Clone>::clone(self);
+                let config = config.clone();
+                let schema = schema.to_string();
+                let table = table.to_string();
+                $crate::run_in_tokio(async move {
+                    $crate::list_triggers_impl(&this, &config, &schema, &table).await
+                })
+                .await
+            }
+
             fn evict_pool(&self, id: &::ramag_domain::entities::ConnectionId) {
                 // PoolCache 内部 DashMap，同步操作，不走 tokio
                 <$ty as $crate::SqlBackend>::cache(self).evict(id);

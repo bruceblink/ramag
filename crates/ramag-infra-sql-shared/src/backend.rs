@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt as _;
 use ramag_domain::entities::{
     Column, ConnectionConfig, DriverKind, ForeignKey, Index, Query, QueryResult, Row, Schema,
-    Table, Value, Warning,
+    Table, Trigger, Value, Warning,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::CancelHandle;
@@ -140,6 +140,15 @@ where
         schema: &str,
         table: &str,
     ) -> Result<Vec<ForeignKey>>;
+
+    async fn list_triggers_impl(
+        &self,
+        _pool: &Pool<Self::Db>,
+        _schema: &str,
+        _table: &str,
+    ) -> Result<Vec<Trigger>> {
+        Err(DomainError::NotImplemented("list_triggers".into()))
+    }
 }
 
 async fn get_pool<B>(b: &B, config: &ConnectionConfig) -> Result<Pool<B::Db>>
@@ -301,6 +310,24 @@ where
     validate_metadata_identifier(table, "table")?;
     let pool = get_pool(b, config).await?;
     b.list_foreign_keys_impl(&pool, schema, table).await
+}
+
+pub async fn list_triggers_impl<B>(
+    b: &B,
+    config: &ConnectionConfig,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<Trigger>>
+where
+    B: SqlBackend,
+    for<'q> <B::Db as Database>::Arguments<'q>: IntoArguments<'q, B::Db>,
+    for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
+    for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
+{
+    validate_metadata_identifier(schema, "schema")?;
+    validate_metadata_identifier(table, "table")?;
+    let pool = get_pool(b, config).await?;
+    b.list_triggers_impl(&pool, schema, table).await
 }
 
 fn validate_metadata_identifier(value: &str, label: &str) -> Result<()> {

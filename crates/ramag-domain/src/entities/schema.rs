@@ -89,6 +89,15 @@ pub struct Index {
     pub columns: Vec<String>,
 }
 
+/// 表级触发器的只读元数据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trigger {
+    pub name: String,
+    pub timing: String,
+    pub event: String,
+    pub definition: String,
+}
+
 /// 外键在被引用行删除或更新时采用的数据库动作。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForeignKeyAction {

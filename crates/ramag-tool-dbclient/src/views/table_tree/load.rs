@@ -346,6 +346,20 @@ impl TableTreePanel {
         cx.emit(TreeEvent::ShowSchemaDiagram { schema });
     }
 
+    pub(super) fn handle_show_table_properties(
+        &mut self,
+        schema: String,
+        table: String,
+        is_view: bool,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(TreeEvent::ShowTableProperties {
+            schema,
+            table,
+            is_view,
+        });
+    }
+
     pub(super) fn toggle_table_columns(
         &mut self,
         schema: String,

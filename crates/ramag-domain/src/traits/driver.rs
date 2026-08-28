@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::entities::{
     Column, ConnectionConfig, ConnectionId, ForeignKey, Index, Query, QueryResult, Schema, Table,
-    TransactionId,
+    TransactionId, Trigger,
 };
 use crate::error::Result;
 
@@ -148,6 +148,18 @@ pub trait Driver: Send + Sync {
         schema: &str,
         table: &str,
     ) -> Result<Vec<ForeignKey>>;
+
+    /// 列出表级触发器；不支持的驱动返回 NotImplemented。
+    async fn list_triggers(
+        &self,
+        _config: &ConnectionConfig,
+        _schema: &str,
+        _table: &str,
+    ) -> Result<Vec<Trigger>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_triggers".into(),
+        ))
+    }
 
     /// 配置变更后使对应连接池失效。
     fn evict_pool(&self, _id: &ConnectionId) {}

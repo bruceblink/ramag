@@ -10,7 +10,7 @@ pub mod types;
 use async_trait::async_trait;
 
 use ramag_domain::entities::{
-    Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema, Table, Value,
+    Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema, Table, Trigger, Value,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::CancelHandle;
@@ -149,6 +149,15 @@ impl SqlBackend for PostgresDriver {
         table: &str,
     ) -> Result<Vec<ForeignKey>> {
         metadata::list_foreign_keys(pool, schema, table).await
+    }
+
+    async fn list_triggers_impl(
+        &self,
+        pool: &PgPool,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<Trigger>> {
+        metadata::list_triggers(pool, schema, table).await
     }
 }
 

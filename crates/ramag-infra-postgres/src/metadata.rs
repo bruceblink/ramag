@@ -2,7 +2,7 @@
 
 use ramag_domain::entities::{
     Column, ForeignKey, ForeignKeyAction, GeneratedColumnStorage, IdentityGeneration, Index,
-    Schema, Table,
+    Schema, Table, Trigger,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_infra_sql_shared::{
@@ -431,6 +431,62 @@ pub async fn list_foreign_keys(
     let foreign_keys = grouped.into_values().collect::<Vec<_>>();
     ensure_metadata_result_limit(&foreign_keys, "外键")?;
     Ok(foreign_keys)
+}
+
+/// 列出指定表的用户触发器，并保留数据库生成的定义供只读视图展示。
+pub async fn list_triggers(pool: &PgPool, schema: &str, table: &str) -> Result<Vec<Trigger>> {
+    debug!(
+        operation = "sql_metadata_list_triggers",
+        ?schema,
+        ?table,
+        "listing triggers"
+    );
+
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        r#"
+        SELECT
+            trigger_info.tgname::text,
+            CASE
+                WHEN (trigger_info.tgtype & 2) <> 0 THEN 'BEFORE'
+                WHEN (trigger_info.tgtype & 64) <> 0 THEN 'INSTEAD OF'
+                ELSE 'AFTER'
+            END::text,
+            concat_ws(', ',
+                CASE WHEN (trigger_info.tgtype & 4) <> 0 THEN 'INSERT' END,
+                CASE WHEN (trigger_info.tgtype & 8) <> 0 THEN 'DELETE' END,
+                CASE WHEN (trigger_info.tgtype & 16) <> 0 THEN 'UPDATE' END,
+                CASE WHEN (trigger_info.tgtype & 32) <> 0 THEN 'TRUNCATE' END
+            )::text,
+            LEFT(pg_get_triggerdef(trigger_info.oid, true), 4096)::text
+        FROM pg_trigger AS trigger_info
+        JOIN pg_class AS table_info ON table_info.oid = trigger_info.tgrelid
+        JOIN pg_namespace AS schema_info ON schema_info.oid = table_info.relnamespace
+        WHERE NOT trigger_info.tgisinternal
+          AND schema_info.nspname = $1
+          AND table_info.relname = $2
+        ORDER BY trigger_info.tgname
+        LIMIT $3
+        "#,
+    )
+    .bind(schema)
+    .bind(table)
+    .bind(METADATA_FETCH_LIMIT)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| map_postgres_error(&e))?;
+    ensure_metadata_item_limit(rows.len(), "触发器")?;
+
+    let triggers = rows
+        .into_iter()
+        .map(|(name, timing, event, definition)| Trigger {
+            name,
+            timing,
+            event,
+            definition,
+        })
+        .collect::<Vec<_>>();
+    ensure_metadata_result_limit(&triggers, "触发器")?;
+    Ok(triggers)
 }
 
 /// `SHOW server_version`，形如 "13.5"

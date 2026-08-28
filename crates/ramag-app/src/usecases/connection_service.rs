@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ramag_domain::entities::{
     Column, ConnectionConfig, ConnectionId, DriverKind, ForeignKey, Index, Query, QueryResult,
-    Schema, Table, TransactionId,
+    Schema, Table, TransactionId, Trigger,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{CancelHandle, Driver, Storage};
@@ -337,6 +337,29 @@ impl ConnectionService {
         );
         log_connection_result(
             "sql_list_foreign_keys",
+            config,
+            Some(schema),
+            Some(table),
+            &result,
+        );
+        result
+    }
+
+    pub async fn list_triggers(
+        &self,
+        config: &ConnectionConfig,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<Trigger>> {
+        let result = retry_idempotent_read!(
+            config.id,
+            self.evict_pool(config),
+            self.driver_for(config)?
+                .list_triggers(config, schema, table)
+                .await
+        );
+        log_connection_result(
+            "sql_list_triggers",
             config,
             Some(schema),
             Some(table),
