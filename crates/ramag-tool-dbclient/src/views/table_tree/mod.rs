@@ -18,7 +18,9 @@ use gpui::{AppContext as _, Context, Entity, EventEmitter, UniformListScrollHand
 use gpui_component::input::InputState;
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
-use ramag_domain::entities::{Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema};
+use ramag_domain::entities::{
+    Column, ConnectionConfig, DriverKind, ForeignKey, Index, Schema, Trigger,
+};
 use ramag_ui::AsyncMutationGate;
 use tracing::error;
 
@@ -98,8 +100,35 @@ pub(super) struct TableColumns {
     pub(super) columns: Vec<Column>,
     pub(super) indexes: Vec<Index>,
     pub(super) foreign_keys: Vec<ForeignKey>,
+    pub(super) triggers: Vec<Trigger>,
+    pub(super) sections: TableTreeSectionExpansion,
     pub(super) error: Option<String>,
     pub(super) request_generation: u64,
+}
+
+/// 表节点下元数据分组的展开状态；列始终直接显示，分组只控制其详情行。
+#[derive(Clone, Copy)]
+pub(super) struct TableTreeSectionExpansion {
+    pub(super) indexes: bool,
+    pub(super) foreign_keys: bool,
+    pub(super) triggers: bool,
+}
+
+impl Default for TableTreeSectionExpansion {
+    fn default() -> Self {
+        Self {
+            indexes: true,
+            foreign_keys: true,
+            triggers: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TableTreeSection {
+    Indexes,
+    ForeignKeys,
+    Triggers,
 }
 
 // 集中传递表树构建所需的导航条件，保持筛选规则与元数据参数的边界清晰。

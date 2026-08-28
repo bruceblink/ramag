@@ -425,11 +425,13 @@ impl TableTreePanel {
         let table_async = table.clone();
         let metadata_generation = self.metadata_generation;
         cx.spawn(async move |this, cx| {
-            // 索引或外键失败不影响列结构。
+            // 表结构的四类元数据并行读取，单项失败时仍保留已经成功的结果。
             let cols_fut = svc.list_columns(&conn, &schema_async, &table_async);
             let idx_fut = svc.list_indexes(&conn, &schema_async, &table_async);
             let fk_fut = svc.list_foreign_keys(&conn, &schema_async, &table_async);
-            let (cols_res, idx_res, fk_res) = futures::join!(cols_fut, idx_fut, fk_fut);
+            let trigger_fut = svc.list_triggers(&conn, &schema_async, &table_async);
+            let (cols_res, idx_res, fk_res, trigger_res) =
+                futures::join!(cols_fut, idx_fut, fk_fut, trigger_fut);
             if let Err(error) = &cols_res {
                 error!(
                     operation = "sql_metadata_columns",
@@ -466,6 +468,18 @@ impl TableTreePanel {
                     "load foreign keys failed"
                 );
             }
+            if let Err(error) = &trigger_res {
+                tracing::warn!(
+                    operation = "sql_metadata_triggers",
+                    connection_id = %conn.id,
+                    driver = ?conn.driver,
+                    schema = %schema_async,
+                    table = %table_async,
+                    connection = %conn.name,
+                    error = %error,
+                    "load triggers failed"
+                );
+            }
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.metadata_generation == metadata_generation
                     && this.connection.as_ref().map(|current| &current.id) == Some(&conn.id)
@@ -498,10 +512,35 @@ impl TableTreePanel {
                 if let Ok(fk) = fk_res {
                     entry.foreign_keys = fk;
                 }
+                if let Ok(triggers) = trigger_res {
+                    entry.triggers = triggers;
+                }
                 this.invalidate_tree_rows();
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// 切换表节点下元数据分组的详情行，不重新请求数据库元数据。
+    pub(super) fn toggle_table_section(
+        &mut self,
+        schema: String,
+        table: String,
+        section: TableTreeSection,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(metadata) = self.table_columns.get_mut(&(schema, table)) else {
+            return;
+        };
+        match section {
+            TableTreeSection::Indexes => metadata.sections.indexes = !metadata.sections.indexes,
+            TableTreeSection::ForeignKeys => {
+                metadata.sections.foreign_keys = !metadata.sections.foreign_keys
+            }
+            TableTreeSection::Triggers => metadata.sections.triggers = !metadata.sections.triggers,
+        }
+        self.invalidate_tree_rows();
+        cx.notify();
     }
 }

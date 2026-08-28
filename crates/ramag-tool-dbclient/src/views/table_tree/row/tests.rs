@@ -1,5 +1,6 @@
 use ramag_domain::entities::{
     Column, ColumnKind, ColumnType, ConnectionId, ForeignKey, ForeignKeyAction, Index, Table,
+    Trigger,
 };
 
 use super::*;
@@ -25,7 +26,7 @@ fn metadata_rows_keep_exact_copy_targets() {
             ..Default::default()
         },
     )]);
-    let table_columns = HashMap::from([(
+    let mut table_columns = HashMap::from([(
         ("gewu".into(), "company_project_member_rel".into()),
         TableColumns {
             columns: vec![Column {
@@ -59,6 +60,12 @@ fn metadata_rows_keep_exact_copy_targets() {
                 on_delete: ForeignKeyAction::Cascade,
                 on_update: ForeignKeyAction::SetNull,
             }],
+            triggers: vec![Trigger {
+                name: "trg_project_audit".into(),
+                timing: "BEFORE".into(),
+                event: "INSERT".into(),
+                definition: "BEGIN END".into(),
+            }],
             ..Default::default()
         },
     )]);
@@ -91,6 +98,39 @@ fn metadata_rows_keep_exact_copy_targets() {
     assert!(view.rows.iter().any(|row| {
         matches!(row, TreeRow::DetailLine { text, .. }
             if text.contains("ON DELETE CASCADE") && text.contains("ON UPDATE SET NULL"))
+    }));
+    assert!(view.rows.iter().any(|row| {
+        matches!(row, TreeRow::Section { text, count: 1, .. } if text == "触发器")
+    }));
+    assert!(view.rows.iter().any(|row| {
+        matches!(row, TreeRow::DetailLine { copy_value, text, .. }
+            if copy_value == "trg_project_audit" && text.contains("BEFORE INSERT"))
+    }));
+
+    table_columns
+        .get_mut(&("gewu".into(), "company_project_member_rel".into()))
+        .expect("test table metadata")
+        .sections
+        .indexes = false;
+    let collapsed = build_tree_rows(
+        &schemas,
+        &expanded,
+        &HashSet::from(["gewu".into()]),
+        &table_columns,
+        false,
+        "",
+    );
+    assert!(collapsed.rows.iter().any(|row| {
+        matches!(
+            row,
+            TreeRow::Section {
+                is_expanded: false,
+                ..
+            }
+        )
+    }));
+    assert!(!collapsed.rows.iter().any(|row| {
+        matches!(row, TreeRow::DetailLine { copy_value, .. } if copy_value == "uk_project_user")
     }));
 }
 

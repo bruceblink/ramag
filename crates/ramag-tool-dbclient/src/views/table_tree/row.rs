@@ -21,7 +21,7 @@ use ramag_domain::entities::format_bytes;
 
 #[cfg(test)]
 use super::{SchemaTables, TableColumns};
-use super::{TableTreeNavigation, TableTreePanel, navigation::TableTreeFilter};
+use super::{TableTreeNavigation, TableTreePanel, TableTreeSection, navigation::TableTreeFilter};
 use crate::views::tree_helpers::{
     render_column_row, render_columns_placeholder, render_copyable_detail_line,
 };
@@ -59,8 +59,12 @@ pub(super) enum TreeRow {
         key: Rc<(String, String)>,
         column_index: usize,
     },
-    SectionLabel {
+    Section {
+        key: Rc<(String, String)>,
+        section: TableTreeSection,
         text: String,
+        count: usize,
+        is_expanded: bool,
     },
     DetailLine {
         element_id: SharedString,
@@ -305,9 +309,9 @@ impl TableTreePanel {
                                     .xsmall()
                                     .icon(chevron_icon)
                                     .tooltip(if is_cols_expanded {
-                                        "收起字段"
+                                        "收起表结构"
                                     } else {
-                                        "展开字段"
+                                        "展开表结构"
                                     })
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                         this.toggle_table_columns(
@@ -397,7 +401,55 @@ impl TableTreePanel {
                         )
                     },
                 ),
-            TreeRow::SectionLabel { text } => render_columns_placeholder(text.clone(), muted_fg),
+            TreeRow::Section {
+                key,
+                section,
+                text,
+                count,
+                is_expanded,
+            } => {
+                let section = *section;
+                let row_id =
+                    SharedString::from(format!("table-section-{}-{}-{section:?}", key.0, key.1));
+                let schema = key.0.clone();
+                let table = key.1.clone();
+                let chevron = if *is_expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                };
+                h_flex()
+                    .id(row_id)
+                    .w_full()
+                    .h(px(28.0))
+                    .flex_none()
+                    .items_center()
+                    .gap(px(4.0))
+                    .pl(px(40.0))
+                    .pr_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(move |this| this.bg(muted_bg))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.toggle_table_section(schema.clone(), table.clone(), section, cx);
+                    }))
+                    .child(Icon::new(chevron).xsmall().text_color(muted_fg))
+                    .child(
+                        Icon::new(section_icon(section))
+                            .xsmall()
+                            .text_color(muted_fg),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(fg)
+                            .whitespace_nowrap()
+                            .child(format!("{} ({count})", text)),
+                    )
+                    .into_any_element()
+            }
             TreeRow::DetailLine {
                 element_id,
                 text,
@@ -410,6 +462,14 @@ impl TableTreePanel {
                 cx,
             ),
         }
+    }
+}
+
+fn section_icon(section: TableTreeSection) -> IconName {
+    match section {
+        TableTreeSection::Indexes => IconName::File,
+        TableTreeSection::ForeignKeys => IconName::ArrowRight,
+        TableTreeSection::Triggers => IconName::Network,
     }
 }
 

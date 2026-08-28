@@ -10,7 +10,7 @@ use super::navigation::{
     TableNavigationRef, TableTreeFilter, schema_has_navigation_item, table_matches_filter,
 };
 use super::row::{TreeRow, TreeRowsView};
-use super::{SchemaTables, TableColumns, TableTreeNavigation};
+use super::{SchemaTables, TableColumns, TableTreeNavigation, TableTreeSection};
 use crate::sql_completion::is_system_schema;
 
 #[cfg(test)]
@@ -207,7 +207,7 @@ pub(super) fn build_tree_rows_with_navigation(
             };
             if columns.loading {
                 rows.push(TreeRow::TablePlaceholder {
-                    text: "加载列结构…".into(),
+                    text: "加载表结构…".into(),
                     is_error: false,
                 });
                 continue;
@@ -227,49 +227,85 @@ pub(super) fn build_tree_rows_with_navigation(
                 }
             }));
             if !columns.indexes.is_empty() {
-                rows.push(TreeRow::SectionLabel {
-                    text: format!("索引 ({})", columns.indexes.len()),
+                rows.push(TreeRow::Section {
+                    key: columns_key.clone(),
+                    section: TableTreeSection::Indexes,
+                    text: "索引".into(),
+                    count: columns.indexes.len(),
+                    is_expanded: columns.sections.indexes,
                 });
-                for index in &columns.indexes {
-                    let prefix = if index.primary {
-                        "🔑 PK"
-                    } else if index.unique {
-                        "★ UQ"
-                    } else {
-                        "·"
-                    };
-                    rows.push(TreeRow::DetailLine {
-                        element_id: SharedString::from(format!(
-                            "tree-index-copy-{name}-{}-{}",
-                            table.name, index.name
-                        )),
-                        text: format!("{prefix}  {}({})", index.name, index.columns.join(", ")),
-                        copy_value: index.name.clone(),
-                    });
+                if columns.sections.indexes {
+                    for index in &columns.indexes {
+                        let prefix = if index.primary {
+                            "🔑 PK"
+                        } else if index.unique {
+                            "★ UQ"
+                        } else {
+                            "·"
+                        };
+                        rows.push(TreeRow::DetailLine {
+                            element_id: SharedString::from(format!(
+                                "tree-index-copy-{name}-{}-{}",
+                                table.name, index.name
+                            )),
+                            text: format!("{prefix}  {}({})", index.name, index.columns.join(", ")),
+                            copy_value: index.name.clone(),
+                        });
+                    }
                 }
             }
             if !columns.foreign_keys.is_empty() {
-                rows.push(TreeRow::SectionLabel {
-                    text: format!("外键 ({})", columns.foreign_keys.len()),
+                rows.push(TreeRow::Section {
+                    key: columns_key.clone(),
+                    section: TableTreeSection::ForeignKeys,
+                    text: "外键".into(),
+                    count: columns.foreign_keys.len(),
+                    is_expanded: columns.sections.foreign_keys,
                 });
-                for foreign_key in &columns.foreign_keys {
-                    rows.push(TreeRow::DetailLine {
-                        element_id: SharedString::from(format!(
-                            "tree-foreign-key-copy-{name}-{}-{}",
-                            table.name, foreign_key.name
-                        )),
-                        text: format!(
-                            "↗ {} ({}) → {}.{}({}) [ON DELETE {}, ON UPDATE {}]",
-                            foreign_key.name,
-                            foreign_key.columns.join(", "),
-                            foreign_key.ref_schema,
-                            foreign_key.ref_table,
-                            foreign_key.ref_columns.join(", "),
-                            foreign_key.on_delete.as_sql(),
-                            foreign_key.on_update.as_sql()
-                        ),
-                        copy_value: foreign_key.name.clone(),
-                    });
+                if columns.sections.foreign_keys {
+                    for foreign_key in &columns.foreign_keys {
+                        rows.push(TreeRow::DetailLine {
+                            element_id: SharedString::from(format!(
+                                "tree-foreign-key-copy-{name}-{}-{}",
+                                table.name, foreign_key.name
+                            )),
+                            text: format!(
+                                "↗ {} ({}) → {}.{}({}) [ON DELETE {}, ON UPDATE {}]",
+                                foreign_key.name,
+                                foreign_key.columns.join(", "),
+                                foreign_key.ref_schema,
+                                foreign_key.ref_table,
+                                foreign_key.ref_columns.join(", "),
+                                foreign_key.on_delete.as_sql(),
+                                foreign_key.on_update.as_sql()
+                            ),
+                            copy_value: foreign_key.name.clone(),
+                        });
+                    }
+                }
+            }
+            if !columns.triggers.is_empty() {
+                rows.push(TreeRow::Section {
+                    key: columns_key.clone(),
+                    section: TableTreeSection::Triggers,
+                    text: "触发器".into(),
+                    count: columns.triggers.len(),
+                    is_expanded: columns.sections.triggers,
+                });
+                if columns.sections.triggers {
+                    for trigger in &columns.triggers {
+                        rows.push(TreeRow::DetailLine {
+                            element_id: SharedString::from(format!(
+                                "tree-trigger-copy-{name}-{}-{}",
+                                table.name, trigger.name
+                            )),
+                            text: format!(
+                                "⚡ {} {} {}",
+                                trigger.timing, trigger.event, trigger.name
+                            ),
+                            copy_value: trigger.name.clone(),
+                        });
+                    }
                 }
             }
         }

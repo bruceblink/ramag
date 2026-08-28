@@ -1,21 +1,36 @@
 //! 表属性视图的结构化只读内容渲染。
 
-use gpui::{AnyElement, IntoElement, ParentElement, Styled, div, prelude::*, px};
+use std::collections::BTreeSet;
+
+use gpui::{
+    AnyElement, ClickEvent, Context, IntoElement, ParentElement, SharedString, Styled, div,
+    prelude::*, px,
+};
 use gpui_component::{Icon, IconName, Sizable as _, Theme, h_flex, v_flex};
 use ramag_domain::entities::{Column, ForeignKey, Index, Trigger};
 
+use super::{TablePropertiesDialog, TablePropertiesSection};
+
 const OUTLINE_WIDTH: f32 = 216.0;
+
+/// 左侧结构导航需要的对象数量，集中传递避免渲染函数参数失控。
+#[derive(Clone, Copy)]
+pub(super) struct OutlineCounts {
+    pub(super) columns: usize,
+    pub(super) keys: usize,
+    pub(super) indexes: usize,
+    pub(super) foreign_keys: usize,
+    pub(super) triggers: usize,
+}
 
 pub(super) fn is_key(index: &Index) -> bool {
     index.primary || index.unique
 }
 
 pub(super) fn render_outline(
-    columns: usize,
-    keys: usize,
-    indexes: usize,
-    foreign_keys: usize,
-    triggers: usize,
+    counts: OutlineCounts,
+    expanded_sections: &BTreeSet<TablePropertiesSection>,
+    cx: &mut Context<TablePropertiesDialog>,
     theme: &Theme,
 ) -> impl IntoElement {
     v_flex()
@@ -40,26 +55,48 @@ pub(super) fn render_outline(
         )
         .child(outline_item(
             "列",
-            columns,
+            counts.columns,
             IconName::MemoryStick,
+            TablePropertiesSection::Columns,
+            expanded_sections,
+            cx,
             theme,
-            true,
         ))
-        .child(outline_item("键", keys, IconName::File, theme, true))
-        .child(outline_item("索引", indexes, IconName::File, theme, true))
+        .child(outline_item(
+            "键",
+            counts.keys,
+            IconName::File,
+            TablePropertiesSection::Keys,
+            expanded_sections,
+            cx,
+            theme,
+        ))
+        .child(outline_item(
+            "索引",
+            counts.indexes,
+            IconName::File,
+            TablePropertiesSection::Indexes,
+            expanded_sections,
+            cx,
+            theme,
+        ))
         .child(outline_item(
             "外键",
-            foreign_keys,
+            counts.foreign_keys,
             IconName::ArrowRight,
+            TablePropertiesSection::ForeignKeys,
+            expanded_sections,
+            cx,
             theme,
-            true,
         ))
         .child(outline_item(
             "触发器",
-            triggers,
+            counts.triggers,
             IconName::Network,
+            TablePropertiesSection::Triggers,
+            expanded_sections,
+            cx,
             theme,
-            true,
         ))
 }
 
@@ -67,10 +104,16 @@ fn outline_item(
     title: &'static str,
     count: usize,
     icon: IconName,
+    section: TablePropertiesSection,
+    expanded_sections: &BTreeSet<TablePropertiesSection>,
+    cx: &mut Context<TablePropertiesDialog>,
     theme: &Theme,
-    expanded: bool,
 ) -> impl IntoElement {
+    let expanded = expanded_sections.contains(&section);
     h_flex()
+        .id(SharedString::from(format!(
+            "table-properties-outline-{title}"
+        )))
         .w_full()
         .h(px(28.0))
         .flex_none()
@@ -78,6 +121,10 @@ fn outline_item(
         .gap(px(4.0))
         .px(px(4.0))
         .rounded(px(3.0))
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.toggle_section(section, cx);
+        }))
         .bg(if expanded {
             theme.muted.opacity(0.55)
         } else {
