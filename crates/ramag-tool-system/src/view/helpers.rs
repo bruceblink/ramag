@@ -1,6 +1,6 @@
 //! 系统工具视图的通用格式化和重复布局。
 
-use gpui::{AnyElement, IntoElement, ParentElement, Styled, div, px};
+use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px};
 use gpui_component::{Icon, h_flex, v_flex};
 
 use super::Notice;
@@ -44,6 +44,7 @@ pub(super) fn metric_card(
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
     v_flex()
+        .debug_selector(|| format!("system-metric-card-{title}"))
         .flex_1()
         .min_w(px(180.0))
         .h(px(102.0))
@@ -78,12 +79,12 @@ pub(super) fn metric_card(
         )
         .child(
             div()
-                .min_w_0()
+                .debug_selector(|| format!("system-metric-detail-{title}"))
+                // 核心数、容量等短详情必须保持完整；只有指标主值允许省略。
+                .flex_none()
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .whitespace_nowrap()
-                .overflow_hidden()
-                .text_ellipsis()
                 .child(detail),
         )
 }
@@ -139,7 +140,9 @@ pub(super) fn render_core_row(
         .gap(px(7.0))
         .child(
             div()
+                .debug_selector(|| format!("system-core-label-{}", index + 1))
                 .w(px(58.0))
+                .flex_none()
                 .text_xs()
                 .child(format!("核心 {}", index + 1)),
         )
@@ -159,7 +162,9 @@ pub(super) fn render_core_row(
         )
         .child(
             div()
+                .debug_selector(|| format!("system-core-percent-{}", index + 1))
                 .w(px(52.0))
+                .flex_none()
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .child(format_percent(usage as f64)),
@@ -358,7 +363,25 @@ pub(super) fn format_bytes(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bytes, format_percent, format_rate_pair, history_max, ratio_percent};
+    use gpui::{
+        AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, div, px, size,
+    };
+    use gpui_component::ActiveTheme as _;
+
+    use super::{
+        format_bytes, format_percent, format_rate_pair, history_max, ratio_percent, render_core_row,
+    };
+
+    struct CoreRowTestHost;
+
+    impl Render for CoreRowTestHost {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(300.0))
+                .child(render_core_row(127, 42.0, cx.theme()))
+        }
+    }
 
     #[test]
     fn formatters_keep_units_and_bounds() {
@@ -374,6 +397,32 @@ mod tests {
         assert_eq!(
             format_rate_pair("读", 27.3, "写", 27.0),
             "读 27.3 / 写 27.0 MB/s"
+        );
+    }
+
+    #[gpui::test]
+    fn core_row_keeps_labels_from_shrinking_with_the_meter(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let host = cx.new(|_| CoreRowTestHost);
+            gpui_component::Root::new(host, window, cx)
+        });
+        cx.simulate_resize(size(px(300.0), px(80.0)));
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.debug_bounds("system-core-label-128")
+                .expect("core label should be rendered")
+                .size
+                .width,
+            px(58.0)
+        );
+        assert_eq!(
+            cx.debug_bounds("system-core-percent-128")
+                .expect("core percentage should be rendered")
+                .size
+                .width,
+            px(52.0)
         );
     }
 }
