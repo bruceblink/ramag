@@ -30,6 +30,10 @@ const MAX_CLOSED_QUERY_DRAFTS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub enum QueryPanelEvent {
+    LocateTableRequested {
+        schema: String,
+        table: String,
+    },
     TableImportRequested {
         schema: String,
         table: String,
@@ -133,6 +137,29 @@ impl QueryPanel {
         cx.notify();
     }
 
+    pub(super) fn forward_tab_event(&mut self, event: &QueryTabEvent, cx: &mut Context<Self>) {
+        match event {
+            QueryTabEvent::DraftChanged => self.schedule_draft_persist(cx),
+            QueryTabEvent::LocateTableRequested { schema, table } => {
+                cx.emit(QueryPanelEvent::LocateTableRequested {
+                    schema: schema.clone(),
+                    table: table.clone(),
+                });
+            }
+            QueryTabEvent::TableImportRequested {
+                schema,
+                table,
+                policy,
+                files,
+            } => cx.emit(QueryPanelEvent::TableImportRequested {
+                schema: schema.clone(),
+                table: table.clone(),
+                policy: *policy,
+                files: files.clone(),
+            }),
+        }
+    }
+
     pub(crate) fn set_connection_list(
         &mut self,
         connection_list: Option<Entity<ConnectionListPanel>>,
@@ -204,19 +231,8 @@ impl QueryPanel {
             }
         };
         let tab = self.build_tab(title.clone(), window, cx);
-        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| match e {
-            QueryTabEvent::DraftChanged => this.schedule_draft_persist(cx),
-            QueryTabEvent::TableImportRequested {
-                schema,
-                table,
-                policy,
-                files,
-            } => cx.emit(QueryPanelEvent::TableImportRequested {
-                schema: schema.clone(),
-                table: table.clone(),
-                policy: *policy,
-                files: files.clone(),
-            }),
+        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| {
+            this.forward_tab_event(e, cx);
         });
         self.tabs.push(tab);
         self.titles.push(title);
@@ -343,19 +359,8 @@ impl QueryPanel {
         tab.update(cx, |tab, cx| {
             tab.restore_draft(draft.text, draft.context, window, cx);
         });
-        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| match e {
-            QueryTabEvent::DraftChanged => this.schedule_draft_persist(cx),
-            QueryTabEvent::TableImportRequested {
-                schema,
-                table,
-                policy,
-                files,
-            } => cx.emit(QueryPanelEvent::TableImportRequested {
-                schema: schema.clone(),
-                table: table.clone(),
-                policy: *policy,
-                files: files.clone(),
-            }),
+        let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| {
+            this.forward_tab_event(e, cx);
         });
         self.tabs.push(tab);
         self.titles.push(draft.title);

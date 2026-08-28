@@ -175,6 +175,85 @@ fn extract_tables_strip_quotes() {
 }
 
 #[test]
+fn parse_table_reference_supports_qualified_and_quoted_names() {
+    assert_eq!(
+        parse_table_reference("public.users"),
+        Some((Some("public".to_string()), "users".to_string()))
+    );
+    assert_eq!(
+        parse_table_reference("`sales db`.`order.items`"),
+        Some((Some("sales db".to_string()), "order.items".to_string()))
+    );
+    assert_eq!(
+        parse_table_reference("catalog.public.audit_log"),
+        Some((Some("public".to_string()), "audit_log".to_string()))
+    );
+    assert_eq!(
+        parse_table_reference("\"FROM\""),
+        Some((None, "FROM".to_string()))
+    );
+    assert_eq!(parse_table_reference("SELECT users"), None);
+}
+
+#[test]
+fn table_reference_at_cursor_matches_only_table_context() {
+    let sql = "SELECT 'FROM fake' AS value FROM public.users u JOIN `sales`.`orders` o ON u.id = o.user_id";
+    let user_cursor = sql.find("users").expect("users is present") + 2;
+    let order_cursor = sql.find("orders").expect("orders is present") + 2;
+    let value_cursor = sql.find("value").expect("value is present") + 2;
+
+    assert_eq!(
+        table_reference_at_cursor(
+            sql,
+            user_cursor,
+            Some(ramag_domain::entities::DriverKind::Postgres)
+        ),
+        Some((Some("public".to_string()), "users".to_string()))
+    );
+    assert_eq!(
+        table_reference_at_cursor(
+            sql,
+            order_cursor,
+            Some(ramag_domain::entities::DriverKind::Mysql)
+        ),
+        Some((Some("sales".to_string()), "orders".to_string()))
+    );
+    assert_eq!(
+        table_reference_at_cursor(
+            sql,
+            value_cursor,
+            Some(ramag_domain::entities::DriverKind::Postgres)
+        ),
+        None
+    );
+}
+
+#[test]
+fn table_reference_at_cursor_skips_comments_and_table_modifiers() {
+    let sql = "-- FROM hidden\nCREATE TABLE IF NOT EXISTS public.audit_log (id int)";
+    let cursor = sql.find("audit_log").expect("audit_log is present") + 3;
+    assert_eq!(
+        table_reference_at_cursor(
+            sql,
+            cursor,
+            Some(ramag_domain::entities::DriverKind::Postgres)
+        ),
+        Some((Some("public".to_string()), "audit_log".to_string()))
+    );
+
+    let sql = "DROP TABLE IF EXISTS public.old_table";
+    let cursor = sql.find("old_table").expect("old_table is present") + 2;
+    assert_eq!(
+        table_reference_at_cursor(
+            sql,
+            cursor,
+            Some(ramag_domain::entities::DriverKind::Postgres)
+        ),
+        Some((Some("public".to_string()), "old_table".to_string()))
+    );
+}
+
+#[test]
 fn phrase_prefix_multiword() {
     // 第一个词已敲完、正敲第二个词：取整段短语（单词 prefix 只剩 "T"，匹配不到 DROP TABLE）
     assert_eq!(phrase_prefix("DROP T", 6), "DROP T");

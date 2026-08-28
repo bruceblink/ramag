@@ -1,6 +1,7 @@
 //! SQL 关键字、表名与列名补全。
 
 mod cache;
+mod object_locator;
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -19,6 +20,7 @@ use ramag_domain::entities::contains_case_insensitive;
 use ropey::Rope;
 
 pub use cache::SchemaCache;
+pub(crate) use object_locator::{parse_table_reference, table_reference_at_cursor};
 
 /// 单次补全 / 预拉最多跟踪这些不同表，避免异常长 SQL 发起大量元数据请求。
 const MAX_EXTRACTED_TABLE_REFERENCES: usize = 128;

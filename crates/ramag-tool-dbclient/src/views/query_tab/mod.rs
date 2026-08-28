@@ -2,6 +2,7 @@ mod actions;
 mod comparison;
 mod comparison_toolbar;
 mod examples;
+mod navigation;
 mod paging;
 mod render;
 mod render_helpers;
@@ -121,6 +122,10 @@ pub(super) struct TransactionSavepoint {
 #[derive(Debug, Clone)]
 pub enum QueryTabEvent {
     DraftChanged,
+    LocateTableRequested {
+        schema: String,
+        table: String,
+    },
     TableImportRequested {
         schema: String,
         table: String,

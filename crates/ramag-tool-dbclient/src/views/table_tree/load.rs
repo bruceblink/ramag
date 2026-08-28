@@ -296,8 +296,10 @@ impl TableTreePanel {
                         entry.loading = false;
                         entry.tables = tables;
                         entry.error = None;
+                        this.reveal_pending_navigation(&schema_for_async, cx);
                     }
                     Err(e) => {
+                        let message = e.to_string();
                         this.schema_cache
                             .write()
                             .cancel_table_refresh(&schema_for_async, cache_generation);
@@ -305,7 +307,20 @@ impl TableTreePanel {
                             return;
                         };
                         entry.loading = false;
-                        entry.error = Some(e.to_string());
+                        entry.error = Some(message.clone());
+                        if this
+                            .pending_navigation
+                            .as_ref()
+                            .is_some_and(|(schema, _)| schema == &schema_for_async)
+                        {
+                            this.pending_navigation = None;
+                            this.pending_notification = Some(
+                                gpui_component::notification::Notification::error(format!(
+                                    "加载 {schema_for_async} 表失败：{message}"
+                                ))
+                                .autohide(true),
+                            );
+                        }
                     }
                 }
                 this.invalidate_tree_rows();

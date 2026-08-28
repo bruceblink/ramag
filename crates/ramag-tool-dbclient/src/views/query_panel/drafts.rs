@@ -218,9 +218,7 @@ impl QueryPanel {
                 tab.restore_draft(draft.text, draft.context, window, cx);
             });
             let sub = cx.subscribe(&tab, |this: &mut Self, _, e: &QueryTabEvent, cx| {
-                if matches!(e, QueryTabEvent::DraftChanged) {
-                    this.schedule_draft_persist(cx);
-                }
+                this.forward_tab_event(e, cx);
             });
             self.tabs.push(tab);
             self.titles.push(title);

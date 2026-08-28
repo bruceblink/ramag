@@ -1,6 +1,7 @@
 mod compare;
 mod ddl;
 mod load;
+mod locate;
 mod menus;
 mod navigation;
 mod ops;
@@ -61,6 +62,7 @@ pub struct TableTreePanel {
     pub(super) active_schema: Option<String>,
     navigation_favorites: HashSet<navigation::TableNavigationRef>,
     recent_tables: Vec<navigation::TableNavigationRef>,
+    pub(super) pending_navigation: Option<(String, String)>,
     table_filter: TableTreeFilter,
     pub(super) uniform_scroll: UniformListScrollHandle,
     tree_revision: u64,
@@ -187,6 +189,7 @@ impl TableTreePanel {
             active_schema: None,
             navigation_favorites: HashSet::new(),
             recent_tables: Vec::new(),
+            pending_navigation: None,
             table_filter: TableTreeFilter::All,
             uniform_scroll: UniformListScrollHandle::new(),
             tree_revision: 0,
@@ -233,6 +236,7 @@ impl TableTreePanel {
         self.cancel_full_search(cx);
         self.table_columns.clear();
         self.selected = None;
+        self.pending_navigation = None;
         self.error = None;
         self.invalidate_tree_rows();
         self.load_schemas(cx);
@@ -254,6 +258,7 @@ impl TableTreePanel {
         self.cancel_full_search(cx);
         self.table_columns.clear();
         self.selected = None;
+        self.pending_navigation = None;
         self.error = None;
         self.invalidate_tree_rows();
         if self.connection.is_some() {
@@ -311,6 +316,7 @@ impl TableTreePanel {
                                 schema: default_name,
                             });
                         }
+                        this.start_pending_navigation(cx);
                     }
                     Err(e) => {
                         this.error = Some(e.to_string());

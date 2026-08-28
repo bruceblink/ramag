@@ -248,6 +248,24 @@ impl Render for QueryPanel {
                                         )),
                                 )
                                 .child(
+                                    ramag_ui::clickable_button("locate-sql-table")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Search)
+                                        .tooltip("定位选中的表或光标所在的表")
+                                        .disabled(self.connection.is_none())
+                                        .on_click(cx.listener(
+                                            |this, _: &ClickEvent, _, cx| {
+                                                if let Some(tab) = this.tabs.get(this.active).cloned()
+                                                {
+                                                    tab.update(cx, |tab, cx| {
+                                                        tab.request_table_navigation(cx);
+                                                    });
+                                                }
+                                            },
+                                        )),
+                                )
+                                .child(
                                     ramag_ui::clickable_button("explain-sql")
                                         .ghost()
                                         .small()

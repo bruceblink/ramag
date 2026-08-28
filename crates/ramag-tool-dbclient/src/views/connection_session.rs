@@ -172,9 +172,23 @@ impl ConnectionSession {
 
         let resize_state = cx.new(|_| ResizableState::default());
         let tree_for_import = tree.clone();
-        subs.push(cx.subscribe(
+        subs.push(cx.subscribe_in(
             &queries,
-            move |_this: &mut Self, _, e: &QueryPanelEvent, cx| match e {
+            window,
+            move |this: &mut Self, _, e: &QueryPanelEvent, window, cx| match e {
+                QueryPanelEvent::LocateTableRequested { schema, table } => {
+                    info!(
+                        operation = "sql_table_navigation",
+                        connection_id = %this.config.id,
+                        driver = ?this.config.driver,
+                        schema = %schema,
+                        table = %table,
+                        "table navigation requested"
+                    );
+                    this.tree.update(cx, |tree, cx| {
+                        tree.locate_table(schema.clone(), table.clone(), window, cx);
+                    });
+                }
                 QueryPanelEvent::TableImportRequested {
                     schema,
                     table,
