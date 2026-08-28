@@ -1,6 +1,6 @@
 //! 系统工具视图的通用格式化和重复布局。
 
-use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px};
+use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px, relative};
 use gpui_component::{Icon, h_flex, v_flex};
 
 use super::Notice;
@@ -91,9 +91,10 @@ pub(super) fn metric_card(
 
 pub(super) fn panel_heading(
     title: &'static str,
-    detail: &'static str,
+    detail: impl Into<gpui::SharedString>,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
+    let detail = detail.into();
     h_flex()
         .w_full()
         .flex_none()
@@ -129,46 +130,147 @@ pub(super) fn format_rate_pair(
     format!("{first_label} {first:.1} / {second_label} {second:.1} MB/s")
 }
 
-pub(super) fn render_core_row(
+/// 根据核心数量选择近似方形的网格，行列都由固定面板空间平均分配。
+pub(super) fn core_grid_dimensions(core_count: usize) -> (usize, usize) {
+    if core_count == 0 {
+        return (1, 1);
+    }
+    let columns = (core_count as f64).sqrt().ceil() as usize;
+    (columns, core_count.div_ceil(columns))
+}
+
+pub(super) fn render_core_grid(
+    usages: &[f32],
+    histories: &[Vec<[f64; 2]>],
+    theme: &gpui_component::theme::Theme,
+) -> AnyElement {
+    if usages.is_empty() {
+        return empty_state("暂时没有 CPU 核心数据", theme).into_any_element();
+    }
+
+    let (columns, rows) = core_grid_dimensions(usages.len());
+    let compact = usages.len() > 32;
+    let mut grid = v_flex()
+        .debug_selector(|| "system-core-grid".to_owned())
+        .size_full()
+        .min_h_0()
+        .gap(px(6.0));
+
+    for row_index in 0..rows {
+        let first = row_index * columns;
+        let last = (first + columns).min(usages.len());
+        let mut row = h_flex().w_full().flex_1().min_h_0().gap(px(6.0));
+        for index in first..last {
+            row = row.child(render_core_tile(
+                index,
+                usages[index],
+                histories.get(index).map(Vec::as_slice).unwrap_or(&[]),
+                compact,
+                theme,
+            ));
+        }
+        for _ in last..first + columns {
+            row = row.child(div().flex_1().h_full().min_w_0());
+        }
+        grid = grid.child(row);
+    }
+
+    grid.into_any_element()
+}
+
+fn render_core_tile(
     index: usize,
     usage: f32,
+    history: &[[f64; 2]],
+    compact: bool,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
     let usage = usage.clamp(0.0, 100.0);
-    h_flex()
-        .items_center()
-        .gap(px(7.0))
-        .child(
+    let label = if compact {
+        format!("{}", index + 1)
+    } else {
+        format!("核心 {}", index + 1)
+    };
+    let detail = if compact {
+        None
+    } else {
+        Some(format_percent(usage as f64))
+    };
+
+    let mut header = h_flex().w_full().flex_none().min_w_0().gap(px(3.0)).child(
+        div()
+            .min_w_0()
+            .flex_1()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_xs()
+            .child(label),
+    );
+    if let Some(detail) = detail {
+        header = header.child(
             div()
-                .debug_selector(|| format!("system-core-label-{}", index + 1))
-                .w(px(58.0))
-                .flex_none()
-                .text_xs()
-                .child(format!("核心 {}", index + 1)),
-        )
-        .child(
-            div()
-                .w(px(180.0))
-                .h(px(6.0))
-                .bg(theme.muted)
-                .rounded_full()
-                .child(
-                    div()
-                        .h_full()
-                        .w(px(usage * 1.8))
-                        .bg(theme.accent)
-                        .rounded_full(),
-                ),
-        )
-        .child(
-            div()
-                .debug_selector(|| format!("system-core-percent-{}", index + 1))
-                .w(px(52.0))
                 .flex_none()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child(format_percent(usage as f64)),
-        )
+                .whitespace_nowrap()
+                .child(detail),
+        );
+    }
+
+    v_flex()
+        .debug_selector(|| format!("system-core-tile-{}", index + 1))
+        .flex_1()
+        .h_full()
+        .min_w_0()
+        .min_h_0()
+        .gap(px(3.0))
+        .p(px(5.0))
+        .overflow_hidden()
+        .bg(theme.background)
+        .border_1()
+        .border_color(theme.border)
+        .rounded(px(3.0))
+        .child(header)
+        .child(render_core_history(history, usage, theme))
+}
+
+fn render_core_history(
+    history: &[[f64; 2]],
+    usage: f32,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
+    let mut samples = history
+        .iter()
+        .rev()
+        .take(24)
+        .map(|point| point[1] as f32)
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        samples.push(usage);
+    }
+
+    let mut graph = h_flex()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .items_end()
+        .gap(px(1.0))
+        .px(px(2.0))
+        .py(px(2.0))
+        .overflow_hidden()
+        .bg(theme.muted);
+    for sample in samples.iter().rev() {
+        let height = (sample.clamp(0.0, 100.0) / 100.0).max(0.03);
+        graph = graph.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h(px(1.0))
+                .h(relative(height))
+                .bg(theme.accent),
+        );
+    }
+    graph
 }
 
 pub(super) fn render_meter_row(
@@ -363,25 +465,10 @@ pub(super) fn format_bytes(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{
-        AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
-        TestAppContext, Window, div, px, size,
-    };
-    use gpui_component::ActiveTheme as _;
-
     use super::{
-        format_bytes, format_percent, format_rate_pair, history_max, ratio_percent, render_core_row,
+        core_grid_dimensions, format_bytes, format_percent, format_rate_pair, history_max,
+        ratio_percent,
     };
-
-    struct CoreRowTestHost;
-
-    impl Render for CoreRowTestHost {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .w(px(300.0))
-                .child(render_core_row(127, 42.0, cx.theme()))
-        }
-    }
 
     #[test]
     fn formatters_keep_units_and_bounds() {
@@ -400,29 +487,14 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn core_row_keeps_labels_from_shrinking_with_the_meter(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let host = cx.new(|_| CoreRowTestHost);
-            gpui_component::Root::new(host, window, cx)
-        });
-        cx.simulate_resize(size(px(300.0), px(80.0)));
-        cx.run_until_parked();
+    #[test]
+    fn core_grid_keeps_every_core_inside_the_fixed_window() {
+        assert_eq!(core_grid_dimensions(0), (1, 1));
+        assert_eq!(core_grid_dimensions(1), (1, 1));
+        assert_eq!(core_grid_dimensions(12), (4, 3));
 
-        assert_eq!(
-            cx.debug_bounds("system-core-label-128")
-                .expect("core label should be rendered")
-                .size
-                .width,
-            px(58.0)
-        );
-        assert_eq!(
-            cx.debug_bounds("system-core-percent-128")
-                .expect("core percentage should be rendered")
-                .size
-                .width,
-            px(52.0)
-        );
+        let (columns, rows) = core_grid_dimensions(128);
+        assert_eq!((columns, rows), (12, 11));
+        assert!(columns * rows >= 128);
     }
 }

@@ -89,6 +89,7 @@ pub struct MonitorSnapshot {
     pub elapsed_seconds: f64,
     pub cpu_percent: f32,
     pub core_usages: Vec<f32>,
+    pub core_histories: Vec<Vec<[f64; 2]>>,
     pub memory_total: u64,
     pub memory_used: u64,
     pub swap_total: u64,
@@ -305,6 +306,13 @@ impl MonitorState {
             .iter()
             .map(|cpu| cpu.cpu_usage())
             .collect::<Vec<_>>();
+        let mut core_histories = self.snapshot.core_histories.clone();
+        update_core_histories(
+            &mut core_histories,
+            &core_usages,
+            elapsed_seconds,
+            elapsed_seconds - HISTORY_SECONDS,
+        );
 
         self.networks.refresh(true);
         let (network_received_total, network_transmitted_total) = self.network_totals();
@@ -340,6 +348,7 @@ impl MonitorState {
             elapsed_seconds,
             cpu_percent,
             core_usages,
+            core_histories,
             memory_total,
             memory_used,
             swap_total,
@@ -391,6 +400,9 @@ impl MonitorState {
 
         let minimum_elapsed = elapsed_seconds - HISTORY_SECONDS;
         trim_history(&mut snapshot.cpu_history, minimum_elapsed);
+        for history in &mut snapshot.core_histories {
+            trim_history(history, minimum_elapsed);
+        }
         trim_history(&mut snapshot.memory_history, minimum_elapsed);
         trim_history(&mut snapshot.swap_history, minimum_elapsed);
         trim_history(&mut snapshot.disk_read_history, minimum_elapsed);
@@ -487,6 +499,21 @@ fn push_history(history: &mut Vec<[f64; 2]>, elapsed: f64, value: f64) {
     history.push([elapsed, value]);
 }
 
+/// 按当前 CPU 核心数调整历史列表，并追加本次采样，防止核心数量变化后索引错位。
+fn update_core_histories(
+    histories: &mut Vec<Vec<[f64; 2]>>,
+    usages: &[f32],
+    elapsed: f64,
+    minimum_elapsed: f64,
+) {
+    histories.truncate(usages.len());
+    histories.resize_with(usages.len(), Vec::new);
+    for (history, usage) in histories.iter_mut().zip(usages) {
+        push_history(history, elapsed, f64::from(*usage));
+        trim_history(history, minimum_elapsed);
+    }
+}
+
 /// 删除 60 秒窗口之前的点，限制历史数据的内存增长。
 fn trim_history(history: &mut Vec<[f64; 2]>, minimum_elapsed: f64) {
     history.retain(|point| point[0] >= minimum_elapsed);
@@ -496,7 +523,7 @@ fn trim_history(history: &mut Vec<[f64; 2]>, minimum_elapsed: f64) {
 mod tests {
     use super::{
         ProcessSnapshot, ProcessSort, SystemMonitor, TerminateResult, counter_rate, percentage,
-        sort_processes, trim_history,
+        sort_processes, trim_history, update_core_histories,
     };
 
     #[test]
@@ -518,6 +545,16 @@ mod tests {
         let mut history = vec![[1.0, 10.0], [40.0, 20.0], [61.0, 30.0]];
         trim_history(&mut history, 41.0);
         assert_eq!(history, vec![[61.0, 30.0]]);
+    }
+
+    #[test]
+    fn core_histories_follow_the_current_core_count() {
+        let mut histories = vec![vec![[1.0, 10.0]], vec![[61.0, 20.0]], vec![[61.0, 30.0]]];
+        update_core_histories(&mut histories, &[42.0, 8.0], 62.0, 2.0);
+
+        assert_eq!(histories.len(), 2);
+        assert_eq!(histories[0].last(), Some(&[62.0, 42.0]));
+        assert_eq!(histories[1].last(), Some(&[62.0, 8.0]));
     }
 
     #[test]

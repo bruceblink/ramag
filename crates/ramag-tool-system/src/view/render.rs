@@ -10,9 +10,9 @@ use gpui_component::{
 };
 
 use super::helpers::{
-    empty_state, format_bytes, format_percent, format_rate_pair, history_max, metric_card,
-    panel_heading, process_header, ratio_percent, render_core_row, render_disk_row, render_history,
-    render_meter_row,
+    core_grid_dimensions, empty_state, format_bytes, format_percent, format_rate_pair, history_max,
+    metric_card, panel_heading, process_header, ratio_percent, render_core_grid, render_disk_row,
+    render_history, render_meter_row,
 };
 use super::{Notice, SystemSection, SystemView, TerminationRequest};
 use crate::{MAX_VISIBLE_PROCESSES, MonitorSnapshot, ProcessSort, RefreshInterval};
@@ -280,40 +280,37 @@ impl SystemView {
             theme,
         ));
 
-        let mut core_rows = v_flex().gap(px(6.0));
-        if snapshot.core_usages.is_empty() {
-            core_rows = core_rows.child(empty_state("暂时没有 CPU 核心数据", theme));
-        } else {
-            for (index, usage) in snapshot.core_usages.iter().enumerate() {
-                core_rows = core_rows.child(render_core_row(index, *usage, theme));
-            }
-        }
-
+        let (core_columns, core_rows) = core_grid_dimensions(snapshot.core_usages.len());
         let cores = v_flex()
             .flex_1()
             .min_w(px(300.0))
-            .h(px(205.0))
+            .h(px(260.0))
             .gap(px(6.0))
             .p(px(12.0))
             .bg(theme.secondary)
             .border_1()
             .border_color(theme.border)
             .rounded(px(6.0))
-            .child(panel_heading("CPU 核心", "实时使用率", theme))
-            // 固定面板高度；核心数较多时只滚动列表，避免遮挡后续面板。
-            .child(
-                div()
-                    .id("system-core-list")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(core_rows),
-            );
+            .child(panel_heading(
+                "CPU 核心",
+                format!(
+                    "{} 个核心 · {} 列 × {} 行",
+                    snapshot.core_usages.len(),
+                    core_columns,
+                    core_rows
+                ),
+                theme,
+            ))
+            .child(render_core_grid(
+                &snapshot.core_usages,
+                &snapshot.core_histories,
+                theme,
+            ));
 
         let mut memory_panel = v_flex()
             .flex_1()
             .min_w(px(300.0))
-            .h(px(205.0))
+            .h(px(260.0))
             .gap(px(8.0))
             .p(px(12.0))
             .bg(theme.secondary)
