@@ -282,6 +282,7 @@ impl SystemView {
 
         let (core_columns, core_rows) = core_grid_dimensions(snapshot.core_usages.len());
         let cores = v_flex()
+            .debug_selector(|| "system-core-panel".to_owned())
             .flex_1()
             .min_w(px(300.0))
             .h(px(260.0))

@@ -152,35 +152,29 @@ pub(super) fn render_core_grid(
 
     let (columns, rows) = core_grid_dimensions(usages.len());
     let compact = usages.len() > 32;
-    let mut grid = v_flex()
+    let columns = u16::try_from(columns).unwrap_or(u16::MAX);
+    let rows = u16::try_from(rows).unwrap_or(u16::MAX);
+    let mut grid = div()
         .debug_selector(|| "system-core-grid".to_owned())
+        .grid()
+        .grid_cols(columns)
+        .grid_rows(rows)
         .w_full()
+        .h_full()
         .flex_1()
         .min_w_0()
         .min_h_0()
+        .overflow_hidden()
         .gap(px(if compact { 2.0 } else { 6.0 }));
 
-    for row_index in 0..rows {
-        let first = row_index * columns;
-        let last = (first + columns).min(usages.len());
-        let mut row = h_flex()
-            .w_full()
-            .flex_1()
-            .min_h_0()
-            .gap(px(if compact { 2.0 } else { 6.0 }));
-        for index in first..last {
-            row = row.child(render_core_tile(
-                index,
-                usages[index],
-                histories.get(index).map(Vec::as_slice).unwrap_or(&[]),
-                compact,
-                theme,
-            ));
-        }
-        for _ in last..first + columns {
-            row = row.child(div().flex_1().h_full().min_w_0());
-        }
-        grid = grid.child(row);
+    for (index, usage) in usages.iter().copied().enumerate() {
+        grid = grid.child(render_core_tile(
+            index,
+            usage,
+            histories.get(index).map(Vec::as_slice).unwrap_or(&[]),
+            compact,
+            theme,
+        ));
     }
 
     grid.into_any_element()
@@ -268,7 +262,7 @@ fn render_core_tile(
             .child(render_core_history(history, usage, false, theme));
     }
 
-    tile
+    tile.w_full().h_full().min_w_0().min_h_0()
 }
 
 fn render_core_history(
@@ -504,8 +498,8 @@ pub(super) fn format_bytes(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use gpui::{
-        AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
-        TestAppContext, Window, div, px, size,
+        AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+        Styled as _, TestAppContext, Window, div, px, size,
     };
     use gpui_component::{ActiveTheme as _, Root, v_flex};
 
@@ -522,10 +516,16 @@ mod tests {
                 .map(|index| (index % 100) as f32)
                 .collect::<Vec<_>>();
             let histories = vec![Vec::new(); usages.len()];
-            v_flex()
-                .size_full()
-                .child(div().h(px(20.0)).flex_none())
-                .child(render_core_grid(&usages, &histories, cx.theme()))
+            v_flex().size_full().child(
+                v_flex()
+                    .debug_selector(|| "system-core-panel".to_owned())
+                    .w_full()
+                    .h(px(260.0))
+                    .gap(px(6.0))
+                    .p(px(12.0))
+                    .child(div().h(px(20.0)).flex_none())
+                    .child(render_core_grid(&usages, &histories, cx.theme())),
+            )
         }
     }
 
@@ -571,11 +571,22 @@ mod tests {
         let grid = cx
             .debug_bounds("system-core-grid")
             .expect("core grid should be rendered");
+        let panel = cx
+            .debug_bounds("system-core-panel")
+            .expect("core panel should be rendered");
         let last_tile = cx
             .debug_bounds("system-core-tile-128")
             .expect("last core tile should be rendered");
         assert!(last_tile.size.width > px(0.0));
         assert!(last_tile.size.height > px(0.0));
+        assert!(grid.origin.x >= panel.origin.x);
+        assert!(grid.origin.y >= panel.origin.y);
+        assert!(grid.origin.x + grid.size.width <= panel.origin.x + panel.size.width);
+        assert!(grid.origin.y + grid.size.height <= panel.origin.y + panel.size.height);
+        assert!(last_tile.origin.x >= panel.origin.x);
+        assert!(last_tile.origin.y >= panel.origin.y);
+        assert!(last_tile.origin.x + last_tile.size.width <= panel.origin.x + panel.size.width);
+        assert!(last_tile.origin.y + last_tile.size.height <= panel.origin.y + panel.size.height);
         assert!(last_tile.origin.x + last_tile.size.width <= grid.origin.x + grid.size.width);
         assert!(last_tile.origin.y + last_tile.size.height <= grid.origin.y + grid.size.height);
     }
