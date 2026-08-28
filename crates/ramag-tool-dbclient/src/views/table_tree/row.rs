@@ -21,7 +21,7 @@ use ramag_domain::entities::format_bytes;
 
 #[cfg(test)]
 use super::{SchemaTables, TableColumns};
-use super::{TableTreePanel, navigation::TableTreeFilter};
+use super::{TableTreeNavigation, TableTreePanel, navigation::TableTreeFilter};
 use crate::views::tree_helpers::{
     render_column_row, render_columns_placeholder, render_copyable_detail_line,
 };
@@ -118,10 +118,12 @@ impl TableTreePanel {
             &self.table_columns,
             self.show_system,
             filter,
-            self.table_filter,
-            self.connection.as_ref().map(|connection| &connection.id),
-            &self.navigation_favorites,
-            &self.recent_tables,
+            TableTreeNavigation {
+                table_filter: self.table_filter,
+                connection_id: self.connection.as_ref().map(|connection| &connection.id),
+                navigation_favorites: &self.navigation_favorites,
+                recent_tables: &self.recent_tables,
+            },
         );
         self.tree_rows_cache.replace(Some(TreeRowsCacheEntry {
             key,

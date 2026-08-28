@@ -224,10 +224,12 @@ fn navigation_filter_keeps_only_current_connection_tables() {
         &HashMap::new(),
         false,
         "",
-        TableTreeFilter::Favorites,
-        Some(&connection_id),
-        &favorites,
-        &recent,
+        TableTreeNavigation {
+            table_filter: TableTreeFilter::Favorites,
+            connection_id: Some(&connection_id),
+            navigation_favorites: &favorites,
+            recent_tables: &recent,
+        },
     );
     assert!(
         !view
@@ -243,10 +245,12 @@ fn navigation_filter_keeps_only_current_connection_tables() {
         &HashMap::new(),
         false,
         "",
-        TableTreeFilter::Recent,
-        Some(&connection_id),
-        &favorites,
-        &recent,
+        TableTreeNavigation {
+            table_filter: TableTreeFilter::Recent,
+            connection_id: Some(&connection_id),
+            navigation_favorites: &favorites,
+            recent_tables: &recent,
+        },
     );
     assert!(
         view.rows

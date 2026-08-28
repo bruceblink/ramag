@@ -58,6 +58,7 @@ pub(super) fn parse_postgres_json_plan(result: &QueryResult) -> Option<PlanTree>
     })
 }
 
+// 将 MySQL JSON 执行计划递归展开为受限的可渲染节点，并保留截断状态。
 fn append_mysql_json_node(
     value: &JsonValue,
     parent: Option<usize>,
@@ -85,11 +86,10 @@ fn append_mysql_json_node(
         append_mysql_json_children(table_object, Some(node_id), depth + 1, rows, truncated);
         return;
     }
-    if let Some((operation, operation_value)) = object.iter().find(|(key, _)| {
-        MYSQL_OPERATION_KEYS
-            .iter()
-            .any(|candidate| *candidate == key.as_str())
-    }) {
+    if let Some((operation, operation_value)) = object
+        .iter()
+        .find(|(key, _)| MYSQL_OPERATION_KEYS.contains(&key.as_str()))
+    {
         let operation = operation.as_str();
         let Some(node_id) = push_json_node(
             rows,

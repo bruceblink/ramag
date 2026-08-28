@@ -283,11 +283,10 @@ impl ResultPanel {
                                 .rows
                                 .get_mut(mutation.row_index)
                                 .and_then(|row| row.values.get_mut(edit.key.1))
+                            && !values_equal(slot, &edit.value)
                         {
-                            if !values_equal(slot, &edit.value) {
-                                *slot = edit.value.clone();
-                                result_changed = true;
-                            }
+                            *slot = edit.value.clone();
+                            result_changed = true;
                         }
                         this.pending_cell_edits.remove(&edit.key);
                         committed_edits += 1;

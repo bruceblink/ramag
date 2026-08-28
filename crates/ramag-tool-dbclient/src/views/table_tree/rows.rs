@@ -10,7 +10,7 @@ use super::navigation::{
     TableNavigationRef, TableTreeFilter, schema_has_navigation_item, table_matches_filter,
 };
 use super::row::{TreeRow, TreeRowsView};
-use super::{SchemaTables, TableColumns};
+use super::{SchemaTables, TableColumns, TableTreeNavigation};
 use crate::sql_completion::is_system_schema;
 
 #[cfg(test)]
@@ -29,13 +29,16 @@ pub(super) fn build_tree_rows(
         table_columns,
         show_system,
         filter,
-        TableTreeFilter::All,
-        None,
-        &HashSet::new(),
-        &[],
+        TableTreeNavigation {
+            table_filter: TableTreeFilter::All,
+            connection_id: None,
+            navigation_favorites: &HashSet::new(),
+            recent_tables: &[],
+        },
     )
 }
 
+// 根据元数据、展开状态和导航条件构建扁平可见行，并统计搜索与失败状态。
 pub(super) fn build_tree_rows_with_navigation(
     schemas: &[Schema],
     expanded: &HashMap<String, SchemaTables>,
@@ -43,11 +46,14 @@ pub(super) fn build_tree_rows_with_navigation(
     table_columns: &HashMap<(String, String), TableColumns>,
     show_system: bool,
     filter: &str,
-    table_filter: TableTreeFilter,
-    connection_id: Option<&ramag_domain::entities::ConnectionId>,
-    navigation_favorites: &HashSet<TableNavigationRef>,
-    recent_tables: &[TableNavigationRef],
+    navigation: TableTreeNavigation<'_>,
 ) -> TreeRowsView {
+    let TableTreeNavigation {
+        table_filter,
+        connection_id,
+        navigation_favorites,
+        recent_tables,
+    } = navigation;
     let has_filter = !filter.is_empty();
     let mut visible: Vec<&Schema> = schemas
         .iter()

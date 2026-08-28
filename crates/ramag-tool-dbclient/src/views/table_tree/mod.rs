@@ -102,6 +102,14 @@ pub(super) struct TableColumns {
     pub(super) request_generation: u64,
 }
 
+// 集中传递表树构建所需的导航条件，保持筛选规则与元数据参数的边界清晰。
+pub(super) struct TableTreeNavigation<'a> {
+    table_filter: TableTreeFilter,
+    connection_id: Option<&'a ramag_domain::entities::ConnectionId>,
+    navigation_favorites: &'a HashSet<navigation::TableNavigationRef>,
+    recent_tables: &'a [navigation::TableNavigationRef],
+}
+
 #[derive(Debug, Clone)]
 pub enum TreeEvent {
     TableSelected {
