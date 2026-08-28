@@ -13,7 +13,22 @@ pub(super) fn table_context_menu(
     schema: String,
     table: String,
     is_view: bool,
+    is_favorite: bool,
 ) -> PopupMenu {
+    let (favorite_schema, favorite_table, favorite_entity) =
+        (schema.clone(), table.clone(), entity.clone());
+    let favorite_label = if is_favorite {
+        "取消收藏"
+    } else {
+        "收藏"
+    };
+    let menu = menu.item(
+        ramag_ui::menu_item(favorite_label).on_click(move |_, _, app| {
+            favorite_entity.update(app, |this, cx| {
+                this.toggle_table_favorite(favorite_schema.clone(), favorite_table.clone(), cx);
+            });
+        }),
+    );
     let table_for_copy = table.clone();
     let menu = menu.item(
         ramag_ui::menu_item("复制表名").on_click(move |_, window, app| {

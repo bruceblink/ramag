@@ -144,6 +144,9 @@ impl TableTreePanel {
                             return false;
                         }
 
+                        if let Ok(tables) = &result {
+                            this.prune_navigation_schema(&schema, tables, cx);
+                        }
                         let entry = this.expanded.entry(schema.clone()).or_default();
                         entry.loading = false;
                         match result {
@@ -274,6 +277,7 @@ impl TableTreePanel {
                 }
                 match result {
                     Ok(tables) => {
+                        this.prune_navigation_schema(&schema_for_async, &tables, cx);
                         let names: Vec<String> = tables.iter().map(|t| t.name.clone()).collect();
                         let view_set: std::collections::HashSet<String> = tables
                             .iter()
@@ -317,6 +321,7 @@ impl TableTreePanel {
         table: String,
         cx: &mut Context<Self>,
     ) {
+        self.record_recent_table(schema.clone(), table.clone(), cx);
         self.selected = Some((schema.clone(), table.clone()));
         if self.active_schema.as_deref() != Some(schema.as_str()) {
             self.active_schema = Some(schema.clone());

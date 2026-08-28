@@ -2,9 +2,11 @@ mod compare;
 mod ddl;
 mod load;
 mod menus;
+mod navigation;
 mod ops;
 mod render;
 mod row;
+mod rows;
 mod transfer_ops;
 
 use std::cell::RefCell;
@@ -19,7 +21,7 @@ use ramag_domain::entities::{Column, ConnectionConfig, DriverKind, ForeignKey, I
 use ramag_ui::AsyncMutationGate;
 use tracing::error;
 
-use self::row::TreeRowsCacheEntry;
+use self::{navigation::TableTreeFilter, row::TreeRowsCacheEntry};
 use crate::sql_completion::{SchemaCache, is_system_schema};
 use crate::views::connection_list::ConnectionListPanel;
 
@@ -57,6 +59,9 @@ pub struct TableTreePanel {
     pub(super) schema_cache: Arc<RwLock<SchemaCache>>,
     pub(super) editor_visible: bool,
     pub(super) active_schema: Option<String>,
+    navigation_favorites: HashSet<navigation::TableNavigationRef>,
+    recent_tables: Vec<navigation::TableNavigationRef>,
+    table_filter: TableTreeFilter,
     pub(super) uniform_scroll: UniformListScrollHandle,
     tree_revision: u64,
     tree_rows_cache: RefCell<Option<TreeRowsCacheEntry>>,
@@ -158,7 +163,7 @@ impl TableTreePanel {
             }),
         ];
 
-        Self {
+        let mut this = Self {
             service,
             connection_list,
             connection: None,
@@ -180,6 +185,9 @@ impl TableTreePanel {
             schema_cache,
             editor_visible: false,
             active_schema: None,
+            navigation_favorites: HashSet::new(),
+            recent_tables: Vec::new(),
+            table_filter: TableTreeFilter::All,
             uniform_scroll: UniformListScrollHandle::new(),
             tree_revision: 0,
             tree_rows_cache: RefCell::new(None),
@@ -188,7 +196,9 @@ impl TableTreePanel {
             ddl_gate: AsyncMutationGate::default(),
             transfer: ramag_ui::TransferState::default(),
             _subscriptions: subs,
-        }
+        };
+        this.load_navigation_state(cx);
+        this
     }
 
     pub fn set_editor_visible(&mut self, v: bool, cx: &mut Context<Self>) {
@@ -291,6 +301,7 @@ impl TableTreePanel {
                         let names: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
                         this.schema_cache.write().all_schemas = names;
                         this.schemas = schemas;
+                        this.ensure_navigation_coverage(cx);
                         this.invalidate_tree_rows();
                         if this.active_schema.is_none()
                             && let Some(default_name) = pick_default_schema(&conn, &this.schemas)

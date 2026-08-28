@@ -1,8 +1,9 @@
 use ramag_domain::entities::{
-    Column, ColumnKind, ColumnType, ForeignKey, ForeignKeyAction, Index, Table,
+    Column, ColumnKind, ColumnType, ConnectionId, ForeignKey, ForeignKeyAction, Index, Table,
 };
 
 use super::*;
+use crate::views::table_tree::navigation::{TableNavigationRef, TableTreeFilter};
 
 #[test]
 fn metadata_rows_keep_exact_copy_targets() {
@@ -172,4 +173,90 @@ fn hidden_system_schemas_are_not_counted_in_search_progress() {
         "users",
     );
     assert_eq!(shown.searchable_schemas, 1);
+}
+
+#[test]
+fn navigation_filter_keeps_only_current_connection_tables() {
+    let connection_id = ConnectionId::new();
+    let other_connection_id = ConnectionId::new();
+    let schemas = vec![Schema {
+        name: "public".into(),
+        charset: None,
+        collation: None,
+    }];
+    let expanded = HashMap::from([(
+        "public".into(),
+        SchemaTables {
+            tables: vec![
+                Table {
+                    name: "users".into(),
+                    schema: "public".into(),
+                    comment: None,
+                    is_view: false,
+                    size_bytes: None,
+                },
+                Table {
+                    name: "orders".into(),
+                    schema: "public".into(),
+                    comment: None,
+                    is_view: false,
+                    size_bytes: None,
+                },
+            ],
+            ..Default::default()
+        },
+    )]);
+    let favorites = HashSet::from([TableNavigationRef {
+        connection_id: other_connection_id,
+        schema: "public".into(),
+        table: "users".into(),
+    }]);
+    let recent = vec![TableNavigationRef {
+        connection_id: connection_id.clone(),
+        schema: "public".into(),
+        table: "orders".into(),
+    }];
+
+    let view = build_tree_rows_with_navigation(
+        &schemas,
+        &expanded,
+        &HashSet::new(),
+        &HashMap::new(),
+        false,
+        "",
+        TableTreeFilter::Favorites,
+        Some(&connection_id),
+        &favorites,
+        &recent,
+    );
+    assert!(
+        !view
+            .rows
+            .iter()
+            .any(|row| { matches!(row, TreeRow::Table { key, .. } if key.1 == "users") })
+    );
+
+    let view = build_tree_rows_with_navigation(
+        &schemas,
+        &expanded,
+        &HashSet::new(),
+        &HashMap::new(),
+        false,
+        "",
+        TableTreeFilter::Recent,
+        Some(&connection_id),
+        &favorites,
+        &recent,
+    );
+    assert!(
+        view.rows
+            .iter()
+            .any(|row| { matches!(row, TreeRow::Table { key, .. } if key.1 == "orders") })
+    );
+    assert!(
+        !view
+            .rows
+            .iter()
+            .any(|row| { matches!(row, TreeRow::Table { key, .. } if key.1 == "users") })
+    );
 }

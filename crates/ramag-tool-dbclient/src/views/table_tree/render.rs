@@ -10,7 +10,7 @@ use gpui_component::{
 use ramag_domain::entities::DriverKind;
 use ramag_ui::PointerDropdownMenu as _;
 
-use super::{TableTreePanel, TreeEvent, ops::TableDdlNotification};
+use super::{TableTreeFilter, TableTreePanel, TreeEvent, ops::TableDdlNotification};
 use crate::sql_completion::is_system_schema;
 
 impl Render for TableTreePanel {
@@ -105,6 +105,33 @@ impl Render for TableTreePanel {
             IconName::EyeOff
         };
         let qp_visible = self.editor_visible;
+        let table_filter = self.table_filter;
+        let filter_entity = cx.entity().clone();
+        let filter_button = ramag_ui::clickable_button("table-tree-filter")
+            .ghost()
+            .small()
+            .label(format!("{} ▾", table_filter.label()))
+            .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, move |menu, _, _| {
+                let mut menu = menu;
+                for option in [
+                    TableTreeFilter::All,
+                    TableTreeFilter::Favorites,
+                    TableTreeFilter::Recent,
+                ] {
+                    let entity = filter_entity.clone();
+                    menu = menu.item(
+                        ramag_ui::menu_item(if option == table_filter {
+                            format!("✓ {}", option.label())
+                        } else {
+                            option.label().to_string()
+                        })
+                        .on_click(move |_, _, app| {
+                            entity.update(app, |this, cx| this.set_table_filter(option, cx));
+                        }),
+                    );
+                }
+                menu
+            });
         let driver = self.connection.as_ref().map(|c| c.driver);
         let pg_database: Option<String> = self
             .connection
@@ -191,6 +218,7 @@ impl Render for TableTreePanel {
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
                 ),
             )
+            .child(filter_button)
             .child(
                 ramag_ui::clickable_button("toggle-system")
                     .ghost()
