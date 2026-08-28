@@ -1,10 +1,17 @@
 //! 系统工具视图的通用格式化和重复布局。
 
-use gpui::{AnyElement, InteractiveElement, IntoElement, ParentElement, Styled, div, px, relative};
+use gpui::{
+    AnyElement, InteractiveElement, IntoElement, ParentElement, PathBuilder, Styled, canvas, div,
+    fill, point, px, relative, size,
+};
 use gpui_component::{Icon, h_flex, v_flex};
 
 use super::Notice;
 use crate::{DiskSnapshot, TerminateResult};
+
+const HISTORY_CHART_POINTS: usize = 60;
+const HISTORY_CHART_HORIZONTAL_GRID_LINES: usize = 4;
+const HISTORY_CHART_VERTICAL_GRID_LINES: usize = 6;
 
 pub(super) fn notice_for_termination(result: TerminateResult) -> Notice {
     match result {
@@ -326,7 +333,7 @@ pub(super) fn render_meter_row(
                 .child(
                     div()
                         .h_full()
-                        .w(px((percent * 1.8) as f32))
+                        .w(relative((percent / 100.0) as f32))
                         .bg(accent)
                         .rounded_full(),
                 ),
@@ -350,22 +357,98 @@ pub(super) fn render_history(
 ) -> AnyElement {
     let latest = points.last().map_or(0.0, |point| point[1]);
     let max_value = max_value.max(f64::EPSILON);
-    let mut bars = v_flex().h(px(78.0)).justify_end().gap(px(2.0));
-    for point in points.iter().rev().take(24) {
-        let width = (point[1].max(0.0) / max_value).clamp(0.0, 1.0) * 250.0;
-        bars = bars.child(
-            div()
-                .h(px(2.0))
-                .w_full()
-                .bg(theme.muted)
-                .child(div().h_full().w(px(width as f32)).bg(accent)),
-        );
-    }
+    let chart_points = history_chart_points(points);
+    let chart_background = theme.muted;
+    let grid_color = theme.border.opacity(0.35);
+    let chart = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let padding = px(1.0);
+            let chart_origin = bounds.origin + point(padding, padding);
+            let chart_width = (bounds.size.width - padding * 2.0).max(px(1.0));
+            let chart_height = (bounds.size.height - padding * 2.0).max(px(1.0));
+            let chart_bounds = gpui::Bounds::new(chart_origin, size(chart_width, chart_height));
+            window.paint_quad(fill(chart_bounds, chart_background));
+
+            let mut grid = PathBuilder::stroke(px(1.0));
+            for index in 1..=HISTORY_CHART_HORIZONTAL_GRID_LINES {
+                let fraction = index as f32 / (HISTORY_CHART_HORIZONTAL_GRID_LINES + 1) as f32;
+                let y = chart_origin.y + chart_height * fraction;
+                grid.move_to(point(chart_origin.x, y));
+                grid.line_to(point(chart_origin.x + chart_width, y));
+            }
+            for index in 1..=HISTORY_CHART_VERTICAL_GRID_LINES {
+                let fraction = index as f32 / (HISTORY_CHART_VERTICAL_GRID_LINES + 1) as f32;
+                let x = chart_origin.x + chart_width * fraction;
+                grid.move_to(point(x, chart_origin.y));
+                grid.line_to(point(x, chart_origin.y + chart_height));
+            }
+            if let Ok(path) = grid.build() {
+                window.paint_path(path, grid_color);
+            }
+
+            if chart_points.is_empty() {
+                return;
+            }
+
+            let coordinates = chart_points
+                .iter()
+                .enumerate()
+                .map(|(index, sample)| {
+                    let x_fraction = if chart_points.len() == 1 {
+                        0.5
+                    } else {
+                        index as f32 / (chart_points.len() - 1) as f32
+                    };
+                    let value_fraction = chart_value_ratio(sample[1], max_value);
+                    point(
+                        chart_origin.x + chart_width * x_fraction,
+                        chart_origin.y + chart_height * (1.0 - value_fraction),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            if coordinates.len() > 1 {
+                let mut area = PathBuilder::fill();
+                area.move_to(point(coordinates[0].x, chart_origin.y + chart_height));
+                for coordinate in &coordinates {
+                    area.line_to(*coordinate);
+                }
+                area.line_to(point(
+                    coordinates[coordinates.len() - 1].x,
+                    chart_origin.y + chart_height,
+                ));
+                area.close();
+                if let Ok(path) = area.build() {
+                    window.paint_path(path, accent.opacity(0.12));
+                }
+            }
+
+            let mut line = PathBuilder::stroke(px(1.5));
+            line.move_to(coordinates[0]);
+            if coordinates.len() == 1 {
+                line.line_to(point(coordinates[0].x + px(2.0), coordinates[0].y));
+            } else {
+                for coordinate in coordinates.iter().skip(1) {
+                    line.line_to(*coordinate);
+                }
+            }
+            if let Ok(path) = line.build() {
+                window.paint_path(path, accent);
+            }
+        },
+    )
+    .w_full()
+    .flex_1()
+    .min_h_0();
     v_flex()
         .flex_1()
         .min_w(px(280.0))
+        .h(px(132.0))
+        .min_h_0()
         .gap(px(6.0))
         .p(px(12.0))
+        .overflow_hidden()
         .bg(theme.secondary)
         .border_1()
         .border_color(theme.border)
@@ -390,9 +473,21 @@ pub(super) fn render_history(
         .child(if points.is_empty() {
             empty_state("等待第一份采样", theme).into_any_element()
         } else {
-            bars.into_any_element()
+            chart.into_any_element()
         })
         .into_any_element()
+}
+
+fn history_chart_points(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let start = points.len().saturating_sub(HISTORY_CHART_POINTS);
+    points[start..].to_vec()
+}
+
+fn chart_value_ratio(value: f64, max_value: f64) -> f32 {
+    if !value.is_finite() || !max_value.is_finite() || max_value <= 0.0 {
+        return 0.0;
+    }
+    (value / max_value).clamp(0.0, 1.0) as f32
 }
 
 pub(super) fn render_disk_row(
@@ -496,98 +591,4 @@ pub(super) fn format_bytes(value: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use gpui::{
-        AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-        Styled as _, TestAppContext, Window, div, px, size,
-    };
-    use gpui_component::{ActiveTheme as _, Root, v_flex};
-
-    use super::{
-        core_grid_dimensions, format_bytes, format_percent, format_rate_pair, history_max,
-        ratio_percent, render_core_grid,
-    };
-
-    struct CoreGridTestHost;
-
-    impl Render for CoreGridTestHost {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let usages = (0..128)
-                .map(|index| (index % 100) as f32)
-                .collect::<Vec<_>>();
-            let histories = vec![Vec::new(); usages.len()];
-            v_flex().size_full().child(
-                v_flex()
-                    .debug_selector(|| "system-core-panel".to_owned())
-                    .w_full()
-                    .h(px(260.0))
-                    .gap(px(6.0))
-                    .p(px(12.0))
-                    .child(div().h(px(20.0)).flex_none())
-                    .child(render_core_grid(&usages, &histories, cx.theme())),
-            )
-        }
-    }
-
-    #[test]
-    fn formatters_keep_units_and_bounds() {
-        assert_eq!(format_bytes(1024), "1.0 KiB");
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_percent(150.0), "100.0%");
-        assert_eq!(ratio_percent(5, 10), 50.0);
-        assert_eq!(history_max(&[[0.0, 2.0], [1.0, 8.0]]), 8.0);
-    }
-
-    #[test]
-    fn rate_pairs_use_one_shared_unit() {
-        assert_eq!(
-            format_rate_pair("读", 27.3, "写", 27.0),
-            "读 27.3 / 写 27.0 MB/s"
-        );
-    }
-
-    #[test]
-    fn core_grid_keeps_every_core_inside_the_fixed_window() {
-        assert_eq!(core_grid_dimensions(0), (1, 1));
-        assert_eq!(core_grid_dimensions(1), (1, 1));
-        assert_eq!(core_grid_dimensions(12), (4, 3));
-        assert_eq!(core_grid_dimensions(33), (9, 4));
-
-        let (columns, rows) = core_grid_dimensions(128);
-        assert_eq!((columns, rows), (16, 8));
-        assert!(columns * rows >= 128);
-    }
-
-    #[gpui::test]
-    fn core_grid_last_tile_is_not_clipped_by_the_fixed_window(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let host = cx.new(|_| CoreGridTestHost);
-            Root::new(host, window, cx)
-        });
-        cx.simulate_resize(size(px(640.0), px(260.0)));
-        cx.run_until_parked();
-
-        let grid = cx
-            .debug_bounds("system-core-grid")
-            .expect("core grid should be rendered");
-        let panel = cx
-            .debug_bounds("system-core-panel")
-            .expect("core panel should be rendered");
-        let last_tile = cx
-            .debug_bounds("system-core-tile-128")
-            .expect("last core tile should be rendered");
-        assert!(last_tile.size.width > px(0.0));
-        assert!(last_tile.size.height > px(0.0));
-        assert!(grid.origin.x >= panel.origin.x);
-        assert!(grid.origin.y >= panel.origin.y);
-        assert!(grid.origin.x + grid.size.width <= panel.origin.x + panel.size.width);
-        assert!(grid.origin.y + grid.size.height <= panel.origin.y + panel.size.height);
-        assert!(last_tile.origin.x >= panel.origin.x);
-        assert!(last_tile.origin.y >= panel.origin.y);
-        assert!(last_tile.origin.x + last_tile.size.width <= panel.origin.x + panel.size.width);
-        assert!(last_tile.origin.y + last_tile.size.height <= panel.origin.y + panel.size.height);
-        assert!(last_tile.origin.x + last_tile.size.width <= grid.origin.x + grid.size.width);
-        assert!(last_tile.origin.y + last_tile.size.height <= grid.origin.y + grid.size.height);
-    }
-}
+mod tests;
