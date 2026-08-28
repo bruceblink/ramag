@@ -4,11 +4,17 @@ use ramag_domain::entities::{QueryResult, Row, Value};
 
 use super::{PlanRow, PlanSource, PlanTree};
 
+#[path = "plan_json_parser.rs"]
+mod json_parser;
+
 const MAX_PLAN_ROWS: usize = 10_000;
 const MAX_PLAN_TEXT_CHARS: usize = 16_384;
 
 pub(super) fn parse_plan(result: &QueryResult) -> Option<PlanTree> {
-    parse_mysql_plan(result).or_else(|| parse_postgres_plan(result))
+    json_parser::parse_mysql_json_plan(result)
+        .or_else(|| json_parser::parse_postgres_json_plan(result))
+        .or_else(|| parse_mysql_plan(result))
+        .or_else(|| parse_postgres_plan(result))
 }
 
 fn parse_mysql_plan(result: &QueryResult) -> Option<PlanTree> {
