@@ -8,10 +8,11 @@ use gpui_component::{
     ActiveTheme, h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
 };
-use ramag_domain::entities::{Commit, ResetKind};
+use ramag_domain::entities::{Commit, MAX_GIT_NAME_ARG_BYTES, ResetKind};
 
 use super::super::commit_graph::{CommitGraphRow, lane_color, render_lane_gutter};
 use super::super::vcs_view::VcsView;
+use super::BranchOp;
 
 const MAX_VISIBLE_REF_CHIPS: usize = 8;
 
@@ -134,6 +135,7 @@ pub(in crate::views) fn render_commit_row(
             let (e_sha, c_sha) = (entity.clone(), cid.clone());
             let (e_msg, c_msg) = (entity.clone(), cid.clone());
             let (e_compare, c_compare) = (entity.clone(), cid.clone());
+            let (e_branch, c_branch) = (entity.clone(), cid.clone());
             menu.item(ramag_ui::menu_item("复制哈希").on_click(move |_, _, app| {
                 app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
                 e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
@@ -174,6 +176,30 @@ pub(in crate::views) fn render_commit_row(
                     });
                 }),
             )
+            .item(
+                ramag_ui::menu_item("新建分支（基于此 commit）").on_click(move |_, window, app| {
+                    let short: String = c_branch.chars().take(7).collect();
+                    let target = c_branch.clone();
+                    let branch_view = e_branch.clone();
+                    ramag_ui::open_bounded_prompt(
+                        "从 commit 新建分支",
+                        format!(
+                            "输入分支名，将基于「{short}」创建并切换到新分支。"
+                        ),
+                        "",
+                        "创建并切换",
+                        MAX_GIT_NAME_ARG_BYTES,
+                        move |name, _, app| {
+                            branch_view.update(app, |this, cx| {
+                                this.run_branch_op(BranchOp::Create(name, Some(target.clone())), cx);
+                            });
+                        },
+                        window,
+                        app,
+                    );
+                }),
+            )
+            .separator()
             .item(
                 ramag_ui::menu_item("撤销提交").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;
