@@ -2,11 +2,11 @@
 
 use super::{SettingsView, pages::settings_card};
 use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
-use gpui_component::{ActiveTheme, Disableable as _, h_flex, notification::Notification, v_flex};
+use gpui_component::{ActiveTheme, h_flex, notification::Notification, v_flex};
 use tracing::error;
 
 impl SettingsView {
-    /// 渲染系统设置页面；托盘开关只在 Windows 上可操作，其他平台不改变现有关闭行为。
+    /// 渲染系统设置页面；托盘开关在所有平台展示，平台行为由运行时支持情况决定。
     pub(super) fn render_system_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -14,7 +14,7 @@ impl SettingsView {
         let description = if supported {
             "关闭主窗口后隐藏到任务栏托盘，应用继续在后台运行；可从托盘重新打开。"
         } else {
-            "此设置仅在 Windows 上生效，当前平台继续使用默认的关闭行为。"
+            "当前平台尚未完成托盘驻留验证，请在对应系统上测试关闭窗口后的行为。"
         };
 
         settings_card("窗口关闭行为", theme.border)
@@ -36,7 +36,6 @@ impl SettingsView {
                         crate::clickable_switch("settings-system-minimize-to-tray")
                             .flex_none()
                             .checked(self.system_settings.minimize_to_tray)
-                            .disabled(!supported)
                             .on_click(cx.listener(|this, _: &bool, _, cx| {
                                 this.toggle_minimize_to_tray(cx);
                             })),
