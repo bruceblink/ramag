@@ -47,6 +47,21 @@ pub fn apply_theme(mode: Mode, cx: &mut App) {
     configure_scrollbar_paint(Theme::global_mut(cx));
 }
 
+/// 切换浅色 / 深色主题，立即刷新全部窗口并把最终选择异步写入 Storage。
+pub fn toggle_theme(cx: &mut App) {
+    let next = match current_mode(cx) {
+        Mode::Light => Mode::Dark,
+        Mode::Dark => Mode::Light,
+    };
+    apply_theme(next, cx);
+    cx.refresh_windows();
+    let preference = match next {
+        Mode::Dark => "dark",
+        Mode::Light => "light",
+    };
+    crate::preferences::persist_preference_latest("theme_mode", preference.to_string(), cx);
+}
+
 /// 为可拖拽滚动条提供稳定的对比度，避免主题配置中的透明色让滚动条只剩滚动状态而不可见。
 fn configure_scrollbar_paint(theme: &mut Theme) {
     let mut track = theme.border;
