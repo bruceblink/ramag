@@ -1,6 +1,7 @@
 pub mod branch_picker;
 pub mod commit_detail;
 pub mod commit_graph;
+pub mod compare_panel;
 pub mod confirm_dialogs;
 pub mod conflict_editor;
 pub mod diff_keys;
@@ -28,6 +29,7 @@ pub mod vcs_tabs;
 pub mod vcs_toolbar;
 pub mod vcs_view;
 pub mod vcs_view_ops;
+pub mod vcs_view_ops_compare;
 pub mod vcs_view_ops_file_tab;
 pub mod vcs_view_ops_history;
 pub mod vcs_view_ops_merge;

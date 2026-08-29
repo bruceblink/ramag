@@ -130,6 +130,10 @@ pub(super) enum FileTabSource {
         commit_id: String,
         change_kind: Option<FileChangeKind>,
     },
+    Compare {
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Clone)]

@@ -134,6 +134,9 @@ impl VcsView {
 
     /// HEAD 变化后清理缓存并刷新。
     pub(in crate::views) fn refresh_after_head_change(&mut self, cx: &mut Context<Self>) {
+        if self.compare.is_some() {
+            self.clear_compare_state();
+        }
         for tab in &mut self.file_tabs {
             tab.cached_diff = None;
             tab.cached_diff_syntax = None;
@@ -161,6 +164,7 @@ impl VcsView {
                 FileTabSource::Commit { commit_id, .. } => {
                     self.select_commit_file(tab.path, commit_id, cx);
                 }
+                FileTabSource::Compare { .. } => {}
             }
         }
     }

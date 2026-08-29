@@ -105,7 +105,7 @@ impl VcsView {
                 ),
             )
             .when(
-                matches!(self.files_view_mode, FilesViewMode::Changes),
+                matches!(self.files_view_mode, FilesViewMode::Changes) && self.compare.is_none(),
                 |c| c.child(self.render_commit_panel(cx)),
             )
             .into_any_element()
@@ -214,7 +214,7 @@ impl VcsView {
                     })),
             );
         }
-        if matches!(active, FilesViewMode::Changes) {
+        if matches!(active, FilesViewMode::Changes) && self.compare.is_none() {
             search_row = search_row.child(self.render_stash_save_button(cx));
         }
         if self.repo.is_some() {
@@ -241,6 +241,9 @@ impl VcsView {
     }
 
     fn render_files_content(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.compare.is_some() {
+            return self.render_compare_files_view(cx);
+        }
         match self.files_view_mode {
             FilesViewMode::Changes => self.render_file_groups(cx),
             FilesViewMode::Project => self.render_project_files_view(cx),

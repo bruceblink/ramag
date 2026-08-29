@@ -28,7 +28,30 @@ pub fn list(repo_path: &Path, commit: &str) -> Result<Vec<FileStatus>> {
     parse_diff_tree(&raw)
 }
 
+/// 读取两个 revision 之间的文件清单，供分支比较面板复用 commit 文件树模型。
+pub fn list_range(repo_path: &Path, from: &str, to: &str) -> Result<Vec<FileStatus>> {
+    validate_positional_arg(from, "diff 起点")?;
+    validate_positional_arg(to, "diff 终点")?;
+    let raw = run_git_bytes(
+        repo_path,
+        &[
+            "diff",
+            "--find-renames",
+            "--name-status",
+            "-z",
+            from,
+            to,
+            "--",
+        ],
+    )?;
+    parse_name_status(&raw, "Git 范围文件列表")
+}
+
 fn parse_diff_tree(raw: &[u8]) -> Result<Vec<FileStatus>> {
+    parse_name_status(raw, "Git commit 文件列表")
+}
+
+fn parse_name_status(raw: &[u8], context: &str) -> Result<Vec<FileStatus>> {
     let mut out = Vec::new();
     let mut fields = raw
         .split(|byte| *byte == 0)
@@ -36,16 +59,16 @@ fn parse_diff_tree(raw: &[u8]) -> Result<Vec<FileStatus>> {
     let mut record_index = 0;
     while let Some(code_raw) = fields.next() {
         record_index += 1;
-        ensure_git_list_room(out.len(), "Git commit 文件列表")?;
-        ensure_git_record_size(code_raw, "Git commit 状态码", record_index)?;
+        ensure_git_list_room(out.len(), context)?;
+        ensure_git_record_size(code_raw, &format!("{context}状态码"), record_index)?;
         let code_raw = std::str::from_utf8(code_raw).map_err(|error| {
-            diff_tree_parse_error(record_index, &format!("状态码非 UTF-8：{error}"))
+            status_parse_error(context, record_index, &format!("状态码非 UTF-8：{error}"))
         })?;
         // R/C 后跟相似度数字，仅取首字母
         let code = code_raw
             .chars()
             .next()
-            .ok_or_else(|| diff_tree_parse_error(record_index, "状态码为空"))?;
+            .ok_or_else(|| status_parse_error(context, record_index, "状态码为空"))?;
         let kind = match code {
             'M' => FileChangeKind::Modified,
             'A' => FileChangeKind::Added,
@@ -54,27 +77,28 @@ fn parse_diff_tree(raw: &[u8]) -> Result<Vec<FileStatus>> {
             'C' => FileChangeKind::Copied,
             'T' => FileChangeKind::TypeChanged,
             _ => {
-                return Err(diff_tree_parse_error(
+                return Err(status_parse_error(
+                    context,
                     record_index,
                     &format!("未知状态码：{code_raw}"),
                 ));
             }
         };
-        validate_status_code(code_raw, kind, record_index)?;
+        validate_status_code(code_raw, kind, record_index, context)?;
 
         let first_path = fields
             .next()
-            .ok_or_else(|| diff_tree_parse_error(record_index, "缺少文件路径"))?;
-        ensure_git_record_size(first_path, "Git commit 文件路径", record_index)?;
-        let first_path = decode_diff_path(first_path, record_index)?;
+            .ok_or_else(|| status_parse_error(context, record_index, "缺少文件路径"))?;
+        ensure_git_record_size(first_path, &format!("{context}文件路径"), record_index)?;
+        let first_path = decode_diff_path(first_path, record_index, context)?;
         let (path, old_path) = match kind {
             FileChangeKind::Renamed | FileChangeKind::Copied => {
                 let new_path = fields
                     .next()
-                    .ok_or_else(|| diff_tree_parse_error(record_index, "缺少新文件路径"))?;
-                ensure_git_record_size(new_path, "Git commit 新文件路径", record_index)?;
+                    .ok_or_else(|| status_parse_error(context, record_index, "缺少新文件路径"))?;
+                ensure_git_record_size(new_path, &format!("{context}新文件路径"), record_index)?;
                 (
-                    decode_diff_path(new_path, record_index)?.to_string(),
+                    decode_diff_path(new_path, record_index, context)?.to_string(),
                     Some(first_path.to_string()),
                 )
             }
@@ -90,7 +114,12 @@ fn parse_diff_tree(raw: &[u8]) -> Result<Vec<FileStatus>> {
     Ok(out)
 }
 
-fn validate_status_code(code: &str, kind: FileChangeKind, index: usize) -> Result<()> {
+fn validate_status_code(
+    code: &str,
+    kind: FileChangeKind,
+    index: usize,
+    context: &str,
+) -> Result<()> {
     let valid = match kind {
         FileChangeKind::Renamed | FileChangeKind::Copied => {
             code.len() > 1 && code[1..].bytes().all(|byte| byte.is_ascii_digit())
@@ -100,24 +129,23 @@ fn validate_status_code(code: &str, kind: FileChangeKind, index: usize) -> Resul
     if valid {
         Ok(())
     } else {
-        Err(diff_tree_parse_error(index, "状态码格式异常"))
+        Err(status_parse_error(context, index, "状态码格式异常"))
     }
 }
 
-fn decode_diff_path(path: &[u8], index: usize) -> Result<&str> {
+fn decode_diff_path<'a>(path: &'a [u8], index: usize, context: &str) -> Result<&'a str> {
     if path.is_empty() {
-        return Err(diff_tree_parse_error(index, "文件路径为空"));
+        return Err(status_parse_error(context, index, "文件路径为空"));
     }
-    let path = std::str::from_utf8(path)
-        .map_err(|error| diff_tree_parse_error(index, &format!("文件路径非 UTF-8：{error}")))?;
-    validate_output_path(path, "Git commit 文件路径", index)?;
+    let path = std::str::from_utf8(path).map_err(|error| {
+        status_parse_error(context, index, &format!("文件路径非 UTF-8：{error}"))
+    })?;
+    validate_output_path(path, &format!("{context}文件路径"), index)?;
     Ok(path)
 }
 
-fn diff_tree_parse_error(index: usize, reason: &str) -> DomainError {
-    DomainError::QueryFailed(format!(
-        "解析 Git commit 文件列表第 {index} 条记录失败：{reason}"
-    ))
+fn status_parse_error(context: &str, index: usize, reason: &str) -> DomainError {
+    DomainError::QueryFailed(format!("解析 {context}第 {index} 条记录失败：{reason}"))
 }
 
 #[cfg(test)]

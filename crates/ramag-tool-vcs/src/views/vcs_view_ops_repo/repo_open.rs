@@ -220,6 +220,9 @@ pub(in super::super) async fn open_repo_async(
                 FileTabSource::Commit { commit_id, .. } => {
                     this.select_commit_file(tab.path, commit_id, cx);
                 }
+                FileTabSource::Compare { from, to } => {
+                    this.select_compare_file(tab.path, from, to, cx);
+                }
             }
         }
         this.start_fs_watcher(cx);

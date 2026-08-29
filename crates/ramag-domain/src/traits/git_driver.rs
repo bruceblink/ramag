@@ -385,6 +385,16 @@ pub trait GitDriver: Send + Sync {
         not_impl("list_commit_files")
     }
 
+    /// 两个 revision 之间的文件变更。`staged` 承载范围差异类型，`unstaged` 始终 None。
+    async fn list_diff_files(
+        &self,
+        _repo: &RepoId,
+        _from: &str,
+        _to: &str,
+    ) -> Result<Vec<FileStatus>> {
+        not_impl("list_diff_files")
+    }
+
     /// 返回结果按 1-based 当前行号排序，长度等于文件总行数。
     async fn blame(&self, _repo: &RepoId, _path: &str) -> Result<Vec<BlameLine>> {
         not_impl("blame")

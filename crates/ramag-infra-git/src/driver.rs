@@ -493,6 +493,20 @@ impl GitDriver for GitDriverImpl {
         run_blocking(move || commit_files::list(&handle.path, &commit)).await
     }
 
+    async fn list_diff_files(
+        &self,
+        repo: &RepoId,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<FileStatus>> {
+        git_cmd::validate_positional_arg(from, "diff 起点")?;
+        git_cmd::validate_positional_arg(to, "diff 终点")?;
+        let handle = self.get_repo(repo)?;
+        let from = from.to_string();
+        let to = to.to_string();
+        run_blocking(move || commit_files::list_range(&handle.path, &from, &to)).await
+    }
+
     async fn blame(&self, repo: &RepoId, path: &str) -> Result<Vec<BlameLine>> {
         git_cmd::validate_path_arg(path, "blame 文件路径")?;
         let handle = self.get_repo(repo)?;

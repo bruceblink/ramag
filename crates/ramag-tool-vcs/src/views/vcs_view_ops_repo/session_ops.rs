@@ -136,6 +136,7 @@ impl VcsView {
         }
         // 缓存仅保留标签元数据。
         let mut file_tabs = self.file_tabs.clone();
+        file_tabs.retain(|tab| !matches!(tab.source, FileTabSource::Compare { .. }));
         strip_file_tab_payloads(&mut file_tabs);
         cache_repo_session(
             &mut self.repo_session_cache,

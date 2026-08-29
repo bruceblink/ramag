@@ -138,6 +138,8 @@ pub struct VcsView {
     pub(super) changes_rows_cache: RefCell<Option<WorkspaceRowsCacheEntry>>,
     pub(super) history_path_filter: Option<String>,
     pub(super) history_search_input: Entity<InputState>,
+    pub(super) compare: Option<CompareState>,
+    pub(super) compare_request_seq: u64,
     /// blame 行数据，以 Rc 供 diff 共享。
     pub(super) blame_lines: std::rc::Rc<Vec<ramag_domain::entities::BlameLine>>,
     pub(super) loading_blame: bool,
@@ -246,6 +248,16 @@ impl Focusable for VcsView {
     }
 }
 
+/// 当前分支与另一个 revision 的只读比较会话；文件列表异步加载，Diff 按文件懒加载。
+#[derive(Clone)]
+pub(super) struct CompareState {
+    pub from: String,
+    pub to: String,
+    pub target_label: String,
+    pub files: std::rc::Rc<Vec<FileStatus>>,
+    pub loading: bool,
+}
+
 impl VcsView {
     pub(super) fn is_current_repo(&self, repo_id: &RepoId) -> bool {
         self.repo.as_ref().map(|r| &r.id) == Some(repo_id)
@@ -277,6 +289,9 @@ impl VcsView {
 
     pub(super) fn set_files_view_mode(&mut self, mode: FilesViewMode, cx: &mut Context<Self>) {
         if self.files_view_mode != mode {
+            if !matches!(mode, FilesViewMode::Changes) && self.compare.is_some() {
+                self.clear_compare_state();
+            }
             self.capture_active_project_draft(cx);
             self.files_view_mode = mode;
             if !matches!(mode, FilesViewMode::Project) {
@@ -354,6 +369,8 @@ impl VcsView {
         self.file_tabs.clear();
         self.active_file_tab_idx = None;
         self.history_path_filter = None;
+        self.compare = None;
+        self.compare_request_seq = self.compare_request_seq.wrapping_add(1);
         self.reflog_entries = std::rc::Rc::new(Vec::new());
         self.reflog_rows_cache.get_mut().take();
         self.showing_reflog = false;
@@ -526,6 +543,9 @@ impl VcsView {
             Some((path, FileTabSource::Changes(kind))) => self.select_file(path, kind, cx),
             Some((path, FileTabSource::Commit { commit_id, .. })) => {
                 self.select_commit_file(path, commit_id, cx);
+            }
+            Some((path, FileTabSource::Compare { from, to })) => {
+                self.select_compare_file(path, from, to, cx);
             }
             _ => cx.notify(),
         }

@@ -279,6 +279,8 @@ impl VcsView {
             changes_rows_cache: RefCell::new(None),
             history_path_filter: None,
             history_search_input,
+            compare: None,
+            compare_request_seq: 0,
             blame_lines: std::rc::Rc::new(Vec::new()),
             loading_blame: false,
             blame_request_seq: 0,

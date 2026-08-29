@@ -70,6 +70,38 @@ fn list_files_and_commit_files() {
     );
 }
 
+#[test]
+fn list_range_files_reports_changes_and_renames() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "base.txt", "base\n", "init");
+    let base = block_on(driver.status(&id)).unwrap().head_commit.unwrap();
+
+    std::fs::rename(tmp.path().join("base.txt"), tmp.path().join("renamed.txt")).unwrap();
+    write(tmp.path(), "changed.txt", "new\n");
+    block_on(driver.stage(
+        &id,
+        &[
+            "base.txt".into(),
+            "renamed.txt".into(),
+            "changed.txt".into(),
+        ],
+    ))
+    .unwrap();
+    let target = block_on(driver.commit(&id, "rename and add", false, false)).unwrap();
+
+    let files = block_on(driver.list_diff_files(&id, &base, &target.0)).unwrap();
+    assert!(files.iter().any(|file| {
+        file.path == "renamed.txt"
+            && file.old_path.as_deref() == Some("base.txt")
+            && file.staged == Some(FileChangeKind::Renamed)
+    }));
+    assert!(
+        files.iter().any(|file| {
+            file.path == "changed.txt" && file.staged == Some(FileChangeKind::Added)
+        })
+    );
+}
+
 /// diff_file 内容 + 行号映射精确正确（diff 渲染的输入，保证 UI 不会行错位）
 #[test]
 fn diff_content_and_line_numbers_precise() {

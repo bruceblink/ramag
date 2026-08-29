@@ -32,6 +32,7 @@ pub(super) fn branch_row(
     let entity = cx.entity();
 
     let name = b.name.clone();
+    let commit = b.commit.0.clone();
     let is_head = b.is_head;
     let name_color = if is_head { accent } else { fg };
     let prefix_color = if is_head { accent } else { muted_fg };
@@ -95,6 +96,7 @@ pub(super) fn branch_row(
     let more_btn = {
         let ent = entity.clone();
         let n = name.clone();
+        let commit = commit.clone();
         ramag_ui::clickable_button(SharedString::from(format!(
             "vcs-side-br-more-{idx}-{is_remote}"
         )))
@@ -102,17 +104,35 @@ pub(super) fn branch_row(
         .xsmall()
         .icon(ramag_ui::icons::ellipsis())
         .tooltip("分支")
-        .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
-            branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
-        })
+        .pointer_dropdown_menu_with_anchor(
+            gpui::Anchor::BottomRight,
+            move |menu, _, _| {
+                branch_actions_menu(
+                    menu,
+                    ent.clone(),
+                    n.clone(),
+                    commit.clone(),
+                    is_remote,
+                    busy,
+                )
+            },
+        )
     };
     row = row.child(div().flex_none().child(more_btn));
 
     row.context_menu({
         let ent = entity.clone();
         let n = name.clone();
+        let commit = commit.clone();
         move |menu: PopupMenu, _, _| {
-            branch_actions_menu(menu, ent.clone(), n.clone(), is_remote, busy)
+            branch_actions_menu(
+                menu,
+                ent.clone(),
+                n.clone(),
+                commit.clone(),
+                is_remote,
+                busy,
+            )
         }
     })
     .into_any_element()
@@ -122,12 +142,14 @@ fn branch_actions_menu(
     menu: PopupMenu,
     ent: Entity<VcsView>,
     n: String,
+    commit: String,
     is_remote: bool,
     busy: bool,
 ) -> PopupMenu {
     let (e1, n1) = (ent.clone(), n.clone());
     let (e2, n2) = (ent.clone(), n.clone());
     let (e3, n3) = (ent.clone(), n.clone());
+    let (e_compare, n_compare, c_compare) = (ent.clone(), n.clone(), commit);
     let n4 = n.clone();
     let mut m = menu;
     if !is_remote {
@@ -151,6 +173,15 @@ fn branch_actions_menu(
             });
         }));
     }
+    m = m.item(
+        ramag_ui::menu_item("与当前分支比较").on_click(move |_, _, app| {
+            if !busy {
+                e_compare.update(app, |this, cx| {
+                    this.open_compare(n_compare.clone(), c_compare.clone(), cx);
+                });
+            }
+        }),
+    );
     m = m.item(ramag_ui::menu_item("合并").on_click(move |_, w, app| {
         e2.update(app, |this, cx| {
             this.confirm_branch_op(BranchOp::Merge(n2.clone()), w, cx);

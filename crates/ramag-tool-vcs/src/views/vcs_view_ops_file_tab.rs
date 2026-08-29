@@ -208,6 +208,9 @@ impl VcsView {
                     FileTabSource::Commit { commit_id, .. } => {
                         self.select_commit_file(tab.path, commit_id, cx);
                     }
+                    FileTabSource::Compare { from, to } => {
+                        self.select_compare_file(tab.path, from, to, cx);
+                    }
                 }
             }
         }
@@ -327,6 +330,16 @@ impl VcsView {
                 self.current_file_content = None;
                 self.loading_file_content = false;
                 self.selected_commit_file = Some(tab.path.clone());
+            }
+            FileTabSource::Compare { .. } => {
+                self.selected_file = None;
+                self.current_diff = tab.cached_diff.clone();
+                self.current_diff_syntax = tab.cached_diff_syntax.clone();
+                self.loading_diff = tab.cached_diff.is_none();
+                self.selected_pf_path = None;
+                self.current_file_content = None;
+                self.loading_file_content = false;
+                self.selected_commit_file = None;
             }
         }
     }

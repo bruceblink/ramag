@@ -75,6 +75,15 @@ impl VcsView {
                     format!("Commit {short}"),
                 )
             }
+            FileTabSource::Compare { from, to } => {
+                let from_short: String = from.chars().take(7).collect();
+                let to_short: String = to.chars().take(7).collect();
+                (
+                    tab.path.clone(),
+                    GroupKind::Staged, // 占位：比较 diff 只读，kind 仅用作 enum 必填字段
+                    format!("比较 {from_short}..{to_short}"),
+                )
+            }
             FileTabSource::ProjectFiles => {
                 self.diff_layout_cache.borrow_mut().take();
                 return div().into_any_element();
@@ -163,6 +172,7 @@ impl VcsView {
                 FileTabSource::Changes(GroupKind::Conflict) => gpui::hsla(0.0, 0.65, 0.55, 1.0),
                 FileTabSource::ProjectFiles => gpui::hsla(210.0 / 360.0, 0.6, 0.55, 1.0),
                 FileTabSource::Commit { .. } => gpui::hsla(280.0 / 360.0, 0.55, 0.55, 1.0),
+                FileTabSource::Compare { .. } => gpui::hsla(160.0 / 360.0, 0.55, 0.5, 1.0),
             };
             // Changes / Commit 的圆点表达来源状态；Project Files 只在尚未落盘时显示。
             let show_dot = !matches!(tab.source, FileTabSource::ProjectFiles) || tab.is_dirty();
@@ -209,6 +219,9 @@ impl VcsView {
                         }
                         FileTabSource::Commit { commit_id, .. } => {
                             this.select_commit_file(path_for_click.clone(), commit_id, cx);
+                        }
+                        FileTabSource::Compare { from, to } => {
+                            this.select_compare_file(path_for_click.clone(), from, to, cx);
                         }
                     }
                 }));
