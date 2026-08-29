@@ -10,10 +10,17 @@ use gpui::Context;
 use ramag_domain::entities::DiffKind;
 use tracing::error;
 
-use super::helpers::ViewMode;
+use super::helpers::{HistoryRefFilter, ViewMode};
 use super::vcs_view::VcsView;
 
 impl VcsView {
+    /// 切换到提交历史前取消 reflog 请求，防止旧回包覆盖当前过滤范围。
+    fn select_commit_history_scope(&mut self) {
+        self.showing_reflog = false;
+        self.loading_reflog = false;
+        self.reflog_request_seq = self.reflog_request_seq.wrapping_add(1);
+    }
+
     /// 历史列表只保留摘要；复制完整 message 时按需读取正文。
     pub(crate) fn copy_commit_message(&mut self, commit_id: String, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.as_ref().map(|repo| repo.id.clone()) else {
@@ -53,6 +60,8 @@ impl VcsView {
     /// 单文件历史：设 path_filter + 打开下半 history pane（history_pane_visible=true 必需，否则无反馈）
     pub(crate) fn view_file_history(&mut self, path: String, cx: &mut Context<Self>) {
         self.history_path_filter = Some(path);
+        self.history_ref_filter = None;
+        self.select_commit_history_scope();
         self.view_mode = ViewMode::History;
         self.history_pane_visible = true;
         self.set_history_commits(Vec::new());
@@ -62,6 +71,30 @@ impl VcsView {
     /// 清除单文件历史过滤，回到全仓库 history
     pub(crate) fn clear_history_path_filter(&mut self, cx: &mut Context<Self>) {
         self.history_path_filter = None;
+        self.select_commit_history_scope();
+        self.set_history_commits(Vec::new());
+        self.load_history_page(0, cx);
+    }
+
+    /// 查看指定本地分支、远程分支或 tag 的提交历史。
+    pub(in crate::views) fn view_ref_history(
+        &mut self,
+        filter: HistoryRefFilter,
+        cx: &mut Context<Self>,
+    ) {
+        self.history_path_filter = None;
+        self.history_ref_filter = Some(filter);
+        self.select_commit_history_scope();
+        self.view_mode = ViewMode::History;
+        self.history_pane_visible = true;
+        self.set_history_commits(Vec::new());
+        self.load_history_page(0, cx);
+    }
+
+    /// 清除分支或 tag 历史过滤，回到当前 HEAD 的提交历史。
+    pub(crate) fn clear_history_ref_filter(&mut self, cx: &mut Context<Self>) {
+        self.history_ref_filter = None;
+        self.select_commit_history_scope();
         self.set_history_commits(Vec::new());
         self.load_history_page(0, cx);
     }

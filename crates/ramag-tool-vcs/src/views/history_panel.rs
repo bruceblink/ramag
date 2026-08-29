@@ -59,7 +59,7 @@ impl VcsView {
         let mono = theme.mono_font_family.clone();
         let busy = self.busy;
 
-        let path_banner: AnyElement = if let Some(path) = &self.history_path_filter {
+        let history_banner: AnyElement = if let Some(path) = &self.history_path_filter {
             let mut chip_bg = accent;
             chip_bg.a = 0.14;
             h_flex()
@@ -101,6 +101,48 @@ impl VcsView {
                         })),
                 )
                 .into_any_element()
+        } else if let Some(filter) = &self.history_ref_filter {
+            let mut chip_bg = accent;
+            chip_bg.a = 0.14;
+            h_flex()
+                .gap(px(8.0))
+                .items_center()
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .bg(chip_bg)
+                .mb(px(8.0))
+                .child(
+                    Icon::new(ramag_ui::icons::git_branch())
+                        .small()
+                        .text_color(accent),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(fg)
+                        .font_family(mono.clone())
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(format!(
+                            "正在看 {} 的历史",
+                            super::inline_text_preview(&filter.label, 200)
+                        )),
+                )
+                .child(
+                    ramag_ui::clickable_button("vcs-history-clear-ref")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("清除")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.clear_history_ref_filter(cx);
+                        })),
+                )
+                .into_any_element()
         } else {
             div().into_any_element()
         };
@@ -113,7 +155,7 @@ impl VcsView {
             .pt(px(6.0))
             .pb(px(8.0))
             .gap(px(0.0))
-            .child(div().px(px(12.0)).child(path_banner))
+            .child(div().px(px(12.0)).child(history_banner))
             .child(body)
             .into_any_element()
     }
@@ -275,7 +317,8 @@ impl VcsView {
         if self.history_commits.is_empty() {
             // 区分空仓库和无匹配结果。
             let filtered = !self.history_search_input.read(cx).value().trim().is_empty()
-                || self.history_path_filter.is_some();
+                || self.history_path_filter.is_some()
+                || self.history_ref_filter.is_some();
             let hint = if filtered {
                 "没有匹配的提交（调整搜索词或清除过滤）"
             } else {

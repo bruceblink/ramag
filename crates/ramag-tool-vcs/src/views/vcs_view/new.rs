@@ -278,6 +278,7 @@ impl VcsView {
             changes_collapsed_dirs_version: 0,
             changes_rows_cache: RefCell::new(None),
             history_path_filter: None,
+            history_ref_filter: None,
             history_search_input,
             compare: None,
             compare_request_seq: 0,

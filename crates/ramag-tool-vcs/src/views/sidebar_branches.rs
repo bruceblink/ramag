@@ -1,7 +1,8 @@
 //! 侧栏分支行与操作菜单。
 
 use gpui::{
-    Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
+    Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, div, px,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable as _,
@@ -13,7 +14,7 @@ use ramag_domain::entities::Branch;
 use ramag_ui::PointerDropdownMenu as _;
 
 use super::confirm_dialogs::open_confirm_dialog;
-use super::helpers::{BranchOp, checkout_remote_branch_op};
+use super::helpers::{BranchOp, HistoryRefFilter, checkout_remote_branch_op};
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
 
@@ -22,6 +23,7 @@ pub(super) fn branch_row(
     b: &Branch,
     busy: bool,
     is_remote: bool,
+    selected: bool,
     cx: &mut Context<VcsView>,
 ) -> impl IntoElement {
     let theme = cx.theme();
@@ -29,6 +31,8 @@ pub(super) fn branch_row(
     let muted_fg = theme.muted_foreground;
     let accent = theme.accent;
     let hover_bg = theme.muted;
+    let mut selected_bg = accent;
+    selected_bg.a = 0.14;
     let entity = cx.entity();
 
     let name = b.name.clone();
@@ -88,10 +92,19 @@ pub(super) fn branch_row(
                 .child(sync_str.unwrap_or_default()),
         );
 
+    let filter = HistoryRefFilter::branch(&name, is_remote);
+    row = row
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+            this.view_ref_history(filter.clone(), cx);
+        }));
+    if selected {
+        row = row.bg(selected_bg);
+    }
+
     if is_head {
         return row.into_any_element();
     }
-    row = row.cursor_pointer();
 
     let more_btn = {
         let ent = entity.clone();
@@ -118,7 +131,12 @@ pub(super) fn branch_row(
             },
         )
     };
-    row = row.child(div().flex_none().child(more_btn));
+    row = row.child(
+        div()
+            .flex_none()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(more_btn),
+    );
 
     row.context_menu({
         let ent = entity.clone();

@@ -1,7 +1,8 @@
 //! 侧栏 Tag 行与操作菜单。
 
 use gpui::{
-    Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px,
+    Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, div, px,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable as _,
@@ -12,7 +13,7 @@ use gpui_component::{
 use ramag_domain::entities::Tag;
 use ramag_ui::PointerDropdownMenu as _;
 
-use super::helpers::TagOp;
+use super::helpers::{HistoryRefFilter, TagOp};
 use super::sidebar::LEFT_ROW_H;
 use super::vcs_view::VcsView;
 
@@ -20,6 +21,7 @@ pub(super) fn tag_row(
     idx: usize,
     t: &Tag,
     busy: bool,
+    selected: bool,
     cx: &mut Context<VcsView>,
 ) -> impl IntoElement {
     let theme = cx.theme();
@@ -28,6 +30,8 @@ pub(super) fn tag_row(
     let mono = theme.mono_font_family.clone();
     let hover_bg = theme.muted;
     let tag_color = gpui::hsla(40.0 / 360.0, 0.7, 0.55, 1.0);
+    let mut selected_bg = theme.accent;
+    selected_bg.a = 0.14;
 
     // 无说明时显示提交哈希。
     let detail = match &t.message {
@@ -38,6 +42,7 @@ pub(super) fn tag_row(
     let row_id = SharedString::from(format!("vcs-side-tag-{idx}-{name}"));
 
     let entity = cx.entity();
+    let filter = HistoryRefFilter::tag(&name);
     let mut row = h_flex()
         .id(row_id)
         .h(px(LEFT_ROW_H))
@@ -67,7 +72,7 @@ pub(super) fn tag_row(
                         .text_ellipsis()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(fg)
+                        .text_color(if selected { theme.accent } else { fg })
                         .child(super::inline_text_preview(&name, 120)),
                 )
                 .child(
@@ -82,18 +87,32 @@ pub(super) fn tag_row(
                         .child(super::inline_text_preview(&detail, 240)),
                 ),
         )
-        .cursor_pointer();
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+            this.view_ref_history(filter.clone(), cx);
+        }));
+    if selected {
+        row = row.bg(selected_bg);
+    }
     let menu_entity = entity.clone();
     let menu_name = name.clone();
     row = row.child(
-        ramag_ui::clickable_button(SharedString::from(format!("vcs-side-tag-more-{idx}")))
-            .ghost()
-            .xsmall()
-            .icon(ramag_ui::icons::ellipsis())
-            .tooltip("标签")
-            .pointer_dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
-                tag_actions_menu(menu, menu_entity.clone(), menu_name.clone(), busy)
-            }),
+        div()
+            .flex_none()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                ramag_ui::clickable_button(SharedString::from(format!("vcs-side-tag-more-{idx}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(ramag_ui::icons::ellipsis())
+                    .tooltip("标签")
+                    .pointer_dropdown_menu_with_anchor(
+                        gpui::Anchor::BottomRight,
+                        move |menu, _, _| {
+                            tag_actions_menu(menu, menu_entity.clone(), menu_name.clone(), busy)
+                        },
+                    ),
+            ),
     );
     row.context_menu(move |menu: PopupMenu, _, _| {
         tag_actions_menu(menu, entity.clone(), name.clone(), busy)

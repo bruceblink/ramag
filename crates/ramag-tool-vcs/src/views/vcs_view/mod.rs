@@ -22,7 +22,7 @@ use ramag_ui::AxisScrollGesture;
 use super::commit_detail::CommitFilesRowsCacheEntry;
 use super::helpers::{
     ActiveView, DiffViewMode, FileContentSnapshot, FileTab, FileTabSource, FilesViewMode,
-    GroupKind, PendingFileEditorLoad, ViewMode,
+    GroupKind, HistoryRefFilter, PendingFileEditorLoad, ViewMode,
 };
 use super::history_panel::HistoryLeftRowsCacheEntry;
 use super::project_files::{ProjectRowsCacheEntry, ProjectStatusCacheEntry};
@@ -137,6 +137,7 @@ pub struct VcsView {
     pub(super) changes_collapsed_dirs_version: u64,
     pub(super) changes_rows_cache: RefCell<Option<WorkspaceRowsCacheEntry>>,
     pub(super) history_path_filter: Option<String>,
+    pub(super) history_ref_filter: Option<HistoryRefFilter>,
     pub(super) history_search_input: Entity<InputState>,
     pub(super) compare: Option<CompareState>,
     pub(super) compare_request_seq: u64,
@@ -370,6 +371,7 @@ impl VcsView {
         self.file_tabs.clear();
         self.active_file_tab_idx = None;
         self.history_path_filter = None;
+        self.history_ref_filter = None;
         self.compare = None;
         self.compare_request_seq = self.compare_request_seq.wrapping_add(1);
         self.reflog_entries = std::rc::Rc::new(Vec::new());

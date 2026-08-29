@@ -53,6 +53,36 @@ impl FilesViewMode {
     }
 }
 
+/// 历史列表的引用过滤器；保存完整 Git ref，避免分支名与 tag 同名时产生歧义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HistoryRefFilter {
+    pub(super) label: String,
+    pub(super) revision: String,
+}
+
+impl HistoryRefFilter {
+    /// 创建本地或远程分支过滤器，并把短名转换为不会误匹配的完整 ref。
+    pub(super) fn branch(name: &str, is_remote: bool) -> Self {
+        let (kind, prefix) = if is_remote {
+            ("远程分支", "refs/remotes/")
+        } else {
+            ("本地分支", "refs/heads/")
+        };
+        Self {
+            label: format!("{kind}：{name}"),
+            revision: format!("{prefix}{name}"),
+        }
+    }
+
+    /// 创建 tag 过滤器，使用 refs/tags/ 避免和同名分支混淆。
+    pub(super) fn tag(name: &str) -> Self {
+        Self {
+            label: format!("标签：{name}"),
+            revision: format!("refs/tags/{name}"),
+        }
+    }
+}
+
 pub(super) const HISTORY_PAGE_SIZE: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,8 +394,9 @@ mod tests {
     use ramag_domain::entities::{Branch, BranchKind, CommitId, Remote};
 
     use super::{
-        BranchOp, FileContentSnapshot, FileTab, FileTabSource, RemoteOp, checkout_remote_branch_op,
-        default_remote_name, is_current_arc_slot, needs_first_push_remote_picker,
+        BranchOp, FileContentSnapshot, FileTab, FileTabSource, HistoryRefFilter, RemoteOp,
+        checkout_remote_branch_op, default_remote_name, is_current_arc_slot,
+        needs_first_push_remote_picker,
     };
 
     fn local(name: &str, upstream: Option<&str>) -> Branch {
@@ -409,6 +440,21 @@ mod tests {
         let result =
             checkout_remote_branch_op("upstream/main", &[local("main", Some("origin/main"))]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn history_ref_filter_uses_unambiguous_refs() {
+        let local = HistoryRefFilter::branch("feature/ui", false);
+        assert_eq!(local.label, "本地分支：feature/ui");
+        assert_eq!(local.revision, "refs/heads/feature/ui");
+
+        let remote = HistoryRefFilter::branch("origin/main", true);
+        assert_eq!(remote.label, "远程分支：origin/main");
+        assert_eq!(remote.revision, "refs/remotes/origin/main");
+
+        let tag = HistoryRefFilter::tag("v1.2.3");
+        assert_eq!(tag.label, "标签：v1.2.3");
+        assert_eq!(tag.revision, "refs/tags/v1.2.3");
     }
 
     #[test]

@@ -91,3 +91,25 @@ fn non_repository_error_is_not_treated_as_empty_history()
     assert!(run_log(temp.path(), &LogOptions::default()).is_err());
     Ok(())
 }
+
+#[test]
+fn log_args_keep_the_selected_ref_as_the_history_start() {
+    for start in [
+        "refs/heads/feature/ui",
+        "refs/remotes/origin/main",
+        "refs/tags/v1.2.3",
+    ] {
+        let options = LogOptions {
+            start: Some(start.into()),
+            limit: Some(100),
+            ..Default::default()
+        };
+
+        let args = build_log_args(&options, true);
+
+        assert!(
+            args.iter().any(|argument| argument == start),
+            "selected history ref was not passed to git: {args:?}"
+        );
+    }
+}

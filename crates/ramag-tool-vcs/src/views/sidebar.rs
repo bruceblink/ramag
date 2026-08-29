@@ -14,6 +14,7 @@ use gpui_component::{
     v_flex,
 };
 
+use super::helpers::HistoryRefFilter;
 use super::vcs_view::VcsView;
 
 /// 行高固定 28px：uniform_list 行级虚拟化要求所有行等高
@@ -69,14 +70,26 @@ impl VcsView {
                 branch.map_or_else(
                     || div().h(px(LEFT_ROW_H)).into_any_element(),
                     |branch| {
-                        super::sidebar_branches::branch_row(*idx, branch, self.busy, *is_remote, cx)
-                            .into_any_element()
+                        let selected = self.history_ref_filter.as_ref().is_some_and(|filter| {
+                            filter.revision
+                                == HistoryRefFilter::branch(&branch.name, *is_remote).revision
+                        });
+                        super::sidebar_branches::branch_row(
+                            *idx, branch, self.busy, *is_remote, selected, cx,
+                        )
+                        .into_any_element()
                     },
                 )
             }
             LeftRow::Tag { idx } => self.tags.get(*idx).map_or_else(
                 || div().h(px(LEFT_ROW_H)).into_any_element(),
-                |tag| super::sidebar_tags::tag_row(*idx, tag, self.busy, cx).into_any_element(),
+                |tag| {
+                    let selected = self.history_ref_filter.as_ref().is_some_and(|filter| {
+                        filter.revision == HistoryRefFilter::tag(&tag.name).revision
+                    });
+                    super::sidebar_tags::tag_row(*idx, tag, self.busy, selected, cx)
+                        .into_any_element()
+                },
             ),
             LeftRow::Remote { idx } => self.remotes.get(*idx).map_or_else(
                 || div().h(px(LEFT_ROW_H)).into_any_element(),

@@ -297,9 +297,13 @@ impl VcsView {
             .trim()
             .to_string();
         let (grep, author, since) = parse_search_query(&raw_search);
+        let history_start = self
+            .history_ref_filter
+            .as_ref()
+            .map_or_else(|| "HEAD".to_owned(), |filter| filter.revision.clone());
         let opts = LogOptions {
-            // 显式 HEAD，避免 infra 额外探测。
-            start: Some("HEAD".into()),
+            // 未选择分支或 tag 时从 HEAD 开始；选择引用后从完整 ref 开始。
+            start: Some(history_start),
             skip,
             limit: Some(HISTORY_PAGE_SIZE),
             path_filter: self.history_path_filter.clone(),
