@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use gpui::{AnyElement, Context, Entity, IntoElement, SharedString, Styled as _, Window, px};
 use gpui_component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     menu::{PopupMenu, PopupMenuItem},
 };
 
@@ -51,7 +51,7 @@ impl CompareBranchMenuContext {
         }
     }
 
-    /// 添加一个只读比较分支项；选中项保留勾选，远程项使用箭头提示来源。
+    /// 添加一个只读比较分支项；选中项使用勾选图标，远程项使用地球图标提示来源。
     fn push_leaf(
         &self,
         menu: PopupMenu,
@@ -61,21 +61,21 @@ impl CompareBranchMenuContext {
         is_head: bool,
         is_remote: bool,
     ) -> PopupMenu {
-        let prefix = if revision == self.selected_revision {
-            "✓  "
-        } else if is_remote {
-            "↗  "
-        } else if is_head {
-            "●  "
-        } else {
-            "    "
-        };
-        let label = format!("{prefix}{}", super::inline_text_preview(display, 40));
+        let label = super::inline_text_preview(display, 40);
         let name = full_name.to_string();
         let revision = revision.to_string();
         let side = self.side;
         let entity = self.entity.clone();
-        menu.item(ramag_ui::menu_item(label).on_click(move |_, _, app| {
+        let icon = if revision == self.selected_revision {
+            Some(IconName::Check)
+        } else {
+            super::branch_picker::branch_marker_icon(is_head, is_remote)
+        };
+        let mut item = ramag_ui::menu_item(label);
+        if let Some(icon) = icon {
+            item = item.icon(icon);
+        }
+        menu.item(item.on_click(move |_, _, app| {
             entity.update(app, |this, cx| {
                 this.select_compare_branch(side, name.clone(), revision.clone(), cx);
             });
@@ -252,7 +252,8 @@ fn render_compare_branches_grouped(
     for (prefix, group_items) in groups {
         let branch_context_for_sub = branch_context.clone();
         let prefix_for_sub = prefix.clone();
-        menu = menu.submenu(
+        menu = menu.submenu_with_icon(
+            Some(Icon::new(IconName::FolderClosed)),
             SharedString::from(prefix),
             window,
             cx,

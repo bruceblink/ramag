@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use gpui::{ClickEvent, Entity, ParentElement, SharedString, Styled, Window, px};
 use gpui_component::{
-    Sizable as _, WindowExt as _,
+    Icon, IconName, Sizable as _, WindowExt as _,
     button::ButtonVariants as _,
     h_flex,
     input::Input,
@@ -20,6 +20,17 @@ pub(super) const MAX_BRANCH_PICKER_ITEMS: usize = 1_000;
 
 /// 分支 leaf：(完整名 / 是否 HEAD / 上游同步信息文本如 "↑3 ↓1"，None=无)
 pub(super) type BranchLeaf = (String, bool, Option<String>);
+
+/// 返回分支菜单左侧的状态图标；没有特殊状态时返回空槽位，让菜单统一对齐文本。
+pub(super) fn branch_marker_icon(is_head: bool, is_remote: bool) -> Option<IconName> {
+    if is_remote {
+        Some(IconName::Globe)
+    } else if is_head {
+        Some(IconName::Check)
+    } else {
+        None
+    }
+}
 
 pub(super) fn branch_picker_limits(local: usize, remote: usize) -> (usize, usize) {
     if local.saturating_add(remote) <= MAX_BRANCH_PICKER_ITEMS {
@@ -53,7 +64,7 @@ fn truncate_branch_display(s: &str) -> String {
 
 /// 按 `/` 分组：单段直列、多项同前缀走 submenu（PopupMenu 的 inline 折叠会触发 dismiss，唯一可行方案）。
 /// 父级 PopupMenu 不能 `.scrollable(true)`，否则 submenu 失效（gpui-component 限制）。
-/// `is_remote=true` 加远程前缀且不限 head_flag
+/// `is_remote=true` 使用远程图标且忽略 head_flag
 pub(super) fn render_branches_grouped(
     mut m: PopupMenu,
     items: &[BranchLeaf],
@@ -85,7 +96,8 @@ pub(super) fn render_branches_grouped(
         let entity_for_sub = entity.clone();
         let prefix_for_sub = prefix.clone();
         let group_items_owned = group_items;
-        m = m.submenu(
+        m = m.submenu_with_icon(
+            Some(Icon::new(IconName::FolderClosed)),
             SharedString::from(prefix),
             window,
             cx,
@@ -166,7 +178,8 @@ pub(super) fn open_new_branch_dialog(
                                 let v_reset = view_for_dd.clone();
                                 let h_reset = head_for_reset.clone();
                                 m = m.item(
-                                    ramag_ui::menu_item(format!("✓  {h_reset}（当前 HEAD）"))
+                                    ramag_ui::menu_item(format!("{h_reset}（当前 HEAD）"))
+                                        .icon(IconName::Check)
                                         .on_click(move |_, _, app| {
                                             v_reset.update(app, |this, cx| {
                                                 this.set_create_branch_base(None, cx);
@@ -267,7 +280,8 @@ fn render_base_branches_grouped(
     for (prefix, rests) in groups {
         let view_for_sub = view.clone();
         let prefix_for_sub = prefix.clone();
-        m = m.submenu(
+        m = m.submenu_with_icon(
+            Some(Icon::new(IconName::FolderClosed)),
             SharedString::from(prefix),
             window,
             cx,
@@ -292,10 +306,13 @@ fn push_base_leaf(
     is_remote: bool,
     view: Entity<VcsView>,
 ) -> PopupMenu {
-    let prefix = if is_remote { "↗  " } else { "    " };
-    let label = format!("{prefix}{}", truncate_branch_display(display));
+    let label = truncate_branch_display(display);
     let n = full_name.to_string();
-    m.item(ramag_ui::menu_item(label).on_click(move |_, _, app| {
+    let mut item = ramag_ui::menu_item(label);
+    if let Some(icon) = branch_marker_icon(false, is_remote) {
+        item = item.icon(icon);
+    }
+    m.item(item.on_click(move |_, _, app| {
         let n = n.clone();
         view.update(app, |this, cx| {
             this.set_create_branch_base(Some(n), cx);
@@ -313,20 +330,17 @@ fn push_branch_leaf(
     sync: &Option<String>,
     entity: Entity<VcsView>,
 ) -> PopupMenu {
-    let prefix = if is_remote {
-        "↗  "
-    } else if is_head {
-        "✓  "
-    } else {
-        "    "
-    };
     let suffix = match sync {
-        Some(s) if !s.is_empty() => format!("    {s}"),
+        Some(s) if !s.is_empty() => format!(" {s}"),
         _ => String::new(),
     };
-    let label = format!("{prefix}{}{suffix}", truncate_branch_display(display));
+    let label = format!("{}{suffix}", truncate_branch_display(display));
     let n = full_name.to_string();
-    m.item(ramag_ui::menu_item(label).on_click(move |_, w, app| {
+    let mut item = ramag_ui::menu_item(label);
+    if let Some(icon) = branch_marker_icon(is_head, is_remote) {
+        item = item.icon(icon);
+    }
+    m.item(item.on_click(move |_, w, app| {
         if is_head && !is_remote {
             return;
         }
