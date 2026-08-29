@@ -1,6 +1,7 @@
 //! 主窗口、托盘和单实例激活生命周期。
 
 use super::*;
+use ramag_ui::SystemSettings;
 
 /// 主窗口重建时复用的依赖。
 #[derive(Clone)]
@@ -22,6 +23,28 @@ pub(super) struct AppDeps {
 pub(super) struct MainWindowGlobal(pub(super) gpui::AnyWindowHandle);
 
 impl gpui::Global for MainWindowGlobal {}
+
+/// 记录系统托盘是否已成功安装，关闭最后窗口时据此决定是否允许后台驻留。
+pub(super) struct TrayResident(pub(super) bool);
+
+impl gpui::Global for TrayResident {}
+
+/// 只有托盘已安装且用户明确开启设置时，关闭最后窗口才保留后台进程。
+pub(super) fn should_keep_running_in_tray(tray_resident: bool, settings: SystemSettings) -> bool {
+    tray_resident && settings.minimize_to_tray
+}
+
+/// 根据当前设置选择 GPUI 的自动退出模式；托盘驻留必须改为显式退出。
+pub(super) fn quit_mode_for_window_close(
+    tray_resident: bool,
+    settings: SystemSettings,
+) -> gpui::QuitMode {
+    if should_keep_running_in_tray(tray_resident, settings) {
+        gpui::QuitMode::Explicit
+    } else {
+        gpui::QuitMode::Default
+    }
+}
 
 /// 合并主窗口句柄写入前的重复唤起。
 #[derive(Default)]
@@ -60,12 +83,15 @@ fn finish_main_window_open(cx: &mut App) {
 
 pub(super) fn reveal_main_window(deps: &AppDeps, cx: &mut App) {
     cx.activate(true);
-    if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|global| global.0)
-        && handle
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-    {
-        return;
+    if let Some(handle) = cx.try_global::<MainWindowGlobal>().map(|global| global.0) {
+        // 关闭到托盘后旧句柄仍保存在全局状态；只有句柄仍属于当前窗口集合时才更新它。
+        if cx.windows().contains(&handle)
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
     }
     open_main_window(deps.clone(), cx);
 }
@@ -155,7 +181,18 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
             },
             move |window, cx| {
                 let gate_for_close = data_sync_gate.clone();
-                window.on_window_should_close(cx, move |_, _| !gate_for_close.is_blocking());
+                window.on_window_should_close(cx, move |_, cx| {
+                    if gate_for_close.is_blocking() {
+                        return false;
+                    }
+                    let tray_resident = cx
+                        .try_global::<TrayResident>()
+                        .is_some_and(|state| state.0);
+                    let settings = ramag_ui::system_settings(cx);
+                    // 让最后一个窗口关闭后仍保留事件循环，托盘菜单可以重新打开窗口。
+                    cx.set_quit_mode(quit_mode_for_window_close(tray_resident, settings));
+                    true
+                });
                 let home_view = cx.new(|_| HomeView::new(registry.clone()));
 
                 let dbclient_view = create_dbclient_view(
@@ -288,4 +325,54 @@ pub(super) fn spawn_instance_activation(
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quit_mode_for_window_close, should_keep_running_in_tray};
+    use ramag_ui::SystemSettings;
+
+    #[test]
+    fn tray_residency_requires_installation_and_opt_in() {
+        assert!(!should_keep_running_in_tray(
+            false,
+            SystemSettings::default()
+        ));
+        assert!(!should_keep_running_in_tray(
+            true,
+            SystemSettings::default()
+        ));
+        assert!(should_keep_running_in_tray(
+            true,
+            SystemSettings {
+                minimize_to_tray: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn window_close_uses_explicit_quit_only_for_tray_residency() {
+        assert_eq!(
+            quit_mode_for_window_close(
+                true,
+                SystemSettings {
+                    minimize_to_tray: true,
+                }
+            ),
+            gpui::QuitMode::Explicit
+        );
+        assert_eq!(
+            quit_mode_for_window_close(
+                false,
+                SystemSettings {
+                    minimize_to_tray: true,
+                }
+            ),
+            gpui::QuitMode::Default
+        );
+        assert_eq!(
+            quit_mode_for_window_close(true, SystemSettings::default()),
+            gpui::QuitMode::Default
+        );
+    }
 }

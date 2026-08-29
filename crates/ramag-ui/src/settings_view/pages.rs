@@ -9,6 +9,7 @@ use super::{SettingsPage, SettingsView};
 impl SettingsPage {
     fn icon(self) -> Icon {
         match self {
+            Self::System => crate::icons::settings(),
             Self::Database => crate::icons::database(),
             Self::VersionControl => crate::icons::git_branch(),
             Self::Ssh => crate::activity_bar::ActivityBar::icon_for_tool("ssh"),
@@ -77,6 +78,7 @@ impl SettingsView {
     pub(super) fn render_selected_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let page = self.selected_page;
         let content = match page {
+            SettingsPage::System => self.render_system_page(cx),
             SettingsPage::Database => self.render_database_page(cx),
             SettingsPage::VersionControl => managed_in_module_card("Git 配置", cx),
             SettingsPage::Ssh => self.render_ssh_page(cx),

@@ -247,6 +247,12 @@ SSH 管理把连接配置、内嵌终端和远程文件浏览放在同一个工�
 - Windows 关闭主窗口后可驻留系统托盘，采集与全局快捷抽屉继续工作。
 - 启用、采集、全局热键和清空全部历史统一放在全局设置中；关闭剪贴板后不显示工具入口，也不注册热键。
 
+### Windows 系统设置
+
+Windows 用户可打开“设置 → 系统设置”，启用“关闭时最小化到任务栏托盘”。启用后关闭主窗口只会隐藏窗口，Ramag 会继续在后台运行；点击托盘图标可重新打开窗口，使用托盘菜单中的“退出 Ramag”才会结束进程。关闭此开关后恢复默认的关闭行为。
+
+![Windows 系统设置中的关闭到任务栏托盘开关](docs/screenshots/v0.0.5/settings-system-tray-windows.png)
+
 | 剪贴历史与类型筛选 | 采集、自动粘贴与应用黑名单设置 |
 |---|---|
 | ![剪贴历史、搜索与类型筛选](docs/screenshots/v0.0.1/clipboard-history-light.png) | ![剪贴板隐私与采集设置](docs/screenshots/v0.0.1/clipboard-settings-light.png) |

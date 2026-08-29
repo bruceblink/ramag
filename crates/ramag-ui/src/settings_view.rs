@@ -2,6 +2,7 @@ mod clipboard;
 mod database;
 mod pages;
 mod ssh;
+mod system;
 mod update;
 
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use crate::MAX_SEARCH_INPUT_BYTES;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum SettingsPage {
     #[default]
+    System,
     Database,
     VersionControl,
     Ssh,
@@ -37,7 +39,8 @@ enum SettingsPage {
 }
 
 impl SettingsPage {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
+        Self::System,
         Self::Database,
         Self::VersionControl,
         Self::Ssh,
@@ -48,6 +51,7 @@ impl SettingsPage {
 
     fn id(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::Database => "database",
             Self::VersionControl => "version-control",
             Self::Ssh => "ssh",
@@ -59,6 +63,7 @@ impl SettingsPage {
 
     fn title(self) -> &'static str {
         match self {
+            Self::System => "系统设置",
             Self::Database => "数据库客户端",
             Self::VersionControl => "版本管理",
             Self::Ssh => "SSH 管理",
@@ -70,6 +75,7 @@ impl SettingsPage {
 
     fn description(self) -> &'static str {
         match self {
+            Self::System => "应用行为",
             Self::Database => "连接与搜索",
             Self::VersionControl => "Git 行为",
             Self::Ssh => "SSH 与 SFTP",
@@ -116,6 +122,7 @@ enum DatabaseConverterTestDirection {
 
 pub struct SettingsView {
     selected_page: SettingsPage,
+    system_settings: crate::SystemSettings,
     clipboard_service: Option<Arc<ClipboardService>>,
     connection_service: Arc<ConnectionService>,
     ssh_service: Arc<SshService>,
@@ -157,6 +164,7 @@ impl SettingsView {
     ) -> Self {
         let update_indicator_subscription =
             cx.observe_global::<crate::activity_bar::UpdateIndicatorGlobal>(|_, cx| cx.notify());
+        let system_settings = crate::system_settings(cx);
         let (clipboard, loaded_revision) = clipboard_service
             .as_ref()
             .map(|service| service.settings_snapshot_with_revision())
@@ -282,6 +290,7 @@ impl SettingsView {
 
         Self {
             selected_page: SettingsPage::default(),
+            system_settings,
             clipboard_service,
             connection_service,
             ssh_service,
@@ -380,9 +389,9 @@ mod tests {
     use super::SettingsPage;
 
     #[test]
-    fn database_is_the_default_page() {
-        assert_eq!(SettingsPage::default(), SettingsPage::Database);
-        assert_eq!(SettingsPage::ALL.first(), Some(&SettingsPage::Database));
+    fn system_is_the_default_page() {
+        assert_eq!(SettingsPage::default(), SettingsPage::System);
+        assert_eq!(SettingsPage::ALL.first(), Some(&SettingsPage::System));
     }
 
     #[test]
@@ -393,6 +402,7 @@ mod tests {
             .collect();
 
         assert_eq!(ids.len(), SettingsPage::ALL.len());
+        assert!(ids.contains("system"));
         assert!(ids.contains("database"));
         assert!(ids.contains("version-control"));
         assert!(ids.contains("clipboard"));
