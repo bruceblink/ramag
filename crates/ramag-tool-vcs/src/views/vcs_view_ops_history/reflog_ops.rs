@@ -57,8 +57,8 @@ impl VcsView {
         .detach();
     }
 
-    /// reflog 条目点击 → checkout 到该 commit（detached HEAD；checkout 后切回 commit 历史）
-    pub(crate) fn checkout_reflog_entry(&mut self, commit: String, cx: &mut Context<Self>) {
+    /// 检出指定 commit；检出后回到 commit 历史并保持 detached HEAD 提示。
+    pub(crate) fn checkout_commit(&mut self, commit: String, cx: &mut Context<Self>) {
         if !self.ensure_no_operation("Checkout 历史版本", cx) {
             return;
         }
@@ -99,20 +99,20 @@ impl VcsView {
                 }
                 if let Err(e) = result {
                     error!(
-                        operation = "vcs_reflog_checkout",
+                        operation = "vcs_commit_checkout",
                         repo_id = %repo,
                         commit_id = %commit,
                         error = %e,
-                        "reflog checkout failed"
+                        "commit checkout failed"
                     );
                     this.error = Some(format!("Checkout 到 {commit} 失败：{e}"));
                 } else {
                     info!(
-                        operation = "vcs_reflog_checkout",
+                        operation = "vcs_commit_checkout",
                         repo_id = %repo,
                         commit_id = %commit,
                         status = "completed",
-                        "reflog checkout completed"
+                        "commit checkout completed"
                     );
                     this.showing_reflog = false;
                     this.load_history_page(0, cx);

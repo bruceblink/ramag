@@ -128,6 +128,7 @@ pub(in crate::views) fn render_commit_row(
         let cid = cid.clone();
         move |menu: PopupMenu, _, _| {
             let (e1, c1) = (entity.clone(), cid.clone());
+            let (e_checkout, c_checkout) = (entity.clone(), cid.clone());
             let (e2, c2) = (entity.clone(), cid.clone());
             let (e3, c3) = (entity.clone(), cid.clone());
             let (e_sha, c_sha) = (entity.clone(), cid.clone());
@@ -142,23 +143,28 @@ pub(in crate::views) fn render_commit_row(
                 });
             }))
             .separator()
-            .item(ramag_ui::menu_item("摘取").on_click(move |_, window, app| {
+            .item(ramag_ui::menu_item("Cherry-pick").on_click(move |_, window, app| {
                 use crate::views::confirm_dialogs::open_confirm_dialog;
                 let short: String = c1.chars().take(7).collect();
                 let c = c1.clone();
                 open_confirm_dialog(
                     e1.clone(),
-                    "摘取此提交？",
-                    format!(
-                        "将把「{short}」应用到当前分支；冲突时需处理后继续。"
-                    ),
-                    "摘取",
+                    "Cherry-pick 此提交？",
+                    format!("将把「{short}」应用到当前分支；冲突时需处理后继续。"),
+                    "Cherry-pick",
                     false,
                     move |this, cx| this.run_cherry_pick(c, cx),
                     window,
                     app,
                 );
             }))
+            .item(
+                ramag_ui::menu_item("Checkout 到此 commit").on_click(move |_, window, app| {
+                    e_checkout.update(app, |this, cx| {
+                        this.confirm_checkout_target(c_checkout.clone(), window, cx);
+                    });
+                }),
+            )
             .item(
                 ramag_ui::menu_item("撤销提交").on_click(move |_, window, app| {
                     use crate::views::confirm_dialogs::open_confirm_dialog;

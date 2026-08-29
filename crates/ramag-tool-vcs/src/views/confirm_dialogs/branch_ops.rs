@@ -2,16 +2,16 @@ use super::*;
 
 impl VcsView {
     /// 脏工作区切换前提供储藏或丢弃选择。
-    pub(in crate::views) fn confirm_checkout_reflog(
+    pub(in crate::views) fn confirm_checkout_target(
         &mut self,
-        commit: String,
+        target: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.is_working_tree_dirty() {
-            open_checkout_dirty_dialog(cx.entity(), commit, window, cx);
+            open_checkout_dirty_dialog(cx.entity(), target, window, cx);
         } else {
-            self.checkout_reflog_entry(commit, cx);
+            self.checkout_commit(target, cx);
         }
     }
 

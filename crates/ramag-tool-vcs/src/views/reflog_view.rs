@@ -256,7 +256,7 @@ fn render_reflog_row(
                 .tooltip("检出")
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.confirm_checkout_reflog(commit_for_btn.clone(), window, cx);
+                    this.confirm_checkout_target(commit_for_btn.clone(), window, cx);
                 })),
         )
         .into_any_element()
