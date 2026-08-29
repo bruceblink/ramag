@@ -73,9 +73,13 @@ impl VcsView {
 
         cx.spawn(async move |this, cx| {
             let result = match &op {
-                TagOp::Create { name, message } => {
+                TagOp::Create {
+                    name,
+                    message,
+                    target,
+                } => {
                     driver
-                        .create_tag(&repo, name, None, message.as_deref(), false)
+                        .create_tag(&repo, name, target.as_deref(), message.as_deref(), false)
                         .await
                 }
                 TagOp::Delete(name) => driver.delete_tag(&repo, name).await,
@@ -185,6 +189,13 @@ impl VcsView {
         } else {
             Some(msg_raw)
         };
-        self.run_tag_op(TagOp::Create { name, message }, cx);
+        self.run_tag_op(
+            TagOp::Create {
+                name,
+                message,
+                target: None,
+            },
+            cx,
+        );
     }
 }

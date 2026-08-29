@@ -311,6 +311,7 @@ pub(super) enum TagOp {
     Create {
         name: String,
         message: Option<String>,
+        target: Option<String>,
     },
     Delete(String),
     Push(String),

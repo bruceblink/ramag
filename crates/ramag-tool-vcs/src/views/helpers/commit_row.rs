@@ -12,7 +12,7 @@ use ramag_domain::entities::{Commit, MAX_GIT_NAME_ARG_BYTES, ResetKind};
 
 use super::super::commit_graph::{CommitGraphRow, lane_color, render_lane_gutter};
 use super::super::vcs_view::VcsView;
-use super::BranchOp;
+use super::{BranchOp, TagOp};
 
 const MAX_VISIBLE_REF_CHIPS: usize = 8;
 
@@ -136,6 +136,7 @@ pub(in crate::views) fn render_commit_row(
             let (e_msg, c_msg) = (entity.clone(), cid.clone());
             let (e_compare, c_compare) = (entity.clone(), cid.clone());
             let (e_branch, c_branch) = (entity.clone(), cid.clone());
+            let (e_tag, c_tag) = (entity.clone(), cid.clone());
             menu.item(ramag_ui::menu_item("复制哈希").on_click(move |_, _, app| {
                 app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
                 e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
@@ -192,6 +193,31 @@ pub(in crate::views) fn render_commit_row(
                         move |name, _, app| {
                             branch_view.update(app, |this, cx| {
                                 this.run_branch_op(BranchOp::Create(name, Some(target.clone())), cx);
+                            });
+                        },
+                        window,
+                        app,
+                    );
+                }),
+            )
+            .item(
+                ramag_ui::menu_item("新建 Tag（基于此 commit）").on_click(move |_, window, app| {
+                    let short: String = c_tag.chars().take(7).collect();
+                    let target = c_tag.clone();
+                    let tag_view = e_tag.clone();
+                    ramag_ui::open_bounded_prompt(
+                        "从 commit 新建 Tag",
+                        format!("输入 Tag 名，将指向「{short}」。"),
+                        "",
+                        "创建",
+                        MAX_GIT_NAME_ARG_BYTES,
+                        move |name, _, app| {
+                            tag_view.update(app, |this, cx| {
+                                this.run_tag_op(TagOp::Create {
+                                    name,
+                                    message: None,
+                                    target: Some(target.clone()),
+                                }, cx);
                             });
                         },
                         window,

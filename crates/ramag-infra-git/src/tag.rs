@@ -44,13 +44,17 @@ pub fn create(
                 None
             }
         };
-    } else if let Some(m) = message {
-        args.push("-a");
-        args.push("-F");
-        args.push("-");
-        stdin_message = Some(m);
     } else {
-        stdin_message = None;
+        // 显式覆盖 tag.gpgSign，确保轻量 tag 不受用户全局签名配置影响。
+        args.push("--no-sign");
+        if let Some(m) = message {
+            args.push("-a");
+            args.push("-F");
+            args.push("-");
+            stdin_message = Some(m);
+        } else {
+            stdin_message = None;
+        }
     }
     args.push(name);
     if let Some(t) = target {

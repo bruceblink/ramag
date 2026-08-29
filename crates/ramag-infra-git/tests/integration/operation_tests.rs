@@ -100,6 +100,26 @@ fn tag_create_list() {
     assert_eq!(tags[0].name, "v1.0");
 }
 
+/// 验证显式 tag 目标会指向指定的历史 commit，而不是当前 HEAD。
+#[test]
+fn tag_create_at_explicit_target() {
+    let (driver, id, tmp) = setup();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "first\n", "first");
+    let first = block_on(driver.log(&id, LogOptions::default()))
+        .unwrap()
+        .first()
+        .expect("首个 commit 应存在")
+        .id
+        .0
+        .clone();
+    commit_file(&driver, &id, tmp.path(), "a.txt", "second\n", "second");
+
+    block_on(driver.create_tag(&id, "v-first", Some(&first), None, false)).unwrap();
+    let tags = block_on(driver.list_tags(&id)).unwrap();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].commit.0, first);
+}
+
 #[test]
 fn reset_and_revert() {
     let (driver, id, tmp) = setup();
