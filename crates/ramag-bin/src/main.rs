@@ -328,6 +328,7 @@ fn main() {
         {
             let tray = std::rc::Rc::new(std::cell::RefCell::new(tray::TrayIcon::install()));
             let tray_resident = tray.borrow().is_some();
+            cx.set_global(TrayResident(tray_resident));
             if tray_resident {
                 spawn_tray_loop(tray.clone(), deps.clone(), cx);
             } else {
