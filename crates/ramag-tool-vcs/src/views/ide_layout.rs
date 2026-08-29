@@ -20,6 +20,8 @@ const TOP_HEIGHT_MAX: f32 = 1400.0;
 pub(super) const LEFT_WIDTH_INITIAL: f32 = 280.0;
 pub(super) const LEFT_WIDTH_MIN: f32 = 180.0;
 pub(super) const LEFT_WIDTH_MAX: f32 = 600.0;
+const BRANCH_PICKER_WIDTH: f32 = 178.0;
+const BRANCH_PICKER_LABEL_CHARS: usize = 24;
 
 impl VcsView {
     pub(super) fn render_ide_layout(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -260,7 +262,10 @@ impl VcsView {
             .as_ref()
             .and_then(|s| s.head_branch.clone())
             .unwrap_or_else(|| "(detached)".into());
-        let label = format!("{} ▾", super::inline_text_preview(&head, 80));
+        let label = format!(
+            "{} ▾",
+            super::inline_text_preview(&head, BRANCH_PICKER_LABEL_CHARS)
+        );
         let busy = self.busy;
         let entity = cx.entity();
         let (local_limit, remote_limit) = super::branch_picker::branch_picker_limits(
@@ -297,78 +302,88 @@ impl VcsView {
             .as_ref()
             .and_then(|status| status.head_commit.as_ref())
             .is_some();
-        ramag_ui::clickable_button("vcs-branch-picker")
-            .outline()
-            .small()
-            .label(label)
-            .text_color(cx.theme().foreground)
-            .disabled(busy)
-            .pointer_dropdown_menu_with_anchor(
-                gpui::Anchor::BottomRight,
-                move |mut m: PopupMenu, window, cx| {
-                    // 父菜单滚动会破坏子菜单，分支组在子菜单内自行滚动。
-                    m = m.max_w(px(420.0));
-                    if shown_branches < total_branches {
-                        m = m.item(PopupMenuItem::label(format!(
-                            "快捷菜单仅显示 {shown_branches} / {total_branches} 个分支；完整列表请使用 History 侧栏"
-                        )));
-                        m = m.separator();
-                    }
-                    m = m.item(PopupMenuItem::label("操作"));
-                    let ent_new = entity.clone();
-                    let head_for_dlg = local
-                        .iter()
-                        .find(|(_, is_head, _)| *is_head)
-                        .map(|(n, _, _)| n.clone())
-                        .unwrap_or_else(|| "(HEAD)".into());
-                    m = m.item(
-                        ramag_ui::menu_item_with_disabled("新建分支", !has_head)
-                            .on_click({
-                                let ent = ent_new.clone();
-                                let hdlg = head_for_dlg.clone();
-                                let local_for_dlg = local
-                                    .iter()
-                                    .map(|(n, h, _)| (n.clone(), *h))
-                                    .collect::<Vec<_>>();
-                                let remote_for_dlg = remote.clone();
-                                move |_, window, app| {
-                                    super::branch_picker::open_new_branch_dialog(
-                                        ent.clone(),
-                                        hdlg.clone(),
-                                        local_for_dlg.clone(),
-                                        remote_for_dlg.clone(),
-                                        window,
-                                        app,
-                                    );
-                                }
-                            }),
-                    );
-                    m = m.separator();
-                    m = m.item(PopupMenuItem::label("本地"));
-                    m = super::branch_picker::render_branches_grouped(
-                        m,
-                        &local,
-                        false,
-                        ent_new.clone(),
-                        window,
-                        cx,
-                    );
-                    if !remote.is_empty() {
-                        m = m.separator();
-                        m = m.item(PopupMenuItem::label("远程"));
-                        let remote_items: Vec<(String, bool, Option<String>)> =
-                            remote.iter().map(|n| (n.clone(), false, None)).collect();
-                        m = super::branch_picker::render_branches_grouped(
-                            m,
-                            &remote_items,
-                            true,
-                            ent_new.clone(),
-                            window,
-                            cx,
-                        );
-                    }
-                    m
-                },
+        div()
+            .flex_shrink()
+            .min_w_0()
+            .w(px(BRANCH_PICKER_WIDTH))
+            .overflow_hidden()
+            .child(
+                ramag_ui::clickable_button("vcs-branch-picker")
+                    .outline()
+                    .small()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .label(label)
+                    .text_color(cx.theme().foreground)
+                    .disabled(busy)
+                    .pointer_dropdown_menu_with_anchor(
+                        gpui::Anchor::BottomRight,
+                        move |mut m: PopupMenu, window, cx| {
+                            // 父菜单滚动会破坏子菜单，分支组在子菜单内自行滚动。
+                            m = m.max_w(px(420.0));
+                            if shown_branches < total_branches {
+                                m = m.item(PopupMenuItem::label(format!(
+                                    "快捷菜单仅显示 {shown_branches} / {total_branches} 个分支；完整列表请使用 History 侧栏"
+                                )));
+                                m = m.separator();
+                            }
+                            m = m.item(PopupMenuItem::label("操作"));
+                            let ent_new = entity.clone();
+                            let head_for_dlg = local
+                                .iter()
+                                .find(|(_, is_head, _)| *is_head)
+                                .map(|(n, _, _)| n.clone())
+                                .unwrap_or_else(|| "(HEAD)".into());
+                            m = m.item(
+                                ramag_ui::menu_item_with_disabled("新建分支", !has_head)
+                                    .on_click({
+                                        let ent = ent_new.clone();
+                                        let hdlg = head_for_dlg.clone();
+                                        let local_for_dlg = local
+                                            .iter()
+                                            .map(|(n, h, _)| (n.clone(), *h))
+                                            .collect::<Vec<_>>();
+                                        let remote_for_dlg = remote.clone();
+                                        move |_, window, app| {
+                                            super::branch_picker::open_new_branch_dialog(
+                                                ent.clone(),
+                                                hdlg.clone(),
+                                                local_for_dlg.clone(),
+                                                remote_for_dlg.clone(),
+                                                window,
+                                                app,
+                                            );
+                                        }
+                                    }),
+                            );
+                            m = m.separator();
+                            m = m.item(PopupMenuItem::label("本地"));
+                            m = super::branch_picker::render_branches_grouped(
+                                m,
+                                &local,
+                                false,
+                                ent_new.clone(),
+                                window,
+                                cx,
+                            );
+                            if !remote.is_empty() {
+                                m = m.separator();
+                                m = m.item(PopupMenuItem::label("远程"));
+                                let remote_items: Vec<(String, bool, Option<String>)> =
+                                    remote.iter().map(|n| (n.clone(), false, None)).collect();
+                                m = super::branch_picker::render_branches_grouped(
+                                    m,
+                                    &remote_items,
+                                    true,
+                                    ent_new.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            m
+                        },
+                    ),
             )
             .into_any_element()
     }
