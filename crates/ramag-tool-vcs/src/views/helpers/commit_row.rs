@@ -133,6 +133,7 @@ pub(in crate::views) fn render_commit_row(
             let (e3, c3) = (entity.clone(), cid.clone());
             let (e_sha, c_sha) = (entity.clone(), cid.clone());
             let (e_msg, c_msg) = (entity.clone(), cid.clone());
+            let (e_compare, c_compare) = (entity.clone(), cid.clone());
             menu.item(ramag_ui::menu_item("复制哈希").on_click(move |_, _, app| {
                 app.write_to_clipboard(gpui::ClipboardItem::new_string(c_sha.clone()));
                 e_sha.update(app, |this, cx| this.notify_success("已复制完整 SHA", cx));
@@ -143,6 +144,14 @@ pub(in crate::views) fn render_commit_row(
                 });
             }))
             .separator()
+            .item(
+                ramag_ui::menu_item("与当前版本比较").on_click(move |_, _, app| {
+                    let short: String = c_compare.chars().take(7).collect();
+                    e_compare.update(app, |this, cx| {
+                        this.open_compare(format!("commit {short}"), c_compare.clone(), cx);
+                    });
+                }),
+            )
             .item(ramag_ui::menu_item("Cherry-pick").on_click(move |_, window, app| {
                 use crate::views::confirm_dialogs::open_confirm_dialog;
                 let short: String = c1.chars().take(7).collect();
