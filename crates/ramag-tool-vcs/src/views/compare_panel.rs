@@ -13,6 +13,7 @@ use gpui_component::{
 use ramag_domain::entities::{FileStatus, contains_case_insensitive};
 use tracing::{error, info};
 
+use super::compare_picker::CompareSide;
 use super::helpers::{FileTabSource, code_letter_color, code_to_letter};
 use super::vcs_view::{CompareState, VcsView};
 
@@ -26,13 +27,11 @@ impl VcsView {
         target_commit: String,
         cx: &mut Context<Self>,
     ) {
-        if self.busy {
-            self.notify_warning("当前 Git 操作正在执行，请稍后比较", cx);
-            return;
-        }
-        let Some(repo) = self.repo.as_ref().map(|repo| repo.id.clone()) else {
-            return;
-        };
+        let current_label = self
+            .status
+            .as_ref()
+            .and_then(|status| status.head_branch.clone())
+            .unwrap_or_else(|| "HEAD".into());
         let Some(current_commit) = self
             .status
             .as_ref()
@@ -41,8 +40,33 @@ impl VcsView {
             self.notify_warning("当前仓库还没有可比较的 HEAD", cx);
             return;
         };
-        if current_commit == target_commit {
-            self.notify_warning("当前分支与目标分支指向同一个 commit", cx);
+        self.open_compare_revisions(
+            target_label,
+            target_commit,
+            current_label,
+            current_commit,
+            cx,
+        );
+    }
+
+    /// 创建一个比较会话并加载两个 revision 之间的文件清单；切换任一端会复用此路径。
+    pub(super) fn open_compare_revisions(
+        &mut self,
+        from_label: String,
+        from: String,
+        to_label: String,
+        to: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            self.notify_warning("当前 Git 操作正在执行，请稍后比较", cx);
+            return;
+        }
+        let Some(repo) = self.repo.as_ref().map(|repo| repo.id.clone()) else {
+            return;
+        };
+        if from == to {
+            self.notify_warning("比较两端指向同一个 commit", cx);
             return;
         }
 
@@ -52,9 +76,10 @@ impl VcsView {
         self.compare_request_seq = self.compare_request_seq.wrapping_add(1);
         let request_seq = self.compare_request_seq;
         self.compare = Some(CompareState {
-            from: target_commit.clone(),
-            to: current_commit.clone(),
-            target_label: target_label.clone(),
+            from: from.clone(),
+            to: to.clone(),
+            from_label,
+            to_label,
             files: Rc::new(Vec::new()),
             loading: true,
         });
@@ -65,15 +90,14 @@ impl VcsView {
 
         let driver = self.driver.clone();
         cx.spawn(async move |this, cx| {
-            let result = driver
-                .list_diff_files(&repo, &target_commit, &current_commit)
-                .await;
+            let result = driver.list_diff_files(&repo, &from, &to).await;
             let _ = this.update(cx, |this, cx| {
                 let is_current = this.is_current_repo(&repo)
                     && this.compare_request_seq == request_seq
-                    && this.compare.as_ref().is_some_and(|compare| {
-                        compare.from == target_commit && compare.to == current_commit
-                    });
+                    && this
+                        .compare
+                        .as_ref()
+                        .is_some_and(|compare| compare.from == from && compare.to == to);
                 if !is_current {
                     return;
                 }
@@ -143,52 +167,99 @@ impl VcsView {
         let muted_fg = theme.muted_foreground;
         let fg = theme.foreground;
         let accent = theme.accent;
-        let target_label = super::inline_text_preview(&compare.target_label, 120);
         let from_short = compare.from.chars().take(7).collect::<String>();
         let to_short = compare.to.chars().take(7).collect::<String>();
 
-        let header = h_flex()
-            .h(px(36.0))
-            .flex_none()
-            .w_full()
-            .gap(px(6.0))
-            .items_center()
-            .border_b_1()
-            .border_color(border)
-            .child(
-                Icon::new(ramag_ui::icons::git_compare())
-                    .small()
-                    .text_color(accent),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_xs()
-                    .text_color(fg)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(format!(
-                        "当前分支 ↔ {target_label} · {from_short}..{to_short}"
-                    )),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(muted_fg)
-                    .child(format!("{} 个文件", compare.files.len())),
-            )
-            .child(
-                ramag_ui::clickable_button("vcs-compare-close")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Close)
-                    .tooltip("关闭比较")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.close_compare(cx);
-                    })),
-            );
+        let header =
+            v_flex()
+                .flex_none()
+                .w_full()
+                .child(
+                    h_flex()
+                        .h(px(36.0))
+                        .w_full()
+                        .gap(px(6.0))
+                        .items_center()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            Icon::new(ramag_ui::icons::git_compare())
+                                .small()
+                                .text_color(accent),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(fg)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(format!("分支比较 · {from_short} → {to_short}")),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(muted_fg)
+                                .child(format!("{} 个文件", compare.files.len())),
+                        )
+                        .child(
+                            ramag_ui::clickable_button("vcs-compare-close")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .tooltip("关闭比较")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.close_compare(cx);
+                                })),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .h(px(38.0))
+                        .w_full()
+                        .gap(px(4.0))
+                        .items_center()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(muted_fg)
+                                .child("比较范围"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.render_compare_revision_picker(
+                                    CompareSide::From,
+                                    &compare.from_label,
+                                    &compare.from,
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            ramag_ui::clickable_button("vcs-compare-swap")
+                                .ghost()
+                                .xsmall()
+                                .icon(ramag_ui::icons::arrow_up_down())
+                                .tooltip("交换比较方向")
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.swap_compare_revisions(cx);
+                                })),
+                        )
+                        .child(div().flex_1().min_w_0().child(
+                            self.render_compare_revision_picker(
+                                CompareSide::To,
+                                &compare.to_label,
+                                &compare.to,
+                                cx,
+                            ),
+                        )),
+                );
 
         if compare.loading {
             return v_flex()

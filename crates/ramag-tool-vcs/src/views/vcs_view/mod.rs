@@ -248,12 +248,13 @@ impl Focusable for VcsView {
     }
 }
 
-/// 当前分支与另一个 revision 的只读比较会话；文件列表异步加载，Diff 按文件懒加载。
+/// 两个 revision 的只读比较会话；文件列表异步加载，Diff 按文件懒加载。
 #[derive(Clone)]
 pub(super) struct CompareState {
     pub from: String,
     pub to: String,
-    pub target_label: String,
+    pub from_label: String,
+    pub to_label: String,
     pub files: std::rc::Rc<Vec<FileStatus>>,
     pub loading: bool,
 }

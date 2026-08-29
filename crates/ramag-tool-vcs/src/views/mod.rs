@@ -2,6 +2,7 @@ pub mod branch_picker;
 pub mod commit_detail;
 pub mod commit_graph;
 pub mod compare_panel;
+mod compare_picker;
 pub mod confirm_dialogs;
 pub mod conflict_editor;
 pub mod diff_keys;
