@@ -59,6 +59,7 @@ impl VcsView {
 
     /// 单文件历史：设 path_filter + 打开下半 history pane（history_pane_visible=true 必需，否则无反馈）
     pub(crate) fn view_file_history(&mut self, path: String, cx: &mut Context<Self>) {
+        self.close_commit_detail(cx);
         self.history_path_filter = Some(path);
         self.history_ref_filter = None;
         self.select_commit_history_scope();
@@ -70,6 +71,7 @@ impl VcsView {
 
     /// 清除单文件历史过滤，回到全仓库 history
     pub(crate) fn clear_history_path_filter(&mut self, cx: &mut Context<Self>) {
+        self.close_commit_detail(cx);
         self.history_path_filter = None;
         self.select_commit_history_scope();
         self.set_history_commits(Vec::new());
@@ -82,6 +84,7 @@ impl VcsView {
         filter: HistoryRefFilter,
         cx: &mut Context<Self>,
     ) {
+        self.close_commit_detail(cx);
         self.history_path_filter = None;
         self.history_ref_filter = Some(filter);
         self.select_commit_history_scope();
@@ -93,6 +96,7 @@ impl VcsView {
 
     /// 清除分支或 tag 历史过滤，回到当前 HEAD 的提交历史。
     pub(crate) fn clear_history_ref_filter(&mut self, cx: &mut Context<Self>) {
+        self.close_commit_detail(cx);
         self.history_ref_filter = None;
         self.select_commit_history_scope();
         self.set_history_commits(Vec::new());
@@ -101,6 +105,7 @@ impl VcsView {
 
     /// 触发 commit 搜索：解析 search_input + 重新拉首页
     pub(crate) fn apply_history_search(&mut self, cx: &mut Context<Self>) {
+        self.close_commit_detail(cx);
         self.set_history_commits(Vec::new());
         self.load_history_page(0, cx);
     }
@@ -340,6 +345,14 @@ impl VcsView {
         self.loading_commit_files = false;
         cx.notify();
     }
+}
+
+/// 只有提交历史的搜索框被清空时才自动重载；reflog 由本地即时过滤，不应触发 Git 查询。
+pub(crate) fn should_apply_empty_history_search(
+    showing_reflog: bool,
+    query_is_empty: bool,
+) -> bool {
+    !showing_reflog && query_is_empty
 }
 
 /// 解析搜索框 → (grep, author, since)：`@xxx`=author / `7d|1w|2m|12h|3y`=since / 其他=grep

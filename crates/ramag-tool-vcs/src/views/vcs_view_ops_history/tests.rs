@@ -1,6 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
-use super::parse_search_query;
+use super::{parse_search_query, should_apply_empty_history_search};
+
+#[test]
+fn clearing_commit_search_reloads_but_reflog_stays_local() {
+    assert!(should_apply_empty_history_search(false, true));
+    assert!(!should_apply_empty_history_search(false, false));
+    assert!(!should_apply_empty_history_search(true, true));
+}
 
 #[test]
 fn parses_pure_keyword_into_grep() {

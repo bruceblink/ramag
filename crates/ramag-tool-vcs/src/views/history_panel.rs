@@ -9,7 +9,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
-    h_flex, input::Input, v_flex,
+    h_flex, v_flex,
 };
 
 use ramag_domain::entities::Commit;
@@ -190,9 +190,14 @@ impl VcsView {
             .child(Icon::new(IconName::Search).small().text_color(muted_fg))
             .child(
                 div().flex_1().min_w_0().child(
-                    Input::new(&self.history_search_input)
-                        .small()
-                        .into_any_element(),
+                    ramag_ui::cleanable_input(
+                        &self.history_search_input,
+                        "vcs-history-search-clear",
+                        false,
+                        cx,
+                    )
+                    .small()
+                    .into_any_element(),
                 ),
             )
             .when(!self.showing_reflog, |row| {

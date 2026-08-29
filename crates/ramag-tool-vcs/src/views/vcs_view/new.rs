@@ -138,7 +138,16 @@ impl VcsView {
         cx.subscribe(
             &history_search_input,
             |this: &mut Self, _, event: &InputEvent, cx| match event {
-                InputEvent::Change => cx.notify(),
+                InputEvent::Change => {
+                    cx.notify();
+                    let query_empty = this.history_search_input.read(cx).value().is_empty();
+                    if super::super::vcs_view_ops_history::should_apply_empty_history_search(
+                        this.showing_reflog,
+                        query_empty,
+                    ) {
+                        this.apply_history_search(cx);
+                    }
+                }
                 InputEvent::PressEnter { .. } if !this.showing_reflog => {
                     this.apply_history_search(cx);
                 }
