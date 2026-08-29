@@ -24,6 +24,7 @@ pub mod result_memory;
 pub mod settings_view;
 pub mod shell;
 pub mod shortcuts_dialog;
+pub mod system_settings;
 pub mod theme;
 pub mod transfer_ui;
 
@@ -70,6 +71,10 @@ pub use result_memory::{
 pub use settings_view::SettingsView;
 pub use shell::{Shell, WindowBoundsPref};
 pub use shortcuts_dialog::open_shortcuts;
+pub use system_settings::{
+    SYSTEM_SETTINGS_PREF_KEY, SystemSettings, SystemSettingsGlobal, init_system_settings,
+    set_system_settings, system_settings,
+};
 pub use theme::{Mode, StorageGlobal, apply_theme, current_mode, init_theme};
 pub use transfer_ui::{
     TransferState, open_import_options_dialog, progress_sink, spawn_transfer_ticker,

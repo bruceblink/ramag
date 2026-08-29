@@ -1,6 +1,7 @@
 //! 主窗口、托盘和单实例激活生命周期。
 
 use super::*;
+use ramag_ui::SystemSettings;
 
 /// 主窗口重建时复用的依赖。
 #[derive(Clone)]
@@ -22,6 +23,11 @@ pub(super) struct AppDeps {
 pub(super) struct MainWindowGlobal(pub(super) gpui::AnyWindowHandle);
 
 impl gpui::Global for MainWindowGlobal {}
+
+/// 只有托盘已安装且用户明确开启设置时，关闭最后窗口才保留后台进程。
+pub(super) fn should_keep_running_in_tray(tray_resident: bool, settings: SystemSettings) -> bool {
+    tray_resident && settings.minimize_to_tray
+}
 
 /// 合并主窗口句柄写入前的重复唤起。
 #[derive(Default)]
@@ -288,4 +294,28 @@ pub(super) fn spawn_instance_activation(
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_keep_running_in_tray;
+    use ramag_ui::SystemSettings;
+
+    #[test]
+    fn tray_residency_requires_installation_and_opt_in() {
+        assert!(!should_keep_running_in_tray(
+            false,
+            SystemSettings::default()
+        ));
+        assert!(!should_keep_running_in_tray(
+            true,
+            SystemSettings::default()
+        ));
+        assert!(should_keep_running_in_tray(
+            true,
+            SystemSettings {
+                minimize_to_tray: true,
+            }
+        ));
+    }
 }

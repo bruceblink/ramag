@@ -65,9 +65,9 @@ use ramag_tool_vcs::{CommitNow, PullNow, PushNow, ToggleHistoryPane, VcsTool, cr
 use ramag_ui::{
     CloseTab, DATABASE_RESULT_SETTINGS_PREF_KEY, DATABASE_SEARCH_SETTINGS_PREF_KEY,
     FEEDBACK_ISSUE_URL, HomeEvent, HomeView, NavTarget, OpenRecentItems,
-    REDIS_TREE_SETTINGS_PREF_KEY, RamagAssets, SettingsView, Shell, StorageGlobal,
-    init_database_result_settings, init_database_search_settings, init_redis_tree_settings,
-    init_theme, sync_update_indicator,
+    REDIS_TREE_SETTINGS_PREF_KEY, RamagAssets, SYSTEM_SETTINGS_PREF_KEY, SettingsView, Shell,
+    StorageGlobal, init_database_result_settings, init_database_search_settings,
+    init_redis_tree_settings, init_system_settings, init_theme, sync_update_indicator,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -202,6 +202,7 @@ fn main() {
             DATABASE_RESULT_SETTINGS_PREF_KEY,
             DATABASE_SEARCH_SETTINGS_PREF_KEY,
             REDIS_TREE_SETTINGS_PREF_KEY,
+            SYSTEM_SETTINGS_PREF_KEY,
             ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY,
         ],
     );
@@ -215,6 +216,7 @@ fn main() {
     let initial_redis_tree_pref = startup_preferences
         .get(REDIS_TREE_SETTINGS_PREF_KEY)
         .cloned();
+    let initial_system_settings_pref = startup_preferences.get(SYSTEM_SETTINGS_PREF_KEY).cloned();
     let initial_shortcut_overrides = startup_preferences
         .get(ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY)
         .cloned();
@@ -284,6 +286,9 @@ fn main() {
         if let Err(error) = init_redis_tree_settings(initial_redis_tree_pref.as_deref(), cx) {
             warn!(operation = "redis_tree_settings_load", error, "ignore invalid Redis tree settings");
         }
+        if let Err(error) = init_system_settings(initial_system_settings_pref.as_deref(), cx) {
+            warn!(operation = "system_settings_load", error, "ignore invalid system settings");
+        }
         if let Err(error) =
             init_database_result_settings(initial_database_result_pref.as_deref(), cx)
         {
@@ -317,7 +322,7 @@ fn main() {
         })
         .detach();
 
-        // Windows 由托盘维持后台运行；安装失败时关闭最后窗口即退出。
+        // Windows 仅在系统设置开启且托盘安装成功时维持后台运行。
         // macOS 依靠 dock 的 on_reopen，无需此回调。
         #[cfg(target_os = "windows")]
         {
@@ -337,7 +342,12 @@ fn main() {
             })
             .detach();
             cx.on_window_closed(move |cx, _window_id| {
-                if !tray_resident && cx.windows().is_empty() {
+                if cx.windows().is_empty()
+                    && !should_keep_running_in_tray(
+                        tray_resident,
+                        ramag_ui::system_settings(cx),
+                    )
+                {
                     cx.quit();
                 }
             })
