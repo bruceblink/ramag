@@ -193,7 +193,7 @@ pub(super) fn open_main_window(deps: AppDeps, cx: &mut App) {
                     cx.set_quit_mode(quit_mode_for_window_close(tray_resident, settings));
                     true
                 });
-                let home_view = cx.new(|_| HomeView::new(registry.clone()));
+                let home_view = cx.new(|cx| HomeView::new(registry.clone(), cx));
 
                 let dbclient_view = create_dbclient_view(
                     conn_service.clone(),

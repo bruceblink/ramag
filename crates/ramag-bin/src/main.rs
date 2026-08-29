@@ -30,7 +30,8 @@ use gpui::{
 use gpui_component::Root;
 use ramag_app::{
     AUTO_CHECK_INTERVAL, ClipboardService, ConnectionService, DataSyncGate, DataSyncService,
-    MongoService, ObjectStorageService, RedisService, SshService, ToolRegistry, UpdateService,
+    MongoService, ObjectStorageService, RedisService, SshService, TOOL_ORDER_PREF_KEY,
+    ToolRegistry, UpdateService,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_domain::traits::ClipboardDriver;
@@ -205,6 +206,7 @@ fn main() {
             REDIS_TREE_SETTINGS_PREF_KEY,
             SYSTEM_SETTINGS_PREF_KEY,
             ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY,
+            TOOL_ORDER_PREF_KEY,
         ],
     );
     let initial_pref = startup_preferences.get("theme_mode").cloned();
@@ -244,6 +246,15 @@ fn main() {
             }
         });
         registry.set_enabled(ClipboardTool::ID, clipboard_enabled);
+    }
+    if let Some(saved_order) = startup_preferences.get(TOOL_ORDER_PREF_KEY)
+        && let Err(error) = registry.apply_order_json(saved_order)
+    {
+        warn!(
+            operation = "tool_order_load",
+            error = %error,
+            "ignore invalid saved tool layout"
+        );
     }
     info!(
         operation = "tool_registry_init",
