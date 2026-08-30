@@ -177,7 +177,6 @@ impl QueryTab {
         if self.running || self.transaction_busy {
             return;
         }
-        let result_handle = self.active_result();
         let Some(conn) = self.connection.clone() else {
             result_handle.update(cx, |r, cx| {
                 r.set_state(ResultState::Error("尚未选择连接".to_string()), cx);
@@ -197,7 +196,6 @@ impl QueryTab {
         };
         if !risks.is_empty() {
             let entity = cx.entity();
-            let result_handle_for_confirm = result_handle.clone();
             let confirmed_connection_id = conn.id.clone();
             let confirmed_schema = self.active_schema.clone();
             let confirmed_editor = self.current_sql(cx);
