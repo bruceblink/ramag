@@ -6,6 +6,9 @@ pub mod git;
 pub mod history;
 pub mod id_conversion;
 pub mod jumpserver;
+pub mod kafka;
+#[cfg(test)]
+mod kafka_tests;
 pub mod mongo;
 pub mod object_storage;
 pub mod query;
@@ -63,6 +66,27 @@ pub use jumpserver::{
     JumpServerOrganization, JumpServerRdpSession, JumpServerRdpSessionHistory, JumpServerSession,
     MAX_JUMPSERVER_ASSETS, MAX_JUMPSERVER_NODES, MAX_JUMPSERVER_RDP_FAVORITE_SESSIONS,
     MAX_JUMPSERVER_RDP_RECENT_SESSIONS, MAX_JUMPSERVER_TOKEN_BYTES, MAX_JUMPSERVER_URL_BYTES,
+};
+pub use kafka::{
+    DEFAULT_KAFKA_MAX_BYTES, DEFAULT_KAFKA_MAX_CONCURRENT_PARTITIONS, DEFAULT_KAFKA_MAX_RECORDS,
+    DEFAULT_KAFKA_MAX_SCAN_SECONDS, KafkaAcl, KafkaAclOperation, KafkaAclPatternType,
+    KafkaAclPermission, KafkaAclResourceType, KafkaBroker, KafkaClusterConfig, KafkaClusterId,
+    KafkaClusterMetadata, KafkaConsumerGroup, KafkaConsumerGroupOffset, KafkaConsumerMember,
+    KafkaConsumerPartitionAssignment, KafkaMessageHeader, KafkaMessageQuery, KafkaMessageRecord,
+    KafkaMessageSearchField, KafkaMessageSearchQuery, KafkaPartition, KafkaReadOnlyState,
+    KafkaSaslMechanism, KafkaSecurityProtocol, KafkaTextPreview, KafkaTlsConfig, KafkaTopic,
+    MAX_KAFKA_ACL_HOST_BYTES, MAX_KAFKA_ACL_RESOURCE_NAME_BYTES, MAX_KAFKA_ACLS,
+    MAX_KAFKA_BOOTSTRAP_SERVER_BYTES, MAX_KAFKA_BOOTSTRAP_SERVERS,
+    MAX_KAFKA_BOOTSTRAP_SERVERS_BYTES, MAX_KAFKA_BROKERS, MAX_KAFKA_CLIENT_ID_BYTES,
+    MAX_KAFKA_CLUSTER_ID_BYTES, MAX_KAFKA_CLUSTER_NAME_BYTES, MAX_KAFKA_CONCURRENT_PARTITIONS,
+    MAX_KAFKA_CONSUMER_GROUPS, MAX_KAFKA_GROUP_MEMBERS, MAX_KAFKA_GROUP_OFFSETS,
+    MAX_KAFKA_HEADER_KEY_BYTES, MAX_KAFKA_MESSAGE_HEADERS, MAX_KAFKA_MESSAGE_PREVIEW_BYTES,
+    MAX_KAFKA_PARTITIONS, MAX_KAFKA_PRINCIPAL_BYTES, MAX_KAFKA_QUERY_PARTITIONS,
+    MAX_KAFKA_QUERY_TEXT_BYTES, MAX_KAFKA_REMARK_BYTES, MAX_KAFKA_REPLICAS,
+    MAX_KAFKA_SASL_PASSWORD_BYTES, MAX_KAFKA_SASL_USERNAME_BYTES, MAX_KAFKA_SCAN_BYTES,
+    MAX_KAFKA_SCAN_RECORDS, MAX_KAFKA_SCAN_SECONDS, MAX_KAFKA_TLS_PATH_BYTES,
+    MAX_KAFKA_TOPIC_NAME_BYTES, MAX_KAFKA_TOPICS, MAX_KAFKA_VERSION_BYTES, preview_bytes,
+    validate_kafka_bootstrap_server, validate_kafka_topic_name,
 };
 pub use mongo::{
     InsertManyOutcome, MAX_MONGO_COLLECTION_NAME_BYTES, MAX_MONGO_DATABASE_NAME_BYTES,
