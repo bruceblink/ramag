@@ -9,6 +9,8 @@ $Target = "x86_64-pc-windows-msvc"
 $BuildProfile = if ($Release) { "release" } else { "debug" }
 $RepoDir = Split-Path -Parent $PSScriptRoot
 $DependencyHelper = Join-Path $PSScriptRoot "windows\pe-dependencies.ps1"
+$ToolchainHelper = Join-Path $PSScriptRoot "windows\msvc-toolchain.ps1"
+$CMakeToolchainFile = Join-Path $PSScriptRoot "windows\msvc-static-crt.cmake"
 
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "This script must run on Windows. Use scripts/build-windows-local.sh for macOS cross-checks."
@@ -16,9 +18,18 @@ if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
 if (-not (Test-Path -LiteralPath $DependencyHelper -PathType Leaf)) {
     throw "PE dependency helper is missing: $DependencyHelper"
 }
+if (-not (Test-Path -LiteralPath $ToolchainHelper -PathType Leaf)) {
+    throw "MSVC toolchain helper is missing: $ToolchainHelper"
+}
+if (-not (Test-Path -LiteralPath $CMakeToolchainFile -PathType Leaf)) {
+    throw "CMake MSVC runtime toolchain file is missing: $CMakeToolchainFile"
+}
 . $DependencyHelper
+. $ToolchainHelper
 
 Set-Location $RepoDir
+$VisualStudio = Get-VisualStudio18Toolchain
+Write-Host "Using Visual Studio 18 2026 Build Tools: $($VisualStudio.InstallationPath) ($($VisualStudio.InstallationVersion))"
 
 function Find-Fxc {
     $Command = Get-Command fxc.exe -ErrorAction SilentlyContinue
@@ -53,27 +64,13 @@ function Find-Fxc {
 }
 
 function Find-Dumpbin {
-    $Command = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-    if ($null -ne $Command) {
-        return $Command.Source
-    }
-
-    $ProgramFilesX86 = [System.Environment]::GetFolderPath("ProgramFilesX86")
-    $Vswhere = Join-Path $ProgramFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path -LiteralPath $Vswhere -PathType Leaf)) {
+    $MsvcRoot = Join-Path $VisualStudio.InstallationPath "VC\Tools\MSVC"
+    if (-not (Test-Path -LiteralPath $MsvcRoot -PathType Container)) {
         return $null
     }
-    $DumpbinMatches = & $Vswhere `
-        -latest `
-        -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe"
-    if ($LASTEXITCODE -ne 0) {
-        return $null
-    }
-    return $DumpbinMatches |
-        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-        Select-Object -First 1
+    return Get-ChildItem -LiteralPath $MsvcRoot -Recurse -File -Filter "dumpbin.exe" |
+        Where-Object { $_.FullName -match "\\bin\\Hostx64\\x64\\dumpbin\.exe$" } |
+        Select-Object -ExpandProperty FullName -First 1
 }
 
 function Assert-PeTarget {
@@ -186,7 +183,12 @@ foreach ($Name in $CompilerEnvironmentNames) {
 try {
     # tree-sitter and other C build scripts must use the MSVC ABI for this target;
     # inherited GNU compiler variables would produce MinGW objects for link.exe.
-    & cargo @CargoArgs
+    $CargoCommand = $CargoArgs -join " "
+    $Vs18Command = 'call "{0}" >nul && set "CMAKE_GENERATOR=NMake Makefiles" && set "CMAKE_GENERATOR_PLATFORM=" && set "CMAKE_GENERATOR_INSTANCE=" && set "CMAKE_GENERATOR_TOOLSET=" && set "CMAKE_TOOLCHAIN_FILE={2}" && cargo {1}' -f `
+        $VisualStudio.VcVars64,
+        $CargoCommand,
+        [System.IO.Path]::GetFullPath($CMakeToolchainFile)
+    & cmd.exe /d /s /c $Vs18Command
     $CargoExitCode = $LASTEXITCODE
 }
 finally {
@@ -201,7 +203,7 @@ finally {
 }
 
 if ($CargoExitCode -ne 0) {
-    throw "Windows $BuildProfile build failed. Install Visual Studio C++ Build Tools and the Windows 10/11 SDK, then retry."
+    throw "Windows $BuildProfile build failed with Visual Studio 18 2026. Verify the C++ workload and Windows 10/11 SDK, then retry."
 }
 
 $Exe = Join-Path $RepoDir "target\$Target\$BuildProfile\ramag.exe"
