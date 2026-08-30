@@ -15,6 +15,7 @@ members = [
     "crates/ramag-infra-ssh",
     "crates/ramag-infra-object-storage",
     "crates/ramag-infra-update",
+    "crates/ramag-infra-kafka",
     "crates/ramag-terminal",
     "crates/ramag-tool-dbclient",
     "crates/ramag-tool-redis",
@@ -52,6 +53,7 @@ ramag-infra-tunnel = { path = "crates/ramag-infra-tunnel" }
 ramag-infra-ssh = { path = "crates/ramag-infra-ssh" }
 ramag-infra-object-storage = { path = "crates/ramag-infra-object-storage" }
 ramag-infra-update = { path = "crates/ramag-infra-update" }
+ramag-infra-kafka = { path = "crates/ramag-infra-kafka" }
 ramag-terminal = { path = "crates/ramag-terminal" }
 ramag-tool-dbclient = { path = "crates/ramag-tool-dbclient" }
 ramag-tool-redis = { path = "crates/ramag-tool-redis" }
@@ -223,6 +225,9 @@ russh-sftp = "2.3"
 
 # 连接池缓存
 dashmap = "6"
+
+# Kafka 客户端；具体 crate 通过显式 feature 选择 librdkafka 的构建方式。
+rdkafka = { version = "0.39", default-features = false }
 
 # 凭证加密
 aes-gcm = "0.10"

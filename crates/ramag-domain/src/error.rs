@@ -25,6 +25,55 @@ pub enum ObjectStorageErrorCategory {
     CorruptResponse,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KafkaErrorCategory {
+    InvalidConfig,
+    Authentication,
+    Tls,
+    Timeout,
+    PermissionDenied,
+    NotFound,
+    Unsupported,
+    Cancelled,
+    Network,
+    Protocol,
+    Unknown,
+}
+
+/// Kafka 基础设施层返回的安全错误；不携带密码、密钥或消息正文。
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[error("{safe_message}")]
+pub struct KafkaError {
+    pub category: KafkaErrorCategory,
+    pub safe_message: String,
+    pub retryable: bool,
+    pub operation: &'static str,
+}
+
+impl KafkaError {
+    pub fn new(
+        category: KafkaErrorCategory,
+        operation: &'static str,
+        safe_message: impl Into<String>,
+    ) -> Self {
+        Self {
+            category,
+            safe_message: safe_message.into(),
+            retryable: false,
+            operation,
+        }
+    }
+
+    pub fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
+    }
+
+    pub fn user_message(&self) -> &str {
+        &self.safe_message
+    }
+}
+
 /// 对象存储错误只保留可安全展示和记录的结构化字段。
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 #[error("{safe_message}")]
@@ -102,6 +151,9 @@ pub enum DomainError {
     #[error("对象存储错误: {0}")]
     ObjectStorage(#[from] ObjectStorageError),
 
+    #[error("Kafka 错误: {0}")]
+    Kafka(#[from] KafkaError),
+
     #[error("功能尚未实现: {0}")]
     NotImplemented(String),
 
@@ -126,12 +178,14 @@ impl DomainError {
             | DomainError::Forbidden(m)
             | DomainError::Other(m) => m,
             DomainError::ObjectStorage(error) => &error.safe_message,
+            DomainError::Kafka(error) => &error.safe_message,
         }
     }
 
     pub fn user_message(&self) -> String {
         match self {
             DomainError::ObjectStorage(error) => error.user_message(),
+            DomainError::Kafka(error) => error.user_message().to_string(),
             other => other.message().to_string(),
         }
     }

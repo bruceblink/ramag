@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -73,6 +73,10 @@ pub enum KafkaSaslMechanism {
 }
 
 impl KafkaSaslMechanism {
+    pub const fn requires_user_password(self) -> bool {
+        matches!(self, Self::Plain | Self::ScramSha256 | Self::ScramSha512)
+    }
+
     pub const fn as_client_property(self) -> &'static str {
         match self {
             Self::Gssapi => "GSSAPI",
@@ -84,7 +88,7 @@ impl KafkaSaslMechanism {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KafkaTlsConfig {
     #[serde(default)]
     pub verify: TlsVerify,
@@ -94,6 +98,27 @@ pub struct KafkaTlsConfig {
     pub client_cert_path: Option<String>,
     #[serde(default)]
     pub client_key_path: Option<String>,
+}
+
+impl fmt::Debug for KafkaTlsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KafkaTlsConfig")
+            .field("verify", &self.verify)
+            .field(
+                "ca_cert_path",
+                &self.ca_cert_path.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "client_cert_path",
+                &self.client_cert_path.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "client_key_path",
+                &self.client_key_path.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl KafkaTlsConfig {
@@ -131,7 +156,7 @@ impl KafkaReadOnlyState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KafkaClusterConfig {
     pub id: KafkaClusterId,
     pub name: String,
@@ -152,6 +177,31 @@ pub struct KafkaClusterConfig {
     pub remark: Option<String>,
     #[serde(default)]
     pub read_only: KafkaReadOnlyState,
+}
+
+impl fmt::Debug for KafkaClusterConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KafkaClusterConfig")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("bootstrap_servers", &self.bootstrap_servers)
+            .field("security_protocol", &self.security_protocol)
+            .field("sasl_mechanism", &self.sasl_mechanism)
+            .field(
+                "sasl_username",
+                &self.sasl_username.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "sasl_password",
+                &self.sasl_password.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tls", &self.tls)
+            .field("client_id", &self.client_id)
+            .field("remark", &self.remark)
+            .field("read_only", &self.read_only)
+            .finish()
+    }
 }
 
 impl KafkaClusterConfig {
@@ -223,6 +273,14 @@ impl KafkaClusterConfig {
                 self.sasl_password.as_deref(),
                 MAX_KAFKA_SASL_PASSWORD_BYTES,
             )?;
+            if self
+                .sasl_mechanism
+                .is_some_and(KafkaSaslMechanism::requires_user_password)
+                && (self.sasl_username.as_deref().is_none_or(str::is_empty)
+                    || self.sasl_password.as_deref().is_none_or(str::is_empty))
+            {
+                return Err("PLAIN 或 SCRAM 机制必须同时设置 SASL 用户名和密码".into());
+            }
         } else if self.sasl_mechanism.is_some()
             || self.sasl_username.is_some()
             || self.sasl_password.is_some()

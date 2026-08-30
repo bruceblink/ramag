@@ -70,6 +70,36 @@ fn cluster_rejects_oversized_text_and_non_tls_certificate_paths() {
 }
 
 #[test]
+fn cluster_debug_output_redacts_credentials_and_certificate_paths() {
+    let mut config = valid_cluster();
+    config.security_protocol = KafkaSecurityProtocol::SaslSsl;
+    config.sasl_mechanism = Some(KafkaSaslMechanism::ScramSha256);
+    config.sasl_username = Some("secret-user".into());
+    config.sasl_password = Some("secret-password".into());
+    config.tls.ca_cert_path = Some("C:\\private\\ca.pem".into());
+    config.tls.client_cert_path = Some("C:\\private\\client.pem".into());
+    config.tls.client_key_path = Some("C:\\private\\client.key".into());
+
+    let rendered = format!("{config:?}");
+    assert!(!rendered.contains("secret-user"));
+    assert!(!rendered.contains("secret-password"));
+    assert!(!rendered.contains("C:\\private"));
+    assert!(rendered.contains("[REDACTED]"));
+}
+
+#[test]
+fn password_based_sasl_requires_both_credentials() {
+    let mut config = valid_cluster();
+    config.security_protocol = KafkaSecurityProtocol::SaslPlaintext;
+    config.sasl_mechanism = Some(KafkaSaslMechanism::Plain);
+    config.sasl_username = Some("user".into());
+    assert!(config.validate().is_err());
+
+    config.sasl_password = Some("password".into());
+    assert!(config.validate().is_ok());
+}
+
+#[test]
 fn metadata_and_topics_reject_duplicate_or_invalid_entries() {
     let broker = KafkaBroker {
         id: 1,

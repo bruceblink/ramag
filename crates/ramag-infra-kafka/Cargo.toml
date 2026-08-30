@@ -1,0 +1,26 @@
+[package]
+name = "ramag-infra-kafka"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ramag Kafka 驱动基线，封装 rdkafka/librdkafka"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+cmake-build = ["dep:rdkafka", "rdkafka/cmake-build"]
+kafka-tls = ["cmake-build", "rdkafka/ssl-vendored"]
+# SASL 构建依赖 librdkafka 的 TLS 支持，因此一起启用 vendored OpenSSL。
+kafka-sasl = ["rdkafka/sasl", "kafka-tls"]
+tls = ["kafka-tls"]
+sasl = ["kafka-sasl"]
+
+[dependencies]
+async-trait = { workspace = true }
+ramag-domain = { workspace = true }
+rdkafka = { workspace = true, optional = true, features = ["tokio"] }
+smol = { workspace = true }
+tracing = { workspace = true }

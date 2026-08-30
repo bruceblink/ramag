@@ -1,11 +1,11 @@
 # Kafka 消息管理工具独立开发计划
 
-> 状态：设计完成，尚未开始实现
-> 更新日期：2026-08-29
+> 状态：阶段 3 已完成；阶段 4 测试环境由并行任务配置中
+> 更新日期：2026-08-30
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
-> 当前基线：`codex/feat/datagrip-like-development`
-> 实施分支：待开始实现时从当前开发主线建立独立的 `codex/feat/kafka-tool` 分支
+> 当前基线：`feat/kafka-tool-development`（阶段 1-3 已完成）
+> 实施分支：`feat/kafka-tool-development`
 
 ## 术语表与命名约定
 
@@ -240,6 +240,15 @@ Kafka ACL 首期支持：
 | 13 | `feat(kafka): inspect consumer groups` | 组、成员、分配 Partition、提交 Offset 和 Lag | 消费者组只读查询测试 |
 | 14 | `feat(kafka): manage kafka acls` | ACL 查询、创建和精确删除 | 授权集群集成测试、权限失败测试 |
 | 15 | `feat(kafka): harden desktop workflow` | 加载错误、断线恢复、刷新竞态、日志脱敏和 UI 细节 | Windows 真实窗口验收和完整质量检查 |
+
+阶段 3 实施记录：
+
+- `ramag-infra-kafka` 通过可选 workspace 依赖接入 `rdkafka`；默认构建不触发 native 构建，显式启用 `cmake-build` 后才使用 CMake 构建 `librdkafka`。
+- `tls`/`kafka-tls` 和 `sasl`/`kafka-sasl` 是独立可选能力；TLS/SASL 配置在未启用对应构建能力时返回明确的不支持错误。
+- `RdkafkaDriver` 在阻塞线程中创建 Admin Client 并拉取元数据，用于连接测试；连接测试不提交 Offset。
+- 客户端属性仅由受支持的集群配置生成，固定关闭自动提交、自动 Offset 存储和 Topic 自动创建。
+- 底层错误被映射为不包含凭据、密钥或消息正文的 Kafka 专用结构化错误；TLS/SASL 构建能力未启用时明确返回不支持原因。
+- 阶段 3 暂不提供 Topic、Partition 消息读取和 UI 入口；这些能力仍按阶段 5-10 的验收条件交付。
 
 后续独立路线：
 
