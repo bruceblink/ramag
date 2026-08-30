@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use gpui::{
     AppContext as _, BorrowAppContext as _, ClickEvent, Context, DragMoveEvent, EventEmitter,
-    IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window, div, hsla,
-    prelude::*, px,
+    IntoElement, MouseButton, ParentElement, Render, SharedString, Styled, Subscription, Window,
+    div, hsla, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme,
@@ -14,9 +14,13 @@ use gpui_component::{
 
 use ramag_app::ToolRegistry;
 
-use crate::activity_bar::{
-    ToolDrag, ToolDragPreview, ToolLayoutGlobal, notify_tool_layout_changed, persist_tool_order,
-    tool_drag_handle,
+use crate::activity_bar::ActivityBar;
+use crate::tool_layout::{
+    HomeDropLayout, ToolDrag, ToolDragGlobal, ToolDragPreviewPlaceholder, ToolDragSurface,
+    ToolDropSide, ToolLayoutGlobal, begin_tool_drag, clear_tool_drag, home_drop_indicator,
+    home_drop_target_from_position, notify_tool_layout_changed, persist_tool_order,
+    tool_drag_display_slots, tool_drag_handle, tool_drag_state, tool_drop_index,
+    update_tool_drop_target,
 };
 
 #[derive(Debug, Clone)]
@@ -39,8 +43,9 @@ const TOOL_GRID_WIDTH: f32 = TOOL_CARD_WIDTH * 3.0 + TOOL_CARD_GAP * 2.0;
 
 pub struct HomeView {
     registry: Arc<ToolRegistry>,
-    last_rendered_order: Vec<String>,
+    last_rendered_slots: Vec<Option<String>>,
     _tool_layout_subscription: Subscription,
+    _tool_drag_subscription: Subscription,
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
@@ -48,75 +53,30 @@ impl EventEmitter<HomeEvent> for HomeView {}
 impl HomeView {
     pub fn new(registry: Arc<ToolRegistry>, cx: &mut Context<Self>) -> Self {
         cx.update_default_global::<ToolLayoutGlobal, _>(|_, _| {});
+        cx.update_default_global::<ToolDragGlobal, _>(|_, _| {});
         let tool_layout_subscription = cx.observe_global::<ToolLayoutGlobal>(|_, cx| cx.notify());
-        let last_rendered_order = registry
+        let tool_drag_subscription = cx.observe_global::<ToolDragGlobal>(|_, cx| cx.notify());
+        let last_rendered_slots = registry
             .list()
             .into_iter()
-            .map(|tool| tool.meta().id.clone())
+            .map(|tool| Some(tool.meta().id.clone()))
             .collect();
         Self {
             registry,
-            last_rendered_order,
+            last_rendered_slots,
             _tool_layout_subscription: tool_layout_subscription,
+            _tool_drag_subscription: tool_drag_subscription,
         }
     }
 
-    /// 将整张卡片移动到目标卡片的位置，并持久化新的工具顺序。
-    fn complete_drop(&mut self, dragged_id: &str, target_id: &str, cx: &mut Context<Self>) {
-        if self.registry.reorder_to_target(dragged_id, target_id) {
+    /// 在释放时一次性提交最终槽位，保存偏好并通知首页与侧栏同步重绘。
+    fn complete_drop(&mut self, dragged_id: &str, fallback_index: usize, cx: &mut Context<Self>) {
+        let target_index = tool_drop_index(ToolDragSurface::Home, fallback_index, cx);
+        if self.registry.reorder_to_index(dragged_id, target_index) {
             persist_tool_order(&self.registry, cx);
             notify_tool_layout_changed(cx);
         }
-    }
-
-    /// 将整张卡片移动到卡片网格末尾，并持久化新的工具顺序。
-    fn complete_drop_to_end(&mut self, dragged_id: &str, cx: &mut Context<Self>) {
-        if self.registry.move_to_end(dragged_id) {
-            persist_tool_order(&self.registry, cx);
-            notify_tool_layout_changed(cx);
-        }
-    }
-
-    /// 根据拖拽指针所在的固定网格槽位即时调整顺序，让目标卡片同步让位。
-    fn handle_drag_move(&mut self, event: &DragMoveEvent<ToolDrag>, cx: &mut Context<Self>) {
-        if !event.bounds.contains(&event.event.position) {
-            return;
-        }
-
-        let dragged_id = event.drag(cx).id.clone();
-        let tools = self.registry.list();
-        if tools.len() < 2 {
-            return;
-        }
-
-        let local_x = f32::from(event.event.position.x - event.bounds.left());
-        let local_y = f32::from(event.event.position.y - event.bounds.top());
-        if local_x < 0.0 || local_y < 0.0 {
-            return;
-        }
-
-        let cell_width = TOOL_CARD_WIDTH + TOOL_CARD_GAP;
-        let cell_height = TOOL_CARD_HEIGHT + TOOL_CARD_GAP;
-        let columns = ((f32::from(event.bounds.size.width) + TOOL_CARD_GAP) / cell_width)
-            .floor()
-            .max(1.0) as usize;
-        let column = (local_x / cell_width).floor() as usize;
-        if column >= columns {
-            return;
-        }
-        let row = (local_y / cell_height).floor() as usize;
-        let slot = row.saturating_mul(columns).saturating_add(column);
-
-        let changed = if slot >= tools.len() {
-            self.registry.move_to_end(&dragged_id)
-        } else {
-            let target_id = tools[slot].meta().id.as_str();
-            self.registry.reorder_to_target(&dragged_id, target_id)
-        };
-        if changed {
-            persist_tool_order(&self.registry, cx);
-            notify_tool_layout_changed(cx);
-        }
+        clear_tool_drag(cx);
     }
 }
 
@@ -140,24 +100,44 @@ impl Render for HomeView {
             .iter()
             .map(|tool| tool.meta().id.clone())
             .collect::<Vec<_>>();
-        let previous_order =
-            std::mem::replace(&mut self.last_rendered_order, current_order.clone());
+        let drag_state = tool_drag_state(cx);
+        let display_slots =
+            tool_drag_display_slots(&current_order, ToolDragSurface::Home, &drag_state);
+        let previous_slots =
+            std::mem::replace(&mut self.last_rendered_slots, display_slots.clone());
         let layout_revision = cx.read_global::<ToolLayoutGlobal, _>(|state, _| state.revision);
         let columns = grid_columns(f32::from(window.bounds().size.width));
-        let cards = tools.into_iter().map(|tool| {
-            let id = tool.meta().id.clone();
+        let item_count = current_order.len();
+        let home_layout = HomeDropLayout {
+            width: TOOL_CARD_WIDTH,
+            height: TOOL_CARD_HEIGHT,
+            item_count,
+            columns,
+            gap: TOOL_CARD_GAP,
+        };
+        let target = drag_state
+            .target
+            .as_ref()
+            .filter(|target| target.surface == ToolDragSurface::Home)
+            .map(|target| (target.index, target.side));
+        let mut cards = Vec::with_capacity(display_slots.len());
+        for slot in &display_slots {
+            let Some(id) = slot else {
+                continue;
+            };
+
+            let Some(tool) = tools.iter().find(|tool| tool.meta().id == *id) else {
+                continue;
+            };
+            let Some(source_index) = current_order.iter().position(|item| item == id) else {
+                continue;
+            };
             let card_id = SharedString::from(format!("home-tool-{id}"));
             let id_for_click = id.clone();
-            let target_id_for_drop = id.clone();
-            let target_id_for_hover = id.clone();
             let name = tool.meta().name.clone();
             let description = tool.meta().description.clone();
-            let icon = crate::activity_bar::ActivityBar::icon_for_tool(&id);
-            let drag = ToolDrag {
-                id: id.clone(),
-                name: SharedString::from(name.clone()),
-                description: SharedString::from(description.clone()),
-            };
+            let icon = ActivityBar::icon_for_tool(id);
+            let drag = ToolDrag { id: id.clone() };
 
             let card = v_flex()
                 .id(card_id)
@@ -175,22 +155,12 @@ impl Render for HomeView {
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     cx.emit(HomeEvent::OpenTool(id_for_click.clone()));
                 }))
-                .on_drag(drag, |drag: &ToolDrag, _position, _, cx| {
-                    cx.new(|_| ToolDragPreview {
-                        id: drag.id.clone(),
-                        name: drag.name.clone(),
-                        description: drag.description.clone(),
-                    })
-                })
-                .drag_over::<ToolDrag>(move |style, drag, _, _| {
-                    if drag.id == target_id_for_hover {
-                        style
-                    } else {
-                        style.bg(accent.opacity(0.16)).border_color(accent)
-                    }
+                .on_drag(drag, move |drag, _, _, cx| {
+                    begin_tool_drag(&drag.id, ToolDragSurface::Home, source_index, cx);
+                    cx.new(|_| ToolDragPreviewPlaceholder)
                 })
                 .on_drop(cx.listener(move |this, drag: &ToolDrag, _, cx| {
-                    this.complete_drop(&drag.id, &target_id_for_drop, cx);
+                    this.complete_drop(&drag.id, source_index, cx);
                 }))
                 .child(
                     h_flex()
@@ -214,18 +184,25 @@ impl Render for HomeView {
                         .child(tool_drag_handle(accent.opacity(0.65))),
                 );
             let (from_x, from_y) =
-                reorder_animation_offset(&previous_order, &current_order, &id, columns);
-            if from_x == px(0.0) && from_y == px(0.0) {
+                reorder_animation_offset(&previous_slots, &display_slots, id, columns);
+            let card = if from_x == px(0.0) && from_y == px(0.0) {
                 card.into_any_element()
             } else {
                 Transition::new(Duration::from_millis(360))
                     .ease(ease_in_out_cubic)
                     .slide_x(from_x, px(0.0))
                     .slide_y(from_y, px(0.0))
-                    .apply(card, format!("home-tool-reorder-{id}-{layout_revision}"))
+                    .apply(
+                        card,
+                        format!(
+                            "home-tool-reorder-{id}-{}-{layout_revision}",
+                            drag_state.revision
+                        ),
+                    )
                     .into_any_element()
-            }
-        });
+            };
+            cards.push(card);
+        }
 
         let mut tool_grid = div()
             .id("home-tool-grid")
@@ -236,21 +213,69 @@ impl Render for HomeView {
             .flex_wrap()
             .justify_start()
             .gap(px(TOOL_CARD_GAP))
-            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<ToolDrag>, _, cx| {
-                this.handle_drag_move(event, cx);
+            .relative()
+            .on_drag_move(
+                cx.listener(move |_, event: &DragMoveEvent<ToolDrag>, _, cx| {
+                    let local_x = f32::from(event.event.position.x - event.bounds.left());
+                    let local_y = f32::from(event.event.position.y - event.bounds.top());
+                    if let Some((target_index, side)) = home_drop_target_from_position(
+                        local_x,
+                        local_y,
+                        drag_state.source_index,
+                        home_layout,
+                    ) {
+                        update_tool_drop_target(ToolDragSurface::Home, target_index, side, cx);
+                    }
+                }),
+            )
+            .on_drop(cx.listener(move |this, drag: &ToolDrag, _, cx| {
+                this.complete_drop(&drag.id, item_count, cx);
             }))
             .children(cards);
+        if let Some((target_index, target_side)) = target
+            && let Some(indicator) = home_drop_indicator(
+                accent,
+                drag_state.source_index,
+                target_index,
+                target_side,
+                home_layout,
+            )
+        {
+            tool_grid = tool_grid.child(
+                indicator
+                    .id("home-tool-drop-indicator")
+                    .on_mouse_move(cx.listener(move |_, _, _, cx| {
+                        update_tool_drop_target(
+                            ToolDragSurface::Home,
+                            target_index,
+                            target_side,
+                            cx,
+                        );
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &ToolDrag, _, cx| {
+                        this.complete_drop(&drag.id, target_index, cx);
+                    })),
+            );
+        }
         if has_tools {
+            let drop_end_index = item_count;
+            let drop_end_target = drop_end_index - 1;
             tool_grid = tool_grid.child(
                 div()
                     .id("home-tool-drop-end")
                     .w_full()
                     .h(px(10.0))
                     .flex_none()
-                    .rounded(px(5.0))
-                    .drag_over::<ToolDrag>(move |style, _, _, _| style.bg(accent.opacity(0.16)))
-                    .on_drop(cx.listener(|this, drag: &ToolDrag, _, cx| {
-                        this.complete_drop_to_end(&drag.id, cx);
+                    .on_mouse_move(cx.listener(move |_, _, _, cx| {
+                        update_tool_drop_target(
+                            ToolDragSurface::Home,
+                            drop_end_target,
+                            ToolDropSide::Bottom,
+                            cx,
+                        );
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &ToolDrag, _, cx| {
+                        this.complete_drop(&drag.id, drop_end_index, cx);
                     })),
             );
         }
@@ -260,6 +285,7 @@ impl Render for HomeView {
             .bg(bg)
             .items_center()
             .justify_center()
+            .on_mouse_up(MouseButton::Left, |_, _, cx| clear_tool_drag(cx))
             .child(
                 v_flex()
                     .w_full()
@@ -283,15 +309,21 @@ fn grid_columns(window_width: f32) -> usize {
 
 /// 计算卡片从旧网格槽位移动到新槽位时的相对起点。
 fn reorder_animation_offset(
-    previous_order: &[String],
-    current_order: &[String],
+    previous_slots: &[Option<String>],
+    current_slots: &[Option<String>],
     id: &str,
     columns: usize,
 ) -> (gpui::Pixels, gpui::Pixels) {
-    let Some(previous_index) = previous_order.iter().position(|item| item == id) else {
+    let Some(previous_index) = previous_slots
+        .iter()
+        .position(|slot| slot.as_deref() == Some(id))
+    else {
         return (px(0.0), px(0.0));
     };
-    let Some(current_index) = current_order.iter().position(|item| item == id) else {
+    let Some(current_index) = current_slots
+        .iter()
+        .position(|slot| slot.as_deref() == Some(id))
+    else {
         return (px(0.0), px(0.0));
     };
     if previous_index == current_index {
@@ -342,8 +374,16 @@ mod tests {
 
     #[test]
     fn reorder_animation_starts_at_the_previous_grid_slot() {
-        let previous = vec!["left".to_owned(), "right".to_owned(), "bottom".to_owned()];
-        let current = vec!["right".to_owned(), "left".to_owned(), "bottom".to_owned()];
+        let previous = vec![
+            Some("left".to_owned()),
+            Some("right".to_owned()),
+            Some("bottom".to_owned()),
+        ];
+        let current = vec![
+            Some("right".to_owned()),
+            Some("left".to_owned()),
+            Some("bottom".to_owned()),
+        ];
 
         let right_offset = reorder_animation_offset(&previous, &current, "right", 2);
         assert_eq!(f32::from(right_offset.0), 296.0);
