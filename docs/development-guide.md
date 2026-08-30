@@ -17,9 +17,9 @@ Ramag 是一个 Rust 2024 Cargo workspace，桌面界面使用 GPUI。仓库通�
 
 ### 1.2 平台构建依赖
 
-Windows 还需要：
+Windows 统一使用 Visual Studio 18 2026 Build Tools，还需要：
 
-- Visual Studio C++ Build Tools
+- Visual Studio 18 2026 Build Tools 的 C++ 工作负载
 - Windows 10/11 SDK
 
 macOS 还需要 Xcode Command Line Tools：

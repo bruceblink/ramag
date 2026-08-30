@@ -107,7 +107,7 @@ cd ramag
 make develop
 ```
 
-Windows 源码构建需要 Visual Studio C++ Build Tools 与 Windows 10/11 SDK，然后在 PowerShell 中运行：
+Windows 源码构建统一使用 Visual Studio 18 2026 Build Tools，并需要其 C++ 工作负载与 Windows 10/11 SDK，然后在 PowerShell 中运行：
 
 ```powershell
 cargo run -p ramag-bin
