@@ -24,9 +24,7 @@ pub(crate) fn build_client_config(
             "security.protocol",
             config.security_protocol.as_client_property(),
         )
-        .set("request.timeout.ms", &timeout_ms)
         .set("socket.timeout.ms", &timeout_ms)
-        .set("metadata.request.timeout.ms", &timeout_ms)
         .set("enable.auto.commit", "false")
         .set("enable.auto.offset.store", "false")
         .set("allow.auto.create.topics", "false");
@@ -97,6 +95,9 @@ mod tests {
         assert_eq!(client.get("bootstrap.servers"), Some("broker:9093"));
         assert_eq!(client.get("security.protocol"), Some("SASL_SSL"));
         assert_eq!(client.get("sasl.mechanisms"), Some("SCRAM-SHA-256"));
+        assert_eq!(client.get("socket.timeout.ms"), Some("3000"));
+        assert_eq!(client.get("request.timeout.ms"), None);
+        assert_eq!(client.get("metadata.request.timeout.ms"), None);
         assert_eq!(client.get("enable.auto.commit"), Some("false"));
         assert_eq!(
             client.get("ssl.endpoint.identification.algorithm"),
