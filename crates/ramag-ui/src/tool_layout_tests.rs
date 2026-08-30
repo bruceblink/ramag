@@ -1,8 +1,20 @@
 use super::{
     ToolDragGlobal, ToolDragSurface, ToolDropSide, ToolDropTarget,
-    activity_drop_target_from_position, home_drop_side, home_drop_target_from_position,
-    tool_drag_display_slots, tool_drop_boundary,
+    activity_drop_target_from_position, dragged_item_background, home_drop_side,
+    home_drop_target_from_position, tool_drag_display_slots, tool_drop_boundary,
 };
+
+#[test]
+fn dragged_item_background_is_lighter_but_stays_within_range() {
+    let background = gpui::hsla(0.6, 0.4, 0.2, 1.0);
+    let highlighted = dragged_item_background(background);
+
+    assert!(highlighted.l > background.l);
+    assert_eq!(highlighted.a, background.a);
+
+    let bright_background = gpui::hsla(0.6, 0.4, 0.9, 1.0);
+    assert_eq!(dragged_item_background(bright_background).l, 1.0);
+}
 
 #[test]
 fn drop_boundaries_follow_the_requested_edge() {

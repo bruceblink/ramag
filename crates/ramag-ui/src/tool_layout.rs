@@ -6,7 +6,16 @@ use ramag_app::ToolRegistry;
 
 const ITEM_HEIGHT: f32 = 40.0;
 pub(crate) const ACTIVITY_ITEM_GAP: f32 = 4.0;
-pub(crate) const DRAGGED_ITEM_OPACITY: f32 = 0.45;
+pub(crate) const DRAGGED_ITEM_OPACITY: f32 = 0.82;
+pub(crate) const DRAG_PREVIEW_OPACITY: f32 = 0.56;
+
+/// 将被拖拽来源的表面提亮，保留文字对比度并区别于普通工具项。
+pub(crate) fn dragged_item_background(color: gpui::Hsla) -> gpui::Hsla {
+    gpui::Hsla {
+        l: (color.l * 1.6).min(1.0),
+        ..color
+    }
+}
 
 /// 拖拽工具入口时在首页和侧栏之间传递的最小数据。
 #[derive(Debug, Clone)]
@@ -337,7 +346,7 @@ impl Render for ToolDragPreview {
         let foreground = theme.foreground;
         let muted_foreground = theme.muted_foreground;
 
-        match self.surface {
+        let preview = match self.surface {
             ToolDragSurface::Home => div()
                 .pl(self.position.x - px(140.0))
                 .pt(self.position.y - px(56.0))
@@ -388,7 +397,8 @@ impl Render for ToolDragPreview {
                         .shadow_md()
                         .child(self.icon.clone().text_color(accent)),
                 ),
-        }
+        };
+        preview.opacity(DRAG_PREVIEW_OPACITY)
     }
 }
 

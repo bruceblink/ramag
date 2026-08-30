@@ -18,9 +18,9 @@ use crate::activity_bar::ActivityBar;
 use crate::tool_layout::{
     DRAGGED_ITEM_OPACITY, HomeDropLayout, ToolDrag, ToolDragGlobal, ToolDragPreview,
     ToolDragSurface, ToolDropSide, ToolLayoutGlobal, begin_tool_drag, clear_tool_drag,
-    home_drop_indicator, home_drop_target_from_position, notify_tool_layout_changed,
-    persist_tool_order, tool_drag_display_slots, tool_drag_handle, tool_drag_state,
-    tool_drop_index, update_tool_drop_target,
+    dragged_item_background, home_drop_indicator, home_drop_target_from_position,
+    notify_tool_layout_changed, persist_tool_order, tool_drag_display_slots, tool_drag_handle,
+    tool_drag_state, tool_drop_index, update_tool_drop_target,
 };
 
 #[derive(Debug, Clone)]
@@ -143,6 +143,16 @@ impl Render for HomeView {
             let preview_description = description.clone();
             let drag = ToolDrag { id: id.clone() };
             let is_dragged = drag_state.dragged_id.as_deref() == Some(id.as_str());
+            let card_background = if is_dragged {
+                dragged_item_background(card_bg)
+            } else {
+                card_bg
+            };
+            let card_border = if is_dragged {
+                accent.opacity(0.78)
+            } else {
+                border
+            };
 
             let mut card = v_flex()
                 .id(card_id)
@@ -150,9 +160,9 @@ impl Render for HomeView {
                 .h(px(TOOL_CARD_HEIGHT))
                 .p(px(20.0))
                 .gap(px(10.0))
-                .bg(card_bg)
+                .bg(card_background)
                 .border_1()
-                .border_color(border)
+                .border_color(card_border)
                 .rounded(px(10.0))
                 .relative()
                 .cursor_move()

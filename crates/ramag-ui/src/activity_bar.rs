@@ -23,8 +23,8 @@ use crate::tool_layout::{
     ACTIVITY_ITEM_GAP, DRAGGED_ITEM_OPACITY, ToolDrag, ToolDragGlobal, ToolDragPreview,
     ToolDragSurface, ToolDropSide, ToolLayoutGlobal, activity_drop_indicator,
     activity_drop_target_from_position, activity_reorder_animation_offset, begin_tool_drag,
-    clear_tool_drag, notify_tool_layout_changed, persist_tool_order, tool_drag_display_slots,
-    tool_drag_state, tool_drop_index, update_tool_drop_target,
+    clear_tool_drag, dragged_item_background, notify_tool_layout_changed, persist_tool_order,
+    tool_drag_display_slots, tool_drag_state, tool_drop_index, update_tool_drop_target,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +84,7 @@ struct ActivityItemConfig {
     on_click: ActivityClickHandler,
     tool_drag: Option<ToolDrag>,
     source_index: Option<usize>,
+    source_background: Option<gpui::Hsla>,
 }
 
 /// 将更新检查结果同步到设置入口角标。
@@ -227,6 +228,7 @@ impl Render for ActivityBar {
                     })),
                     tool_drag: Some(ToolDrag { id: id.clone() }),
                     source_index: Some(source_index),
+                    source_background: is_dragged.then(|| dragged_item_background(sidebar_bg)),
                 },
                 cx,
             );
@@ -345,6 +347,7 @@ impl Render for ActivityBar {
                 })),
                 tool_drag: None,
                 source_index: None,
+                source_background: None,
             },
             cx,
         ));
@@ -381,6 +384,7 @@ impl Render for ActivityBar {
                 }),
                 tool_drag: None,
                 source_index: None,
+                source_background: None,
             },
             cx,
         ));
@@ -397,6 +401,7 @@ impl Render for ActivityBar {
                 })),
                 tool_drag: None,
                 source_index: None,
+                source_background: None,
             },
             cx,
         ));
@@ -426,6 +431,7 @@ fn activity_item(
         on_click,
         tool_drag,
         source_index,
+        source_background,
     } = config;
     let ActivityItemDecoration {
         tooltip,
@@ -449,6 +455,7 @@ fn activity_item(
         .w(px(BAR_WIDTH))
         .h(px(ITEM_HEIGHT))
         .relative()
+        .bg(source_background.unwrap_or(transparent))
         .items_center()
         .justify_center()
         .child(
