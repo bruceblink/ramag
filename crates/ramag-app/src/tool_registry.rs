@@ -210,6 +210,52 @@ impl ToolRegistry {
         self.reorder(dragged_id, target_id, dragged_index > target_index)
     }
 
+    /// 按可见工具列表中的最终槽位移动工具，隐藏工具仍保留在注册表中。
+    /// `visible_index` 可以等于可见工具数量，表示移动到列表末尾。
+    pub fn reorder_to_index(&self, dragged_id: &str, visible_index: usize) -> bool {
+        let mut tools = self.tools.write();
+        let Some(dragged_index) = tools
+            .iter()
+            .position(|entry| entry.enabled && entry.tool.meta().id == dragged_id)
+        else {
+            return false;
+        };
+
+        let previous_order = tools
+            .iter()
+            .map(|entry| entry.tool.meta().id.clone())
+            .collect::<Vec<_>>();
+        let dragged = tools.remove(dragged_index);
+        let remaining_visible_count = tools.iter().filter(|entry| entry.enabled).count();
+        let target_index = visible_index.min(remaining_visible_count);
+        let insert_index = if target_index == remaining_visible_count {
+            tools.len()
+        } else {
+            tools
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.enabled)
+                .nth(target_index)
+                .map_or(tools.len(), |(index, _)| index)
+        };
+        tools.insert(insert_index, dragged);
+
+        let changed = previous_order
+            != tools
+                .iter()
+                .map(|entry| entry.tool.meta().id.clone())
+                .collect::<Vec<_>>();
+        if changed {
+            tracing::info!(
+                operation = "tool_order_update",
+                dragged_id,
+                visible_index,
+                "tool layout changed"
+            );
+        }
+        changed
+    }
+
     /// 将可见工具移动到当前所有可见工具的末尾，供末尾整项落点使用。
     pub fn move_to_end(&self, dragged_id: &str) -> bool {
         let target_id = {
@@ -333,6 +379,33 @@ mod tests {
         assert!(reg.move_to_end("b"));
         assert_eq!(reg.order(), ["a", "c", "b"]);
         assert!(!reg.move_to_end("b"));
+    }
+
+    #[test]
+    fn reorder_to_index_moves_item_to_the_requested_visible_slot() {
+        let reg = ToolRegistry::new();
+        reg.register(dummy("a", "ToolA"));
+        reg.register(dummy("b", "ToolB"));
+        reg.register(dummy("c", "ToolC"));
+
+        assert!(reg.reorder_to_index("c", 0));
+        assert_eq!(reg.order(), ["c", "a", "b"]);
+        assert!(reg.reorder_to_index("c", 3));
+        assert_eq!(reg.order(), ["a", "b", "c"]);
+        assert!(!reg.reorder_to_index("b", 1));
+    }
+
+    #[test]
+    fn reorder_to_index_keeps_disabled_tools_in_the_registry() {
+        let reg = ToolRegistry::new();
+        reg.register(dummy("a", "ToolA"));
+        reg.register(dummy("hidden", "Hidden"));
+        reg.register(dummy("b", "ToolB"));
+        assert!(reg.set_enabled("hidden", false));
+
+        assert!(reg.reorder_to_index("b", 0));
+        assert_eq!(reg.order(), ["b", "a", "hidden"]);
+        assert_eq!(reg.list().len(), 2);
     }
 
     #[test]
