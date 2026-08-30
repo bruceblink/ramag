@@ -18,6 +18,7 @@ members = [
     "crates/ramag-infra-kafka",
     "crates/ramag-terminal",
     "crates/ramag-tool-dbclient",
+    "crates/ramag-tool-kafka",
     "crates/ramag-tool-redis",
     "crates/ramag-tool-mongodb",
     "crates/ramag-tool-vcs",
@@ -56,6 +57,7 @@ ramag-infra-update = { path = "crates/ramag-infra-update" }
 ramag-infra-kafka = { path = "crates/ramag-infra-kafka" }
 ramag-terminal = { path = "crates/ramag-terminal" }
 ramag-tool-dbclient = { path = "crates/ramag-tool-dbclient" }
+ramag-tool-kafka = { path = "crates/ramag-tool-kafka" }
 ramag-tool-redis = { path = "crates/ramag-tool-redis" }
 ramag-tool-mongodb = { path = "crates/ramag-tool-mongodb" }
 ramag-tool-vcs = { path = "crates/ramag-tool-vcs" }
@@ -161,6 +163,7 @@ async-compression = { version = "0.4", features = ["futures-io", "gzip"] }
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 toml = "0.9"
 # JumpServer REST API；使用 rustls，并读取系统证书库以兼容企业与内网证书链。
 reqwest = { version = "0.13", default-features = false, features = [

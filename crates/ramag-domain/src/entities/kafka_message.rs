@@ -102,6 +102,53 @@ impl KafkaMessageRecord {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KafkaMessagePage {
+    pub records: Vec<KafkaMessageRecord>,
+    pub scanned_records: usize,
+    pub scanned_bytes: u64,
+    pub truncated: bool,
+}
+
+impl KafkaMessagePage {
+    /// 创建空的扫描结果；扫描统计由基础设施层逐步填充，正文始终受查询预算限制。
+    pub fn empty() -> Self {
+        Self {
+            records: Vec::new(),
+            scanned_records: 0,
+            scanned_bytes: 0,
+            truncated: false,
+        }
+    }
+
+    /// 校验返回页的记录和扫描统计，防止基础设施层绕过领域层的资源上限。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.scanned_records > MAX_KAFKA_SCAN_RECORDS {
+            return Err(format!(
+                "消息扫描记录数超过 {MAX_KAFKA_SCAN_RECORDS} 个上限"
+            ));
+        }
+        if self.scanned_bytes > MAX_KAFKA_SCAN_BYTES {
+            return Err(format!(
+                "消息扫描字节数超过 {MAX_KAFKA_SCAN_BYTES} bytes 上限"
+            ));
+        }
+        if self.records.len() > self.scanned_records {
+            return Err("消息结果数不能超过扫描记录数".into());
+        }
+        let retained_bytes = self.records.iter().fold(0u64, |total, record| {
+            total.saturating_add(record.retained_bytes())
+        });
+        if retained_bytes > self.scanned_bytes {
+            return Err("消息结果占用字节数不能超过扫描字节统计".into());
+        }
+        for record in &self.records {
+            record.validate()?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KafkaMessageSearchField {
     Key,

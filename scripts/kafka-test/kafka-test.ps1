@@ -87,8 +87,39 @@ function Ensure-Healthy {
     Wait-Healthy
 }
 
+function Reset-FixtureTopic {
+    $topics = @(Get-KafkaOutput -KafkaArguments @(
+        "/opt/kafka/bin/kafka-topics.sh",
+        "--bootstrap-server", "kafka:9092",
+        "--list"
+    ) | ForEach-Object { $_.ToString().Trim() })
+    if ($topics -notcontains $TopicName) {
+        return
+    }
+
+    Invoke-Kafka -KafkaArguments @(
+        "/opt/kafka/bin/kafka-topics.sh",
+        "--bootstrap-server", "kafka:9092",
+        "--delete",
+        "--topic", $TopicName
+    )
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $topics = @(Get-KafkaOutput -KafkaArguments @(
+            "/opt/kafka/bin/kafka-topics.sh",
+            "--bootstrap-server", "kafka:9092",
+            "--list"
+        ) | ForEach-Object { $_.ToString().Trim() })
+        if ($topics -notcontains $TopicName) {
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+    throw "Kafka fixture topic could not be deleted before reseeding: $TopicName"
+}
+
 function Seed-Fixture {
     Ensure-Healthy
+    Reset-FixtureTopic
     Invoke-Kafka -KafkaArguments @(
         "/opt/kafka/bin/kafka-topics.sh",
         "--bootstrap-server", "kafka:9092",
@@ -104,7 +135,8 @@ function Seed-Fixture {
         "--bootstrap-server", "kafka:9092",
         "--topic", $TopicName,
         "--property", "parse.key=true",
-        "--property", "key.separator=|"
+        "--property", "key.separator=|",
+        "--producer-property", "partitioner.class=org.apache.kafka.clients.producer.RoundRobinPartitioner"
     )
     Get-Content -LiteralPath $FixtureFile | & docker compose --project-name $ProjectName --file $ComposeFile @producerArguments
     if ($LASTEXITCODE -ne 0) {

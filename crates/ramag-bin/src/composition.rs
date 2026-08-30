@@ -62,6 +62,7 @@ pub(super) fn read_preferences(
 pub(super) fn build_tool_registry() -> Arc<ToolRegistry> {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(DbClientTool::new()));
+    registry.register(Arc::new(KafkaTool::new()));
     registry.register(Arc::new(VcsTool::new()));
     registry.register(Arc::new(SshTool::new()));
     registry.register(Arc::new(ObjectStorageTool::new()));
@@ -79,6 +80,11 @@ pub(super) fn build_redis_service(storage: Arc<dyn Storage>) -> Arc<RedisService
 pub(super) fn build_mongo_service(storage: Arc<dyn Storage>) -> Arc<MongoService> {
     let driver: Arc<dyn DocDriver> = Arc::new(MongoDriver::new());
     Arc::new(MongoService::new(driver, storage))
+}
+
+pub(super) fn build_kafka_service(storage: Arc<dyn Storage>) -> Arc<KafkaService> {
+    let driver: Arc<dyn KafkaDriver> = Arc::new(RdkafkaDriver::new());
+    Arc::new(KafkaService::new(driver, storage))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]

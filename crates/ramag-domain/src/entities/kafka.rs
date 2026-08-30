@@ -25,8 +25,8 @@ pub use kafka_consumer::{
     KafkaConsumerPartitionAssignment,
 };
 pub use kafka_message::{
-    KafkaMessageHeader, KafkaMessageQuery, KafkaMessageRecord, KafkaMessageSearchField,
-    KafkaMessageSearchQuery, KafkaTextPreview,
+    KafkaMessageHeader, KafkaMessagePage, KafkaMessageQuery, KafkaMessageRecord,
+    KafkaMessageSearchField, KafkaMessageSearchQuery, KafkaTextPreview,
 };
 pub use kafka_metadata::{KafkaBroker, KafkaClusterMetadata, KafkaPartition, KafkaTopic};
 pub use kafka_validation::{

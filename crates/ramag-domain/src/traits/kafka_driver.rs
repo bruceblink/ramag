@@ -2,7 +2,10 @@
 
 use async_trait::async_trait;
 
-use crate::entities::{KafkaClusterConfig, KafkaClusterMetadata};
+use crate::entities::{
+    KafkaClusterConfig, KafkaClusterMetadata, KafkaMessagePage, KafkaMessageQuery,
+    KafkaMessageSearchQuery, KafkaTopic,
+};
 use crate::error::Result;
 
 /// Kafka 读取端口；不会提交 Offset，也不修改集群状态。
@@ -17,6 +20,32 @@ pub trait KafkaDriver: Send + Sync {
     async fn cluster_metadata(&self, _config: &KafkaClusterConfig) -> Result<KafkaClusterMetadata> {
         Err(crate::error::DomainError::NotImplemented(
             "cluster_metadata".into(),
+        ))
+    }
+
+    async fn list_topics(&self, _config: &KafkaClusterConfig) -> Result<Vec<KafkaTopic>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_topics".into(),
+        ))
+    }
+
+    async fn read_messages(
+        &self,
+        _config: &KafkaClusterConfig,
+        _query: &KafkaMessageQuery,
+    ) -> Result<KafkaMessagePage> {
+        Err(crate::error::DomainError::NotImplemented(
+            "read_messages".into(),
+        ))
+    }
+
+    async fn search_messages(
+        &self,
+        _config: &KafkaClusterConfig,
+        _query: &KafkaMessageSearchQuery,
+    ) -> Result<KafkaMessagePage> {
+        Err(crate::error::DomainError::NotImplemented(
+            "search_messages".into(),
         ))
     }
 }

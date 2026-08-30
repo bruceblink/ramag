@@ -26,6 +26,7 @@ pub mod connection_service;
 pub mod data_sync;
 pub mod export;
 pub mod id_conversion;
+pub mod kafka_service;
 pub mod mongo_service;
 pub mod object_storage_service;
 pub mod redis_service;
@@ -41,6 +42,7 @@ pub use data_sync::{
     DataSyncService, MAX_DATA_SYNC_CATALOG_OBJECTS, PreparedDataSync, StartedDataSync,
 };
 pub use id_conversion::{convert_id_to_integer, convert_id_to_string};
+pub use kafka_service::KafkaService;
 pub use mongo_service::MongoService;
 pub use object_storage_service::{
     AccountVerification, ObjectListingPage, ObjectStorageMountResult, ObjectStorageService,

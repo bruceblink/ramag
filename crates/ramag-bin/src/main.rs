@@ -30,19 +30,20 @@ use gpui::{
 use gpui_component::Root;
 use ramag_app::{
     AUTO_CHECK_INTERVAL, ClipboardService, ConnectionService, DataSyncGate, DataSyncService,
-    MongoService, ObjectStorageService, RedisService, SshService, TOOL_ORDER_PREF_KEY,
-    ToolRegistry, UpdateService,
+    KafkaService, MongoService, ObjectStorageService, RedisService, SshService,
+    TOOL_ORDER_PREF_KEY, ToolRegistry, UpdateService,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_domain::traits::ClipboardDriver;
 use ramag_domain::traits::{
-    DocDriver, Driver, GitDriver, JumpServerDriver, KvDriver, SshDriver, Storage,
+    DocDriver, Driver, GitDriver, JumpServerDriver, KafkaDriver, KvDriver, SshDriver, Storage,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_infra_clipboard::{
     HotkeyEvent, HotkeyListener, PlatformClipboardDriver, foreground_display_index,
 };
 use ramag_infra_git::GitDriverImpl;
+use ramag_infra_kafka::RdkafkaDriver;
 use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
 use ramag_infra_postgres::PostgresDriver;
@@ -59,6 +60,7 @@ use ramag_tool_dbclient::{
     DbClientTool, ExplainQuery, FindInResults, FormatSql, NewQueryTab, RunQuery,
     RunStatementAtCursor, ToggleRedisConsole, ToggleSqlEditor, create_dbclient_view,
 };
+use ramag_tool_kafka::{KafkaTool, create_kafka_view};
 use ramag_tool_mongodb::{FormatMongoJson, NewMongoQueryTab, RunMongoQuery, ToggleMongoEditor};
 use ramag_tool_object_storage::{ObjectStorageTool, create_object_storage_view};
 use ramag_tool_ssh::{CloseSshTerminal, NewSshTerminal, SshTool, create_ssh_view};
@@ -171,6 +173,7 @@ fn main() {
 
     let redis_service: Arc<RedisService> = build_redis_service(storage.clone());
     let mongo_service: Arc<MongoService> = build_mongo_service(storage.clone());
+    let kafka_service: Arc<KafkaService> = build_kafka_service(storage.clone());
     let data_sync_gate = Arc::new(DataSyncGate::default());
     let data_sync_service = Arc::new(DataSyncService::new(
         conn_service.clone(),
@@ -267,6 +270,7 @@ fn main() {
         conn_service,
         redis_service,
         mongo_service,
+        kafka_service,
         data_sync_service,
         data_sync_gate,
         clipboard_service,

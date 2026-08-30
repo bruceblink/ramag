@@ -203,6 +203,33 @@ fn message_preview_does_not_split_utf8_and_handles_empty_values() {
 }
 
 #[test]
+fn message_page_validates_scan_budget_and_result_count() {
+    let record = KafkaMessageRecord {
+        topic: "events".into(),
+        partition: 0,
+        offset: 1,
+        timestamp: None,
+        key: None,
+        value: Some(b"ok".to_vec()),
+        headers: Vec::new(),
+    };
+    let record_bytes = record.retained_bytes();
+    let page = KafkaMessagePage {
+        records: vec![record],
+        scanned_records: 1,
+        scanned_bytes: record_bytes,
+        truncated: false,
+    };
+    assert!(page.validate().is_ok());
+
+    let invalid = KafkaMessagePage {
+        scanned_records: 0,
+        ..page
+    };
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
 fn offset_and_time_queries_require_one_bounded_range() {
     let query = KafkaMessageQuery::by_offset("events", vec![0, 1], 10, Some(20));
     assert!(query.validate().is_ok());

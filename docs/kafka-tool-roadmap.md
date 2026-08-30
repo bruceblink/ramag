@@ -1,10 +1,10 @@
 # Kafka 消息管理工具独立开发计划
 
-> 状态：阶段 4 已完成（截至 2026-08-30）
+> 状态：阶段 10 已完成（截至 2026-08-30）
 > 更新日期：2026-08-30
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
-> 当前基线：`feat/kafka-tool-development`（阶段 1-4 已完成）
+> 当前基线：`feat/kafka-tool-development`（阶段 1-10 已完成）
 > 实施分支：`feat/kafka-tool-development`
 
 ## 术语表与命名约定
@@ -248,14 +248,23 @@ Kafka ACL 首期支持：
 - `RdkafkaDriver` 在阻塞线程中创建 Admin Client 并拉取元数据，用于连接测试；连接测试不提交 Offset。
 - 客户端属性仅由受支持的集群配置生成，固定关闭自动提交、自动 Offset 存储和 Topic 自动创建。
 - 底层错误被映射为不包含凭据、密钥或消息正文的 Kafka 专用结构化错误；TLS/SASL 构建能力未启用时明确返回不支持原因。
-- 阶段 3 暂不提供 Topic、Partition 消息读取和 UI 入口；这些能力仍按阶段 5-10 的验收条件交付。
+- 阶段 3 的基础设施基线仍保留为独立可选 native 构建；阶段 5-10 在此边界上继续增加只读 Topic、Partition、消息和 UI 能力。
 
 阶段 4 实施记录：
 
 - `scripts/kafka-test/compose.yaml` 固定使用 `apache/kafka:4.0.0`，以单节点 KRaft 模式启动专用测试容器、网络和数据卷，并绑定 `127.0.0.1:19092`；健康检查通过后才允许后续操作。
 - `scripts/kafka-test/kafka-test.ps1` 提供 `up`、`status`、`seed`、`test`、`down` 和 `clean`；测试会创建三分区 Topic，写入固定 fixture，从头读取并核对记录，再执行 Rust `rdkafka` 元数据连接测试。
 - 2026-08-30 已在 Docker 中完成健康检查、fixture 写入/读取和 `docker_kafka_accepts_metadata_request` 集成测试；专用容器 `ramag-kafka-test` 保持运行以便复用。
-- 当前阶段没有新增 Kafka UI 代码；提交前额外执行 `cargo test -p ramag-ui --lib`，`ramag-ui` 的 64 个测试全部通过。真实 Kafka 工具窗口验收保留到阶段 5 的 UI 入口交付。
+
+阶段 5-10 实施记录：
+
+- `ramag-tool-kafka` 已接入 Activity Bar、ToolRegistry 和主壳，未配置集群时展示空状态，不生成伪造 Broker、Topic 或消息。
+- `KafkaService` 编排本地集群配置、连接测试、集群元数据、Topic/Partition 查询、Offset/时间范围读取和客户端搜索；返回快照在应用边界再次执行数量、字节和字段校验。
+- `RdkafkaDriver` 使用手动分配的临时消费者组读取 Partition，关闭自动提交和自动 Offset 存储，不加入或推进用户业务消费者组；读取、搜索和时间范围转换均在有界后台任务中完成。
+- Kafka 工作区提供集群配置、概览、Broker、Topic/Partition、消息表、Key/Value/Headers 详情、UTF-8/Hex/Base64 查看、JSON 导出和取消控制；Kafka 资源写操作与消息生产不在本阶段开放。
+- 2026-08-30 GPUI headless 验收测试通过，覆盖真实数据状态渲染、消息页切换、读取控件和取消后的旧任务失效；本机 `ramag.exe` 可构建并打开 `Ramag — Kafka` 窗口，但 Computer Use 状态捕获未能返回截图，原生截图证据保留为未完成项。
+- 2026-08-30 Docker 集成测试通过 2 项，覆盖生产 `RdkafkaDriver` 的元数据、Topic/Partition 水位、Offset/时间读取、Value 搜索和记录数边界。
+- 2026-08-30 Windows 截图复核发现侧栏“+”和空状态“新建集群”按钮目前只有视觉挂载，点击事件尚未完成；本次提交冻结现状，下一提交补齐交互并增加点击验收。
 
 后续独立路线：
 

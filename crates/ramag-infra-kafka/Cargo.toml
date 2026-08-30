@@ -20,7 +20,9 @@ sasl = ["kafka-sasl"]
 
 [dependencies]
 async-trait = { workspace = true }
+chrono = { workspace = true }
 ramag-domain = { workspace = true }
 rdkafka = { workspace = true, optional = true, features = ["tokio"] }
 smol = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
