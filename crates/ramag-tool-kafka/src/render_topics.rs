@@ -59,6 +59,7 @@ impl KafkaView {
                 }),
             )
             .flex_1()
+            .min_h_0()
             .into_any_element()
         };
         let detail = selected_topic
@@ -129,6 +130,9 @@ impl KafkaView {
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    // h_flex defaults to centered cross-axis items; stretch both panes so the
+                    // virtual Topic list receives the full viewport height.
+                    .items_stretch()
                     .gap(px(14.0))
                     .child(
                         v_flex()
@@ -152,8 +156,10 @@ impl KafkaView {
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
         let name = topic.name.clone();
+        let debug_name = name.clone();
         h_flex()
             .id(SharedString::from(format!("kafka-topic-row-{name}")))
+            .debug_selector(move || format!("kafka-topic-row-{debug_name}"))
             .w_full()
             .items_center()
             .justify_between()
@@ -230,6 +236,7 @@ impl KafkaView {
             .child(
                 v_flex()
                     .id("kafka-partition-scroll")
+                    .debug_selector(|| "kafka-partition-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -237,6 +244,7 @@ impl KafkaView {
             )
             .child(
                 ramag_ui::clickable_button("kafka-open-topic-messages")
+                    .debug_selector(|| "kafka-open-topic-messages".into())
                     .outline()
                     .small()
                     .icon(IconName::Search)

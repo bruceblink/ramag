@@ -11,6 +11,7 @@ impl KafkaView {
         let tls = self.security_protocol.uses_tls();
         v_flex()
             .id("kafka-config")
+            .debug_selector(|| "kafka-config".into())
             .size_full()
             .overflow_y_scroll()
             .p(px(22.0))

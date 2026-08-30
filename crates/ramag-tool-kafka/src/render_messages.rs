@@ -12,7 +12,20 @@ impl KafkaView {
             self.selected_message
                 .and_then(|index| page.records.get(index))
         });
-        let rows = if let Some(page) = page {
+        let rows = if self.loading_messages {
+            v_flex()
+                .id("kafka-message-loading")
+                .debug_selector(|| "kafka-message-loading".into())
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .gap(px(10.0))
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(Spinner::new().small().color(theme.accent))
+                .child("正在读取 Kafka 消息…")
+                .into_any_element()
+        } else if let Some(page) = page {
             if page.records.is_empty() {
                 v_flex()
                     .flex_1()
@@ -93,6 +106,8 @@ impl KafkaView {
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    // Keep the message table and detail pane at the full available height.
+                    .items_stretch()
                     .gap(px(14.0))
                     .child(
                         v_flex()
@@ -116,29 +131,35 @@ impl KafkaView {
         let theme = cx.theme().clone();
         let range_modes = [KafkaRangeMode::Offset, KafkaRangeMode::Time]
             .into_iter()
-            .fold(h_flex().gap(px(4.0)), |row, mode| {
-                let selected = self.range_mode == mode;
-                row.child(
-                    ramag_ui::clickable_button(SharedString::from(format!(
-                        "kafka-range-{}",
-                        mode.label()
-                    )))
-                    .small()
-                    .label(mode.label())
-                    .when(selected, |button| button.primary())
-                    .when(!selected, |button| button.ghost())
-                    .on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.range_mode = mode;
-                            cx.notify();
-                        },
-                    )),
-                )
-            });
+            .fold(
+                h_flex()
+                    .debug_selector(|| "kafka-range-mode".into())
+                    .gap(px(4.0)),
+                |row, mode| {
+                    let selected = self.range_mode == mode;
+                    row.child(
+                        ramag_ui::clickable_button(SharedString::from(format!(
+                            "kafka-range-{}",
+                            mode.label()
+                        )))
+                        .small()
+                        .label(mode.label())
+                        .when(selected, |button| button.primary())
+                        .when(!selected, |button| button.ghost())
+                        .on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.range_mode = mode;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                },
+            );
         let range_inputs = match self.range_mode {
             KafkaRangeMode::Offset => h_flex()
-                .w_full()
-                .flex_wrap()
+                .debug_selector(|| "kafka-range-inputs".into())
+                .flex_none()
+                .items_end()
                 .gap(px(8.0))
                 .child(field(
                     "起始 Offset",
@@ -152,8 +173,9 @@ impl KafkaView {
                 ))
                 .into_any_element(),
             KafkaRangeMode::Time => h_flex()
-                .w_full()
-                .flex_wrap()
+                .debug_selector(|| "kafka-range-inputs".into())
+                .flex_none()
+                .items_end()
                 .gap(px(8.0))
                 .child(field(
                     "起始时间",
@@ -167,6 +189,47 @@ impl KafkaView {
                 ))
                 .into_any_element(),
         };
+        let message_actions = h_flex()
+            .debug_selector(|| "kafka-message-actions".into())
+            .flex_none()
+            .items_end()
+            .gap(px(8.0))
+            .child(field(
+                "Limit",
+                Input::new(&self.max_records_input).small(),
+                90.0,
+            ))
+            .child(
+                ramag_ui::clickable_button("kafka-read-messages")
+                    .debug_selector(|| "kafka-read-messages".into())
+                    .primary()
+                    .small()
+                    .icon(IconName::Search)
+                    .label("读取")
+                    .loading(self.loading_messages)
+                    .disabled(
+                        self.loading_runtime
+                            || self.loading_messages
+                            || self.testing
+                            || self.saving,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.read_messages(window, cx);
+                    })),
+            )
+            .when(self.loading_messages, |row| {
+                row.child(
+                    ramag_ui::clickable_button("kafka-cancel-messages")
+                        .debug_selector(|| "kafka-cancel-messages".into())
+                        .outline()
+                        .small()
+                        .icon(IconName::Close)
+                        .label("取消")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.cancel_message_read(cx);
+                        })),
+                )
+            });
         let search_fields = KafkaMessageSearchField::all().into_iter().enumerate().fold(
             h_flex().gap(px(4.0)),
             |row, (index, field)| {
@@ -188,97 +251,91 @@ impl KafkaView {
                 )
             },
         );
+        // 将查询条件和操作控件分成可收缩的布局组，避免固定宽度控件把搜索区域推出窗口。
+        let message_query = h_flex()
+            .debug_selector(|| "kafka-message-query".into())
+            .flex_1()
+            .min_w_0()
+            .flex_wrap()
+            .items_end()
+            .gap(px(8.0))
+            .child(field("Topic", Input::new(&self.topic_input).small(), 190.0))
+            .child(field(
+                "Partition",
+                Input::new(&self.partition_input).small(),
+                130.0,
+            ))
+            .child(field("范围", range_modes, 134.0))
+            .child(range_inputs);
+        let message_search = v_flex()
+            .debug_selector(|| "kafka-message-search".into())
+            .w(px(260.0))
+            .flex_none()
+            .gap(px(5.0))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("搜索内容（可选）"),
+            )
+            .child(
+                ramag_ui::cleanable_input(
+                    &self.message_search,
+                    "kafka-message-search-clear",
+                    false,
+                    cx,
+                )
+                .small()
+                .prefix(
+                    Icon::new(IconName::Search)
+                        .small()
+                        .text_color(theme.muted_foreground),
+                ),
+            );
+        let message_search_fields = v_flex()
+            .debug_selector(|| "kafka-message-search-fields".into())
+            .w(px(208.0))
+            .flex_none()
+            .gap(px(5.0))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("搜索字段"),
+            )
+            .child(search_fields);
         v_flex()
             .w_full()
             .flex_none()
             .gap(px(8.0))
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-message-query-row".into())
                     .w_full()
-                    .flex_wrap()
+                    .min_w_0()
                     .items_end()
                     .gap(px(8.0))
-                    .child(field("Topic", Input::new(&self.topic_input).small(), 190.0))
-                    .child(field(
-                        "Partition",
-                        Input::new(&self.partition_input).small(),
-                        130.0,
-                    ))
-                    .child(field("范围", range_modes, 0.0))
-                    .child(field(
-                        "Limit",
-                        Input::new(&self.max_records_input).small(),
-                        90.0,
-                    ))
-                    .child(
-                        ramag_ui::clickable_button("kafka-read-messages")
-                            .debug_selector(|| "kafka-read-messages".into())
-                            .primary()
-                            .small()
-                            .icon(IconName::Search)
-                            .label("读取")
-                            .disabled(
-                                self.loading_runtime
-                                    || self.loading_messages
-                                    || self.testing
-                                    || self.saving,
-                            )
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.read_messages(window, cx);
-                            })),
-                    )
-                    .when(self.loading_messages, |row| {
-                        row.child(
-                            ramag_ui::clickable_button("kafka-cancel-messages")
-                                .debug_selector(|| "kafka-cancel-messages".into())
-                                .outline()
-                                .small()
-                                .icon(IconName::Close)
-                                .label("取消")
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.cancel_message_read(cx);
-                                })),
-                        )
-                    }),
+                    .child(message_query)
+                    .child(message_actions),
             )
-            .child(range_inputs)
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-message-search-row".into())
                     .w_full()
-                    .flex_wrap()
+                    .min_w_0()
                     .items_end()
                     .gap(px(8.0))
-                    .child(
-                        div().w(px(260.0)).child(
-                            v_flex()
-                                .gap(px(5.0))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child("搜索内容（可选）"),
-                                )
-                                .child(
-                                    ramag_ui::cleanable_input(
-                                        &self.message_search,
-                                        "kafka-message-search-clear",
-                                        false,
-                                        cx,
-                                    )
-                                    .small()
-                                    .prefix(
-                                        Icon::new(IconName::Search)
-                                            .small()
-                                            .text_color(theme.muted_foreground),
-                                    ),
-                                ),
-                        ),
-                    )
-                    .child(field("搜索字段", search_fields, 0.0))
+                    .child(message_search)
+                    .child(message_search_fields)
                     .child(
                         div()
+                            .debug_selector(|| "kafka-message-search-note".into())
+                            .flex_1()
+                            .min_w_0()
                             .text_xs()
                             .text_color(theme.muted_foreground)
+                            .text_right()
+                            .truncate()
                             .child("只读扫描 · 不提交 Offset"),
                     ),
             )
@@ -383,7 +440,7 @@ impl KafkaView {
             .gap(px(10.0))
             .child(section_heading(
                 "消息详情",
-                "UTF-8 可读文本；非 UTF-8 使用转义预览",
+                "UTF-8 保留原文；二进制显示 Hex 摘要",
                 &theme,
             ))
             .child(

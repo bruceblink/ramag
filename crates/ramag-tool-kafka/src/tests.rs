@@ -247,6 +247,24 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
         "Kafka header status collapsed to {:?}",
         status_bounds.size
     );
+    assert!(visual_cx.debug_bounds("kafka-welcome-add").is_some());
+    assert!(visual_cx.debug_bounds("kafka-add-profile").is_some());
+    click(visual_cx, "kafka-welcome-add");
+    visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("kafka-config").is_some());
+    assert!(kafka_entity.read_with(visual_cx, |view, _| {
+        view.section == KafkaSection::Config
+    }));
+
+    kafka_entity.update(visual_cx, |view, cx| {
+        view.section = KafkaSection::Overview;
+        cx.notify();
+    });
+    visual_cx.run_until_parked();
+    click(visual_cx, "kafka-add-profile");
+    visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("kafka-config").is_some());
+
     kafka_entity.update(visual_cx, |view, cx| {
         view.selected_cluster_id = Some(cluster.id.clone());
         view.metadata = Some(KafkaClusterMetadata {
@@ -274,21 +292,140 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
                 high_watermark: Some(1),
             }],
         }];
+        view.section = KafkaSection::Overview;
         view.loading_runtime = false;
         cx.notify();
     });
     visual_cx.run_until_parked();
     assert!(visual_cx.debug_bounds("kafka-overview-scroll").is_some());
+    click(visual_cx, "kafka-section-Topics");
+    visual_cx.run_until_parked();
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-topic-row-ramag.integration.messages")
+            .is_some()
+    );
+    click(visual_cx, "kafka-topic-row-ramag.integration.messages");
+    visual_cx.run_until_parked();
+    assert!(kafka_entity.read_with(visual_cx, |view, _| {
+        view.section == KafkaSection::Topics
+    }));
+    assert!(visual_cx.debug_bounds("kafka-partition-scroll").is_some());
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-open-topic-messages")
+            .is_some()
+    );
+    click(visual_cx, "kafka-open-topic-messages");
+    visual_cx.run_until_parked();
     click(visual_cx, "kafka-section-Messages");
     visual_cx.run_until_parked();
     assert!(visual_cx.debug_bounds("kafka-messages").is_some());
     assert!(visual_cx.debug_bounds("kafka-read-messages").is_some());
+    visual_cx.simulate_resize(size(px(1600.0), px(900.0)));
+    visual_cx.run_until_parked();
+    let message_search_bounds = visual_cx.debug_bounds("kafka-message-search");
+    let message_search_fields_bounds = visual_cx.debug_bounds("kafka-message-search-fields");
+    let message_search_note_bounds = visual_cx.debug_bounds("kafka-message-search-note");
+    assert!(
+        message_search_bounds.is_some()
+            && message_search_fields_bounds.is_some()
+            && message_search_note_bounds.is_some(),
+        "消息搜索控件应全部参与布局"
+    );
+    let (
+        Some(message_search_bounds),
+        Some(message_search_fields_bounds),
+        Some(message_search_note_bounds),
+    ) = (
+        message_search_bounds,
+        message_search_fields_bounds,
+        message_search_note_bounds,
+    )
+    else {
+        return;
+    };
+    assert!(
+        message_search_bounds.origin.x + message_search_bounds.size.width
+            <= message_search_fields_bounds.origin.x,
+        "搜索输入与字段按钮不应重叠: {message_search_bounds:?} / {message_search_fields_bounds:?}"
+    );
+    assert!(
+        message_search_fields_bounds.origin.x + message_search_fields_bounds.size.width
+            <= message_search_note_bounds.origin.x,
+        "字段按钮与扫描说明不应重叠: {message_search_fields_bounds:?} / {message_search_note_bounds:?}"
+    );
+    let messages_bounds = visual_cx.debug_bounds("kafka-messages");
+    assert!(messages_bounds.is_some(), "消息页面应参与布局");
+    let Some(messages_bounds) = messages_bounds else {
+        return;
+    };
+    assert!(
+        message_search_note_bounds.origin.x + message_search_note_bounds.size.width
+            <= messages_bounds.origin.x + messages_bounds.size.width,
+        "扫描说明不应溢出消息页面: {message_search_note_bounds:?} / {messages_bounds:?}"
+    );
+    let range_mode_bounds = visual_cx.debug_bounds("kafka-range-mode");
+    let range_input_bounds = visual_cx.debug_bounds("kafka-range-inputs");
+    let action_bounds = visual_cx.debug_bounds("kafka-message-actions");
+    assert!(
+        range_mode_bounds.is_some() && range_input_bounds.is_some() && action_bounds.is_some(),
+        "消息范围控件应全部参与布局"
+    );
+    let (Some(range_mode_bounds), Some(range_input_bounds), Some(action_bounds)) =
+        (range_mode_bounds, range_input_bounds, action_bounds)
+    else {
+        return;
+    };
+    assert!(
+        range_mode_bounds.origin.x + range_mode_bounds.size.width <= range_input_bounds.origin.x,
+        "范围模式与范围输入不应重叠: {range_mode_bounds:?} / {range_input_bounds:?}"
+    );
+    assert!(
+        range_input_bounds.origin.x + range_input_bounds.size.width <= action_bounds.origin.x,
+        "范围输入与读取动作不应重叠: {range_input_bounds:?} / {action_bounds:?}"
+    );
+    assert!(
+        action_bounds.origin.x + action_bounds.size.width
+            <= messages_bounds.origin.x + messages_bounds.size.width,
+        "读取动作不应溢出消息页面: {action_bounds:?} / {messages_bounds:?}"
+    );
+
+    visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
+    visual_cx.run_until_parked();
+    let narrow_messages_bounds = visual_cx.debug_bounds("kafka-messages");
+    let narrow_search_note_bounds = visual_cx.debug_bounds("kafka-message-search-note");
+    let narrow_action_bounds = visual_cx.debug_bounds("kafka-message-actions");
+    assert!(
+        narrow_messages_bounds.is_some()
+            && narrow_search_note_bounds.is_some()
+            && narrow_action_bounds.is_some(),
+        "窄窗口消息筛选控件应全部参与布局"
+    );
+    let (Some(narrow_messages_bounds), Some(narrow_search_note_bounds), Some(narrow_action_bounds)) = (
+        narrow_messages_bounds,
+        narrow_search_note_bounds,
+        narrow_action_bounds,
+    ) else {
+        return;
+    };
+    assert!(
+        narrow_search_note_bounds.origin.x + narrow_search_note_bounds.size.width
+            <= narrow_messages_bounds.origin.x + narrow_messages_bounds.size.width,
+        "窄窗口搜索说明不应溢出: {narrow_search_note_bounds:?} / {narrow_messages_bounds:?}"
+    );
+    assert!(
+        narrow_action_bounds.origin.x + narrow_action_bounds.size.width
+            <= narrow_messages_bounds.origin.x + narrow_messages_bounds.size.width,
+        "窄窗口读取动作不应溢出: {narrow_action_bounds:?} / {narrow_messages_bounds:?}"
+    );
 
     kafka_entity.update(visual_cx, |view, cx| {
         view.loading_messages = true;
         cx.notify();
     });
     visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("kafka-message-loading").is_some());
     click(visual_cx, "kafka-cancel-messages");
     assert!(!kafka_entity.read_with(visual_cx, |view, _| view.loading_messages));
 }

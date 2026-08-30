@@ -119,6 +119,7 @@ impl KafkaView {
                     )
                     .child(
                         ramag_ui::clickable_button("kafka-add-profile")
+                            .debug_selector(|| "kafka-add-profile".into())
                             .ghost()
                             .xsmall()
                             .icon(IconName::Plus)

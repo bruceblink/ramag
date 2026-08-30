@@ -19,7 +19,9 @@ impl KafkaView {
         } else {
             ("未连接", theme.muted_foreground)
         };
-        let body = if selected.is_none() {
+        // 新建草稿尚未分配集群 ID，但必须先显示配置表单；只有初始概览才显示欢迎页。
+        let show_welcome = selected.is_none() && self.section != KafkaSection::Config;
+        let body = if show_welcome {
             self.render_welcome(cx).into_any_element()
         } else {
             self.render_workspace(window, cx).into_any_element()

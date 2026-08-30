@@ -246,6 +246,7 @@ impl KafkaView {
         .detach();
     }
 
+    // 选择 Topic 只更新当前筛选和详情状态；切换到消息页由详情区的明确按钮负责。
     pub(super) fn select_topic(
         &mut self,
         topic: String,
@@ -255,7 +256,6 @@ impl KafkaView {
         self.invalidate_message_request();
         self.selected_topic = Some(topic.clone());
         set_value(&self.topic_input, topic, window, cx);
-        self.section = KafkaSection::Messages;
         self.message_page = None;
         self.selected_message = None;
         self.notice = None;

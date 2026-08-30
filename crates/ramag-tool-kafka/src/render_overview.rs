@@ -24,6 +24,7 @@ impl KafkaView {
             )
             .child(
                 ramag_ui::clickable_button("kafka-welcome-add")
+                    .debug_selector(|| "kafka-welcome-add".into())
                     .primary()
                     .small()
                     .icon(IconName::Plus)

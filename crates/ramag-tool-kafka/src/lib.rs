@@ -19,6 +19,7 @@ use gpui_component::{
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputEvent, InputState},
+    spinner::Spinner,
     v_flex,
 };
 use ramag_app::KafkaService;

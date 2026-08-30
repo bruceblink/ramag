@@ -67,6 +67,7 @@ fn clipboard_tool_is_registered_last() {
         ids,
         [
             "dbclient",
+            "kafka",
             "vcs",
             "ssh",
             "object_storage",
