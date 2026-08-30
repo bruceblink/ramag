@@ -20,9 +20,9 @@ use redb::{Database, ReadableDatabase as _, ReadableTableMetadata as _, TableErr
 use tracing::{debug, info, warn};
 
 use ramag_domain::entities::{
-    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, MAX_CLIPBOARD_SEARCH_BYTES,
-    ObjectStorageAccount, ObjectStorageAccountId, QueryHistoryPage, QueryRecord, QueryRecordId,
-    RepoConfig, RepoId, SshProfile, SshProfileId,
+    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, KafkaClusterConfig,
+    KafkaClusterId, MAX_CLIPBOARD_SEARCH_BYTES, ObjectStorageAccount, ObjectStorageAccountId,
+    QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId, SshProfile, SshProfileId,
 };
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::Storage;
@@ -74,6 +74,7 @@ impl RedbStorage {
         // 首启迁移：为存量历史构建时间 / 去重索引（空库或已建则瞬时返回）
         repos::clip_repo::migrate_indexes(db.clone(), cipher.clone())?;
         let _ = repos::connection_repo::list(db.clone(), cipher.clone())?;
+        let _ = repos::kafka_cluster_repo::list(db.clone(), cipher.clone())?;
         let _ = repos::ssh_profile_repo::list(db.clone(), cipher.clone())?;
         let _ = repos::object_storage_account_repo::list(db.clone(), cipher.clone())?;
         repos::clip_repo::validate_key(db.clone(), cipher.clone())?;
@@ -150,6 +151,7 @@ fn database_has_encrypted_records(db: &Database) -> Result<bool> {
         repos::clip_repo::CLIPS_TABLE,
         repos::ssh_profile_repo::SSH_PROFILES_TABLE,
         repos::object_storage_account_repo::OBJECT_STORAGE_ACCOUNTS_TABLE,
+        repos::kafka_cluster_repo::KAFKA_CLUSTERS_TABLE,
     ] {
         match read_txn.open_table(definition) {
             Ok(table)
@@ -179,6 +181,32 @@ fn validate_clip_search_query(query: &str) -> Result<()> {
 
 #[async_trait]
 impl Storage for RedbStorage {
+    async fn list_kafka_clusters(&self) -> Result<Vec<KafkaClusterConfig>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        run_blocking(move || repos::kafka_cluster_repo::list(db, cipher)).await
+    }
+
+    async fn get_kafka_cluster(&self, id: &KafkaClusterId) -> Result<Option<KafkaClusterConfig>> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let id = id.to_string();
+        run_blocking(move || repos::kafka_cluster_repo::get(db, cipher, id)).await
+    }
+
+    async fn save_kafka_cluster(&self, config: &KafkaClusterConfig) -> Result<()> {
+        let db = self.db.clone();
+        let cipher = self.cipher.clone();
+        let config = config.clone();
+        run_blocking(move || repos::kafka_cluster_repo::save(db, cipher, config)).await
+    }
+
+    async fn delete_kafka_cluster(&self, id: &KafkaClusterId) -> Result<()> {
+        let db = self.db.clone();
+        let id = id.to_string();
+        run_blocking(move || repos::kafka_cluster_repo::delete(db, id)).await
+    }
+
     async fn list_connections(&self) -> Result<Vec<ConnectionConfig>> {
         let db = self.db.clone();
         let cipher = self.cipher.clone();

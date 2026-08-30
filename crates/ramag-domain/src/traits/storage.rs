@@ -4,14 +4,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 
 use crate::entities::{
-    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, ObjectStorageAccount,
-    ObjectStorageAccountId, QueryHistoryPage, QueryRecord, QueryRecordId, RepoConfig, RepoId,
-    SshProfile, SshProfileId,
+    ClipId, ClipItem, ClipSearchResult, ConnectionConfig, ConnectionId, KafkaClusterConfig,
+    KafkaClusterId, ObjectStorageAccount, ObjectStorageAccountId, QueryHistoryPage, QueryRecord,
+    QueryRecordId, RepoConfig, RepoId, SshProfile, SshProfileId,
 };
 use crate::error::Result;
 
 #[async_trait]
 pub trait Storage: Send + Sync {
+    async fn list_kafka_clusters(&self) -> Result<Vec<KafkaClusterConfig>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_kafka_clusters".into(),
+        ))
+    }
+
+    async fn get_kafka_cluster(&self, _id: &KafkaClusterId) -> Result<Option<KafkaClusterConfig>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "get_kafka_cluster".into(),
+        ))
+    }
+
+    async fn save_kafka_cluster(&self, _config: &KafkaClusterConfig) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "save_kafka_cluster".into(),
+        ))
+    }
+
+    async fn delete_kafka_cluster(&self, _id: &KafkaClusterId) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "delete_kafka_cluster".into(),
+        ))
+    }
+
     async fn list_connections(&self) -> Result<Vec<ConnectionConfig>>;
     async fn get_connection(&self, id: &ConnectionId) -> Result<Option<ConnectionConfig>>;
     async fn save_connection(&self, config: &ConnectionConfig) -> Result<()>;

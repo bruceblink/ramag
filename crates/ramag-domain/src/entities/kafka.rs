@@ -34,6 +34,7 @@ pub use kafka_validation::{
 };
 
 pub const MAX_KAFKA_CLUSTER_NAME_BYTES: usize = 256;
+pub const MAX_KAFKA_CLUSTERS: usize = 2_048;
 pub const MAX_KAFKA_BOOTSTRAP_SERVERS: usize = 32;
 pub const MAX_KAFKA_BOOTSTRAP_SERVER_BYTES: usize = 1024;
 pub const MAX_KAFKA_BOOTSTRAP_SERVERS_BYTES: usize = 16 * 1024;

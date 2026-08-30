@@ -111,6 +111,7 @@ fn fresh_storage_initializes_complete_schema() {
         "clip_uuid_meta".to_string(),
         "clips".to_string(),
         "connections".to_string(),
+        "kafka_clusters".to_string(),
         "object_storage_accounts".to_string(),
         "preferences".to_string(),
         "query_history".to_string(),
@@ -570,3 +571,4 @@ use ramag_domain::entities::{
 };
 
 mod clip_tests;
+mod kafka_tests;
