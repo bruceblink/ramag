@@ -199,7 +199,15 @@ fn message_preview_does_not_split_utf8_and_handles_empty_values() {
             truncated: true
         }
     );
-    assert!(preview_bytes(&[0xff], 1).truncated);
+    let binary = preview_bytes(&[0xff, 0x00, 0x01], 3);
+    assert_eq!(binary.text, "二进制消息（3 bytes） · Hex ff0001");
+    assert!(!binary.truncated);
+    assert!(!binary.text.contains('�'));
+    assert_eq!(preview_bytes(b"line\n", 5).text, "line\\n");
+
+    let truncated = preview_bytes(&[0xff, 0x00, 0x01], 2);
+    assert_eq!(truncated.text, "二进制消息（3 bytes） · Hex ff00...");
+    assert!(truncated.truncated);
 }
 
 #[test]

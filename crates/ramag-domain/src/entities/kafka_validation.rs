@@ -51,7 +51,7 @@ pub fn validate_kafka_bootstrap_server(server: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 将原始 Key/Value 截取为有限的 UTF-8 宽度预览，二进制内容使用替换字符显示。
+/// 将原始 Key/Value 截取为有限预览；合法 UTF-8 保留原文，二进制内容改用 Hex 摘要。
 pub fn preview_bytes(bytes: &[u8], max_bytes: usize) -> super::KafkaTextPreview {
     if bytes.is_empty() {
         return super::KafkaTextPreview {
@@ -61,12 +61,57 @@ pub fn preview_bytes(bytes: &[u8], max_bytes: usize) -> super::KafkaTextPreview 
     }
     let max_bytes = max_bytes.min(MAX_KAFKA_MESSAGE_PREVIEW_BYTES);
     let take = bytes.len().min(max_bytes);
-    let lossy = String::from_utf8_lossy(&bytes[..take]);
-    let end = floor_char_boundary(&lossy, max_bytes);
-    super::KafkaTextPreview {
-        text: lossy[..end].to_string(),
-        truncated: take < bytes.len() || end < lossy.len(),
+    if take == 0 {
+        return super::KafkaTextPreview {
+            text: String::new(),
+            truncated: true,
+        };
     }
+
+    let prefix = &bytes[..take];
+    let utf8_end = match std::str::from_utf8(prefix) {
+        Ok(_) => take,
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => take,
+    };
+    if let Ok(text) = std::str::from_utf8(&prefix[..utf8_end]) {
+        return super::KafkaTextPreview {
+            text: escape_preview_text(text),
+            truncated: take < bytes.len() || utf8_end < take,
+        };
+    }
+
+    super::KafkaTextPreview {
+        text: format_binary_preview(prefix, bytes.len(), take < bytes.len()),
+        truncated: take < bytes.len(),
+    }
+}
+
+fn escape_preview_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                escaped.push_str(&format!("\\u{{{:04x}}}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn format_binary_preview(bytes: &[u8], total_bytes: usize, truncated: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    let suffix = if truncated { "..." } else { "" };
+    format!("二进制消息（{total_bytes} bytes） · Hex {hex}{suffix}")
 }
 
 pub(super) fn validate_required_text(
@@ -143,12 +188,4 @@ pub(super) fn validate_optional_offset(offset: Option<i64>) -> Result<(), String
         return Err("Offset 不能为负数".into());
     }
     Ok(())
-}
-
-pub(super) fn floor_char_boundary(value: &str, mut index: usize) -> usize {
-    index = index.min(value.len());
-    while index > 0 && !value.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
 }
