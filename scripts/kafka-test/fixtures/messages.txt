@@ -1,0 +1,3 @@
+event-001|{"event":"created","sequence":1,"source":"docker-fixture"}
+event-002|{"event":"updated","sequence":2,"source":"docker-fixture"}
+event-003|{"event":"deleted","sequence":3,"source":"docker-fixture"}

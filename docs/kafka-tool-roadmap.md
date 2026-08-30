@@ -1,10 +1,10 @@
 # Kafka 消息管理工具独立开发计划
 
-> 状态：阶段 3 已完成；阶段 4 测试环境由并行任务配置中
+> 状态：阶段 4 已完成（截至 2026-08-30）
 > 更新日期：2026-08-30
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
-> 当前基线：`feat/kafka-tool-development`（阶段 1-3 已完成）
+> 当前基线：`feat/kafka-tool-development`（阶段 1-4 已完成）
 > 实施分支：`feat/kafka-tool-development`
 
 ## 术语表与命名约定
@@ -249,6 +249,13 @@ Kafka ACL 首期支持：
 - 客户端属性仅由受支持的集群配置生成，固定关闭自动提交、自动 Offset 存储和 Topic 自动创建。
 - 底层错误被映射为不包含凭据、密钥或消息正文的 Kafka 专用结构化错误；TLS/SASL 构建能力未启用时明确返回不支持原因。
 - 阶段 3 暂不提供 Topic、Partition 消息读取和 UI 入口；这些能力仍按阶段 5-10 的验收条件交付。
+
+阶段 4 实施记录：
+
+- `scripts/kafka-test/compose.yaml` 固定使用 `apache/kafka:4.0.0`，以单节点 KRaft 模式启动专用测试容器、网络和数据卷，并绑定 `127.0.0.1:19092`；健康检查通过后才允许后续操作。
+- `scripts/kafka-test/kafka-test.ps1` 提供 `up`、`status`、`seed`、`test`、`down` 和 `clean`；测试会创建三分区 Topic，写入固定 fixture，从头读取并核对记录，再执行 Rust `rdkafka` 元数据连接测试。
+- 2026-08-30 已在 Docker 中完成健康检查、fixture 写入/读取和 `docker_kafka_accepts_metadata_request` 集成测试；专用容器 `ramag-kafka-test` 保持运行以便复用。
+- 当前阶段没有新增 Kafka UI 代码；提交前额外执行 `cargo test -p ramag-ui --lib`，`ramag-ui` 的 64 个测试全部通过。真实 Kafka 工具窗口验收保留到阶段 5 的 UI 入口交付。
 
 后续独立路线：
 
