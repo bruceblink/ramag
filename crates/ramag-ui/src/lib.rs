@@ -26,6 +26,7 @@ pub mod shell;
 pub mod shortcuts_dialog;
 pub mod system_settings;
 pub mod theme;
+pub(crate) mod tool_layout;
 pub mod transfer_ui;
 
 pub use actions::{CloseTab, OpenRecentItems};

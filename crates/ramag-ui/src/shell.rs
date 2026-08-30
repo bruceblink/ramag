@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window,
-    div, prelude::*,
+    div, prelude::*, px,
 };
-use gpui_component::{ActiveTheme, Root, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, Root, button::ButtonVariants as _, h_flex, v_flex,
+};
 use ramag_app::{DataSyncGate, ToolRegistry};
 
 use crate::activity_bar::{ActivityBar, NavEvent, NavTarget};
@@ -282,6 +284,15 @@ impl Render for Shell {
         // dialog / notification 浮层须由顶层 view 渲染
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
+        let theme_icon = match crate::theme::current_mode(cx) {
+            crate::theme::Mode::Light => IconName::Moon,
+            crate::theme::Mode::Dark => IconName::Sun,
+        };
+        let theme_toggle = crate::clickable_button("shell-theme-toggle")
+            .ghost()
+            .icon(Icon::new(theme_icon))
+            .tooltip("切换主题")
+            .on_click(|_, _, cx| crate::theme::toggle_theme(cx));
 
         v_flex()
             .size_full()
@@ -294,21 +305,39 @@ impl Render for Shell {
                     .min_h_0()
                     .child(self.activity_bar.clone())
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .h_full()
                             .min_w_0()
-                            .when_some(content_view, |this, view| this.child(view))
-                            .when(
-                                (self.settings_selected && self.settings_view.is_none())
-                                    || (!self.settings_selected
-                                        && self.selected.is_some()
-                                        && self
-                                            .selected
-                                            .as_ref()
-                                            .and_then(|id| self.tool_views.get(id))
-                                            .is_none()),
-                                |this| this.child(render_view_missing(cx)),
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .h(px(44.0))
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_end()
+                                    .px_3()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(theme_toggle),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .min_w_0()
+                                    .when_some(content_view, |this, view| this.child(view))
+                                    .when(
+                                        (self.settings_selected && self.settings_view.is_none())
+                                            || (!self.settings_selected
+                                                && self.selected.is_some()
+                                                && self
+                                                    .selected
+                                                    .as_ref()
+                                                    .and_then(|id| self.tool_views.get(id))
+                                                    .is_none()),
+                                        |this| this.child(render_view_missing(cx)),
+                                    ),
                             ),
                     ),
             )
