@@ -1,9 +1,12 @@
-use gpui::{App, Context, Global, IntoElement, ParentElement, Render, Styled, Window, div, px};
-use gpui_component::{h_flex, v_flex};
+use gpui::{
+    App, Context, Global, IntoElement, ParentElement, Point, Render, Styled, Window, div, px,
+};
+use gpui_component::{ActiveTheme, Icon, h_flex, v_flex};
 use ramag_app::ToolRegistry;
 
 const ITEM_HEIGHT: f32 = 40.0;
 pub(crate) const ACTIVITY_ITEM_GAP: f32 = 4.0;
+pub(crate) const DRAGGED_ITEM_OPACITY: f32 = 0.45;
 
 /// 拖拽工具入口时在首页和侧栏之间传递的最小数据。
 #[derive(Debug, Clone)]
@@ -291,12 +294,101 @@ pub(crate) fn persist_tool_order(registry: &ToolRegistry, cx: &mut App) {
     }
 }
 
-/// 拖拽只传递排序数据，不绘制跟随指针的卡片；按钮自身仍保留原有 tooltip。
-pub(crate) struct ToolDragPreviewPlaceholder;
+/// 拖拽预览保留来源工具的主要信息，并由 GPUI 按鼠标偏移绘制在最上层。
+#[derive(Clone)]
+pub(crate) struct ToolDragPreview {
+    surface: ToolDragSurface,
+    icon: Icon,
+    name: String,
+    description: String,
+    position: Point<gpui::Pixels>,
+}
 
-impl Render for ToolDragPreviewPlaceholder {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size(px(0.0))
+impl ToolDragPreview {
+    /// 创建固定尺寸拖拽预览；位置由 GPUI 的拖拽回调在开始拖动时补充。
+    pub(crate) fn new(
+        surface: ToolDragSurface,
+        icon: Icon,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            surface,
+            icon,
+            name: name.into(),
+            description: description.into(),
+            position: Point::default(),
+        }
+    }
+
+    /// 保存 GPUI 提供的光标偏移，使预览内容以光标为中心跟随移动。
+    pub(crate) fn position(mut self, position: Point<gpui::Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for ToolDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let border = theme.border;
+        let card_bg = theme.secondary;
+        let accent = theme.accent;
+        let foreground = theme.foreground;
+        let muted_foreground = theme.muted_foreground;
+
+        match self.surface {
+            ToolDragSurface::Home => div()
+                .pl(self.position.x - px(140.0))
+                .pt(self.position.y - px(56.0))
+                .child(
+                    v_flex()
+                        .w(px(280.0))
+                        .h(px(112.0))
+                        .p(px(20.0))
+                        .gap(px(10.0))
+                        .border_1()
+                        .border_color(border)
+                        .rounded(px(10.0))
+                        .bg(card_bg)
+                        .shadow_md()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(self.icon.clone().text_color(accent))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(foreground)
+                                        .child(self.name.clone()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted_foreground)
+                                .child(self.description.clone()),
+                        ),
+                ),
+            ToolDragSurface::ActivityBar => div()
+                .pl(self.position.x - px(24.0))
+                .pt(self.position.y - px(20.0))
+                .child(
+                    h_flex()
+                        .w(px(48.0))
+                        .h(px(40.0))
+                        .items_center()
+                        .justify_center()
+                        .border_1()
+                        .border_color(border)
+                        .rounded(px(6.0))
+                        .bg(card_bg)
+                        .shadow_md()
+                        .child(self.icon.clone().text_color(accent)),
+                ),
+        }
     }
 }
 

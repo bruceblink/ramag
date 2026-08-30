@@ -20,11 +20,11 @@ use ramag_app::{ToolRegistry, UpdateCheckResult};
 use crate::PointerDropdownMenu as _;
 use crate::icons;
 use crate::tool_layout::{
-    ACTIVITY_ITEM_GAP, ToolDrag, ToolDragGlobal, ToolDragPreviewPlaceholder, ToolDragSurface,
-    ToolDropSide, ToolLayoutGlobal, activity_drop_indicator, activity_drop_target_from_position,
-    activity_reorder_animation_offset, begin_tool_drag, clear_tool_drag,
-    notify_tool_layout_changed, persist_tool_order, tool_drag_display_slots, tool_drag_state,
-    tool_drop_index, update_tool_drop_target,
+    ACTIVITY_ITEM_GAP, DRAGGED_ITEM_OPACITY, ToolDrag, ToolDragGlobal, ToolDragPreview,
+    ToolDragSurface, ToolDropSide, ToolLayoutGlobal, activity_drop_indicator,
+    activity_drop_target_from_position, activity_reorder_animation_offset, begin_tool_drag,
+    clear_tool_drag, notify_tool_layout_changed, persist_tool_order, tool_drag_display_slots,
+    tool_drag_state, tool_drop_index, update_tool_drop_target,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,6 +170,7 @@ impl ActivityBar {
 }
 
 impl Render for ActivityBar {
+    /// 将持久化工具顺序绘制为侧栏入口，并同步拖拽占位线与来源入口反馈。
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let tools = self.registry.list();
@@ -210,7 +211,8 @@ impl Render for ActivityBar {
             };
             let id_for_click = id.clone();
             let is_selected = matches!(&selected, NavTarget::Tool(s) if s == id);
-            let item = activity_item(
+            let is_dragged = drag_state.dragged_id.as_deref() == Some(id.as_str());
+            let mut item = activity_item(
                 ActivityItemConfig {
                     id: format!("tool-{id}").into(),
                     icon: Self::icon_for_tool(id),
@@ -228,6 +230,9 @@ impl Render for ActivityBar {
                 },
                 cx,
             );
+            if is_dragged {
+                item = item.opacity(DRAGGED_ITEM_OPACITY);
+            }
             let offset = activity_reorder_animation_offset(&previous_slots, &display_slots, id);
             let item = if offset == px(0.0) {
                 item.into_any_element()
@@ -427,6 +432,8 @@ fn activity_item(
         show_badge,
     } = decoration;
     let transparent = hsla(0.0, 0.0, 0.0, 0.0);
+    let preview_icon = icon.clone();
+    let preview_name = tooltip.clone();
     let mut button = crate::clickable_button(id.clone()).ghost();
     button = if !show_badge {
         button.icon(icon)
@@ -457,9 +464,17 @@ fn activity_item(
         };
         item = item
             .cursor_move()
-            .on_drag(drag, move |drag, _, _, cx| {
+            .on_drag(drag, move |drag, position, _, cx| {
                 begin_tool_drag(&drag.id, ToolDragSurface::ActivityBar, source_index, cx);
-                cx.new(|_| ToolDragPreviewPlaceholder)
+                cx.new(|_| {
+                    ToolDragPreview::new(
+                        ToolDragSurface::ActivityBar,
+                        preview_icon.clone(),
+                        preview_name.to_string(),
+                        String::new(),
+                    )
+                    .position(position)
+                })
             })
             .on_drop(cx.listener(move |this, drag: &ToolDrag, _, cx| {
                 this.complete_drop(&drag.id, source_index, cx);

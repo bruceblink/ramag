@@ -16,11 +16,11 @@ use ramag_app::ToolRegistry;
 
 use crate::activity_bar::ActivityBar;
 use crate::tool_layout::{
-    HomeDropLayout, ToolDrag, ToolDragGlobal, ToolDragPreviewPlaceholder, ToolDragSurface,
-    ToolDropSide, ToolLayoutGlobal, begin_tool_drag, clear_tool_drag, home_drop_indicator,
-    home_drop_target_from_position, notify_tool_layout_changed, persist_tool_order,
-    tool_drag_display_slots, tool_drag_handle, tool_drag_state, tool_drop_index,
-    update_tool_drop_target,
+    DRAGGED_ITEM_OPACITY, HomeDropLayout, ToolDrag, ToolDragGlobal, ToolDragPreview,
+    ToolDragSurface, ToolDropSide, ToolLayoutGlobal, begin_tool_drag, clear_tool_drag,
+    home_drop_indicator, home_drop_target_from_position, notify_tool_layout_changed,
+    persist_tool_order, tool_drag_display_slots, tool_drag_handle, tool_drag_state,
+    tool_drop_index, update_tool_drop_target,
 };
 
 #[derive(Debug, Clone)]
@@ -81,6 +81,7 @@ impl HomeView {
 }
 
 impl Render for HomeView {
+    /// 将持久化工具顺序绘制为首页网格，并同步拖拽占位线与来源卡片反馈。
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -137,9 +138,13 @@ impl Render for HomeView {
             let name = tool.meta().name.clone();
             let description = tool.meta().description.clone();
             let icon = ActivityBar::icon_for_tool(id);
+            let preview_icon = icon.clone();
+            let preview_name = name.clone();
+            let preview_description = description.clone();
             let drag = ToolDrag { id: id.clone() };
+            let is_dragged = drag_state.dragged_id.as_deref() == Some(id.as_str());
 
-            let card = v_flex()
+            let mut card = v_flex()
                 .id(card_id)
                 .w(px(TOOL_CARD_WIDTH))
                 .h(px(TOOL_CARD_HEIGHT))
@@ -155,9 +160,17 @@ impl Render for HomeView {
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     cx.emit(HomeEvent::OpenTool(id_for_click.clone()));
                 }))
-                .on_drag(drag, move |drag, _, _, cx| {
+                .on_drag(drag, move |drag, position, _, cx| {
                     begin_tool_drag(&drag.id, ToolDragSurface::Home, source_index, cx);
-                    cx.new(|_| ToolDragPreviewPlaceholder)
+                    cx.new(|_| {
+                        ToolDragPreview::new(
+                            ToolDragSurface::Home,
+                            preview_icon.clone(),
+                            preview_name.clone(),
+                            preview_description.clone(),
+                        )
+                        .position(position)
+                    })
                 })
                 .on_drop(cx.listener(move |this, drag: &ToolDrag, _, cx| {
                     this.complete_drop(&drag.id, source_index, cx);
@@ -183,6 +196,9 @@ impl Render for HomeView {
                         .right(px(10.0))
                         .child(tool_drag_handle(accent.opacity(0.65))),
                 );
+            if is_dragged {
+                card = card.opacity(DRAGGED_ITEM_OPACITY);
+            }
             let (from_x, from_y) =
                 reorder_animation_offset(&previous_slots, &display_slots, id, columns);
             let card = if from_x == px(0.0) && from_y == px(0.0) {
