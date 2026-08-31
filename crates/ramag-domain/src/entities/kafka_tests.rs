@@ -336,6 +336,54 @@ fn acl_validation_requires_exact_non_empty_target_fields() {
 }
 
 #[test]
+fn topic_admin_requests_reject_internal_zero_and_oversized_values() {
+    let create = KafkaTopicCreateRequest::new("events", 3, 1);
+    assert!(create.validate().is_ok());
+
+    assert!(
+        KafkaTopicCreateRequest::new("__consumer_offsets", 1, 1)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        KafkaTopicCreateRequest::new("events", 0, 1)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        KafkaTopicCreateRequest::new("events", MAX_KAFKA_PARTITIONS + 1, 1)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        KafkaTopicCreateRequest::new("events", 1, MAX_KAFKA_REPLICAS + 1)
+            .validate()
+            .is_err()
+    );
+
+    assert!(
+        KafkaTopicPartitionExpansion::new("events", 4)
+            .validate()
+            .is_ok()
+    );
+    assert!(
+        KafkaTopicPartitionExpansion::new("__consumer_offsets", 4)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        KafkaTopicPartitionExpansion::new("events", 0)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        KafkaTopicPartitionExpansion::new("events", MAX_KAFKA_PARTITIONS + 1)
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
 fn serde_defaults_keep_new_optional_metadata_compatible() -> Result<(), serde_json::Error> {
     let config = serde_json::from_str::<KafkaClusterConfig>(
         r#"{"id":"00000000-0000-0000-0000-000000000000","name":"local","bootstrap_servers":["localhost:9092"]}"#,

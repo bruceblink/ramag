@@ -292,6 +292,35 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     click(visual_cx, "kafka-welcome-add");
     visual_cx.run_until_parked();
     assert!(visual_cx.debug_bounds("kafka-config").is_some());
+    let Some(config_bounds) = visual_cx.debug_bounds("kafka-config") else {
+        return;
+    };
+    assert!(
+        visual_cx.debug_bounds("kafka-admin-mode-panel").is_some(),
+        "Topic 管理模式面板应参与布局"
+    );
+    let Some(admin_panel_bounds) = visual_cx.debug_bounds("kafka-admin-mode-panel") else {
+        return;
+    };
+    assert!(
+        visual_cx.debug_bounds("kafka-admin-mode-copy").is_some(),
+        "Topic 管理模式说明应参与布局"
+    );
+    let Some(admin_copy_bounds) = visual_cx.debug_bounds("kafka-admin-mode-copy") else {
+        return;
+    };
+    assert!(
+        config_bounds.size.width >= px(700.0),
+        "配置页内容宽度过小: {config_bounds:?}"
+    );
+    assert!(
+        admin_panel_bounds.size.width >= px(600.0),
+        "管理模式面板宽度过小: {admin_panel_bounds:?}"
+    );
+    assert!(
+        admin_copy_bounds.size.width >= px(300.0),
+        "管理模式说明被压缩: {admin_copy_bounds:?}"
+    );
     assert!(kafka_entity.read_with(visual_cx, |view, _| {
         view.section == KafkaSection::Config
     }));
@@ -380,6 +409,34 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     assert!(
         visual_cx.debug_bounds("ramag-confirm-ok").is_some(),
         "创建 Topic 前必须显示确认对话框"
+    );
+    click(visual_cx, "ramag-confirm-cancel");
+    visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("ramag-confirm-ok").is_none());
+
+    visual_cx.update(|window, app| {
+        kafka_entity.update(app, |view, cx| {
+            view.topic_target_partitions
+                .update(cx, |input, cx| input.set_value("2", window, cx));
+            cx.notify();
+        });
+    });
+    visual_cx.run_until_parked();
+    click(visual_cx, "kafka-topic-expand");
+    visual_cx.run_until_parked();
+    assert!(
+        visual_cx.debug_bounds("ramag-confirm-ok").is_some(),
+        "扩容 Topic 前必须显示确认对话框"
+    );
+    click(visual_cx, "ramag-confirm-cancel");
+    visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("ramag-confirm-ok").is_none());
+
+    click(visual_cx, "kafka-topic-delete");
+    visual_cx.run_until_parked();
+    assert!(
+        visual_cx.debug_bounds("ramag-confirm-ok").is_some(),
+        "删除 Topic 前必须显示确认对话框"
     );
     click(visual_cx, "ramag-confirm-cancel");
     visual_cx.run_until_parked();

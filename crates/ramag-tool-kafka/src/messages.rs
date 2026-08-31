@@ -256,6 +256,13 @@ impl KafkaView {
         self.invalidate_message_request();
         self.selected_topic = Some(topic.clone());
         set_value(&self.topic_input, topic, window, cx);
+        let target_partitions = self
+            .selected_topic
+            .as_ref()
+            .and_then(|name| self.topics.iter().find(|candidate| &candidate.name == name))
+            .map(|topic| topic.partitions.len().saturating_add(1).to_string())
+            .unwrap_or_default();
+        set_value(&self.topic_target_partitions, target_partitions, window, cx);
         self.message_page = None;
         self.selected_message = None;
         self.notice = None;

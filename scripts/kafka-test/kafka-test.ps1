@@ -19,7 +19,7 @@ $TopicName = "ramag.integration.messages"
 if (-not (Test-Path -LiteralPath $ToolchainHelper -PathType Leaf)) {
     throw "MSVC toolchain helper is missing: $ToolchainHelper"
 }
-. $ToolchainHelper
+    . $ToolchainHelper
 
 function Write-TestLog {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -181,8 +181,10 @@ function Run-RustIntegrationTest {
     $VisualStudio = Get-VisualStudio18Toolchain
 
     try {
-        $cargoCommand = 'call "{0}" >nul && set "CMAKE_GENERATOR=NMake Makefiles" && set "CMAKE_GENERATOR_PLATFORM=" && set "CMAKE_GENERATOR_INSTANCE=" && set "CMAKE_GENERATOR_TOOLSET=" && set "RUSTFLAGS=-C target-feature=-crt-static" && cargo test --offline --locked -p ramag-infra-kafka --no-default-features --features cmake-build --test docker_kafka' -f `
-            $VisualStudio.VcVars64
+        $vcVarsArguments = $VisualStudio.VcVarsArguments -join " "
+        $cargoCommand = 'call "{0}" {1} >nul && set "CC=" && set "CXX=" && set "AR=" && set "HOST_CC=" && set "HOST_CXX=" && set "HOST_AR=" && set "CMAKE_GENERATOR=NMake Makefiles" && set "CMAKE_GENERATOR_PLATFORM=" && set "CMAKE_GENERATOR_INSTANCE=" && set "CMAKE_GENERATOR_TOOLSET=" && set "RUSTFLAGS=-C target-feature=-crt-static" && cargo test --offline --locked -p ramag-infra-kafka --no-default-features --features cmake-build --test docker_kafka' -f `
+            $VisualStudio.VcVars64,
+            $vcVarsArguments
         & cmd.exe /d /s /c $cargoCommand
         if ($LASTEXITCODE -ne 0) {
             throw "Rust Kafka integration test failed with exit code $LASTEXITCODE"

@@ -18,9 +18,79 @@ impl KafkaView {
             .child(
                 v_flex()
                     .w_full()
+                    .min_w_0()
                     .max_w(px(900.0))
                     .gap(px(18.0))
                     .child(section_heading("集群配置", "配置保存在本机；认证字段由 Storage 加密保存", &theme))
+                    .child(
+                        h_flex()
+                            .id("kafka-admin-mode-panel")
+                            .debug_selector(|| "kafka-admin-mode-panel".into())
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(12.0))
+                            .px(px(12.0))
+                            .py(px(10.0))
+                            .border_1()
+                            .border_color(if self.read_only.allows_admin() {
+                                theme.warning.opacity(0.45)
+                            } else {
+                                theme.border
+                            })
+                            .rounded(px(6.0))
+                            .child(
+                                v_flex()
+                                    .id("kafka-admin-mode-copy")
+                                    .debug_selector(|| "kafka-admin-mode-copy".into())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(3.0))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child("Topic 管理模式"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(if self.read_only.allows_admin() {
+                                                "已允许创建、删除和增加 Partition；每次操作仍需确认"
+                                            } else {
+                                                "默认只读；关闭后不会调用 Kafka Admin API"
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(if self.read_only.allows_admin() {
+                                                theme.warning
+                                            } else {
+                                                theme.muted_foreground
+                                            })
+                                            .child(if self.read_only.allows_admin() {
+                                                "管理已启用"
+                                            } else {
+                                                "只读保护"
+                                            }),
+                                    )
+                                    .child(
+                                        ramag_ui::clickable_switch("kafka-admin-mode")
+                                            .checked(self.read_only.allows_admin())
+                                            .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                                this.toggle_admin_mode(cx);
+                                            })),
+                                    ),
+                            ),
+                    )
                     .child(
                         h_flex()
                             .w_full()
@@ -80,7 +150,7 @@ impl KafkaView {
                                 div()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
-                                    .child("Kafka 页面仅执行元数据和有界消息读取，不生产消息、不提交消费位点。"),
+                                    .child("Kafka 消息浏览不会生产消息或提交消费位点；Topic 管理写操作需要单独确认。"),
                             ),
                     )
                     .child(

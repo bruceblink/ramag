@@ -19,6 +19,16 @@ impl KafkaView {
         } else {
             ("未连接", theme.muted_foreground)
         };
+        let admin_mode_label = if self.read_only.allows_admin() {
+            "管理已启用"
+        } else {
+            "只读"
+        };
+        let admin_mode_color = if self.read_only.allows_admin() {
+            theme.warning
+        } else {
+            theme.muted_foreground
+        };
         // 新建草稿尚未分配集群 ID，但必须先显示配置表单；只有初始概览才显示欢迎页。
         let show_welcome = selected.is_none() && self.section != KafkaSection::Config;
         let body = if show_welcome {
@@ -81,10 +91,14 @@ impl KafkaView {
                                     .px(px(8.0))
                                     .py(px(3.0))
                                     .rounded(px(4.0))
-                                    .bg(theme.muted.opacity(0.65))
+                                    .bg(if self.read_only.allows_admin() {
+                                        theme.warning.opacity(0.12)
+                                    } else {
+                                        theme.muted.opacity(0.65)
+                                    })
                                     .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child("只读"),
+                                    .text_color(admin_mode_color)
+                                    .child(admin_mode_label),
                             )
                             .when(selected.is_some(), |row| {
                                 row.child(
@@ -93,7 +107,12 @@ impl KafkaView {
                                         .small()
                                         .icon(IconName::CircleCheck)
                                         .label("测试连接")
-                                        .disabled(self.testing || self.saving || self.deleting)
+                                        .disabled(
+                                            self.testing
+                                                || self.saving
+                                                || self.deleting
+                                                || self.topic_operation,
+                                        )
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 this.test_connection(window, cx);
@@ -107,7 +126,11 @@ impl KafkaView {
                                     .small()
                                     .icon(IconName::Search)
                                     .tooltip("刷新元数据")
-                                    .disabled(self.loading_runtime || selected.is_none())
+                                    .disabled(
+                                        self.loading_runtime
+                                            || selected.is_none()
+                                            || self.topic_operation,
+                                    )
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         if let Some(config) = this.selected_config() {
                                             this.load_runtime(config, window, cx);

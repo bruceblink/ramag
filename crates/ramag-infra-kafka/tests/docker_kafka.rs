@@ -4,8 +4,10 @@
 use chrono::{Duration, Utc};
 use ramag_domain::entities::{
     KafkaClusterConfig, KafkaMessageQuery, KafkaMessageSearchField, KafkaMessageSearchQuery,
+    KafkaReadOnlyState, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
 };
-use ramag_domain::traits::KafkaDriver;
+use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE};
+use ramag_domain::traits::{KafkaAdminDriver, KafkaDriver};
 use ramag_infra_kafka::RdkafkaDriver;
 use std::env;
 
@@ -145,4 +147,93 @@ fn docker_kafka_reads_and_searches_seeded_fixture() {
     };
     assert!(bounded_page.records.len() <= 1);
     assert!(bounded_page.scanned_records <= 1);
+}
+
+/// Executes the production Admin API against a unique Docker topic and verifies
+/// create, increase-partitions, metadata refresh, and delete as one sequence.
+#[test]
+fn docker_kafka_manages_topic_with_admin_api() {
+    let bootstrap = env::var("RAMAG_TEST_KAFKA_BOOTSTRAP").unwrap_or_default();
+    let driver = RdkafkaDriver::new();
+
+    let read_only_config = KafkaClusterConfig::new("ramag-docker-kafka", vec![bootstrap.clone()]);
+    let read_only_request = KafkaTopicCreateRequest::new("ramag.integration.read-only", 1, 1);
+    let read_only_result =
+        smol::block_on(driver.create_topic(&read_only_config, &read_only_request));
+    assert!(matches!(
+        read_only_result,
+        Err(DomainError::Forbidden(message)) if message == READ_ONLY_MESSAGE
+    ));
+
+    let mut config = KafkaClusterConfig::new("ramag-docker-kafka-admin", vec![bootstrap]);
+    config.read_only = KafkaReadOnlyState::ReadWrite;
+    let topic = format!("ramag.integration.admin.{}", uuid::Uuid::new_v4().simple());
+    let create_request = KafkaTopicCreateRequest::new(&topic, 2, 1);
+    let create_result = smol::block_on(driver.create_topic(&config, &create_request));
+    assert!(
+        create_result.is_ok(),
+        "Docker Kafka Admin API should create a topic: {create_result:?}"
+    );
+    if create_result.is_err() {
+        return;
+    }
+
+    let created_topics = smol::block_on(driver.list_topics(&config));
+    assert!(
+        created_topics.is_ok(),
+        "created topic metadata should be readable: {created_topics:?}"
+    );
+    let Some(created_topic) = created_topics
+        .ok()
+        .and_then(|topics| topics.into_iter().find(|candidate| candidate.name == topic))
+    else {
+        let _ = smol::block_on(driver.delete_topic(&config, &topic));
+        panic!("created topic should appear in refreshed metadata");
+    };
+    assert_eq!(created_topic.partitions.len(), 2);
+
+    let expansion = KafkaTopicPartitionExpansion::new(&topic, 3);
+    let expand_result = smol::block_on(driver.increase_topic_partitions(&config, &expansion));
+    assert!(
+        expand_result.is_ok(),
+        "Docker Kafka Admin API should increase partitions: {expand_result:?}"
+    );
+    if expand_result.is_err() {
+        let _ = smol::block_on(driver.delete_topic(&config, &topic));
+        return;
+    }
+
+    let expanded_topics = smol::block_on(driver.list_topics(&config));
+    assert!(
+        expanded_topics.is_ok(),
+        "expanded topic metadata should be readable: {expanded_topics:?}"
+    );
+    let expanded_partition_count = expanded_topics.ok().and_then(|topics| {
+        topics
+            .into_iter()
+            .find(|candidate| candidate.name == topic)
+            .map(|candidate| candidate.partitions.len())
+    });
+    assert_eq!(expanded_partition_count, Some(3));
+
+    let delete_result = smol::block_on(driver.delete_topic(&config, &topic));
+    assert!(
+        delete_result.is_ok(),
+        "Docker Kafka Admin API should delete the topic: {delete_result:?}"
+    );
+    if delete_result.is_err() {
+        return;
+    }
+
+    let remaining_topics = smol::block_on(driver.list_topics(&config));
+    assert!(
+        remaining_topics.is_ok(),
+        "metadata should refresh after delete: {remaining_topics:?}"
+    );
+    assert!(
+        !remaining_topics
+            .unwrap_or_default()
+            .iter()
+            .any(|candidate| candidate.name == topic)
+    );
 }

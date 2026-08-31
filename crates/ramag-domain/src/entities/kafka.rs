@@ -2,6 +2,8 @@
 
 #[path = "kafka_acl.rs"]
 mod kafka_acl;
+#[path = "kafka_admin.rs"]
+mod kafka_admin;
 #[path = "kafka_config.rs"]
 mod kafka_config;
 #[path = "kafka_consumer.rs"]
@@ -16,6 +18,7 @@ mod kafka_validation;
 pub use kafka_acl::{
     KafkaAcl, KafkaAclOperation, KafkaAclPatternType, KafkaAclPermission, KafkaAclResourceType,
 };
+pub use kafka_admin::{KafkaTopicCreateRequest, KafkaTopicPartitionExpansion};
 pub use kafka_config::{
     KafkaClusterConfig, KafkaClusterId, KafkaReadOnlyState, KafkaSaslMechanism,
     KafkaSecurityProtocol, KafkaTlsConfig,
@@ -30,7 +33,8 @@ pub use kafka_message::{
 };
 pub use kafka_metadata::{KafkaBroker, KafkaClusterMetadata, KafkaPartition, KafkaTopic};
 pub use kafka_validation::{
-    preview_bytes, validate_kafka_bootstrap_server, validate_kafka_topic_name,
+    preview_bytes, validate_kafka_bootstrap_server, validate_kafka_managed_topic_name,
+    validate_kafka_topic_name,
 };
 
 pub const MAX_KAFKA_CLUSTER_NAME_BYTES: usize = 256;

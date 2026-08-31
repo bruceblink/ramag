@@ -1,4 +1,5 @@
 //! Kafka 基础设施层：使用 `rdkafka` 创建隔离的客户端，并将错误映射为安全领域错误。
+mod admin;
 #[cfg(feature = "cmake-build")]
 mod config;
 #[cfg(feature = "cmake-build")]
@@ -595,6 +596,5 @@ impl KafkaDriver for RdkafkaDriver {
             .await
     }
 }
-
 #[cfg(test)]
 mod tests;

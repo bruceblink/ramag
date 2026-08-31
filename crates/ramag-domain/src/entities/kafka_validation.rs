@@ -11,6 +11,15 @@ pub fn validate_kafka_topic_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 校验允许执行写操作的 Topic 名称；Kafka 内部 Topic 只能浏览，不能由工具管理。
+pub fn validate_kafka_managed_topic_name(name: &str) -> Result<(), String> {
+    validate_kafka_topic_name(name)?;
+    if name.starts_with("__") {
+        return Err("不能管理 Kafka 内部 Topic".into());
+    }
+    Ok(())
+}
+
 /// 校验用户输入的 Bootstrap Server，要求 `host:port` 或 `[ipv6]:port`。
 pub fn validate_kafka_bootstrap_server(server: &str) -> Result<(), String> {
     validate_required_text("Bootstrap Server", server, MAX_KAFKA_BOOTSTRAP_SERVER_BYTES)?;

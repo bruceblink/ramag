@@ -29,7 +29,9 @@ use ramag_domain::{
         DEFAULT_KAFKA_MAX_SCAN_SECONDS, KafkaClusterConfig, KafkaClusterId, KafkaClusterMetadata,
         KafkaMessagePage, KafkaMessageQuery, KafkaMessageRecord, KafkaMessageSearchField,
         KafkaMessageSearchQuery, KafkaReadOnlyState, KafkaSaslMechanism, KafkaSecurityProtocol,
-        KafkaTlsConfig, KafkaTopic, MAX_KAFKA_QUERY_PARTITIONS, MAX_KAFKA_SCAN_RECORDS,
+        KafkaTlsConfig, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+        MAX_KAFKA_PARTITIONS, MAX_KAFKA_QUERY_PARTITIONS, MAX_KAFKA_REPLICAS,
+        MAX_KAFKA_SCAN_RECORDS,
     },
     traits::{Tool, ToolMeta},
 };
@@ -138,6 +140,10 @@ pub struct KafkaView {
     client_key_path: Entity<InputState>,
     topic_input: Entity<InputState>,
     partition_input: Entity<InputState>,
+    topic_create_name: Entity<InputState>,
+    topic_create_partitions: Entity<InputState>,
+    topic_create_replication_factor: Entity<InputState>,
+    topic_target_partitions: Entity<InputState>,
     start_offset_input: Entity<InputState>,
     end_offset_input: Entity<InputState>,
     start_time_input: Entity<InputState>,
@@ -147,6 +153,7 @@ pub struct KafkaView {
     range_mode: KafkaRangeMode,
     security_protocol: KafkaSecurityProtocol,
     sasl_mechanism: KafkaSaslMechanism,
+    read_only: KafkaReadOnlyState,
     loading_clusters: bool,
     loading_runtime: bool,
     loading_messages: bool,
@@ -156,6 +163,8 @@ pub struct KafkaView {
     exporting: bool,
     runtime_request_id: u64,
     message_request_id: u64,
+    topic_operation_id: u64,
+    topic_operation: bool,
     notice: Option<(String, bool)>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -199,6 +208,10 @@ impl KafkaView {
         let client_key_path = input(window, cx, 32 * 1024, "客户端密钥路径（可选）", false, "");
         let topic_input = input(window, cx, 249, "Topic", false, "");
         let partition_input = input(window, cx, 4 * 1024, "Partition，例如 0,1,2", false, "0");
+        let topic_create_name = input(window, cx, 249, "新 Topic 名称", false, "");
+        let topic_create_partitions = input(window, cx, 32, "初始 Partition 数量", false, "1");
+        let topic_create_replication_factor = input(window, cx, 32, "副本因子", false, "1");
+        let topic_target_partitions = input(window, cx, 32, "目标 Partition 总数", false, "");
         let start_offset_input = input(window, cx, 32, "起始 Offset（可选）", false, "0");
         let end_offset_input = input(window, cx, 32, "结束 Offset（可选）", false, "");
         let start_time_input = input(window, cx, 64, "起始时间 RFC3339（可选）", false, "");
@@ -221,6 +234,10 @@ impl KafkaView {
             &client_key_path,
             &topic_input,
             &partition_input,
+            &topic_create_name,
+            &topic_create_partitions,
+            &topic_create_replication_factor,
+            &topic_target_partitions,
             &start_offset_input,
             &end_offset_input,
             &start_time_input,
@@ -259,6 +276,10 @@ impl KafkaView {
             client_key_path,
             topic_input,
             partition_input,
+            topic_create_name,
+            topic_create_partitions,
+            topic_create_replication_factor,
+            topic_target_partitions,
             start_offset_input,
             end_offset_input,
             start_time_input,
@@ -268,6 +289,7 @@ impl KafkaView {
             range_mode: KafkaRangeMode::Offset,
             security_protocol: KafkaSecurityProtocol::default(),
             sasl_mechanism: KafkaSaslMechanism::Plain,
+            read_only: KafkaReadOnlyState::default(),
             loading_clusters: true,
             loading_runtime: false,
             loading_messages: false,
@@ -277,6 +299,8 @@ impl KafkaView {
             exporting: false,
             runtime_request_id: 0,
             message_request_id: 0,
+            topic_operation_id: 0,
+            topic_operation: false,
             notice: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -288,6 +312,7 @@ impl KafkaView {
 
 mod helpers;
 use helpers::*;
+mod admin;
 mod messages;
 mod profile;
 mod render_config;

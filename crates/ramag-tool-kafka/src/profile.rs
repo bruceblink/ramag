@@ -52,6 +52,7 @@ impl KafkaView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.read_only = config.read_only;
         set_value(&self.name, config.name.clone(), window, cx);
         set_value(
             &self.bootstrap_servers,
@@ -115,10 +116,15 @@ impl KafkaView {
             window,
             cx,
         );
+        set_value(&self.topic_create_name, "", window, cx);
+        set_value(&self.topic_create_partitions, "1", window, cx);
+        set_value(&self.topic_create_replication_factor, "1", window, cx);
+        set_value(&self.topic_target_partitions, "", window, cx);
     }
 
     pub(super) fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.invalidate_message_request();
+        self.invalidate_topic_operation();
         self.selected_cluster_id = None;
         self.selected_topic = None;
         self.metadata = None;
@@ -128,6 +134,7 @@ impl KafkaView {
         self.section = KafkaSection::Config;
         self.security_protocol = KafkaSecurityProtocol::default();
         self.sasl_mechanism = KafkaSaslMechanism::Plain;
+        self.read_only = KafkaReadOnlyState::default();
         for field in [
             &self.name,
             &self.bootstrap_servers,
@@ -139,9 +146,13 @@ impl KafkaView {
             &self.client_cert_path,
             &self.client_key_path,
             &self.topic_input,
+            &self.topic_create_name,
+            &self.topic_target_partitions,
         ] {
             set_value(field, "", window, cx);
         }
+        set_value(&self.topic_create_partitions, "1", window, cx);
+        set_value(&self.topic_create_replication_factor, "1", window, cx);
         self.bootstrap_servers.update(cx, |state, cx| {
             state.set_placeholder("broker-1:9092, broker-2:9092", window, cx);
         });
@@ -164,6 +175,7 @@ impl KafkaView {
         self.invalidate_message_request();
         self.selected_cluster_id = Some(id);
         self.selected_topic = None;
+        self.invalidate_topic_operation();
         self.metadata = None;
         self.topics.clear();
         self.message_page = None;
@@ -204,7 +216,7 @@ impl KafkaView {
             config.sasl_username = None;
             config.sasl_password = None;
         }
-        config.read_only = KafkaReadOnlyState::ReadOnly;
+        config.read_only = self.read_only;
         config
             .validate()
             .map(|()| config)
@@ -400,6 +412,7 @@ impl KafkaView {
                         this.message_page = None;
                         this.selected_message = None;
                         this.section = KafkaSection::Overview;
+                        this.invalidate_topic_operation();
                         this.notice = Some(("本地 Kafka 配置已删除".into(), false));
                     }
                     Err(error) => {

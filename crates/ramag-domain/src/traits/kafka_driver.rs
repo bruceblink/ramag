@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::entities::{
     KafkaClusterConfig, KafkaClusterMetadata, KafkaMessagePage, KafkaMessageQuery,
-    KafkaMessageSearchQuery, KafkaTopic,
+    KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
 };
 use crate::error::Result;
 
@@ -56,6 +56,32 @@ pub trait KafkaAdminDriver: Send + Sync {
     async fn test_admin_connection(&self, _config: &KafkaClusterConfig) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "test_admin_connection".into(),
+        ))
+    }
+
+    async fn create_topic(
+        &self,
+        _config: &KafkaClusterConfig,
+        _request: &KafkaTopicCreateRequest,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "create_topic".into(),
+        ))
+    }
+
+    async fn delete_topic(&self, _config: &KafkaClusterConfig, _topic: &str) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "delete_topic".into(),
+        ))
+    }
+
+    async fn increase_topic_partitions(
+        &self,
+        _config: &KafkaClusterConfig,
+        _request: &KafkaTopicPartitionExpansion,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "increase_topic_partitions".into(),
         ))
     }
 }

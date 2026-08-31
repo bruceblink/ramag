@@ -75,8 +75,9 @@ pub use kafka::{
     KafkaConsumerPartitionAssignment, KafkaMessageHeader, KafkaMessagePage, KafkaMessageQuery,
     KafkaMessageRecord, KafkaMessageSearchField, KafkaMessageSearchQuery, KafkaPartition,
     KafkaReadOnlyState, KafkaSaslMechanism, KafkaSecurityProtocol, KafkaTextPreview,
-    KafkaTlsConfig, KafkaTopic, MAX_KAFKA_ACL_HOST_BYTES, MAX_KAFKA_ACL_RESOURCE_NAME_BYTES,
-    MAX_KAFKA_ACLS, MAX_KAFKA_BOOTSTRAP_SERVER_BYTES, MAX_KAFKA_BOOTSTRAP_SERVERS,
+    KafkaTlsConfig, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+    MAX_KAFKA_ACL_HOST_BYTES, MAX_KAFKA_ACL_RESOURCE_NAME_BYTES, MAX_KAFKA_ACLS,
+    MAX_KAFKA_BOOTSTRAP_SERVER_BYTES, MAX_KAFKA_BOOTSTRAP_SERVERS,
     MAX_KAFKA_BOOTSTRAP_SERVERS_BYTES, MAX_KAFKA_BROKERS, MAX_KAFKA_CLIENT_ID_BYTES,
     MAX_KAFKA_CLUSTER_ID_BYTES, MAX_KAFKA_CLUSTER_NAME_BYTES, MAX_KAFKA_CLUSTERS,
     MAX_KAFKA_CONCURRENT_PARTITIONS, MAX_KAFKA_CONSUMER_GROUPS, MAX_KAFKA_GROUP_MEMBERS,
@@ -86,7 +87,7 @@ pub use kafka::{
     MAX_KAFKA_REPLICAS, MAX_KAFKA_SASL_PASSWORD_BYTES, MAX_KAFKA_SASL_USERNAME_BYTES,
     MAX_KAFKA_SCAN_BYTES, MAX_KAFKA_SCAN_RECORDS, MAX_KAFKA_SCAN_SECONDS, MAX_KAFKA_TLS_PATH_BYTES,
     MAX_KAFKA_TOPIC_NAME_BYTES, MAX_KAFKA_TOPICS, MAX_KAFKA_VERSION_BYTES, preview_bytes,
-    validate_kafka_bootstrap_server, validate_kafka_topic_name,
+    validate_kafka_bootstrap_server, validate_kafka_managed_topic_name, validate_kafka_topic_name,
 };
 pub use mongo::{
     InsertManyOutcome, MAX_MONGO_COLLECTION_NAME_BYTES, MAX_MONGO_DATABASE_NAME_BYTES,

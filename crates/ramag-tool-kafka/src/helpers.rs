@@ -139,16 +139,17 @@ pub(super) fn parse_usize_input(
 
 pub(super) fn field<E: IntoElement>(label: &'static str, input: E, width: f32) -> impl IntoElement {
     let control = if width > 0.0 {
-        div().w(px(width)).child(input)
+        div().w(px(width)).flex_none().child(input)
     } else {
-        div().flex_1().min_w_0().child(input)
+        div().w_full().min_w_0().child(input)
     };
     v_flex()
         .flex_none()
         .gap(px(5.0))
-        .when(width == 0.0, |this| this.flex_1().min_w_0())
+        .when(width == 0.0, |this| this.w_full().flex_1().min_w_0())
         .child(
             div()
+                .w_full()
                 .text_xs()
                 .text_color(gpui::hsla(0.0, 0.0, 0.5, 1.0))
                 .child(label),
@@ -162,6 +163,7 @@ pub(super) fn section_heading(
     theme: &gpui_component::Theme,
 ) -> impl IntoElement {
     v_flex()
+        .w_full()
         .gap(px(2.0))
         .child(
             div()
