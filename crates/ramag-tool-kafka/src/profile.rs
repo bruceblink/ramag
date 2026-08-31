@@ -52,6 +52,7 @@ impl KafkaView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_config_request();
         self.read_only = config.read_only;
         set_value(&self.name, config.name.clone(), window, cx);
         set_value(
@@ -120,11 +121,20 @@ impl KafkaView {
         set_value(&self.topic_create_partitions, "1", window, cx);
         set_value(&self.topic_create_replication_factor, "1", window, cx);
         set_value(&self.topic_target_partitions, "", window, cx);
+        self.config_resource_type = KafkaConfigResourceType::Topic;
+        set_value(
+            &self.config_resource_name,
+            self.selected_topic.clone().unwrap_or_default(),
+            window,
+            cx,
+        );
+        set_value(&self.config_value, "", window, cx);
     }
 
     pub(super) fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.invalidate_message_request();
         self.invalidate_topic_operation();
+        self.invalidate_config_request();
         self.selected_cluster_id = None;
         self.selected_topic = None;
         self.metadata = None;
@@ -145,6 +155,8 @@ impl KafkaView {
             &self.ca_cert_path,
             &self.client_cert_path,
             &self.client_key_path,
+            &self.config_resource_name,
+            &self.config_value,
             &self.topic_input,
             &self.topic_create_name,
             &self.topic_target_partitions,

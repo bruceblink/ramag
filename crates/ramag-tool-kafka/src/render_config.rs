@@ -20,7 +20,7 @@ impl KafkaView {
                 v_flex()
                     .w_full()
                     .min_w_0()
-                    .max_w(px(900.0))
+                    .max_w(px(1280.0))
                     .gap(px(18.0))
                     .child(section_heading("集群配置", "配置保存在本机；认证字段由 Storage 加密保存", &theme))
                     .child(
@@ -194,6 +194,7 @@ impl KafkaView {
                             .child("保存后可在右上角测试连接；未保存的表单也可以直接测试，不会自动写入本机。"),
                     ),
             )
+            .child(self.render_remote_config(window, cx))
     }
 
     pub(super) fn render_protocols(&self, cx: &mut Context<Self>) -> impl IntoElement {

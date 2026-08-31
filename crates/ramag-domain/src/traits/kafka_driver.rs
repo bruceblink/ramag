@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    KafkaClusterConfig, KafkaClusterMetadata, KafkaMessagePage, KafkaMessageQuery,
-    KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+    KafkaClusterConfig, KafkaClusterMetadata, KafkaConfigResource, KafkaConfigResourceType,
+    KafkaConfigUpdateRequest, KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery,
+    KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
 };
 use crate::error::Result;
 
@@ -82,6 +83,27 @@ pub trait KafkaAdminDriver: Send + Sync {
     ) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "increase_topic_partitions".into(),
+        ))
+    }
+
+    async fn describe_configs(
+        &self,
+        _config: &KafkaClusterConfig,
+        _resource_type: KafkaConfigResourceType,
+        _resource_name: &str,
+    ) -> Result<KafkaConfigResource> {
+        Err(crate::error::DomainError::NotImplemented(
+            "describe_configs".into(),
+        ))
+    }
+
+    async fn update_config(
+        &self,
+        _config: &KafkaClusterConfig,
+        _request: &KafkaConfigUpdateRequest,
+    ) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "update_config".into(),
         ))
     }
 }

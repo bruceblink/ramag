@@ -27,11 +27,13 @@ use ramag_domain::{
     entities::{
         DEFAULT_KAFKA_MAX_BYTES, DEFAULT_KAFKA_MAX_CONCURRENT_PARTITIONS,
         DEFAULT_KAFKA_MAX_SCAN_SECONDS, KafkaClusterConfig, KafkaClusterId, KafkaClusterMetadata,
-        KafkaMessagePage, KafkaMessageQuery, KafkaMessageRecord, KafkaMessageSearchField,
-        KafkaMessageSearchQuery, KafkaReadOnlyState, KafkaSaslMechanism, KafkaSecurityProtocol,
-        KafkaTlsConfig, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
-        MAX_KAFKA_PARTITIONS, MAX_KAFKA_QUERY_PARTITIONS, MAX_KAFKA_REPLICAS,
-        MAX_KAFKA_SCAN_RECORDS,
+        KafkaConfigEntry, KafkaConfigResourceType, KafkaConfigUpdateOperation,
+        KafkaConfigUpdateRequest, KafkaMessagePage, KafkaMessageQuery, KafkaMessageRecord,
+        KafkaMessageSearchField, KafkaMessageSearchQuery, KafkaReadOnlyState, KafkaSaslMechanism,
+        KafkaSecurityProtocol, KafkaTlsConfig, KafkaTopic, KafkaTopicCreateRequest,
+        KafkaTopicPartitionExpansion, MAX_KAFKA_CONFIG_RESOURCE_NAME_BYTES,
+        MAX_KAFKA_CONFIG_VALUE_BYTES, MAX_KAFKA_PARTITIONS, MAX_KAFKA_QUERY_PARTITIONS,
+        MAX_KAFKA_REPLICAS, MAX_KAFKA_SCAN_RECORDS,
     },
     traits::{Tool, ToolMeta},
 };
@@ -138,6 +140,8 @@ pub struct KafkaView {
     ca_cert_path: Entity<InputState>,
     client_cert_path: Entity<InputState>,
     client_key_path: Entity<InputState>,
+    config_resource_name: Entity<InputState>,
+    config_value: Entity<InputState>,
     topic_input: Entity<InputState>,
     partition_input: Entity<InputState>,
     topic_create_name: Entity<InputState>,
@@ -153,16 +157,22 @@ pub struct KafkaView {
     range_mode: KafkaRangeMode,
     security_protocol: KafkaSecurityProtocol,
     sasl_mechanism: KafkaSaslMechanism,
+    config_resource_type: KafkaConfigResourceType,
+    config_entries: Vec<KafkaConfigEntry>,
+    editing_config_key: Option<String>,
     read_only: KafkaReadOnlyState,
     loading_clusters: bool,
     loading_runtime: bool,
     loading_messages: bool,
+    loading_configs: bool,
     testing: bool,
     saving: bool,
     deleting: bool,
+    updating_config: bool,
     exporting: bool,
     runtime_request_id: u64,
     message_request_id: u64,
+    config_request_id: u64,
     topic_operation_id: u64,
     topic_operation: bool,
     notice: Option<(String, bool)>,
@@ -206,6 +216,22 @@ impl KafkaView {
         let ca_cert_path = input(window, cx, 32 * 1024, "CA 证书路径（可选）", false, "");
         let client_cert_path = input(window, cx, 32 * 1024, "客户端证书路径（可选）", false, "");
         let client_key_path = input(window, cx, 32 * 1024, "客户端密钥路径（可选）", false, "");
+        let config_resource_name = input(
+            window,
+            cx,
+            MAX_KAFKA_CONFIG_RESOURCE_NAME_BYTES,
+            "Topic 名称或 Broker ID",
+            false,
+            "",
+        );
+        let config_value = input(
+            window,
+            cx,
+            MAX_KAFKA_CONFIG_VALUE_BYTES,
+            "配置值",
+            false,
+            "",
+        );
         let topic_input = input(window, cx, 249, "Topic", false, "");
         let partition_input = input(window, cx, 4 * 1024, "Partition，例如 0,1,2", false, "0");
         let topic_create_name = input(window, cx, 249, "新 Topic 名称", false, "");
@@ -232,6 +258,7 @@ impl KafkaView {
             &ca_cert_path,
             &client_cert_path,
             &client_key_path,
+            &config_value,
             &topic_input,
             &partition_input,
             &topic_create_name,
@@ -251,6 +278,16 @@ impl KafkaView {
                 }
             }));
         }
+        subscriptions.push(cx.subscribe(
+            &config_resource_name,
+            |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.invalidate_config_request();
+                    this.notice = None;
+                    cx.notify();
+                }
+            },
+        ));
 
         let mut this = Self {
             service,
@@ -274,6 +311,8 @@ impl KafkaView {
             ca_cert_path,
             client_cert_path,
             client_key_path,
+            config_resource_name,
+            config_value,
             topic_input,
             partition_input,
             topic_create_name,
@@ -289,16 +328,22 @@ impl KafkaView {
             range_mode: KafkaRangeMode::Offset,
             security_protocol: KafkaSecurityProtocol::default(),
             sasl_mechanism: KafkaSaslMechanism::Plain,
+            config_resource_type: KafkaConfigResourceType::Topic,
+            config_entries: Vec::new(),
+            editing_config_key: None,
             read_only: KafkaReadOnlyState::default(),
             loading_clusters: true,
             loading_runtime: false,
             loading_messages: false,
+            loading_configs: false,
             testing: false,
             saving: false,
             deleting: false,
+            updating_config: false,
             exporting: false,
             runtime_request_id: 0,
             message_request_id: 0,
+            config_request_id: 0,
             topic_operation_id: 0,
             topic_operation: false,
             notice: None,
@@ -315,6 +360,8 @@ use helpers::*;
 mod admin;
 mod messages;
 mod profile;
+mod remote_config;
+mod remote_config_render;
 mod render_config;
 mod render_main;
 mod render_messages;

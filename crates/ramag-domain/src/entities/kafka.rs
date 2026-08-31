@@ -18,7 +18,11 @@ mod kafka_validation;
 pub use kafka_acl::{
     KafkaAcl, KafkaAclOperation, KafkaAclPatternType, KafkaAclPermission, KafkaAclResourceType,
 };
-pub use kafka_admin::{KafkaTopicCreateRequest, KafkaTopicPartitionExpansion};
+pub use kafka_admin::{
+    KafkaConfigEntry, KafkaConfigResource, KafkaConfigResourceType, KafkaConfigSource,
+    KafkaConfigUpdateOperation, KafkaConfigUpdateRequest, KafkaTopicCreateRequest,
+    KafkaTopicPartitionExpansion,
+};
 pub use kafka_config::{
     KafkaClusterConfig, KafkaClusterId, KafkaReadOnlyState, KafkaSaslMechanism,
     KafkaSecurityProtocol, KafkaTlsConfig,
@@ -76,6 +80,11 @@ pub const MAX_KAFKA_ACLS: usize = 100_000;
 pub const MAX_KAFKA_PRINCIPAL_BYTES: usize = 1024;
 pub const MAX_KAFKA_ACL_HOST_BYTES: usize = 1024;
 pub const MAX_KAFKA_ACL_RESOURCE_NAME_BYTES: usize = 1024;
+
+pub const MAX_KAFKA_CONFIG_ENTRIES: usize = 20_000;
+pub const MAX_KAFKA_CONFIG_KEY_BYTES: usize = 256;
+pub const MAX_KAFKA_CONFIG_RESOURCE_NAME_BYTES: usize = 249;
+pub const MAX_KAFKA_CONFIG_VALUE_BYTES: usize = 64 * 1024;
 
 pub const DEFAULT_KAFKA_MAX_RECORDS: usize = 1_000;
 pub const DEFAULT_KAFKA_MAX_BYTES: u64 = 16 * 1024 * 1024;

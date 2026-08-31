@@ -256,6 +256,16 @@ impl KafkaView {
         self.invalidate_message_request();
         self.selected_topic = Some(topic.clone());
         set_value(&self.topic_input, topic, window, cx);
+        if self.config_resource_type == KafkaConfigResourceType::Topic {
+            self.invalidate_config_request();
+            set_value(
+                &self.config_resource_name,
+                self.selected_topic.clone().unwrap_or_default(),
+                window,
+                cx,
+            );
+            set_value(&self.config_value, "", window, cx);
+        }
         let target_partitions = self
             .selected_topic
             .as_ref()

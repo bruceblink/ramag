@@ -56,8 +56,21 @@ impl KafkaView {
                     .when(selected, |button| button.primary())
                     .when(!selected, |button| button.ghost())
                     .on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
+                        move |this, _: &ClickEvent, window, cx| {
                             this.section = section;
+                            if section == KafkaSection::Config
+                                && this.selected_cluster_id.is_some()
+                                && this.config_entries.is_empty()
+                            {
+                                if this.config_resource_name.read(cx).value().trim().is_empty() {
+                                    set_value(
+                                        &this.config_resource_name,
+                                        this.selected_topic.clone().unwrap_or_default(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
                             cx.notify();
                         },
                     )),
