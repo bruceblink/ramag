@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{App, ClickEvent, ParentElement, SharedString, Styled, Window, div, px};
+use gpui::{
+    App, ClickEvent, InteractiveElement as _, ParentElement, SharedString, Styled, Window, div, px,
+};
 use gpui_component::{
     ActiveTheme, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
 };
@@ -53,6 +55,7 @@ pub fn open_confirm_with_cancel(
         let confirm_label_inner = confirm_label.clone();
 
         let cancel_btn = crate::clickable_button("ramag-confirm-cancel")
+            .debug_selector(|| "ramag-confirm-cancel".into())
             .ghost()
             .small()
             .label("取消")
@@ -67,6 +70,7 @@ pub fn open_confirm_with_cancel(
             });
 
         let mut ok_btn = crate::clickable_button("ramag-confirm-ok")
+            .debug_selector(|| "ramag-confirm-ok".into())
             .small()
             .label(confirm_label_inner);
         ok_btn = if danger {

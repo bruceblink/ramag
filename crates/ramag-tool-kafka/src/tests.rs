@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use super::{
     KafkaSection, KafkaTool, KafkaView, bytes_to_base64, bytes_to_hex, format_message_json,
@@ -6,14 +6,15 @@ use super::{
 };
 use async_trait::async_trait;
 use gpui::{
-    AppContext as _, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size,
+    AppContext as _, Context, IntoElement, Modifiers, ParentElement as _, Render, Styled as _,
+    TestAppContext, VisualTestContext, Window, point, px, size,
 };
 use ramag_app::KafkaService;
 use ramag_domain::entities::KafkaMessageRecord;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, KafkaBroker, KafkaClusterConfig, KafkaClusterMetadata,
-    KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery, KafkaPartition, KafkaTopic,
-    QueryRecord, QueryRecordId,
+    KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery, KafkaPartition,
+    KafkaReadOnlyState, KafkaTopic, QueryRecord, QueryRecordId,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{KafkaDriver, Storage, Tool};
@@ -196,18 +197,56 @@ impl KafkaDriver for FakeKafkaDriver {
     }
 }
 
+struct KafkaDialogTestHost {
+    view: gpui::Entity<KafkaView>,
+}
+
+impl Render for KafkaDialogTestHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
+        gpui::div()
+            .relative()
+            .size_full()
+            .child(self.view.clone())
+            .children(dialog_layer)
+    }
+}
+
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
-    let bounds = cx.debug_bounds(selector);
-    assert!(bounds.is_some(), "控件应参与布局: {selector}");
-    let Some(bounds) = bounds else {
+    assert!(
+        cx.debug_bounds(selector).is_some(),
+        "控件应参与布局: {selector}"
+    );
+
+    // gpui-component 对话框带有 250ms 的进入动画；先推进测试时钟并刷新窗口，避免按下和抬起落在不同帧。
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    let Some(bounds) = cx.debug_bounds(selector) else {
         return;
     };
+    let initial_center = point(
+        bounds.origin.x + bounds.size.width / 2.0,
+        bounds.origin.y + bounds.size.height / 2.0,
+    );
+    cx.simulate_mouse_move(initial_center, None, Modifiers::default());
+    let bounds = cx.debug_bounds(selector).unwrap_or(bounds);
     let center = point(
         bounds.origin.x + bounds.size.width / 2.0,
         bounds.origin.y + bounds.size.height / 2.0,
     );
-    cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, Modifiers::default());
+    let release_bounds = cx.debug_bounds(selector).unwrap_or(bounds);
+    let release_center = point(
+        release_bounds.origin.x + release_bounds.size.width / 2.0,
+        release_bounds.origin.y + release_bounds.size.height / 2.0,
+    );
+    cx.simulate_mouse_up(
+        release_center,
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
 }
 
 #[gpui::test]
@@ -224,7 +263,8 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     let (_, visual_cx) = cx.add_window_view(|window, cx| {
         let kafka = cx.new(|cx| KafkaView::new(service, window, cx));
         kafka_entity = Some(kafka.clone());
-        gpui_component::Root::new(kafka, window, cx)
+        let host = cx.new(|_| KafkaDialogTestHost { view: kafka });
+        gpui_component::Root::new(host, window, cx)
     });
     assert!(kafka_entity.is_some(), "Kafka 视图实体应创建");
     let Some(kafka_entity) = kafka_entity else {
@@ -311,6 +351,40 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
         view.section == KafkaSection::Topics
     }));
     assert!(visual_cx.debug_bounds("kafka-partition-scroll").is_some());
+    assert!(visual_cx.debug_bounds("kafka-topic-admin").is_some());
+    assert!(visual_cx.debug_bounds("kafka-topic-expand").is_some());
+    assert!(visual_cx.debug_bounds("kafka-topic-delete").is_some());
+
+    visual_cx.update(|window, app| {
+        kafka_entity.update(app, |view, cx| {
+            view.set_form_from_config(&cluster, window, cx);
+            view.read_only = KafkaReadOnlyState::ReadWrite;
+            view.topic_create_name
+                .update(cx, |input, cx| input.set_value("events-admin", window, cx));
+            view.topic_create_partitions
+                .update(cx, |input, cx| input.set_value("2", window, cx));
+            view.topic_create_replication_factor
+                .update(cx, |input, cx| input.set_value("1", window, cx));
+            cx.notify();
+        });
+    });
+    visual_cx.run_until_parked();
+    let form_result = visual_cx.update(|_, app| kafka_entity.read(app).form_config(app));
+    assert!(form_result.is_ok(), "管理表单应能组装配置: {form_result:?}");
+    assert!(kafka_entity.read_with(visual_cx, |view, _| {
+        view.read_only == KafkaReadOnlyState::ReadWrite
+    }));
+    assert!(visual_cx.debug_bounds("kafka-topic-create").is_some());
+    click(visual_cx, "kafka-topic-create");
+    visual_cx.run_until_parked();
+    assert!(
+        visual_cx.debug_bounds("ramag-confirm-ok").is_some(),
+        "创建 Topic 前必须显示确认对话框"
+    );
+    click(visual_cx, "ramag-confirm-cancel");
+    visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("ramag-confirm-ok").is_none());
+
     assert!(
         visual_cx
             .debug_bounds("kafka-open-topic-messages")
