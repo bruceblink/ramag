@@ -1,7 +1,7 @@
 # Kafka 消息管理工具独立开发计划
 
-> 状态：阶段 10 已完成（截至 2026-08-30）
-> 更新日期：2026-08-30
+> 状态：阶段 13 已完成（截至 2026-08-31）
+> 更新日期：2026-08-31
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
 > 当前基线：`feat/kafka-tool-development`（阶段 1-10 已完成）
@@ -266,6 +266,14 @@ Kafka ACL 首期支持：
 - 2026-08-30 Docker 集成测试通过 2 项，覆盖生产 `RdkafkaDriver` 的元数据、Topic/Partition 水位、Offset/时间读取、Value 搜索和记录数边界。
 - 2026-08-30 Windows 截图复核发现侧栏“+”和空状态“新建集群”按钮点击后仍停留在欢迎页。现已修正草稿状态的配置页路由，并以 GPUI 点击回归测试覆盖两个入口；原生窗口已复验配置页入口和消息页筛选字段切换。
 
+阶段 11-13 实施记录：
+
+- Topic 管理已提供创建、删除和增加 Partition 的二次确认；配置页已支持 Topic/Broker 配置读取、动态配置修改以及只读和静态配置拒绝。
+- `KafkaConsumerGroup` 快照包含组状态、协议、成员、分配 Partition、已提交 Offset、末尾 Offset 和 Lag。`KafkaService` 在应用边界重新校验组、成员和 Offset 的数量、唯一性与范围。
+- `RdkafkaDriver` 使用独立查询客户端读取消费者组和提交 Offset，限制组、成员、Partition、分配载荷与 Offset 快照规模；损坏的 `ConsumerProtocolAssignment` 不会越界解析或写入凭据/消息正文。
+- Kafka 工作区新增“消费者组”视图，提供组筛选、成员/分配/Offset 详情、ID 选择与复制、列表纵向滚动条，以及窄窗口下的上下布局；刷新、切换集群和迟到任务结果均按请求代次隔离。
+- 2026-08-31 GPUI headless UI 验收覆盖消费者组列表、详情、复制、滚动条和 900px 窄窗口布局；Docker KRaft 集成测试 4 项通过，包含真实成员分配、提交 Offset 与 Lag。新增消费者组页面尚未补充 Windows 原生截图，需在可附着的真实窗口环境继续复核。
+
 后续独立路线：
 
 - `feat(kafka): add schema registry integration`
@@ -301,6 +309,7 @@ Docker 测试不得使用开发者真实集群、真实账号或真实业务消�
 
 - Kafka 工具在 Activity Bar 中与已有工具对齐，集群为空、连接中、连接失败和已连接状态互不重叠。
 - Topic 树、消息表、详情区和管理表单在 Windows 实际窗口中完成截图验证。
+- 消费者组列表、成员分配和 Offset/Lag 详情在 headless UI 中完成布局与交互验收，并在真实 Windows 窗口中补充截图后才可关闭该项。
 - 消息表大于视口时保持垂直滚动；宽消息字段和 Headers 能横向查看，不遮挡分页或状态栏。
 - 切换集群、Topic、Partition 和搜索任务后，旧任务结果不会覆盖当前上下文。
 - 管理操作的确认弹窗显示完整目标和变更内容，拒绝或失败后页面状态保持可恢复。

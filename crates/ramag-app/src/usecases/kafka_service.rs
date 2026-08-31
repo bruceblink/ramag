@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use ramag_domain::entities::{
     KafkaClusterConfig, KafkaClusterId, KafkaClusterMetadata, KafkaConfigResource,
-    KafkaConfigResourceType, KafkaConfigUpdateRequest, KafkaMessagePage, KafkaMessageQuery,
-    KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+    KafkaConfigResourceType, KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage,
+    KafkaMessageQuery, KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest,
+    KafkaTopicPartitionExpansion,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::{KafkaAdminDriver, KafkaDriver, Storage};
@@ -100,6 +101,24 @@ impl KafkaService {
             result.as_ref().err(),
         );
         result.and_then(validate_topics)
+    }
+
+    /// 读取消费者组、成员和已提交 Offset；该查询只读，不加入任何业务消费者组。
+    pub async fn list_consumer_groups(
+        &self,
+        config: &KafkaClusterConfig,
+    ) -> Result<Vec<KafkaConsumerGroup>> {
+        validate_config(config)?;
+        let started = std::time::Instant::now();
+        let result = self.driver.list_consumer_groups(config).await;
+        log_runtime_result(
+            "kafka_consumer_group_list",
+            config,
+            started,
+            result.as_ref().ok().map(Vec::len),
+            result.as_ref().err(),
+        );
+        result.and_then(validate_consumer_groups)
     }
 
     pub async fn read_messages(
@@ -270,6 +289,27 @@ fn validate_topics(topics: Vec<KafkaTopic>) -> Result<Vec<KafkaTopic>> {
         }
     }
     Ok(topics)
+}
+
+/// 在应用边界校验消费者组快照，防止驱动实现绕过数量、成员和 Offset 约束。
+fn validate_consumer_groups(groups: Vec<KafkaConsumerGroup>) -> Result<Vec<KafkaConsumerGroup>> {
+    if groups.len() > ramag_domain::entities::MAX_KAFKA_CONSUMER_GROUPS {
+        return Err(DomainError::InvalidConfig(format!(
+            "消费者组数量超过 {} 个上限",
+            ramag_domain::entities::MAX_KAFKA_CONSUMER_GROUPS
+        )));
+    }
+    let mut ids = std::collections::HashSet::with_capacity(groups.len());
+    for group in &groups {
+        group.validate().map_err(DomainError::InvalidConfig)?;
+        if !ids.insert(group.group_id.as_str()) {
+            return Err(DomainError::InvalidConfig(format!(
+                "消费者组 ID 重复：{}",
+                group.group_id
+            )));
+        }
+    }
+    Ok(groups)
 }
 
 fn validate_config(config: &KafkaClusterConfig) -> Result<()> {

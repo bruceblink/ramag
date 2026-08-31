@@ -8,6 +8,9 @@ impl KafkaView {
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
         let compact = f32::from(window.viewport_size().width) < 1200.0;
+        // The split gets less height than the whole window; derive its cap from the
+        // current viewport so the detail actions stay visible at every supported size.
+        let split_max_height = (f32::from(window.viewport_size().height) - 540.0).max(240.0);
         let query = value(&self.topic_search, cx).to_lowercase();
         let visible: Vec<KafkaTopic> = self
             .topics
@@ -15,6 +18,12 @@ impl KafkaView {
             .filter(|topic| query.is_empty() || topic.name.to_lowercase().contains(&query))
             .cloned()
             .collect();
+        let page_count = visible.len().div_ceil(self.topic_page_size);
+        let current_page = self.topic_page_index.min(page_count.saturating_sub(1));
+        let page_start = current_page.saturating_mul(self.topic_page_size);
+        let page_end = page_start
+            .saturating_add(self.topic_page_size)
+            .min(visible.len());
         let selected_topic = self
             .selected_topic
             .as_ref()
@@ -49,8 +58,8 @@ impl KafkaView {
                 )
                 .into_any_element()
         } else {
-            let topics = visible.clone();
-            uniform_list(
+            let topics = visible[page_start..page_end].to_vec();
+            let rows = uniform_list(
                 "kafka-topic-list",
                 topics.len(),
                 cx.processor(move |this, range: Range<usize>, _window, cx| {
@@ -66,7 +75,37 @@ impl KafkaView {
             )
             .flex_1()
             .min_h_0()
-            .into_any_element()
+            .track_scroll(&self.topic_scroll);
+            let table = div()
+                .id("kafka-topic-table")
+                .debug_selector(|| "kafka-topic-table".into())
+                .relative()
+                .size_full()
+                .child(v_flex().size_full().child(rows))
+                .child(
+                    div()
+                        .id("kafka-topic-v-scrollbar")
+                        .debug_selector(|| "kafka-topic-v-scrollbar".into())
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(px(16.0))
+                        .bg(theme.scrollbar)
+                        .child(
+                            Scrollbar::vertical(&self.topic_scroll)
+                                .id("kafka-topic-v-scrollbar-control")
+                                .scrollbar_show(ScrollbarShow::Always),
+                        ),
+                );
+            div()
+                .debug_selector(|| "kafka-topic-list-viewport".into())
+                .relative()
+                .h_full()
+                .flex_1()
+                .min_h_0()
+                .child(table)
+                .into_any_element()
         };
         let detail = selected_topic
             .map(|topic| {
@@ -91,7 +130,12 @@ impl KafkaView {
             });
         v_flex()
             .id("kafka-topics")
+            .debug_selector(|| "kafka-topics".into())
             .size_full()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
             .p(px(18.0))
             .gap(px(12.0))
             .child(
@@ -103,6 +147,7 @@ impl KafkaView {
                     .gap(px(12.0))
                     .child(
                         v_flex()
+                            .h_full()
                             .flex_1()
                             .min_w_0()
                             .gap(px(2.0))
@@ -253,22 +298,119 @@ impl KafkaView {
             )
             .child(
                 h_flex()
-                    .flex_1()
+                    .debug_selector(|| "kafka-topic-split".into())
+                    .flex_none()
                     .min_h_0()
+                    .max_h(px(split_max_height))
+                    .h(px(split_max_height))
                     .when(compact, |layout| layout.flex_col())
                     .items_stretch()
                     .gap(px(14.0))
                     .child(
                         v_flex()
+                            .debug_selector(|| "kafka-topic-list-panel".into())
+                            .h_full()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
                             .border_1()
                             .border_color(theme.border)
                             .rounded(px(6.0))
-                            .child(list),
+                            .child(list)
+                            .when(page_count > 0, |panel| {
+                                panel.child(self.render_topic_pagination(
+                                    visible.len(),
+                                    current_page,
+                                    page_count,
+                                    cx,
+                                ))
+                            }),
                     )
                     .child(detail),
+            )
+    }
+
+    /// Reset Topic pagination and the list viewport when the cluster or filter changes.
+    pub(super) fn reset_topic_paging(&mut self) {
+        self.topic_page_index = 0;
+        self.topic_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+    }
+
+    /// Switch the already loaded Topic snapshot to a bounded page.
+    fn set_topic_page(&mut self, page_index: usize, cx: &mut Context<Self>) {
+        if page_index == self.topic_page_index {
+            return;
+        }
+        self.topic_page_index = page_index;
+        self.topic_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+        cx.notify();
+    }
+
+    /// Render pagination for the filtered Topic snapshot without changing Broker state.
+    fn render_topic_pagination(
+        &self,
+        total_topics: usize,
+        current_page: usize,
+        page_count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme().clone();
+        let previous_page = current_page.saturating_sub(1);
+        let next_page = current_page.saturating_add(1);
+        h_flex()
+            .id("kafka-topic-pagination")
+            .debug_selector(|| "kafka-topic-pagination".into())
+            .w_full()
+            .h(px(38.0))
+            .flex_none()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(format!("共 {total_topics} 个 Topic"))
+            .child(div().flex_1().min_w_0())
+            .child(
+                ramag_ui::clickable_button("kafka-topic-page-previous")
+                    .debug_selector(|| "kafka-topic-page-previous".into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronLeft)
+                    .tooltip("上一页")
+                    .disabled(current_page == 0)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_topic_page(previous_page, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("kafka-topic-page-indicator")
+                    .debug_selector(|| "kafka-topic-page-indicator".into())
+                    .flex_none()
+                    .child(format!("第 {} / {} 页", current_page + 1, page_count)),
+            )
+            .child(
+                ramag_ui::clickable_button("kafka-topic-page-next")
+                    .debug_selector(|| "kafka-topic-page-next".into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronRight)
+                    .tooltip("下一页")
+                    .disabled(current_page.saturating_add(1) >= page_count)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_topic_page(next_page, cx);
+                    })),
             )
     }
 
@@ -281,6 +423,8 @@ impl KafkaView {
         let theme = cx.theme().clone();
         let name = topic.name.clone();
         let debug_name = name.clone();
+        let copy_debug_name = debug_name.clone();
+        let name_for_copy = name.clone();
         h_flex()
             .id(SharedString::from(format!("kafka-topic-row-{name}")))
             .debug_selector(move || format!("kafka-topic-row-{debug_name}"))
@@ -296,13 +440,22 @@ impl KafkaView {
                 row.hover(|row| row.bg(theme.muted.opacity(0.5)))
             })
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                // Ctrl/Command + double-click copies the stable Topic name without changing selection.
+                if event.modifiers().secondary() {
+                    if ramag_ui::is_primary_modifier_double_click(event) {
+                        ramag_ui::copy_text_with_notification(name.clone(), window, cx);
+                    }
+                    return;
+                }
                 this.select_topic(name.clone(), window, cx);
             }))
             .child(
                 v_flex()
+                    .flex_1()
+                    .min_w_0()
                     .gap(px(2.0))
-                    .child(div().text_sm().child(topic.name))
+                    .child(div().text_sm().truncate().child(topic.name))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         if topic.internal {
                             "内部 Topic"
@@ -317,111 +470,18 @@ impl KafkaView {
                     .text_color(theme.muted_foreground)
                     .child(format!("{} P", topic.partitions.len())),
             )
-    }
-
-    pub(super) fn render_topic_detail(
-        &self,
-        topic: &KafkaTopic,
-        compact: bool,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let admin_disabled = !self.read_only.allows_admin()
-            || self.topic_operation
-            || self.loading_runtime
-            || self.saving
-            || self.deleting;
-        let mut rows = v_flex()
-            .w_full()
-            .border_1()
-            .border_color(theme.border)
-            .rounded(px(6.0));
-        for partition in topic.partitions.iter().take(MAX_VISIBLE_PARTITIONS) {
-            rows = rows.child(partition_row(partition, &theme));
-        }
-        if topic.partitions.len() > MAX_VISIBLE_PARTITIONS {
-            rows = rows.child(
-                div()
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .text_xs()
-                    .text_color(theme.warning)
-                    .child(format!(
-                        "Partition 数量过多，仅展示前 {} 个",
-                        MAX_VISIBLE_PARTITIONS
-                    )),
-            );
-        }
-        v_flex()
-            .when(compact, |panel| panel.w_full().flex_1().min_w_0())
-            .when(!compact, |panel| panel.w(px(390.0)).flex_none())
-            .min_h_0()
-            .gap(px(10.0))
-            .child(section_heading(
-                &topic.name,
-                "Partition、Leader、ISR 与 Offset",
-                &theme,
-            ))
             .child(
-                v_flex()
-                    .id("kafka-partition-scroll")
-                    .debug_selector(|| "kafka-partition-scroll".into())
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rows),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .when(compact, |row| row.flex_col().items_stretch())
-                    .when(!compact, |row| row.items_end())
-                    .gap(px(8.0))
-                    .child(field(
-                        "目标 Partition 总数",
-                        Input::new(&self.topic_target_partitions).small(),
-                        if compact { 0.0 } else { 170.0 },
-                    ))
-                    .child(
-                        ramag_ui::clickable_button("kafka-topic-expand")
-                            .debug_selector(|| "kafka-topic-expand".into())
-                            .outline()
-                            .small()
-                            .icon(IconName::Plus)
-                            .label("增加 Partition")
-                            .when(compact, |button| button.w_full())
-                            .disabled(admin_disabled || topic.internal)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.begin_expand_topic(window, cx);
-                            })),
-                    )
-                    .child(
-                        ramag_ui::clickable_button("kafka-topic-delete")
-                            .debug_selector(|| "kafka-topic-delete".into())
-                            .danger()
-                            .small()
-                            .icon(IconName::Delete)
-                            .label("删除 Topic")
-                            .when(compact, |button| button.w_full())
-                            .disabled(admin_disabled || topic.internal)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.begin_delete_topic(window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                ramag_ui::clickable_button("kafka-open-topic-messages")
-                    .debug_selector(|| "kafka-open-topic-messages".into())
-                    .outline()
-                    .small()
-                    .icon(IconName::Search)
-                    .label("浏览消息")
-                    .when(compact, |button| button.w_full())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.section = KafkaSection::Messages;
-                        cx.notify();
-                    })),
+                ramag_ui::clickable_button(SharedString::from(format!(
+                    "kafka-topic-copy-{copy_debug_name}"
+                )))
+                .debug_selector(move || format!("kafka-topic-copy-{copy_debug_name}"))
+                .ghost()
+                .xsmall()
+                .icon(IconName::Copy)
+                .tooltip("复制 Topic 名称")
+                .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
+                    ramag_ui::copy_text_with_notification(name_for_copy.clone(), window, cx);
+                })),
             )
     }
 }

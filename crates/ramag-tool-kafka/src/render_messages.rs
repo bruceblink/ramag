@@ -8,6 +8,8 @@ impl KafkaView {
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
         let page = self.message_page.as_ref();
+        let page_count = self.message_page_count();
+        let current_page = self.message_page_index.min(page_count.saturating_sub(1));
         let selected_record = page.and_then(|page| {
             self.selected_message
                 .and_then(|index| page.records.get(index))
@@ -39,7 +41,11 @@ impl KafkaView {
                     )
                     .into_any_element()
             } else {
-                let records = page.records.clone();
+                let page_start = current_page.saturating_mul(self.message_page_size);
+                let page_end = page_start
+                    .saturating_add(self.message_page_size)
+                    .min(page.records.len());
+                let records = page.records[page_start..page_end].to_vec();
                 let header = message_table_header(&theme);
                 let body = uniform_list(
                     "kafka-message-list",
@@ -48,20 +54,41 @@ impl KafkaView {
                         range
                             .map(|index| {
                                 let record = records[index].clone();
-                                let selected = this.selected_message == Some(index);
-                                this.render_message_row(index, record, selected, cx)
+                                let record_index = page_start + index;
+                                let selected = this.selected_message == Some(record_index);
+                                this.render_message_row(record_index, record, selected, cx)
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>()
                     }),
                 )
+                .track_scroll(&self.message_scroll)
                 .flex_1();
-                v_flex()
+                let table = div()
+                    .id("kafka-message-table")
+                    .debug_selector(|| "kafka-message-table".into())
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .child(header)
-                    .child(body)
-                    .into_any_element()
+                    .min_w_0()
+                    .child(v_flex().size_full().child(header).child(body))
+                    .child(
+                        div()
+                            .id("kafka-message-v-scrollbar")
+                            .debug_selector(|| "kafka-message-v-scrollbar".into())
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right_0()
+                            .w(px(16.0))
+                            .bg(theme.scrollbar)
+                            .child(
+                                Scrollbar::vertical(&self.message_scroll)
+                                    .id("kafka-message-v-scrollbar-control")
+                                    .scrollbar_show(ScrollbarShow::Always),
+                            ),
+                    );
+                v_flex().flex_1().min_h_0().child(table).into_any_element()
             }
         } else {
             v_flex()
@@ -95,6 +122,9 @@ impl KafkaView {
                     )
                     .into_any_element()
             });
+        let pagination = page.map(|page| {
+            self.render_message_pagination(page.records.len(), current_page, page_count, cx)
+        });
         v_flex()
             .id("kafka-messages")
             .debug_selector(|| "kafka-messages".into())
@@ -117,7 +147,8 @@ impl KafkaView {
                             .border_1()
                             .border_color(theme.border)
                             .rounded(px(6.0))
-                            .child(rows),
+                            .child(rows)
+                            .when_some(pagination, |panel, pagination| panel.child(pagination)),
                     )
                     .child(detail),
             )
@@ -125,10 +156,11 @@ impl KafkaView {
 
     pub(super) fn render_message_controls(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 1080.0;
         let range_modes = [KafkaRangeMode::Offset, KafkaRangeMode::Time]
             .into_iter()
             .fold(
@@ -164,13 +196,14 @@ impl KafkaView {
                 .child(field(
                     "起始 Offset",
                     Input::new(&self.start_offset_input).small(),
-                    130.0,
+                    if compact { 0.0 } else { 130.0 },
                 ))
                 .child(field(
                     "结束 Offset",
                     Input::new(&self.end_offset_input).small(),
-                    130.0,
+                    if compact { 0.0 } else { 130.0 },
                 ))
+                .when(compact, |inputs| inputs.w_full().items_stretch())
                 .into_any_element(),
             KafkaRangeMode::Time => h_flex()
                 .debug_selector(|| "kafka-range-inputs".into())
@@ -180,13 +213,14 @@ impl KafkaView {
                 .child(field(
                     "起始时间",
                     Input::new(&self.start_time_input).small(),
-                    230.0,
+                    if compact { 0.0 } else { 230.0 },
                 ))
                 .child(field(
                     "结束时间",
                     Input::new(&self.end_time_input).small(),
-                    230.0,
+                    if compact { 0.0 } else { 230.0 },
                 ))
+                .when(compact, |inputs| inputs.w_full().items_stretch())
                 .into_any_element(),
         };
         let message_actions = h_flex()
@@ -230,6 +264,8 @@ impl KafkaView {
                         })),
                 )
             });
+        let message_actions =
+            message_actions.when(compact, |row| row.w_full().flex_wrap().items_end());
         let search_fields = KafkaMessageSearchField::all().into_iter().enumerate().fold(
             h_flex().gap(px(4.0)),
             |row, (index, field)| {
@@ -259,17 +295,27 @@ impl KafkaView {
             .flex_wrap()
             .items_end()
             .gap(px(8.0))
-            .child(field("Topic", Input::new(&self.topic_input).small(), 190.0))
+            .child(field(
+                "Topic",
+                Input::new(&self.topic_input).small(),
+                if compact { 0.0 } else { 190.0 },
+            ))
             .child(field(
                 "Partition",
                 Input::new(&self.partition_input).small(),
-                130.0,
+                if compact { 0.0 } else { 130.0 },
             ))
-            .child(field("范围", range_modes, 134.0))
-            .child(range_inputs);
+            .child(field(
+                "范围",
+                range_modes,
+                if compact { 0.0 } else { 134.0 },
+            ))
+            .child(range_inputs)
+            .when(compact, |query| query.w_full().flex_col().items_stretch());
         let message_search = v_flex()
             .debug_selector(|| "kafka-message-search".into())
-            .w(px(260.0))
+            .when(compact, |search| search.w_full())
+            .when(!compact, |search| search.w(px(260.0)))
             .flex_none()
             .gap(px(5.0))
             .child(
@@ -294,7 +340,8 @@ impl KafkaView {
             );
         let message_search_fields = v_flex()
             .debug_selector(|| "kafka-message-search-fields".into())
-            .w(px(208.0))
+            .when(compact, |fields| fields.w_full())
+            .when(!compact, |fields| fields.w(px(208.0)))
             .flex_none()
             .gap(px(5.0))
             .child(
@@ -315,6 +362,7 @@ impl KafkaView {
                     .min_w_0()
                     .items_end()
                     .gap(px(8.0))
+                    .when(compact, |row| row.flex_col().items_stretch())
                     .child(message_query)
                     .child(message_actions),
             )
@@ -325,6 +373,7 @@ impl KafkaView {
                     .min_w_0()
                     .items_end()
                     .gap(px(8.0))
+                    .when(compact, |row| row.flex_col().items_stretch())
                     .child(message_search)
                     .child(message_search_fields)
                     .child(
@@ -338,6 +387,72 @@ impl KafkaView {
                             .truncate()
                             .child("只读扫描 · 不提交 Offset"),
                     ),
+            )
+    }
+
+    /// 显示已加载消息的分页状态；翻页只切换内存中的有界结果，不会隐式扩大 Broker 扫描。
+    fn render_message_pagination(
+        &self,
+        total_records: usize,
+        current_page: usize,
+        page_count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = cx.theme().clone();
+        let has_previous = current_page > 0;
+        let has_next = current_page.saturating_add(1) < page_count;
+        let previous_page = current_page.saturating_sub(1);
+        let next_page = current_page.saturating_add(1);
+        h_flex()
+            .id("kafka-message-pagination")
+            .debug_selector(|| "kafka-message-pagination".into())
+            .w_full()
+            .h(px(38.0))
+            .flex_none()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(format!("已加载 {total_records} 条消息"))
+            .child(div().flex_1().min_w_0())
+            .child(
+                ramag_ui::clickable_button("kafka-message-page-previous")
+                    .debug_selector(|| "kafka-message-page-previous".into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronLeft)
+                    .label("上页")
+                    .disabled(!has_previous)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_message_page(previous_page, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("kafka-message-page-indicator")
+                    .debug_selector(|| "kafka-message-page-indicator".into())
+                    .flex_none()
+                    .child(if page_count == 0 {
+                        "第 0 / 0 页".to_string()
+                    } else {
+                        format!("第 {} / {} 页", current_page + 1, page_count)
+                    }),
+            )
+            .child(
+                ramag_ui::clickable_button("kafka-message-page-next")
+                    .debug_selector(|| "kafka-message-page-next".into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronRight)
+                    .label("下页")
+                    .disabled(!has_next)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.set_message_page(next_page, cx);
+                    })),
             )
     }
 
@@ -414,131 +529,6 @@ impl KafkaView {
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(format!("{} headers", record.headers.len())),
-            )
-    }
-
-    pub(super) fn render_message_detail(
-        &self,
-        record: &KafkaMessageRecord,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let key = record
-            .key_preview(MESSAGE_PREVIEW_BYTES)
-            .map_or_else(|| "<null>".into(), |preview| preview.text);
-        let value = record
-            .value_preview(MESSAGE_PREVIEW_BYTES)
-            .map_or_else(|| "<null>".into(), |preview| preview.text);
-        let record_for_json = record.clone();
-        let record_for_hex = record.clone();
-        let record_for_base64 = record.clone();
-        let record_for_export = record.clone();
-        v_flex()
-            .w(px(360.0))
-            .flex_none()
-            .min_h_0()
-            .gap(px(10.0))
-            .child(section_heading(
-                "消息详情",
-                "UTF-8 保留原文；二进制显示 Hex 摘要",
-                &theme,
-            ))
-            .child(
-                v_flex()
-                    .id("kafka-message-detail-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .gap(px(12.0))
-                    .p(px(14.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(px(6.0))
-                    .child(summary_row("Topic", &record.topic, &theme))
-                    .child(summary_row(
-                        "Partition",
-                        &record.partition.to_string(),
-                        &theme,
-                    ))
-                    .child(summary_row("Offset", &record.offset.to_string(), &theme))
-                    .child(summary_row(
-                        "Timestamp",
-                        &format_timestamp(record.timestamp),
-                        &theme,
-                    ))
-                    .child(value_block("Key", key, &theme))
-                    .child(value_block("Value", value, &theme))
-                    .child(value_block("Headers", format_headers(record), &theme))
-                    .child(section_heading(
-                        "消息格式",
-                        "复制 Value 或导出包含完整原始字节的 JSON",
-                        &theme,
-                    ))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .flex_wrap()
-                            .gap(px(6.0))
-                            .child(
-                                ramag_ui::clickable_button("kafka-copy-message-json")
-                                    .outline()
-                                    .xsmall()
-                                    .icon(IconName::Copy)
-                                    .label("复制 JSON")
-                                    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                                        ramag_ui::copy_text_with_notification(
-                                            format_message_json(&record_for_json),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                ramag_ui::clickable_button("kafka-copy-message-hex")
-                                    .outline()
-                                    .xsmall()
-                                    .icon(IconName::Copy)
-                                    .label("Value Hex")
-                                    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                                        ramag_ui::copy_text_with_notification(
-                                            encode_value_hex(&record_for_hex),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                ramag_ui::clickable_button("kafka-copy-message-base64")
-                                    .outline()
-                                    .xsmall()
-                                    .icon(IconName::Copy)
-                                    .label("Value Base64")
-                                    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                                        ramag_ui::copy_text_with_notification(
-                                            encode_value_base64(&record_for_base64),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                ramag_ui::clickable_button("kafka-export-message-json")
-                                    .primary()
-                                    .xsmall()
-                                    .icon(IconName::File)
-                                    .label("导出 JSON")
-                                    .disabled(self.exporting)
-                                    .on_click(cx.listener(
-                                        move |this, _: &ClickEvent, window, cx| {
-                                            this.export_message(
-                                                record_for_export.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        },
-                                    )),
-                            ),
-                    ),
             )
     }
 }

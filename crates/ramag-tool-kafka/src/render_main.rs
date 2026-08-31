@@ -41,8 +41,9 @@ impl KafkaView {
             .id("kafka-main")
             .debug_selector(|| "kafka-main".into())
             .flex_1()
-            .min_w_0()
             .h_full()
+            .min_w_0()
+            .min_h_0()
             .bg(theme.background)
             .child(
                 h_flex()

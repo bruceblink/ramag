@@ -1,4 +1,8 @@
+#[cfg(feature = "cmake-build")]
+use super::consumer_groups::decode_member_assignment;
 use super::*;
+#[cfg(feature = "cmake-build")]
+use ramag_domain::entities::MAX_KAFKA_GROUP_ASSIGNMENT_BYTES;
 use ramag_domain::error::KafkaErrorCategory;
 
 #[test]
@@ -86,4 +90,29 @@ fn default_build_reports_missing_native_client_without_network_access() {
             if error.category == KafkaErrorCategory::Unsupported
                 && error.safe_message.contains("cmake-build")
     ));
+}
+
+#[cfg(feature = "cmake-build")]
+#[test]
+fn consumer_assignment_decoder_accepts_valid_payload_and_rejects_malformed_data() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1_i16.to_be_bytes());
+    payload.extend_from_slice(&1_i32.to_be_bytes());
+    payload.extend_from_slice(&6_i16.to_be_bytes());
+    payload.extend_from_slice(b"events");
+    payload.extend_from_slice(&2_i32.to_be_bytes());
+    payload.extend_from_slice(&0_i32.to_be_bytes());
+    payload.extend_from_slice(&3_i32.to_be_bytes());
+    payload.extend_from_slice(&(-1_i32).to_be_bytes());
+    let assignments = decode_member_assignment(&payload);
+    assert_eq!(assignments.len(), 2);
+    assert_eq!(assignments[0].topic, "events");
+    assert_eq!(assignments[1].partition, 3);
+
+    let mut truncated = payload.clone();
+    truncated.pop();
+    assert!(decode_member_assignment(&truncated).is_empty());
+
+    let oversized = vec![0_u8; MAX_KAFKA_GROUP_ASSIGNMENT_BYTES + 1];
+    assert!(decode_member_assignment(&oversized).is_empty());
 }

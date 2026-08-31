@@ -103,6 +103,7 @@ impl KafkaView {
         let request_id = self.message_request_id;
         self.message_page = None;
         self.selected_message = None;
+        self.reset_message_paging();
         self.loading_messages = true;
         self.notice = Some((
             if search_text.is_empty() {
@@ -173,6 +174,40 @@ impl KafkaView {
     pub(super) fn invalidate_message_request(&mut self) {
         self.message_request_id = self.message_request_id.wrapping_add(1);
         self.loading_messages = false;
+    }
+
+    /// 回到已加载消息的第一页，并把虚拟列表滚动位置归零，避免新查询沿用旧视口。
+    pub(super) fn reset_message_paging(&mut self) {
+        self.message_page_index = 0;
+        self.selected_message = None;
+        self.message_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+    }
+
+    /// 返回当前已加载结果的页数；分页只切分内存中的有界结果，不扩大 Kafka 扫描范围。
+    pub(super) fn message_page_count(&self) -> usize {
+        self.message_page.as_ref().map_or(0, |page| {
+            page.records.len().div_ceil(self.message_page_size)
+        })
+    }
+
+    /// 切换已加载结果页并清理详情选择，保证详情不会指向上一页的记录。
+    pub(super) fn set_message_page(&mut self, page_index: usize, cx: &mut Context<Self>) {
+        let page_count = self.message_page_count();
+        if page_index >= page_count || page_index == self.message_page_index {
+            return;
+        }
+        self.message_page_index = page_index;
+        self.selected_message = None;
+        self.message_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+        cx.notify();
     }
 
     pub(super) fn selected_search_fields(&self) -> Vec<KafkaMessageSearchField> {
@@ -254,6 +289,7 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) {
         self.invalidate_message_request();
+        self.reset_message_paging();
         self.selected_topic = Some(topic.clone());
         set_value(&self.topic_input, topic, window, cx);
         if self.config_resource_type == KafkaConfigResourceType::Topic {

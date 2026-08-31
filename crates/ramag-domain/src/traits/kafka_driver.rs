@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::entities::{
     KafkaClusterConfig, KafkaClusterMetadata, KafkaConfigResource, KafkaConfigResourceType,
-    KafkaConfigUpdateRequest, KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery,
-    KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+    KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage, KafkaMessageQuery,
+    KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
 };
 use crate::error::Result;
 
@@ -27,6 +27,15 @@ pub trait KafkaDriver: Send + Sync {
     async fn list_topics(&self, _config: &KafkaClusterConfig) -> Result<Vec<KafkaTopic>> {
         Err(crate::error::DomainError::NotImplemented(
             "list_topics".into(),
+        ))
+    }
+
+    async fn list_consumer_groups(
+        &self,
+        _config: &KafkaClusterConfig,
+    ) -> Result<Vec<KafkaConsumerGroup>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_consumer_groups".into(),
         ))
     }
 

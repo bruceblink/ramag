@@ -1,15 +1,15 @@
 use std::sync::{Arc, Mutex};
 
 use super::{
-    KafkaService, validate_admin_request, validate_cluster_metadata, validate_message_page,
-    validate_topics,
+    KafkaService, validate_admin_request, validate_cluster_metadata, validate_consumer_groups,
+    validate_message_page, validate_topics,
 };
 use async_trait::async_trait;
 use ramag_domain::entities::{
     KafkaBroker, KafkaClusterConfig, KafkaClusterMetadata, KafkaConfigEntry, KafkaConfigResource,
-    KafkaConfigResourceType, KafkaConfigSource, KafkaConfigUpdateRequest, KafkaMessagePage,
-    KafkaMessageRecord, KafkaPartition, KafkaReadOnlyState, KafkaTopic, KafkaTopicCreateRequest,
-    KafkaTopicPartitionExpansion,
+    KafkaConfigResourceType, KafkaConfigSource, KafkaConfigUpdateRequest, KafkaConsumerGroup,
+    KafkaMessagePage, KafkaMessageRecord, KafkaPartition, KafkaReadOnlyState, KafkaTopic,
+    KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
 };
 use ramag_domain::error::{DomainError, KafkaError, KafkaErrorCategory, Result};
 use ramag_domain::traits::{KafkaAdminDriver, KafkaDriver, Storage};
@@ -231,6 +231,18 @@ fn application_boundary_accepts_valid_metadata() {
         kafka_version: None,
     };
     assert!(validate_cluster_metadata(metadata).is_ok());
+}
+
+#[test]
+fn application_boundary_rejects_duplicate_consumer_group_ids() {
+    let group = KafkaConsumerGroup {
+        group_id: "workers".into(),
+        state: Some("Stable".into()),
+        protocol: Some("range".into()),
+        members: Vec::new(),
+        offsets: Vec::new(),
+    };
+    assert!(validate_consumer_groups(vec![group.clone(), group]).is_err());
 }
 
 #[test]

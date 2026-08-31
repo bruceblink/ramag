@@ -133,12 +133,17 @@ impl KafkaView {
 
     pub(super) fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.invalidate_message_request();
+        self.invalidate_consumer_group_request();
         self.invalidate_topic_operation();
         self.invalidate_config_request();
         self.selected_cluster_id = None;
         self.selected_topic = None;
         self.metadata = None;
         self.topics.clear();
+        self.reset_topic_paging();
+        self.consumer_groups.clear();
+        self.selected_consumer_group = None;
+        self.consumer_group_error = None;
         self.message_page = None;
         self.selected_message = None;
         self.section = KafkaSection::Config;
@@ -149,6 +154,7 @@ impl KafkaView {
             &self.name,
             &self.bootstrap_servers,
             &self.client_id,
+            &self.consumer_group_search,
             &self.sasl_username,
             &self.sasl_password,
             &self.remark,
@@ -185,11 +191,16 @@ impl KafkaView {
             return;
         };
         self.invalidate_message_request();
+        self.invalidate_consumer_group_request();
         self.selected_cluster_id = Some(id);
         self.selected_topic = None;
         self.invalidate_topic_operation();
         self.metadata = None;
         self.topics.clear();
+        self.reset_topic_paging();
+        self.consumer_groups.clear();
+        self.selected_consumer_group = None;
+        self.consumer_group_error = None;
         self.message_page = None;
         self.selected_message = None;
         self.section = KafkaSection::Overview;
@@ -321,6 +332,11 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) {
         self.invalidate_message_request();
+        self.invalidate_consumer_group_request();
+        self.consumer_groups.clear();
+        self.selected_consumer_group = None;
+        self.consumer_group_error = None;
+        self.reset_topic_paging();
         self.runtime_request_id = self.runtime_request_id.wrapping_add(1);
         let request_id = self.runtime_request_id;
         self.loading_runtime = true;
@@ -328,7 +344,7 @@ impl KafkaView {
         cx.spawn_in(window, async move |this, cx| {
             let metadata = service.cluster_metadata(&config).await;
             let topics = service.list_topics(&config).await;
-            let _ = this.update_in(cx, |this, _window, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.runtime_request_id != request_id {
                     return;
                 }
@@ -367,6 +383,11 @@ impl KafkaView {
                             true,
                         ));
                     }
+                }
+                if this.section == KafkaSection::ConsumerGroups
+                    && this.selected_cluster_id.is_some()
+                {
+                    this.load_consumer_groups(config.clone(), window, cx);
                 }
                 cx.notify();
             });
@@ -416,11 +437,16 @@ impl KafkaView {
                 match result {
                     Ok(()) => {
                         this.invalidate_message_request();
+                        this.invalidate_consumer_group_request();
                         this.clusters.retain(|cluster| cluster.id != id);
                         this.selected_cluster_id = None;
                         this.selected_topic = None;
                         this.metadata = None;
                         this.topics.clear();
+                        this.reset_topic_paging();
+                        this.consumer_groups.clear();
+                        this.selected_consumer_group = None;
+                        this.consumer_group_error = None;
                         this.message_page = None;
                         this.selected_message = None;
                         this.section = KafkaSection::Overview;

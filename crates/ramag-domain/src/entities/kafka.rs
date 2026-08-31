@@ -75,6 +75,7 @@ pub const MAX_KAFKA_CONCURRENT_PARTITIONS: usize = 32;
 pub const MAX_KAFKA_CONSUMER_GROUPS: usize = 100_000;
 pub const MAX_KAFKA_GROUP_MEMBERS: usize = 10_000;
 pub const MAX_KAFKA_GROUP_OFFSETS: usize = 1_000_000;
+pub const MAX_KAFKA_GROUP_ASSIGNMENT_BYTES: usize = 4 * 1024 * 1024;
 
 pub const MAX_KAFKA_ACLS: usize = 100_000;
 pub const MAX_KAFKA_PRINCIPAL_BYTES: usize = 1024;

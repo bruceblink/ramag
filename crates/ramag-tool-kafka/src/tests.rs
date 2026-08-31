@@ -14,11 +14,59 @@ use ramag_domain::entities::KafkaMessageRecord;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, KafkaBroker, KafkaClusterConfig, KafkaClusterMetadata,
     KafkaConfigEntry, KafkaConfigResource, KafkaConfigResourceType, KafkaConfigSource,
-    KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery, KafkaPartition,
-    KafkaReadOnlyState, KafkaTopic, QueryRecord, QueryRecordId,
+    KafkaConsumerGroup, KafkaConsumerGroupOffset, KafkaConsumerMember,
+    KafkaConsumerPartitionAssignment, KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery,
+    KafkaPartition, KafkaReadOnlyState, KafkaTopic, QueryRecord, QueryRecordId,
 };
 use ramag_domain::error::Result;
 use ramag_domain::traits::{KafkaAdminDriver, KafkaDriver, Storage, Tool};
+
+fn click(cx: &mut VisualTestContext, selector: &'static str) {
+    assert!(
+        cx.debug_bounds(selector).is_some(),
+        "控件应参与布局: {selector}"
+    );
+
+    // 推进对话框进入动画并在同一帧完成鼠标按下/抬起，避免测试点击落在不同位置。
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+
+    let Some(bounds) = cx.debug_bounds(selector) else {
+        return;
+    };
+    let center = point(
+        bounds.origin.x + bounds.size.width / 2.0,
+        bounds.origin.y + bounds.size.height / 2.0,
+    );
+    cx.simulate_mouse_move(center, None, Modifiers::default());
+    let bounds = cx.debug_bounds(selector).unwrap_or(bounds);
+    let center = point(
+        bounds.origin.x + bounds.size.width / 2.0,
+        bounds.origin.y + bounds.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(center, gpui::MouseButton::Left, Modifiers::default());
+    let release_bounds = cx.debug_bounds(selector).unwrap_or(bounds);
+    let release_center = point(
+        release_bounds.origin.x + release_bounds.size.width / 2.0,
+        release_bounds.origin.y + release_bounds.size.height / 2.0,
+    );
+    cx.simulate_mouse_up(
+        release_center,
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+}
+
+fn assert_within_width(cx: &mut VisualTestContext, selector: &'static str, width: f32) {
+    let bounds = cx.debug_bounds(selector);
+    assert!(
+        bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.origin.x + bounds.size.width <= px(width)),
+        "{selector} 应参与布局且不应横向溢出窗口: {bounds:?}"
+    );
+}
 
 #[test]
 fn tool_metadata_exposes_kafka_entry() {
@@ -42,7 +90,8 @@ fn sections_keep_the_read_only_workflow_order() {
     assert_eq!(KafkaSection::ALL[0], KafkaSection::Overview);
     assert_eq!(KafkaSection::ALL[1], KafkaSection::Topics);
     assert_eq!(KafkaSection::ALL[2], KafkaSection::Messages);
-    assert_eq!(KafkaSection::ALL[3], KafkaSection::Config);
+    assert_eq!(KafkaSection::ALL[3], KafkaSection::ConsumerGroups);
+    assert_eq!(KafkaSection::ALL[4], KafkaSection::Config);
 }
 
 #[test]
@@ -178,6 +227,33 @@ impl KafkaDriver for FakeKafkaDriver {
                     high_watermark: Some(1),
                 })
                 .collect(),
+        }])
+    }
+
+    async fn list_consumer_groups(
+        &self,
+        _config: &KafkaClusterConfig,
+    ) -> Result<Vec<KafkaConsumerGroup>> {
+        Ok(vec![KafkaConsumerGroup {
+            group_id: "ramag.integration.consumer".into(),
+            state: Some("Stable".into()),
+            protocol: Some("range".into()),
+            members: vec![KafkaConsumerMember {
+                member_id: "member-1".into(),
+                client_id: "consumer-1".into(),
+                client_host: Some("/127.0.0.1".into()),
+                assigned_partitions: vec![KafkaConsumerPartitionAssignment {
+                    topic: "ramag.integration.messages".into(),
+                    partition: 0,
+                }],
+            }],
+            offsets: vec![KafkaConsumerGroupOffset {
+                topic: "ramag.integration.messages".into(),
+                partition: 0,
+                committed_offset: Some(1),
+                end_offset: Some(4),
+                lag: Some(3),
+            }],
         }])
     }
 

@@ -15,52 +15,7 @@ impl Render for KafkaDialogTestHost {
     }
 }
 
-fn click(cx: &mut VisualTestContext, selector: &'static str) {
-    assert!(
-        cx.debug_bounds(selector).is_some(),
-        "控件应参与布局: {selector}"
-    );
-
-    // gpui-component 对话框带有 250ms 的进入动画；先推进测试时钟并刷新窗口，避免按下和抬起落在不同帧。
-    cx.executor().advance_clock(Duration::from_millis(300));
-    cx.update(|window, _| window.refresh());
-    cx.run_until_parked();
-
-    let Some(bounds) = cx.debug_bounds(selector) else {
-        return;
-    };
-    let initial_center = point(
-        bounds.origin.x + bounds.size.width / 2.0,
-        bounds.origin.y + bounds.size.height / 2.0,
-    );
-    cx.simulate_mouse_move(initial_center, None, Modifiers::default());
-    let bounds = cx.debug_bounds(selector).unwrap_or(bounds);
-    let center = point(
-        bounds.origin.x + bounds.size.width / 2.0,
-        bounds.origin.y + bounds.size.height / 2.0,
-    );
-    cx.simulate_mouse_down(center, gpui::MouseButton::Left, Modifiers::default());
-    let release_bounds = cx.debug_bounds(selector).unwrap_or(bounds);
-    let release_center = point(
-        release_bounds.origin.x + release_bounds.size.width / 2.0,
-        release_bounds.origin.y + release_bounds.size.height / 2.0,
-    );
-    cx.simulate_mouse_up(
-        release_center,
-        gpui::MouseButton::Left,
-        Modifiers::default(),
-    );
-}
-
-fn assert_within_width(cx: &mut VisualTestContext, selector: &'static str, width: f32) {
-    let bounds = cx.debug_bounds(selector);
-    assert!(
-        bounds
-            .as_ref()
-            .is_some_and(|bounds| bounds.origin.x + bounds.size.width <= px(width)),
-        "{selector} 应参与布局且不应横向溢出窗口: {bounds:?}"
-    );
-}
+const VISUAL_MESSAGE_COUNT: usize = 5_000;
 
 #[gpui::test]
 fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext) {
@@ -169,8 +124,22 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
             }],
             kafka_version: Some("4.0.0".into()),
         });
-        view.topics = vec![KafkaTopic {
+        let mut topics = vec![KafkaTopic {
             name: "ramag.integration.messages".into(),
+            internal: false,
+            partitions: (0..50)
+                .map(|id| KafkaPartition {
+                    id,
+                    leader: Some(0),
+                    replicas: vec![0],
+                    isr: vec![0],
+                    low_watermark: Some(0),
+                    high_watermark: Some(1),
+                })
+                .collect(),
+        }];
+        topics.extend((0..122).map(|index| KafkaTopic {
+            name: format!("ramag.integration.topic-{index:03}"),
             internal: false,
             partitions: vec![KafkaPartition {
                 id: 0,
@@ -180,7 +149,8 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
                 low_watermark: Some(0),
                 high_watermark: Some(1),
             }],
-        }];
+        }));
+        view.topics = topics;
         view.section = KafkaSection::Overview;
         view.loading_runtime = false;
         cx.notify();
@@ -202,6 +172,27 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
             .is_some_and(|bounds| { bounds.origin.y + bounds.size.height <= px(780.0) }),
         "Topic 行应保持在测试窗口内: {topic_row_bounds:?}"
     );
+    assert!(
+        visual_cx.debug_bounds("kafka-topic-v-scrollbar").is_some(),
+        "Topic 列表应提供纵向滚动条入口"
+    );
+    assert!(
+        visual_cx.debug_bounds("kafka-topic-pagination").is_some()
+            && visual_cx.debug_bounds("kafka-topic-page-next").is_some(),
+        "Topic 数量超过一页时应显示分页控件"
+    );
+    click(visual_cx, "kafka-topic-page-next");
+    assert_eq!(
+        kafka_entity.read_with(visual_cx, |view, _| view.topic_page_index),
+        1,
+        "Topic 下一页按钮应切换已加载快照页"
+    );
+    click(visual_cx, "kafka-topic-page-previous");
+    assert_eq!(
+        kafka_entity.read_with(visual_cx, |view, _| view.topic_page_index),
+        0,
+        "Topic 上一页按钮应返回第一页"
+    );
     click(visual_cx, "kafka-topic-row-ramag.integration.messages");
     visual_cx.run_until_parked();
     assert!(kafka_entity.read_with(visual_cx, |view, _| {
@@ -213,7 +204,50 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
         Some("ramag.integration.messages"),
         "Topic 行点击后应选中详情: {selected_topic:?}"
     );
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-topic-copy-ramag.integration.messages")
+            .is_some(),
+        "Topic 行应提供明确的复制入口"
+    );
     assert!(visual_cx.debug_bounds("kafka-partition-scroll").is_some());
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-partition-v-scrollbar")
+            .is_some(),
+        "Topic Partition 详情应提供始终可发现的纵向滚动条"
+    );
+    for selector in [
+        "kafka-partition-scroll",
+        "kafka-topic-expand",
+        "kafka-topic-delete",
+        "kafka-open-topic-messages",
+    ] {
+        let bounds = visual_cx.debug_bounds(selector);
+        assert!(
+            bounds
+                .as_ref()
+                .is_some_and(|bounds| bounds.origin.y + bounds.size.height <= px(780.0)),
+            "Topic 详情控件不应被底部窗口边缘遮挡: {selector}={bounds:?}"
+        );
+    }
+    assert_within_width(visual_cx, "kafka-topic-expand", 1200.0);
+    assert_within_width(visual_cx, "kafka-topic-delete", 1200.0);
+    let topic_detail_name_bounds = visual_cx.debug_bounds("kafka-topic-detail-name");
+    let topic_detail_copy_bounds = visual_cx.debug_bounds("kafka-topic-detail-copy");
+    assert!(
+        topic_detail_name_bounds.is_some() && topic_detail_copy_bounds.is_some(),
+        "选中 Topic 后应显示可选择名称和复制按钮: name={topic_detail_name_bounds:?}, copy={topic_detail_copy_bounds:?}"
+    );
+    click(visual_cx, "kafka-topic-detail-copy");
+    let copied_topic = visual_cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(
+        copied_topic, "ramag.integration.messages",
+        "Topic 复制按钮应写入完整名称"
+    );
 
     visual_cx.simulate_resize(size(px(900.0), px(780.0)));
     visual_cx.run_until_parked();
@@ -221,10 +255,69 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
         "kafka-topic-admin",
         "kafka-topic-row-ramag.integration.messages",
         "kafka-partition-scroll",
+        "kafka-topic-expand",
+        "kafka-topic-delete",
     ] {
         assert_within_width(visual_cx, selector, 900.0);
     }
 
+    visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
+    visual_cx.run_until_parked();
+
+    click(visual_cx, "kafka-section-ConsumerGroups");
+    visual_cx.run_until_parked();
+    assert!(visual_cx.debug_bounds("kafka-consumer-groups").is_some());
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-consumer-group-row-ramag.integration.consumer")
+            .is_some(),
+        "消费者组列表应显示真实驱动返回的组"
+    );
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-consumer-group-v-scrollbar")
+            .is_some(),
+        "消费者组列表应提供纵向滚动条入口"
+    );
+    click(
+        visual_cx,
+        "kafka-consumer-group-row-ramag.integration.consumer",
+    );
+    visual_cx.run_until_parked();
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-consumer-group-detail-name")
+            .is_some()
+            && visual_cx
+                .debug_bounds("kafka-consumer-group-detail-copy")
+                .is_some(),
+        "选中消费者组后应显示可选择名称和复制按钮"
+    );
+    click(visual_cx, "kafka-consumer-group-detail-copy");
+    let copied_group = visual_cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert_eq!(
+        copied_group, "ramag.integration.consumer",
+        "消费者组复制按钮应写入完整 ID"
+    );
+    for selector in [
+        "kafka-consumer-group-list",
+        "kafka-consumer-group-detail",
+        "kafka-consumer-group-members",
+    ] {
+        assert_within_width(visual_cx, selector, 1200.0);
+    }
+    visual_cx.simulate_resize(size(px(900.0), px(780.0)));
+    visual_cx.run_until_parked();
+    for selector in [
+        "kafka-consumer-group-list",
+        "kafka-consumer-group-detail",
+        "kafka-consumer-group-offset-rows",
+    ] {
+        assert_within_width(visual_cx, selector, 900.0);
+    }
     visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
     visual_cx.run_until_parked();
 
@@ -300,7 +393,7 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     visual_cx.update(|window, app| {
         kafka_entity.update(app, |view, cx| {
             view.topic_target_partitions
-                .update(cx, |input, cx| input.set_value("2", window, cx));
+                .update(cx, |input, cx| input.set_value("51", window, cx));
             cx.notify();
         });
     });
@@ -404,6 +497,58 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
             <= messages_bounds.origin.x + messages_bounds.size.width,
         "读取动作不应溢出消息页面: {action_bounds:?} / {messages_bounds:?}"
     );
+
+    kafka_entity.update(visual_cx, |view, cx| {
+        let records = (0..VISUAL_MESSAGE_COUNT)
+            .map(|offset| KafkaMessageRecord {
+                topic: "ramag.integration.messages".into(),
+                partition: i32::try_from(offset % 3).unwrap_or_default(),
+                offset: i64::from(u32::try_from(offset).unwrap_or_default()),
+                timestamp: None,
+                key: Some(format!("key-{offset}").into_bytes()),
+                value: Some(format!("value-{offset}").into_bytes()),
+                headers: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        view.message_page = Some(KafkaMessagePage {
+            records,
+            scanned_records: VISUAL_MESSAGE_COUNT,
+            scanned_bytes: 1_024_000,
+            truncated: false,
+        });
+        view.message_page_index = 0;
+        view.loading_messages = false;
+        cx.notify();
+    });
+    visual_cx.run_until_parked();
+    assert!(
+        visual_cx
+            .debug_bounds("kafka-message-v-scrollbar")
+            .is_some(),
+        "消息结果区应显示纵向滚动条"
+    );
+    assert!(
+        visual_cx.debug_bounds("kafka-message-pagination").is_some()
+            && visual_cx.debug_bounds("kafka-message-page-next").is_some(),
+        "消息结果超过一页时应显示分页控件"
+    );
+    click(visual_cx, "kafka-message-page-next");
+    assert_eq!(
+        kafka_entity.read_with(visual_cx, |view, _| view.message_page_index),
+        1,
+        "下一页按钮应切换已加载结果页"
+    );
+
+    visual_cx.simulate_resize(size(px(800.0), px(500.0)));
+    visual_cx.run_until_parked();
+    for selector in [
+        "kafka-message-query-row",
+        "kafka-message-search-row",
+        "kafka-message-actions",
+        "kafka-message-pagination",
+    ] {
+        assert_within_width(visual_cx, selector, 800.0);
+    }
 
     visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
     visual_cx.run_until_parked();

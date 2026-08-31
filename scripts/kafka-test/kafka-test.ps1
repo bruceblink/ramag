@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet("up", "status", "seed", "test", "down", "clean")]
-    [string]$Command = "status"
+    [string]$Command = "status",
+    [ValidateRange(5000, 50000)]
+    [int]$MessageCount = 5000
 )
 
 Set-StrictMode -Version Latest
@@ -93,6 +95,16 @@ function Ensure-Healthy {
     Wait-Healthy
 }
 
+function Get-FixtureLines {
+    # Keep the three semantic records stable, then add deterministic bulk data for
+    # message pagination and bounded client-side search performance checks.
+    Get-Content -LiteralPath $FixtureFile
+    for ($index = 4; $index -le $MessageCount; $index++) {
+        $payload = '{"event":"bulk","sequence":' + $index + ',"source":"docker-fixture","marker":"message-' + $index + '"}'
+        '{0}|{1}' -f ("event-{0:D4}" -f $index), $payload
+    }
+}
+
 function Reset-FixtureTopic {
     $topics = @(Get-KafkaOutput -KafkaArguments @(
         "/opt/kafka/bin/kafka-topics.sh",
@@ -144,11 +156,11 @@ function Seed-Fixture {
         "--property", "key.separator=|",
         "--producer-property", "partitioner.class=org.apache.kafka.clients.producer.RoundRobinPartitioner"
     )
-    Get-Content -LiteralPath $FixtureFile | & docker compose --project-name $ProjectName --file $ComposeFile @producerArguments
+    Get-FixtureLines | & docker compose --project-name $ProjectName --file $ComposeFile @producerArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Kafka fixture producer failed with exit code $LASTEXITCODE"
     }
-    Write-TestLog "Seeded $TopicName from $FixtureFile."
+    Write-TestLog "Seeded $TopicName with $MessageCount deterministic messages."
 }
 
 function Verify-Fixture {
@@ -163,12 +175,22 @@ function Verify-Fixture {
     )
     $receivedLines = @($consumerOutput | ForEach-Object { $_.ToString().Trim() })
 
-    foreach ($expectedLine in (Get-Content -LiteralPath $FixtureFile)) {
+    $expectedLines = @(Get-FixtureLines)
+    if ($receivedLines.Count -lt $MessageCount) {
+        throw "Kafka fixture verification failed; expected at least $MessageCount records, received $($receivedLines.Count)"
+    }
+    $sentinelLines = @(
+        $expectedLines[0],
+        $expectedLines[1],
+        $expectedLines[2],
+        $expectedLines[$expectedLines.Count - 1]
+    )
+    foreach ($expectedLine in $sentinelLines) {
         if ($receivedLines -notcontains $expectedLine) {
             throw "Kafka fixture verification failed; missing record: $expectedLine`nReceived:`n$($receivedLines -join "`n")"
         }
     }
-    Write-TestLog "Verified all fixture records in $TopicName."
+    Write-TestLog "Verified all $MessageCount fixture records in $TopicName."
 }
 
 function Run-RustIntegrationTest {

@@ -10,8 +10,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Utc};
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div,
+    InteractiveElement as _, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
@@ -19,6 +19,7 @@ use gpui_component::{
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputEvent, InputState},
+    scroll::{Scrollbar, ScrollbarShow},
     spinner::Spinner,
     v_flex,
 };
@@ -28,12 +29,12 @@ use ramag_domain::{
         DEFAULT_KAFKA_MAX_BYTES, DEFAULT_KAFKA_MAX_CONCURRENT_PARTITIONS,
         DEFAULT_KAFKA_MAX_SCAN_SECONDS, KafkaClusterConfig, KafkaClusterId, KafkaClusterMetadata,
         KafkaConfigEntry, KafkaConfigResourceType, KafkaConfigUpdateOperation,
-        KafkaConfigUpdateRequest, KafkaMessagePage, KafkaMessageQuery, KafkaMessageRecord,
-        KafkaMessageSearchField, KafkaMessageSearchQuery, KafkaReadOnlyState, KafkaSaslMechanism,
-        KafkaSecurityProtocol, KafkaTlsConfig, KafkaTopic, KafkaTopicCreateRequest,
-        KafkaTopicPartitionExpansion, MAX_KAFKA_CONFIG_RESOURCE_NAME_BYTES,
-        MAX_KAFKA_CONFIG_VALUE_BYTES, MAX_KAFKA_PARTITIONS, MAX_KAFKA_QUERY_PARTITIONS,
-        MAX_KAFKA_REPLICAS, MAX_KAFKA_SCAN_RECORDS,
+        KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage, KafkaMessageQuery,
+        KafkaMessageRecord, KafkaMessageSearchField, KafkaMessageSearchQuery, KafkaReadOnlyState,
+        KafkaSaslMechanism, KafkaSecurityProtocol, KafkaTlsConfig, KafkaTopic,
+        KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+        MAX_KAFKA_CONFIG_RESOURCE_NAME_BYTES, MAX_KAFKA_CONFIG_VALUE_BYTES, MAX_KAFKA_PARTITIONS,
+        MAX_KAFKA_QUERY_PARTITIONS, MAX_KAFKA_REPLICAS, MAX_KAFKA_SCAN_RECORDS,
     },
     traits::{Tool, ToolMeta},
 };
@@ -42,6 +43,8 @@ use serde::Serialize;
 const MAX_VISIBLE_PARTITIONS: usize = 200;
 const MESSAGE_PREVIEW_BYTES: usize = 512;
 const MAX_KAFKA_EXPORT_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_MESSAGE_PAGE_SIZE: usize = 100;
+const DEFAULT_TOPIC_PAGE_SIZE: usize = 50;
 
 /// 创建 Kafka 工具的主视图，窗口生命周期由主壳持有。
 pub fn create_kafka_view(
@@ -86,6 +89,7 @@ enum KafkaSection {
     Overview,
     Topics,
     Messages,
+    ConsumerGroups,
     Config,
 }
 
@@ -105,13 +109,20 @@ impl KafkaRangeMode {
 }
 
 impl KafkaSection {
-    const ALL: [Self; 4] = [Self::Overview, Self::Topics, Self::Messages, Self::Config];
+    const ALL: [Self; 5] = [
+        Self::Overview,
+        Self::Topics,
+        Self::Messages,
+        Self::ConsumerGroups,
+        Self::Config,
+    ];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Overview => "概览",
             Self::Topics => "Topics",
             Self::Messages => "消息",
+            Self::ConsumerGroups => "消费者组",
             Self::Config => "配置",
         }
     }
@@ -125,11 +136,23 @@ pub struct KafkaView {
     selected_topic: Option<String>,
     metadata: Option<KafkaClusterMetadata>,
     topics: Vec<KafkaTopic>,
+    topic_page_index: usize,
+    topic_page_size: usize,
+    topic_scroll: UniformListScrollHandle,
+    consumer_groups: Vec<KafkaConsumerGroup>,
+    selected_consumer_group: Option<String>,
+    consumer_group_error: Option<String>,
     message_page: Option<KafkaMessagePage>,
     selected_message: Option<usize>,
+    message_page_index: usize,
+    message_page_size: usize,
+    message_scroll: UniformListScrollHandle,
+    topic_partition_scroll: ScrollHandle,
+    consumer_group_scroll: UniformListScrollHandle,
     section: KafkaSection,
     cluster_search: Entity<InputState>,
     topic_search: Entity<InputState>,
+    consumer_group_search: Entity<InputState>,
     message_search: Entity<InputState>,
     name: Entity<InputState>,
     bootstrap_servers: Entity<InputState>,
@@ -164,6 +187,7 @@ pub struct KafkaView {
     loading_clusters: bool,
     loading_runtime: bool,
     loading_messages: bool,
+    loading_consumer_groups: bool,
     loading_configs: bool,
     testing: bool,
     saving: bool,
@@ -172,6 +196,7 @@ pub struct KafkaView {
     exporting: bool,
     runtime_request_id: u64,
     message_request_id: u64,
+    consumer_group_request_id: u64,
     config_request_id: u64,
     topic_operation_id: u64,
     topic_operation: bool,
@@ -185,6 +210,7 @@ impl KafkaView {
     pub fn new(service: Arc<KafkaService>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let cluster_search = input(window, cx, 4 * 1024, "搜索集群…", false, "");
         let topic_search = input(window, cx, 4 * 1024, "筛选 Topic…", false, "");
+        let consumer_group_search = input(window, cx, 4 * 1024, "筛选消费者组…", false, "");
         let message_search = input(
             window,
             cx,
@@ -247,7 +273,7 @@ impl KafkaView {
         let mut subscriptions = Vec::new();
         for field in [
             &cluster_search,
-            &topic_search,
+            &consumer_group_search,
             &message_search,
             &name,
             &bootstrap_servers,
@@ -278,6 +304,20 @@ impl KafkaView {
                 }
             }));
         }
+        subscriptions.push(
+            cx.subscribe(&topic_search, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.topic_page_index = 0;
+                    this.topic_scroll
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(gpui::point(gpui::px(0.0), gpui::px(0.0)));
+                    this.notice = None;
+                    cx.notify();
+                }
+            }),
+        );
         subscriptions.push(cx.subscribe(
             &config_resource_name,
             |this, _, event: &InputEvent, cx| {
@@ -296,11 +336,23 @@ impl KafkaView {
             selected_topic: None,
             metadata: None,
             topics: Vec::new(),
+            topic_page_index: 0,
+            topic_page_size: DEFAULT_TOPIC_PAGE_SIZE,
+            topic_scroll: UniformListScrollHandle::new(),
+            consumer_groups: Vec::new(),
+            selected_consumer_group: None,
+            consumer_group_error: None,
             message_page: None,
             selected_message: None,
+            message_page_index: 0,
+            message_page_size: DEFAULT_MESSAGE_PAGE_SIZE,
+            message_scroll: UniformListScrollHandle::new(),
+            topic_partition_scroll: ScrollHandle::new(),
+            consumer_group_scroll: UniformListScrollHandle::new(),
             section: KafkaSection::Overview,
             cluster_search,
             topic_search,
+            consumer_group_search,
             message_search,
             name,
             bootstrap_servers,
@@ -335,6 +387,7 @@ impl KafkaView {
             loading_clusters: true,
             loading_runtime: false,
             loading_messages: false,
+            loading_consumer_groups: false,
             loading_configs: false,
             testing: false,
             saving: false,
@@ -343,6 +396,7 @@ impl KafkaView {
             exporting: false,
             runtime_request_id: 0,
             message_request_id: 0,
+            consumer_group_request_id: 0,
             config_request_id: 0,
             topic_operation_id: 0,
             topic_operation: false,
@@ -363,10 +417,14 @@ mod profile;
 mod remote_config;
 mod remote_config_render;
 mod render_config;
+mod render_consumer_group_helpers;
+mod render_consumer_groups;
 mod render_main;
+mod render_message_detail;
 mod render_messages;
 mod render_overview;
 mod render_sidebar;
+mod render_topic_detail;
 mod render_topics;
 #[cfg(test)]
 mod tests;

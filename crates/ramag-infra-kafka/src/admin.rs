@@ -144,10 +144,13 @@ fn describe_config_resource(
             "Kafka 未返回唯一的配置资源",
         )));
     }
-    let resource = resources
-        .into_iter()
-        .next()
-        .expect("checked resource count");
+    let Some(resource) = resources.into_iter().next() else {
+        return Err(DomainError::Kafka(KafkaError::new(
+            KafkaErrorCategory::Protocol,
+            "读取 Kafka 配置",
+            "Kafka 未返回配置资源",
+        )));
+    };
     let resource = resource.map_err(|code| {
         super::errors::map_kafka_error(rdkafka::error::KafkaError::AdminOp(code), "读取 Kafka 配置")
     })?;

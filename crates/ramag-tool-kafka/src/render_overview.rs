@@ -58,18 +58,23 @@ impl KafkaView {
                     .on_click(cx.listener(
                         move |this, _: &ClickEvent, window, cx| {
                             this.section = section;
+                            if section == KafkaSection::ConsumerGroups
+                                && !this.loading_runtime
+                                && let Some(config) = this.selected_config()
+                            {
+                                this.load_consumer_groups(config, window, cx);
+                            }
                             if section == KafkaSection::Config
                                 && this.selected_cluster_id.is_some()
                                 && this.config_entries.is_empty()
+                                && this.config_resource_name.read(cx).value().trim().is_empty()
                             {
-                                if this.config_resource_name.read(cx).value().trim().is_empty() {
-                                    set_value(
-                                        &this.config_resource_name,
-                                        this.selected_topic.clone().unwrap_or_default(),
-                                        window,
-                                        cx,
-                                    );
-                                }
+                                set_value(
+                                    &this.config_resource_name,
+                                    this.selected_topic.clone().unwrap_or_default(),
+                                    window,
+                                    cx,
+                                );
                             }
                             cx.notify();
                         },
@@ -80,6 +85,9 @@ impl KafkaView {
             KafkaSection::Overview => self.render_overview(cx).into_any_element(),
             KafkaSection::Topics => self.render_topics(window, cx).into_any_element(),
             KafkaSection::Messages => self.render_messages(window, cx).into_any_element(),
+            KafkaSection::ConsumerGroups => {
+                self.render_consumer_groups(window, cx).into_any_element()
+            }
             KafkaSection::Config => self.render_config(window, cx).into_any_element(),
         };
         v_flex()
