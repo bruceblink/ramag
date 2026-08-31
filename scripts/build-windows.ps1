@@ -29,7 +29,7 @@ if (-not (Test-Path -LiteralPath $CMakeToolchainFile -PathType Leaf)) {
 
 Set-Location $RepoDir
 $VisualStudio = Get-VisualStudio18Toolchain
-Write-Host "Using Visual Studio 18 2026 Build Tools: $($VisualStudio.InstallationPath) ($($VisualStudio.InstallationVersion))"
+Write-Host "Using Visual Studio 18 2026 MSVC: $($VisualStudio.InstallationPath) ($($VisualStudio.InstallationVersion)); toolset $($VisualStudio.ToolsetVersion)"
 
 function Find-Fxc {
     $Command = Get-Command fxc.exe -ErrorAction SilentlyContinue
@@ -184,8 +184,10 @@ try {
     # tree-sitter and other C build scripts must use the MSVC ABI for this target;
     # inherited GNU compiler variables would produce MinGW objects for link.exe.
     $CargoCommand = $CargoArgs -join " "
-    $Vs18Command = 'call "{0}" >nul && set "CMAKE_GENERATOR=NMake Makefiles" && set "CMAKE_GENERATOR_PLATFORM=" && set "CMAKE_GENERATOR_INSTANCE=" && set "CMAKE_GENERATOR_TOOLSET=" && set "CMAKE_TOOLCHAIN_FILE={2}" && cargo {1}' -f `
+    $VcVarsArguments = $VisualStudio.VcVarsArguments -join " "
+    $Vs18Command = 'call "{0}" {1} >nul && set "CMAKE_GENERATOR=NMake Makefiles" && set "CMAKE_GENERATOR_PLATFORM=" && set "CMAKE_GENERATOR_INSTANCE=" && set "CMAKE_GENERATOR_TOOLSET=" && set "CMAKE_TOOLCHAIN_FILE={3}" && cargo {2}' -f `
         $VisualStudio.VcVars64,
+        $VcVarsArguments,
         $CargoCommand,
         [System.IO.Path]::GetFullPath($CMakeToolchainFile)
     & cmd.exe /d /s /c $Vs18Command
