@@ -1,4 +1,5 @@
 #![cfg(feature = "cmake-build")]
+#![allow(clippy::panic)]
 
 use chrono::{Duration, Utc};
 use ramag_domain::entities::{
