@@ -4,6 +4,10 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, Root, v_flex};
 
+use super::core_history::{
+    CORE_HISTORY_HEIGHT, CORE_HISTORY_MIN_BAR_HEIGHT, CORE_HISTORY_MIN_BAR_RATIO,
+    core_histogram_bar_ratio,
+};
 use super::{
     HISTORY_CHART_POINTS, chart_value_ratio, core_grid_dimensions, format_bytes, format_percent,
     format_rate_pair, history_chart_points, history_max, ratio_percent, render_core_grid,
@@ -20,6 +24,28 @@ impl Render for CoreGridTestHost {
         v_flex().size_full().child(
             v_flex()
                 .debug_selector(|| "system-core-panel".to_owned())
+                .w_full()
+                .h(px(260.0))
+                .gap(px(6.0))
+                .p(px(12.0))
+                .child(div().h(px(20.0)).flex_none())
+                .child(render_core_grid(&usages, &histories, cx.theme())),
+        )
+    }
+}
+
+struct CoreHistogramTestHost;
+
+impl Render for CoreHistogramTestHost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let usages = (0..24)
+            .map(|index| if index == 0 { 0.0 } else { 50.0 })
+            .collect::<Vec<_>>();
+        let mut histories = vec![Vec::<[f64; 2]>::new(); usages.len()];
+        histories[0] = vec![[0.0, 0.0], [1.0, 25.0], [2.0, 100.0]];
+        v_flex().size_full().child(
+            v_flex()
+                .debug_selector(|| "system-core-histogram-panel".to_owned())
                 .w_full()
                 .h(px(260.0))
                 .gap(px(6.0))
@@ -61,6 +87,16 @@ fn chart_value_ratio_is_bounded_and_handles_invalid_values() {
     assert_eq!(chart_value_ratio(120.0, 100.0), 1.0);
     assert_eq!(chart_value_ratio(f64::NAN, 100.0), 0.0);
     assert_eq!(chart_value_ratio(10.0, 0.0), 0.0);
+}
+
+#[test]
+fn core_histogram_bar_ratio_keeps_low_values_visible() {
+    assert_eq!(core_histogram_bar_ratio(0.0), CORE_HISTORY_MIN_BAR_RATIO);
+    assert_eq!(
+        core_histogram_bar_ratio(f32::NAN),
+        CORE_HISTORY_MIN_BAR_RATIO
+    );
+    assert_eq!(core_histogram_bar_ratio(100.0), 1.0);
 }
 
 #[test]
@@ -115,4 +151,43 @@ fn core_grid_last_tile_is_not_clipped_by_the_fixed_window(cx: &mut TestAppContex
     assert!(last_tile.origin.y + last_tile.size.height <= panel.origin.y + panel.size.height);
     assert!(last_tile.origin.x + last_tile.size.width <= grid.origin.x + grid.size.width);
     assert!(last_tile.origin.y + last_tile.size.height <= grid.origin.y + grid.size.height);
+}
+
+#[gpui::test]
+#[allow(clippy::expect_used)]
+fn core_histogram_renders_visible_bars_inside_each_tile(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let host = cx.new(|_| CoreHistogramTestHost);
+        Root::new(host, window, cx)
+    });
+    cx.simulate_resize(size(px(640.0), px(260.0)));
+    cx.run_until_parked();
+
+    let graph = cx
+        .debug_bounds("system-core-history-1")
+        .expect("core histogram should be rendered");
+    let tile = cx
+        .debug_bounds("system-core-tile-1")
+        .expect("core histogram tile should be rendered");
+    let low_bar = cx
+        .debug_bounds("system-core-bar-1-1")
+        .expect("core histogram baseline bar should be rendered");
+    let high_bar = cx
+        .debug_bounds("system-core-bar-1-3")
+        .expect("core histogram high bar should be rendered");
+    assert!(graph.size.height >= px(CORE_HISTORY_HEIGHT));
+    assert!(
+        graph.origin.y >= tile.origin.y,
+        "histogram graph should stay inside tile: graph={graph:?}, tile={tile:?}"
+    );
+    assert!(
+        graph.origin.y + graph.size.height <= tile.origin.y + tile.size.height,
+        "histogram graph should stay inside tile: graph={graph:?}, tile={tile:?}"
+    );
+    assert!(low_bar.size.height >= px(CORE_HISTORY_MIN_BAR_HEIGHT));
+    assert!(
+        high_bar.size.height > low_bar.size.height,
+        "high CPU sample should produce a taller bar: graph={graph:?}, low={low_bar:?}, high={high_bar:?}"
+    );
 }

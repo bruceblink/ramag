@@ -9,6 +9,9 @@ use gpui_component::{Icon, h_flex, v_flex};
 use super::Notice;
 use crate::{DiskSnapshot, TerminateResult};
 
+mod core_history;
+use core_history::render_core_history;
+
 const HISTORY_CHART_POINTS: usize = 60;
 const HISTORY_CHART_HORIZONTAL_GRID_LINES: usize = 4;
 const HISTORY_CHART_VERTICAL_GRID_LINES: usize = 6;
@@ -235,9 +238,10 @@ fn render_core_tile(
             v_flex()
                 .relative()
                 .flex_1()
+                .w_full()
                 .min_w_0()
                 .min_h_0()
-                .child(render_core_history(history, usage, true, theme))
+                .child(render_core_history(index, history, usage, true, theme))
                 .child(
                     div()
                         .absolute()
@@ -266,50 +270,10 @@ fn render_core_tile(
         };
         tile = tile
             .child(header)
-            .child(render_core_history(history, usage, false, theme));
+            .child(render_core_history(index, history, usage, false, theme));
     }
 
     tile.w_full().h_full().min_w_0().min_h_0()
-}
-
-fn render_core_history(
-    history: &[[f64; 2]],
-    usage: f32,
-    compact: bool,
-    theme: &gpui_component::theme::Theme,
-) -> impl IntoElement {
-    let mut samples = history
-        .iter()
-        .rev()
-        .take(if compact { 8 } else { 24 })
-        .map(|point| point[1] as f32)
-        .collect::<Vec<_>>();
-    if samples.is_empty() {
-        samples.push(usage);
-    }
-
-    let mut graph = h_flex()
-        .flex_1()
-        .min_h_0()
-        .w_full()
-        .items_end()
-        .gap(px(1.0))
-        .px(px(2.0))
-        .py(px(2.0))
-        .overflow_hidden()
-        .bg(theme.muted);
-    for sample in samples.iter().rev() {
-        let height = (sample.clamp(0.0, 100.0) / 100.0).max(0.03);
-        graph = graph.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .min_h(px(1.0))
-                .h(relative(height))
-                .bg(theme.accent),
-        );
-    }
-    graph
 }
 
 pub(super) fn render_meter_row(
