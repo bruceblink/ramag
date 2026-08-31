@@ -7,6 +7,7 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 1200.0;
         let query = value(&self.topic_search, cx).to_lowercase();
         let visible: Vec<KafkaTopic> = self
             .topics
@@ -69,13 +70,14 @@ impl KafkaView {
         };
         let detail = selected_topic
             .map(|topic| {
-                self.render_topic_detail(topic, window, cx)
+                self.render_topic_detail(topic, compact, window, cx)
                     .into_any_element()
             })
             .unwrap_or_else(|| {
                 v_flex()
-                    .w(px(390.0))
-                    .flex_none()
+                    .when(compact, |panel| panel.w_full().flex_1().min_w_0())
+                    .when(!compact, |panel| panel.w(px(390.0)).flex_none())
+                    .min_h_0()
                     .items_center()
                     .justify_center()
                     .px(px(22.0))
@@ -98,37 +100,48 @@ impl KafkaView {
                     .flex_none()
                     .items_center()
                     .justify_between()
+                    .gap(px(12.0))
                     .child(
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap(px(2.0))
                             .child(
                                 div()
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .truncate()
                                     .child("Topics"),
                             )
                             .child(
                                 div()
+                                    .w_full()
+                                    .min_w_0()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
+                                    .truncate()
                                     .child("Topic 与 Partition 元数据来自 Broker"),
                             ),
                     )
                     .child(
-                        div().w(px(260.0)).child(
-                            ramag_ui::cleanable_input(
-                                &self.topic_search,
-                                "kafka-topic-search-clear",
-                                false,
-                                cx,
-                            )
-                            .small()
-                            .prefix(
-                                Icon::new(IconName::Search)
-                                    .small()
-                                    .text_color(theme.muted_foreground),
+                        div()
+                            .min_w_0()
+                            .when(compact, |input| input.flex_1())
+                            .when(!compact, |input| input.w(px(260.0)).flex_none())
+                            .child(
+                                ramag_ui::cleanable_input(
+                                    &self.topic_search,
+                                    "kafka-topic-search-clear",
+                                    false,
+                                    cx,
+                                )
+                                .small()
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .small()
+                                        .text_color(theme.muted_foreground),
+                                ),
                             ),
-                        ),
                     ),
             )
             .child(
@@ -151,10 +164,13 @@ impl KafkaView {
                             .w_full()
                             .items_center()
                             .justify_between()
+                            .when(compact, |row| row.flex_col().items_start())
                             .gap(px(12.0))
                             .child(
                                 v_flex()
+                                    .flex_1()
                                     .min_w_0()
+                                    .when(compact, |copy| copy.flex_initial().w_full())
                                     .gap(px(2.0))
                                     .child(
                                         div()
@@ -198,17 +214,18 @@ impl KafkaView {
                     .child(
                         h_flex()
                             .w_full()
-                            .items_end()
+                            .when(compact, |row| row.flex_col().items_stretch())
+                            .when(!compact, |row| row.items_end())
                             .gap(px(10.0))
                             .child(field(
                                 "初始 Partition 数量",
                                 Input::new(&self.topic_create_partitions).small(),
-                                150.0,
+                                if compact { 0.0 } else { 150.0 },
                             ))
                             .child(field(
                                 "副本因子",
                                 Input::new(&self.topic_create_replication_factor).small(),
-                                120.0,
+                                if compact { 0.0 } else { 120.0 },
                             ))
                             .child(
                                 ramag_ui::clickable_button("kafka-topic-create")
@@ -217,6 +234,7 @@ impl KafkaView {
                                     .small()
                                     .icon(IconName::Plus)
                                     .label("创建 Topic")
+                                    .when(compact, |button| button.w_full())
                                     .disabled(admin_disabled)
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.begin_create_topic(window, cx);
@@ -237,8 +255,7 @@ impl KafkaView {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    // h_flex defaults to centered cross-axis items; stretch both panes so the
-                    // virtual Topic list receives the full viewport height.
+                    .when(compact, |layout| layout.flex_col())
                     .items_stretch()
                     .gap(px(14.0))
                     .child(
@@ -305,6 +322,7 @@ impl KafkaView {
     pub(super) fn render_topic_detail(
         &self,
         topic: &KafkaTopic,
+        compact: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -336,8 +354,8 @@ impl KafkaView {
             );
         }
         v_flex()
-            .w(px(390.0))
-            .flex_none()
+            .when(compact, |panel| panel.w_full().flex_1().min_w_0())
+            .when(!compact, |panel| panel.w(px(390.0)).flex_none())
             .min_h_0()
             .gap(px(10.0))
             .child(section_heading(
@@ -357,12 +375,13 @@ impl KafkaView {
             .child(
                 h_flex()
                     .w_full()
-                    .items_end()
+                    .when(compact, |row| row.flex_col().items_stretch())
+                    .when(!compact, |row| row.items_end())
                     .gap(px(8.0))
                     .child(field(
                         "目标 Partition 总数",
                         Input::new(&self.topic_target_partitions).small(),
-                        170.0,
+                        if compact { 0.0 } else { 170.0 },
                     ))
                     .child(
                         ramag_ui::clickable_button("kafka-topic-expand")
@@ -371,6 +390,7 @@ impl KafkaView {
                             .small()
                             .icon(IconName::Plus)
                             .label("增加 Partition")
+                            .when(compact, |button| button.w_full())
                             .disabled(admin_disabled || topic.internal)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.begin_expand_topic(window, cx);
@@ -383,6 +403,7 @@ impl KafkaView {
                             .small()
                             .icon(IconName::Delete)
                             .label("删除 Topic")
+                            .when(compact, |button| button.w_full())
                             .disabled(admin_disabled || topic.internal)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.begin_delete_topic(window, cx);
@@ -396,6 +417,7 @@ impl KafkaView {
                     .small()
                     .icon(IconName::Search)
                     .label("浏览消息")
+                    .when(compact, |button| button.w_full())
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.section = KafkaSection::Messages;
                         cx.notify();

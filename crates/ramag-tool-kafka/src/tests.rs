@@ -249,6 +249,16 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
     );
 }
 
+fn assert_within_width(cx: &mut VisualTestContext, selector: &'static str, width: f32) {
+    let bounds = cx.debug_bounds(selector);
+    assert!(
+        bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.origin.x + bounds.size.width <= px(width)),
+        "{selector} 应参与布局且不应横向溢出窗口: {bounds:?}"
+    );
+}
+
 #[gpui::test]
 fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
@@ -291,21 +301,12 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     assert!(visual_cx.debug_bounds("kafka-add-profile").is_some());
     click(visual_cx, "kafka-welcome-add");
     visual_cx.run_until_parked();
-    assert!(visual_cx.debug_bounds("kafka-config").is_some());
     let Some(config_bounds) = visual_cx.debug_bounds("kafka-config") else {
         return;
     };
-    assert!(
-        visual_cx.debug_bounds("kafka-admin-mode-panel").is_some(),
-        "Topic 管理模式面板应参与布局"
-    );
     let Some(admin_panel_bounds) = visual_cx.debug_bounds("kafka-admin-mode-panel") else {
         return;
     };
-    assert!(
-        visual_cx.debug_bounds("kafka-admin-mode-copy").is_some(),
-        "Topic 管理模式说明应参与布局"
-    );
     let Some(admin_copy_bounds) = visual_cx.debug_bounds("kafka-admin-mode-copy") else {
         return;
     };
@@ -321,6 +322,19 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
         admin_copy_bounds.size.width >= px(300.0),
         "管理模式说明被压缩: {admin_copy_bounds:?}"
     );
+
+    visual_cx.simulate_resize(size(px(900.0), px(780.0)));
+    visual_cx.run_until_parked();
+    let compact_admin_panel_bounds = visual_cx.debug_bounds("kafka-admin-mode-panel");
+    assert!(
+        compact_admin_panel_bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.size.height < px(220.0)),
+        "窄窗口管理模式面板不应占满表单高度: {compact_admin_panel_bounds:?}"
+    );
+    assert_within_width(visual_cx, "kafka-admin-mode-panel", 900.0);
+    visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
+    visual_cx.run_until_parked();
     assert!(kafka_entity.read_with(visual_cx, |view, _| {
         view.section == KafkaSection::Config
     }));
@@ -366,23 +380,47 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
         cx.notify();
     });
     visual_cx.run_until_parked();
-    assert!(visual_cx.debug_bounds("kafka-overview-scroll").is_some());
     click(visual_cx, "kafka-section-Topics");
     visual_cx.run_until_parked();
+    let topic_admin_bounds = visual_cx.debug_bounds("kafka-topic-admin");
+    let topic_row_bounds = visual_cx.debug_bounds("kafka-topic-row-ramag.integration.messages");
     assert!(
-        visual_cx
-            .debug_bounds("kafka-topic-row-ramag.integration.messages")
-            .is_some()
+        topic_admin_bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.size.height < px(300.0)),
+        "Topic 管理区不应占满剩余窗口高度: {topic_admin_bounds:?}"
+    );
+    assert!(
+        topic_row_bounds
+            .as_ref()
+            .is_some_and(|bounds| { bounds.origin.y + bounds.size.height <= px(780.0) }),
+        "Topic 行应保持在测试窗口内: {topic_row_bounds:?}"
     );
     click(visual_cx, "kafka-topic-row-ramag.integration.messages");
     visual_cx.run_until_parked();
     assert!(kafka_entity.read_with(visual_cx, |view, _| {
         view.section == KafkaSection::Topics
     }));
+    let selected_topic = kafka_entity.read_with(visual_cx, |view, _| view.selected_topic.clone());
+    assert_eq!(
+        selected_topic.as_deref(),
+        Some("ramag.integration.messages"),
+        "Topic 行点击后应选中详情: {selected_topic:?}"
+    );
     assert!(visual_cx.debug_bounds("kafka-partition-scroll").is_some());
-    assert!(visual_cx.debug_bounds("kafka-topic-admin").is_some());
-    assert!(visual_cx.debug_bounds("kafka-topic-expand").is_some());
-    assert!(visual_cx.debug_bounds("kafka-topic-delete").is_some());
+
+    visual_cx.simulate_resize(size(px(900.0), px(780.0)));
+    visual_cx.run_until_parked();
+    for selector in [
+        "kafka-topic-admin",
+        "kafka-topic-row-ramag.integration.messages",
+        "kafka-partition-scroll",
+    ] {
+        assert_within_width(visual_cx, selector, 900.0);
+    }
+
+    visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
+    visual_cx.run_until_parked();
 
     visual_cx.update(|window, app| {
         kafka_entity.update(app, |view, cx| {

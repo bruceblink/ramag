@@ -137,7 +137,7 @@ pub(super) fn parse_usize_input(
         .map_err(|_| format!("{label} 必须是 1 - {MAX_KAFKA_SCAN_RECORDS} 之间的整数"))
 }
 
-pub(super) fn field<E: IntoElement>(label: &'static str, input: E, width: f32) -> impl IntoElement {
+pub(super) fn field<E: IntoElement>(label: &'static str, input: E, width: f32) -> gpui::Div {
     let control = if width > 0.0 {
         div().w(px(width)).flex_none().child(input)
     } else {
@@ -146,7 +146,9 @@ pub(super) fn field<E: IntoElement>(label: &'static str, input: E, width: f32) -
     v_flex()
         .flex_none()
         .gap(px(5.0))
-        .when(width == 0.0, |this| this.w_full().flex_1().min_w_0())
+        // A field can be used in both horizontal rows and vertical forms. Keep its
+        // default flex behavior neutral; the horizontal caller opts into expansion.
+        .when(width == 0.0, |this| this.w_full().min_w_0())
         .child(
             div()
                 .w_full()
@@ -155,6 +157,10 @@ pub(super) fn field<E: IntoElement>(label: &'static str, input: E, width: f32) -
                 .child(label),
         )
         .child(control)
+}
+
+pub(super) fn flexible_field<E: IntoElement>(label: &'static str, input: E) -> gpui::Div {
+    field(label, input, 0.0).flex_1().min_w_0()
 }
 
 pub(super) fn section_heading(
