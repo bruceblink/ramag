@@ -263,7 +263,7 @@ Kafka ACL 首期支持：
 - `RdkafkaDriver` 使用手动分配的临时消费者组读取 Partition，关闭自动提交和自动 Offset 存储，不加入或推进用户业务消费者组；读取、搜索和时间范围转换均在有界后台任务中完成。
 - Kafka 工作区提供集群配置、概览、Broker、Topic/Partition、消息表、Key/Value/Headers 详情、UTF-8/Hex/Base64 查看、JSON 导出和取消控制；Kafka 资源写操作与消息生产不在本阶段开放。
 - 2026-08-30 GPUI headless 验收测试通过，覆盖真实数据状态渲染、消息页切换、读取控件和取消后的旧任务失效；本机 `ramag.exe` 使用 VS18 2026 直接 `cargo build` 构建并打开 `Ramag — Kafka` 窗口，原生截图确认消息筛选控件未越界。
-- 2026-08-30 Docker 集成测试通过 2 项，覆盖生产 `RdkafkaDriver` 的元数据、Topic/Partition 水位、Offset/时间读取、Value 搜索和记录数边界。
+- 2026-08-30 Docker 集成测试通过 2 项，覆盖生产 `RdkafkaDriver` 的元数据、Topic/Partition 读取位置、Offset/时间读取、Value 搜索和记录数边界。
 - 2026-08-30 Windows 截图复核发现侧栏“+”和空状态“新建集群”按钮点击后仍停留在欢迎页。现已修正草稿状态的配置页路由，并以 GPUI 点击回归测试覆盖两个入口；原生窗口已复验配置页入口和消息页筛选字段切换。
 
 阶段 11-13 实施记录：
@@ -318,11 +318,11 @@ Docker 测试不得使用开发者真实集群、真实账号或真实业务消�
 
 每个小功能都必须在提交前执行与风险匹配的测试，并从 workspace 根目录通过：
 
-```powershell
-cargo fmt --all -- --check
-cargo check --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --all
+```text
+cargo fmt-check
+cargo check-all
+cargo clippy-all
+cargo test-all
 git diff --check
 ```
 

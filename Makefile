@@ -19,19 +19,21 @@
 help:
 	@printf "\033[1mRamag — 常用命令\033[0m\n\n"
 	@printf "  \033[36m开发\033[0m\n"
-	@printf "    make develop        cargo run -p ramag-bin（debug，编译快）\n"
-	@printf "    make release        本地运行优化构建，不创建或发布安装包\n"
+	@printf "    cargo dev           运行 Debug 桌面应用（Windows/Linux/macOS 相同）\n"
+	@printf "    cargo dev-release   运行 Release 桌面应用（Windows/Linux/macOS 相同）\n"
+	@printf "    make develop        兼容入口，等同于 cargo dev\n"
+	@printf "    make release        兼容入口，等同于 cargo dev-release\n"
 	@printf "    make install-hooks  启用提交前源码尺寸检查\n"
 	@printf "\n  \033[36m检查\033[0m\n"
-	@printf "    make check          cargo check --all-targets\n"
+	@printf "    cargo check-all     cargo check --workspace --all-targets\n"
 	@printf "    make size-check     检查 Rust 文件不超过 600 行\n"
 	@printf "    make log-check      检查 tracing 操作与错误上下文\n"
 	@printf "    make fmt            cargo fmt --all\n"
-	@printf "    make fmt-check      cargo fmt --all -- --check（CI 用）\n"
-	@printf "    make clippy         cargo clippy --all-targets -- -D warnings\n"
-	@printf "    make test           cargo test --all\n"
+	@printf "    cargo fmt-check     cargo fmt --all -- --check\n"
+	@printf "    cargo clippy-all    cargo clippy --workspace --all-targets -- -D warnings\n"
+	@printf "    cargo test-all      cargo test --workspace\n"
 	@printf "\n  \033[36m四数据库集成测试（Docker）\033[0m\n"
-	@printf "    make db-test        启动四库 → 重建大数据 → 四库测试与质量门禁\n"
+	@printf "    make db-test        启动四库 → 重建大数据 → 四库测试与相关检查\n"
 	@printf "    make db-test-up     仅启动四库并等待健康检查\n"
 	@printf "    make db-test-seed   重建专用测试卷中的全部测试数据\n"
 	@printf "    make db-test-run    复用现有数据运行四个数据库 crate 测试\n"
@@ -59,10 +61,10 @@ help:
 
 # === 开发 ============================================================
 develop:
-	cargo run -p ramag-bin
+	cargo dev
 
 release:
-	cargo run --release -p ramag-bin
+	cargo dev-release
 
 ifeq ($(OS),Windows_NT)
 install-hooks:
@@ -74,7 +76,7 @@ endif
 
 # === 检查 ============================================================
 check: size-check log-check
-	cargo check --all-targets
+	cargo check-all
 
 size-check:
 	./scripts/check-source-size.sh
@@ -86,13 +88,13 @@ fmt:
 	cargo fmt --all
 
 fmt-check:
-	cargo fmt --all -- --check
+	cargo fmt-check
 
 clippy:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy-all
 
 test:
-	cargo test --all
+	cargo test-all
 
 # === 四数据库集成测试 ===============================================
 # 编排、凭据生成与数据构建均集中在 scripts/db-test，避免 Makefile 承载实现细节。
@@ -120,7 +122,7 @@ db-test-down:
 db-test-clean:
 	./scripts/db-test/db-test.sh clean
 
-# 脚本内部复用的数据库范围门禁；下划线 target 不作为日常入口展示。
+# 脚本内部复用的数据库范围检查；下划线 target 不作为日常入口展示。
 _db-test-test:
 	cargo test \
 		-p ramag-infra-mysql \

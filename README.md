@@ -45,7 +45,7 @@ The four primary workspaces—database, Git, SSH / SFTP, and object storage—ar
 |---|---|
 | 支持平台 | Linux x86_64、macOS 12+（Apple Silicon / Intel）、Windows 10/11 x64 |
 | 公开发布 | GitHub Releases 提供三平台安装包与 `SHA256SUMS.txt` |
-| 质量门禁 | GitHub Actions 在 Linux、macOS、Windows 执行格式、编译、Clippy、测试与打包校验 |
+| 发布前检查 | GitHub Actions 在 Linux、macOS、Windows 执行格式、编译、Clippy、测试与打包校验 |
 | 数据边界 | 连接配置、凭据与剪贴历史保存于本机；Ramag 不提供托管服务，也不主动上传这些数据 |
 
 Ramag is actively maintained. Contributions, reproducible feedback, and security reports are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
@@ -99,21 +99,28 @@ macOS 还需要 Xcode Command Line Tools：
 xcode-select --install
 ```
 
-克隆并运行：
+克隆并运行。Windows、Linux 和 macOS 使用同一条命令：
 
-```bash
+```text
 git clone https://github.com/tools-rs/ramag.git
 cd ramag
-make develop
+cargo dev
 ```
 
-Windows 源码构建统一使用 Visual Studio 18 2026 Build Tools，并需要其 C++ 工作负载与 Windows 10/11 SDK，然后在 PowerShell 中运行：
+日常开发命令由 Cargo 配置统一提供：
 
-```powershell
-cargo run -p ramag-bin
+```text
+cargo dev           # 运行 Debug 桌面应用
+cargo dev-release   # 运行 Release 桌面应用
+cargo fmt-check     # 检查格式
+cargo check-all     # 检查 workspace 所有 target
+cargo clippy-all    # 运行 Clippy，警告视为错误
+cargo test-all      # 运行 workspace 测试
 ```
 
-Linux 源码构建和打包所需系统依赖见[桌面端构建与发布](docs/desktop-release.md#本地-linux-打包)。首次构建需要下载 GPUI 等依赖，耗时会明显长于后续增量构建。
+三个平台仍需要各自的原生开发组件：Windows 需要 Visual Studio 18 2026 Build Tools、C++ 工作负载和 Windows 10/11 SDK；macOS 需要 Xcode Command Line Tools；Linux 需要桌面开发库，完整列表见[桌面端构建与发布](docs/desktop-release.md#本地-linux-打包)。Rust nightly 版本、Cargo.lock 和日常命令由仓库统一管理。首次构建需要下载 GPUI 等依赖，耗时会明显长于后续增量构建。
+
+Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 启动终端，确保 MSVC 和 Windows SDK 已加入当前环境；环境准备好后仍执行上面的同一组 `cargo` 命令。Windows 原生打包脚本会自行初始化工具链，不改变日常开发入口。
 
 ## 功能细节
 
@@ -320,25 +327,26 @@ ramag-bin              应用入口、依赖注入、快捷键与平台生命周
 
 ## 开发与验证
 
-日常任务统一通过仓库 `Makefile` 执行，运行 `make` 可以查看完整列表：
+日常编译和验证统一通过 Cargo 别名执行；`Makefile` 保留为打包脚本和旧入口的兼容层：
 
 | 命令 | 用途 |
 |---|---|
-| `make develop` | Debug 模式运行桌面应用 |
-| `make release` | Release 模式在本机运行，不生成安装包 |
-| `make check` | 检查所有 target 是否可编译 |
-| `make fmt-check` | 检查 Rust 格式 |
-| `make clippy` | 对所有 target 执行 Clippy，警告视为错误 |
-| `make test` | 运行整个 workspace 测试 |
-| `make db-test` | 用 Docker 启动并填充四类数据库，执行数据库测试与质量门禁 |
+| `cargo dev` | Debug 模式运行桌面应用 |
+| `cargo dev-release` | Release 模式在本机运行，不生成安装包 |
+| `cargo check-all` | 检查 workspace 所有 target 是否可编译 |
+| `cargo fmt-check` | 检查 Rust 格式 |
+| `cargo clippy-all` | 对 workspace 所有 target 执行 Clippy，警告视为错误 |
+| `cargo test-all` | 运行整个 workspace 测试 |
+| `make develop` / `make release` | 兼容入口，分别转发到 `cargo dev` / `cargo dev-release` |
+| `make db-test` | 用 Docker 启动并填充四类数据库，执行数据库测试与相关检查 |
 
 提交改动前建议依次运行：
 
 ```bash
-make fmt-check
-make check
-make clippy
-make test
+cargo fmt-check
+cargo check-all
+cargo clippy-all
+cargo test-all
 ```
 
 外部数据库集成测试在缺少 `RAMAG_TEST_*` 环境变量时会自动跳过；需要完整验证时使用 `make db-test`，它会管理专用 Docker 容器、测试数据与本地测试凭据。`make db-test-clean` 会删除这些专用容器、数据卷和凭据，属于破坏性操作，请确认后再执行。

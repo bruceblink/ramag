@@ -22,6 +22,8 @@ Windows 统一使用 Visual Studio 18 2026 Build Tools，还需要：
 - Visual Studio 18 2026 Build Tools 的 C++ 工作负载
 - Windows 10/11 SDK
 
+Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 启动终端，确保 MSVC 和 Windows SDK 已加入当前环境；环境准备好后，运行、检查和测试仍使用下文的同一组 `cargo` 命令。
+
 macOS 还需要 Xcode Command Line Tools：
 
 ```bash
@@ -40,17 +42,11 @@ ssh -V
 
 ## 2. 建立可运行基线
 
-在修改代码前，先从当前分支启动未修改的应用：
+在修改代码前，先从当前分支启动未修改的应用。Windows、Linux 和 macOS 都执行同一条命令：
 
-```powershell
+```text
 cd ramag
-cargo run -p ramag-bin
-```
-
-macOS 或提供 Make 的开发环境也可以使用：
-
-```bash
-make develop
+cargo dev
 ```
 
 第一次构建需要下载并编译 GPUI 等依赖，耗时会明显长于后续增量构建。启动成功后，建议实际操作一次以下页面：
@@ -110,7 +106,7 @@ ramag-bin                    最外层组合入口
 正常启动链路如下：
 
 ```text
-cargo run -p ramag-bin
+cargo dev
     ↓
 main()
     ↓
@@ -203,7 +199,7 @@ open_main_window()
 - 调整一个已有页面的交互或布局
 - 修复一个范围明确的小问题
 - 为纯函数补充边界处理和单元测试
-- 给现有 Service 增加一个不改变跨层契约的小能力
+- 给现有 Service 增加一个不改变跨层接口约定的小能力
 
 不建议从以下任务开始：
 
@@ -213,7 +209,7 @@ open_main_window()
 - 统一 SQL、KV、文档数据库等语义不同的接口
 - 升级 GPUI 或重新解析整个 `Cargo.lock`
 
-这些任务通常会同时穿过 Domain、App、Infra、Tool 和 Bin，需要先充分理解现有契约。
+这些任务通常会同时穿过 Domain、App、Infra、Tool 和 Bin，需要先充分理解现有接口约定。
 
 ## 8. 开发时必须守住的边界
 
@@ -239,9 +235,9 @@ git log -10 --oneline
 
 ### 9.2 开发过程中
 
-优先执行当前 crate 的快速检查：
+优先执行当前 crate 的快速检查。以下命令在三个平台的写法相同：
 
-```powershell
+```text
 cargo fmt --all
 cargo check -p ramag-ui --all-targets
 cargo test -p ramag-ui
@@ -250,27 +246,20 @@ cargo clippy -p ramag-ui --all-targets -- -D warnings
 
 上例以 `ramag-ui` 为例，开发其他模块时替换为实际 crate 名称。
 
-修改跨 crate 契约时，应同时测试直接生产者和消费者。
+修改跨 crate 接口约定时，应同时测试直接生产者和消费者。
 
 ### 9.3 提交前
 
-完整质量门禁为：
+完整提交前检查为：
 
-```powershell
-cargo fmt --all -- --check
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo test --all
+```text
+cargo fmt-check
+cargo check-all
+cargo clippy-all
+cargo test-all
 ```
 
-也可以在提供 Make 的环境中执行：
-
-```bash
-make fmt-check
-make check
-make clippy
-make test
-```
+`Makefile` 只作为兼容入口；`make develop`、`make release`、`make fmt-check`、`make check`、`make clippy` 和 `make test` 会转发或补充 Cargo 命令。打包和 Docker 数据库测试仍使用各自的脚本入口。
 
 数据库基础设施改动还应运行真实数据库集成测试：
 
@@ -333,6 +322,6 @@ GPUI 的异步执行环境不是 Tokio。数据库、Redis、MongoDB 和 SSH 已
 
 - [ ] 没有破坏 Domain、App、Infra、Tool 的依赖方向
 - [ ] 已运行相关 crate 的格式、检查、测试和 Clippy
-- [ ] 跨层契约改动已覆盖生产者和消费者
+- [ ] 跨层接口约定改动已覆盖生产者和消费者
 - [ ] 外部数据库、SSH 或平台功能已说明真实环境验证情况
 - [ ] 提交只包含一个可独立评审的功能或修复

@@ -719,7 +719,7 @@ P1 的验收条件：执行计划解析失败时仍能复制原文；结构迁�
 | 4 | `codex/feat/schema-migration-review` | 依赖顺序、重命名候选、脚本指纹和逐段复核 | Schema 对比测试、MySQL/PostgreSQL 回放、生产只读检查 |
 | 5 | `codex/feat/query-manager-export` | 查询管理、流式导出和有界取消 | 大结果集测试、取消/内存预算测试、导出文件校验 |
 
-每个 PR 至少包含 `cargo fmt --all -- --check`、目标 crate 测试、`cargo check --workspace --all-targets`、`git diff --check` 和源码尺寸检查。涉及数据库真实行为时，补充 MySQL/PostgreSQL 集成环境；涉及 GPUI 布局、滚动、弹窗或交互时，使用 Windows computer-use 进行真实窗口检查，静态测试不能替代这项证据。
+每个 PR 至少包含 `cargo fmt-check`、目标 crate 测试、`cargo check-all`、`git diff --check` 和源码尺寸检查。涉及数据库真实行为时，补充 MySQL/PostgreSQL 集成环境；涉及 GPUI 布局、滚动、弹窗或交互时，使用 Windows computer-use 进行真实窗口检查，静态测试不能替代这项证据。
 
 ### 10.6 明确不做的事情
 

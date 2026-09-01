@@ -322,7 +322,7 @@ run_workspace_tests() {
     verify_seed
     export_test_environment
     log "Running the complete workspace test suite with all database integrations enabled"
-    (cd "$REPO_DIR" && make test)
+    (cd "$REPO_DIR" && cargo test-all)
 }
 
 show_status() {

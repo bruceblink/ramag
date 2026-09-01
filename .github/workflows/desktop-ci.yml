@@ -83,16 +83,19 @@ jobs:
           make linux-package-test
 
       - name: Check formatting
-        run: make fmt-check
+        run: cargo fmt-check
 
       - name: Check all targets
-        run: make check
+        run: cargo check-all
+
+      - name: Check source conventions
+        run: make size-check log-check
 
       - name: Lint all targets
-        run: make clippy
+        run: cargo clippy-all
 
       - name: Test workspace
-        run: make test
+        run: cargo test-all
 
   macos-quality:
     name: macOS quality gates
@@ -134,16 +137,19 @@ jobs:
         run: make mac-package-test
 
       - name: Check formatting
-        run: make fmt-check
+        run: cargo fmt-check
 
       - name: Check all targets
-        run: make check
+        run: cargo check-all
+
+      - name: Check source conventions
+        run: make size-check log-check
 
       - name: Lint all targets
-        run: make clippy
+        run: cargo clippy-all
 
       - name: Test workspace
-        run: make test
+        run: cargo test-all
 
   windows-quality:
     name: Windows x64 quality gates
@@ -191,13 +197,13 @@ jobs:
           Invoke-Pester -Configuration $PesterConfig
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt-check
 
       - name: Check all targets
-        run: cargo check --all-targets
+        run: cargo check-all
 
       - name: Lint all targets
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy-all
 
       - name: Test workspace
-        run: cargo test --all
+        run: cargo test-all

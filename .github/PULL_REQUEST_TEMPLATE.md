@@ -6,10 +6,10 @@
 
 <!-- 列出实际运行的命令和人工验证的平台。未运行的检查请说明原因。 -->
 
-- [ ] `make fmt-check`
-- [ ] `make check`
-- [ ] `make clippy`
-- [ ] `make test`
+- [ ] `cargo fmt-check`
+- [ ] `cargo check-all`
+- [ ] `cargo clippy-all`
+- [ ] `cargo test-all`
 - [ ] 已完成与本次改动相关的人工验证
 
 ## 检查清单

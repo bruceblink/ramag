@@ -68,8 +68,8 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
 - `RedisService`：Redis 侧 facade
 - `MongoService`：MongoDB 侧 facade（连接 CRUD + 文档操作 + 查询历史，与 SQL 共用同一张 history 表）
 - `SshService`：SSH 配置、连接测试、SFTP、传输队列与 JumpServer 导入编排
-- `ObjectStorageService`：COS/OSS 账号生命周期、必填 Bucket 挂载验证、对象分页、只读门禁、传输队列与加密工作区
-- `DataSyncService`：MySQL、PostgreSQL、Redis 与 MongoDB 同类型连接的数据同步、预检、范围门禁与结果汇总
+- `ObjectStorageService`：COS/OSS 账号生命周期、必填 Bucket 挂载验证、对象分页、只读限制、传输队列与加密工作区
+- `DataSyncService`：MySQL、PostgreSQL、Redis 与 MongoDB 同类型连接的数据同步、预检、范围检查与结果汇总
 - `UpdateService`：版本比较、平台产物选择、更新下载状态与取消编排
 - `id_conversion`：结果搜索使用的双向 ID 转换，隔离内置算法和外部进程边界
 - `ToolRegistry`：管理已注册的 Tool
@@ -289,7 +289,7 @@ features = ["rustls-tls", "bson-2", "compat-3-3-0"]
 | Infra（SSH） | 单元测试 + 可选 OpenSSH 集成测试 | 外部服务测试按环境跳过 |
 | UI | GPUI 无头渲染与状态回归测试 + 手动验收 | 覆盖关键布局、焦点和交互状态 |
 
-仓库已配置 Windows / macOS 桌面打包发布工作流；常规代码质量门禁仍需在提交前本地运行 `make fmt-check`、`make check`、`make clippy`、`make test`。数据库集成测试需配置 `RAMAG_TEST_*` 环境变量；SSH 集成测试需要可用的 OpenSSH 测试端点。
+仓库已配置 Windows / macOS 桌面打包发布工作流；常规提交前检查应在本地运行 `cargo fmt-check`、`cargo check-all`、`cargo clippy-all`、`cargo test-all`。数据库集成测试需配置 `RAMAG_TEST_*` 环境变量；SSH 集成测试需要可用的 OpenSSH 测试端点。
 
 ## 参考资料
 

@@ -1,3 +1,12 @@
 # Windows 便携版静态链接 MSVC CRT，避免目标机器必须预装 VC++ Redistributable。
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# 这些别名是跨平台的日常开发入口，直接调用 Cargo，因此三个平台都不依赖 Make。
+[alias]
+dev = ["run", "--locked", "--package", "ramag-bin"]
+dev-release = ["run", "--release", "--locked", "--package", "ramag-bin"]
+fmt-check = ["fmt", "--all", "--", "--check"]
+check-all = ["check", "--workspace", "--all-targets", "--locked"]
+clippy-all = ["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]
+test-all = ["test", "--workspace", "--locked"]

@@ -12,7 +12,7 @@
 
 | 入口 | 用途 | 是否发布 |
 |---|---|---:|
-| `make release` | 本地运行当前平台的优化构建 | 否 |
+| `cargo dev-release` | 本地运行当前平台的优化构建 | 否 |
 | `make win-debug` | macOS 交叉编译 Windows debug，尽早发现编译问题 | 否 |
 | `scripts/package-windows.ps1` | Windows 本机复现完整 Release 打包 | 否 |
 | `make dmg-*` | macOS 本机生成指定架构的开发 DMG | 否 |
@@ -20,7 +20,7 @@
 | `make linux-package` | Linux x86_64 本机生成 deb 与 AppImage | 否 |
 | `Desktop Release` Action | 并行构建三个平台；`v*` 标签自动发布，也可指定已有标签手动重试 | 是 |
 
-`make release` 不创建安装包，也不代表对外发布。
+`cargo dev-release` 不创建安装包，也不代表对外发布；`make release` 仍可作为兼容入口。
 
 最终 GitHub Release 固定包含：
 
@@ -149,7 +149,7 @@ Actions → Desktop Release → Run workflow
 ### 正式发布
 
 1. 修改根 `Cargo.toml` 的 workspace 版本，并通过项目检查同步 `Cargo.lock`。
-2. 完成本地质量门禁、手动 Action 和真实桌面验收。
+2. 完成本地发布前检查、手动 Action 和真实桌面验收。
 3. 创建与 Cargo 版本一致的带注释标签，例如 `v0.0.5`；标签注释会作为 GitHub Release 说明。
 4. 推送标签，等待三个平台均通过后自动发布。
 
@@ -162,7 +162,7 @@ Actions → Desktop Release → Run workflow
 1. workspace 与锁文件版本均为 `0.0.5`，`cargo metadata --locked --no-deps` 返回相同版本。
 2. `CHANGELOG.md` 已记录 `0.0.5 - 2026-08-19` 的用户可见变化，并保留 `v0.0.4...v0.0.5` 对比链接。
 3. 发布公告与 README 只描述本版可验证的更新，不把 v0.0.4 已发布能力写成本版首次新增。
-4. 本地 macOS 质量门禁和发布脚本回归检查已完成；正式桌面产物仍由 `Desktop Release` 工作流生成并复核。
+4. 本地 macOS 发布前检查和发布脚本回归检查已完成；正式桌面产物仍由 `Desktop Release` 工作流生成并复核。
 5. 正式标签为带注释的 `v0.0.5`；只有实际生成并通过校验的产物才可进入 GitHub Release。
 
 ### 0.0.4 发布记录

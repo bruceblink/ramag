@@ -12,15 +12,17 @@
 
 开发环境需要 Git、rustup 和当前平台的构建工具。仓库通过 `rust-toolchain.toml` 固定 Rust 工具链；完整的首次运行说明见 [开发入门指南](docs/development-guide.md)。
 
-常用命令：
+Windows、Linux 和 macOS 使用相同的 Cargo 命令：
 
 ```bash
-make develop
-make fmt-check
-make check
-make clippy
-make test
+cargo dev
+cargo fmt-check
+cargo check-all
+cargo clippy-all
+cargo test-all
 ```
+
+仓库通过 `rust-toolchain.toml` 固定 Rust nightly，通过 `.cargo/config.toml` 提供这些别名。`Makefile` 仍保留给打包、数据库测试和旧入口使用；日常应用运行与 Rust 质量检查不需要安装 Make。
 
 首次克隆或切换到新的工作区后，启用提交前源码尺寸检查：
 
