@@ -4,10 +4,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, Root, v_flex};
 
-use super::core_history::{
-    CORE_HISTORY_HEIGHT, CORE_HISTORY_MIN_BAR_HEIGHT, CORE_HISTORY_MIN_BAR_RATIO,
-    core_histogram_bar_ratio,
-};
+use super::core_history::{core_chart_value_ratio, core_history_points};
 use super::{
     HISTORY_CHART_POINTS, chart_value_ratio, core_grid_dimensions, format_bytes, format_percent,
     format_rate_pair, history_chart_points, history_max, ratio_percent, render_core_grid,
@@ -34,18 +31,18 @@ impl Render for CoreGridTestHost {
     }
 }
 
-struct CoreHistogramTestHost;
+struct CoreLineChartTestHost;
 
-impl Render for CoreHistogramTestHost {
+impl Render for CoreLineChartTestHost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let usages = (0..24)
+        let usages = (0..12)
             .map(|index| if index == 0 { 0.0 } else { 50.0 })
             .collect::<Vec<_>>();
         let mut histories = vec![Vec::<[f64; 2]>::new(); usages.len()];
         histories[0] = vec![[0.0, 0.0], [1.0, 25.0], [2.0, 100.0]];
         v_flex().size_full().child(
             v_flex()
-                .debug_selector(|| "system-core-histogram-panel".to_owned())
+                .debug_selector(|| "system-core-line-chart-panel".to_owned())
                 .w_full()
                 .h(px(260.0))
                 .gap(px(6.0))
@@ -90,13 +87,15 @@ fn chart_value_ratio_is_bounded_and_handles_invalid_values() {
 }
 
 #[test]
-fn core_histogram_bar_ratio_keeps_low_values_visible() {
-    assert_eq!(core_histogram_bar_ratio(0.0), CORE_HISTORY_MIN_BAR_RATIO);
+fn core_history_points_keep_latest_samples_and_bound_values() {
+    let history = vec![[0.0, -10.0], [1.0, 25.0], [2.0, 140.0], [3.0, f64::NAN]];
     assert_eq!(
-        core_histogram_bar_ratio(f32::NAN),
-        CORE_HISTORY_MIN_BAR_RATIO
+        core_history_points(&history, 50.0, 2),
+        vec![[2.0, 100.0], [3.0, 0.0]]
     );
-    assert_eq!(core_histogram_bar_ratio(100.0), 1.0);
+    assert_eq!(core_history_points(&[], 50.0, 24), vec![[0.0, 50.0]]);
+    assert_eq!(core_chart_value_ratio(-1.0), 0.0);
+    assert_eq!(core_chart_value_ratio(120.0), 1.0);
 }
 
 #[test]
@@ -155,39 +154,31 @@ fn core_grid_last_tile_is_not_clipped_by_the_fixed_window(cx: &mut TestAppContex
 
 #[gpui::test]
 #[allow(clippy::expect_used)]
-fn core_histogram_renders_visible_bars_inside_each_tile(cx: &mut TestAppContext) {
+fn core_line_chart_fills_each_tile(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let host = cx.new(|_| CoreHistogramTestHost);
+        let host = cx.new(|_| CoreLineChartTestHost);
         Root::new(host, window, cx)
     });
     cx.simulate_resize(size(px(640.0), px(260.0)));
     cx.run_until_parked();
 
     let graph = cx
-        .debug_bounds("system-core-history-1")
-        .expect("core histogram should be rendered");
+        .debug_bounds("system-core-line-chart-1")
+        .expect("core line chart should be rendered");
     let tile = cx
         .debug_bounds("system-core-tile-1")
-        .expect("core histogram tile should be rendered");
-    let low_bar = cx
-        .debug_bounds("system-core-bar-1-1")
-        .expect("core histogram baseline bar should be rendered");
-    let high_bar = cx
-        .debug_bounds("system-core-bar-1-3")
-        .expect("core histogram high bar should be rendered");
-    assert!(graph.size.height >= px(CORE_HISTORY_HEIGHT));
+        .expect("core line chart tile should be rendered");
+    assert!(
+        graph.size.height >= px(20.0),
+        "line chart should have visible height: graph={graph:?}, tile={tile:?}"
+    );
     assert!(
         graph.origin.y >= tile.origin.y,
-        "histogram graph should stay inside tile: graph={graph:?}, tile={tile:?}"
+        "line chart should stay inside tile: graph={graph:?}, tile={tile:?}"
     );
     assert!(
         graph.origin.y + graph.size.height <= tile.origin.y + tile.size.height,
-        "histogram graph should stay inside tile: graph={graph:?}, tile={tile:?}"
-    );
-    assert!(low_bar.size.height >= px(CORE_HISTORY_MIN_BAR_HEIGHT));
-    assert!(
-        high_bar.size.height > low_bar.size.height,
-        "high CPU sample should produce a taller bar: graph={graph:?}, low={low_bar:?}, high={high_bar:?}"
+        "line chart should stay inside tile: graph={graph:?}, tile={tile:?}"
     );
 }
