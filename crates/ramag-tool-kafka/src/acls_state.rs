@@ -1,18 +1,18 @@
 use super::*;
-use ramag_ui::PointerDropdownMenu as _;
+use ramag_domain::entities::KafkaAclFilter;
 
 impl KafkaView {
-    pub(super) fn invalidate_acl_request(&mut self) {
+    pub(crate) fn invalidate_acl_request(&mut self) {
         self.acl_request_id = self.acl_request_id.wrapping_add(1);
         self.loading_acls = false;
     }
 
-    pub(super) fn invalidate_acl_operation(&mut self) {
+    pub(crate) fn invalidate_acl_operation(&mut self) {
         self.acl_operation_id = self.acl_operation_id.wrapping_add(1);
         self.acl_operation = false;
     }
 
-    pub(super) fn clear_acl_snapshot(&mut self) {
+    pub(crate) fn clear_acl_snapshot(&mut self) {
         self.invalidate_acl_request();
         self.acls.clear();
         self.selected_acl = None;
@@ -21,7 +21,7 @@ impl KafkaView {
     }
 
     /// 清空当前集群的 ACL 快照和表单，避免切换集群时短暂展示旧规则。
-    pub(super) fn reset_acl_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn reset_acl_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_acl_snapshot();
         self.invalidate_acl_operation();
         self.acl_filter_resource_type = None;
@@ -71,7 +71,7 @@ impl KafkaView {
         Ok(acl)
     }
 
-    pub(super) fn load_acls(
+    pub(crate) fn load_acls(
         &mut self,
         config: KafkaClusterConfig,
         window: &mut Window,
@@ -139,14 +139,14 @@ impl KafkaView {
         cx.notify();
     }
 
-    pub(super) fn select_acl(&mut self, acl: KafkaAcl, cx: &mut Context<Self>) {
+    pub(crate) fn select_acl(&mut self, acl: KafkaAcl, cx: &mut Context<Self>) {
         if self.acls.iter().any(|candidate| candidate == &acl) {
             self.selected_acl = Some(acl);
             cx.notify();
         }
     }
 
-    pub(super) fn begin_create_acl(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn begin_create_acl(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.acl_operation
             || self.loading_acls
             || self.loading_runtime
@@ -184,7 +184,7 @@ impl KafkaView {
         );
     }
 
-    pub(super) fn begin_delete_acl(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn begin_delete_acl(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.acl_operation
             || self.loading_acls
             || self.loading_runtime

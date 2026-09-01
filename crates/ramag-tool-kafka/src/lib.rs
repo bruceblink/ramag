@@ -27,9 +27,9 @@ use ramag_app::KafkaService;
 use ramag_domain::{
     entities::{
         DEFAULT_KAFKA_MAX_BYTES, DEFAULT_KAFKA_MAX_CONCURRENT_PARTITIONS,
-        DEFAULT_KAFKA_MAX_SCAN_SECONDS, KafkaAcl, KafkaAclFilter, KafkaAclOperation,
-        KafkaAclPatternType, KafkaAclPermission, KafkaAclResourceType, KafkaClusterConfig,
-        KafkaClusterId, KafkaClusterMetadata, KafkaConfigEntry, KafkaConfigResourceType,
+        DEFAULT_KAFKA_MAX_SCAN_SECONDS, KafkaAcl, KafkaAclOperation, KafkaAclPatternType,
+        KafkaAclPermission, KafkaAclResourceType, KafkaClusterConfig, KafkaClusterId,
+        KafkaClusterMetadata, KafkaConfigEntry, KafkaConfigResourceType,
         KafkaConfigUpdateOperation, KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage,
         KafkaMessageQuery, KafkaMessageRecord, KafkaMessageSearchField, KafkaMessageSearchQuery,
         KafkaReadOnlyState, KafkaSaslMechanism, KafkaSecurityProtocol, KafkaTlsConfig, KafkaTopic,

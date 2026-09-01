@@ -1,8 +1,6 @@
 use super::*;
-use ramag_ui::PointerDropdownMenu as _;
-
 impl KafkaView {
-    pub(super) fn render_acls(
+    pub(crate) fn render_acls(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,

@@ -2,7 +2,10 @@ use super::*;
 use ramag_ui::PointerDropdownMenu as _;
 
 impl KafkaView {
-    fn render_acl_filter_resource_types(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_filter_resource_types(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let current = self.acl_filter_resource_type;
         let entity = cx.entity();
         let label = current.map(KafkaAclResourceType::label).unwrap_or("全部");
@@ -40,7 +43,10 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_filter_pattern_types(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_filter_pattern_types(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let current = self.acl_filter_pattern_type;
         let entity = cx.entity();
         let label = current.map(KafkaAclPatternType::label).unwrap_or("全部");
@@ -74,7 +80,7 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_filter_operations(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_filter_operations(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.acl_filter_operation;
         let entity = cx.entity();
         let label = current.map(KafkaAclOperation::label).unwrap_or("全部");
@@ -116,7 +122,7 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_filter_permissions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_filter_permissions(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.acl_filter_permission;
         let entity = cx.entity();
         let label = current.map(KafkaAclPermission::label).unwrap_or("全部");
@@ -149,7 +155,7 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_resource_types(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_resource_types(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.acl_resource_type;
         let entity = cx.entity();
         ramag_ui::clickable_button("kafka-acl-resource-type")
@@ -182,7 +188,7 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_pattern_types(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_pattern_types(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.acl_pattern_type;
         let entity = cx.entity();
         ramag_ui::clickable_button("kafka-acl-pattern-type")
@@ -210,7 +216,7 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_operations(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_operations(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.acl_operation_kind;
         let entity = cx.entity();
         ramag_ui::clickable_button("kafka-acl-operation")
@@ -250,7 +256,7 @@ impl KafkaView {
             })
     }
 
-    fn render_acl_permissions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_acl_permissions(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.acl_permission;
         let entity = cx.entity();
         ramag_ui::clickable_button("kafka-acl-permission")
