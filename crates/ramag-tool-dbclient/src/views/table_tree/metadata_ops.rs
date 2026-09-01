@@ -31,6 +31,16 @@ enum MetadataMenu {
     Trigger(Trigger),
 }
 
+struct MetadataRow {
+    element_id: SharedString,
+    text: String,
+    copy_value: String,
+    menu_kind: MetadataMenu,
+    schema: String,
+    table: String,
+    color: gpui::Hsla,
+}
+
 pub(super) fn render_index_row(
     index: &Index,
     schema: String,
@@ -40,16 +50,18 @@ pub(super) fn render_index_row(
     cx: &mut Context<TableTreePanel>,
 ) -> AnyElement {
     render_metadata_row(
-        SharedString::from(format!(
-            "tree-index-action-{schema}-{table}-{index_index}-{}",
-            index.name
-        )),
-        format!("·  {}({})", index.name, index.columns.join(", ")),
-        index.name.clone(),
-        MetadataMenu::Index(index.clone()),
-        schema,
-        table,
-        color,
+        MetadataRow {
+            element_id: SharedString::from(format!(
+                "tree-index-action-{schema}-{table}-{index_index}-{}",
+                index.name
+            )),
+            text: format!("·  {}({})", index.name, index.columns.join(", ")),
+            copy_value: index.name.clone(),
+            menu_kind: MetadataMenu::Index(index.clone()),
+            schema,
+            table,
+            color,
+        },
         cx,
     )
 }
@@ -63,33 +75,36 @@ pub(super) fn render_trigger_row(
     cx: &mut Context<TableTreePanel>,
 ) -> AnyElement {
     render_metadata_row(
-        SharedString::from(format!(
-            "tree-trigger-action-{schema}-{table}-{trigger_index}-{}",
-            trigger.name
-        )),
-        format!("⚡ {} {} {}", trigger.timing, trigger.event, trigger.name),
-        trigger.name.clone(),
-        MetadataMenu::Trigger(trigger.clone()),
-        schema,
-        table,
-        color,
+        MetadataRow {
+            element_id: SharedString::from(format!(
+                "tree-trigger-action-{schema}-{table}-{trigger_index}-{}",
+                trigger.name
+            )),
+            text: format!("⚡ {} {} {}", trigger.timing, trigger.event, trigger.name),
+            copy_value: trigger.name.clone(),
+            menu_kind: MetadataMenu::Trigger(trigger.clone()),
+            schema,
+            table,
+            color,
+        },
         cx,
     )
 }
 
-fn render_metadata_row(
-    element_id: SharedString,
-    text: String,
-    copy_value: String,
-    menu_kind: MetadataMenu,
-    schema: String,
-    table: String,
-    color: gpui::Hsla,
-    cx: &mut Context<TableTreePanel>,
-) -> AnyElement {
+/// 渲染索引或触发器行，并把复制和右键菜单绑定到同一条元数据记录。
+fn render_metadata_row(row: MetadataRow, cx: &mut Context<TableTreePanel>) -> AnyElement {
+    let MetadataRow {
+        element_id,
+        text,
+        copy_value,
+        menu_kind,
+        schema,
+        table,
+        color,
+    } = row;
     let entity = cx.entity().clone();
-    let schema_for_menu = schema.clone();
-    let table_for_menu = table.clone();
+    let schema_for_menu = schema;
+    let table_for_menu = table;
     div()
         .id(element_id)
         .w_full()
@@ -335,7 +350,8 @@ impl TableTreePanel {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+type SqlEditorSubmit = dyn Fn(String, &mut Window, &mut App) -> bool;
+
 fn open_sql_editor(
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
@@ -379,7 +395,7 @@ fn open_sql_editor(
     )
     .detach();
     input.update(cx, |state, cx| state.focus(window, cx));
-    let on_submit: Rc<dyn Fn(String, &mut Window, &mut App) -> bool> = Rc::new(on_submit);
+    let on_submit: Rc<SqlEditorSubmit> = Rc::new(on_submit);
     let title = title.into();
     let description = description.into();
     window.open_dialog(cx, move |dialog, _, _| {
