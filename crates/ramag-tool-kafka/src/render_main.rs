@@ -14,6 +14,8 @@ impl KafkaView {
             .unwrap_or_else(|| "新建 Kafka 集群".into());
         let status = if self.loading_runtime {
             ("同步中", theme.warning)
+        } else if self.runtime_error.is_some() {
+            ("同步失败", theme.danger)
         } else if self.metadata.is_some() {
             ("已连接", theme.success)
         } else {
@@ -138,9 +140,7 @@ impl KafkaView {
                                             || self.acl_operation,
                                     )
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        if let Some(config) = this.selected_config() {
-                                            this.load_runtime(config, window, cx);
-                                        }
+                                        this.retry_runtime(window, cx);
                                     })),
                             ),
                     ),

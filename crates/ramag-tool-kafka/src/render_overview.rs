@@ -264,11 +264,57 @@ impl KafkaView {
                     .into_any_element(),
             }
         };
-        div()
+        let runtime_error = self.runtime_error.clone();
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .when_some(runtime_error, |view, error| {
+                view.child(
+                    h_flex()
+                        .id("kafka-runtime-error")
+                        .debug_selector(|| "kafka-runtime-error".into())
+                        .w_full()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(10.0))
+                        .px(px(22.0))
+                        .py(px(10.0))
+                        .bg(theme.danger.opacity(0.08))
+                        .border_b_1()
+                        .border_color(theme.danger.opacity(0.25))
+                        .child(Icon::new(IconName::TriangleAlert).text_color(theme.danger))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(theme.danger)
+                                .child(error),
+                        )
+                        .child(
+                            ramag_ui::clickable_button("kafka-runtime-retry")
+                                .outline()
+                                .small()
+                                .icon(ramag_ui::icons::refresh_cw())
+                                .label("重试")
+                                .disabled(
+                                    self.loading_runtime
+                                        || self.selected_cluster_id.is_none()
+                                        || self.testing
+                                        || self.saving
+                                        || self.deleting
+                                        || self.topic_operation
+                                        || self.acl_operation,
+                                )
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.retry_runtime(window, cx);
+                                })),
+                        ),
+                )
+            })
+            .child(content)
             .id("kafka-overview")
             .debug_selector(|| "kafka-overview".into())
-            .size_full()
-            .child(content)
     }
 
     pub(super) fn render_broker_table(
