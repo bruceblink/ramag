@@ -31,6 +31,12 @@ impl KafkaView {
                 )
                 .into_any_element()
         } else if self.clusters.is_empty() {
+            let load_error = self.cluster_load_error.clone();
+            let message = load_error
+                .as_deref()
+                .map_or("还没有保存的集群配置".to_owned(), |error| {
+                    format!("加载配置失败：{error}")
+                });
             v_flex()
                 .flex_1()
                 .items_center()
@@ -42,9 +48,27 @@ impl KafkaView {
                     div()
                         .text_xs()
                         .text_center()
-                        .text_color(theme.muted_foreground)
-                        .child("还没有保存的集群配置"),
+                        .text_color(if load_error.is_some() {
+                            theme.danger
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(message),
                 )
+                .when(load_error.is_some(), |view| {
+                    view.child(
+                        ramag_ui::clickable_button("kafka-retry-clusters")
+                            .debug_selector(|| "kafka-retry-clusters".into())
+                            .outline()
+                            .small()
+                            .icon(ramag_ui::icons::refresh_cw())
+                            .label("重试")
+                            .disabled(self.loading_clusters)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.retry_cluster_load(window, cx);
+                            })),
+                    )
+                })
                 .into_any_element()
         } else if visible_indices.is_empty() {
             v_flex()
@@ -124,6 +148,7 @@ impl KafkaView {
                             .xsmall()
                             .icon(IconName::Plus)
                             .tooltip("新建集群配置")
+                            .disabled(self.saving || self.testing || self.deleting)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.new_profile(window, cx);
                             })),
@@ -171,6 +196,7 @@ impl KafkaView {
         let theme = cx.theme().clone();
         let row_id = SharedString::from(format!("kafka-cluster-row-{}", cluster.id));
         let id = cluster.id.clone();
+        let profile_operation_active = self.saving || self.testing || self.deleting;
         h_flex()
             .id(row_id)
             .debug_selector(|| "kafka-cluster-row".into())
@@ -184,10 +210,13 @@ impl KafkaView {
             .when(!selected, |row| {
                 row.hover(|row| row.bg(theme.muted.opacity(0.5)))
             })
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.select_cluster(id.clone(), window, cx);
-            }))
+            .when(!profile_operation_active, |row| {
+                row.cursor_pointer().on_click(cx.listener(
+                    move |this, _: &ClickEvent, window, cx| {
+                        this.select_cluster(id.clone(), window, cx);
+                    },
+                ))
+            })
             .child(div().size(px(8.0)).rounded_full().bg(if selected {
                 theme.accent
             } else {

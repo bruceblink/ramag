@@ -125,7 +125,10 @@ impl KafkaView {
                                         .icon(IconName::Check)
                                         .label("保存")
                                         .disabled(
-                                            self.saving || self.deleting || self.acl_operation,
+                                            self.saving
+                                                || self.testing
+                                                || self.deleting
+                                                || self.acl_operation,
                                         )
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
@@ -141,7 +144,10 @@ impl KafkaView {
                                             .icon(IconName::Delete)
                                             .tooltip("删除本地配置")
                                             .disabled(
-                                                self.saving || self.deleting || self.acl_operation,
+                                                self.saving
+                                                    || self.testing
+                                                    || self.deleting
+                                                    || self.acl_operation,
                                             )
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {

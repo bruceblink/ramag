@@ -1,15 +1,47 @@
 use super::*;
 
+/// 只接受代次和当前上下文都一致的结果，避免迟到任务覆盖新页面。
+pub(super) fn request_matches<T: PartialEq>(
+    current_request_id: u64,
+    request_id: u64,
+    current_context: Option<&T>,
+    request_context: Option<&T>,
+) -> bool {
+    current_request_id == request_id && current_context == request_context
+}
+
 impl KafkaView {
+    /// 使保存、连接测试和删除任务失效；底层请求仍可自然结束，但不能再更新视图。
+    pub(super) fn invalidate_profile_operation(&mut self) {
+        self.profile_operation_id = self.profile_operation_id.wrapping_add(1);
+        self.saving = false;
+        self.testing = false;
+        self.deleting = false;
+    }
+
+    /// 使元数据刷新任务失效，防止切换到草稿或删除配置后恢复旧的集群快照。
+    pub(super) fn invalidate_runtime_request(&mut self) {
+        self.runtime_request_id = self.runtime_request_id.wrapping_add(1);
+        self.loading_runtime = false;
+    }
+
+    /// 重新读取本地配置；每次读取都有独立代次，重复触发时只接受最后一次结果。
     pub(super) fn load_clusters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cluster_request_id = self.cluster_request_id.wrapping_add(1);
+        let request_id = self.cluster_request_id;
         self.loading_clusters = true;
+        self.cluster_load_error = None;
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = service.list_clusters().await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.cluster_request_id != request_id {
+                    return;
+                }
                 this.loading_clusters = false;
                 match result {
                     Ok(clusters) => {
+                        this.cluster_load_error = None;
                         let selected = this
                             .selected_cluster_id
                             .clone()
@@ -25,6 +57,7 @@ impl KafkaView {
                         }
                     }
                     Err(error) => {
+                        this.cluster_load_error = Some(error.user_message());
                         this.notice =
                             Some((format!("加载集群配置失败：{}", error.user_message()), true));
                     }
@@ -33,6 +66,14 @@ impl KafkaView {
             });
         })
         .detach();
+    }
+
+    pub(super) fn retry_cluster_load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading_clusters {
+            return;
+        }
+        self.load_clusters(window, cx);
+        cx.notify();
     }
 
     pub(super) fn cluster_by_id(&self, id: &KafkaClusterId) -> Option<&KafkaClusterConfig> {
@@ -133,6 +174,8 @@ impl KafkaView {
     }
 
     pub(super) fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.invalidate_profile_operation();
+        self.invalidate_runtime_request();
         self.invalidate_message_request();
         self.invalidate_consumer_group_request();
         self.invalidate_topic_operation();
@@ -192,6 +235,8 @@ impl KafkaView {
         let Some(config) = self.cluster_by_id(&id).cloned() else {
             return;
         };
+        self.invalidate_profile_operation();
+        self.invalidate_runtime_request();
         self.invalidate_message_request();
         self.invalidate_consumer_group_request();
         self.clear_acl_snapshot();
@@ -251,7 +296,7 @@ impl KafkaView {
     }
 
     pub(super) fn save_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving {
+        if self.saving || self.testing || self.deleting {
             return;
         }
         let config = match self.form_config(cx) {
@@ -265,11 +310,22 @@ impl KafkaView {
         let service = self.service.clone();
         let id = config.id.clone();
         let name = config.name.clone();
+        let context_cluster_id = self.selected_cluster_id.clone();
+        self.profile_operation_id = self.profile_operation_id.wrapping_add(1);
+        let operation_id = self.profile_operation_id;
         self.saving = true;
         self.notice = Some(("正在保存本地加密配置…".into(), false));
         cx.spawn_in(window, async move |this, cx| {
             let result = service.save_cluster(&config).await;
             let _ = this.update_in(cx, |this, _window, cx| {
+                if !request_matches(
+                    this.profile_operation_id,
+                    operation_id,
+                    this.selected_cluster_id.as_ref(),
+                    context_cluster_id.as_ref(),
+                ) {
+                    return;
+                }
                 this.saving = false;
                 match result {
                     Ok(()) => {
@@ -295,7 +351,7 @@ impl KafkaView {
     }
 
     pub(super) fn test_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.testing {
+        if self.testing || self.saving || self.deleting {
             return;
         }
         let config = match self.form_config(cx) {
@@ -307,11 +363,22 @@ impl KafkaView {
             }
         };
         let service = self.service.clone();
+        let context_cluster_id = self.selected_cluster_id.clone();
+        self.profile_operation_id = self.profile_operation_id.wrapping_add(1);
+        let operation_id = self.profile_operation_id;
         self.testing = true;
         self.notice = Some(("正在连接 Kafka Broker…".into(), false));
         cx.spawn_in(window, async move |this, cx| {
             let result = service.test_connection(&config).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if !request_matches(
+                    this.profile_operation_id,
+                    operation_id,
+                    this.selected_cluster_id.as_ref(),
+                    context_cluster_id.as_ref(),
+                ) {
+                    return;
+                }
                 this.testing = false;
                 match result {
                     Ok(()) => {
@@ -345,13 +412,19 @@ impl KafkaView {
         self.reset_topic_paging();
         self.runtime_request_id = self.runtime_request_id.wrapping_add(1);
         let request_id = self.runtime_request_id;
+        let context_cluster_id = self.selected_cluster_id.clone();
         self.loading_runtime = true;
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let metadata = service.cluster_metadata(&config).await;
             let topics = service.list_topics(&config).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.runtime_request_id != request_id {
+                if !request_matches(
+                    this.runtime_request_id,
+                    request_id,
+                    this.selected_cluster_id.as_ref(),
+                    context_cluster_id.as_ref(),
+                ) {
                     return;
                 }
                 this.loading_runtime = false;
@@ -402,7 +475,7 @@ impl KafkaView {
     }
 
     pub(super) fn delete_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.deleting {
+        if self.deleting || self.saving || self.testing {
             return;
         }
         let Some(id) = self.selected_cluster_id.clone() else {
@@ -434,14 +507,33 @@ impl KafkaView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.deleting
+            || self.saving
+            || self.testing
+            || self.selected_cluster_id.as_ref() != Some(&id)
+        {
+            return;
+        }
+        self.profile_operation_id = self.profile_operation_id.wrapping_add(1);
+        let operation_id = self.profile_operation_id;
+        let context_cluster_id = self.selected_cluster_id.clone();
         self.deleting = true;
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = service.delete_cluster(&id).await;
             let _ = this.update_in(cx, |this, _window, cx| {
+                if !request_matches(
+                    this.profile_operation_id,
+                    operation_id,
+                    this.selected_cluster_id.as_ref(),
+                    context_cluster_id.as_ref(),
+                ) {
+                    return;
+                }
                 this.deleting = false;
                 match result {
                     Ok(()) => {
+                        this.invalidate_runtime_request();
                         this.invalidate_message_request();
                         this.invalidate_consumer_group_request();
                         this.clusters.retain(|cluster| cluster.id != id);

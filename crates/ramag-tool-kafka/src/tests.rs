@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use super::profile::request_matches;
 use super::{
     KafkaSection, KafkaTool, KafkaView, bytes_to_base64, bytes_to_hex, format_message_json,
     parse_bootstrap_servers, parse_datetime_text, parse_partition_list,
@@ -12,7 +13,7 @@ use gpui::{
 use ramag_app::KafkaService;
 use ramag_domain::entities::KafkaMessageRecord;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, KafkaAcl, KafkaBroker, KafkaClusterConfig,
+    ConnectionConfig, ConnectionId, KafkaAcl, KafkaBroker, KafkaClusterConfig, KafkaClusterId,
     KafkaClusterMetadata, KafkaConfigEntry, KafkaConfigResource, KafkaConfigResourceType,
     KafkaConfigSource, KafkaConsumerGroup, KafkaConsumerGroupOffset, KafkaConsumerMember,
     KafkaConsumerPartitionAssignment, KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery,
@@ -147,6 +148,33 @@ fn datetime_parser_normalizes_rfc3339_to_utc() {
         Ok(Some("2026-08-30T10:00:00+00:00".into()))
     );
     assert!(parse_datetime_text("not-a-time", "时间").is_err());
+}
+
+#[test]
+fn async_request_results_require_current_generation_and_context() {
+    let first_cluster = KafkaClusterId::new();
+    let second_cluster = KafkaClusterId::new();
+
+    assert!(request_matches(
+        2,
+        2,
+        Some(&first_cluster),
+        Some(&first_cluster)
+    ));
+    assert!(request_matches::<KafkaClusterId>(2, 2, None, None));
+    assert!(!request_matches(
+        2,
+        1,
+        Some(&first_cluster),
+        Some(&first_cluster)
+    ));
+    assert!(!request_matches(
+        2,
+        2,
+        Some(&second_cluster),
+        Some(&first_cluster)
+    ));
+    assert!(!request_matches(2, 2, Some(&first_cluster), None));
 }
 
 struct FakeStorage {
@@ -365,5 +393,7 @@ impl KafkaAdminDriver for FakeKafkaAdminDriver {
 
 #[path = "visual_acl_tests.rs"]
 mod visual_acl_tests;
+#[path = "visual_profile_tests.rs"]
+mod visual_profile_tests;
 #[path = "visual_tests.rs"]
 mod visual_tests;

@@ -131,6 +131,9 @@ impl KafkaView {
                                     .disabled(
                                         self.loading_runtime
                                             || selected.is_none()
+                                            || self.testing
+                                            || self.saving
+                                            || self.deleting
                                             || self.topic_operation
                                             || self.acl_operation,
                                     )
