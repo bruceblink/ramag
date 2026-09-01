@@ -12,9 +12,9 @@ use gpui::{
 use ramag_app::KafkaService;
 use ramag_domain::entities::KafkaMessageRecord;
 use ramag_domain::entities::{
-    ConnectionConfig, ConnectionId, KafkaBroker, KafkaClusterConfig, KafkaClusterMetadata,
-    KafkaConfigEntry, KafkaConfigResource, KafkaConfigResourceType, KafkaConfigSource,
-    KafkaConsumerGroup, KafkaConsumerGroupOffset, KafkaConsumerMember,
+    ConnectionConfig, ConnectionId, KafkaAcl, KafkaBroker, KafkaClusterConfig,
+    KafkaClusterMetadata, KafkaConfigEntry, KafkaConfigResource, KafkaConfigResourceType,
+    KafkaConfigSource, KafkaConsumerGroup, KafkaConsumerGroupOffset, KafkaConsumerMember,
     KafkaConsumerPartitionAssignment, KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery,
     KafkaPartition, KafkaReadOnlyState, KafkaTopic, QueryRecord, QueryRecordId,
 };
@@ -91,7 +91,22 @@ fn sections_keep_the_read_only_workflow_order() {
     assert_eq!(KafkaSection::ALL[1], KafkaSection::Topics);
     assert_eq!(KafkaSection::ALL[2], KafkaSection::Messages);
     assert_eq!(KafkaSection::ALL[3], KafkaSection::ConsumerGroups);
-    assert_eq!(KafkaSection::ALL[4], KafkaSection::Config);
+    assert_eq!(KafkaSection::ALL[4], KafkaSection::Acls);
+    assert_eq!(KafkaSection::ALL[5], KafkaSection::Config);
+}
+
+#[test]
+fn acl_constructor_uses_kafka_wildcard_host() {
+    let acl = KafkaAcl::new(
+        "User:app",
+        ramag_domain::entities::KafkaAclResourceType::Topic,
+        "events",
+        ramag_domain::entities::KafkaAclPatternType::Literal,
+        ramag_domain::entities::KafkaAclOperation::Read,
+        ramag_domain::entities::KafkaAclPermission::Allow,
+    );
+    assert_eq!(acl.host, "*");
+    assert!(acl.validate().is_ok());
 }
 
 #[test]
@@ -278,6 +293,29 @@ struct FakeKafkaAdminDriver;
 
 #[async_trait]
 impl KafkaAdminDriver for FakeKafkaAdminDriver {
+    async fn list_acls(
+        &self,
+        _config: &KafkaClusterConfig,
+        _filter: &ramag_domain::entities::KafkaAclFilter,
+    ) -> Result<Vec<KafkaAcl>> {
+        Ok(vec![KafkaAcl::new(
+            "User:ramag",
+            ramag_domain::entities::KafkaAclResourceType::Topic,
+            "ramag.integration.messages",
+            ramag_domain::entities::KafkaAclPatternType::Literal,
+            ramag_domain::entities::KafkaAclOperation::Read,
+            ramag_domain::entities::KafkaAclPermission::Allow,
+        )])
+    }
+
+    async fn create_acl(&self, _config: &KafkaClusterConfig, _acl: &KafkaAcl) -> Result<()> {
+        Ok(())
+    }
+
+    async fn delete_acl(&self, _config: &KafkaClusterConfig, _acl: &KafkaAcl) -> Result<()> {
+        Ok(())
+    }
+
     async fn describe_configs(
         &self,
         _config: &KafkaClusterConfig,
@@ -325,5 +363,7 @@ impl KafkaAdminDriver for FakeKafkaAdminDriver {
     }
 }
 
+#[path = "visual_acl_tests.rs"]
+mod visual_acl_tests;
 #[path = "visual_tests.rs"]
 mod visual_tests;

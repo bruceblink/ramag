@@ -64,6 +64,13 @@ impl KafkaView {
                             {
                                 this.load_consumer_groups(config, window, cx);
                             }
+                            if section == KafkaSection::Acls
+                                && !this.loading_runtime
+                                && !this.acls_loaded
+                                && let Some(config) = this.selected_config()
+                            {
+                                this.load_acls(config, window, cx);
+                            }
                             if section == KafkaSection::Config
                                 && this.selected_cluster_id.is_some()
                                 && this.config_entries.is_empty()
@@ -88,6 +95,7 @@ impl KafkaView {
             KafkaSection::ConsumerGroups => {
                 self.render_consumer_groups(window, cx).into_any_element()
             }
+            KafkaSection::Acls => self.render_acls(window, cx).into_any_element(),
             KafkaSection::Config => self.render_config(window, cx).into_any_element(),
         };
         v_flex()
@@ -116,7 +124,9 @@ impl KafkaView {
                                         .small()
                                         .icon(IconName::Check)
                                         .label("保存")
-                                        .disabled(self.saving || self.deleting)
+                                        .disabled(
+                                            self.saving || self.deleting || self.acl_operation,
+                                        )
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
                                                 this.save_profile(window, cx);
@@ -130,7 +140,9 @@ impl KafkaView {
                                             .small()
                                             .icon(IconName::Delete)
                                             .tooltip("删除本地配置")
-                                            .disabled(self.saving || self.deleting)
+                                            .disabled(
+                                                self.saving || self.deleting || self.acl_operation,
+                                            )
                                             .on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {
                                                     this.delete_profile(window, cx);

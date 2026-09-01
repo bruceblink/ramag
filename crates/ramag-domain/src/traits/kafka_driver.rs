@@ -3,9 +3,10 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    KafkaClusterConfig, KafkaClusterMetadata, KafkaConfigResource, KafkaConfigResourceType,
-    KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage, KafkaMessageQuery,
-    KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
+    KafkaAcl, KafkaAclFilter, KafkaClusterConfig, KafkaClusterMetadata, KafkaConfigResource,
+    KafkaConfigResourceType, KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage,
+    KafkaMessageQuery, KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest,
+    KafkaTopicPartitionExpansion,
 };
 use crate::error::Result;
 
@@ -113,6 +114,28 @@ pub trait KafkaAdminDriver: Send + Sync {
     ) -> Result<()> {
         Err(crate::error::DomainError::NotImplemented(
             "update_config".into(),
+        ))
+    }
+
+    async fn list_acls(
+        &self,
+        _config: &KafkaClusterConfig,
+        _filter: &KafkaAclFilter,
+    ) -> Result<Vec<KafkaAcl>> {
+        Err(crate::error::DomainError::NotImplemented(
+            "list_acls".into(),
+        ))
+    }
+
+    async fn create_acl(&self, _config: &KafkaClusterConfig, _acl: &KafkaAcl) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "create_acl".into(),
+        ))
+    }
+
+    async fn delete_acl(&self, _config: &KafkaClusterConfig, _acl: &KafkaAcl) -> Result<()> {
+        Err(crate::error::DomainError::NotImplemented(
+            "delete_acl".into(),
         ))
     }
 }

@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use ramag_domain::entities::{
-    KafkaClusterConfig, KafkaClusterId, KafkaClusterMetadata, KafkaConfigResource,
-    KafkaConfigResourceType, KafkaConfigUpdateRequest, KafkaConsumerGroup, KafkaMessagePage,
-    KafkaMessageQuery, KafkaMessageSearchQuery, KafkaTopic, KafkaTopicCreateRequest,
-    KafkaTopicPartitionExpansion,
+    KafkaAcl, KafkaAclFilter, KafkaClusterConfig, KafkaClusterId, KafkaClusterMetadata,
+    KafkaConfigResource, KafkaConfigResourceType, KafkaConfigUpdateRequest, KafkaConsumerGroup,
+    KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery, KafkaTopic,
+    KafkaTopicCreateRequest, KafkaTopicPartitionExpansion,
 };
 use ramag_domain::error::{DomainError, READ_ONLY_MESSAGE, Result};
 use ramag_domain::traits::{KafkaAdminDriver, KafkaDriver, Storage};
@@ -249,6 +249,48 @@ impl KafkaService {
         log_config_update_result("kafka_config_update", config, request, started, &result);
         result
     }
+
+    /// 按明确过滤条件读取 Kafka ACL；返回结果在应用边界再次执行数量和字段校验。
+    pub async fn list_acls(
+        &self,
+        config: &KafkaClusterConfig,
+        filter: &KafkaAclFilter,
+    ) -> Result<Vec<KafkaAcl>> {
+        validate_config(config)?;
+        filter.validate().map_err(DomainError::InvalidConfig)?;
+        let started = std::time::Instant::now();
+        let result = self
+            .admin_driver
+            .list_acls(config, filter)
+            .await
+            .and_then(validate_acls);
+        log_runtime_result(
+            "kafka_acl_list",
+            config,
+            started,
+            result.as_ref().ok().map(Vec::len),
+            result.as_ref().err(),
+        );
+        result
+    }
+
+    /// 创建一条完整 ACL 规则；应用层和驱动层都要求管理模式已开启。
+    pub async fn create_acl(&self, config: &KafkaClusterConfig, acl: &KafkaAcl) -> Result<()> {
+        validate_admin_request(config, acl.validate())?;
+        let started = std::time::Instant::now();
+        let result = self.admin_driver.create_acl(config, acl).await;
+        log_acl_result("kafka_acl_create", config, acl, started, &result);
+        result
+    }
+
+    /// 按完整 ACL 规则删除；空资源名等模糊条件在进入驱动前直接拒绝。
+    pub async fn delete_acl(&self, config: &KafkaClusterConfig, acl: &KafkaAcl) -> Result<()> {
+        validate_admin_request(config, acl.validate())?;
+        let started = std::time::Instant::now();
+        let result = self.admin_driver.delete_acl(config, acl).await;
+        log_acl_result("kafka_acl_delete", config, acl, started, &result);
+        result
+    }
 }
 
 struct UnsupportedKafkaAdminDriver;
@@ -310,6 +352,19 @@ fn validate_consumer_groups(groups: Vec<KafkaConsumerGroup>) -> Result<Vec<Kafka
         }
     }
     Ok(groups)
+}
+
+fn validate_acls(acls: Vec<KafkaAcl>) -> Result<Vec<KafkaAcl>> {
+    if acls.len() > ramag_domain::entities::MAX_KAFKA_ACLS {
+        return Err(DomainError::InvalidConfig(format!(
+            "Kafka ACL 数量超过 {} 个上限",
+            ramag_domain::entities::MAX_KAFKA_ACLS
+        )));
+    }
+    for acl in &acls {
+        acl.validate().map_err(DomainError::InvalidConfig)?;
+    }
+    Ok(acls)
 }
 
 fn validate_config(config: &KafkaClusterConfig) -> Result<()> {
@@ -473,6 +528,44 @@ fn log_config_update_result(
             config_operation = request.operation.label(),
             error = %error,
             "Kafka 配置修改失败"
+        );
+    }
+}
+
+fn log_acl_result(
+    operation: &'static str,
+    config: &KafkaClusterConfig,
+    acl: &KafkaAcl,
+    started: std::time::Instant,
+    result: &Result<()>,
+) {
+    tracing::info!(
+        operation,
+        cluster_id = %config.id,
+        principal = %acl.principal,
+        host = %acl.host,
+        resource_type = acl.resource_type.label(),
+        resource_name = %acl.resource_name,
+        pattern_type = acl.pattern_type.label(),
+        acl_operation = acl.operation.label(),
+        permission = acl.permission.label(),
+        elapsed_ms = started.elapsed().as_millis(),
+        success = result.is_ok(),
+        "Kafka ACL 管理操作完成"
+    );
+    if let Err(error) = result {
+        tracing::warn!(
+            operation,
+            cluster_id = %config.id,
+            principal = %acl.principal,
+            host = %acl.host,
+            resource_type = acl.resource_type.label(),
+            resource_name = %acl.resource_name,
+            pattern_type = acl.pattern_type.label(),
+            acl_operation = acl.operation.label(),
+            permission = acl.permission.label(),
+            error = %error,
+            "Kafka ACL 管理操作失败"
         );
     }
 }

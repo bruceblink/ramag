@@ -321,6 +321,8 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
     visual_cx.run_until_parked();
 
+    super::visual_acl_tests::exercise_acl_workspace(visual_cx, &kafka_entity);
+
     visual_cx.update(|window, app| {
         kafka_entity.update(app, |view, cx| {
             view.set_form_from_config(&cluster, window, cx);

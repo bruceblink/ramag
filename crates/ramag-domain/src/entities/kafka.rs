@@ -16,7 +16,8 @@ mod kafka_metadata;
 mod kafka_validation;
 
 pub use kafka_acl::{
-    KafkaAcl, KafkaAclOperation, KafkaAclPatternType, KafkaAclPermission, KafkaAclResourceType,
+    KafkaAcl, KafkaAclFilter, KafkaAclOperation, KafkaAclPatternType, KafkaAclPermission,
+    KafkaAclResourceType,
 };
 pub use kafka_admin::{
     KafkaConfigEntry, KafkaConfigResource, KafkaConfigResourceType, KafkaConfigSource,

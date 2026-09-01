@@ -53,6 +53,7 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) {
         self.invalidate_config_request();
+        self.reset_acl_state(window, cx);
         self.read_only = config.read_only;
         set_value(&self.name, config.name.clone(), window, cx);
         set_value(
@@ -136,6 +137,7 @@ impl KafkaView {
         self.invalidate_consumer_group_request();
         self.invalidate_topic_operation();
         self.invalidate_config_request();
+        self.reset_acl_state(window, cx);
         self.selected_cluster_id = None;
         self.selected_topic = None;
         self.metadata = None;
@@ -192,6 +194,8 @@ impl KafkaView {
         };
         self.invalidate_message_request();
         self.invalidate_consumer_group_request();
+        self.clear_acl_snapshot();
+        self.invalidate_acl_operation();
         self.selected_cluster_id = Some(id);
         self.selected_topic = None;
         self.invalidate_topic_operation();
@@ -333,6 +337,8 @@ impl KafkaView {
     ) {
         self.invalidate_message_request();
         self.invalidate_consumer_group_request();
+        self.clear_acl_snapshot();
+        self.invalidate_acl_operation();
         self.consumer_groups.clear();
         self.selected_consumer_group = None;
         self.consumer_group_error = None;
@@ -449,6 +455,8 @@ impl KafkaView {
                         this.consumer_group_error = None;
                         this.message_page = None;
                         this.selected_message = None;
+                        this.clear_acl_snapshot();
+                        this.invalidate_acl_operation();
                         this.section = KafkaSection::Overview;
                         this.invalidate_topic_operation();
                         this.notice = Some(("本地 Kafka 配置已删除".into(), false));

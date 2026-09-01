@@ -330,9 +330,53 @@ fn acl_validation_requires_exact_non_empty_target_fields() {
 
     let invalid = KafkaAcl {
         resource_name: String::new(),
-        ..acl
+        ..acl.clone()
     };
     assert!(invalid.validate().is_err());
+
+    assert!(
+        KafkaAcl {
+            resource_type: KafkaAclResourceType::Any,
+            ..acl.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        KafkaAcl {
+            pattern_type: KafkaAclPatternType::Match,
+            ..acl.clone()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        KafkaAcl {
+            operation: KafkaAclOperation::Any,
+            ..acl.clone()
+        }
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
+fn acl_filter_allows_partial_fields_but_rejects_unknown_values() {
+    let filter = KafkaAclFilter {
+        principal: Some("User:app".into()),
+        resource_name: Some("events".into()),
+        operation: Some(KafkaAclOperation::Read),
+        ..KafkaAclFilter::default()
+    };
+    assert!(filter.validate().is_ok());
+    assert!(
+        KafkaAclFilter {
+            resource_type: Some(KafkaAclResourceType::Unknown),
+            ..KafkaAclFilter::default()
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[test]

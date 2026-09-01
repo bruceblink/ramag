@@ -112,7 +112,8 @@ impl KafkaView {
                                             self.testing
                                                 || self.saving
                                                 || self.deleting
-                                                || self.topic_operation,
+                                                || self.topic_operation
+                                                || self.acl_operation,
                                         )
                                         .on_click(cx.listener(
                                             |this, _: &ClickEvent, window, cx| {
@@ -130,7 +131,8 @@ impl KafkaView {
                                     .disabled(
                                         self.loading_runtime
                                             || selected.is_none()
-                                            || self.topic_operation,
+                                            || self.topic_operation
+                                            || self.acl_operation,
                                     )
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         if let Some(config) = this.selected_config() {
