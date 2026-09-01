@@ -208,6 +208,9 @@ impl TableTreePanel {
         edited_sql: String,
         cx: &mut Context<Self>,
     ) -> bool {
+        let Some(driver) = self.connection.as_ref().map(|config| config.driver) else {
+            return false;
+        };
         if !is_index_create_sql(driver, &edited_sql) {
             metadata_error(
                 "索引更新 SQL 必须是 CREATE INDEX 或 ALTER TABLE ... ADD INDEX",
@@ -216,9 +219,6 @@ impl TableTreePanel {
             );
             return false;
         }
-        let Some(driver) = self.connection.as_ref().map(|config| config.driver) else {
-            return false;
-        };
         let drop_sql = match index_drop_sql(driver, &schema, &table, &index) {
             Ok(sql) => sql,
             Err(error) => {
@@ -311,13 +311,13 @@ impl TableTreePanel {
         edited_sql: String,
         cx: &mut Context<Self>,
     ) -> bool {
+        let Some(driver) = self.connection.as_ref().map(|config| config.driver) else {
+            return false;
+        };
         if !is_trigger_create_sql(driver, &edited_sql) {
             metadata_error("触发器更新 SQL 必须是 CREATE TRIGGER", self, cx);
             return false;
         }
-        let Some(driver) = self.connection.as_ref().map(|config| config.driver) else {
-            return false;
-        };
         let drop_sql = match trigger_drop_sql(driver, &schema, &table, &trigger.name) {
             Ok(sql) => sql,
             Err(error) => {
@@ -416,19 +416,22 @@ fn open_sql_editor(
                 let sql = input_for_enter.read(app).value().to_string();
                 submit_for_enter(sql, window, app)
             })
-            .content(move |content, _, cx| {
-                content.child(
-                    v_flex()
-                        .gap(px(8.0))
-                        .py(px(4.0))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(description.clone()),
-                        )
-                        .child(Input::new(&input_for_content).h(px(420.0))),
-                )
+            .content({
+                let description_for_content = description.clone();
+                move |content, _, cx| {
+                    content.child(
+                        v_flex()
+                            .gap(px(8.0))
+                            .py(px(4.0))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(description_for_content.clone()),
+                            )
+                            .child(Input::new(&input_for_content).h(px(420.0))),
+                    )
+                }
             })
             .footer(
                 h_flex()
@@ -438,11 +441,15 @@ fn open_sql_editor(
                     .gap(px(8.0))
                     .child(cancel)
                     .child(apply),
-            );
+            )
     });
 }
 
-fn metadata_error(message: impl Into<String>, this: &mut TableTreePanel, cx: &mut Context<Self>) {
+fn metadata_error(
+    message: impl Into<String>,
+    this: &mut TableTreePanel,
+    cx: &mut Context<TableTreePanel>,
+) {
     this.pending_notification = Some(Notification::error(message.into()).autohide(true));
     cx.notify();
 }

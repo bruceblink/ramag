@@ -240,8 +240,8 @@ fn is_single_statement(
 }
 
 fn has_index_add_clause(sql: &str) -> bool {
-    let words = sql
-        .to_ascii_uppercase()
+    let uppercase = sql.to_ascii_uppercase();
+    let words = uppercase
         .split_whitespace()
         .map(|word| word.trim_matches(|character: char| !character.is_ascii_alphabetic()))
         .collect::<Vec<_>>();

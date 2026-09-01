@@ -271,7 +271,7 @@ pub(super) fn build_tree_rows_with_navigation(
                     is_expanded: columns.sections.indexes,
                 });
                 if columns.sections.indexes {
-                    for (index_index, index) in columns
+                    for (index_index, _index) in columns
                         .indexes
                         .iter()
                         .enumerate()
