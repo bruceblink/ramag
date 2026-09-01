@@ -2,7 +2,7 @@
 
 use gpui::Entity;
 use gpui_component::menu::PopupMenu;
-use ramag_domain::entities::{DriverKind, MAX_CONNECTION_IDENTIFIER_BYTES};
+use ramag_domain::entities::{DriverKind, Index, MAX_CONNECTION_IDENTIFIER_BYTES, Trigger};
 use ramag_ui::{open_bounded_prompt, open_confirm};
 
 use super::TableTreePanel;
@@ -170,6 +170,94 @@ pub(super) fn table_context_menu(
             second_confirm_label,
             move |_, app| {
                 entity.update(app, |this, cx| this.drop_table(schema, table, is_view, cx));
+            },
+            window,
+            app,
+        );
+    }))
+}
+
+pub(super) fn index_context_menu(
+    menu: PopupMenu,
+    entity: Entity<TableTreePanel>,
+    schema: String,
+    table: String,
+    index: Index,
+) -> PopupMenu {
+    let (update_entity, update_schema, update_table, update_index) =
+        (entity.clone(), schema.clone(), table.clone(), index.clone());
+    let menu = menu.item(ramag_ui::menu_item("更新").on_click(move |_, window, app| {
+        update_entity.update(app, |this, cx| {
+            this.open_index_update_dialog(
+                update_schema.clone(),
+                update_table.clone(),
+                update_index.clone(),
+                window,
+                cx,
+            );
+        });
+    }));
+
+    let description = format!("将删除索引 {}.{}，不会删除表数据。", table, index.name);
+    menu.item(ramag_ui::menu_item("删除").on_click(move |_, window, app| {
+        let (entity, schema, table, index) =
+            (entity.clone(), schema.clone(), table.clone(), index.clone());
+        open_confirm(
+            "删除索引",
+            description.clone(),
+            "删除",
+            true,
+            move |_, app| {
+                entity.update(app, |this, cx| this.drop_index(schema, table, index, cx));
+            },
+            window,
+            app,
+        );
+    }))
+}
+
+pub(super) fn trigger_context_menu(
+    menu: PopupMenu,
+    entity: Entity<TableTreePanel>,
+    schema: String,
+    table: String,
+    trigger: Trigger,
+) -> PopupMenu {
+    let (update_entity, update_schema, update_table, update_trigger) = (
+        entity.clone(),
+        schema.clone(),
+        table.clone(),
+        trigger.clone(),
+    );
+    let menu = menu.item(ramag_ui::menu_item("更新").on_click(move |_, window, app| {
+        update_entity.update(app, |this, cx| {
+            this.open_trigger_update_dialog(
+                update_schema.clone(),
+                update_table.clone(),
+                update_trigger.clone(),
+                window,
+                cx,
+            );
+        });
+    }));
+
+    let description = format!("将删除触发器 {}.{}，不会删除表数据。", table, trigger.name);
+    menu.item(ramag_ui::menu_item("删除").on_click(move |_, window, app| {
+        let (entity, schema, table, trigger) = (
+            entity.clone(),
+            schema.clone(),
+            table.clone(),
+            trigger.clone(),
+        );
+        open_confirm(
+            "删除触发器",
+            description.clone(),
+            "删除",
+            true,
+            move |_, app| {
+                entity.update(app, |this, cx| {
+                    this.drop_trigger(schema, table, trigger, cx)
+                });
             },
             window,
             app,

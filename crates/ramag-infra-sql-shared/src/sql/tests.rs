@@ -76,6 +76,17 @@ fn mysql_does_not_treat_dollar_as_quote() {
 }
 
 #[test]
+fn split_mysql_compound_trigger_keeps_body_as_one_statement() {
+    let sql = "DROP TRIGGER `shop`.`audit`; CREATE TRIGGER `audit` AFTER INSERT ON `shop`.`orders` FOR EACH ROW BEGIN SET @seen = 1; IF @seen = 1 THEN SET @again = 1; END IF; END; SELECT 2";
+    let statements = split_statements(sql, SplitOptions::mysql());
+    assert_eq!(statements.len(), 3);
+    assert_eq!(statements[0], "DROP TRIGGER `shop`.`audit`");
+    assert!(statements[1].contains("SET @seen = 1;"));
+    assert!(statements[1].ends_with("END"));
+    assert_eq!(statements[2], "SELECT 2");
+}
+
+#[test]
 fn inject_basic() {
     assert_eq!(
         inject_limit_if_needed("SELECT * FROM t", Some(500)).as_deref(),

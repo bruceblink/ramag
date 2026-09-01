@@ -3,6 +3,8 @@ mod ddl;
 mod load;
 mod locate;
 mod menus;
+mod metadata_ops;
+mod metadata_sql;
 mod navigation;
 mod ops;
 mod render;
@@ -109,6 +111,7 @@ pub(super) struct TableColumns {
 /// 表节点下元数据分组的展开状态；列始终直接显示，分组只控制其详情行。
 #[derive(Clone, Copy)]
 pub(super) struct TableTreeSectionExpansion {
+    pub(super) keys: bool,
     pub(super) indexes: bool,
     pub(super) foreign_keys: bool,
     pub(super) triggers: bool,
@@ -117,6 +120,7 @@ pub(super) struct TableTreeSectionExpansion {
 impl Default for TableTreeSectionExpansion {
     fn default() -> Self {
         Self {
+            keys: true,
             indexes: true,
             foreign_keys: true,
             triggers: true,
@@ -126,6 +130,7 @@ impl Default for TableTreeSectionExpansion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TableTreeSection {
+    Keys,
     Indexes,
     ForeignKeys,
     Triggers,

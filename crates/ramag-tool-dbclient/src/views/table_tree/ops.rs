@@ -415,6 +415,46 @@ impl TableTreePanel {
         );
     }
 
+    pub(super) fn execute_metadata_ddl(
+        &mut self,
+        sql: String,
+        success_msg: String,
+        schema: String,
+        table: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((production, driver)) = self
+            .connection
+            .as_ref()
+            .map(|config| (config.production, config.driver))
+        else {
+            return false;
+        };
+        if production {
+            self.pending_notification = Some(
+                Notification::warning("生产连接已启用只读保护，不能修改索引或触发器")
+                    .autohide(true),
+            );
+            cx.notify();
+            return false;
+        }
+        if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) {
+            self.pending_notification =
+                Some(Notification::warning("当前数据库类型不支持索引或触发器操作").autohide(true));
+            cx.notify();
+            return false;
+        }
+        self.exec_ddl(
+            sql,
+            success_msg,
+            AfterDdl::ReloadSchema {
+                schema,
+                invalidated_table: table,
+            },
+            cx,
+        )
+    }
+
     fn exec_ddl(
         &mut self,
         sql: String,

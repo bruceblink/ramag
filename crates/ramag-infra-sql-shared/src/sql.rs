@@ -10,18 +10,22 @@ pub const MAX_SQL_STATEMENTS: usize = ramag_domain::entities::TRANSFER_BATCH_ITE
 pub struct SplitOptions {
     /// 识别 PG dollar-quoted：`$$..$$` / `$tag$..$tag$`
     pub dollar_quoted: bool,
+    /// 保留 MySQL `CREATE TRIGGER ... BEGIN ... END` 内部的分号。
+    pub mysql_compound_blocks: bool,
 }
 
 impl SplitOptions {
     pub fn mysql() -> Self {
         Self {
             dollar_quoted: false,
+            mysql_compound_blocks: true,
         }
     }
 
     pub fn postgres() -> Self {
         Self {
             dollar_quoted: true,
+            mysql_compound_blocks: false,
         }
     }
 }
@@ -53,6 +57,9 @@ fn split_statements_with_limit(
     let mut out: Vec<String> = Vec::new();
     let mut start = 0usize;
     let mut i = 0usize;
+    let mut mysql_create_seen = false;
+    let mut mysql_trigger = false;
+    let mut mysql_block_depth = 0usize;
 
     while i < bytes.len() {
         let b = bytes[i];
@@ -92,6 +99,10 @@ fn split_statements_with_limit(
                 i = (i + 2).min(bytes.len());
             }
             b';' => {
+                if opts.mysql_compound_blocks && mysql_trigger && mysql_block_depth > 0 {
+                    i += 1;
+                    continue;
+                }
                 let segment = sql[start..i].trim();
                 if !segment.is_empty() {
                     if out.len() >= max_statements {
@@ -100,7 +111,35 @@ fn split_statements_with_limit(
                     out.push(segment.to_string());
                 }
                 start = i + 1;
+                mysql_create_seen = false;
+                mysql_trigger = false;
+                mysql_block_depth = 0;
                 i += 1;
+            }
+            _ if opts.mysql_compound_blocks && b.is_ascii_alphabetic() => {
+                let word_start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let word = &bytes[word_start..i];
+                if !mysql_trigger {
+                    if word.eq_ignore_ascii_case(b"CREATE") {
+                        mysql_create_seen = true;
+                    } else if mysql_create_seen && word.eq_ignore_ascii_case(b"TRIGGER") {
+                        mysql_trigger = true;
+                    }
+                }
+                if mysql_trigger {
+                    if word.eq_ignore_ascii_case(b"BEGIN") {
+                        mysql_block_depth = mysql_block_depth.saturating_add(1);
+                    } else if word.eq_ignore_ascii_case(b"END")
+                        && mysql_block_depth > 0
+                        && !mysql_end_closes_nested_block(bytes, i)
+                    {
+                        mysql_block_depth -= 1;
+                    }
+                }
             }
             _ => i += 1,
         }
@@ -113,6 +152,22 @@ fn split_statements_with_limit(
         out.push(tail.to_string());
     }
     Ok(out)
+}
+
+fn mysql_end_closes_nested_block(bytes: &[u8], mut offset: usize) -> bool {
+    while offset < bytes.len() && bytes[offset].is_ascii_whitespace() {
+        offset += 1;
+    }
+    let word_start = offset;
+    while offset < bytes.len() && (bytes[offset].is_ascii_alphanumeric() || bytes[offset] == b'_') {
+        offset += 1;
+    }
+    let next = &bytes[word_start..offset];
+    next.eq_ignore_ascii_case(b"IF")
+        || next.eq_ignore_ascii_case(b"CASE")
+        || next.eq_ignore_ascii_case(b"LOOP")
+        || next.eq_ignore_ascii_case(b"REPEAT")
+        || next.eq_ignore_ascii_case(b"WHILE")
 }
 
 /// 返回 dollar-quoted 闭合标签后的字节位置；不支持嵌套。

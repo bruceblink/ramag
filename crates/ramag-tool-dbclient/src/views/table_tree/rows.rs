@@ -226,30 +226,60 @@ pub(super) fn build_tree_rows_with_navigation(
                     column_index,
                 }
             }));
-            if !columns.indexes.is_empty() {
+            let key_count = columns
+                .indexes
+                .iter()
+                .filter(|index| index.primary || index.unique)
+                .count();
+            if key_count > 0 {
                 rows.push(TreeRow::Section {
                     key: columns_key.clone(),
-                    section: TableTreeSection::Indexes,
-                    text: "索引".into(),
-                    count: columns.indexes.len(),
-                    is_expanded: columns.sections.indexes,
+                    section: TableTreeSection::Keys,
+                    text: "键".into(),
+                    count: key_count,
+                    is_expanded: columns.sections.keys,
                 });
-                if columns.sections.indexes {
-                    for index in &columns.indexes {
-                        let prefix = if index.primary {
-                            "🔑 PK"
-                        } else if index.unique {
-                            "★ UQ"
-                        } else {
-                            "·"
-                        };
+                if columns.sections.keys {
+                    for index in columns
+                        .indexes
+                        .iter()
+                        .filter(|index| index.primary || index.unique)
+                    {
+                        let prefix = if index.primary { "🔑 PK" } else { "★ UQ" };
                         rows.push(TreeRow::DetailLine {
                             element_id: SharedString::from(format!(
-                                "tree-index-copy-{name}-{}-{}",
+                                "tree-key-copy-{name}-{}-{}",
                                 table.name, index.name
                             )),
                             text: format!("{prefix}  {}({})", index.name, index.columns.join(", ")),
                             copy_value: index.name.clone(),
+                        });
+                    }
+                }
+            }
+            let index_count = columns
+                .indexes
+                .iter()
+                .filter(|index| !index.primary && !index.unique)
+                .count();
+            if index_count > 0 {
+                rows.push(TreeRow::Section {
+                    key: columns_key.clone(),
+                    section: TableTreeSection::Indexes,
+                    text: "索引".into(),
+                    count: index_count,
+                    is_expanded: columns.sections.indexes,
+                });
+                if columns.sections.indexes {
+                    for (index_index, index) in columns
+                        .indexes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, index)| !index.primary && !index.unique)
+                    {
+                        rows.push(TreeRow::Index {
+                            key: columns_key.clone(),
+                            index_index,
                         });
                     }
                 }
@@ -293,17 +323,10 @@ pub(super) fn build_tree_rows_with_navigation(
                     is_expanded: columns.sections.triggers,
                 });
                 if columns.sections.triggers {
-                    for trigger in &columns.triggers {
-                        rows.push(TreeRow::DetailLine {
-                            element_id: SharedString::from(format!(
-                                "tree-trigger-copy-{name}-{}-{}",
-                                table.name, trigger.name
-                            )),
-                            text: format!(
-                                "⚡ {} {} {}",
-                                trigger.timing, trigger.event, trigger.name
-                            ),
-                            copy_value: trigger.name.clone(),
+                    for (trigger_index, _) in columns.triggers.iter().enumerate() {
+                        rows.push(TreeRow::Trigger {
+                            key: columns_key.clone(),
+                            trigger_index,
                         });
                     }
                 }

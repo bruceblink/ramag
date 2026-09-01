@@ -534,6 +534,7 @@ impl TableTreePanel {
             return;
         };
         match section {
+            TableTreeSection::Keys => metadata.sections.keys = !metadata.sections.keys,
             TableTreeSection::Indexes => metadata.sections.indexes = !metadata.sections.indexes,
             TableTreeSection::ForeignKeys => {
                 metadata.sections.foreign_keys = !metadata.sections.foreign_keys

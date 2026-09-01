@@ -45,12 +45,20 @@ fn metadata_rows_keep_exact_copy_targets() {
                 generated_storage: None,
                 identity_generation: None,
             }],
-            indexes: vec![Index {
-                name: "uk_project_user".into(),
-                unique: true,
-                primary: false,
-                columns: vec!["project_id".into(), "user_id".into()],
-            }],
+            indexes: vec![
+                Index {
+                    name: "uk_project_user".into(),
+                    unique: true,
+                    primary: false,
+                    columns: vec!["project_id".into(), "user_id".into()],
+                },
+                Index {
+                    name: "idx_project_id".into(),
+                    unique: false,
+                    primary: false,
+                    columns: vec!["project_id".into()],
+                },
+            ],
             foreign_keys: vec![ForeignKey {
                 name: "fk_project".into(),
                 columns: vec!["project_id".into()],
@@ -91,6 +99,20 @@ fn metadata_rows_keep_exact_copy_targets() {
         matches!(row, TreeRow::DetailLine { copy_value, .. }
             if copy_value == "uk_project_user")
     }));
+    assert!(
+        view.rows
+            .iter()
+            .any(|row| { matches!(row, TreeRow::Section { text, count: 1, .. } if text == "键") })
+    );
+    assert!(
+        view.rows.iter().any(|row| {
+            matches!(row, TreeRow::Section { text, count: 1, .. } if text == "索引")
+        })
+    );
+    assert!(view.rows.iter().any(|row| {
+        matches!(row, TreeRow::Index { key, index_index: 1 }
+            if key.0 == "gewu" && key.1 == "company_project_member_rel")
+    }));
     assert!(view.rows.iter().any(|row| {
         matches!(row, TreeRow::DetailLine { copy_value, .. }
             if copy_value == "fk_project")
@@ -103,10 +125,15 @@ fn metadata_rows_keep_exact_copy_targets() {
         matches!(row, TreeRow::Section { text, count: 1, .. } if text == "触发器")
     }));
     assert!(view.rows.iter().any(|row| {
-        matches!(row, TreeRow::DetailLine { copy_value, text, .. }
-            if copy_value == "trg_project_audit" && text.contains("BEFORE INSERT"))
+        matches!(row, TreeRow::Trigger { key, trigger_index: 0 }
+            if key.0 == "gewu" && key.1 == "company_project_member_rel")
     }));
 
+    table_columns
+        .get_mut(&("gewu".into(), "company_project_member_rel".into()))
+        .expect("test table metadata")
+        .sections
+        .keys = false;
     table_columns
         .get_mut(&("gewu".into(), "company_project_member_rel".into()))
         .expect("test table metadata")
@@ -132,6 +159,12 @@ fn metadata_rows_keep_exact_copy_targets() {
     assert!(!collapsed.rows.iter().any(|row| {
         matches!(row, TreeRow::DetailLine { copy_value, .. } if copy_value == "uk_project_user")
     }));
+    assert!(
+        !collapsed
+            .rows
+            .iter()
+            .any(|row| matches!(row, TreeRow::Index { .. }))
+    );
 }
 
 #[test]

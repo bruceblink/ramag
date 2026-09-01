@@ -66,6 +66,14 @@ pub(super) enum TreeRow {
         count: usize,
         is_expanded: bool,
     },
+    Index {
+        key: Rc<(String, String)>,
+        index_index: usize,
+    },
+    Trigger {
+        key: Rc<(String, String)>,
+        trigger_index: usize,
+    },
     DetailLine {
         element_id: SharedString,
         text: String,
@@ -450,6 +458,40 @@ impl TableTreePanel {
                     )
                     .into_any_element()
             }
+            TreeRow::Index { key, index_index } => self
+                .table_columns
+                .get(key.as_ref())
+                .and_then(|columns| columns.indexes.get(*index_index))
+                .map_or_else(
+                    || div().h(px(28.0)).into_any_element(),
+                    |index| {
+                        super::metadata_ops::render_index_row(
+                            index,
+                            key.0.clone(),
+                            key.1.clone(),
+                            *index_index,
+                            fg,
+                            cx,
+                        )
+                    },
+                ),
+            TreeRow::Trigger { key, trigger_index } => self
+                .table_columns
+                .get(key.as_ref())
+                .and_then(|columns| columns.triggers.get(*trigger_index))
+                .map_or_else(
+                    || div().h(px(28.0)).into_any_element(),
+                    |trigger| {
+                        super::metadata_ops::render_trigger_row(
+                            trigger,
+                            key.0.clone(),
+                            key.1.clone(),
+                            *trigger_index,
+                            fg,
+                            cx,
+                        )
+                    },
+                ),
             TreeRow::DetailLine {
                 element_id,
                 text,
@@ -467,6 +509,7 @@ impl TableTreePanel {
 
 fn section_icon(section: TableTreeSection) -> IconName {
     match section {
+        TableTreeSection::Keys => IconName::File,
         TableTreeSection::Indexes => IconName::File,
         TableTreeSection::ForeignKeys => IconName::ArrowRight,
         TableTreeSection::Triggers => IconName::Network,
