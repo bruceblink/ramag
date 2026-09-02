@@ -565,12 +565,16 @@ impl Focusable for KafkaView {
 
 impl Render for KafkaView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = f32::from(window.viewport_size().width) < 900.0;
         h_flex()
             .id("kafka-root")
             .debug_selector(|| "kafka-root".into())
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .when(compact, |root| root.flex_col().items_stretch())
             .bg(cx.theme().background)
-            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar(window, cx))
             .child(self.render_main(window, cx))
     }
 }

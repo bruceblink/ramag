@@ -422,5 +422,7 @@ mod visual_acl_tests;
 mod visual_profile_tests;
 #[path = "visual_runtime_tests.rs"]
 mod visual_runtime_tests;
+#[path = "visual_shell_tests.rs"]
+mod visual_shell_tests;
 #[path = "visual_tests.rs"]
 mod visual_tests;

@@ -109,6 +109,11 @@ fn kafka_workspace_renders_real_data_and_cancel_control(cx: &mut TestAppContext)
     visual_cx.run_until_parked();
     assert!(visual_cx.debug_bounds("kafka-config").is_some());
 
+    visual_cx.simulate_resize(size(px(680.0), px(780.0)));
+    super::visual_shell_tests::assert_compact_shell(visual_cx, &kafka_entity);
+    visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
+    visual_cx.run_until_parked();
+
     kafka_entity.update(visual_cx, |view, cx| {
         view.selected_cluster_id = Some(cluster.id.clone());
         view.metadata = Some(KafkaClusterMetadata {

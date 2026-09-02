@@ -1,8 +1,13 @@
 use super::*;
 
 impl KafkaView {
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_sidebar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 900.0;
         let query = value(&self.cluster_search, cx).to_lowercase();
         let visible_indices: Vec<usize> = self
             .clusters
@@ -108,6 +113,7 @@ impl KafkaView {
             .w(px(260.0))
             .h_full()
             .flex_none()
+            .when(compact, |panel| panel.w_full().h(px(220.0)).flex_none())
             .border_r_1()
             .border_color(theme.border)
             .bg(theme.secondary)

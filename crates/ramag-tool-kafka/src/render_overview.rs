@@ -41,6 +41,7 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 700.0;
         let tabs = KafkaSection::ALL
             .into_iter()
             .fold(h_flex().gap(px(2.0)), |tabs, section| {
@@ -104,6 +105,7 @@ impl KafkaView {
             .min_h_0()
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-workspace-tabs".into())
                     .id("kafka-workspace-tabs")
                     .w_full()
                     .h(px(48.0))
@@ -111,13 +113,24 @@ impl KafkaView {
                     .items_center()
                     .justify_between()
                     .px(px(22.0))
+                    .when(compact, |row| {
+                        row.h(px(112.0))
+                            .flex_wrap()
+                            .items_start()
+                            .justify_start()
+                            .gap(px(8.0))
+                            .px(px(12.0))
+                            .py(px(8.0))
+                    })
                     .border_b_1()
                     .border_color(theme.border)
                     .child(tabs)
                     .when(self.section == KafkaSection::Config, |row| {
                         row.child(
                             h_flex()
+                                .debug_selector(|| "kafka-config-actions".into())
                                 .gap(px(8.0))
+                                .when(compact, |row| row.w_full().justify_end())
                                 .child(
                                     ramag_ui::clickable_button("kafka-save-profile")
                                         .primary()

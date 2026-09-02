@@ -7,6 +7,7 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 700.0;
         let selected = self.selected_config();
         let title = selected
             .as_ref()
@@ -49,11 +50,21 @@ impl KafkaView {
             .bg(theme.background)
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-header".into())
                     .h(px(58.0))
                     .flex_none()
                     .items_center()
                     .justify_between()
                     .px(px(22.0))
+                    .when(compact, |row| {
+                        row.h(px(106.0))
+                            .flex_col()
+                            .items_stretch()
+                            .justify_start()
+                            .gap(px(8.0))
+                            .px(px(14.0))
+                            .py(px(10.0))
+                    })
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
@@ -61,6 +72,7 @@ impl KafkaView {
                             .debug_selector(|| "kafka-header-status".into())
                             .flex_1()
                             .min_w_0()
+                            .when(compact, |row| row.w_full().flex_none())
                             .gap(px(10.0))
                             .child(div().size(px(9.0)).rounded_full().bg(status.1))
                             .child(
@@ -86,9 +98,11 @@ impl KafkaView {
                     )
                     .child(
                         h_flex()
+                            .debug_selector(|| "kafka-header-actions".into())
                             .flex_none()
                             .items_center()
                             .gap(px(8.0))
+                            .when(compact, |row| row.w_full().justify_between())
                             .child(
                                 div()
                                     .px(px(8.0))
