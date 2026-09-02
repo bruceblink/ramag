@@ -51,6 +51,7 @@ impl KafkaView {
                         this.consumer_groups.clear();
                         this.selected_consumer_group = None;
                         this.consumer_group_error = Some(error.user_message());
+                        this.mark_runtime_failure("读取消费者组", &error);
                         this.notice =
                             Some((format!("读取消费者组失败：{}", error.user_message()), true));
                     }

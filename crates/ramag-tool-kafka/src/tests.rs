@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use super::profile::request_matches;
+use super::runtime_state::runtime_recovery_message;
 use super::{
     KafkaSection, KafkaTool, KafkaView, bytes_to_base64, bytes_to_hex, format_message_json,
     parse_bootstrap_servers, parse_datetime_text, parse_partition_list,
@@ -19,7 +20,7 @@ use ramag_domain::entities::{
     KafkaConsumerPartitionAssignment, KafkaMessagePage, KafkaMessageQuery, KafkaMessageSearchQuery,
     KafkaPartition, KafkaReadOnlyState, KafkaTopic, QueryRecord, QueryRecordId,
 };
-use ramag_domain::error::Result;
+use ramag_domain::error::{DomainError, KafkaError, KafkaErrorCategory, Result};
 use ramag_domain::traits::{KafkaAdminDriver, KafkaDriver, Storage, Tool};
 
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
@@ -175,6 +176,30 @@ fn async_request_results_require_current_generation_and_context() {
         Some(&first_cluster)
     ));
     assert!(!request_matches(2, 2, Some(&first_cluster), None));
+}
+
+#[test]
+fn runtime_recovery_message_only_marks_retryable_kafka_errors() {
+    let network_error = DomainError::Kafka(
+        KafkaError::new(
+            KafkaErrorCategory::Network,
+            "读取消息",
+            "Kafka Broker 暂时不可达",
+        )
+        .retryable(true),
+    );
+    assert_eq!(
+        runtime_recovery_message("读取消息", &network_error),
+        Some("读取消息失败：Kafka Broker 暂时不可达；请检查 Kafka 连接后刷新元数据".into())
+    );
+
+    let permission_error = DomainError::Kafka(KafkaError::new(
+        KafkaErrorCategory::PermissionDenied,
+        "读取消息",
+        "Kafka 拒绝读取请求",
+    ));
+    assert!(runtime_recovery_message("读取消息", &permission_error).is_none());
+    assert!(runtime_recovery_message("读取消息", &DomainError::Storage("离线".into())).is_none());
 }
 
 struct FakeStorage {
@@ -395,5 +420,7 @@ impl KafkaAdminDriver for FakeKafkaAdminDriver {
 mod visual_acl_tests;
 #[path = "visual_profile_tests.rs"]
 mod visual_profile_tests;
+#[path = "visual_runtime_tests.rs"]
+mod visual_runtime_tests;
 #[path = "visual_tests.rs"]
 mod visual_tests;

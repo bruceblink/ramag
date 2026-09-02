@@ -404,6 +404,7 @@ impl KafkaView {
                         this.load_runtime(config, window, cx);
                     }
                     Err(error) => {
+                        this.mark_runtime_failure("连接 Kafka", &error);
                         this.notice = Some((format!("连接失败：{}", error.user_message()), true));
                     }
                 }

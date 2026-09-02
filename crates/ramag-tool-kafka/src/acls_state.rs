@@ -126,6 +126,7 @@ impl KafkaView {
                         this.selected_acl = None;
                         this.acls_loaded = false;
                         this.acl_error = Some(error.user_message());
+                        this.mark_runtime_failure("读取 Kafka ACL", &error);
                         this.notice = Some((
                             format!("读取 Kafka ACL 失败：{}", error.user_message()),
                             true,
@@ -273,6 +274,14 @@ impl KafkaView {
                         this.load_acls(config, window, cx);
                     }
                     Err(error) => {
+                        this.mark_runtime_failure(
+                            if create {
+                                "创建 Kafka ACL"
+                            } else {
+                                "删除 Kafka ACL"
+                            },
+                            &error,
+                        );
                         this.notice = Some((
                             if create {
                                 format!("创建 Kafka ACL 失败：{}", error.user_message())

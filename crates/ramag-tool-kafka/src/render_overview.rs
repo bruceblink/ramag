@@ -293,6 +293,7 @@ impl KafkaView {
                         )
                         .child(
                             ramag_ui::clickable_button("kafka-runtime-retry")
+                                .debug_selector(|| "kafka-runtime-retry".into())
                                 .outline()
                                 .small()
                                 .icon(ramag_ui::icons::refresh_cw())

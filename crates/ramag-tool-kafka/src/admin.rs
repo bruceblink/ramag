@@ -261,6 +261,7 @@ impl KafkaView {
                         this.load_runtime(config, window, cx);
                     }
                     Err(error) => {
+                        this.mark_runtime_failure("创建 Topic", &error);
                         this.notice =
                             Some((format!("创建 Topic 失败：{}", error.user_message()), true));
                     }
@@ -308,6 +309,7 @@ impl KafkaView {
                         this.load_runtime(config, window, cx);
                     }
                     Err(error) => {
+                        this.mark_runtime_failure("删除 Topic", &error);
                         this.notice =
                             Some((format!("删除 Topic 失败：{}", error.user_message()), true));
                     }
@@ -356,6 +358,7 @@ impl KafkaView {
                         this.load_runtime(config, window, cx);
                     }
                     Err(error) => {
+                        this.mark_runtime_failure("增加 Partition", &error);
                         this.notice = Some((
                             format!("增加 Partition 失败：{}", error.user_message()),
                             true,

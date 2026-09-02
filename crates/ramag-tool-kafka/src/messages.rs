@@ -150,6 +150,7 @@ impl KafkaView {
                         }
                     },
                     Err(error) => {
+                        this.mark_runtime_failure("读取消息", &error);
                         this.notice =
                             Some((format!("读取消息失败：{}", error.user_message()), true));
                     }

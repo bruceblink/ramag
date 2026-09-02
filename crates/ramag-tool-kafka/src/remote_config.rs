@@ -97,6 +97,7 @@ impl KafkaView {
                         ));
                     }
                     Err(error) => {
+                        this.mark_runtime_failure("读取 Kafka 配置", &error);
                         this.notice = Some((
                             format!("读取 Kafka 配置失败：{}", error.user_message()),
                             true,
@@ -296,6 +297,7 @@ impl KafkaView {
                         this.load_configs(window, cx);
                     }
                     Err(error) => {
+                        this.mark_runtime_failure("修改 Kafka 配置", &error);
                         this.notice = Some((
                             format!("修改 Kafka 配置失败：{}", error.user_message()),
                             true,
