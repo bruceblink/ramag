@@ -9,7 +9,9 @@ use gpui::{
 use ramag_domain::entities::{QueryResult, Row, Value};
 
 use super::{DisplayViewCache, DisplayViewCacheKey, build_display_view, cached_display_view};
-use crate::views::result_panel::{ResultPanel, ResultState, ResultViewMode};
+use crate::views::result_panel::{
+    ResultPagination, ResultPanel, ResultState, ResultViewMode, TotalRows,
+};
 
 /// 测试宿主同时渲染结果面板和 GPUI Component 的对话框浮层。
 struct ResultDialogTestHost {
@@ -238,6 +240,73 @@ fn result_view_modes_keep_loaded_selection_and_render_each_surface(cx: &mut Test
     assert!(
         cx.debug_bounds("result-text-h-scrollbar").is_none(),
         "alternate result views should honor the global horizontal scrollbar setting"
+    );
+}
+
+/// 长状态文本不能把分页控件推出结果状态栏的可视区域。
+#[gpui::test]
+fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
+        ramag_ui::DatabaseResultSettings {
+            show_horizontal_scrollbar: true,
+            display_binary_16_as_uuid: true,
+        },
+    ));
+    let result = Arc::new(QueryResult {
+        columns: vec!["id".into(), "description".into()],
+        column_types: vec!["BIGINT".into(), "TEXT".into()],
+        rows: vec![Row {
+            values: vec![Value::Int(1), Value::Text("状态信息".repeat(120))],
+        }],
+        affected_rows: 0,
+        elapsed_ms: 123,
+        warnings: Vec::new(),
+        truncated: false,
+    });
+    let display_view = build_display_view(&result, None, "", "");
+    let display_view_key = DisplayViewCacheKey {
+        result_identity: Arc::as_ptr(&result) as usize,
+        result_revision: 0,
+        sort_by: None,
+        column_filter: String::new(),
+        row_filter: super::RowFilter::Text(String::new()),
+        display_binary_16_as_uuid: true,
+    };
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let mut panel = ResultPanel::new(window, cx);
+        panel.state = ResultState::Ok(result.clone());
+        panel.selected_cell = Some((0, 1));
+        panel.selected_rows.insert(0);
+        panel.pagination = Some(ResultPagination {
+            page: 0,
+            page_size: 100,
+            has_more: true,
+            total: TotalRows::Known(10_000),
+        });
+        panel.display_view_cache = Some(DisplayViewCache {
+            key: display_view_key,
+            view: display_view,
+        });
+        panel
+    });
+    cx.simulate_resize(gpui::size(px(720.0), px(420.0)));
+    panel.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    let status_bar = cx
+        .debug_bounds("result-status-bar")
+        .expect("结果状态栏应渲染");
+    let status_context = cx
+        .debug_bounds("result-status-context")
+        .expect("状态摘要区域应渲染");
+    let next_page = cx
+        .debug_bounds("result-page-next")
+        .expect("下一页按钮应渲染");
+    assert!(status_context.size.width > px(0.0));
+    assert!(
+        next_page.right() <= status_bar.right(),
+        "分页按钮不能被长状态文本推出状态栏"
     );
 }
 

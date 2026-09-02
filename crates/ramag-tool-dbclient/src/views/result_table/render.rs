@@ -348,7 +348,40 @@ pub(in crate::views) fn render_table(
     }
     let status_summary = status_parts.join(" · ");
 
+    let status_context = h_flex()
+        .id("result-status-context")
+        .debug_selector(|| "result-status-context".into())
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(status_summary),
+        )
+        .child(div().flex_none().child(format!("· 耗时 {elapsed} ms")))
+        .when_some(selected_scope, |this, scope| {
+            this.child(div().flex_none().child(scope))
+        })
+        .when_some(selected_info, |this, info| {
+            this.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(info),
+            )
+        });
+
     let status_bar = h_flex()
+        .id("result-status-bar")
+        .debug_selector(|| "result-status-bar".into())
         .w_full()
         .flex_none()
         .items_center()
@@ -360,13 +393,7 @@ pub(in crate::views) fn render_table(
         .bg(secondary_bg)
         .text_xs()
         .text_color(muted_fg)
-        .child(div().child(status_summary))
-        .child(div().child(format!("· 耗时 {elapsed} ms")))
-        .when_some(selected_scope, |this, scope| this.child(div().child(scope)))
-        .when_some(selected_info, |this, info| {
-            this.child(div().overflow_hidden().text_ellipsis().child(info))
-        })
-        .child(div().flex_1())
+        .child(status_context)
         .when_some(pagination_ui, |this, pagination| {
             let has_previous_page = pagination.page > 0;
             let previous_page = pagination.page.saturating_sub(1);
@@ -380,6 +407,7 @@ pub(in crate::views) fn render_table(
             ))
             .child(
                 ramag_ui::clickable_button("result-page-previous")
+                    .debug_selector(|| "result-page-previous".into())
                     .ghost()
                     .small()
                     .label("上页")
@@ -401,6 +429,7 @@ pub(in crate::views) fn render_table(
                     let current_page = pagination.page.saturating_add(1);
                     this.child(
                         ramag_ui::clickable_button("result-page-jump")
+                            .debug_selector(|| "result-page-jump".into())
                             .ghost()
                             .small()
                             .label("跳页")
@@ -434,6 +463,7 @@ pub(in crate::views) fn render_table(
             )
             .child(
                 ramag_ui::clickable_button("result-page-next")
+                    .debug_selector(|| "result-page-next".into())
                     .ghost()
                     .small()
                     .label("下页")
