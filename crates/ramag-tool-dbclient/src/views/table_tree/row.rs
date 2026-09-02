@@ -284,6 +284,7 @@ impl TableTreePanel {
 
                 let mut row = h_flex()
                     .id(row_id)
+                    .w_full()
                     .h(px(28.0))
                     .flex_none()
                     .items_center()

@@ -1,4 +1,5 @@
 use super::pagination::parse_result_page;
+use super::states::{render_affected_result, render_row_search_blocker};
 use super::*;
 use gpui_component::IconName;
 
@@ -27,46 +28,11 @@ pub(in crate::views) fn render_table(
         .unwrap_or(0);
 
     if columns.is_empty() {
-        return v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .child(
-                div()
-                    .text_lg()
-                    .text_color(fg)
-                    .child(format!("✓ {affected} 行受影响")),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted_fg)
-                    .child(format!("{elapsed} ms")),
-            )
-            .into_any_element();
+        return render_affected_result(affected, elapsed, fg, muted_fg);
     }
 
     if let Some(blocker) = panel.row_search_blocker(cx) {
-        let (message, color) = match blocker {
-            RowSearchBlocker::Converting => ("正在通过外部程序转换 ID…".to_string(), muted_fg),
-            RowSearchBlocker::Error(error) => (format!("ID 转换失败：{error}"), cx.theme().danger),
-        };
-        return v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .px_4()
-            .text_xs()
-            .text_color(color)
-            .child(message)
-            .child(
-                div()
-                    .text_color(muted_fg)
-                    .child("请修改搜索词，或检查设置中的转换方式。"),
-            )
-            .into_any_element();
+        return render_row_search_blocker(blocker, muted_fg, cx.theme().danger);
     }
 
     // 排序、筛选与列宽估算可能扫描大结果集，统一在受限工作池构建。

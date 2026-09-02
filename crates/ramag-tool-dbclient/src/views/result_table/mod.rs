@@ -374,6 +374,7 @@ mod modes;
 mod page_size;
 mod pagination;
 mod render;
+mod states;
 
 pub(super) use modes::render_result_view;
 pub(super) use page_size::render_page_size_selector;
