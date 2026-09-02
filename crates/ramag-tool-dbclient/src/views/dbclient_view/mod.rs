@@ -30,7 +30,7 @@ pub(super) enum SessionEntity {
 }
 
 impl SessionEntity {
-    /// 元数据加载状态，不代表实时连接健康。
+    /// 用于连接标签的状态快照：首次元数据加载成功表示会话已建立。
     pub(super) fn health(&self, cx: &App) -> (bool, bool) {
         match self {
             SessionEntity::Sql(e) => e.read(cx).health(cx),

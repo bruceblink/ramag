@@ -69,6 +69,7 @@ impl Render for DbClientView {
         let bg = theme.background;
         let warning = theme.warning;
         let danger = theme.danger;
+        let success = theme.success;
 
         let active = self.active_session;
 
@@ -78,8 +79,8 @@ impl Render for DbClientView {
             title: String,
             kind_label: &'static str,
             is_active: bool,
-            /// 元数据 (loading, has_error)；占位 / stale 槽无实体，恒 (false, false)
-            health: (bool, bool),
+            /// 实体存在时记录元数据加载快照；未实例化的恢复标签为 None。
+            health: Option<(bool, bool)>,
             stale: bool,
             production: bool,
         }
@@ -92,11 +93,7 @@ impl Render for DbClientView {
                 title: s.config.name.clone(),
                 kind_label: super::driver_kind_label(s.config.driver),
                 is_active: Some(i) == active,
-                health: s
-                    .entity
-                    .as_ref()
-                    .map(|e| e.health(cx))
-                    .unwrap_or((false, false)),
+                health: s.entity.as_ref().map(|entity| entity.health(cx)),
                 stale: s.stale,
                 production: s.config.production,
             })
@@ -159,31 +156,28 @@ impl Render for DbClientView {
                 title,
                 kind_label,
                 is_active,
-                health: (h_loading, h_error),
+                health,
                 stale,
                 production,
             } = info;
             let tab_id = SharedString::from(format!("conn-tab-{idx}"));
             let close_id = SharedString::from(format!("conn-tab-close-{idx}"));
 
-            // 仅掌握元数据树状态，不冒充实时连接健康：黄=加载中、红=失败、灰=已加载/未知。
-            let dot_color = if h_loading {
-                gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0)
-            } else if h_error {
-                gpui::hsla(0.0, 0.7, 0.55, 1.0)
+            // 标签状态与会话实体绑定：已完成首次连接显示绿色，未实例化的恢复标签明确显示未连接。
+            let (dot_color, status_label, status_color) = if stale {
+                (warning, "需重连", warning)
             } else {
-                muted_fg
+                match health {
+                    None => (muted_fg, "未连接", muted_fg),
+                    Some((true, _)) => (
+                        gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0),
+                        "连接中",
+                        gpui::hsla(45.0 / 360.0, 0.9, 0.55, 1.0),
+                    ),
+                    Some((false, true)) => (danger, "连接失败", danger),
+                    Some((false, false)) => (success, "已连接", success),
+                }
             };
-            let metadata_label = if stale {
-                Some("需重连")
-            } else if h_loading {
-                Some("元数据加载中")
-            } else if h_error {
-                Some("元数据失败")
-            } else {
-                None
-            };
-            let metadata_color = if stale { warning } else { dot_color };
 
             let mut tab = h_flex()
                 .id(tab_id)
@@ -203,6 +197,7 @@ impl Render for DbClientView {
                         .child(title.clone()),
                 )
                 .child(div().text_xs().text_color(muted_fg).child(kind_label))
+                .child(div().text_xs().text_color(status_color).child(status_label))
                 // 生产徽标持续可见，与 driver 层拦截、写入口禁用保持同一语义。
                 .when(production, |tab| {
                     let mut chip_bg = danger;
@@ -218,9 +213,6 @@ impl Render for DbClientView {
                             .text_color(danger)
                             .child(ramag_ui::PRODUCTION_BADGE_LABEL),
                     )
-                })
-                .when_some(metadata_label, |tab, label| {
-                    tab.child(div().text_xs().text_color(metadata_color).child(label))
                 })
                 .child(
                     ramag_ui::clickable_button(close_id)
