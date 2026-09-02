@@ -337,8 +337,26 @@ fn render_status_bar(
     pagination: Option<MongoResultPagination>,
     panel: Entity<ResultPanel>,
 ) -> impl IntoElement {
+    // Keep the summary flexible so pagination remains reachable when the window narrows.
+    let status_context = h_flex()
+        .id("mongo-status-context")
+        .debug_selector(|| "mongo-status-context".into())
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .items_center()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(SharedString::from(summary)),
+        );
+
     h_flex()
         .id("mongo-status-bar")
+        .debug_selector(|| "mongo-status-bar".into())
         .w_full()
         .flex_none()
         .items_center()
@@ -350,8 +368,7 @@ fn render_status_bar(
         .bg(bg)
         .text_xs()
         .text_color(muted)
-        .child(SharedString::from(summary))
-        .child(div().flex_1())
+        .child(status_context)
         .when_some(pagination, |this, pagination| {
             let previous_page = pagination.page.saturating_sub(1);
             let next_page = pagination.page.saturating_add(1);
@@ -363,6 +380,7 @@ fn render_status_bar(
             ))
             .child(
                 ramag_ui::clickable_button("mongo-result-page-previous")
+                    .debug_selector(|| "mongo-result-page-previous".into())
                     .ghost()
                     .small()
                     .label("上页")
@@ -380,6 +398,7 @@ fn render_status_bar(
             )
             .child(
                 ramag_ui::clickable_button("mongo-result-page-next")
+                    .debug_selector(|| "mongo-result-page-next".into())
                     .ghost()
                     .small()
                     .label("下页")

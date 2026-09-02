@@ -4,11 +4,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px};
+use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size};
 use ramag_domain::entities::MongoQueryResult;
 use serde_json::{Map, Value};
 
-use super::{ResultPanel, RowFilter, RowSearchMode, RowViewCache, RowViewKey};
+use super::{
+    MongoResultPagination, ResultPanel, RowFilter, RowSearchMode, RowViewCache, RowViewKey,
+};
 
 fn wide_documents() -> Vec<Value> {
     (0..80)
@@ -106,6 +108,60 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     assert!(
         cx.debug_bounds("mongo-table-h-scrollbar").is_some(),
         "重新开启设置后 MongoDB 结果表应恢复水平滚动条"
+    );
+}
+
+/// 窄窗口下摘要必须收缩，分页控件仍需保持在结果状态栏内可见。
+#[gpui::test]
+fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let documents = wide_documents();
+        let table = Arc::new(super::flatten::build_flat_table_with(
+            &documents,
+            &BTreeSet::new(),
+        ));
+        let row_indices = Arc::new((0..table.rows.len()).collect());
+        let mut panel = ResultPanel::new(window, cx);
+        panel.result = Some(MongoQueryResult {
+            elapsed_ms: 123,
+            ..Default::default()
+        });
+        panel.docs_arc = Some(Arc::new(documents));
+        panel.table_build_seq = 1;
+        panel.table = Some(table);
+        panel.row_view_cache = Some(RowViewCache {
+            key: RowViewKey {
+                generation: panel.table_build_seq,
+                filter: RowFilter::Text(String::new()),
+                sort_by: None,
+            },
+            indices: row_indices,
+        });
+        panel.pagination = Some(MongoResultPagination {
+            page: 0,
+            page_size: 100,
+            has_more: true,
+        });
+        panel
+    });
+    cx.simulate_resize(size(px(360.0), px(280.0)));
+    panel.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    let status_bar = cx
+        .debug_bounds("mongo-status-bar")
+        .expect("MongoDB 结果状态栏应渲染");
+    let status_context = cx
+        .debug_bounds("mongo-status-context")
+        .expect("MongoDB 状态摘要区域应渲染");
+    let next_page = cx
+        .debug_bounds("mongo-result-page-next")
+        .expect("MongoDB 下一页按钮应渲染");
+    assert!(status_context.size.width > px(0.0));
+    assert!(
+        next_page.right() <= status_bar.right(),
+        "MongoDB 分页按钮不能被状态摘要推出状态栏"
     );
 }
 
