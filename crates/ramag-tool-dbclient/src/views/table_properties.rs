@@ -154,7 +154,7 @@ impl TablePropertiesDialog {
             drag.position.x + cursor.x - drag.cursor.x,
             drag.position.y + cursor.y - drag.cursor.y,
         );
-        self.position = Some(clamp_position(next, viewport));
+        self.position = Some(clamp_position(next, viewport, modal_size(viewport)));
     }
 
     fn end_drag(&mut self) {
@@ -267,6 +267,7 @@ impl TablePropertiesDialog {
     fn render_modal(
         &self,
         position: Point<gpui::Pixels>,
+        size: gpui::Size<gpui::Pixels>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -275,8 +276,8 @@ impl TablePropertiesDialog {
             .absolute()
             .left(position.x)
             .top(position.y)
-            .w(px(MODAL_WIDTH))
-            .h(px(MODAL_HEIGHT))
+            .w(size.width)
+            .h(size.height)
             .min_h_0()
             .overflow_hidden()
             .bg(theme.background)
@@ -310,13 +311,14 @@ impl Render for TablePropertiesDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let viewport = window.viewport_size();
+        let size = modal_size(viewport);
         let initial_position = self.position.unwrap_or_else(|| {
             point(
-                ((viewport.width - px(MODAL_WIDTH)) / 2.0).max(px(MODAL_MARGIN)),
-                ((viewport.height - px(MODAL_HEIGHT)) / 2.0).max(px(MODAL_MARGIN)),
+                ((viewport.width - size.width) / 2.0).max(px(MODAL_MARGIN)),
+                ((viewport.height - size.height) / 2.0).max(px(MODAL_MARGIN)),
             )
         });
-        let position = clamp_position(initial_position, viewport);
+        let position = clamp_position(initial_position, viewport, size);
         self.position = Some(position);
 
         let backdrop = div()
@@ -332,18 +334,28 @@ impl Render for TablePropertiesDialog {
 
         div().absolute().inset_0().children([
             backdrop.into_any_element(),
-            self.render_modal(position, &theme, cx),
+            self.render_modal(position, size, &theme, cx),
         ])
     }
+}
+
+fn modal_size(viewport: gpui::Size<gpui::Pixels>) -> gpui::Size<gpui::Pixels> {
+    let available_width = (viewport.width - px(MODAL_MARGIN * 2.0)).max(px(1.0));
+    let available_height = (viewport.height - px(MODAL_MARGIN * 2.0)).max(px(1.0));
+    gpui::Size::new(
+        available_width.min(px(MODAL_WIDTH)),
+        available_height.min(px(MODAL_HEIGHT)),
+    )
 }
 
 fn clamp_position(
     position: Point<gpui::Pixels>,
     viewport: gpui::Size<gpui::Pixels>,
+    size: gpui::Size<gpui::Pixels>,
 ) -> Point<gpui::Pixels> {
     let min = px(MODAL_MARGIN);
-    let max_x = (viewport.width - px(MODAL_WIDTH) - min).max(min);
-    let max_y = (viewport.height - px(MODAL_HEIGHT) - min).max(min);
+    let max_x = (viewport.width - size.width - min).max(min);
+    let max_y = (viewport.height - size.height - min).max(min);
     point(position.x.clamp(min, max_x), position.y.clamp(min, max_y))
 }
 
@@ -379,17 +391,31 @@ fn value_as_ddl(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MODAL_HEIGHT, MODAL_WIDTH, clamp_position};
+    use super::{MODAL_HEIGHT, MODAL_WIDTH, clamp_position, modal_size};
     use gpui::{Point, Size, px};
 
     #[test]
     fn dragged_modal_stays_inside_viewport() {
+        let viewport = Size::new(px(1440.0), px(900.0));
         let position = clamp_position(
             Point::new(px(-100.0), px(900.0)),
-            Size::new(px(1440.0), px(900.0)),
+            viewport,
+            modal_size(viewport),
         );
         assert_eq!(position.x, px(16.0));
         assert_eq!(position.y, px(234.0));
+    }
+
+    #[test]
+    fn modal_fits_narrow_viewports_before_dragging() {
+        let viewport = Size::new(px(900.0), px(500.0));
+        let size = modal_size(viewport);
+        assert_eq!(size.width, px(868.0));
+        assert_eq!(size.height, px(468.0));
+        assert_eq!(
+            clamp_position(Point::new(px(0.0), px(0.0)), viewport, size),
+            Point::new(px(16.0), px(16.0))
+        );
     }
 
     #[test]
