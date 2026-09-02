@@ -7,7 +7,8 @@ use gpui_component::{ActiveTheme as _, Root, v_flex};
 use super::core_history::{core_chart_value_ratio, core_history_points};
 use super::{
     HISTORY_CHART_POINTS, chart_value_ratio, core_grid_dimensions, format_bytes, format_percent,
-    format_rate_pair, history_chart_points, history_max, ratio_percent, render_core_grid,
+    format_rate_pair, history_chart_points, history_max, process_table_layout, ratio_percent,
+    render_core_grid,
 };
 
 struct CoreGridTestHost;
@@ -116,6 +117,23 @@ fn core_grid_keeps_every_core_inside_the_fixed_window() {
     let (columns, rows) = core_grid_dimensions(128);
     assert_eq!((columns, rows), (16, 8));
     assert!(columns * rows >= 128);
+}
+
+#[test]
+fn compact_process_columns_fit_the_narrow_content_width() {
+    let compact = process_table_layout(true);
+    let fixed_width = compact.pid_width
+        + compact.cpu_width
+        + compact.memory_width
+        + compact.action_width
+        + compact.gap * 4.0
+        + compact.horizontal_padding * 2.0;
+
+    assert_eq!(compact.process_name_min_width, 0.0);
+    assert!(
+        fixed_width < 328.0,
+        "fixed process columns must leave room for a name at 360px: {fixed_width}"
+    );
 }
 
 #[gpui::test]

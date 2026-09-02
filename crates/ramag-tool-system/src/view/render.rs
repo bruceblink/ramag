@@ -11,115 +11,14 @@ use gpui_component::{
 
 use super::helpers::{
     core_grid_dimensions, empty_state, format_bytes, format_percent, format_rate_pair, history_max,
-    metric_card, panel_heading, process_header, ratio_percent, render_core_grid, render_disk_row,
-    render_history, render_meter_row,
+    metric_card, panel_heading, process_header, process_table_layout, ratio_percent,
+    render_core_grid, render_disk_row, render_history, render_meter_row,
 };
 use super::{Notice, SystemSection, SystemView, TerminationRequest};
-use crate::{MAX_VISIBLE_PROCESSES, MonitorSnapshot, ProcessSort, RefreshInterval};
+use crate::{MAX_VISIBLE_PROCESSES, MonitorSnapshot, ProcessSort};
 
 impl SystemView {
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let interval = self.monitor.refresh_interval();
-        let mut tabs = h_flex().gap(px(4.0));
-        tabs = tabs.child(self.section_button(
-            SystemSection::Performance,
-            "性能监控",
-            ramag_ui::icons::gauge(),
-            cx,
-        ));
-        tabs = tabs.child(self.section_button(
-            SystemSection::Processes,
-            "任务管理器",
-            Icon::new(IconName::MemoryStick),
-            cx,
-        ));
-
-        let mut intervals = h_flex().gap(px(2.0));
-        for option in [
-            RefreshInterval::OneSecond,
-            RefreshInterval::TwoSeconds,
-            RefreshInterval::FiveSeconds,
-        ] {
-            let selected = option == interval;
-            let label = option.label();
-            let mut button = ramag_ui::clickable_button(SharedString::from(format!(
-                "system-interval-{}",
-                label
-            )))
-            .xsmall()
-            .label(label);
-            button = if selected {
-                button.primary()
-            } else {
-                button.ghost()
-            };
-            intervals = intervals.child(button.on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.select_interval(option, cx)),
-            ));
-        }
-        let theme = cx.theme();
-
-        h_flex()
-            .w_full()
-            .flex_none()
-            .items_center()
-            .justify_between()
-            .gap(px(12.0))
-            .px_4()
-            .py(px(10.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .bg(theme.secondary)
-            .child(
-                h_flex()
-                    .min_w_0()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(ramag_ui::icons::gauge().text_color(theme.accent))
-                    .child(
-                        v_flex()
-                            .gap(px(1.0))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("系统监控"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child("本机性能与运行中进程"),
-                            ),
-                    )
-                    .child(tabs),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(format!("刷新 {}", interval.status_label())),
-                    )
-                    .child(intervals)
-                    .child(
-                        ramag_ui::clickable_button("system-refresh")
-                            .ghost()
-                            .small()
-                            .icon(ramag_ui::icons::refresh_cw())
-                            .tooltip("立即刷新")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.refresh_now(cx);
-                            })),
-                    ),
-            )
-    }
-
-    fn section_button(
+    pub(super) fn section_button(
         &self,
         section: SystemSection,
         label: &'static str,
@@ -430,10 +329,17 @@ impl SystemView {
         .into_any_element()
     }
 
-    fn render_processes(&self, snapshot: &MonitorSnapshot, cx: &mut Context<Self>) -> AnyElement {
+    /// 根据窗口宽度切换进程表列尺寸，所有字段保持可见而长进程名可在窄窗口省略。
+    fn render_processes(
+        &self,
+        snapshot: &MonitorSnapshot,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme();
+        let layout = process_table_layout(window.viewport_size().width < px(560.0));
         let current_pid = std::process::id();
-        let mut sort_buttons = h_flex().gap(px(4.0));
+        let mut sort_buttons = h_flex().flex_wrap().gap(px(4.0));
         for sort in [ProcessSort::Cpu, ProcessSort::Memory] {
             let selected = self.monitor.process_sort() == sort;
             let mut button = ramag_ui::clickable_button(SharedString::from(format!(
@@ -453,12 +359,13 @@ impl SystemView {
         }
 
         let mut table = v_flex()
+            .debug_selector(|| "system-process-table".to_owned())
             .w_full()
             .bg(theme.secondary)
             .border_1()
             .border_color(theme.border)
             .rounded(px(6.0));
-        table = table.child(process_header(theme));
+        table = table.child(process_header(layout, theme));
         if snapshot.processes.is_empty() {
             table = table.child(empty_state("暂时没有进程数据", theme));
         } else {
@@ -489,34 +396,41 @@ impl SystemView {
                         .w_full()
                         .min_h(px(34.0))
                         .items_center()
-                        .gap(px(8.0))
-                        .px_3()
+                        .gap(px(layout.gap))
+                        .px(px(layout.horizontal_padding))
                         .border_t_1()
                         .border_color(theme.border)
-                        .child(div().w(px(70.0)).text_xs().child(pid.to_string()))
+                        .child(
+                            div()
+                                .w(px(layout.pid_width))
+                                .text_xs()
+                                .child(pid.to_string()),
+                        )
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(140.0))
+                                .min_w(px(layout.process_name_min_width))
                                 .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
                                 .text_xs()
                                 .child(name),
                         )
                         .child(
                             div()
-                                .w(px(84.0))
+                                .w(px(layout.cpu_width))
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .child(format_percent(process.cpu_percent as f64)),
                         )
                         .child(
                             div()
-                                .w(px(110.0))
+                                .w(px(layout.memory_width))
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .child(format_bytes(process.memory_bytes)),
                         )
-                        .child(div().w(px(42.0)).child(terminate)),
+                        .child(div().w(px(layout.action_width)).child(terminate)),
                 );
             }
         }
@@ -528,11 +442,14 @@ impl SystemView {
             .child(
                 h_flex()
                     .w_full()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .gap(px(10.0))
                     .child(
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap(px(2.0))
                             .child(
                                 div()
@@ -556,13 +473,13 @@ impl SystemView {
 }
 
 impl Render for SystemView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.monitor.snapshot();
         let mut root = v_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground);
-        root = root.child(self.render_header(cx));
+        root = root.child(self.render_header(window, cx));
         if let Some(notice) = &self.notice {
             root = root.child(self.render_notice(notice, cx));
         }
@@ -571,15 +488,101 @@ impl Render for SystemView {
         }
         let content = match self.section {
             SystemSection::Performance => self.render_performance(&snapshot, cx),
-            SystemSection::Processes => self.render_processes(&snapshot, cx),
+            SystemSection::Processes => self.render_processes(&snapshot, window, cx),
         };
         root.child(
             div()
                 .id("system-content")
+                .debug_selector(|| "system-content".to_owned())
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
                 .child(content),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext as _, TestAppContext, px, size};
+    use gpui_component::Root;
+
+    use super::*;
+    use crate::SystemMonitor;
+
+    /// 在最窄支持宽度渲染真实视图，避免标题栏或任务表在组件边界外被裁切。
+    #[gpui::test]
+    #[allow(clippy::expect_used)]
+    fn narrow_window_keeps_monitor_controls_and_process_table_inside_content(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| SystemView {
+                monitor: SystemMonitor::new(),
+                section: SystemSection::Processes,
+                termination_request: None,
+                termination_in_progress: false,
+                notice: None,
+            });
+            Root::new(view, window, cx)
+        });
+        cx.simulate_resize(size(px(360.0), px(640.0)));
+        cx.run_until_parked();
+
+        let header = cx
+            .debug_bounds("system-header")
+            .expect("system header should be rendered");
+        let controls = cx
+            .debug_bounds("system-header-controls")
+            .expect("system header controls should be rendered");
+        let content = cx
+            .debug_bounds("system-content")
+            .expect("system content should be rendered");
+        let table = cx
+            .debug_bounds("system-process-table")
+            .expect("process table should be rendered");
+
+        assert!(header.size.width <= px(360.0));
+        assert!(controls.origin.x >= header.origin.x);
+        assert!(controls.origin.x + controls.size.width <= header.origin.x + header.size.width);
+        assert!(table.origin.x >= content.origin.x);
+        assert!(table.origin.x + table.size.width <= content.origin.x + content.size.width);
+    }
+
+    /// 性能页在窄窗口保持指标卡和核心面板可见，避免固定最小宽度造成水平溢出。
+    #[gpui::test]
+    #[allow(clippy::expect_used)]
+    fn narrow_window_keeps_performance_panels_inside_content(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| SystemView {
+                monitor: SystemMonitor::new(),
+                section: SystemSection::Performance,
+                termination_request: None,
+                termination_in_progress: false,
+                notice: None,
+            });
+            Root::new(view, window, cx)
+        });
+        cx.simulate_resize(size(px(360.0), px(640.0)));
+        cx.run_until_parked();
+
+        let content = cx
+            .debug_bounds("system-content")
+            .expect("system content should be rendered");
+        let metric = cx
+            .debug_bounds("system-metric-card-CPU")
+            .expect("CPU metric card should be rendered");
+        let cores = cx
+            .debug_bounds("system-core-panel")
+            .expect("core panel should be rendered");
+
+        assert!(metric.size.width > px(0.0));
+        assert!(cores.size.width > px(0.0));
+        assert!(metric.origin.x >= content.origin.x);
+        assert!(metric.origin.x + metric.size.width <= content.origin.x + content.size.width);
+        assert!(cores.origin.x >= content.origin.x);
+        assert!(cores.origin.x + cores.size.width <= content.origin.x + content.size.width);
     }
 }

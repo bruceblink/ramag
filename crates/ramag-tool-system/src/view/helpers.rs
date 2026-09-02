@@ -11,6 +11,8 @@ use crate::{DiskSnapshot, TerminateResult};
 
 mod core_history;
 use core_history::render_core_history;
+mod process_layout;
+pub(super) use process_layout::{ProcessTableLayout, process_table_layout};
 
 const HISTORY_CHART_POINTS: usize = 60;
 const HISTORY_CHART_HORIZONTAL_GRID_LINES: usize = 4;
@@ -458,8 +460,10 @@ pub(super) fn render_disk_row(
     disk: &DiskSnapshot,
     theme: &gpui_component::theme::Theme,
 ) -> impl IntoElement {
+    // 窄窗口把文件系统和容量信息换到下一行，挂载点仍优先保持可读。
     h_flex()
         .w_full()
+        .flex_wrap()
         .items_center()
         .gap(px(8.0))
         .py(px(5.0))
@@ -482,7 +486,8 @@ pub(super) fn render_disk_row(
         )
         .child(
             div()
-                .w(px(220.0))
+                .flex_1()
+                .min_w(px(180.0))
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .child(format!(
@@ -494,21 +499,32 @@ pub(super) fn render_disk_row(
         )
 }
 
-pub(super) fn process_header(theme: &gpui_component::theme::Theme) -> impl IntoElement {
+pub(super) fn process_header(
+    layout: ProcessTableLayout,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
     h_flex()
         .w_full()
         .items_center()
-        .gap(px(8.0))
-        .px_3()
+        .gap(px(layout.gap))
+        .px(px(layout.horizontal_padding))
         .py(px(7.0))
         .bg(theme.muted)
         .text_xs()
         .text_color(theme.muted_foreground)
-        .child(div().w(px(70.0)).child("PID"))
-        .child(div().flex_1().min_w(px(140.0)).child("进程"))
-        .child(div().w(px(84.0)).child("CPU"))
-        .child(div().w(px(110.0)).child("内存"))
-        .child(div().w(px(42.0)))
+        .child(div().w(px(layout.pid_width)).child("PID"))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(layout.process_name_min_width))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child("进程"),
+        )
+        .child(div().w(px(layout.cpu_width)).child("CPU"))
+        .child(div().w(px(layout.memory_width)).child("内存"))
+        .child(div().w(px(layout.action_width)))
 }
 
 pub(super) fn empty_state(
