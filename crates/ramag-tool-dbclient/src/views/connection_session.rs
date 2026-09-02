@@ -18,7 +18,7 @@ use crate::sql_completion::{SchemaCache, is_system_schema};
 use crate::views::connection_list::ConnectionListPanel;
 use crate::views::query_panel::{QueryPanel, QueryPanelEvent};
 use crate::views::schema_diagram::SchemaDiagramPanel;
-use crate::views::table_properties::TablePropertiesDialog;
+use crate::views::table_properties::{TablePropertiesDialog, TablePropertiesEvent};
 use crate::views::table_tree::{TableTreePanel, TreeEvent};
 
 /// 元数据缓存刷新间隔，用于同步外部结构变更。
@@ -32,12 +32,15 @@ pub struct ConnectionSession {
     config: ConnectionConfig,
     tree: Entity<TableTreePanel>,
     queries: Entity<QueryPanel>,
+    table_properties_dialog: Option<Entity<TablePropertiesDialog>>,
     resize_state: Entity<ResizableState>,
     /// 隐藏编辑器后承接焦点，保证快捷键仍在焦点链中。
     focus_handle: FocusHandle,
     /// 持有补全缓存，查询标签通过 `Arc` 共享。
     _schema_cache: Arc<RwLock<SchemaCache>>,
     _subscriptions: Vec<Subscription>,
+    /// 当前表属性弹窗的事件订阅；关闭后立即释放，避免重复打开时累积订阅。
+    table_properties_subscription: Option<Subscription>,
 }
 
 impl ConnectionSession {
@@ -214,10 +217,12 @@ impl ConnectionSession {
             config,
             tree,
             queries,
+            table_properties_dialog: None,
             resize_state,
             focus_handle,
             _schema_cache: schema_cache,
             _subscriptions: subs,
+            table_properties_subscription: None,
         }
     }
 
@@ -354,14 +359,22 @@ impl ConnectionSession {
                 cx,
             )
         });
-        window.open_dialog(cx, move |dialog, _, _| {
-            let panel = panel.clone();
-            dialog
-                .title(format!("表属性 · {schema}.{table}"))
-                .width(px(1160.0))
-                .margin_top(px(42.0))
-                .content(move |content, _, _| content.child(panel.clone()))
-        });
+        let subscription = cx.subscribe_in(
+            &panel,
+            window,
+            move |this: &mut Self, _, event: &TablePropertiesEvent, window, cx| {
+                if matches!(event, TablePropertiesEvent::CloseRequested) {
+                    this.table_properties_dialog = None;
+                    this.table_properties_subscription = None;
+                    this.focus(window, cx);
+                    cx.notify();
+                }
+            },
+        );
+        self.table_properties_subscription = Some(subscription);
+        self.table_properties_dialog = Some(panel.clone());
+        panel.update(cx, |panel, cx| panel.focus(window, cx));
+        cx.notify();
     }
 }
 
@@ -371,6 +384,7 @@ impl Render for ConnectionSession {
 
         h_flex()
             .size_full()
+            .relative()
             .track_focus(&self.focus_handle)
             .bg(theme.background)
             .on_action(
@@ -398,6 +412,9 @@ impl Render for ConnectionSession {
                             .child(div().size_full().min_w_0().child(self.queries.clone())),
                     ),
             )
+            .when_some(self.table_properties_dialog.clone(), |view, dialog| {
+                view.child(dialog)
+            })
     }
 }
 
