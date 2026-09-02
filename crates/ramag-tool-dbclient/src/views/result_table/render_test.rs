@@ -310,6 +310,73 @@ fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppC
     );
 }
 
+/// 结果树、文本和转置视图的状态栏也不能被选中值挤出分页控件。
+#[gpui::test]
+fn alternate_result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    cx.set_global(ramag_ui::DatabaseResultSettingsGlobal::new(
+        ramag_ui::DatabaseResultSettings {
+            show_horizontal_scrollbar: true,
+            display_binary_16_as_uuid: true,
+        },
+    ));
+    let result = Arc::new(QueryResult {
+        columns: vec!["id".into(), "description_".repeat(40)],
+        column_types: vec!["BIGINT".into(), "TEXT".into()],
+        rows: vec![Row {
+            values: vec![Value::Int(1), Value::Text("状态信息".repeat(120))],
+        }],
+        affected_rows: 0,
+        elapsed_ms: 123,
+        warnings: Vec::new(),
+        truncated: false,
+    });
+    let display_view = build_display_view(&result, None, "", "");
+    let display_view_key = DisplayViewCacheKey {
+        result_identity: Arc::as_ptr(&result) as usize,
+        result_revision: 0,
+        sort_by: None,
+        column_filter: String::new(),
+        row_filter: super::RowFilter::Text(String::new()),
+        display_binary_16_as_uuid: true,
+    };
+    let (panel, cx) = cx.add_window_view(|window, cx| {
+        let mut panel = ResultPanel::new(window, cx);
+        panel.state = ResultState::Ok(result.clone());
+        panel.view_mode = ResultViewMode::Tree;
+        panel.selected_cell = Some((0, 1));
+        panel.pagination = Some(ResultPagination {
+            page: 0,
+            page_size: 100,
+            has_more: true,
+            total: TotalRows::Known(10_000),
+        });
+        panel.display_view_cache = Some(DisplayViewCache {
+            key: display_view_key,
+            view: display_view,
+        });
+        panel
+    });
+    cx.simulate_resize(gpui::size(px(720.0), px(420.0)));
+    panel.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    let status_bar = cx
+        .debug_bounds("result-alternate-status")
+        .expect("替代结果视图状态栏应渲染");
+    let status_context = cx
+        .debug_bounds("result-alternate-status-context")
+        .expect("替代结果视图状态摘要区域应渲染");
+    let next_page = cx
+        .debug_bounds("result-alternate-page-next")
+        .expect("替代结果视图下一页按钮应渲染");
+    assert!(status_context.size.width > px(0.0));
+    assert!(
+        next_page.right() <= status_bar.right(),
+        "替代结果视图分页按钮不能被长状态文本推出状态栏"
+    );
+}
+
 /// The value viewer should render only the selected cell and remain closable as a dialog.
 #[gpui::test]
 fn selected_cell_opens_bounded_value_viewer(cx: &mut TestAppContext) {

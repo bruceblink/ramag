@@ -355,8 +355,30 @@ fn render_alternate_footer(
             display_cell_value(Some(value), 40, display_binary_16_as_uuid)
         ));
     }
+    let status_context = h_flex()
+        .id("result-alternate-status-context")
+        .debug_selector(|| "result-alternate-status-context".into())
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(status),
+        )
+        .child(
+            div()
+                .flex_none()
+                .child(format!("· 耗时 {} ms", result.elapsed_ms)),
+        );
     let mut footer = h_flex()
         .id("result-alternate-status")
+        .debug_selector(|| "result-alternate-status".into())
         .w_full()
         .flex_none()
         .items_center()
@@ -368,19 +390,7 @@ fn render_alternate_footer(
         .bg(cx.theme().secondary)
         .text_xs()
         .text_color(cx.theme().muted_foreground)
-        .child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(status),
-        )
-        .child(
-            div()
-                .flex_none()
-                .child(format!("· 耗时 {} ms", result.elapsed_ms)),
-        )
-        .child(div().flex_1());
+        .child(status_context);
     if let Some(pagination) = pagination {
         let panel_entity = cx.entity();
         let previous_page = pagination.page.saturating_sub(1);
@@ -399,6 +409,7 @@ fn render_alternate_footer(
             ))
             .child(
                 ramag_ui::clickable_button("result-alternate-page-previous")
+                    .debug_selector(|| "result-alternate-page-previous".into())
                     .ghost()
                     .small()
                     .label("上页")
@@ -418,6 +429,7 @@ fn render_alternate_footer(
             }))
             .child(
                 ramag_ui::clickable_button("result-alternate-page-next")
+                    .debug_selector(|| "result-alternate-page-next".into())
                     .ghost()
                     .small()
                     .label("下页")
