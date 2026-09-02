@@ -19,8 +19,7 @@ use ramag_domain::entities::{QueryResult, contains_case_insensitive};
 use ramag_ui::RestrictScrollToAxisExt as _;
 
 use super::result_panel::{
-    MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, RowFilter, RowSearchBlocker, SortDir,
-    TotalRows,
+    MAX_ROWS_DISPLAY, ResultPanel, ResultPanelEvent, RowFilter, SortDir, TotalRows,
 };
 
 /// 连续输入筛选词时先等待短暂停顿，避免每个按键都占用共享 CPU 工作池。
