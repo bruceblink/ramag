@@ -2,12 +2,14 @@ use super::*;
 use ramag_ui::RestrictScrollToAxisExt as _;
 
 impl KafkaView {
+    /// 渲染消息查询页；窄屏把结果区放入页面滚动范围，保证查询控件不会挤掉表格和详情。
     pub(super) fn render_messages(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let stacked_root = f32::from(window.viewport_size().width) < 900.0;
         let compact = f32::from(window.viewport_size().width) < 1280.0;
         let page = self.message_page.as_ref();
         let page_count = self.message_page_count();
@@ -170,7 +172,13 @@ impl KafkaView {
         v_flex()
             .id("kafka-messages")
             .debug_selector(|| "kafka-messages".into())
-            .size_full()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .when(stacked_root, |page| {
+                page.overflow_y_scroll()
+                    .track_scroll(&self.message_page_scroll)
+            })
             .p(px(18.0))
             .gap(px(12.0))
             .child(self.render_message_controls(window, cx))
@@ -180,6 +188,9 @@ impl KafkaView {
                     .min_h_0()
                     .items_stretch()
                     .when(compact, |row| row.flex_col())
+                    .when(stacked_root, |row| {
+                        row.min_h(px(COMPACT_MESSAGE_RESULTS_HEIGHT))
+                    })
                     .gap(px(14.0))
                     .child(
                         v_flex()

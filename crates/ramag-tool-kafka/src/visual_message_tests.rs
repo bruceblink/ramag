@@ -90,7 +90,12 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
     let selected_message = kafka_entity.read_with(visual_cx, |view, _| view.selected_message);
     assert_eq!(selected_message, Some(0));
 
-    for (width, height) in [(360.0, 900.0), (1024.0, 900.0), (1440.0, 900.0)] {
+    for (width, height) in [
+        (360.0, 900.0),
+        (800.0, 500.0),
+        (1024.0, 900.0),
+        (1440.0, 900.0),
+    ] {
         visual_cx.simulate_resize(size(px(width), px(height)));
         visual_cx.run_until_parked();
         let messages = visual_cx.debug_bounds("kafka-messages");
@@ -160,6 +165,10 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             "消息页面不能横向溢出: {messages:?}"
         );
         assert!(
+            messages.bottom() <= px(height),
+            "消息页面不能纵向越出可用窗口: {messages:?} / {width}x{height}"
+        );
+        assert!(
             table.right() <= messages.right(),
             "消息表不能越出消息页面: {table:?}"
         );
@@ -178,6 +187,10 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
         assert!(
             pagination.right() <= messages.right(),
             "分页状态栏不能越出消息页面: {pagination:?}"
+        );
+        assert!(
+            table.size.height > px(0.0) && detail.size.height > px(0.0),
+            "结果区及表格、详情应保留可用高度: table={table:?}, detail={detail:?}"
         );
         assert!(
             query_row.right() <= messages.right()
@@ -219,6 +232,32 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
                 range_start.origin.y + range_start.size.height > range_end.origin.y,
                 "宽窗口应保留起止范围字段的横向布局: start={range_start:?}, end={range_end:?}"
             );
+        }
+
+        if width < 900.0 {
+            let max_page_offset =
+                kafka_entity.read_with(visual_cx, |view, _| view.message_page_scroll.max_offset());
+            assert!(
+                max_page_offset.y > px(0.0),
+                "窄窗口消息页内容超出视口时应提供纵向滚动范围: {max_page_offset:?}"
+            );
+            kafka_entity.update(visual_cx, |view, cx| {
+                view.message_page_scroll
+                    .set_offset(gpui::point(-max_page_offset.x, -max_page_offset.y));
+                cx.notify();
+            });
+            visual_cx.run_until_parked();
+            let scrolled_table = visual_cx.debug_bounds("kafka-message-table");
+            assert!(
+                scrolled_table.is_some_and(|bounds| bounds.origin.y < messages.bottom()),
+                "滚动到页面底部后应能看到消息结果区: {scrolled_table:?} / {messages:?}"
+            );
+            kafka_entity.update(visual_cx, |view, cx| {
+                view.message_page_scroll
+                    .set_offset(gpui::point(px(0.0), px(0.0)));
+                cx.notify();
+            });
+            visual_cx.run_until_parked();
         }
     }
 }
