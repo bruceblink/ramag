@@ -74,6 +74,7 @@ pub(crate) struct ResultPagination {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResultPanelEvent {
+    Retry,
     PageRequested(usize),
     PageSizeChanged(usize),
     SortChanged {

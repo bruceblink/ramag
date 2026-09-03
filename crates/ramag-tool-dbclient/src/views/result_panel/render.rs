@@ -10,8 +10,7 @@ use gpui_component::{
 };
 use ramag_ui::platform::primary_shortcut;
 
-use super::ResultPanel;
-use super::ResultState;
+use super::{ResultPanel, ResultPanelEvent, ResultState};
 use crate::actions::{
     CopyCellAsCsv, CopyCellAsJson, CopyCellAsSql, CopyCellValue, CopySelectedColumn, FindInResults,
     OpenCellValueViewer,
@@ -65,21 +64,40 @@ impl Render for ResultPanel {
             ResultState::Error(msg) => {
                 let msg_for_copy = msg.clone();
                 v_flex()
+                    .id("sql-result-error")
+                    .debug_selector(|| "sql-result-error".into())
                     .size_full()
+                    .min_w_0()
                     .p_4()
                     .gap_2()
                     .child(
                         h_flex()
+                            .w_full()
+                            .min_w_0()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .child(
                                 div()
+                                    .flex_none()
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(danger)
                                     .child("执行失败"),
                             )
-                            .child(div().flex_1())
+                            .child(div().flex_1().min_w_0())
+                            .child(
+                                ramag_ui::clickable_button("sql-result-retry")
+                                    .debug_selector(|| "sql-result-retry".into())
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::Play)
+                                    .label("重试")
+                                    .tooltip("重新执行当前编辑器中的 SQL")
+                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                        cx.emit(ResultPanelEvent::Retry);
+                                    })),
+                            )
                             .child(
                                 ramag_ui::clickable_button("copy-error")
                                     .ghost()
@@ -96,7 +114,15 @@ impl Render for ResultPanel {
                                     })),
                             ),
                     )
-                    .child(div().text_xs().text_color(fg).child(msg))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_xs()
+                            .text_color(fg)
+                            .child(msg),
+                    )
                     .into_any_element()
             }
 

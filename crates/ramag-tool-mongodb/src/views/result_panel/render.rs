@@ -1,5 +1,5 @@
 use super::*;
-use gpui_component::notification::Notification;
+use gpui_component::{IconName, notification::Notification};
 use ramag_ui::PointerDropdownMenu as _;
 
 /// Builds the MongoDB page-size menu and emits a bounded pager update event.
@@ -81,7 +81,7 @@ impl Render for ResultPanel {
                 .min_w_0()
                 .bg(bg)
                 .child(toolbar::render(self, cx))
-                .child(error_hint(err, danger))
+                .child(error_hint(err, danger, cx))
                 .into_any_element();
         }
         let Some((affected, elapsed, truncated)) = self
@@ -468,13 +468,39 @@ fn empty_hint(text: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Statefu
         .child(text.into())
 }
 
-fn error_hint(text: String, color: gpui::Hsla) -> gpui::Stateful<gpui::Div> {
-    div()
+fn error_hint(
+    text: String,
+    color: gpui::Hsla,
+    cx: &mut Context<ResultPanel>,
+) -> gpui::Stateful<gpui::Div> {
+    v_flex()
         .id("mongo-result-error")
+        .debug_selector(|| "mongo-result-error".into())
         .flex_1()
-        .px(px(12.0))
-        .py(px(10.0))
-        .text_xs()
-        .text_color(color)
-        .child(SharedString::from(text))
+        .min_w_0()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .p_4()
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .whitespace_normal()
+                .text_xs()
+                .text_color(color)
+                .child(SharedString::from(text)),
+        )
+        .child(
+            ramag_ui::clickable_button("mongo-result-retry")
+                .debug_selector(|| "mongo-result-retry".into())
+                .outline()
+                .small()
+                .icon(IconName::Play)
+                .label("重试")
+                .tooltip("重新执行当前编辑器中的 MongoDB 命令")
+                .on_click(cx.listener(|_, _: &gpui::ClickEvent, _, cx| {
+                    cx.emit(ResultEvent::Refresh);
+                })),
+        )
 }
