@@ -5,6 +5,7 @@ use std::sync::Arc;
 use gpui::{
     AppContext as _, Context, Entity, IntoElement, Modifiers, ParentElement as _, Render,
     ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, TouchPhase, Window, div, point, px,
+    size,
 };
 use ramag_domain::entities::{QueryResult, Row, Value};
 
@@ -406,9 +407,9 @@ fn alternate_result_status_keeps_paging_controls_visible_in_small_window(cx: &mu
     );
 }
 
-/// The value viewer should render only the selected cell and remain closable as a dialog.
+/// The value viewer should stay inside supported window widths and remain closable as a dialog.
 #[gpui::test]
-fn selected_cell_opens_bounded_value_viewer(cx: &mut TestAppContext) {
+fn selected_cell_value_viewer_stays_inside_three_window_widths(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let result = Arc::new(QueryResult {
         columns: vec!["id".into(), "payload".into()],
@@ -451,33 +452,52 @@ fn selected_cell_opens_bounded_value_viewer(cx: &mut TestAppContext) {
     let panel = panel_entity.expect("result panel should be initialized");
     cx.run_until_parked();
 
-    panel.update_in(cx, |panel, window, cx| {
-        panel.open_selected_cell_viewer(window, cx);
-    });
-    cx.run_until_parked();
-    assert!(
-        cx.debug_bounds("result-value-viewer").is_some(),
-        "selected cell should open the value viewer"
-    );
-    assert!(
-        cx.debug_bounds("result-value-viewer-content-frame")
-            .is_some(),
-        "value viewer should render a selectable bounded content area"
-    );
-    assert!(
-        cx.debug_bounds("result-value-viewer-h-scrollbar").is_some(),
-        "value viewer should provide horizontal scrolling for long lines"
-    );
+    for width in [360.0, 1024.0, 1440.0] {
+        cx.simulate_resize(size(px(width), px(620.0)));
+        panel.update_in(cx, |panel, window, cx| {
+            panel.open_selected_cell_viewer(window, cx);
+        });
+        cx.run_until_parked();
 
-    let close = cx
-        .debug_bounds("result-value-viewer-close")
-        .expect("value viewer should expose a close action");
-    cx.simulate_click(close.center(), Modifiers::default());
-    cx.run_until_parked();
-    assert!(
-        cx.debug_bounds("result-value-viewer").is_none(),
-        "closing the value viewer should remove the dialog"
-    );
+        let viewer = cx
+            .debug_bounds("result-value-viewer")
+            .expect("selected cell should open the value viewer");
+        let scroll_area = cx
+            .debug_bounds("result-value-viewer-scroll-area")
+            .expect("value viewer should render a scroll area");
+        assert!(viewer.size.width > px(0.0), "查看器不能被压缩为零宽");
+        assert!(
+            viewer.right() <= px(width),
+            "查看器不能越出窗口：viewer={viewer:?}, width={width}"
+        );
+        assert!(
+            scroll_area.right() <= viewer.right(),
+            "滚动区域不能越出查看器：scroll_area={scroll_area:?}, viewer={viewer:?}"
+        );
+        assert!(
+            cx.debug_bounds("result-value-viewer-content-frame")
+                .is_some(),
+            "value viewer should render a selectable bounded content area"
+        );
+        assert!(
+            cx.debug_bounds("result-value-viewer-h-scrollbar").is_some(),
+            "value viewer should provide horizontal scrolling for long lines"
+        );
+
+        let close = cx
+            .debug_bounds("result-value-viewer-close")
+            .expect("value viewer should expose a close action");
+        assert!(
+            close.right() <= px(width),
+            "关闭操作不能越出窗口：close={close:?}, width={width}"
+        );
+        cx.simulate_click(close.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("result-value-viewer").is_none(),
+            "closing the value viewer should remove the dialog"
+        );
+    }
 }
 
 #[gpui::test]

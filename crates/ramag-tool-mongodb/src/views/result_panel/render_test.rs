@@ -4,13 +4,33 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size};
+use gpui::{
+    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, ScrollDelta,
+    ScrollWheelEvent, Styled as _, TestAppContext, TouchPhase, Window, div, point, px, size,
+};
+use gpui_component::WindowExt as _;
 use ramag_domain::entities::MongoQueryResult;
 use serde_json::{Map, Value};
 
 use super::{
     MongoResultPagination, ResultPanel, RowFilter, RowSearchMode, RowViewCache, RowViewKey,
 };
+
+/// 测试宿主同时渲染 MongoDB 结果面板和 GPUI Component 的对话框浮层。
+struct MongoResultDialogTestHost {
+    panel: Entity<ResultPanel>,
+}
+
+impl Render for MongoResultDialogTestHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
+        div()
+            .relative()
+            .size_full()
+            .child(self.panel.clone())
+            .children(dialog_layer)
+    }
+}
 
 fn wide_documents() -> Vec<Value> {
     (0..80)
@@ -176,6 +196,62 @@ fn result_toolbar_and_status_keep_actions_visible_in_three_window_widths(cx: &mu
         assert!(
             next_page.right() <= status_bar.right(),
             "MongoDB 分页按钮不能被状态摘要推出状态栏"
+        );
+    }
+}
+
+/// MongoDB 单元格详情应在三种窗口宽度内显示，并且始终可以关闭。
+#[gpui::test]
+fn mongo_cell_detail_stays_inside_three_window_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let mut panel_entity = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| ResultPanel::new(window, cx));
+        panel_entity = Some(panel.clone());
+        let host = cx.new(|_| MongoResultDialogTestHost {
+            panel: panel.clone(),
+        });
+        gpui_component::Root::new(host, window, cx)
+    });
+    let panel = panel_entity.expect("MongoDB result panel should be initialized");
+    cx.run_until_parked();
+
+    for width in [360.0, 1024.0, 1440.0] {
+        cx.simulate_resize(size(px(width), px(620.0)));
+        panel.update_in(cx, |panel, window, cx| {
+            panel.open_cell_dialog(
+                "payload".to_string(),
+                "JSON",
+                r#"{"line":"detail value"}"#.to_string(),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let scroll_area = cx
+            .debug_bounds("mongo-value-detail-scroll")
+            .expect("MongoDB cell detail should render a scroll area");
+        let title = cx
+            .debug_bounds("mongo-value-detail-title")
+            .expect("MongoDB cell detail should render a title");
+        assert!(
+            scroll_area.size.width > px(0.0),
+            "详情查看器不能被压缩为零宽"
+        );
+        assert!(
+            scroll_area.right() <= px(width),
+            "详情滚动区域不能越出窗口：scroll_area={scroll_area:?}, width={width}"
+        );
+        assert!(
+            title.right() <= px(width),
+            "MongoDB 详情标题不能越出窗口：title={title:?}, width={width}"
+        );
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("mongo-value-detail-scroll").is_none(),
+            "closing MongoDB cell detail should remove the dialog"
         );
     }
 }

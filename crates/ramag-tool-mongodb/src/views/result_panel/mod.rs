@@ -49,6 +49,11 @@ const PATH_COMPLETION_DEPTH: usize = 5;
 /// 行过滤防抖，避免按键时反复扫描大表。
 const ROW_VIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
 
+fn responsive_dialog_width(window: &Window, preferred: f32) -> gpui::Pixels {
+    let available = f32::from(window.viewport_size().width);
+    px((available - 32.0).max(160.0).min(preferred))
+}
+
 pub struct ResultPanel {
     pub(crate) result: Option<MongoQueryResult>,
     /// 当前层文档由此共享，避免渲染时复制。
@@ -491,23 +496,31 @@ impl ResultPanel {
             inline_text_preview(&column_path, 96)
         ));
         let display: SharedString = display.into();
-        window.open_dialog(cx, move |dialog, _w, _app| {
+        window.open_dialog(cx, move |dialog, window, _app| {
             let title = title.clone();
             let display = display.clone();
-            dialog
-                .title(ramag_ui::closable_dialog_title(
+            let dialog_width = responsive_dialog_width(window, 720.0);
+            let dialog_title = div()
+                .id("mongo-value-detail-title")
+                .debug_selector(|| "mongo-value-detail-title".into())
+                .w_full()
+                .child(ramag_ui::closable_dialog_title(
                     "mongo-value-detail-close",
                     title,
                     |_, _| {},
-                ))
+                ));
+            dialog
+                .title(dialog_title)
                 .close_button(false)
-                .w(px(720.0))
+                .w(dialog_width)
                 .p(px(20.0))
                 .content(move |content, _, _| {
                     content.child(
                         div()
                             .id("mongo-value-detail-scroll")
+                            .debug_selector(|| "mongo-value-detail-scroll".into())
                             .w_full()
+                            .min_w_0()
                             .h(px(400.0))
                             .overflow_y_scroll()
                             .child(
@@ -516,6 +529,7 @@ impl ResultPanel {
                                     display.clone(),
                                 )
                                 .w_full()
+                                .min_w_0()
                                 .text_sm(),
                             ),
                     )

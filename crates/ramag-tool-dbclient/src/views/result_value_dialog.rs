@@ -24,6 +24,11 @@ const VALUE_VIEW_HEIGHT: f32 = 400.0;
 /// 单个值的查看上限；结果集本身仍由已有的全局结果预算控制。
 const MAX_VALUE_VIEW_BYTES: usize = 2 * 1024 * 1024;
 
+fn responsive_dialog_width(window: &Window, preferred: f32) -> gpui::Pixels {
+    let available = f32::from(window.viewport_size().width);
+    px((available - 32.0).max(160.0).min(preferred))
+}
+
 pub(crate) struct ResultValueDialog {
     result: Arc<QueryResult>,
     row_index: usize,
@@ -106,10 +111,12 @@ impl ResultValueDialog {
             .relative()
             .h(px(VALUE_VIEW_HEIGHT))
             .w_full()
+            .min_w_0()
             .child(
                 div()
                     .id("result-value-viewer-horizontal-scroll")
                     .size_full()
+                    .min_w_0()
                     .overflow_x_scroll()
                     .track_scroll(&self.horizontal_scroll)
                     .child(
@@ -175,8 +182,9 @@ pub(crate) fn open(
     let viewer =
         cx.new(|_| ResultValueDialog::new(result, row_index, column_index, driver, value_override));
     let viewer_for_dialog = viewer.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, window, _| {
         let viewer_for_content = viewer_for_dialog.clone();
+        let dialog_width = responsive_dialog_width(window, 1040.0);
         let close = div()
             .debug_selector(|| "result-value-viewer-close".into())
             .child(
@@ -193,7 +201,7 @@ pub(crate) fn open(
                 |_, _| {},
             ))
             .close_button(false)
-            .width(px(1040.0))
+            .width(dialog_width)
             .margin_top(px(36.0))
             .content(move |content, _, _| content.child(viewer_for_content.clone()))
             .footer(h_flex().w_full().items_center().justify_end().child(close))
@@ -224,8 +232,10 @@ impl Render for ResultValueDialog {
             .id("result-value-viewer-meta")
             .debug_selector(|| "result-value-viewer-meta".into())
             .w_full()
+            .min_w_0()
             .flex_none()
             .items_center()
+            .flex_wrap()
             .gap(px(14.0))
             .pb(px(8.0))
             .text_xs()
@@ -244,7 +254,9 @@ impl Render for ResultValueDialog {
             .id("result-value-viewer-copy-toolbar")
             .debug_selector(|| "result-value-viewer-copy-toolbar".into())
             .w_full()
+            .min_w_0()
             .flex_none()
+            .flex_wrap()
             .items_center()
             .gap(px(6.0))
             .pb(px(8.0))
@@ -277,6 +289,7 @@ impl Render for ResultValueDialog {
             .id("result-value-viewer")
             .debug_selector(|| "result-value-viewer".into())
             .w_full()
+            .min_w_0()
             .gap(px(2.0))
             .child(meta)
             .child(copy_toolbar)
