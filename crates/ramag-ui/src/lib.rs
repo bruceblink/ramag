@@ -162,21 +162,32 @@ pub fn closable_dialog_title(
     title: impl gpui::IntoElement,
     on_close: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> impl gpui::IntoElement {
-    use gpui::{ParentElement as _, Styled as _};
+    use gpui::{InteractiveElement as _, ParentElement as _, Styled as _, div, px};
     use gpui_component::{
         IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
     };
 
     h_flex()
+        .debug_selector(|| "ramag-dialog-title".into())
         .w_full()
+        .min_w_0()
         .items_center()
-        .justify_between()
-        .child(title)
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(title),
+        )
         .child(
             clickable_button(id)
                 .ghost()
                 .xsmall()
+                .flex_none()
                 .icon(IconName::Close)
+                .debug_selector(|| "ramag-dialog-close".into())
                 .tooltip("关闭")
                 .on_click(move |_, window, cx| {
                     window.close_dialog(cx);
@@ -277,6 +288,9 @@ fn byte_prefix(value: &str, max_bytes: usize) -> &str {
 
 #[cfg(test)]
 mod copy_support_tests;
+
+#[cfg(test)]
+mod shared_ui_tests;
 
 #[cfg(test)]
 mod input_limit_tests {
