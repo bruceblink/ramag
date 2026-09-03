@@ -6,9 +6,7 @@ use std::rc::Rc;
 use gpui::{
     App, ClickEvent, InteractiveElement as _, ParentElement, SharedString, Styled, Window, div, px,
 };
-use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
-};
+use gpui_component::{ActiveTheme, Sizable as _, WindowExt as _, button::ButtonVariants as _};
 
 pub fn open_confirm(
     title: impl Into<SharedString>,
@@ -135,14 +133,6 @@ pub fn open_confirm_with_cancel(
                         .child(desc.clone()),
                 )
             })
-            .footer(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .child(cancel_btn)
-                    .child(ok_btn),
-            )
+            .footer(crate::dialog_action_footer(cancel_btn, ok_btn))
     });
 }

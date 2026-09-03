@@ -196,6 +196,25 @@ pub fn closable_dialog_title(
         )
 }
 
+/// 创建可在窄窗口换行的对话框双按钮操作区；第一个按钮是次要操作，第二个按钮是主要操作。
+pub fn dialog_action_footer(
+    secondary: impl gpui::IntoElement,
+    primary: impl gpui::IntoElement,
+) -> impl gpui::IntoElement {
+    use gpui::{InteractiveElement as _, ParentElement as _, Styled as _, px};
+    use gpui_component::h_flex;
+
+    h_flex()
+        .debug_selector(|| "ramag-dialog-footer".into())
+        .w_full()
+        .flex_wrap()
+        .items_center()
+        .justify_end()
+        .gap(px(8.0))
+        .child(secondary)
+        .child(primary)
+}
+
 /// 创建带手型光标的菜单项。
 pub fn menu_item(label: impl Into<gpui::SharedString>) -> gpui_component::menu::PopupMenuItem {
     menu_item_with_disabled(label, false)

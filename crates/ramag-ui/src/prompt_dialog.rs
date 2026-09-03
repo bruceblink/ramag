@@ -11,7 +11,6 @@ use gpui::{
 use gpui_component::{
     ActiveTheme, IconName, Sizable as _, WindowExt as _,
     button::ButtonVariants as _,
-    h_flex,
     input::{Input, InputState},
     notification::Notification,
     v_flex,
@@ -297,15 +296,7 @@ pub fn open_reveal_masked_prompt(
                         }),
                 )
             })
-            .footer(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .child(cancel_btn)
-                    .child(ok_btn),
-            )
+            .footer(crate::dialog_action_footer(cancel_btn, ok_btn))
     });
 }
 
@@ -438,15 +429,7 @@ fn open_prompt_impl(
                     )
                 }
             })
-            .footer(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .child(cancel_btn)
-                    .child(ok_btn),
-            )
+            .footer(crate::dialog_action_footer(cancel_btn, ok_btn))
     });
 }
 
