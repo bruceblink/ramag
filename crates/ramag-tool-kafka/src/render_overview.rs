@@ -300,13 +300,16 @@ impl KafkaView {
                             div()
                                 .flex_1()
                                 .min_w_0()
+                                .whitespace_normal()
                                 .text_xs()
                                 .text_color(theme.danger)
+                                .debug_selector(|| "kafka-runtime-error-message".into())
                                 .child(error),
                         )
                         .child(
                             ramag_ui::clickable_button("kafka-runtime-retry")
                                 .debug_selector(|| "kafka-runtime-retry".into())
+                                .flex_none()
                                 .outline()
                                 .small()
                                 .icon(ramag_ui::icons::refresh_cw())
