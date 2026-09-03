@@ -276,6 +276,15 @@ strip = true
 panic = "abort"
 incremental = false
 
+# 本地日常构建：保留优化和 panic 策略，关闭全量 LTO 并启用增量编译。
+[profile.release-fast]
+inherits = "release"
+opt-level = 2
+codegen-units = 16
+lto = false
+strip = false
+incremental = true
+
 [profile.dev]
 opt-level = 0
 debug = 1

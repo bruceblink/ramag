@@ -1,12 +1,17 @@
 # Windows 原生 x64 构建；Release 由 Windows SDK fxc.exe 预编译 GPUI 着色器。
+# `-Release -Fast` 使用 release-fast profile，供本地日常迭代构建。
 param(
-    [switch]$Release
+    [switch]$Release,
+    [switch]$Fast
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $Target = "x86_64-pc-windows-msvc"
-$BuildProfile = if ($Release) { "release" } else { "debug" }
+if ($Fast -and -not $Release) {
+    throw "-Fast requires -Release."
+}
+$BuildProfile = if ($Fast) { "release-fast" } elseif ($Release) { "release" } else { "debug" }
 $RepoDir = Split-Path -Parent $PSScriptRoot
 $DependencyHelper = Join-Path $PSScriptRoot "windows\pe-dependencies.ps1"
 $ToolchainHelper = Join-Path $PSScriptRoot "windows\msvc-toolchain.ps1"
@@ -143,9 +148,13 @@ if ($Release) {
 }
 
 $CargoArgs = @("build", "--locked", "--target", $Target, "-p", "ramag-bin")
-if ($Release) {
+if ($Fast) {
+    $CargoArgs += @("--profile", $BuildProfile)
+}
+elseif ($Release) {
     $CargoArgs += "--release"
 }
+Write-Host "Using Cargo profile: $BuildProfile"
 
 $TargetEnvSuffix = $Target.Replace("-", "_")
 $CompilerEnvironmentNames = @(

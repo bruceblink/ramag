@@ -182,6 +182,22 @@ Actions → Desktop Release → Run workflow
 
 这些保护属于 GitHub 仓库配置，不能只靠工作流 YAML 完成。
 
+## 本地 Windows 构建
+
+日常 Windows x64 构建使用快速 Release profile，保留静态 MSVC CRT、Windows PE、版本资源和 DLL 依赖校验：
+
+```powershell
+.\scripts\build-windows.ps1 -Release -Fast
+```
+
+快速构建产物位于 `target/x86_64-pc-windows-msvc/release-fast/`。正式发布构建仍使用完整 Release profile：
+
+```powershell
+.\scripts\build-windows.ps1 -Release
+```
+
+正式 Windows 安装包脚本固定使用完整 Release profile，不受 `-Fast` 影响。
+
 ## 本地 Windows 打包
 
 普通打包：
