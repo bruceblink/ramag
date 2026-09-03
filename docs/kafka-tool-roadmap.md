@@ -290,7 +290,7 @@ Kafka ACL 首期支持：
 阶段 16 当前切片实施记录：
 
 - `c01aaae` 补充消息页紧凑窗口可用性：窗口宽度小于 900px 时，消息页使用外层纵向滚动，结果面板保留 480px 最小高度，分页后滚动位置回到页首；不改变 Kafka 请求、消息读取或消费进度行为。
-- 新增 `compact_result_panel_reserves_readable_height` 和 `message_page_stays_scrollable_when_result_panel_is_below_the_fold` headless 测试，覆盖 700/899/900/1280 宽度边界和 760×540 窄窗口；`cargo fmt --all -- --check`、`cargo test --locked --workspace`、workspace Clippy、MSVC Clippy、Windows debug build、源码大小检查和 `git diff --check` 均通过。
+- 扩展 `kafka_message_table_and_detail_fit_three_window_widths` headless 测试，覆盖 360/800/1024/1440 窗口、800×500 低高度场景、窄窗口纵向滚动范围和结果区可见性；`cargo fmt --all -- --check`、`cargo test --locked --workspace`、workspace Clippy、MSVC Clippy、Windows debug build、源码大小检查和 `git diff --check` 均通过。
 - 原生可执行文件已启动并枚举到目标窗口，但 Computer Use helper 连续返回 `node_repl exec context not found`，未取得截图或控件状态证据；真实 Windows 窗口验收仍待补充。
 
 后续独立路线：
