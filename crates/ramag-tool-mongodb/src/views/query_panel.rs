@@ -1,6 +1,9 @@
 mod drafts;
 mod render;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gpui::TestAppContext;
+use gpui::{AppContext as _, TestAppContext, px, size};
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConnectionConfig, ConnectionId, QueryRecord};
 use ramag_domain::error::Result;
@@ -98,6 +98,62 @@ fn closed_draft_stack_is_bounded_and_reopens_newest_first() {
         Some("查询 1")
     );
     assert_eq!(stack.pop().map(|draft| draft.title), Some("查询 10".into()));
+}
+
+/// 三种窗口下 SQL 查询工具栏都要保留标签区和操作区。
+#[gpui::test]
+fn editor_toolbar_keeps_actions_visible_in_three_window_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let service = Arc::new(ConnectionService::new(
+        HashMap::new(),
+        Arc::new(NoopStorage),
+    ));
+    let schema_cache = SchemaCache::new_shared();
+    let mut panel_entity = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            QueryPanel::new(
+                service,
+                schema_cache,
+                ramag_ui::ResultMemoryBudget::default(),
+                window,
+                cx,
+            )
+        });
+        panel_entity = Some(panel.clone());
+        gpui_component::Root::new(panel, window, cx)
+    });
+    let panel = panel_entity.expect("SQL 查询面板应创建");
+
+    cx.update(|window, app| {
+        panel.update(app, |panel, cx| {
+            for _ in 0..6 {
+                assert!(panel.add_tab(window, cx));
+            }
+            assert!(panel.toggle_editor(cx));
+        });
+    });
+
+    for width in [360.0, 1024.0, 1440.0] {
+        cx.simulate_resize(size(px(width), px(480.0)));
+        panel.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        let toolbar = cx
+            .debug_bounds("sql-editor-toolbar")
+            .expect("SQL 查询工具栏应渲染");
+        let actions = cx
+            .debug_bounds("sql-editor-actions")
+            .expect("SQL 查询操作区应渲染");
+
+        assert!(toolbar.right() <= px(width), "工具栏不能越出窗口");
+        assert!(actions.size.width > px(0.0), "操作区不能被压缩为零宽");
+        assert!(actions.right() <= toolbar.right(), "操作区不能越出工具栏");
+        assert!(
+            actions.bottom() <= toolbar.bottom(),
+            "操作区不能被工具栏裁掉"
+        );
+    }
 }
 
 /// Session disposal must invalidate every SQL tab independently without clearing terminal results.

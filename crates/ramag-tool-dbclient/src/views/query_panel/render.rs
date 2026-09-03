@@ -82,6 +82,7 @@ impl Render for QueryPanel {
 
         v_flex()
             .size_full()
+            .min_w_0()
             .key_context("QueryPanel")
             .on_action(cx.listener(|this, _: &NewQueryTab, window, cx| {
                 this.add_tab(window, cx);
@@ -94,7 +95,9 @@ impl Render for QueryPanel {
                 panel.child(
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .flex_none()
+                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .px_3()
@@ -136,8 +139,11 @@ impl Render for QueryPanel {
             .when(self.show_editor, |panel| {
                 panel.child(
                     h_flex()
+                        .debug_selector(|| "sql-editor-toolbar".into())
                         .w_full()
+                        .min_w_0()
                         .flex_none()
+                        .flex_wrap()
                         .border_b_1()
                         .border_color(border)
                         .bg(secondary_bg)
@@ -169,6 +175,8 @@ impl Render for QueryPanel {
                         )
                         .child(
                             h_flex()
+                                .debug_selector(|| "sql-editor-actions".into())
+                                .min_w_0()
                                 .flex_none()
                                 .items_center()
                                 .border_l_1()
@@ -302,6 +310,7 @@ impl Render for QueryPanel {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .min_h_0()
                     .when_some(current_view, |this, view| this.child(view)),
             )

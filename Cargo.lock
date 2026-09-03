@@ -7159,6 +7159,7 @@ name = "ramag-tool-mongodb"
 version = "0.0.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "futures",
  "gpui",
@@ -7167,6 +7168,7 @@ dependencies = [
  "parking_lot",
  "ramag-app",
  "ramag-domain",
+ "ramag-infra-mongodb",
  "ramag-ui",
  "rfd",
  "ropey",

@@ -86,6 +86,7 @@ impl Render for MongoQueryPanel {
 
         v_flex()
             .size_full()
+            .min_w_0()
             .track_focus(&self.focus_handle)
             .bg(theme.background)
             .key_context("MongoQueryPanel")
@@ -102,7 +103,9 @@ impl Render for MongoQueryPanel {
                 panel.child(
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .flex_none()
+                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .px_3()
@@ -147,9 +150,12 @@ impl Render for MongoQueryPanel {
             .when(self.show_editor, |panel| {
                 panel.child(
                     h_flex()
+                        .debug_selector(|| "mongo-editor-toolbar".into())
                         .w_full()
+                        .min_w_0()
                         .flex_none()
-                        .h(px(32.0))
+                        .min_h(px(32.0))
+                        .flex_wrap()
                         .items_center()
                         .border_b_1()
                         .border_color(border)
@@ -159,7 +165,6 @@ impl Render for MongoQueryPanel {
                                 .id("mongo-tabs-scroll")
                                 .flex_1()
                                 .min_w_0()
-                                .h_full()
                                 .items_center()
                                 .overflow_x_scroll()
                                 .track_scroll(&self.tabs_scroll)
@@ -186,6 +191,8 @@ impl Render for MongoQueryPanel {
                         )
                         .child(
                             h_flex()
+                                .debug_selector(|| "mongo-editor-actions".into())
+                                .min_w_0()
                                 .flex_none()
                                 .items_center()
                                 .border_l_1()
@@ -253,6 +260,6 @@ impl Render for MongoQueryPanel {
                         ),
                 )
             })
-            .child(div().flex_1().min_h_0().child(body))
+            .child(div().flex_1().min_w_0().min_h_0().child(body))
     }
 }
