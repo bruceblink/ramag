@@ -78,8 +78,13 @@ endif
 check: size-check log-check
 	cargo check-all
 
+ifeq ($(OS),Windows_NT)
+size-check:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/check-source-size.ps1
+else
 size-check:
 	./scripts/check-source-size.sh
+endif
 
 log-check:
 	bash ./scripts/check-log-convention.sh

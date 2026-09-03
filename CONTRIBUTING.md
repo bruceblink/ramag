@@ -36,6 +36,7 @@ Windows PowerShell：
 
 ```powershell
 .\scripts\install-githooks.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\check-source-size.ps1
 ```
 
 安装了 Make 的环境可以执行 `make install-hooks`，该目标会根据当前系统调用对应脚本。安装后，hook 会在每次提交前检查 Rust 源文件是否超过 600 行，并运行 `cargo clippy --workspace --all-targets -- -D warnings`；任一检查失败，提交会被拒绝。

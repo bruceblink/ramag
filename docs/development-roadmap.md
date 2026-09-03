@@ -127,7 +127,7 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 
 - 目标 crate 的单元测试和 headless UI 测试通过，测试覆盖本次改动的窄窗口或状态边界。
 - `cargo fmt --all -- --check`、目标 crate 的 `cargo check`、目标 crate 的 Clippy 和目标 crate 测试通过。
-- 涉及共享层或跨工具行为时，追加直接生产者和消费者的检查；涉及源文件时运行 `scripts/check-source-size.sh`，或在脚本不可用时记录等价检查及限制。
+- 涉及共享层或跨工具行为时，追加直接生产者和消费者的检查；涉及源文件时，Linux/macOS 运行 `scripts/check-source-size.sh`，Windows PowerShell 运行 `scripts/windows/check-source-size.ps1`。
 - `git diff --check` 通过，提交前后的工作区状态和远端分支状态可复核。
 
 ### 7.2 UI 和运行环境

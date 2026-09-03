@@ -4,10 +4,24 @@ set -eu
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+platform="$(uname -s 2>/dev/null || printf '%s' unknown)"
+
 printf '%s\n' 'pre-commit: checking Rust source file sizes'
-# Windows checkouts may expose the tracked script as CRLF; normalize it in the
-# pipe so the same hook works from Git Bash, WSL, and Linux.
-sed 's/\r$//' "$repo_root/scripts/check-source-size.sh" | bash
+case "$platform" in
+MINGW*|MSYS*|CYGWIN*)
+    if ! command -v powershell.exe >/dev/null 2>&1; then
+        printf '%s\n' 'pre-commit: PowerShell is required for the Windows source-size check' >&2
+        exit 1
+    fi
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
+        '$repo = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $repo "scripts\\windows\\check-source-size.ps1"); exit $LASTEXITCODE'
+    ;;
+*)
+    # Windows checkouts may expose the tracked script as CRLF; normalize it in the
+    # pipe so the same hook works from WSL and Linux.
+    sed 's/\r$//' "$repo_root/scripts/check-source-size.sh" | bash
+    ;;
+esac
 
 printf '%s\n' 'pre-commit: running workspace Clippy'
 run_clippy() {
@@ -22,7 +36,6 @@ run_clippy() {
     fi
 }
 
-platform="$(uname -s 2>/dev/null || printf '%s' unknown)"
 case "$platform" in
 MINGW*|MSYS*|CYGWIN*)
     if ! command -v powershell.exe >/dev/null 2>&1; then
