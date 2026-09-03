@@ -1,11 +1,12 @@
 # Kafka 消息管理工具独立开发计划
 
 > 状态：阶段 15 的配置加载、异步状态、断线恢复、Windows 原生验收和最终质量检查已完成
-> 更新日期：2026-09-02
+> 更新日期：2026-09-03
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
 > 当前基线：`feat/kafka-tool-development`（阶段 1-10 已完成）
 > 实施分支：`feat/kafka-tool-development`
+> 当前主线：大功能基线完成后，UI、响应性布局和已知问题按 [`docs/development-roadmap.md`](development-roadmap.md) 排期
 
 ## 术语表与命名约定
 
@@ -67,6 +68,8 @@ Ramag 已经采用清晰的分层结构：
 ### 2.1 与其他开发计划的关系
 
 本路线图只负责 Kafka 消息管理工具。它与 [`docs/database-client-datagrip-roadmap.md`](database-client-datagrip-roadmap.md) 以及其他工具的路线图互不构成阶段依赖：
+
+跨工具的 UI 和已知问题修复不再在本文件中另起一套排期，统一遵循 [`docs/development-roadmap.md`](development-roadmap.md)。
 
 - Kafka 功能可以独立排期、开发、测试、提交、推送和回滚。
 - Kafka 的功能完成情况不以数据库客户端、VCS、SSH 或其他工具的未完成项为前置条件。
@@ -285,6 +288,8 @@ Kafka ACL 首期支持：
 - 2026-09-02 GPUI headless 回归测试覆盖断线状态提示、手动重试和成功恢复；Windows 原生窗口在停止专用 Broker 后显示同步失败、原操作错误和“重试”按钮，截图归档为 [`runtime-failure-windows.png`](screenshots/kafka/runtime-failure-windows.png)，恢复容器并点击重试后恢复概览数据，截图归档为 [`runtime-retry-windows.png`](screenshots/kafka/runtime-retry-windows.png)。`cargo fmt --all -- --check`、workspace Clippy、workspace 全量测试、`ramag-bin` 构建、源文件大小检查、`git diff --check` 和 Docker Kafka 集成测试均通过。
 
 后续独立路线：
+
+Kafka 大功能扩展暂缓，先按主线完成 UI 和响应性问题收口。以下条目保留为 M6 评审后的候选，不代表当前开发顺序：
 
 - `feat(kafka): add schema registry integration`
 - `feat(kafka): add kafka connect integration`

@@ -2,7 +2,7 @@
 
 本文面向第一次参与 Ramag 开发的贡献者，目标是帮助开发者先建立可运行基线，再沿一条真实功能调用链理解项目，而不是从头阅读全部 crate。
 
-架构细节请配合阅读[架构说明](architecture.md)，构建和发布流程请参考[桌面端构建与发布](desktop-release.md)。
+架构细节请配合阅读[架构说明](architecture.md)，主线排期请参考[主线开发计划](development-roadmap.md)，构建和发布流程请参考[桌面端构建与发布](desktop-release.md)。
 
 ## 1. 开始之前
 

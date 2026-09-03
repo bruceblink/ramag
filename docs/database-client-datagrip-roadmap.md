@@ -1,8 +1,9 @@
 # 数据库查询工具 DataGrip-like 开发路线图
 
 > 状态：M1 结果数据编辑器、M2-A SQL 查询上下文隔离、M2-B 最近关闭查询草稿恢复、M3-A SQL 手动事务提交/回滚、M3-B 事务失败状态与恢复提示、M3-C SQL 事务保存点、M4-A 原始/结构化执行计划结果视图、M4-B 只读 Schema Diagram 预览、M4-C 字段结构差异预览、M4-D 同连接表结构对比、M4-E 查询结果数据网格差异比较、M4-F 跨连接表结构对比、M4-G 跨连接查询结果比较、M4-H 表结构迁移 SQL 预览、M4-I 表结构迁移执行与回读、M4-J 外键动作元数据与迁移保真度、M4-K 迁移审批记录、M4-L 查询结果差异单元格定位、M4-M 列元数据保真度、M4-N 精确页码跳转、M4-O 表树表大小状态以及 P0 表树收藏、最近访问筛选和 SQL 表定位已落地，后续迭代中
-> 更新日期：2026-08-28
+> 更新日期：2026-09-03
 > 适用范围：`ramag-tool-dbclient`、`ramag-tool-mongodb`、`ramag-domain`、`ramag-app` 及对应基础设施驱动
+> 当前主线：UI、响应性布局和已知问题按 [`docs/development-roadmap.md`](development-roadmap.md) 统一排期
 
 ## 术语表与命名约定
 
@@ -48,6 +49,8 @@ Ramag 已经具备多数据库连接、Schema 浏览、查询编辑、结果编�
 - [`crates/ramag-domain/src/traits/driver.rs`](../crates/ramag-domain/src/traits/driver.rs)
 
 当前最需要继续处理的问题：
+
+跨工具的优先顺序以 [`docs/development-roadmap.md`](development-roadmap.md) 的 UI-001 至 UI-006 为准；本节只保留数据库专项的实现边界和验收证据。
 
 - M1 的真实 Windows 窗口截图仍需在带实际数据的连接上补充验收，确认列表高度、底部状态栏和垂直滚动条不会互相覆盖。
 - M2-A 已为 SQL 查询代次和 COUNT 代次增加上下文隔离；取消请求现在绑定数据/计划结果目标，不会清空另一面板或把旧的服务端取消提示写入新查询。连接、Schema 或 SQL 上下文失效时也会对旧 SQL 发起尽力取消；会话关闭或配置失效前会遍历全部查询标签。多标签和会话失效已有回归测试，真实连接断开场景仍需继续补充集成验证。
