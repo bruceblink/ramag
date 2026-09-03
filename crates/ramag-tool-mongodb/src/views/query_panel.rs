@@ -23,6 +23,11 @@ use ramag_ui::{CloseTab, MAX_EDITOR_TABS, ResultMemoryBudget, can_open_editor_ta
 use crate::actions::{NewMongoQueryTab, ToggleMongoEditor};
 use crate::views::query_tab::{MongoQueryTab, MongoQueryTabEvent};
 
+fn responsive_dialog_width(window: &Window, preferred: f32) -> gpui::Pixels {
+    let available = f32::from(window.viewport_size().width);
+    px((available - 32.0).max(160.0).min(preferred))
+}
+
 #[derive(Debug, Clone)]
 pub enum MongoQueryPanelEvent {
     CollectionImportRequested {
@@ -302,23 +307,28 @@ impl MongoQueryPanel {
         ));
         let title = SharedString::from(format!("查询历史 · {}", conn.name));
         let panel_for_close = cx.entity().clone();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let list = list.clone();
             let panel_for_close = panel_for_close.clone();
             let panel_for_title_close = panel_for_close.clone();
-            dialog
-                .title(ramag_ui::closable_dialog_title(
+            let dialog_title = div()
+                .id("mongo-history-dialog-title")
+                .debug_selector(|| "mongo-history-dialog-title".into())
+                .w_full()
+                .child(ramag_ui::closable_dialog_title(
                     "mongo-history-dialog-close",
                     title.clone(),
                     move |_, app| {
                         panel_for_title_close.update(app, |this, _| this.history_sub = None);
                     },
-                ))
+                ));
+            dialog
+                .title(dialog_title)
                 .close_button(false)
                 .on_close(move |_, _, app| {
                     panel_for_close.update(app, |this, _| this.history_sub = None);
                 })
-                .width(px(760.0))
+                .width(responsive_dialog_width(window, 760.0))
                 .content(move |content, _, _| content.child(list.clone()))
         });
     }

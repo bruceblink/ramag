@@ -250,6 +250,10 @@ impl MongoHistoryList {
 
         h_flex()
             .id(SharedString::from(format!("mhist-row-{ix}")))
+            .debug_selector(move || format!("mongo-history-row-{ix}"))
+            .w_full()
+            .min_w_0()
+            .flex_wrap()
             .items_center()
             .gap_3()
             .px_3()
@@ -274,6 +278,7 @@ impl MongoHistoryList {
                         div()
                             .text_sm()
                             .text_color(fg)
+                            .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
                             .child(preview),
@@ -282,6 +287,7 @@ impl MongoHistoryList {
                         div()
                             .text_xs()
                             .text_color(muted_fg)
+                            .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
                             .child(meta),
@@ -289,6 +295,7 @@ impl MongoHistoryList {
             )
             .child(
                 h_flex()
+                    .debug_selector(move || format!("mongo-history-actions-{ix}"))
                     .flex_none()
                     .gap_1()
                     .child(
@@ -343,12 +350,14 @@ impl MongoHistoryList {
 }
 
 impl Render for MongoHistoryList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
         let danger = theme.danger;
         let warning = theme.warning;
         let border = theme.border;
+        let list_height =
+            (f32::from(window.viewport_size().height) - 144.0).clamp(120.0, LIST_HEIGHT);
 
         let query = self.filter_query.clone();
         let filtered_indices = self.filtered_indices.clone();
@@ -359,7 +368,11 @@ impl Render for MongoHistoryList {
         };
 
         let toolbar = h_flex()
+            .id("mongo-history-toolbar")
+            .debug_selector(|| "mongo-history-toolbar".into())
             .w_full()
+            .min_w_0()
+            .flex_wrap()
             .items_center()
             .gap_2()
             .pb(px(8.0))
@@ -367,24 +380,47 @@ impl Render for MongoHistoryList {
             .border_color(border)
             .child(
                 div()
+                    .id("mongo-history-search")
+                    .debug_selector(|| "mongo-history-search".into())
                     .flex_1()
                     .min_w_0()
                     .child(Input::new(&self.search).small()),
             )
-            .child(div().text_xs().text_color(muted_fg).child(count_text))
+            .child(
+                div()
+                    .id("mongo-history-count")
+                    .debug_selector(|| "mongo-history-count".into())
+                    .flex_none()
+                    .text_xs()
+                    .text_color(muted_fg)
+                    .child(count_text),
+            )
             .when(self.history_truncated, |this| {
                 this.child(
                     div()
+                        .id("mongo-history-warning")
+                        .debug_selector(|| "mongo-history-warning".into())
+                        .flex_none()
+                        .min_w_0()
                         .text_xs()
                         .text_color(warning)
                         .child("结果按 32 MiB 内存预算截断"),
                 )
             })
             .when(self.mutating, |this| {
-                this.child(div().text_xs().text_color(muted_fg).child("正在更新…"))
+                this.child(
+                    div()
+                        .id("mongo-history-mutating")
+                        .debug_selector(|| "mongo-history-mutating".into())
+                        .flex_none()
+                        .text_xs()
+                        .text_color(muted_fg)
+                        .child("正在更新…"),
+                )
             })
             .child(
                 ramag_ui::clickable_button("mhist-clear-all")
+                    .debug_selector(|| "mongo-history-clear-all".into())
                     .ghost()
                     .xsmall()
                     .label("清空")
@@ -473,8 +509,11 @@ impl Render for MongoHistoryList {
         };
 
         v_flex()
+            .id("mongo-history-list")
+            .debug_selector(|| "mongo-history-list".into())
             .w_full()
-            .h(px(LIST_HEIGHT))
+            .min_w_0()
+            .h(px(list_height))
             .child(toolbar)
             .when_some(self.mutation_error.clone(), |this, error| {
                 this.child(
@@ -486,7 +525,7 @@ impl Render for MongoHistoryList {
                         .child(error),
                 )
             })
-            .child(div().flex_1().min_h_0().child(body))
+            .child(div().flex_1().min_w_0().min_h_0().child(body))
     }
 }
 
