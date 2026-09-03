@@ -1,6 +1,6 @@
 # Kafka 消息管理工具独立开发计划
 
-> 状态：阶段 15 的配置加载、异步状态、断线恢复、Windows 原生验收和最终质量检查已完成
+> 状态：阶段 15 的配置加载、异步状态、断线恢复、Windows 原生验收和最终质量检查已完成；当前推进 UI-004 的紧凑消息工作区切片
 > 更新日期：2026-09-03
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
@@ -286,6 +286,12 @@ Kafka ACL 首期支持：
 - `ramag-tool-kafka` 新增代次与上下文组合测试；阶段 15 的原生窗口验收使用专用 Docker Kafka 容器，不写入真实业务数据。
 - 消息、消费者组、ACL、配置和 Topic 请求遇到可重试的 Kafka 网络/超时错误时，会将连接失效原因提升到工作区状态；页面保留原操作错误，并通过元数据刷新恢复，不自动重放写操作。
 - 2026-09-02 GPUI headless 回归测试覆盖断线状态提示、手动重试和成功恢复；Windows 原生窗口在停止专用 Broker 后显示同步失败、原操作错误和“重试”按钮，截图归档为 [`runtime-failure-windows.png`](screenshots/kafka/runtime-failure-windows.png)，恢复容器并点击重试后恢复概览数据，截图归档为 [`runtime-retry-windows.png`](screenshots/kafka/runtime-retry-windows.png)。`cargo fmt --all -- --check`、workspace Clippy、workspace 全量测试、`ramag-bin` 构建、源文件大小检查、`git diff --check` 和 Docker Kafka 集成测试均通过。
+
+阶段 16 当前切片实施记录：
+
+- `c01aaae` 补充消息页紧凑窗口可用性：窗口宽度小于 900px 时，消息页使用外层纵向滚动，结果面板保留 480px 最小高度，分页后滚动位置回到页首；不改变 Kafka 请求、消息读取或消费进度行为。
+- 新增 `compact_result_panel_reserves_readable_height` 和 `message_page_stays_scrollable_when_result_panel_is_below_the_fold` headless 测试，覆盖 700/899/900/1280 宽度边界和 760×540 窄窗口；`cargo fmt --all -- --check`、`cargo test --locked --workspace`、workspace Clippy、MSVC Clippy、Windows debug build、源码大小检查和 `git diff --check` 均通过。
+- 原生可执行文件已启动并枚举到目标窗口，但 Computer Use helper 连续返回 `node_repl exec context not found`，未取得截图或控件状态证据；真实 Windows 窗口验收仍待补充。
 
 后续独立路线：
 
