@@ -28,7 +28,9 @@ pub fn copy_text_with_notification(text: impl Into<String>, window: &mut Window,
 pub fn copy_success_notification() -> Notification {
     Notification::success("复制成功")
         .autohide(true)
-        .w(px(320.0))
+        .w_full()
+        .min_w_0()
+        .max_w(px(320.0))
 }
 
 /// 可拖拽选中的只读文本。

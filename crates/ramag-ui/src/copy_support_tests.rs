@@ -1,12 +1,14 @@
+use super::{SelectableText, copy_success_notification};
 use gpui::{
-    AppContext as _, Context, InteractiveElement as _, IntoElement, Modifiers, MouseButton,
-    ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, div, point,
-    px,
+    AppContext as _, Context, Element as _, InteractiveElement as _, IntoElement, Modifiers,
+    MouseButton, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext,
+    Window, div, point, px, size,
 };
-
-use super::SelectableText;
+use gpui_component::WindowExt as _;
 
 struct SelectableTextHost;
+
+struct NotificationHost;
 
 impl Render for SelectableTextHost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -22,6 +24,16 @@ impl Render for SelectableTextHost {
                 .w_full()
                 .h_full(),
             )
+    }
+}
+
+impl Render for NotificationHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .debug_selector(|| "copy-notification-host".into())
+            .relative()
+            .size_full()
+            .children(gpui_component::Root::render_notification_layer(window, cx))
     }
 }
 
@@ -66,4 +78,32 @@ fn selectable_text_copies_dragged_selection(cx: &mut TestAppContext) {
         copied,
         "**bold** [link](https://example.com) `code`\nraw ~ text"
     );
+}
+
+#[gpui::test]
+fn copy_notification_stays_inside_narrow_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let host = cx.new(|_| NotificationHost);
+        gpui_component::Root::new(host, window, cx)
+    });
+    let cx: &mut VisualTestContext = cx;
+    cx.simulate_resize(size(px(180.0), px(120.0)));
+    let notification = copy_success_notification().content(|_, _, _| {
+        div()
+            .debug_selector(|| "copy-success-notification-content".into())
+            .size(px(1.0))
+            .into_any()
+    });
+    cx.update(|window, cx| window.push_notification(notification, cx));
+    cx.run_until_parked();
+
+    let notification = cx.debug_bounds("copy-success-notification-content");
+    assert!(notification.is_some(), "复制成功通知应渲染");
+    if let Some(notification) = notification {
+        assert!(notification.origin.x >= px(0.0));
+        assert!(notification.origin.y >= px(0.0));
+        assert!(notification.right() <= px(180.0));
+        assert!(notification.bottom() <= px(120.0));
+    }
 }
