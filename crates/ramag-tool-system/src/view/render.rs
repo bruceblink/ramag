@@ -119,7 +119,7 @@ impl SystemView {
         let theme = cx.theme();
         let memory_percent = ratio_percent(snapshot.memory_used, snapshot.memory_total);
         let swap_percent = ratio_percent(snapshot.swap_used, snapshot.swap_total);
-        let mut overview = h_flex().w_full().flex().flex_wrap().gap(px(10.0));
+        let mut overview = h_flex().w_full().min_w_0().flex().flex_wrap().gap(px(10.0));
         overview = overview.child(metric_card(
             "CPU",
             format_percent(snapshot.cpu_percent as f64),
@@ -298,7 +298,13 @@ impl SystemView {
             }
         }
 
-        let mut body = v_flex().w_full().gap(px(10.0)).p(px(16.0)).child(overview);
+        let mut body = v_flex()
+            .debug_selector(|| "system-performance-body".to_owned())
+            .w_full()
+            .min_w_0()
+            .gap(px(10.0))
+            .p(px(16.0))
+            .child(overview);
         if let Some(warning) = &snapshot.data_warning {
             let mut background = theme.warning;
             background.a = 0.12;
@@ -319,6 +325,7 @@ impl SystemView {
         body.child(
             h_flex()
                 .w_full()
+                .min_w_0()
                 .flex()
                 .flex_wrap()
                 .gap(px(10.0))
@@ -503,86 +510,5 @@ impl Render for SystemView {
 }
 
 #[cfg(test)]
-mod tests {
-    use gpui::{AppContext as _, TestAppContext, px, size};
-    use gpui_component::Root;
-
-    use super::*;
-    use crate::SystemMonitor;
-
-    /// 在最窄支持宽度渲染真实视图，避免标题栏或任务表在组件边界外被裁切。
-    #[gpui::test]
-    #[allow(clippy::expect_used)]
-    fn narrow_window_keeps_monitor_controls_and_process_table_inside_content(
-        cx: &mut TestAppContext,
-    ) {
-        cx.update(gpui_component::init);
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| SystemView {
-                monitor: SystemMonitor::new(),
-                section: SystemSection::Processes,
-                termination_request: None,
-                termination_in_progress: false,
-                notice: None,
-            });
-            Root::new(view, window, cx)
-        });
-        cx.simulate_resize(size(px(360.0), px(640.0)));
-        cx.run_until_parked();
-
-        let header = cx
-            .debug_bounds("system-header")
-            .expect("system header should be rendered");
-        let controls = cx
-            .debug_bounds("system-header-controls")
-            .expect("system header controls should be rendered");
-        let content = cx
-            .debug_bounds("system-content")
-            .expect("system content should be rendered");
-        let table = cx
-            .debug_bounds("system-process-table")
-            .expect("process table should be rendered");
-
-        assert!(header.size.width <= px(360.0));
-        assert!(controls.origin.x >= header.origin.x);
-        assert!(controls.origin.x + controls.size.width <= header.origin.x + header.size.width);
-        assert!(table.origin.x >= content.origin.x);
-        assert!(table.origin.x + table.size.width <= content.origin.x + content.size.width);
-    }
-
-    /// 性能页在窄窗口保持指标卡和核心面板可见，避免固定最小宽度造成水平溢出。
-    #[gpui::test]
-    #[allow(clippy::expect_used)]
-    fn narrow_window_keeps_performance_panels_inside_content(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|_| SystemView {
-                monitor: SystemMonitor::new(),
-                section: SystemSection::Performance,
-                termination_request: None,
-                termination_in_progress: false,
-                notice: None,
-            });
-            Root::new(view, window, cx)
-        });
-        cx.simulate_resize(size(px(360.0), px(640.0)));
-        cx.run_until_parked();
-
-        let content = cx
-            .debug_bounds("system-content")
-            .expect("system content should be rendered");
-        let metric = cx
-            .debug_bounds("system-metric-card-CPU")
-            .expect("CPU metric card should be rendered");
-        let cores = cx
-            .debug_bounds("system-core-panel")
-            .expect("core panel should be rendered");
-
-        assert!(metric.size.width > px(0.0));
-        assert!(cores.size.width > px(0.0));
-        assert!(metric.origin.x >= content.origin.x);
-        assert!(metric.origin.x + metric.size.width <= content.origin.x + content.size.width);
-        assert!(cores.origin.x >= content.origin.x);
-        assert!(cores.origin.x + cores.size.width <= content.origin.x + content.size.width);
-    }
-}
+#[path = "render_tests.rs"]
+mod tests;

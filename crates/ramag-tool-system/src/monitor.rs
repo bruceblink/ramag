@@ -158,6 +158,11 @@ impl SystemMonitor {
         self.state.lock().snapshot.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_snapshot_for_test(&self, snapshot: MonitorSnapshot) {
+        self.state.lock().snapshot = snapshot;
+    }
+
     /// 读取当前刷新档位，不暴露内部锁或采集器对象。
     pub fn refresh_interval(&self) -> RefreshInterval {
         self.state.lock().refresh_interval

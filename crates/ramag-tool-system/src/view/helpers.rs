@@ -82,6 +82,7 @@ pub(super) fn metric_card(
         )
         .child(
             div()
+                .debug_selector(|| format!("system-metric-value-{title}"))
                 .min_w_0()
                 .text_base()
                 .whitespace_nowrap()
