@@ -8,7 +8,7 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, ClickEvent, ClipboardItem, Context, EventEmitter, Hsla, IntoElement, ParentElement,
+    AnyElement, ClickEvent, ClipboardItem, Context, EventEmitter, IntoElement, ParentElement,
     Render, SharedString, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
@@ -430,7 +430,7 @@ impl Render for HistoryList {
             );
 
         let body: AnyElement = if self.loading {
-            centered_hint("加载中…", muted_fg)
+            ramag_ui::centered_status("加载中…", muted_fg)
         } else if let Some(e) = &self.load_error {
             v_flex()
                 .size_full()
@@ -452,9 +452,9 @@ impl Render for HistoryList {
                 )
                 .into_any_element()
         } else if self.records.is_empty() {
-            centered_hint("暂无查询历史", muted_fg)
+            ramag_ui::centered_status("暂无查询历史", muted_fg)
         } else if self.filtering {
-            centered_hint("搜索中…", muted_fg)
+            ramag_ui::centered_status("搜索中…", muted_fg)
         } else if let Some(error) = &self.filter_error {
             v_flex()
                 .size_full()
@@ -473,7 +473,7 @@ impl Render for HistoryList {
                 )
                 .into_any_element()
         } else if filtered_indices.is_empty() {
-            centered_hint(format!("没有匹配「{query}」的历史"), muted_fg)
+            ramag_ui::centered_status(format!("没有匹配「{query}」的历史"), muted_fg)
         } else {
             let records = self.records.clone();
             let rows = uniform_list(
@@ -514,15 +514,4 @@ impl Render for HistoryList {
             })
             .child(div().flex_1().min_w_0().min_h_0().child(body))
     }
-}
-
-fn centered_hint(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
-    v_flex()
-        .size_full()
-        .items_center()
-        .justify_center()
-        .text_sm()
-        .text_color(color)
-        .child(text.into())
-        .into_any_element()
 }

@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::input::InputState;
 
-use super::{clickable_button, closable_dialog_title, dialog_action_footer};
+use super::{centered_status, clickable_button, closable_dialog_title, dialog_action_footer};
 
 struct DialogTitleHost;
 
@@ -15,6 +15,8 @@ struct DialogFooterHost;
 struct CleanableInputHost {
     input: Entity<InputState>,
 }
+
+struct CenteredStatusHost;
 
 impl Render for DialogTitleHost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -66,6 +68,22 @@ impl Render for CleanableInputHost {
                 "shared-cleanable-input-clear",
                 false,
                 cx,
+            ))
+    }
+}
+
+impl Render for CenteredStatusHost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_component::ActiveTheme as _;
+
+        div()
+            .id("shared-centered-status-host")
+            .debug_selector(|| "shared-centered-status-host".into())
+            .w(px(180.0))
+            .h(px(100.0))
+            .child(centered_status(
+                "没有匹配当前搜索条件的历史记录，请缩短条件后重试",
+                cx.theme().muted_foreground,
             ))
     }
 }
@@ -153,4 +171,25 @@ fn cleanable_input_keeps_clear_button_inside_narrow_parent(cx: &mut TestAppConte
     assert!(clear.origin.y >= host.origin.y);
     assert!(clear.origin.x + clear.size.width <= host.origin.x + host.size.width);
     assert!(clear.origin.y + clear.size.height <= host.origin.y + host.size.height);
+}
+
+#[gpui::test]
+fn centered_status_keeps_long_message_inside_narrow_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|_, _| CenteredStatusHost);
+    let cx: &mut VisualTestContext = cx;
+    cx.simulate_resize(size(px(180.0), px(120.0)));
+    cx.run_until_parked();
+
+    let host = cx
+        .debug_bounds("shared-centered-status-host")
+        .expect("状态提示宿主应渲染");
+    let status = cx
+        .debug_bounds("ramag-centered-status-message")
+        .expect("状态提示文本区域应渲染");
+
+    assert!(status.origin.x >= host.origin.x);
+    assert!(status.origin.y >= host.origin.y);
+    assert!(status.origin.x + status.size.width <= host.origin.x + host.size.width);
+    assert!(status.origin.y + status.size.height <= host.origin.y + host.size.height);
 }

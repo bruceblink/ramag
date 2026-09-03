@@ -216,6 +216,35 @@ pub fn dialog_action_footer(
         .child(primary)
 }
 
+/// 创建可在窄窗口内换行的居中状态提示，用于加载中、空列表和过滤无结果状态。
+pub fn centered_status(
+    message: impl Into<gpui::SharedString>,
+    color: gpui::Hsla,
+) -> gpui::AnyElement {
+    use gpui::{
+        InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _, div, px,
+    };
+    use gpui_component::v_flex;
+
+    v_flex()
+        .size_full()
+        .min_w_0()
+        .items_center()
+        .justify_center()
+        .px(px(12.0))
+        .child(
+            div()
+                .debug_selector(|| "ramag-centered-status-message".into())
+                .w_full()
+                .min_w_0()
+                .text_center()
+                .text_sm()
+                .text_color(color)
+                .child(message.into()),
+        )
+        .into_any_element()
+}
+
 /// 创建带手型光标的菜单项。
 pub fn menu_item(label: impl Into<gpui::SharedString>) -> gpui_component::menu::PopupMenuItem {
     menu_item_with_disabled(label, false)
