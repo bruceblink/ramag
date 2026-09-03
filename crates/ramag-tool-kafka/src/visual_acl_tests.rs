@@ -8,7 +8,9 @@ pub(super) fn exercise_acl_workspace(
     visual_cx.run_until_parked();
     assert!(visual_cx.debug_bounds("kafka-acls").is_some());
     assert!(visual_cx.debug_bounds("kafka-acl-filter").is_some());
+    assert!(visual_cx.debug_bounds("kafka-acl-filter-header").is_some());
     assert!(visual_cx.debug_bounds("kafka-acl-admin").is_some());
+    assert!(visual_cx.debug_bounds("kafka-acl-admin-header").is_some());
     assert!(
         visual_cx
             .debug_bounds("kafka-acl-row-User:ramag-Topic-ramag.integration.messages-READ-ALLOW")
@@ -54,15 +56,37 @@ pub(super) fn exercise_acl_workspace(
     visual_cx.run_until_parked();
     assert!(visual_cx.debug_bounds("ramag-confirm-ok").is_none());
 
-    visual_cx.simulate_resize(size(px(900.0), px(780.0)));
-    visual_cx.run_until_parked();
-    for selector in [
-        "kafka-acl-filter",
-        "kafka-acl-admin",
-        "kafka-acl-list-panel",
-        "kafka-acl-detail",
-    ] {
-        assert_within_width(visual_cx, selector, 900.0);
+    for (width, height) in [(360.0, 900.0), (1024.0, 900.0), (1440.0, 900.0)] {
+        visual_cx.simulate_resize(size(px(width), px(height)));
+        visual_cx.run_until_parked();
+        for selector in [
+            "kafka-acls",
+            "kafka-acl-filter",
+            "kafka-acl-filter-header",
+            "kafka-acl-admin",
+            "kafka-acl-admin-header",
+            "kafka-acl-list-panel",
+            "kafka-acl-detail",
+        ] {
+            assert_within_width(visual_cx, selector, width);
+        }
+        let Some(list) = visual_cx.debug_bounds("kafka-acl-list-panel") else {
+            return;
+        };
+        let Some(detail) = visual_cx.debug_bounds("kafka-acl-detail") else {
+            return;
+        };
+        if width < 1060.0 {
+            assert!(
+                list.origin.y + list.size.height <= detail.origin.y,
+                "紧凑窗口中 ACL 列表和详情不应重叠: list={list:?}, detail={detail:?}"
+            );
+        } else {
+            assert!(
+                list.origin.x + list.size.width <= detail.origin.x,
+                "宽窗口中 ACL 列表和详情不应重叠: list={list:?}, detail={detail:?}"
+            );
+        }
     }
     visual_cx.simulate_resize(size(px(1200.0), px(780.0)));
     visual_cx.run_until_parked();

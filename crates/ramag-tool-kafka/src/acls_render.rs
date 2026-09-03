@@ -87,10 +87,13 @@ impl KafkaView {
             .rounded(px(6.0))
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-acl-filter-header".into())
                     .w_full()
+                    .min_w_0()
                     .items_center()
                     .justify_between()
                     .gap(px(12.0))
+                    .when(compact, |row| row.flex_col().items_stretch())
                     .child(section_heading(
                         "ACL 查询",
                         format!("{} 条已加载规则", self.acls.len()),
@@ -98,6 +101,7 @@ impl KafkaView {
                     ))
                     .child(
                         h_flex()
+                            .when(compact, |row| row.w_full().justify_between())
                             .gap(px(8.0))
                             .child(
                                 ramag_ui::clickable_button("kafka-acl-read")
@@ -152,10 +156,13 @@ impl KafkaView {
             .rounded(px(6.0))
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-acl-admin-header".into())
                     .w_full()
+                    .min_w_0()
                     .items_center()
                     .justify_between()
                     .gap(px(12.0))
+                    .when(compact, |row| row.flex_col().items_stretch())
                     .child(section_heading(
                         "ACL 管理",
                         "创建和删除都需要二次确认",
