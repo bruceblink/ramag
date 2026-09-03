@@ -22,7 +22,7 @@ pub(crate) fn group_metric(
                 .text_color(theme.muted_foreground)
                 .child(label),
         )
-        .child(div().text_sm().truncate().child(value.to_owned()))
+        .child(div().min_w_0().text_sm().truncate().child(value.to_owned()))
 }
 
 pub(crate) fn consumer_member_row(
@@ -54,9 +54,19 @@ pub(crate) fn consumer_member_row(
                 .items_center()
                 .justify_between()
                 .gap(px(8.0))
-                .child(div().text_sm().truncate().child(member.client_id.clone()))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .truncate()
+                        .child(member.client_id.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w_0()
+                        .max_w(px(180.0))
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .truncate()
@@ -70,8 +80,11 @@ pub(crate) fn consumer_member_row(
         )
         .child(
             div()
+                .w_full()
+                .min_w_0()
                 .text_xs()
                 .text_color(theme.muted_foreground)
+                .truncate()
                 .child(format!("Member ID：{}", member.member_id)),
         )
         .child(
@@ -118,6 +131,7 @@ pub(crate) fn consumer_offset_row(
         .child(offset_value("末尾", offset.end_offset, theme))
         .child(
             div()
+                .flex_none()
                 .w(px(88.0))
                 .text_right()
                 .text_xs()
@@ -132,6 +146,7 @@ fn offset_value(
     theme: &gpui_component::Theme,
 ) -> impl IntoElement {
     div()
+        .flex_none()
         .w(px(96.0))
         .text_xs()
         .text_color(theme.muted_foreground)
