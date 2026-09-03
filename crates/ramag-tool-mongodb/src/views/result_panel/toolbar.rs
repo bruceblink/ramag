@@ -20,8 +20,11 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
     let production = panel.is_production();
 
     h_flex()
+        .debug_selector(|| "mongo-result-toolbar".into())
         .w_full()
+        .min_w_0()
         .flex_none()
+        .flex_wrap()
         .px_3()
         .py(px(6.0))
         .gap_3()
@@ -212,6 +215,7 @@ pub(super) fn render(panel: &mut ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .on_click(cx.listener(|_panel, _, _, cx| cx.emit(ResultEvent::Cancel)))
         } else {
             ramag_ui::clickable_button("mongo-run-result")
+                .debug_selector(|| "mongo-run-result".into())
                 .primary()
                 .small()
                 .icon(IconName::Play)

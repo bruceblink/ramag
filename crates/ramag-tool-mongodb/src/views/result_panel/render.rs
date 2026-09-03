@@ -69,6 +69,7 @@ impl Render for ResultPanel {
         if self.running {
             return v_flex()
                 .size_full()
+                .min_w_0()
                 .bg(bg)
                 .child(toolbar::render(self, cx))
                 .child(empty_hint("执行中…", muted))
@@ -77,6 +78,7 @@ impl Render for ResultPanel {
         if let Some(err) = self.error.clone() {
             return v_flex()
                 .size_full()
+                .min_w_0()
                 .bg(bg)
                 .child(toolbar::render(self, cx))
                 .child(error_hint(err, danger))
@@ -89,6 +91,7 @@ impl Render for ResultPanel {
         else {
             return v_flex()
                 .size_full()
+                .min_w_0()
                 .bg(bg)
                 .child(toolbar::render(self, cx))
                 .child(empty_hint(
@@ -108,7 +111,11 @@ impl Render for ResultPanel {
             } else {
                 "（无文档返回）".to_string()
             };
-            let mut root = v_flex().size_full().bg(bg).child(toolbar::render(self, cx));
+            let mut root = v_flex()
+                .size_full()
+                .min_w_0()
+                .bg(bg)
+                .child(toolbar::render(self, cx));
             if self.is_drilled() {
                 root = root.child(self.render_breadcrumb(cx));
             }
@@ -120,7 +127,11 @@ impl Render for ResultPanel {
                 RowSearchBlocker::Converting => ("正在通过外部程序转换 ID…".to_string(), muted),
                 RowSearchBlocker::Error(error) => (format!("ID 转换失败：{error}"), danger),
             };
-            let mut root = v_flex().size_full().bg(bg).child(toolbar::render(self, cx));
+            let mut root = v_flex()
+                .size_full()
+                .min_w_0()
+                .bg(bg)
+                .child(toolbar::render(self, cx));
             if self.is_drilled() {
                 root = root.child(self.render_breadcrumb(cx));
             }
@@ -161,6 +172,7 @@ impl Render for ResultPanel {
             }
             let mut root = v_flex()
                 .size_full()
+                .min_w_0()
                 .bg(bg)
                 .child(toolbar::render(self, cx))
                 .child(div().h(px(1.0)).bg(border))
@@ -169,7 +181,7 @@ impl Render for ResultPanel {
                 root = root.child(self.render_breadcrumb(cx));
             }
             return root
-                .child(div().flex_1().min_h_0().child(table::render(
+                .child(div().flex_1().min_h_0().min_w_0().child(table::render(
                     self,
                     flat_table,
                     col_indices,
@@ -198,7 +210,11 @@ impl Render for ResultPanel {
             } else {
                 ("正在准备行视图…".to_string(), muted)
             };
-            let mut root = v_flex().size_full().bg(bg).child(toolbar::render(self, cx));
+            let mut root = v_flex()
+                .size_full()
+                .min_w_0()
+                .bg(bg)
+                .child(toolbar::render(self, cx));
             if self.is_drilled() {
                 root = root.child(self.render_breadcrumb(cx));
             }
@@ -308,7 +324,7 @@ impl Render for ResultPanel {
         if self.is_drilled() {
             root = root.child(self.render_breadcrumb(cx));
         }
-        root.child(div().flex_1().min_h_0().child(table::render(
+        root.child(div().flex_1().min_h_0().min_w_0().child(table::render(
             self,
             table_arc,
             col_indices,
@@ -358,7 +374,9 @@ fn render_status_bar(
         .id("mongo-status-bar")
         .debug_selector(|| "mongo-status-bar".into())
         .w_full()
+        .min_w_0()
         .flex_none()
+        .flex_wrap()
         .items_center()
         .gap_2()
         .px(px(12.0))

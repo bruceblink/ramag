@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use gpui::TestAppContext;
+use gpui::{TestAppContext, px, size};
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, QueryRecord, QueryResult, Row, Value,
@@ -182,6 +182,48 @@ fn plan_result_tabs_render_without_replacing_data_panel(cx: &mut TestAppContext)
             ResultState::Error(_)
         ));
     });
+}
+
+/// Narrow result toolbars must keep both filter inputs and the run action reachable.
+#[gpui::test]
+fn result_toolbar_keeps_filters_and_run_action_inside_three_window_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let service = Arc::new(ConnectionService::new(
+        HashMap::new(),
+        Arc::new(NoopStorage),
+    ));
+    let schema_cache = SchemaCache::new_shared();
+    let (tab, cx) = cx.add_window_view(|window, cx| {
+        QueryTab::new(
+            service,
+            "查询 1",
+            None,
+            schema_cache,
+            ramag_ui::ResultMemoryBudget::default(),
+            window,
+            cx,
+        )
+    });
+
+    for width in [360.0, 1024.0, 1440.0] {
+        cx.simulate_resize(size(px(width), px(480.0)));
+        tab.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        let toolbar = cx
+            .debug_bounds("sql-result-toolbar")
+            .expect("SQL 结果工具栏应渲染");
+        let filters = cx
+            .debug_bounds("sql-result-filter-group")
+            .expect("SQL 结果筛选区应渲染");
+        let run = cx
+            .debug_bounds("sql-run-query")
+            .expect("SQL 运行按钮应渲染");
+
+        assert!(filters.size.width > px(0.0), "筛选区不能被压缩为零宽");
+        assert!(filters.right() <= toolbar.right(), "筛选区不能越出工具栏");
+        assert!(run.right() <= toolbar.right(), "运行按钮不能越出工具栏");
+    }
 }
 
 /// A failed transaction operation must have a distinct status from normal auto-commit mode.

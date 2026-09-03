@@ -211,6 +211,7 @@ impl Render for QueryTab {
 
         v_flex()
             .size_full()
+            .min_w_0()
             .bg(bg)
             .key_context("QueryTab")
             .on_action(cx.listener(|this, _: &RunQuery, window, cx| {
@@ -242,8 +243,11 @@ impl Render for QueryTab {
             })
             .child(
                 h_flex()
+                    .debug_selector(|| "sql-result-toolbar".into())
                     .w_full()
+                    .min_w_0()
                     .flex_none()
+                    .flex_wrap()
                     .items_center()
                     .gap_3()
                     .px_3()
@@ -265,6 +269,7 @@ impl Render for QueryTab {
                         let col_for_up = col_input.clone();
                         let col_for_down = col_input.clone();
                         h_flex()
+                            .debug_selector(|| "sql-result-filter-group".into())
                             .flex_1()
                             .min_w_0()
                             .gap_2()
@@ -525,6 +530,7 @@ impl Render for QueryTab {
                     .when(!running, |this| {
                         this.child(
                             ramag_ui::clickable_button("run-query")
+                                .debug_selector(|| "sql-run-query".into())
                     .primary()
                     .small()
                     .icon(IconName::Play)

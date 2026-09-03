@@ -111,9 +111,9 @@ fn result_scroll_horizontal_gesture_does_not_move_rows_vertically(cx: &mut TestA
     );
 }
 
-/// 窄窗口下摘要必须收缩，分页控件仍需保持在结果状态栏内可见。
+/// 三种窗口下工具栏和摘要不得互相覆盖，分页控件仍需保持在结果状态栏内可见。
 #[gpui::test]
-fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppContext) {
+fn result_toolbar_and_status_keep_actions_visible_in_three_window_widths(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let (panel, cx) = cx.add_window_view(|window, cx| {
         let documents = wide_documents();
@@ -145,24 +145,39 @@ fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppC
         });
         panel
     });
-    cx.simulate_resize(size(px(360.0), px(280.0)));
-    panel.update(cx, |_, cx| cx.notify());
-    cx.run_until_parked();
+    for (width, height) in [(360.0, 280.0), (1024.0, 420.0), (1440.0, 420.0)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        panel.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
 
-    let status_bar = cx
-        .debug_bounds("mongo-status-bar")
-        .expect("MongoDB 结果状态栏应渲染");
-    let status_context = cx
-        .debug_bounds("mongo-status-context")
-        .expect("MongoDB 状态摘要区域应渲染");
-    let next_page = cx
-        .debug_bounds("mongo-result-page-next")
-        .expect("MongoDB 下一页按钮应渲染");
-    assert!(status_context.size.width > px(0.0));
-    assert!(
-        next_page.right() <= status_bar.right(),
-        "MongoDB 分页按钮不能被状态摘要推出状态栏"
-    );
+        let toolbar = cx
+            .debug_bounds("mongo-result-toolbar")
+            .expect("MongoDB 结果工具栏应渲染");
+        let run = cx
+            .debug_bounds("mongo-run-result")
+            .expect("MongoDB 运行按钮应渲染");
+        let status_bar = cx
+            .debug_bounds("mongo-status-bar")
+            .expect("MongoDB 结果状态栏应渲染");
+        let status_context = cx
+            .debug_bounds("mongo-status-context")
+            .expect("MongoDB 状态摘要区域应渲染");
+        let next_page = cx
+            .debug_bounds("mongo-result-page-next")
+            .expect("MongoDB 下一页按钮应渲染");
+
+        assert!(toolbar.right() <= px(width));
+        assert!(run.right() <= toolbar.right(), "运行按钮不能越出工具栏");
+        assert!(status_context.size.width > px(0.0));
+        assert!(
+            status_bar.origin.y >= toolbar.bottom(),
+            "状态栏不能覆盖工具栏"
+        );
+        assert!(
+            next_page.right() <= status_bar.right(),
+            "MongoDB 分页按钮不能被状态摘要推出状态栏"
+        );
+    }
 }
 
 #[gpui::test]
