@@ -58,21 +58,22 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
         view.loading_clusters = false;
         view.loading_runtime = false;
         view.loading_messages = false;
-        view.message_page = Some(KafkaMessagePage {
-            records: vec![KafkaMessageRecord {
-                topic: "ramag.integration.messages".into(),
-                partition: 1,
-                offset: 42,
-                timestamp: None,
-                key: Some(b"message-key".to_vec()),
-                value: Some(vec![b'v'; 256]),
-                headers: vec![ramag_domain::entities::KafkaMessageHeader {
-                    key: "trace-id".into(),
-                    value: Some(b"header-value".to_vec()),
-                }],
+        let record = KafkaMessageRecord {
+            topic: "ramag.integration.messages".into(),
+            partition: 1,
+            offset: 42,
+            timestamp: None,
+            key: Some(b"message-key".to_vec()),
+            value: Some(vec![b'v'; 256]),
+            headers: vec![ramag_domain::entities::KafkaMessageHeader {
+                key: "trace-id".into(),
+                value: Some(b"header-value".to_vec()),
             }],
-            scanned_records: 1,
-            scanned_bytes: 512,
+        };
+        view.message_page = Some(KafkaMessagePage {
+            records: vec![record; 5_000],
+            scanned_records: 5_000,
+            scanned_bytes: 512 * 5_000,
             truncated: false,
         });
         view.message_page_index = 0;
@@ -102,6 +103,9 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
         let range_inputs = visual_cx.debug_bounds("kafka-range-inputs");
         let range_start = visual_cx.debug_bounds("kafka-range-start-field");
         let range_end = visual_cx.debug_bounds("kafka-range-end-field");
+        let previous_page = visual_cx.debug_bounds("kafka-message-page-previous");
+        let page_indicator = visual_cx.debug_bounds("kafka-message-page-indicator");
+        let next_page = visual_cx.debug_bounds("kafka-message-page-next");
         assert!(
             messages.is_some()
                 && table.is_some()
@@ -112,7 +116,10 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
                 && query_row.is_some()
                 && range_inputs.is_some()
                 && range_start.is_some()
-                && range_end.is_some(),
+                && range_end.is_some()
+                && previous_page.is_some()
+                && page_indicator.is_some()
+                && next_page.is_some(),
             "消息表、详情、滚动条和分页控件都应参与布局"
         );
         let (
@@ -126,6 +133,9 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             Some(range_inputs),
             Some(range_start),
             Some(range_end),
+            Some(previous_page),
+            Some(page_indicator),
+            Some(next_page),
         ) = (
             messages,
             table,
@@ -137,6 +147,9 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             range_inputs,
             range_start,
             range_end,
+            previous_page,
+            page_indicator,
+            next_page,
         )
         else {
             return;
@@ -172,6 +185,18 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
                 && range_start.right() <= range_inputs.right()
                 && range_end.right() <= range_inputs.right(),
             "消息范围控件不能横向溢出父容器: query={query_row:?}, range={range_inputs:?}, start={range_start:?}, end={range_end:?}"
+        );
+        assert!(
+            previous_page.right() <= pagination.right()
+                && page_indicator.right() <= pagination.right()
+                && next_page.right() <= pagination.right()
+                && previous_page.origin.y >= pagination.origin.y
+                && page_indicator.origin.y >= pagination.origin.y
+                && next_page.origin.y >= pagination.origin.y
+                && previous_page.bottom() <= pagination.bottom()
+                && page_indicator.bottom() <= pagination.bottom()
+                && next_page.bottom() <= pagination.bottom(),
+            "分页子控件不能越出分页栏: pagination={pagination:?}, previous={previous_page:?}, indicator={page_indicator:?}, next={next_page:?}"
         );
         if width < 1280.0 {
             assert!(
