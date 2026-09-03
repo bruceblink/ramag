@@ -290,7 +290,7 @@ fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppC
         });
         panel
     });
-    cx.simulate_resize(gpui::size(px(720.0), px(420.0)));
+    cx.simulate_resize(gpui::size(px(360.0), px(420.0)));
     panel.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
 
@@ -303,7 +303,32 @@ fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppC
     let next_page = cx
         .debug_bounds("result-page-next")
         .expect("下一页按钮应渲染");
+    let table = cx.debug_bounds("result-h-scroll").expect("结果视口应渲染");
+    let vertical_scrollbar = cx
+        .debug_bounds("result-v-scrollbar")
+        .expect("垂直滚动条应渲染");
+    let horizontal_scrollbar = cx
+        .debug_bounds("result-h-scrollbar")
+        .expect("水平滚动条应渲染");
     assert!(status_context.size.width > px(0.0));
+    assert!(
+        status_bar.right() <= px(360.0),
+        "结果状态栏不能超出窄窗口：status_bar={status_bar:?}"
+    );
+    assert!(
+        table.right() <= status_bar.right(),
+        "结果视口不能超出状态栏的窗口边界：table={table:?}, status_bar={status_bar:?}"
+    );
+    assert!(
+        vertical_scrollbar.right() <= table.right()
+            && vertical_scrollbar.bottom() <= status_bar.origin.y,
+        "垂直滚动条不能覆盖状态栏或越出结果视口：scrollbar={vertical_scrollbar:?}, table={table:?}, status_bar={status_bar:?}"
+    );
+    assert!(
+        horizontal_scrollbar.right() <= status_bar.right()
+            && horizontal_scrollbar.bottom() <= status_bar.origin.y,
+        "水平滚动条不能覆盖状态栏：scrollbar={horizontal_scrollbar:?}, status_bar={status_bar:?}"
+    );
     assert!(
         next_page.right() <= status_bar.right(),
         "分页按钮不能被长状态文本推出状态栏"
@@ -357,7 +382,7 @@ fn alternate_result_status_keeps_paging_controls_visible_in_small_window(cx: &mu
         });
         panel
     });
-    cx.simulate_resize(gpui::size(px(720.0), px(420.0)));
+    cx.simulate_resize(gpui::size(px(360.0), px(420.0)));
     panel.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
 
@@ -371,6 +396,10 @@ fn alternate_result_status_keeps_paging_controls_visible_in_small_window(cx: &mu
         .debug_bounds("result-alternate-page-next")
         .expect("替代结果视图下一页按钮应渲染");
     assert!(status_context.size.width > px(0.0));
+    assert!(
+        status_bar.right() <= px(360.0),
+        "替代结果视图状态栏不能超出窄窗口：status_bar={status_bar:?}"
+    );
     assert!(
         next_page.right() <= status_bar.right(),
         "替代结果视图分页按钮不能被长状态文本推出状态栏"

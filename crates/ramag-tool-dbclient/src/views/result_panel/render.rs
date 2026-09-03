@@ -156,7 +156,7 @@ impl Render for ResultPanel {
         if let Some(banner) = warnings_banner {
             root = root.child(banner);
         }
-        root.child(div().flex_1().min_h_0().child(content))
+        root.child(div().flex_1().min_h_0().min_w_0().child(content))
     }
 }
 
