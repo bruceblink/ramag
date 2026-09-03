@@ -375,23 +375,8 @@ pub(super) fn render_history(
                 })
                 .collect::<Vec<_>>();
 
-            if coordinates.len() > 1 {
-                let mut area = PathBuilder::fill();
-                area.move_to(point(coordinates[0].x, chart_origin.y + chart_height));
-                for coordinate in &coordinates {
-                    area.line_to(*coordinate);
-                }
-                area.line_to(point(
-                    coordinates[coordinates.len() - 1].x,
-                    chart_origin.y + chart_height,
-                ));
-                area.close();
-                if let Ok(path) = area.build() {
-                    window.paint_path(path, accent.opacity(0.12));
-                }
-            }
-
-            let mut line = PathBuilder::stroke(px(1.5));
+            // 趋势卡只绘制折线和最新采样点，避免填充区域把图表误读成面积图。
+            let mut line = PathBuilder::stroke(px(2.0));
             line.move_to(coordinates[0]);
             if coordinates.len() == 1 {
                 line.line_to(point(coordinates[0].x + px(2.0), coordinates[0].y));
@@ -403,12 +388,33 @@ pub(super) fn render_history(
             if let Ok(path) = line.build() {
                 window.paint_path(path, accent);
             }
+
+            if let Some(coordinate) = coordinates.last() {
+                let marker_size = px(6.0);
+                let marker_x = (coordinate.x - marker_size / 2.0)
+                    .max(chart_origin.x)
+                    .min(chart_origin.x + chart_width - marker_size);
+                let marker_y = (coordinate.y - marker_size / 2.0)
+                    .max(chart_origin.y)
+                    .min(chart_origin.y + chart_height - marker_size);
+                window.paint_quad(
+                    fill(
+                        gpui::Bounds::new(
+                            point(marker_x, marker_y),
+                            size(marker_size, marker_size),
+                        ),
+                        accent,
+                    )
+                    .corner_radii(marker_size / 2.0),
+                );
+            }
         },
     )
     .w_full()
     .flex_1()
     .min_h_0();
     v_flex()
+        .debug_selector(|| format!("system-history-chart-{title}"))
         .flex_1()
         .min_w(px(280.0))
         .h(px(132.0))

@@ -60,15 +60,22 @@ fn narrow_window_keeps_monitor_controls_and_process_table_inside_content(cx: &mu
     assert!(table.origin.x + table.size.width <= content.origin.x + content.size.width);
 }
 
-/// 用高核心数快照验证关键 CPU 状态和核心网格在窄、常规、宽窗口中都不越界。
+/// 用高核心数和趋势快照验证性能卡片、核心网格及折线图在三种窗口中都不越界。
 #[gpui::test]
 #[allow(clippy::expect_used)]
 fn performance_layout_keeps_cpu_state_inside_parent_at_supported_widths(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
+    let history = (0..60)
+        .map(|index| [index as f64, 20.0 + (index % 10) as f64])
+        .collect::<Vec<_>>();
     let snapshot = MonitorSnapshot {
         cpu_percent: 42.0,
         core_usages: vec![42.0; 128],
         core_histories: vec![vec![[0.0, 42.0]]; 128],
+        cpu_history: history.clone(),
+        memory_history: history.clone(),
+        network_received_history: history.clone(),
+        disk_read_history: history,
         ..MonitorSnapshot::default()
     };
     let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -109,6 +116,18 @@ fn performance_layout_keeps_cpu_state_inside_parent_at_supported_widths(cx: &mut
         let last_tile = cx
             .debug_bounds("system-core-tile-128")
             .expect("last core tile should be rendered");
+        let cpu_chart = cx
+            .debug_bounds("system-history-chart-CPU 使用率")
+            .expect("CPU history chart should be rendered");
+        let memory_chart = cx
+            .debug_bounds("system-history-chart-内存使用率")
+            .expect("memory history chart should be rendered");
+        let network_chart = cx
+            .debug_bounds("system-history-chart-网络接收")
+            .expect("network history chart should be rendered");
+        let disk_chart = cx
+            .debug_bounds("system-history-chart-磁盘读取")
+            .expect("disk history chart should be rendered");
 
         assert!(metric.size.width > px(0.0));
         assert!(cores.size.width > px(0.0));
@@ -119,5 +138,13 @@ fn performance_layout_keeps_cpu_state_inside_parent_at_supported_widths(cx: &mut
         assert_inside(&cores, &grid, "CPU core grid");
         assert_inside(&cores, &last_tile, "last CPU core tile");
         assert_inside(&grid, &last_tile, "last CPU core tile in grid");
+        for (chart, label) in [
+            (cpu_chart, "CPU history chart"),
+            (memory_chart, "memory history chart"),
+            (network_chart, "network history chart"),
+            (disk_chart, "disk history chart"),
+        ] {
+            assert_inside(&body, &chart, label);
+        }
     }
 }
