@@ -22,7 +22,14 @@ Windows 统一使用 Visual Studio 18 2026 Build Tools，还需要：
 - Visual Studio 18 2026 Build Tools 的 C++ 工作负载
 - Windows 10/11 SDK
 
-Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 启动终端，确保 MSVC 和 Windows SDK 已加入当前环境；环境准备好后，运行、检查和测试仍使用下文的同一组 `cargo` 命令。
+Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 启动终端，确保 MSVC 和 Windows SDK 已加入当前环境；如果当前终端没有加载 VS 环境，使用仓库脚本执行 Cargo 命令，例如：
+
+```powershell
+.\scripts\windows\cargo-msvc.ps1 test -p ramag-tool-system --lib
+.\scripts\windows\cargo-msvc.ps1 clippy-all
+```
+
+环境准备好后，运行、检查和测试仍使用下文的同一组 `cargo` 命令。
 
 macOS 还需要 Xcode Command Line Tools：
 
