@@ -1,15 +1,20 @@
 #![allow(clippy::expect_used)]
 
 use gpui::{
-    Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
-    TestAppContext, VisualTestContext, Window, div, px, size,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, Styled as _, TestAppContext, VisualTestContext, Window, div, px, size,
 };
+use gpui_component::input::InputState;
 
 use super::{clickable_button, closable_dialog_title, dialog_action_footer};
 
 struct DialogTitleHost;
 
 struct DialogFooterHost;
+
+struct CleanableInputHost {
+    input: Entity<InputState>,
+}
 
 impl Render for DialogTitleHost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -45,6 +50,22 @@ impl Render for DialogFooterHost {
                     .small()
                     .primary()
                     .label("确认继续执行危险操作"),
+            ))
+    }
+}
+
+impl Render for CleanableInputHost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("shared-cleanable-input-host")
+            .debug_selector(|| "shared-cleanable-input-host".into())
+            .w(px(128.0))
+            .h(px(48.0))
+            .child(super::cleanable_input(
+                &self.input,
+                "shared-cleanable-input-clear",
+                false,
+                cx,
             ))
     }
 }
@@ -105,4 +126,31 @@ fn dialog_action_footer_wraps_long_actions_inside_parent(cx: &mut TestAppContext
         assert!(button.origin.y + button.size.height <= host.origin.y + host.size.height);
     }
     assert!(primary.origin.y > secondary.origin.y);
+}
+
+#[gpui::test]
+fn cleanable_input_keeps_clear_button_inside_narrow_parent(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let input = cx.new(|cx| InputState::new(window, cx));
+        input.update(cx, |state, cx| {
+            state.set_value("一段足够长的搜索内容", window, cx);
+        });
+        CleanableInputHost { input }
+    });
+    let cx: &mut VisualTestContext = cx;
+    cx.simulate_resize(size(px(240.0), px(120.0)));
+    cx.run_until_parked();
+
+    let host = cx
+        .debug_bounds("shared-cleanable-input-host")
+        .expect("清除输入框宿主应渲染");
+    let clear = cx
+        .debug_bounds("shared-cleanable-input-clear")
+        .expect("非空输入应显示清除按钮");
+
+    assert!(clear.origin.x >= host.origin.x);
+    assert!(clear.origin.y >= host.origin.y);
+    assert!(clear.origin.x + clear.size.width <= host.origin.x + host.size.width);
+    assert!(clear.origin.y + clear.size.height <= host.origin.y + host.size.height);
 }

@@ -128,7 +128,7 @@ pub fn cleanable_input(
         ActiveTheme as _, Icon, IconName, Sizable as _, button::ButtonVariants as _, input::Input,
     };
 
-    let input = Input::new(state).disabled(disabled);
+    let input = Input::new(state).disabled(disabled).min_w_0();
     if disabled || state.read(cx).value().is_empty() {
         return input;
     }
@@ -142,6 +142,7 @@ pub fn cleanable_input(
             .icon(Icon::new(IconName::CircleX))
             .ghost()
             .xsmall()
+            .flex_none()
             .tooltip("清空")
             .tab_stop(false)
             .text_color(cx.theme().muted_foreground)
