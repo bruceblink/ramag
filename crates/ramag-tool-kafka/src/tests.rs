@@ -418,6 +418,8 @@ impl KafkaAdminDriver for FakeKafkaAdminDriver {
 
 #[path = "visual_acl_tests.rs"]
 mod visual_acl_tests;
+#[path = "visual_config_tests.rs"]
+mod visual_config_tests;
 #[path = "visual_consumer_group_tests.rs"]
 mod visual_consumer_group_tests;
 #[path = "visual_message_tests.rs"]

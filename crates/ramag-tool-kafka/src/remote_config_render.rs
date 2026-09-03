@@ -303,7 +303,7 @@ impl KafkaView {
         let delete_selector = delete_key.clone();
         let actions = h_flex()
             .gap(px(6.0))
-            .when(compact, |row| row.w_full())
+            .when(compact, |row| row.w_full().min_w_0())
             .child(
                 ramag_ui::clickable_button(SharedString::from(format!("kafka-config-set-{key}")))
                     .debug_selector(move || format!("kafka-config-set-{set_selector}"))
@@ -391,10 +391,14 @@ impl KafkaView {
                 .child(
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .justify_between()
                         .gap(px(8.0))
+                        .when(compact, |row| row.flex_col().items_stretch())
                         .child(
                             div()
+                                .flex_none()
+                                .min_w_0()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
                                 .child(status),
