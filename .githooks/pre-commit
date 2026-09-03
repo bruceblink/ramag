@@ -10,12 +10,29 @@ printf '%s\n' 'pre-commit: checking Rust source file sizes'
 sed 's/\r$//' "$repo_root/scripts/check-source-size.sh" | bash
 
 printf '%s\n' 'pre-commit: running workspace Clippy'
-if command -v cargo >/dev/null 2>&1; then
-    cargo clippy-all
-elif command -v cargo.exe >/dev/null 2>&1; then
-    # WSL and some Git Bash installations expose the Windows toolchain as cargo.exe.
-    cargo.exe clippy-all
-else
-    printf '%s\n' 'pre-commit: cargo is required for the Clippy check' >&2
-    exit 1
-fi
+run_clippy() {
+    if command -v cargo >/dev/null 2>&1; then
+        cargo clippy-all
+    elif command -v cargo.exe >/dev/null 2>&1; then
+        # WSL and some Git Bash installations expose the Windows toolchain as cargo.exe.
+        cargo.exe clippy-all
+    else
+        printf '%s\n' 'pre-commit: cargo is required for the Clippy check' >&2
+        return 1
+    fi
+}
+
+platform="$(uname -s 2>/dev/null || printf '%s' unknown)"
+case "$platform" in
+MINGW*|MSYS*|CYGWIN*)
+    if ! command -v powershell.exe >/dev/null 2>&1; then
+        printf '%s\n' 'pre-commit: PowerShell is required to initialize the Windows MSVC toolchain' >&2
+        exit 1
+    fi
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
+        '$repo = (& git rev-parse --show-toplevel).Trim(); & (Join-Path $repo "scripts\\windows\\clippy-msvc.ps1"); exit $LASTEXITCODE'
+    ;;
+*)
+    run_clippy
+    ;;
+esac
