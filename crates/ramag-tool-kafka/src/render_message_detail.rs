@@ -4,6 +4,7 @@ impl KafkaView {
     pub(super) fn render_message_detail(
         &self,
         record: &KafkaMessageRecord,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -18,8 +19,10 @@ impl KafkaView {
         let record_for_base64 = record.clone();
         let record_for_export = record.clone();
         v_flex()
-            .w(px(360.0))
-            .flex_none()
+            .id("kafka-message-detail")
+            .debug_selector(|| "kafka-message-detail".into())
+            .when(compact, |view| view.w_full().flex_1().min_w_0())
+            .when(!compact, |view| view.w(px(360.0)).flex_none())
             .min_h_0()
             .gap(px(10.0))
             .child(section_heading(
@@ -30,6 +33,7 @@ impl KafkaView {
             .child(
                 v_flex()
                     .id("kafka-message-detail-scroll")
+                    .debug_selector(|| "kafka-message-detail-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

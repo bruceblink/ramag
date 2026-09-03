@@ -46,6 +46,7 @@ const MAX_VISIBLE_PARTITIONS: usize = 200;
 const MESSAGE_PREVIEW_BYTES: usize = 512;
 const MAX_KAFKA_EXPORT_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MESSAGE_PAGE_SIZE: usize = 100;
+const MESSAGE_TABLE_MIN_WIDTH: f32 = 720.0;
 const DEFAULT_TOPIC_PAGE_SIZE: usize = 50;
 
 /// 创建 Kafka 工具的主视图，窗口生命周期由主壳持有。
@@ -152,6 +153,7 @@ pub struct KafkaView {
     message_page_index: usize,
     message_page_size: usize,
     message_scroll: UniformListScrollHandle,
+    message_horizontal_scroll: ScrollHandle,
     topic_partition_scroll: ScrollHandle,
     consumer_group_scroll: UniformListScrollHandle,
     acls: Vec<KafkaAcl>,
@@ -446,6 +448,7 @@ impl KafkaView {
             message_page_index: 0,
             message_page_size: DEFAULT_MESSAGE_PAGE_SIZE,
             message_scroll: UniformListScrollHandle::new(),
+            message_horizontal_scroll: ScrollHandle::new(),
             topic_partition_scroll: ScrollHandle::new(),
             consumer_group_scroll: UniformListScrollHandle::new(),
             acls: Vec::new(),

@@ -329,6 +329,7 @@ pub(super) fn value_block(
     theme: &gpui_component::Theme,
 ) -> impl IntoElement {
     v_flex()
+        .min_w_0()
         .gap(px(4.0))
         .child(
             div()
@@ -339,10 +340,12 @@ pub(super) fn value_block(
         .child(
             div()
                 .w_full()
+                .min_w_0()
                 .p(px(8.0))
                 .rounded(px(4.0))
                 .bg(theme.muted.opacity(0.5))
                 .text_xs()
+                .whitespace_normal()
                 .child(value),
         )
 }
@@ -350,6 +353,7 @@ pub(super) fn value_block(
 pub(super) fn message_table_header(theme: &gpui_component::Theme) -> impl IntoElement {
     h_flex()
         .w_full()
+        .min_w(px(MESSAGE_TABLE_MIN_WIDTH))
         .items_center()
         .gap(px(10.0))
         .px(px(12.0))
@@ -359,12 +363,12 @@ pub(super) fn message_table_header(theme: &gpui_component::Theme) -> impl IntoEl
         .bg(theme.secondary)
         .text_xs()
         .text_color(theme.muted_foreground)
-        .child(div().w(px(56.0)).child("分区"))
-        .child(div().w(px(90.0)).child("Offset"))
-        .child(div().w(px(150.0)).child("Timestamp"))
-        .child(div().w(px(100.0)).child("Key"))
-        .child(div().flex_1().child("Value 预览"))
-        .child(div().w(px(70.0)).child("Headers"))
+        .child(div().w(px(56.0)).flex_none().child("分区"))
+        .child(div().w(px(90.0)).flex_none().child("Offset"))
+        .child(div().w(px(150.0)).flex_none().child("Timestamp"))
+        .child(div().w(px(100.0)).flex_none().child("Key"))
+        .child(div().flex_1().min_w(px(180.0)).child("Value 预览"))
+        .child(div().w(px(70.0)).flex_none().child("Headers"))
 }
 
 pub(super) fn format_headers(record: &KafkaMessageRecord) -> String {

@@ -1,4 +1,5 @@
 use super::*;
+use ramag_ui::RestrictScrollToAxisExt as _;
 
 impl KafkaView {
     pub(super) fn render_messages(
@@ -7,6 +8,7 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 1280.0;
         let page = self.message_page.as_ref();
         let page_count = self.message_page_count();
         let current_page = self.message_page_index.min(page_count.saturating_sub(1));
@@ -63,7 +65,15 @@ impl KafkaView {
                     }),
                 )
                 .track_scroll(&self.message_scroll)
+                .w_full()
+                .min_w(px(MESSAGE_TABLE_MIN_WIDTH))
                 .flex_1();
+                let table_content = v_flex()
+                    .w_full()
+                    .min_w(px(MESSAGE_TABLE_MIN_WIDTH))
+                    .h_full()
+                    .child(header)
+                    .child(body);
                 let table = div()
                     .id("kafka-message-table")
                     .debug_selector(|| "kafka-message-table".into())
@@ -71,7 +81,16 @@ impl KafkaView {
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .child(v_flex().size_full().child(header).child(body))
+                    .child(
+                        div()
+                            .id("kafka-message-h-scroll")
+                            .debug_selector(|| "kafka-message-h-scroll".into())
+                            .size_full()
+                            .overflow_x_scroll()
+                            .restrict_scroll_to_axis()
+                            .track_scroll(&self.message_horizontal_scroll)
+                            .child(table_content),
+                    )
                     .child(
                         div()
                             .id("kafka-message-v-scrollbar")
@@ -88,7 +107,26 @@ impl KafkaView {
                                     .scrollbar_show(ScrollbarShow::Always),
                             ),
                     );
-                v_flex().flex_1().min_h_0().child(table).into_any_element()
+                let horizontal_scrollbar = div()
+                    .id("kafka-message-h-scrollbar")
+                    .debug_selector(|| "kafka-message-h-scrollbar".into())
+                    .flex_none()
+                    .w_full()
+                    .h(px(16.0))
+                    .relative()
+                    .bg(theme.scrollbar)
+                    .child(
+                        Scrollbar::horizontal(&self.message_horizontal_scroll)
+                            .id("kafka-message-h-scrollbar-control")
+                            .scroll_size(gpui::size(px(MESSAGE_TABLE_MIN_WIDTH), px(16.0)))
+                            .scrollbar_show(ScrollbarShow::Always),
+                    );
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(table)
+                    .child(horizontal_scrollbar)
+                    .into_any_element()
             }
         } else {
             v_flex()
@@ -106,11 +144,15 @@ impl KafkaView {
                 .into_any_element()
         };
         let detail = selected_record
-            .map(|record| self.render_message_detail(record, cx).into_any_element())
+            .map(|record| {
+                self.render_message_detail(record, compact, cx)
+                    .into_any_element()
+            })
             .unwrap_or_else(|| {
                 v_flex()
-                    .w(px(360.0))
-                    .flex_none()
+                    .when(compact, |view| view.w_full().flex_1().min_w_0())
+                    .when(!compact, |view| view.w(px(360.0)).flex_none())
+                    .min_h_0()
                     .items_center()
                     .justify_center()
                     .px(px(20.0))
@@ -136,8 +178,8 @@ impl KafkaView {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    // Keep the message table and detail pane at the full available height.
                     .items_stretch()
+                    .when(compact, |row| row.flex_col())
                     .gap(px(14.0))
                     .child(
                         v_flex()
@@ -466,6 +508,7 @@ impl KafkaView {
         let theme = cx.theme().clone();
         h_flex()
             .id(SharedString::from(format!("kafka-message-row-{index}")))
+            .debug_selector(move || format!("kafka-message-row-{index}"))
             .w_full()
             .items_center()
             .gap(px(10.0))
