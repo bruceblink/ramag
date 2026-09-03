@@ -98,13 +98,21 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
         let detail_scroll = visual_cx.debug_bounds("kafka-message-detail-scroll");
         let horizontal_scrollbar = visual_cx.debug_bounds("kafka-message-h-scrollbar");
         let pagination = visual_cx.debug_bounds("kafka-message-pagination");
+        let query_row = visual_cx.debug_bounds("kafka-message-query-row");
+        let range_inputs = visual_cx.debug_bounds("kafka-range-inputs");
+        let range_start = visual_cx.debug_bounds("kafka-range-start-field");
+        let range_end = visual_cx.debug_bounds("kafka-range-end-field");
         assert!(
             messages.is_some()
                 && table.is_some()
                 && detail.is_some()
                 && detail_scroll.is_some()
                 && horizontal_scrollbar.is_some()
-                && pagination.is_some(),
+                && pagination.is_some()
+                && query_row.is_some()
+                && range_inputs.is_some()
+                && range_start.is_some()
+                && range_end.is_some(),
             "消息表、详情、滚动条和分页控件都应参与布局"
         );
         let (
@@ -114,6 +122,10 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             Some(detail_scroll),
             Some(horizontal_scrollbar),
             Some(pagination),
+            Some(query_row),
+            Some(range_inputs),
+            Some(range_start),
+            Some(range_end),
         ) = (
             messages,
             table,
@@ -121,6 +133,10 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             detail_scroll,
             horizontal_scrollbar,
             pagination,
+            query_row,
+            range_inputs,
+            range_start,
+            range_end,
         )
         else {
             return;
@@ -150,6 +166,13 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             pagination.right() <= messages.right(),
             "分页状态栏不能越出消息页面: {pagination:?}"
         );
+        assert!(
+            query_row.right() <= messages.right()
+                && range_inputs.right() <= query_row.right()
+                && range_start.right() <= range_inputs.right()
+                && range_end.right() <= range_inputs.right(),
+            "消息范围控件不能横向溢出父容器: query={query_row:?}, range={range_inputs:?}, start={range_start:?}, end={range_end:?}"
+        );
         if width < 1280.0 {
             assert!(
                 detail.origin.y >= table.origin.y + table.size.height,
@@ -159,6 +182,17 @@ fn kafka_message_table_and_detail_fit_three_window_widths(cx: &mut TestAppContex
             assert!(
                 detail.origin.x >= table.origin.x,
                 "常规和宽窗口应保留表格与详情的横向工作区: {table:?} / {detail:?}"
+            );
+        }
+        if width < 1080.0 {
+            assert!(
+                range_start.origin.y + range_start.size.height <= range_end.origin.y,
+                "紧凑窗口应将起止范围字段上下排列: start={range_start:?}, end={range_end:?}"
+            );
+        } else {
+            assert!(
+                range_start.origin.y + range_start.size.height > range_end.origin.y,
+                "宽窗口应保留起止范围字段的横向布局: start={range_start:?}, end={range_end:?}"
             );
         }
     }

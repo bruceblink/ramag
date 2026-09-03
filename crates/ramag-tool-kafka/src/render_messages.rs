@@ -235,34 +235,46 @@ impl KafkaView {
                 .flex_none()
                 .items_end()
                 .gap(px(8.0))
-                .child(field(
-                    "起始 Offset",
-                    Input::new(&self.start_offset_input).small(),
-                    if compact { 0.0 } else { 130.0 },
-                ))
-                .child(field(
-                    "结束 Offset",
-                    Input::new(&self.end_offset_input).small(),
-                    if compact { 0.0 } else { 130.0 },
-                ))
-                .when(compact, |inputs| inputs.w_full().items_stretch())
+                .child(
+                    field(
+                        "起始 Offset",
+                        Input::new(&self.start_offset_input).small(),
+                        if compact { 0.0 } else { 130.0 },
+                    )
+                    .debug_selector(|| "kafka-range-start-field".into()),
+                )
+                .child(
+                    field(
+                        "结束 Offset",
+                        Input::new(&self.end_offset_input).small(),
+                        if compact { 0.0 } else { 130.0 },
+                    )
+                    .debug_selector(|| "kafka-range-end-field".into()),
+                )
+                .when(compact, |inputs| inputs.w_full().flex_col().items_stretch())
                 .into_any_element(),
             KafkaRangeMode::Time => h_flex()
                 .debug_selector(|| "kafka-range-inputs".into())
                 .flex_none()
                 .items_end()
                 .gap(px(8.0))
-                .child(field(
-                    "起始时间",
-                    Input::new(&self.start_time_input).small(),
-                    if compact { 0.0 } else { 230.0 },
-                ))
-                .child(field(
-                    "结束时间",
-                    Input::new(&self.end_time_input).small(),
-                    if compact { 0.0 } else { 230.0 },
-                ))
-                .when(compact, |inputs| inputs.w_full().items_stretch())
+                .child(
+                    field(
+                        "起始时间",
+                        Input::new(&self.start_time_input).small(),
+                        if compact { 0.0 } else { 230.0 },
+                    )
+                    .debug_selector(|| "kafka-range-start-field".into()),
+                )
+                .child(
+                    field(
+                        "结束时间",
+                        Input::new(&self.end_time_input).small(),
+                        if compact { 0.0 } else { 230.0 },
+                    )
+                    .debug_selector(|| "kafka-range-end-field".into()),
+                )
+                .when(compact, |inputs| inputs.w_full().flex_col().items_stretch())
                 .into_any_element(),
         };
         let message_actions = h_flex()
