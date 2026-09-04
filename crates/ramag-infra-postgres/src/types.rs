@@ -1,4 +1,7 @@
-//! PostgreSQL 行解码。常见原生类型转为可读值，未知二进制类型保留原始字节。
+//! PostgreSQL 行解码。常见原生类型转为可读值，PostGIS 空间值转为 WKT 文本。
+
+#[path = "postgis.rs"]
+mod postgis;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -268,6 +271,19 @@ fn decode_raw_utf8(row: &PgRow, col: &PgColumn) -> Result<Value> {
 
 fn decode_unknown(row: &PgRow, col: &PgColumn) -> Result<Value> {
     let raw = raw_value(row, col)?;
+    let type_name = col.type_info().name();
+    if postgis::is_spatial_type(type_name) {
+        if raw.format() == PgValueFormat::Text {
+            return raw
+                .as_str()
+                .map(|value| Value::Text(postgis::text_to_wkt(value)))
+                .map_err(|error| decode_raw_error(col, error));
+        }
+        return raw
+            .as_bytes()
+            .map(|value| Value::Text(postgis::binary_to_wkt(value)))
+            .map_err(|error| decode_raw_error(col, error));
+    }
     if raw.format() == PgValueFormat::Text || matches!(col.type_info().kind(), PgTypeKind::Enum(_))
     {
         return raw
