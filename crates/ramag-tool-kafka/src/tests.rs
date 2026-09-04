@@ -424,6 +424,8 @@ mod visual_config_tests;
 mod visual_consumer_group_tests;
 #[path = "visual_message_tests.rs"]
 mod visual_message_tests;
+#[path = "visual_overview_tests.rs"]
+mod visual_overview_tests;
 #[path = "visual_profile_tests.rs"]
 mod visual_profile_tests;
 #[path = "visual_runtime_tests.rs"]

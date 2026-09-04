@@ -192,6 +192,7 @@ pub(super) fn metric_card(
 ) -> impl IntoElement {
     v_flex()
         .flex_1()
+        .min_w_0()
         .gap(px(4.0))
         .p(px(14.0))
         .border_1()

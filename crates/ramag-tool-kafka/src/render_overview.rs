@@ -90,7 +90,7 @@ impl KafkaView {
                 )
             });
         let panel = match self.section {
-            KafkaSection::Overview => self.render_overview(cx).into_any_element(),
+            KafkaSection::Overview => self.render_overview(window, cx).into_any_element(),
             KafkaSection::Topics => self.render_topics(window, cx).into_any_element(),
             KafkaSection::Messages => self.render_messages(window, cx).into_any_element(),
             KafkaSection::ConsumerGroups => {
@@ -175,8 +175,15 @@ impl KafkaView {
             .child(panel)
     }
 
-    pub(super) fn render_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// 根据窗口宽度排列概览内容，避免高侧栏把后续 Topic 预览推入无意义的空白区。
+    pub(super) fn render_overview(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let compact = f32::from(window.viewport_size().width) < 1100.0;
+        let narrow = f32::from(window.viewport_size().width) < 700.0;
         let metadata = self.metadata.as_ref();
         let topic_count = self.topics.len();
         let partition_count = self
@@ -202,6 +209,7 @@ impl KafkaView {
             match metadata {
                 None => v_flex()
                     .flex_1()
+                    .w_full()
                     .items_center()
                     .justify_center()
                     .gap(px(8.0))
@@ -219,68 +227,94 @@ impl KafkaView {
                             .child("请先在配置页保存集群并测试连接"),
                     )
                     .into_any_element(),
-                Some(metadata) => v_flex()
-                    .id("kafka-overview-scroll")
-                    .debug_selector(|| "kafka-overview-scroll".into())
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p(px(22.0))
-                    .gap(px(18.0))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap(px(12.0))
-                            .child(metric_card("Brokers", metadata.brokers.len(), &theme))
-                            .child(metric_card("Topics", topic_count, &theme))
-                            .child(metric_card("Partitions", partition_count, &theme)),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap(px(18.0))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(px(10.0))
-                                    .child(section_heading(
-                                        "Broker 元数据",
-                                        "来自 Kafka Metadata API",
-                                        &theme,
-                                    ))
-                                    .child(self.render_broker_table(metadata, cx)),
-                            )
-                            .child(
-                                v_flex()
-                                    .w(px(320.0))
-                                    .flex_none()
-                                    .gap(px(10.0))
-                                    .child(section_heading(
-                                        "集群信息",
-                                        "连接状态和协议摘要",
-                                        &theme,
-                                    ))
-                                    .child(self.render_cluster_summary(metadata, cx)),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .gap(px(10.0))
-                            .child(section_heading(
-                                "Topic 预览",
-                                "仅展示已从 Broker 读取的数据",
-                                &theme,
-                            ))
-                            .child(self.render_topic_preview(cx)),
-                    )
-                    .into_any_element(),
+                Some(metadata) => {
+                    let metrics = h_flex()
+                        .id("kafka-overview-metrics")
+                        .debug_selector(|| "kafka-overview-metrics".into())
+                        .w_full()
+                        .min_w_0()
+                        .flex_none()
+                        .gap(px(12.0))
+                        .when(narrow, |row| row.flex_col().items_stretch().gap(px(8.0)))
+                        .child(metric_card("Brokers", metadata.brokers.len(), &theme))
+                        .child(metric_card("Topics", topic_count, &theme))
+                        .child(metric_card("Partitions", partition_count, &theme));
+                    let broker_section = v_flex()
+                        .id("kafka-overview-broker")
+                        .debug_selector(|| "kafka-overview-broker".into())
+                        .w_full()
+                        .min_w_0()
+                        .flex_none()
+                        .gap(px(10.0))
+                        .child(section_heading(
+                            "Broker 元数据",
+                            "来自 Kafka Metadata API",
+                            &theme,
+                        ))
+                        .child(self.render_broker_table(metadata, cx));
+                    let topic_section = v_flex()
+                        .id("kafka-overview-topic")
+                        .debug_selector(|| "kafka-overview-topic".into())
+                        .w_full()
+                        .min_w_0()
+                        .flex_none()
+                        .gap(px(10.0))
+                        .child(section_heading(
+                            "Topic 预览",
+                            "仅展示已从 Broker 读取的数据",
+                            &theme,
+                        ))
+                        .child(self.render_topic_preview(cx));
+                    let primary_sections = v_flex()
+                        .id("kafka-overview-primary")
+                        .debug_selector(|| "kafka-overview-primary".into())
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(18.0))
+                        .when(compact, |column| column.w_full().flex_none())
+                        .child(broker_section)
+                        .child(topic_section);
+                    let cluster_section = v_flex()
+                        .id("kafka-overview-cluster")
+                        .debug_selector(|| "kafka-overview-cluster".into())
+                        .min_w_0()
+                        .gap(px(10.0))
+                        .when(compact, |panel| panel.w_full().flex_none())
+                        .when(!compact, |panel| panel.w(px(320.0)).flex_none())
+                        .child(section_heading("集群信息", "连接状态和协议摘要", &theme))
+                        .child(self.render_cluster_summary(metadata, cx));
+                    let sections = h_flex()
+                        .id("kafka-overview-sections")
+                        .debug_selector(|| "kafka-overview-sections".into())
+                        .w_full()
+                        .min_w_0()
+                        .items_start()
+                        .gap(px(18.0))
+                        .when(compact, |row| row.flex_col().items_stretch())
+                        .child(primary_sections)
+                        .child(cluster_section);
+                    v_flex()
+                        .id("kafka-overview-scroll")
+                        .debug_selector(|| "kafka-overview-scroll".into())
+                        .flex_1()
+                        .w_full()
+                        .min_h_0()
+                        .items_stretch()
+                        .overflow_y_scroll()
+                        .p(px(22.0))
+                        .gap(px(18.0))
+                        .child(metrics)
+                        .child(sections)
+                        .into_any_element()
+                }
             }
         };
         let runtime_error = self.runtime_error.clone();
         v_flex()
             .size_full()
+            .w_full()
             .min_h_0()
+            .items_stretch()
             .when_some(runtime_error, |view, error| {
                 view.child(
                     h_flex()

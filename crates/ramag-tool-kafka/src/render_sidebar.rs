@@ -119,6 +119,7 @@ impl KafkaView {
             .bg(theme.secondary)
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-sidebar-header".into())
                     .h(px(58.0))
                     .flex_none()
                     .items_center()
@@ -161,20 +162,24 @@ impl KafkaView {
                     ),
             )
             .child(
-                div().px(px(12.0)).py(px(10.0)).child(
-                    ramag_ui::cleanable_input(
-                        &self.cluster_search,
-                        "kafka-cluster-search-clear",
-                        false,
-                        cx,
-                    )
-                    .small()
-                    .prefix(
-                        Icon::new(IconName::Search)
-                            .small()
-                            .text_color(theme.muted_foreground),
+                div()
+                    .debug_selector(|| "kafka-sidebar-search".into())
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .child(
+                        ramag_ui::cleanable_input(
+                            &self.cluster_search,
+                            "kafka-cluster-search-clear",
+                            false,
+                            cx,
+                        )
+                        .small()
+                        .prefix(
+                            Icon::new(IconName::Search)
+                                .small()
+                                .text_color(theme.muted_foreground),
+                        ),
                     ),
-                ),
             )
             .child(rows)
             .child(
