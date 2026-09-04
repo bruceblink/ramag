@@ -1,7 +1,7 @@
 # Kafka 消息管理工具独立开发计划
 
-> 状态：阶段 15 的配置加载、异步状态、断线恢复、Windows 原生验收和最终质量检查已完成；当前推进 UI-004 的紧凑消息工作区切片
-> 更新日期：2026-09-03
+> 状态：阶段 15 的配置加载、异步状态、断线恢复、Windows 原生验收和最终质量检查已完成；当前推进 UI-004 的紧凑主题工作区切片
+> 更新日期：2026-09-04
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
 > 当前基线：`dev`（阶段 1-10 已完成）
@@ -292,6 +292,12 @@ Kafka ACL 首期支持：
 - `c01aaae` 补充消息页紧凑窗口可用性：窗口宽度小于 900px 时，消息页使用外层纵向滚动，结果面板保留 480px 最小高度，分页后滚动位置回到页首；不改变 Kafka 请求、消息读取或消费进度行为。
 - 扩展 `kafka_message_table_and_detail_fit_three_window_widths` headless 测试，覆盖 360/800/1024/1440 窗口、800×500 低高度场景、窄窗口纵向滚动范围和结果区可见性；`cargo fmt --all -- --check`、`cargo test --locked --workspace`、workspace Clippy、MSVC Clippy、Windows debug build、源码大小检查和 `git diff --check` 均通过。
 - 原生可执行文件已启动并枚举到目标窗口，但 Computer Use helper 连续返回 `node_repl exec context not found`，未取得截图或控件状态证据；真实 Windows 窗口验收仍待补充。
+
+阶段 17 当前切片实施记录：
+
+- `a92ef05` 修复主题页紧凑布局：700px 以下标题和搜索框上下排列；列表与详情不再继承整高，按当前窗口高度分配稳定区域，外层页面滚动承载完整主题工作区；宽窗口继续保留左右分栏。
+- 新增 `kafka_topics_reflow_header_and_split_at_supported_widths`，使用长 Topic 名称验证 360/900/1440 窗口下标题、搜索框、列表、详情、扩容、删除和浏览消息操作均留在父容器内，并确认紧凑窗口列表和详情上下排列。
+- `cargo fmt --all -- --check`、`cargo check -p ramag-tool-kafka`、MSVC Clippy、Kafka crate 17 项测试、Windows 源文件大小检查和 `git diff --check` 均通过；真实 Windows 窗口截图和操作记录仍待补充。
 
 后续独立路线：
 
