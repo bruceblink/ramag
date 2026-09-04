@@ -325,8 +325,11 @@ impl Render for ActivityBar {
         }
 
         let mut container = v_flex()
+            .id("activity-bar")
+            .debug_selector(|| "activity-bar".into())
             .w(px(BAR_WIDTH))
             .h_full()
+            .min_h_0()
             .flex_none()
             .bg(sidebar_bg)
             .border_r_1()
@@ -355,13 +358,19 @@ impl Render for ActivityBar {
         ));
 
         container = container.child(div().w(px(20.0)).h(px(1.0)).bg(border).my_1());
-        if !tools.is_empty() {
-            container = container.child(tool_list);
-        }
-
-        container = container.child(div().flex_1());
+        container = container.child(
+            v_flex()
+                .id("activity-tool-scroll")
+                .debug_selector(|| "activity-tool-scroll".into())
+                .w(px(BAR_WIDTH))
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(tool_list),
+        );
         container = container.child(
             crate::clickable_button("add-menu")
+                .debug_selector(|| "activity-add-menu".into())
                 .ghost()
                 .icon(Icon::new(IconName::Plus))
                 .tooltip("添加")
@@ -442,6 +451,7 @@ fn activity_item(
     let transparent = hsla(0.0, 0.0, 0.0, 0.0);
     let preview_icon = icon.clone();
     let preview_name = tooltip.clone();
+    let item_selector = format!("activity-{id}");
     let mut button = crate::clickable_button(id.clone()).ghost();
     button = if !show_badge {
         button.icon(icon)
@@ -453,7 +463,8 @@ fn activity_item(
     };
     button = button.tooltip(tooltip);
     let mut item = h_flex()
-        .id(SharedString::from(format!("activity-{id}")))
+        .id(SharedString::from(item_selector.clone()))
+        .debug_selector(move || item_selector.clone())
         .w(px(BAR_WIDTH))
         .h(px(ITEM_HEIGHT))
         .relative()
@@ -529,3 +540,7 @@ mod tests {
         )));
     }
 }
+
+#[cfg(test)]
+#[path = "activity_bar_visual_tests.rs"]
+mod activity_bar_visual_tests;
