@@ -267,7 +267,8 @@ impl Render for QueryTab {
                         h_flex()
                             .debug_selector(|| "sql-result-filter-group".into())
                             .flex_1()
-                            .min_w_0()
+                            // 保留两组筛选输入的可用宽度；空间不足时让后续操作换到下一行。
+                            .min_w(px(220.0))
                             .gap_2()
                             .child(
                                 div()

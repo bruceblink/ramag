@@ -220,7 +220,10 @@ fn result_toolbar_keeps_filters_and_run_action_inside_three_window_widths(cx: &m
             .debug_bounds("sql-run-query")
             .expect("SQL 运行按钮应渲染");
 
-        assert!(filters.size.width > px(0.0), "筛选区不能被压缩为零宽");
+        assert!(
+            filters.size.width >= px(180.0),
+            "窄窗口下筛选区应保留可输入宽度：filters={filters:?}, toolbar={toolbar:?}"
+        );
         assert!(filters.right() <= toolbar.right(), "筛选区不能越出工具栏");
         assert!(run.right() <= toolbar.right(), "运行按钮不能越出工具栏");
     }
