@@ -3,7 +3,7 @@
 > 状态：大功能基线基本完成，主线转入 UI 细节、响应性布局和已知问题修复
 > 更新日期：2026-09-03
 > 适用范围：`ramag-ui`、`ramag-tool-*`、`ramag-app`、`ramag-domain` 及本地构建与测试脚本
-> 当前分支：`feat/kafka-tool-development`
+> 当前分支：`dev`
 > 当前 UI 验证方式：暂时使用 headless GPUI 边界测试；真实窗口验证恢复后再补充截图和操作记录。
 
 ## 术语与命名规则

@@ -4,8 +4,8 @@
 > 更新日期：2026-09-03
 > 计划性质：独立开发计划，不并入数据库 DataGrip-like 路线图或其他工具的功能排期
 > 适用范围：`ramag-domain`、`ramag-app`、`ramag-infra-kafka`、`ramag-infra-storage`、`ramag-tool-kafka`、`ramag-ui` 和 `ramag-bin`
-> 当前基线：`feat/kafka-tool-development`（阶段 1-10 已完成）
-> 实施分支：`feat/kafka-tool-development`
+> 当前基线：`dev`（阶段 1-10 已完成）
+> 实施分支：`dev`
 > 当前主线：大功能基线完成后，UI、响应性布局和已知问题按 [`docs/development-roadmap.md`](development-roadmap.md) 排期
 
 ## 术语表与命名约定
