@@ -5,6 +5,7 @@ use gpui::{
     Window, div, point, px, size,
 };
 use gpui_component::WindowExt as _;
+use ramag_domain::entities::TransferSummary;
 
 struct SelectableTextHost;
 
@@ -105,5 +106,53 @@ fn copy_notification_stays_inside_narrow_window(cx: &mut TestAppContext) {
         assert!(notification.origin.y >= px(0.0));
         assert!(notification.right() <= px(180.0));
         assert!(notification.bottom() <= px(120.0));
+    }
+}
+
+#[gpui::test]
+fn transfer_notification_stays_inside_narrow_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let host = cx.new(|_| NotificationHost);
+        gpui_component::Root::new(host, window, cx)
+    });
+    let cx: &mut VisualTestContext = cx;
+    cx.simulate_resize(size(px(180.0), px(220.0)));
+
+    let notification = crate::transfer_notification(
+        "导出",
+        "任务已取消",
+        Ok(Some((
+            TransferSummary {
+                objects: 12,
+                items: 3_600,
+                failed: 2,
+                cancelled: true,
+                ..TransferSummary::default()
+            },
+            "连接名称很长，仍应保留在通知范围内".to_string(),
+        ))),
+    );
+    assert!(notification.is_some(), "传输结果应生成通知");
+    if let Some(notification) = notification {
+        let notification = notification.content(|_, _, _| {
+            div()
+                .debug_selector(|| "transfer-notification-content".into())
+                .w_full()
+                .min_w_0()
+                .child("传输结果")
+                .into_any()
+        });
+        cx.update(|window, cx| window.push_notification(notification, cx));
+        cx.run_until_parked();
+
+        let notification = cx.debug_bounds("transfer-notification-content");
+        assert!(notification.is_some(), "传输通知应渲染");
+        if let Some(notification) = notification {
+            assert!(notification.origin.x >= px(0.0));
+            assert!(notification.origin.y >= px(0.0));
+            assert!(notification.right() <= px(180.0));
+            assert!(notification.bottom() <= px(220.0));
+        }
     }
 }

@@ -2,7 +2,7 @@
 
 use gpui::{
     App, ClickEvent, ClipboardItem, ElementId, IntoElement, RenderOnce, SharedString,
-    StyleRefinement, Styled, Window, px,
+    StyleRefinement, Styled, Window,
 };
 use gpui_component::{StyledExt as _, WindowExt as _, notification::Notification, text::TextView};
 
@@ -26,11 +26,7 @@ pub fn copy_text_with_notification(text: impl Into<String>, window: &mut Window,
 
 /// 创建紧凑的复制成功通知。
 pub fn copy_success_notification() -> Notification {
-    Notification::success("复制成功")
-        .autohide(true)
-        .w_full()
-        .min_w_0()
-        .max_w(px(320.0))
+    crate::responsive_notification(Notification::success("复制成功").autohide(true))
 }
 
 /// 可拖拽选中的只读文本。

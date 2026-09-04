@@ -127,14 +127,15 @@ pub fn transfer_notification(
             if !summary.warnings.is_empty() || summary.warnings_overflow > 0 {
                 text.push_str("；明细见日志");
             }
-            Some(if summary.cancelled {
+            let notification = if summary.cancelled {
                 text.push_str(&format!("；{cancelled_note}"));
                 Notification::warning(text).title(target)
             } else if summary.failed > 0 {
                 Notification::warning(text).title(target)
             } else {
                 Notification::success(text).title(target).autohide(true)
-            })
+            };
+            Some(crate::responsive_notification(notification))
         }
         Err(error) => {
             error!(
@@ -143,9 +144,8 @@ pub fn transfer_notification(
                 error = %error,
                 "database transfer failed"
             );
-            Some(Notification::error(format!(
-                "{verb}失败：{}",
-                error.message()
+            Some(crate::responsive_notification(Notification::error(
+                format!("{verb}失败：{}", error.message()),
             )))
         }
     }

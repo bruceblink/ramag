@@ -95,6 +95,15 @@ pub const COMMUNITY_URL: &str =
 pub const PRODUCTION_MODE_LABEL: &str = "生产模式（只读保护）";
 pub const PRODUCTION_BADGE_LABEL: &str = "生产";
 
+/// 将通知宽度限制在当前窗口可用空间内，并保留宽窗口的可读上限。
+pub fn responsive_notification(
+    notification: gpui_component::notification::Notification,
+) -> gpui_component::notification::Notification {
+    use gpui::Styled as _;
+
+    notification.w_full().min_w_0().max_w(gpui::px(320.0))
+}
+
 /// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
 pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {
     use gpui::Styled as _;
