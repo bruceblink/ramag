@@ -23,7 +23,6 @@ use ramag_domain::entities::{
     Column, ConnectionConfig, MAX_SQL_QUERY_BYTES, QueryResult, TransactionId, Value,
 };
 use ramag_ui::{AxisScrollGesture, ResultMemoryLease};
-pub(crate) use state::ResultViewMode;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc,
@@ -121,10 +120,6 @@ pub struct ResultPanel {
     pub(super) pagination: Option<ResultPagination>,
     /// 结果代际，供派生缓存和异步回包校验。
     pub(super) result_revision: u64,
-    /// 当前结果的展示模式；模式切换只改变本地渲染，不重新查询。
-    pub(super) view_mode: ResultViewMode,
-    /// 树形视图中展开的源行，按源行索引保存以跨排序/筛选保持上下文。
-    pub(super) tree_expanded_rows: BTreeSet<usize>,
     /// 排序、筛选和列布局缓存。
     pub(super) display_view_cache: Option<crate::views::result_table::DisplayViewCache>,
     /// 当前后台派生视图条件，避免重复排队。
@@ -214,8 +209,6 @@ impl ResultPanel {
             sort_by: None,
             pagination: None,
             result_revision: 0,
-            view_mode: ResultViewMode::Table,
-            tree_expanded_rows: BTreeSet::new(),
             display_view_cache: None,
             display_view_build_key: None,
             display_view_building: false,

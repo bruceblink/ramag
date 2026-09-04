@@ -369,15 +369,15 @@ fn build_display_view_cancellable(
 }
 
 mod cells;
-mod modes;
 mod page_size;
 mod pagination;
 mod render;
 mod states;
+mod toolbar;
 
-pub(super) use modes::render_result_view;
 pub(super) use page_size::render_page_size_selector;
 pub(super) use render::render_table;
+pub(super) use toolbar::render_result_view;
 mod helpers;
 #[cfg(test)]
 mod render_test;

@@ -1,36 +1,5 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum ResultViewMode {
-    #[default]
-    Table,
-    Tree,
-    Text,
-    Transpose,
-}
-
-impl ResultViewMode {
-    pub(crate) const ALL: [Self; 4] = [Self::Table, Self::Tree, Self::Text, Self::Transpose];
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Table => "表格",
-            Self::Tree => "树形",
-            Self::Text => "文本",
-            Self::Transpose => "转置",
-        }
-    }
-
-    pub(crate) fn description(self) -> &'static str {
-        match self {
-            Self::Table => "按列查看并编辑结果",
-            Self::Tree => "按行展开字段层级",
-            Self::Text => "按行查看紧凑文本",
-            Self::Transpose => "按字段查看当前行",
-        }
-    }
-}
-
 impl ResultPanel {
     pub fn set_state(&mut self, state: ResultState, cx: &mut Context<Self>) {
         let state = self.account_result_memory(state, cx);
@@ -54,7 +23,6 @@ impl ResultPanel {
         self.pagination = None;
         self.mark_result_changed();
         self.clear_cell_edit_state();
-        self.tree_expanded_rows.clear();
         self.selected_cell = None;
         self.clear_selected_rows();
         self.sort_by = None;
@@ -83,7 +51,6 @@ impl ResultPanel {
         self.pending_cell_edits.clear();
         self.mark_result_changed();
         self.clear_cell_edit_state();
-        self.tree_expanded_rows.clear();
         cx.notify();
     }
 
@@ -129,7 +96,6 @@ impl ResultPanel {
         self.pagination = None;
         self.mark_result_changed();
         self.clear_cell_edit_state();
-        self.tree_expanded_rows.clear();
         self.selected_cell = None;
         self.clear_selected_rows();
         self.sort_by = None;
@@ -286,46 +252,6 @@ impl ResultPanel {
         self.sort_by
     }
 
-    /// Changes only the local result renderer and resets its scroll position.
-    pub(crate) fn set_view_mode(&mut self, mode: ResultViewMode, cx: &mut Context<Self>) {
-        if self.view_mode == mode {
-            return;
-        }
-        if mode != ResultViewMode::Table && !self.pending_cell_edits.is_empty() {
-            self.pending_notification = Some(
-                Notification::warning("请先提交或撤销未提交单元格修改，再切换结果视图")
-                    .autohide(true),
-            );
-            cx.notify();
-            return;
-        }
-        self.view_mode = mode;
-        self.clear_cell_edit_state();
-        self.uniform_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.h_scroll.set_offset(Point::new(px(0.0), px(0.0)));
-        cx.notify();
-    }
-
-    pub(crate) fn view_mode(&self) -> ResultViewMode {
-        self.view_mode
-    }
-
-    /// Returns the latest local display-view error so alternate renderers can show a retry state.
-    pub(crate) fn display_view_error(&self) -> Option<&str> {
-        self.display_view_error.as_deref()
-    }
-
-    pub(crate) fn toggle_tree_row(&mut self, row_index: usize, cx: &mut Context<Self>) {
-        if !self.tree_expanded_rows.remove(&row_index) {
-            self.tree_expanded_rows.insert(row_index);
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn tree_row_expanded(&self, row_index: usize) -> bool {
-        self.tree_expanded_rows.contains(&row_index)
-    }
-
     pub(crate) fn pagination(&self) -> Option<ResultPagination> {
         self.pagination
     }
@@ -403,25 +329,5 @@ impl ResultPanel {
 
     pub fn state(&self) -> &ResultState {
         &self.state
-    }
-}
-
-#[cfg(test)]
-mod view_mode_tests {
-    use super::ResultViewMode;
-
-    #[test]
-    fn exposes_stable_result_view_order_and_labels() {
-        assert_eq!(
-            ResultViewMode::ALL,
-            [
-                ResultViewMode::Table,
-                ResultViewMode::Tree,
-                ResultViewMode::Text,
-                ResultViewMode::Transpose,
-            ]
-        );
-        assert_eq!(ResultViewMode::default(), ResultViewMode::Table);
-        assert_eq!(ResultViewMode::Transpose.label(), "转置");
     }
 }
