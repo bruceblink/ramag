@@ -5,6 +5,7 @@ impl KafkaView {
         &self,
         topic: &KafkaTopic,
         compact: bool,
+        compact_height: f32,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -36,9 +37,11 @@ impl KafkaView {
             );
         }
         v_flex()
-            .when(compact, |panel| panel.w_full().flex_1().min_w_0())
-            .when(!compact, |panel| panel.w(px(390.0)).flex_none())
-            .h_full()
+            .debug_selector(|| "kafka-topic-detail".into())
+            .when(compact, |panel| {
+                panel.w_full().h(px(compact_height)).flex_none().min_w_0()
+            })
+            .when(!compact, |panel| panel.w(px(390.0)).flex_none().h_full())
             .min_h_0()
             .gap(px(8.0))
             .child(section_heading(

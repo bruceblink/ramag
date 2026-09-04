@@ -7,10 +7,16 @@ impl KafkaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let compact = f32::from(window.viewport_size().width) < 1200.0;
+        let viewport = window.viewport_size();
+        let width = f32::from(viewport.width);
+        let compact = width < 1200.0;
+        let narrow = width < 700.0;
         // The split gets less height than the whole window; derive its cap from the
         // current viewport so the detail actions stay visible at every supported size.
-        let split_max_height = (f32::from(window.viewport_size().height) - 540.0).max(240.0);
+        let split_max_height = (f32::from(viewport.height) - 540.0).max(240.0);
+        let compact_list_height = (f32::from(viewport.height) - 620.0).clamp(160.0, 230.0);
+        let compact_detail_height = (f32::from(viewport.height) - 520.0).clamp(300.0, 380.0);
+        let compact_split_height = compact_list_height + compact_detail_height + 14.0;
         let query = value(&self.topic_search, cx).to_lowercase();
         let visible: Vec<KafkaTopic> = self
             .topics
@@ -109,12 +115,18 @@ impl KafkaView {
         };
         let detail = selected_topic
             .map(|topic| {
-                self.render_topic_detail(topic, compact, window, cx)
+                self.render_topic_detail(topic, compact, compact_detail_height, window, cx)
                     .into_any_element()
             })
             .unwrap_or_else(|| {
                 v_flex()
-                    .when(compact, |panel| panel.w_full().flex_1().min_w_0())
+                    .when(compact, |panel| {
+                        panel
+                            .w_full()
+                            .h(px(compact_detail_height))
+                            .flex_none()
+                            .min_w_0()
+                    })
                     .when(!compact, |panel| panel.w(px(390.0)).flex_none())
                     .min_h_0()
                     .items_center()
@@ -140,16 +152,19 @@ impl KafkaView {
             .gap(px(12.0))
             .child(
                 h_flex()
+                    .debug_selector(|| "kafka-topic-header".into())
                     .w_full()
                     .flex_none()
                     .items_center()
                     .justify_between()
                     .gap(px(12.0))
+                    .when(narrow, |row| row.flex_col().items_stretch().justify_start())
                     .child(
                         v_flex()
                             .h_full()
                             .flex_1()
                             .min_w_0()
+                            .when(narrow, |copy| copy.w_full().flex_none())
                             .gap(px(2.0))
                             .child(
                                 div()
@@ -170,8 +185,10 @@ impl KafkaView {
                     )
                     .child(
                         div()
+                            .debug_selector(|| "kafka-topic-search".into())
                             .min_w_0()
                             .when(compact, |input| input.flex_1())
+                            .when(narrow, |input| input.w_full().flex_none())
                             .when(!compact, |input| input.w(px(260.0)).flex_none())
                             .child(
                                 ramag_ui::cleanable_input(
@@ -299,20 +316,28 @@ impl KafkaView {
             .child(
                 h_flex()
                     .debug_selector(|| "kafka-topic-split".into())
-                    .flex_none()
+                    .w_full()
                     .min_h_0()
-                    .max_h(px(split_max_height))
-                    .h(px(split_max_height))
-                    .when(compact, |layout| layout.flex_col())
+                    .when(compact, |layout| {
+                        layout.flex_col().flex_none().h(px(compact_split_height))
+                    })
+                    .when(!compact, |layout| {
+                        layout
+                            .flex_1()
+                            .max_h(px(split_max_height))
+                            .h(px(split_max_height))
+                    })
                     .items_stretch()
                     .gap(px(14.0))
                     .child(
                         v_flex()
                             .debug_selector(|| "kafka-topic-list-panel".into())
-                            .h_full()
-                            .flex_1()
                             .min_w_0()
                             .min_h_0()
+                            .when(compact, |panel| {
+                                panel.w_full().h(px(compact_list_height)).flex_none()
+                            })
+                            .when(!compact, |panel| panel.h_full().flex_1())
                             .border_1()
                             .border_color(theme.border)
                             .rounded(px(6.0))

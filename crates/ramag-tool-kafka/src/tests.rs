@@ -432,3 +432,5 @@ mod visual_runtime_tests;
 mod visual_shell_tests;
 #[path = "visual_tests.rs"]
 mod visual_tests;
+#[path = "visual_topic_tests.rs"]
+mod visual_topic_tests;
