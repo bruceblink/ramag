@@ -1,5 +1,5 @@
 use super::*;
-use gpui::TestAppContext;
+use gpui::{Entity, TestAppContext, VisualTestContext, px, size};
 use ramag_domain::entities::{ColumnKind, ColumnType};
 
 fn column(name: &str, raw_type: &str, nullable: bool) -> Column {
@@ -51,6 +51,56 @@ fn designer(
         unreachable!("测试窗口应创建表设计器")
     };
     (designer, visual_cx)
+}
+
+#[gpui::test]
+fn designer_toolbars_and_field_scroll_stay_inside_narrow_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (designer, cx): (Entity<TableDesigner>, &mut VisualTestContext) =
+        designer(DriverKind::Mysql, vec![column("id", "int", false)], cx);
+    cx.update(|window, app| {
+        designer.update(app, |designer, cx| {
+            designer.table_name.update(cx, |input, cx| {
+                input.set_value("a_narrow_table_name", window, cx)
+            });
+            designer.add_field(window, cx);
+        });
+    });
+    cx.simulate_resize(size(px(360.0), px(620.0)));
+    designer.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+
+    let content = cx
+        .debug_bounds("table-designer-content")
+        .expect("表设计器内容应渲染");
+    let top_toolbar = cx
+        .debug_bounds("table-designer-top-toolbar")
+        .expect("表设计器顶部工具栏应渲染");
+    let save = cx
+        .debug_bounds("table-designer-save-name")
+        .expect("表名保存按钮应渲染");
+    let show_ddl = cx
+        .debug_bounds("table-designer-show-ddl")
+        .expect("DDL 切换按钮应渲染");
+    let field_scroll = cx
+        .debug_bounds("table-designer-fields-h-scroll")
+        .expect("字段横向滚动区域应渲染");
+    let field_content = cx
+        .debug_bounds("table-designer-fields-content")
+        .expect("字段内容应渲染");
+
+    for bounds in [top_toolbar, field_scroll] {
+        assert!(bounds.origin.x >= content.origin.x);
+        assert!(bounds.right() <= content.right());
+    }
+    for button in [save, show_ddl] {
+        assert!(button.origin.x >= top_toolbar.origin.x);
+        assert!(button.right() <= top_toolbar.right());
+        assert!(button.origin.y >= top_toolbar.origin.y);
+        assert!(button.bottom() <= top_toolbar.bottom());
+    }
+    assert!(save.right() <= show_ddl.origin.x || show_ddl.right() <= save.origin.x);
+    assert!(field_content.right() > field_scroll.right());
 }
 
 #[gpui::test]

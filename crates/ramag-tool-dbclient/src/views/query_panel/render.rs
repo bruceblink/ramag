@@ -138,12 +138,10 @@ impl Render for QueryPanel {
             }))
             .when(self.show_editor, |panel| {
                 panel.child(
-                    h_flex()
+                    ramag_ui::responsive_toolbar()
                         .debug_selector(|| "sql-editor-toolbar".into())
-                        .w_full()
-                        .min_w_0()
                         .flex_none()
-                        .flex_wrap()
+                        .gap(px(0.0))
                         .border_b_1()
                         .border_color(border)
                         .bg(secondary_bg)

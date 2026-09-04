@@ -6,7 +6,10 @@ use gpui::{
 };
 use gpui_component::input::InputState;
 
-use super::{centered_status, clickable_button, closable_dialog_title, dialog_action_footer};
+use super::{
+    centered_status, clickable_button, closable_dialog_title, dialog_action_footer,
+    responsive_toolbar,
+};
 
 struct DialogTitleHost;
 
@@ -17,6 +20,8 @@ struct CleanableInputHost {
 }
 
 struct CenteredStatusHost;
+
+struct ResponsiveToolbarHost;
 
 impl Render for DialogTitleHost {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -85,6 +90,34 @@ impl Render for CenteredStatusHost {
                 "没有匹配当前搜索条件的历史记录，请缩短条件后重试",
                 cx.theme().muted_foreground,
             ))
+    }
+}
+
+impl Render for ResponsiveToolbarHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("shared-responsive-toolbar-host")
+            .debug_selector(|| "shared-responsive-toolbar-host".into())
+            .w(px(180.0))
+            .h(px(80.0))
+            .child(
+                responsive_toolbar()
+                    .debug_selector(|| "ramag-responsive-toolbar".into())
+                    .child(
+                        div()
+                            .debug_selector(|| "shared-responsive-toolbar-summary".into())
+                            .w(px(140.0))
+                            .h(px(20.0))
+                            .flex_none(),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "shared-responsive-toolbar-action".into())
+                            .w(px(60.0))
+                            .h(px(20.0))
+                            .flex_none(),
+                    ),
+            )
     }
 }
 
@@ -192,4 +225,38 @@ fn centered_status_keeps_long_message_inside_narrow_window(cx: &mut TestAppConte
     assert!(status.origin.y >= host.origin.y);
     assert!(status.origin.x + status.size.width <= host.origin.x + host.size.width);
     assert!(status.origin.y + status.size.height <= host.origin.y + host.size.height);
+}
+
+#[gpui::test]
+fn responsive_toolbar_wraps_fixed_actions_inside_narrow_parent(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|_, _| ResponsiveToolbarHost);
+    let cx: &mut VisualTestContext = cx;
+    cx.simulate_resize(size(px(240.0), px(120.0)));
+    cx.run_until_parked();
+
+    let host = cx
+        .debug_bounds("shared-responsive-toolbar-host")
+        .expect("工具栏宿主应渲染");
+    let toolbar = cx
+        .debug_bounds("ramag-responsive-toolbar")
+        .expect("共享工具栏应渲染");
+    let summary = cx
+        .debug_bounds("shared-responsive-toolbar-summary")
+        .expect("工具栏摘要应渲染");
+    let action = cx
+        .debug_bounds("shared-responsive-toolbar-action")
+        .expect("工具栏操作项应渲染");
+
+    for child in [summary, action] {
+        assert!(child.origin.x >= toolbar.origin.x);
+        assert!(child.origin.y >= toolbar.origin.y);
+        assert!(child.right() <= toolbar.right());
+        assert!(child.bottom() <= toolbar.bottom());
+        assert!(child.origin.x >= host.origin.x);
+        assert!(child.origin.y >= host.origin.y);
+        assert!(child.right() <= host.right());
+        assert!(child.bottom() <= host.bottom());
+    }
+    assert!(action.origin.y > summary.origin.y);
 }

@@ -4,16 +4,11 @@ use crate::views::table_designer::diff::{format_field_diff, render_field_diff_li
 
 impl Render for TableDesigner {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let field_editor = self.render_field_editor(cx);
         let theme = cx.theme();
         let border = theme.border;
         let muted = theme.muted;
         let muted_fg = theme.muted_foreground;
-        let syntax = &theme.highlight_theme.style.syntax;
-        let type_color = syntax_color(syntax, "type", theme.link);
-        let keyword_color = syntax_color(syntax, "keyword", theme.info);
-        let number_color = syntax_color(syntax, "number", theme.warning);
-        let string_color = syntax_color(syntax, "string", theme.success);
-        let constant_color = syntax_color(syntax, "constant", theme.foreground);
         let entity = cx.entity().clone();
         if self.loading {
             return v_flex()
@@ -47,95 +42,7 @@ impl Render for TableDesigner {
                 );
         }
         let active_fields = self.fields.iter().filter(|field| !field.deleted).count();
-        let mut rows = v_flex().w_full();
         let reviewing = self.preview_sql.is_some();
-        let visible_rows = visible_field_rows(active_fields, reviewing);
-        let rows_height = px(visible_rows as f32 * FIELD_ROW_HEIGHT);
-        for (index, field) in self.fields.iter().enumerate() {
-            if field.deleted {
-                continue;
-            }
-            let toggle = entity.clone();
-            let remove = entity.clone();
-            rows =
-                rows.child(
-                    h_flex()
-                        .w_full()
-                        .min_h(px(46.0))
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .border_t_1()
-                        .border_color(border)
-                        .when(index % 2 == 1, |row| row.bg(muted.opacity(0.45)))
-                        .child(
-                            Input::new(&field.name)
-                                .w(px(170.0))
-                                .disabled(reviewing || self.executing),
-                        )
-                        .child(
-                            Input::new(&field.data_type)
-                                .w(px(180.0))
-                                .font_family(theme.mono_font_family.clone())
-                                .text_color(type_color)
-                                .disabled(reviewing || self.executing),
-                        )
-                        .child(
-                            h_flex().w(px(76.0)).items_center().justify_center().child(
-                                ramag_ui::clickable_checkbox(format!("field-nullable-{index}"))
-                                    .checked(field.nullable)
-                                    .small()
-                                    .disabled(reviewing || self.executing)
-                                    .tooltip("允许 NULL")
-                                    .on_click(move |nullable: &bool, _, app| {
-                                        toggle.update(app, |this, cx| {
-                                            if let Some(field) = this.fields.get_mut(index) {
-                                                field.nullable = *nullable;
-                                            }
-                                            this.preview_sql = None;
-                                            this.discard_confirming = false;
-                                            cx.notify();
-                                        })
-                                    }),
-                            ),
-                        )
-                        .child(
-                            Input::new(&field.default_value)
-                                .w(px(180.0))
-                                .font_family(theme.mono_font_family.clone())
-                                .text_color(default_value_color(
-                                    field.default_value.read(cx).value().as_ref(),
-                                    keyword_color,
-                                    number_color,
-                                    string_color,
-                                    constant_color,
-                                ))
-                                .disabled(reviewing || self.executing),
-                        )
-                        .child(div().flex_1().min_w(px(150.0)).child(
-                            Input::new(&field.comment).disabled(reviewing || self.executing),
-                        ))
-                        .child(
-                            ramag_ui::clickable_button(format!("field-delete-{index}"))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Delete)
-                                .tooltip("删除")
-                                .text_color(theme.danger)
-                                .disabled(reviewing || self.executing)
-                                .on_click(move |_: &ClickEvent, _, app| {
-                                    remove.update(app, |this, cx| {
-                                        if let Some(field) = this.fields.get_mut(index) {
-                                            field.deleted = true;
-                                        }
-                                        this.preview_sql = None;
-                                        this.discard_confirming = false;
-                                        cx.notify();
-                                    })
-                                }),
-                        ),
-                );
-        }
         let add = entity.clone();
         let preview = entity.clone();
         let execute = entity.clone();
@@ -160,29 +67,38 @@ impl Render for TableDesigner {
             self.preview_diff.clone()
         };
         v_flex()
+            .debug_selector(|| "table-designer-content".into())
             .w_full()
             .gap_3()
             .child(
-                h_flex()
-                    .w_full()
+                ramag_ui::responsive_toolbar()
+                    .debug_selector(|| "table-designer-top-toolbar".into())
+                    .flex_none()
                     .items_end()
                     .justify_between()
                     .child(
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_1()
                             .child(div().text_xs().text_color(muted_fg).child("表名"))
                             .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
+                                ramag_ui::responsive_toolbar()
+                                    .min_w_0()
                                     .child(
                                         Input::new(&self.table_name)
                                             .w(px(320.0))
+                                            .max_w(px(320.0))
+                                            .flex_1()
+                                            .min_w_0()
                                             .disabled(reviewing || executing || show_ddl),
                                     )
                                     .when(has_table_name_change, |name| {
                                         name.child(
                                             ramag_ui::clickable_button("table-designer-save-name")
+                                                .debug_selector(|| {
+                                                    "table-designer-save-name".into()
+                                                })
                                                 .primary()
                                                 .small()
                                                 .label(if executing {
@@ -203,8 +119,10 @@ impl Render for TableDesigner {
                     )
                     .child(
                         ramag_ui::clickable_button("table-designer-show-ddl")
+                            .debug_selector(|| "table-designer-show-ddl".into())
                             .secondary()
                             .small()
+                            .flex_none()
                             .label(if show_ddl {
                                 "字段设计"
                             } else {
@@ -244,6 +162,7 @@ impl Render for TableDesigner {
                 designer.child(
                     v_flex()
                         .w_full()
+                        .min_w_0()
                         .gap_2()
                         .child(
                             v_flex()
@@ -261,42 +180,7 @@ impl Render for TableDesigner {
                                         .child(format!("{active_fields} 个字段")),
                                 ),
                         )
-                        .child(
-                            v_flex()
-                                .w_full()
-                                .border_1()
-                                .border_color(border)
-                                .rounded_lg()
-                                .overflow_hidden()
-                                .child(
-                                    h_flex()
-                                        .min_h(px(38.0))
-                                        .items_center()
-                                        .gap_2()
-                                        .px_3()
-                                        .bg(muted.opacity(0.7))
-                                        .text_xs()
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(muted_fg)
-                                        .child(div().w(px(170.0)).child("字段名"))
-                                        .child(div().w(px(180.0)).child("类型"))
-                                        .child(div().w(px(76.0)).text_center().child("允许 NULL"))
-                                        .child(div().w(px(180.0)).child("默认值"))
-                                        .child(div().flex_1().child("注释"))
-                                        .child(div().w(px(36.0)).text_center().child("操作")),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .h(rows_height)
-                                        .min_h_0()
-                                        .flex_none()
-                                        .id("table-designer-fields-scroll")
-                                        .overflow_y_scroll()
-                                        .track_scroll(&self.field_scroll)
-                                        .child(rows),
-                                ),
-                        ),
+                        .child(field_editor),
                 )
             })
             .when_some(preview_sql, |designer, sql| {
@@ -305,9 +189,8 @@ impl Render for TableDesigner {
                 let highlighted_sql = highlight_sql(sql, &theme.highlight_theme);
                 let diff = preview_diff.clone().unwrap_or_default();
                 let diff_for_copy = format_field_diff(&diff);
-                let diff_header = h_flex()
-                    .w_full()
-                    .items_center()
+                let diff_header = ramag_ui::responsive_toolbar()
+                    .flex_none()
                     .justify_between()
                     .child(
                         div()
@@ -346,9 +229,8 @@ impl Render for TableDesigner {
                         .when(!discard_confirming, |preview| {
                             preview
                                 .child(
-                                    h_flex()
-                                        .w_full()
-                                        .items_center()
+                                    ramag_ui::responsive_toolbar()
+                                        .flex_none()
                                         .justify_between()
                                         .child(
                                             div()
@@ -401,9 +283,8 @@ impl Render for TableDesigner {
                                         ),
                                 )
                                 .child(
-                                    h_flex()
-                                        .w_full()
-                                        .items_center()
+                                    ramag_ui::responsive_toolbar()
+                                        .flex_none()
                                         .justify_between()
                                         .child(
                                             ramag_ui::clickable_button("modify-table-back-to-edit")
@@ -467,9 +348,8 @@ impl Render for TableDesigner {
                 self.preview_sql.is_none() && !discard_confirming,
                 |designer| {
                     designer.child(
-                        h_flex()
-                            .w_full()
-                            .items_center()
+                        ramag_ui::responsive_toolbar()
+                            .flex_none()
                             .justify_between()
                             .when(!show_ddl, |actions| {
                                 actions.child(
@@ -529,9 +409,9 @@ impl Render for TableDesigner {
             )
             .when(discard_confirming, |designer| {
                 designer.child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
+                    ramag_ui::responsive_toolbar()
+                        .flex_none()
+                        .items_start()
                         .justify_between()
                         .gap_3()
                         .p_3()
@@ -541,6 +421,8 @@ impl Render for TableDesigner {
                         .bg(theme.danger.opacity(0.08))
                         .child(
                             v_flex()
+                                .flex_1()
+                                .min_w_0()
                                 .gap_1()
                                 .child(
                                     div()
@@ -557,6 +439,7 @@ impl Render for TableDesigner {
                         )
                         .child(
                             h_flex()
+                                .flex_none()
                                 .items_center()
                                 .gap_2()
                                 .child(

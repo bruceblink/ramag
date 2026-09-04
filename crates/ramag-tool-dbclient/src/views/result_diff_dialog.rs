@@ -404,11 +404,8 @@ impl Render for ResultDiffDialog {
             .map(|diff| format_result_diff(&self.source, &self.target, diff))
             .unwrap_or_default();
         let has_diff = self.diff.is_some();
-        let toolbar = h_flex()
-            .w_full()
+        let toolbar = ramag_ui::responsive_toolbar()
             .flex_none()
-            .items_center()
-            .gap(px(8.0))
             .child(
                 v_flex()
                     .flex_1()

@@ -319,11 +319,8 @@ fn render_plan_toolbar(
             }))
     };
 
-    h_flex()
-        .w_full()
+    ramag_ui::responsive_toolbar()
         .flex_none()
-        .items_center()
-        .gap_2()
         .px_3()
         .py_1()
         .border_b_1()

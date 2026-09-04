@@ -386,10 +386,7 @@ impl Render for SchemaDiffDialog {
                 .into_any_element()
         };
 
-        let toolbar = h_flex()
-            .w_full()
-            .items_center()
-            .gap(px(8.0))
+        let toolbar = ramag_ui::responsive_toolbar()
             .child(
                 v_flex()
                     .flex_1()

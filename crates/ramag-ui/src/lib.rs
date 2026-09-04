@@ -104,6 +104,19 @@ pub fn responsive_notification(
     notification.w_full().min_w_0().max_w(gpui::px(320.0))
 }
 
+/// 创建可在窄窗口换行的通用工具栏；调用方负责补充具体的对齐和内边距。
+pub fn responsive_toolbar() -> gpui::Div {
+    use gpui::{Styled as _, px};
+    use gpui_component::h_flex;
+
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.0))
+}
+
 /// 创建带手型光标的按钮，统一可点击控件的悬浮反馈。
 pub fn clickable_button(id: impl Into<gpui::ElementId>) -> gpui_component::button::Button {
     use gpui::Styled as _;

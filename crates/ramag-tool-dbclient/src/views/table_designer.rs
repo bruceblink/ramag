@@ -1,6 +1,7 @@
 //! MySQL / PostgreSQL 表结构编辑器。
 
 mod diff;
+mod fields;
 mod preview;
 mod render;
 mod sql;
@@ -33,6 +34,8 @@ use ropey::Rope;
 const NO_CHANGES: &str = "没有检测到表结构变更";
 const FIELD_ROW_HEIGHT: f32 = 46.0;
 const MAX_VISIBLE_FIELD_ROWS: usize = 8;
+// 固定字段列、列间距和水平内边距的最小总宽，窄窗口由外层横向滚动承载。
+const FIELD_TABLE_MIN_WIDTH: f32 = 856.0;
 const SQL_PREVIEW_LINE_HEIGHT: f32 = 20.0;
 const SQL_PREVIEW_VISIBLE_LINES: f32 = 6.0;
 const SQL_PREVIEW_VERTICAL_PADDING: f32 = 24.0;
@@ -87,6 +90,8 @@ pub(super) struct TableDesigner {
     table_name: Entity<InputState>,
     fields: Vec<FieldDraft>,
     field_scroll: ScrollHandle,
+    field_horizontal_scroll: ScrollHandle,
+    field_scroll_gesture: ramag_ui::AxisScrollGesture,
     sql_scroll: ScrollHandle,
     loading: bool,
     load_error: Option<String>,
@@ -123,6 +128,8 @@ impl TableDesigner {
             table_name,
             fields,
             field_scroll: ScrollHandle::new(),
+            field_horizontal_scroll: ScrollHandle::new(),
+            field_scroll_gesture: ramag_ui::AxisScrollGesture::default(),
             sql_scroll: ScrollHandle::new(),
             loading: config.loading,
             load_error: None,
@@ -212,6 +219,23 @@ impl TableDesigner {
         self.discard_confirming = false;
         self.field_scroll.scroll_to_bottom();
         cx.notify();
+    }
+
+    /// 在表字段区域内按手势主方向分流横向和纵向滚动，避免横向拖动带动字段行上下跳动。
+    fn on_field_scroll(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        ramag_ui::handle_axis_scroll(
+            &mut self.field_scroll_gesture,
+            event,
+            window,
+            &self.field_horizontal_scroll,
+            &self.field_scroll,
+            cx,
+        );
     }
 
     fn next_field_name(&self, cx: &gpui::App) -> String {
