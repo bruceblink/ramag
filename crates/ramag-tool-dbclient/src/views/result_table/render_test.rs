@@ -209,6 +209,33 @@ fn result_view_renders_only_table_view(cx: &mut TestAppContext) {
             "不应渲染已移除的结果视图控件：{selector}"
         );
     }
+
+    for width in [280.0, 320.0, 360.0, 1024.0] {
+        cx.simulate_resize(size(px(width), px(420.0)));
+        panel.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        let toolbar = cx
+            .debug_bounds("result-view-toolbar")
+            .expect("结果表工具栏应在窄窗口继续渲染");
+        assert!(toolbar.right() <= px(width));
+        assert!(toolbar.bottom() <= px(420.0));
+
+        for selector in [
+            "result-view-indicator",
+            "result-view-value-actions",
+            "result-view-toolbar-help",
+        ] {
+            let child = cx.debug_bounds(selector).expect("结果表工具栏子项应渲染");
+            assert!(
+                child.origin.x >= toolbar.origin.x
+                    && child.origin.y >= toolbar.origin.y
+                    && child.right() <= toolbar.right()
+                    && child.bottom() <= toolbar.bottom(),
+                "结果表工具栏子项不能越出工具栏：selector={selector}, child={child:?}, toolbar={toolbar:?}"
+            );
+        }
+    }
     panel.read_with(cx, |panel, _cx| {
         assert_eq!(panel.selected_cell(), Some((1, 1)));
         let ResultState::Ok(current) = panel.state() else {

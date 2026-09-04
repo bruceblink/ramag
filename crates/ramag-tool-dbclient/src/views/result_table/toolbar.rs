@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui::{AnyElement, Context, IntoElement, ParentElement as _, div, prelude::*};
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, button::ButtonVariants as _,
-    h_flex, v_flex,
+    v_flex,
 };
 use ramag_domain::entities::QueryResult;
 use ramag_ui::PointerDropdownMenu as _;
@@ -45,12 +45,10 @@ pub(in crate::views) fn render_result_view(
 fn render_result_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> AnyElement {
     let value_actions = render_result_value_actions(panel, cx);
     let theme = cx.theme();
-    h_flex()
+    ramag_ui::responsive_toolbar()
         .id("result-view-toolbar")
         .debug_selector(|| "result-view-toolbar".into())
-        .w_full()
         .flex_none()
-        .items_center()
         .gap_2()
         .px_3()
         .py_1()
@@ -67,6 +65,7 @@ fn render_result_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .flex_none()
                 .text_xs()
                 .text_color(theme.muted_foreground)
+                .whitespace_nowrap()
                 .child("结果视图"),
         )
         .child(
@@ -78,16 +77,21 @@ fn render_result_toolbar(panel: &ResultPanel, cx: &mut Context<ResultPanel>) -> 
                 .py_1()
                 .text_xs()
                 .text_color(theme.foreground)
+                .whitespace_nowrap()
                 .bg(theme.accent.opacity(0.16))
                 .child("表格"),
         )
         .child(value_actions)
-        .child(div().flex_1())
         .child(
             div()
-                .flex_none()
+                .debug_selector(|| "result-view-toolbar-help".into())
+                .flex_1()
+                .min_w_0()
                 .text_xs()
                 .text_color(theme.muted_foreground)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
                 .child("按列查看并编辑结果"),
         )
         .into_any_element()
@@ -97,6 +101,7 @@ fn render_result_value_actions(panel: &ResultPanel, cx: &mut Context<ResultPanel
     let panel_entity = cx.entity();
     let has_selection = panel.selected_cell().is_some();
     let trigger = ramag_ui::clickable_button("result-value-actions")
+        .debug_selector(|| "result-view-value-actions".into())
         .ghost()
         .small()
         .icon(IconName::Copy)
