@@ -308,7 +308,9 @@ impl Render for Shell {
                         v_flex()
                             .flex_1()
                             .h_full()
+                            .w_full()
                             .min_w_0()
+                            .items_stretch()
                             .child(
                                 h_flex()
                                     .w_full()
@@ -325,7 +327,9 @@ impl Render for Shell {
                                 div()
                                     .flex_1()
                                     .h_full()
+                                    .w_full()
                                     .min_w_0()
+                                    .items_stretch()
                                     .when_some(content_view, |this, view| this.child(view))
                                     .when(
                                         (self.settings_selected && self.settings_view.is_none())

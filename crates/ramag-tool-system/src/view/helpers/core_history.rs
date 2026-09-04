@@ -8,6 +8,7 @@ const CORE_HISTORY_POINTS: usize = 24;
 const CORE_HISTORY_COMPACT_POINTS: usize = 12;
 const CORE_HISTORY_HORIZONTAL_GRID_LINES: usize = 2;
 const CORE_HISTORY_VERTICAL_GRID_LINES: usize = 3;
+const CORE_HISTORY_MIN_SCALE: f64 = 25.0;
 
 /// 将单个核心的历史采样绘制成占满卡片剩余空间的迷你折线图。
 pub(super) fn render_core_history(
@@ -26,10 +27,11 @@ pub(super) fn render_core_history(
             CORE_HISTORY_POINTS
         },
     );
+    let chart_scale = core_chart_scale(&points);
     let chart_background = theme.muted;
-    let grid_color = theme.border.opacity(0.35);
+    let grid_color = theme.border.opacity(if compact { 0.48 } else { 0.4 });
     let accent = theme.accent;
-    let line_width = if compact { 1.2 } else { 1.5 };
+    let line_width = if compact { 2.0 } else { 2.25 };
     let chart = canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -66,7 +68,7 @@ pub(super) fn render_core_history(
                     } else {
                         point_index as f32 / (points.len() - 1) as f32
                     };
-                    let value_fraction = core_chart_value_ratio(sample[1]);
+                    let value_fraction = core_chart_value_ratio(sample[1], chart_scale);
                     point(
                         chart_origin.x + chart_width * x_fraction,
                         chart_origin.y + chart_height * (1.0 - value_fraction),
@@ -86,7 +88,7 @@ pub(super) fn render_core_history(
                 ));
                 area.close();
                 if let Ok(path) = area.build() {
-                    window.paint_path(path, accent.opacity(0.16));
+                    window.paint_path(path, accent.opacity(if compact { 0.24 } else { 0.2 }));
                 }
             }
 
@@ -101,6 +103,28 @@ pub(super) fn render_core_history(
             }
             if let Ok(path) = line.build() {
                 window.paint_path(path, accent);
+            }
+
+            if let Some(coordinate) = coordinates.last() {
+                let marker_size = px(if compact { 4.0 } else { 5.0 })
+                    .min(chart_width)
+                    .min(chart_height);
+                let marker_x = (coordinate.x - marker_size / 2.0)
+                    .max(chart_origin.x)
+                    .min(chart_origin.x + chart_width - marker_size);
+                let marker_y = (coordinate.y - marker_size / 2.0)
+                    .max(chart_origin.y)
+                    .min(chart_origin.y + chart_height - marker_size);
+                window.paint_quad(
+                    fill(
+                        gpui::Bounds::new(
+                            point(marker_x, marker_y),
+                            size(marker_size, marker_size),
+                        ),
+                        accent,
+                    )
+                    .corner_radii(marker_size / 2.0),
+                );
             }
         },
     );
@@ -132,6 +156,15 @@ pub(super) fn core_history_points(
     points
 }
 
+/// 为迷你折线图选择显示刻度：低负载时放大波动，高负载时仍保持 100% 上限。
+pub(super) fn core_chart_scale(points: &[[f64; 2]]) -> f64 {
+    let maximum = points
+        .iter()
+        .map(|sample| sanitize_core_usage(sample[1]))
+        .fold(0.0, f64::max);
+    (maximum * 1.1).clamp(CORE_HISTORY_MIN_SCALE, 100.0)
+}
+
 fn sanitize_core_usage(value: f64) -> f64 {
     if value.is_finite() {
         value.clamp(0.0, 100.0)
@@ -140,6 +173,9 @@ fn sanitize_core_usage(value: f64) -> f64 {
     }
 }
 
-pub(super) fn core_chart_value_ratio(value: f64) -> f32 {
-    (sanitize_core_usage(value) / 100.0) as f32
+pub(super) fn core_chart_value_ratio(value: f64, scale: f64) -> f32 {
+    if !scale.is_finite() || scale <= 0.0 {
+        return 0.0;
+    }
+    (sanitize_core_usage(value) / scale).clamp(0.0, 1.0) as f32
 }

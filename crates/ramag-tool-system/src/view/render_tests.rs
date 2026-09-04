@@ -110,6 +110,12 @@ fn performance_layout_keeps_cpu_state_inside_parent_at_supported_widths(cx: &mut
         let cores = cx
             .debug_bounds("system-core-panel")
             .expect("core panel should be rendered");
+        let memory_panel = cx
+            .debug_bounds("system-memory-panel")
+            .expect("memory panel should be rendered");
+        let detail_row = cx
+            .debug_bounds("system-performance-detail-row")
+            .expect("performance detail row should be rendered");
         let grid = cx
             .debug_bounds("system-core-grid")
             .expect("core grid should be rendered");
@@ -131,8 +137,31 @@ fn performance_layout_keeps_cpu_state_inside_parent_at_supported_widths(cx: &mut
 
         assert!(metric.size.width > px(0.0));
         assert!(cores.size.width > px(0.0));
+        assert!(memory_panel.size.width > px(0.0));
+        assert_inside(&body, &detail_row, "performance detail row");
         assert_inside(&body, &metric, "CPU metric card");
         assert_inside(&body, &cores, "CPU core panel");
+        assert_inside(&detail_row, &cores, "CPU core panel in detail row");
+        assert_inside(&detail_row, &memory_panel, "memory panel in detail row");
+        if width >= 1024.0 {
+            assert!(
+                cores.size.width >= px(400.0),
+                "wide layout should use the available width: cores={cores:?}, detail_row={detail_row:?}"
+            );
+            assert!(
+                memory_panel.size.width >= px(400.0),
+                "wide layout should use the available width: memory={memory_panel:?}, detail_row={detail_row:?}"
+            );
+            assert!(
+                cores.origin.x + cores.size.width <= memory_panel.origin.x,
+                "wide layout should keep both detail panels on one row: cores={cores:?}, memory={memory_panel:?}"
+            );
+        } else {
+            assert!(
+                cores.origin.y + cores.size.height <= memory_panel.origin.y,
+                "compact layout should stack detail panels: cores={cores:?}, memory={memory_panel:?}"
+            );
+        }
         assert_inside(&metric, &value, "CPU metric value");
         assert_inside(&metric, &detail, "CPU core count");
         assert_inside(&cores, &grid, "CPU core grid");

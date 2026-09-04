@@ -115,10 +115,19 @@ impl SystemView {
             )
     }
 
-    fn render_performance(&self, snapshot: &MonitorSnapshot, cx: &mut Context<Self>) -> AnyElement {
+    /// 渲染性能监控页面；窄窗口堆叠详情面板，宽窗口让两个面板平分可用宽度。
+    fn render_performance(
+        &self,
+        snapshot: &MonitorSnapshot,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme();
         let memory_percent = ratio_percent(snapshot.memory_used, snapshot.memory_total);
         let swap_percent = ratio_percent(snapshot.swap_used, snapshot.swap_total);
+        let compact = window.viewport_size().width < px(720.0);
+        let detail_panel_min_width = if compact { 0.0 } else { 300.0 };
+        let detail_columns = if compact { 1 } else { 2 };
         let mut overview = h_flex().w_full().min_w_0().flex().flex_wrap().gap(px(10.0));
         overview = overview.child(metric_card(
             "CPU",
@@ -182,8 +191,9 @@ impl SystemView {
         let (core_columns, core_rows) = core_grid_dimensions(snapshot.core_usages.len());
         let cores = v_flex()
             .debug_selector(|| "system-core-panel".to_owned())
-            .flex_1()
-            .min_w(px(300.0))
+            .w_full()
+            .min_w_0()
+            .min_w(px(detail_panel_min_width))
             .h(px(260.0))
             .gap(px(6.0))
             .p(px(12.0))
@@ -208,8 +218,10 @@ impl SystemView {
             ));
 
         let mut memory_panel = v_flex()
-            .flex_1()
-            .min_w(px(300.0))
+            .debug_selector(|| "system-memory-panel".to_owned())
+            .w_full()
+            .min_w_0()
+            .min_w(px(detail_panel_min_width))
             .h(px(260.0))
             .gap(px(8.0))
             .p(px(12.0))
@@ -302,6 +314,7 @@ impl SystemView {
             .debug_selector(|| "system-performance-body".to_owned())
             .w_full()
             .min_w_0()
+            .items_stretch()
             .gap(px(10.0))
             .p(px(16.0))
             .child(overview);
@@ -323,11 +336,13 @@ impl SystemView {
             );
         }
         body.child(
-            h_flex()
+            div()
+                .debug_selector(|| "system-performance-detail-row".to_owned())
                 .w_full()
                 .min_w_0()
-                .flex()
-                .flex_wrap()
+                .self_stretch()
+                .grid()
+                .grid_cols(detail_columns)
                 .gap(px(10.0))
                 .children([cores.into_any_element(), memory_panel.into_any_element()]),
         )
@@ -484,6 +499,7 @@ impl Render for SystemView {
         let snapshot = self.monitor.snapshot();
         let mut root = v_flex()
             .size_full()
+            .items_stretch()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground);
         root = root.child(self.render_header(window, cx));
@@ -494,13 +510,14 @@ impl Render for SystemView {
             root = root.child(self.render_termination_confirmation(request, cx));
         }
         let content = match self.section {
-            SystemSection::Performance => self.render_performance(&snapshot, cx),
+            SystemSection::Performance => self.render_performance(&snapshot, window, cx),
             SystemSection::Processes => self.render_processes(&snapshot, window, cx),
         };
         root.child(
             div()
                 .id("system-content")
                 .debug_selector(|| "system-content".to_owned())
+                .w_full()
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()

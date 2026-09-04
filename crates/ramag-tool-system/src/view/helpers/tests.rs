@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, Root, v_flex};
 
-use super::core_history::{core_chart_value_ratio, core_history_points};
+use super::core_history::{core_chart_scale, core_chart_value_ratio, core_history_points};
 use super::{
     HISTORY_CHART_POINTS, chart_value_ratio, core_grid_dimensions, format_bytes, format_percent,
     format_rate_pair, history_chart_points, history_max, process_table_layout, ratio_percent,
@@ -95,8 +95,10 @@ fn core_history_points_keep_latest_samples_and_bound_values() {
         vec![[2.0, 100.0], [3.0, 0.0]]
     );
     assert_eq!(core_history_points(&[], 50.0, 24), vec![[0.0, 50.0]]);
-    assert_eq!(core_chart_value_ratio(-1.0), 0.0);
-    assert_eq!(core_chart_value_ratio(120.0), 1.0);
+    assert_eq!(core_chart_scale(&[[0.0, 12.0], [1.0, 20.0]]), 25.0);
+    assert_eq!(core_chart_scale(&[[0.0, 80.0], [1.0, 100.0]]), 100.0);
+    assert_eq!(core_chart_value_ratio(-1.0, 25.0), 0.0);
+    assert_eq!(core_chart_value_ratio(120.0, 100.0), 1.0);
 }
 
 #[test]
