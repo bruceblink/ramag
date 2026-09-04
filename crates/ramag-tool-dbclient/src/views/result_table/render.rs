@@ -319,6 +319,8 @@ pub(in crate::views) fn render_table(
         .debug_selector(|| "result-status-context".into())
         .flex_1()
         .min_w_0()
+        // 窄窗口下让摘要先占一行，分页控件换行后仍保留可读宽度。
+        .min_w(px(180.0))
         .overflow_hidden()
         .items_center()
         .gap_2()

@@ -292,49 +292,56 @@ fn result_status_keeps_paging_controls_visible_in_small_window(cx: &mut TestAppC
         });
         panel
     });
-    cx.simulate_resize(gpui::size(px(360.0), px(420.0)));
-    panel.update(cx, |_, cx| cx.notify());
-    cx.run_until_parked();
+    for width in [280.0, 320.0, 360.0, 1024.0] {
+        cx.simulate_resize(gpui::size(px(width), px(420.0)));
+        panel.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
 
-    let status_bar = cx
-        .debug_bounds("result-status-bar")
-        .expect("结果状态栏应渲染");
-    let status_context = cx
-        .debug_bounds("result-status-context")
-        .expect("状态摘要区域应渲染");
-    let next_page = cx
-        .debug_bounds("result-page-next")
-        .expect("下一页按钮应渲染");
-    let table = cx.debug_bounds("result-h-scroll").expect("结果视口应渲染");
-    let vertical_scrollbar = cx
-        .debug_bounds("result-v-scrollbar")
-        .expect("垂直滚动条应渲染");
-    let horizontal_scrollbar = cx
-        .debug_bounds("result-h-scrollbar")
-        .expect("水平滚动条应渲染");
-    assert!(status_context.size.width > px(0.0));
-    assert!(
-        status_bar.right() <= px(360.0),
-        "结果状态栏不能超出窄窗口：status_bar={status_bar:?}"
-    );
-    assert!(
-        table.right() <= status_bar.right(),
-        "结果视口不能超出状态栏的窗口边界：table={table:?}, status_bar={status_bar:?}"
-    );
-    assert!(
-        vertical_scrollbar.right() <= table.right()
-            && vertical_scrollbar.bottom() <= status_bar.origin.y,
-        "垂直滚动条不能覆盖状态栏或越出结果视口：scrollbar={vertical_scrollbar:?}, table={table:?}, status_bar={status_bar:?}"
-    );
-    assert!(
-        horizontal_scrollbar.right() <= status_bar.right()
-            && horizontal_scrollbar.bottom() <= status_bar.origin.y,
-        "水平滚动条不能覆盖状态栏：scrollbar={horizontal_scrollbar:?}, status_bar={status_bar:?}"
-    );
-    assert!(
-        next_page.right() <= status_bar.right(),
-        "分页按钮不能被长状态文本推出状态栏"
-    );
+        let status_bar = cx
+            .debug_bounds("result-status-bar")
+            .expect("结果状态栏应渲染");
+        let status_context = cx
+            .debug_bounds("result-status-context")
+            .expect("状态摘要区域应渲染");
+        let next_page = cx
+            .debug_bounds("result-page-next")
+            .expect("下一页按钮应渲染");
+        let table = cx.debug_bounds("result-h-scroll").expect("结果视口应渲染");
+        let vertical_scrollbar = cx
+            .debug_bounds("result-v-scrollbar")
+            .expect("垂直滚动条应渲染");
+        let horizontal_scrollbar = cx
+            .debug_bounds("result-h-scrollbar")
+            .expect("水平滚动条应渲染");
+        assert!(status_context.size.width >= px(160.0));
+        assert!(
+            status_context.right() <= status_bar.right()
+                && status_context.bottom() <= status_bar.bottom(),
+            "状态摘要不能越出状态栏：status_context={status_context:?}, status_bar={status_bar:?}"
+        );
+        assert!(
+            status_bar.right() <= px(width),
+            "结果状态栏不能超出窗口：status_bar={status_bar:?}"
+        );
+        assert!(
+            table.right() <= status_bar.right(),
+            "结果视口不能超出状态栏的窗口边界：table={table:?}, status_bar={status_bar:?}"
+        );
+        assert!(
+            vertical_scrollbar.right() <= table.right()
+                && vertical_scrollbar.bottom() <= status_bar.origin.y,
+            "垂直滚动条不能覆盖状态栏或越出结果视口：scrollbar={vertical_scrollbar:?}, table={table:?}, status_bar={status_bar:?}"
+        );
+        assert!(
+            horizontal_scrollbar.right() <= status_bar.right()
+                && horizontal_scrollbar.bottom() <= status_bar.origin.y,
+            "水平滚动条不能覆盖状态栏：scrollbar={horizontal_scrollbar:?}, status_bar={status_bar:?}"
+        );
+        assert!(
+            next_page.right() <= status_bar.right(),
+            "分页按钮不能被长状态文本推出状态栏"
+        );
+    }
 }
 
 /// The value viewer should stay inside supported window widths and remain closable as a dialog.
