@@ -13,8 +13,8 @@ use gpui::{
 
 use crate::actions::NewQueryTab;
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
-    button::ButtonVariants as _, h_flex, notification::Notification, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
+    notification::Notification, v_flex,
 };
 use parking_lot::RwLock;
 use ramag_app::ConnectionService;
@@ -209,7 +209,8 @@ impl QueryPanel {
 
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !can_open_editor_tab(self.tabs.len()) {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::warning(format!(
                     "查询标签已达上限（{MAX_EDITOR_TABS} 个），请先关闭不需要的标签"
                 ))
@@ -342,7 +343,8 @@ impl QueryPanel {
     /// 恢复最近关闭的草稿并让新标签成为当前活动标签。
     pub(super) fn reopen_last_closed_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !can_open_editor_tab(self.tabs.len()) {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::warning(format!(
                     "查询标签已达上限（{MAX_EDITOR_TABS} 个），请先关闭不需要的标签"
                 ))

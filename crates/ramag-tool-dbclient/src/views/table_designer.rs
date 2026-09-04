@@ -311,7 +311,11 @@ impl TableDesigner {
         let sql = match self.rename_sql(cx) {
             Ok(sql) => sql,
             Err(error) => {
-                window.push_notification(Notification::warning(error).autohide(true), cx);
+                ramag_ui::push_responsive_notification(
+                    window,
+                    Notification::warning(error).autohide(true),
+                    cx,
+                );
                 return;
             }
         };
@@ -370,7 +374,11 @@ impl TableDesigner {
         let sql = match self.change_sql(cx) {
             Ok(sql) => sql,
             Err(error) => {
-                window.push_notification(Notification::warning(error).autohide(true), cx);
+                ramag_ui::push_responsive_notification(
+                    window,
+                    Notification::warning(error).autohide(true),
+                    cx,
+                );
                 return;
             }
         };

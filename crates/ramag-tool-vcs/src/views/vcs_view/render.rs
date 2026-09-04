@@ -14,8 +14,7 @@ impl Render for VcsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 把异步操作完成时挂起的 toast 推送出来（commit / push / pull 等成功提示）
         if let Some(n) = self.pending_notification.take() {
-            use gpui_component::WindowExt as _;
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         // 仓库管理页首次显示即聚焦搜索框，进入页面直接可打字过滤
         if !self.focused_repo_search_once && matches!(self.active_view, ActiveView::RepoList) {

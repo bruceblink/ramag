@@ -393,7 +393,8 @@ impl Render for TableDesigner {
                                                     preview.update(app, |this, cx| {
                                                         match this.build_preview(cx) {
                                                             Ok(()) => {}
-                                                            Err(error) => window.push_notification(
+                                                            Err(error) => ramag_ui::push_responsive_notification(
+                                                                window,
                                                                 Notification::warning(error)
                                                                     .autohide(true),
                                                                 cx,

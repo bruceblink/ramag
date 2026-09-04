@@ -12,8 +12,8 @@ use gpui::{
     Render, SharedString, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    h_flex, input::InputEvent, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, button::ButtonVariants as _, h_flex,
+    input::InputEvent, v_flex,
 };
 use ramag_app::ConnectionService;
 use ramag_domain::entities::{ConnectionId, QueryRecord, QueryStatus, compact_text_preview};
@@ -297,7 +297,11 @@ impl HistoryList {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     rec_for_copy.sql.clone(),
                                 ));
-                                window.push_notification(ramag_ui::copy_success_notification(), cx);
+                                ramag_ui::push_responsive_notification(
+                                    window,
+                                    ramag_ui::copy_success_notification(),
+                                    cx,
+                                );
                             })),
                     )
                     .child(

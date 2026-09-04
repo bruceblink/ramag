@@ -104,6 +104,17 @@ pub fn responsive_notification(
     notification.w_full().min_w_0().max_w(gpui::px(320.0))
 }
 
+/// 推送统一宽度的通知，确保各工具的长状态和错误文案服从相同的窗口边界。
+pub fn push_responsive_notification(
+    window: &mut gpui::Window,
+    notification: gpui_component::notification::Notification,
+    cx: &mut gpui::App,
+) {
+    use gpui_component::WindowExt as _;
+
+    window.push_notification(responsive_notification(notification), cx);
+}
+
 /// 创建可在窄窗口换行的通用工具栏；调用方负责补充具体的对齐和内边距。
 pub fn responsive_toolbar() -> gpui::Div {
     use gpui::{Styled as _, px};

@@ -5,8 +5,7 @@ use gpui::{
     SharedString, Styled, Window, div, prelude::*,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
-    v_flex,
+    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex,
 };
 use ramag_ui::platform::primary_shortcut;
 
@@ -22,7 +21,7 @@ impl Render for ResultPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 把异步任务挂的通知 push 到全局 toast
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
 
         let theme = cx.theme();

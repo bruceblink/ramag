@@ -12,7 +12,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, WindowExt as _,
+    ActiveTheme,
     input::{Input, InputEvent, InputState},
     notification::Notification,
     v_flex,
@@ -373,7 +373,7 @@ fn find_command_template(collection: &str) -> String {
 impl Render for MongoQueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         let bg = cx.theme().background;
         let fg = cx.theme().foreground;

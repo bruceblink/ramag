@@ -4,7 +4,6 @@ use gpui::{
     MouseButton, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext,
     Window, div, point, px, size,
 };
-use gpui_component::WindowExt as _;
 use ramag_domain::entities::TransferSummary;
 
 struct SelectableTextHost;
@@ -96,7 +95,7 @@ fn copy_notification_stays_inside_narrow_window(cx: &mut TestAppContext) {
             .size(px(1.0))
             .into_any()
     });
-    cx.update(|window, cx| window.push_notification(notification, cx));
+    cx.update(|window, cx| crate::push_responsive_notification(window, notification, cx));
     cx.run_until_parked();
 
     let notification = cx.debug_bounds("copy-success-notification-content");
@@ -143,7 +142,7 @@ fn transfer_notification_stays_inside_narrow_window(cx: &mut TestAppContext) {
                 .child("传输结果")
                 .into_any()
         });
-        cx.update(|window, cx| window.push_notification(notification, cx));
+        cx.update(|window, cx| crate::push_responsive_notification(window, notification, cx));
         cx.run_until_parked();
 
         let notification = cx.debug_bounds("transfer-notification-content");

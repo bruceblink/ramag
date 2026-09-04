@@ -3,7 +3,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
@@ -20,7 +20,7 @@ pub(super) const ASSET_PANE_HEIGHT: f32 = 520.0;
 impl Render for JumpServerPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(notification) = self.pending_notification.take() {
-            window.push_notification(notification, cx);
+            ramag_ui::push_responsive_notification(window, notification, cx);
         }
         let body_max_h = (window.viewport_size().height * 0.9 - px(100.0)).max(px(360.0));
 

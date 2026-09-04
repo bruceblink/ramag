@@ -10,7 +10,7 @@ use gpui::{
     Window, div, prelude::*, px, relative,
 };
 use gpui_component::{
-    ActiveTheme, WindowExt as _,
+    ActiveTheme,
     notification::Notification,
     resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
@@ -442,7 +442,8 @@ fn confirmed_target_is_current(
     if panel.read(app).current_key() == Some(expected_key) {
         return true;
     }
-    window.push_notification(
+    ramag_ui::push_responsive_notification(
+        window,
         Notification::warning("当前 Key 已变化，为避免误删已取消操作").autohide(true),
         app,
     );

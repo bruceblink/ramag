@@ -113,8 +113,11 @@ impl TableTreePanel {
                 ) {
                     Ok(result) => result,
                     Err(message) => {
-                        window
-                            .push_notification(Notification::warning(message).autohide(true), app);
+                        ramag_ui::push_responsive_notification(
+                            window,
+                            Notification::warning(message).autohide(true),
+                            app,
+                        );
                         return;
                     }
                 };
@@ -122,7 +125,8 @@ impl TableTreePanel {
                     && target.schema.eq_ignore_ascii_case(&source_schema)
                     && target.table.eq_ignore_ascii_case(&source_table)
                 {
-                    window.push_notification(
+                    ramag_ui::push_responsive_notification(
+                        window,
                         Notification::warning("源表和目标表不能相同").autohide(true),
                         app,
                     );

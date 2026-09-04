@@ -9,8 +9,8 @@ use gpui::{
     UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    Selectable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    clipboard::Clipboard, h_flex, v_flex,
+    Selectable as _, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard, h_flex,
+    v_flex,
 };
 use ramag_domain::entities::RedisValue;
 use ramag_ui::RestrictScrollToAxisExt as _;
@@ -227,7 +227,11 @@ pub(super) fn render_scalar(
                 .tooltip("复制")
                 .value(display_text)
                 .on_copied(|_, window, cx| {
-                    window.push_notification(ramag_ui::copy_success_notification(), cx);
+                    ramag_ui::push_responsive_notification(
+                        window,
+                        ramag_ui::copy_success_notification(),
+                        cx,
+                    );
                 }),
         );
 

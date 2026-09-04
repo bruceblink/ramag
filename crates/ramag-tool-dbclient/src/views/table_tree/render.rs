@@ -19,7 +19,7 @@ impl Render for TableTreePanel {
             window.remove_notification::<TableDdlNotification>(cx);
         }
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         let muted_fg = cx.theme().muted_foreground;
         let red = gpui::red();

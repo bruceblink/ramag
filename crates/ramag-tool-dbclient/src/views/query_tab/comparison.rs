@@ -93,13 +93,17 @@ impl QueryTab {
                 ) {
                     Ok(target) => target,
                     Err(message) => {
-                        window
-                            .push_notification(Notification::warning(message).autohide(true), app);
+                        ramag_ui::push_responsive_notification(
+                            window,
+                            Notification::warning(message).autohide(true),
+                            app,
+                        );
                         return;
                     }
                 };
                 if target.id == source_connection.id {
-                    window.push_notification(
+                    ramag_ui::push_responsive_notification(
+                        window,
                         Notification::warning("目标连接必须不同于当前连接").autohide(true),
                         app,
                     );

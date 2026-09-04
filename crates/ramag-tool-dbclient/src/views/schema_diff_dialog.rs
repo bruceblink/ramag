@@ -7,7 +7,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, Theme, WindowExt as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, Theme,
     button::ButtonVariants as _,
     h_flex,
     notification::Notification,
@@ -253,7 +253,7 @@ impl SchemaDiffDialog {
 impl Render for SchemaDiffDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(notification) = self.pending_notification.take() {
-            window.push_notification(notification, cx);
+            ramag_ui::push_responsive_notification(window, notification, cx);
         }
         let theme = cx.theme().clone();
         let theme = &theme;

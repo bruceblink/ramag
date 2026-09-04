@@ -322,7 +322,7 @@ impl ObjectStorageView {
                 } else {
                     Notification::success(message)
                 };
-                window.push_notification(notification, cx);
+                ramag_ui::push_responsive_notification(window, notification, cx);
                 self.load_accounts(window, cx);
             }
             AccountFormEvent::Cancelled => {

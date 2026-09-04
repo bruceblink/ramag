@@ -7,7 +7,7 @@ use gpui::{
     Subscription, Window, div, hsla, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, WindowExt as _,
+    ActiveTheme, Icon, IconName,
     animation::{Transition, ease_in_out_cubic},
     badge::Badge,
     button::ButtonVariants as _,
@@ -423,7 +423,8 @@ impl Render for ActivityBar {
 
 /// 添加入口暂时没有对应的工具创建流程，先用统一通知明确反馈点击结果。
 fn show_add_placeholder(kind: &str, window: &mut Window, cx: &mut App) {
-    window.push_notification(
+    crate::push_responsive_notification(
+        window,
         Notification::info(format!("{kind}功能即将支持")).autohide(true),
         cx,
     );

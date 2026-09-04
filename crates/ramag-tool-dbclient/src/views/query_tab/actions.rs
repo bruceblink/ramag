@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, Entity, Window};
-use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use ramag_domain::entities::{MAX_SQL_QUERY_BYTES, Query, QueryResult, Value};
 use ramag_domain::error::DomainError;
@@ -479,7 +478,8 @@ impl QueryTab {
             if tid > 0 { Some(tid) } else { None }
         });
         if let (Some(tid), Some(conn)) = (cancel_target, self.connection.clone()) {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::info("已停止等待，正在请求服务器取消该查询…").autohide(true),
                 cx,
             );
@@ -519,7 +519,8 @@ impl QueryTab {
             })
             .detach();
         } else {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::info("已停止等待；未获取到服务器线程，语句可能仍在服务器执行")
                     .autohide(true),
                 cx,

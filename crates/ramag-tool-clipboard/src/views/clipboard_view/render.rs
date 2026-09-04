@@ -3,8 +3,8 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Selectable as _, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    h_flex, input::Input, v_flex,
+    ActiveTheme, Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex, input::Input,
+    v_flex,
 };
 use ramag_domain::entities::{ClipKind, format_bytes};
 
@@ -18,7 +18,7 @@ impl Render for ClipboardView {
             self.search.update(cx, |state, cx| state.focus(window, cx));
         }
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
 
         let theme = cx.theme();

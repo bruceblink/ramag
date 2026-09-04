@@ -361,7 +361,8 @@ fn open_sql_editor(
     cx: &mut Context<TableTreePanel>,
 ) {
     if initial.len() > MAX_SQL_QUERY_BYTES {
-        window.push_notification(
+        ramag_ui::push_responsive_notification(
+            window,
             Notification::error(format!(
                 "DDL 内容超过 {} MiB，无法打开编辑对话框",
                 MAX_SQL_QUERY_BYTES / 1024 / 1024

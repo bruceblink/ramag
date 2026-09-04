@@ -14,8 +14,7 @@ impl Render for DbClientView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 异步失败提示：Render 持 Window 时统一推送（与各面板同款）
         if let Some(n) = self.pending_notification.take() {
-            use gpui_component::WindowExt as _;
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         // 跨重启恢复：首帧只建占位槽（不连库），仅上次激活的那个立即建会话；
         // 其余标签首次点击时才真正连接，避免恢复 N 个标签时全部拉元数据 / SCAN

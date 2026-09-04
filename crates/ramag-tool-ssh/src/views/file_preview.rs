@@ -369,7 +369,11 @@ impl RemoteFileEditor {
                 error = %error,
                 "refresh remote file tail failed"
             );
-            window.push_notification(Notification::error(format!("刷新失败：{error}")), cx);
+            ramag_ui::push_responsive_notification(
+                window,
+                Notification::error(format!("刷新失败：{error}")),
+                cx,
+            );
         }
         self.auto_refresh_failed = true;
     }
@@ -420,11 +424,18 @@ impl RemoteFileEditor {
                                 error = %error,
                                 "decode remote file chunk failed"
                             );
-                            window.push_notification(Notification::error(error), cx);
+                            ramag_ui::push_responsive_notification(
+                                window,
+                                Notification::error(error),
+                                cx,
+                            );
                         }
                     },
-                    Err(error) => window
-                        .push_notification(Notification::error(format!("读取失败：{error}")), cx),
+                    Err(error) => ramag_ui::push_responsive_notification(
+                        window,
+                        Notification::error(format!("读取失败：{error}")),
+                        cx,
+                    ),
                 }
                 cx.notify();
             });
@@ -465,7 +476,8 @@ impl RemoteFileEditor {
         }
         let contents = self.input.read(cx).value().to_string();
         if contents.len() > MAX_REMOTE_FILE_PREVIEW_BYTES {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::error(format!(
                     "不能超过 {} MiB",
                     MAX_REMOTE_FILE_PREVIEW_BYTES / 1024 / 1024
@@ -513,11 +525,17 @@ impl RemoteFileEditor {
                         this.owner.update(cx, |owner, cx| {
                             owner.refresh_directory(profile.id.clone(), None, cx);
                         });
-                        window
-                            .push_notification(Notification::success("已保存").autohide(true), cx);
+                        ramag_ui::push_responsive_notification(
+                            window,
+                            Notification::success("已保存").autohide(true),
+                            cx,
+                        );
                     }
-                    Err(error) => window
-                        .push_notification(Notification::error(format!("保存失败：{error}")), cx),
+                    Err(error) => ramag_ui::push_responsive_notification(
+                        window,
+                        Notification::error(format!("保存失败：{error}")),
+                        cx,
+                    ),
                 }
                 cx.notify();
             });
@@ -527,9 +545,9 @@ impl RemoteFileEditor {
 
     fn request_close(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
-            window.push_notification(Notification::warning("正在保存"), cx);
+            ramag_ui::push_responsive_notification(window, Notification::warning("正在保存"), cx);
         } else if self.is_dirty() {
-            window.push_notification(Notification::warning("修改未保存"), cx);
+            ramag_ui::push_responsive_notification(window, Notification::warning("修改未保存"), cx);
         } else {
             window.close_dialog(cx);
         }

@@ -3,7 +3,7 @@
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px,
 };
-use gpui_component::{WindowExt as _, clipboard::Clipboard, h_flex, v_flex};
+use gpui_component::{clipboard::Clipboard, h_flex, v_flex};
 use ramag_domain::entities::RedisValue;
 
 use super::KeyDetailPanel;
@@ -180,7 +180,11 @@ fn array_block(
                         .tooltip("复制")
                         .value(item.to_clipboard_string())
                         .on_copied(|_, window, cx| {
-                            window.push_notification(ramag_ui::copy_success_notification(), cx);
+                            ramag_ui::push_responsive_notification(
+                                window,
+                                ramag_ui::copy_success_notification(),
+                                cx,
+                            );
                         }),
                 ),
         );

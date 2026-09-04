@@ -185,14 +185,16 @@ impl MongoQueryPanel {
 
     pub fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(conf) = self.connection.clone() else {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::warning("请先连接 MongoDB，再新建查询标签").autohide(true),
                 cx,
             );
             return false;
         };
         if !can_open_editor_tab(self.tabs.len()) {
-            window.push_notification(
+            ramag_ui::push_responsive_notification(
+                window,
                 Notification::warning(format!(
                     "查询标签已达上限（{MAX_EDITOR_TABS} 个），请先关闭不需要的标签"
                 ))

@@ -2,8 +2,8 @@
 
 use gpui::{ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
-    Disableable as _, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _,
-    clipboard::Clipboard, h_flex, v_flex,
+    Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, clipboard::Clipboard,
+    h_flex, v_flex,
 };
 use ramag_domain::entities::{MAX_REDIS_COLLECTION_BYTES, RedisValue};
 
@@ -152,7 +152,11 @@ pub(super) fn render_header(
                         .into()
                 })
                 .on_copied(|_, window, cx| {
-                    window.push_notification(ramag_ui::copy_success_notification(), cx);
+                    ramag_ui::push_responsive_notification(
+                        window,
+                        ramag_ui::copy_success_notification(),
+                        cx,
+                    );
                 }),
         );
 

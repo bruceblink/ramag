@@ -18,9 +18,7 @@ use gpui::{
     ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled, UniformListScrollHandle,
     Window, div, prelude::*, px,
 };
-use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _, notification::Notification, v_flex,
-};
+use gpui_component::{ActiveTheme, Sizable as _, notification::Notification, v_flex};
 use ramag_app::RedisService;
 use ramag_domain::entities::{ConnectionConfig, MAX_REDIS_COLLECTION_ITEMS, RedisValue};
 use ramag_ui::AxisScrollGesture;
@@ -213,7 +211,7 @@ impl KeyDetailPanel {
 impl Render for KeyDetailPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;

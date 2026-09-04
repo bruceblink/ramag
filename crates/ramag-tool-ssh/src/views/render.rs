@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _, WindowExt as _, button::ButtonVariants as _, h_flex,
+    ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex,
     notification::Notification, v_flex,
 };
 
@@ -161,7 +161,7 @@ impl Render for SshView {
             } else {
                 Notification::success(notice.message)
             };
-            window.push_notification(notification, cx);
+            ramag_ui::push_responsive_notification(window, notification, cx);
         }
         let body = match self.view_mode {
             ViewMode::Manager => self.render_manager(window, cx).into_any_element(),

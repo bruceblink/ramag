@@ -1,5 +1,5 @@
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*};
-use gpui_component::{ActiveTheme, WindowExt as _, notification::Notification, v_flex};
+use gpui_component::{ActiveTheme, notification::Notification, v_flex};
 
 use super::model::ObjectStorageView;
 
@@ -11,7 +11,7 @@ impl Render for ObjectStorageView {
             } else {
                 Notification::success(message)
             };
-            window.push_notification(notification, cx);
+            ramag_ui::push_responsive_notification(window, notification, cx);
         }
         let body = if self.management_visible {
             self.render_accounts(window, cx).into_any_element()

@@ -56,7 +56,7 @@ fn render_page_size_selector(current: usize, panel: Entity<ResultPanel>) -> impl
 impl Render for ResultPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         if std::mem::take(&mut self.pending_close_dialog) {
             window.close_dialog(cx);

@@ -13,7 +13,7 @@ use gpui::{
     Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    WindowExt as _, h_flex,
+    h_flex,
     input::{InputEvent, InputState},
     notification::Notification,
 };
@@ -402,7 +402,7 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_update_state();
         if let Some(notification) = self.pending_notification.take() {
-            window.push_notification(notification, cx);
+            crate::push_responsive_notification(window, notification, cx);
         }
         let compact = settings_is_compact(window);
         let navigation = self.render_navigation(window, cx).into_any_element();

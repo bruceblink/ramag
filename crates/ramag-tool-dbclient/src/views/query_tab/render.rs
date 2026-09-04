@@ -5,7 +5,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::ButtonVariants as _,
     h_flex,
     input::{Input, InputState},
@@ -30,7 +30,7 @@ use crate::views::result_panel::{MAX_INSERT_COLUMNS, ResultState};
 impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;
@@ -418,7 +418,8 @@ impl Render for QueryTab {
                                     let _ = cx.update_window(handle, |_, window, app| match cols {
                                         Ok(cols) => {
                                             if cols.len() > MAX_INSERT_COLUMNS {
-                                                window.push_notification(
+                                                ramag_ui::push_responsive_notification(
+                                                    window,
                                                     Notification::warning(format!(
                                                         "该表有 {} 列，超过行内新增的 {} 列上限；请使用 INSERT SQL",
                                                         cols.len(),
@@ -462,7 +463,8 @@ impl Render for QueryTab {
                                             }
                                         }
                                         Err(e) => {
-                                            window.push_notification(
+                                            ramag_ui::push_responsive_notification(
+                                                window,
                                                 Notification::error(format!("拉取表结构失败：{e}"))
                                                     .autohide(true),
                                                 app,

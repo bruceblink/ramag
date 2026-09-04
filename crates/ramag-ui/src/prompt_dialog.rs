@@ -314,7 +314,8 @@ fn open_prompt_impl(
     cx: &mut App,
 ) {
     if max_bytes == 0 || initial.len() > max_bytes {
-        window.push_notification(
+        crate::push_responsive_notification(
+            window,
             Notification::error(format!(
                 "输入内容超过 {max_bytes} bytes 上限，无法打开编辑对话框"
             )),

@@ -57,7 +57,8 @@ impl RedisSessionPanel {
                         let new_key = key.clone();
                         window.close_dialog(cx);
                         if let Some(warning) = ttl_warning {
-                            window.push_notification(
+                            ramag_ui::push_responsive_notification(
+                                window,
                                 Notification::warning(warning.clone())
                                     .title("Key 已创建，但 TTL 未按预期设置"),
                                 cx,

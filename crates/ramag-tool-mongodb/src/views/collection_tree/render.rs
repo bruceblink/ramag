@@ -31,8 +31,7 @@ pub(super) fn prospective_collection_bytes(
 impl Render for CollectionTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
-            use gpui_component::WindowExt as _;
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
         let theme = cx.theme();
         let muted_fg = theme.muted_foreground;

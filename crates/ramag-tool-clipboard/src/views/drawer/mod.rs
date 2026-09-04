@@ -9,7 +9,7 @@ use gpui::{
     ScrollStrategy, Styled, Subscription, Window, div, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme, Sizable as _, VirtualListScrollHandle, WindowExt as _, h_flex, h_virtual_list,
+    ActiveTheme, Sizable as _, VirtualListScrollHandle, h_flex, h_virtual_list,
     input::{Input, InputEvent, InputState},
     notification::Notification,
     v_flex,
@@ -394,7 +394,7 @@ impl ClipboardDrawer {
 impl Render for ClipboardDrawer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(n) = self.pending_notification.take() {
-            window.push_notification(n, cx);
+            ramag_ui::push_responsive_notification(window, n, cx);
         }
 
         // 先复制主题颜色，释放主题借用。
