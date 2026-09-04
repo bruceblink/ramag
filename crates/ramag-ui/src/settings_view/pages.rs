@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 
-use super::{SettingsPage, SettingsView};
+use super::{SETTINGS_COMPACT_NAV_ITEM_WIDTH, SettingsPage, SettingsView, settings_is_compact};
 
 impl SettingsPage {
     fn icon(self) -> Icon {
@@ -23,26 +23,21 @@ impl SettingsPage {
 }
 
 impl SettingsView {
-    pub(super) fn render_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_navigation(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let compact = settings_is_compact(window);
         let theme = cx.theme();
-        let mut navigation = v_flex()
-            .w(px(220.0))
-            .h_full()
-            .flex_none()
-            .p(px(16.0))
-            .gap(px(4.0))
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .px(px(10.0))
-                    .pt(px(6.0))
-                    .pb(px(14.0))
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("设置"),
-            );
+        let style = SettingsNavigationStyle {
+            active: theme.list_active,
+            foreground: theme.foreground,
+            muted_foreground: theme.muted_foreground,
+            hover: theme.list_hover,
+            accent: theme.accent,
+        };
+        let mut children = Vec::new();
         let update_available =
             cx.read_global::<crate::activity_bar::UpdateIndicatorGlobal, _>(|state, _| {
                 state.available
@@ -53,29 +48,38 @@ impl SettingsView {
             .filter(|&&page| page != SettingsPage::Clipboard || self.clipboard_service.is_some())
         {
             let selected = self.selected_page == page;
-            navigation = navigation.child(settings_navigation_item(
-                page,
-                selected,
-                update_available && page == SettingsPage::Update,
-                cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    if this.selected_page != page {
-                        if this
-                            .selected_page
-                            .clears_database_test_when_switching_to(page)
-                        {
-                            this.clear_database_converter_test(window, cx);
+            children.push(
+                settings_navigation_item(
+                    page,
+                    selected,
+                    update_available && page == SettingsPage::Update,
+                    compact,
+                    style,
+                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        if this.selected_page != page {
+                            if this
+                                .selected_page
+                                .clears_database_test_when_switching_to(page)
+                            {
+                                this.clear_database_converter_test(window, cx);
+                            }
+                            this.selected_page = page;
+                            cx.notify();
                         }
-                        this.selected_page = page;
-                        cx.notify();
-                    }
-                }),
-                cx,
-            ));
+                    }),
+                )
+                .into_any_element(),
+            );
         }
-        navigation
+        settings_navigation_shell(compact, theme.sidebar, theme.border, children)
     }
 
-    pub(super) fn render_selected_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_selected_page(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let compact = settings_is_compact(window);
         let page = self.selected_page;
         let content = match page {
             SettingsPage::System => self.render_system_page(cx),
@@ -96,8 +100,8 @@ impl SettingsView {
                     .w_full()
                     .max_w(px(820.0))
                     .mx_auto()
-                    .p(px(28.0))
-                    .gap(px(24.0))
+                    .p(px(if compact { 16.0 } else { 28.0 }))
+                    .gap(px(if compact { 16.0 } else { 24.0 }))
                     .child(
                         v_flex()
                             .gap(px(6.0))
@@ -120,30 +124,93 @@ impl SettingsView {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SettingsNavigationStyle {
+    active: gpui::Hsla,
+    foreground: gpui::Hsla,
+    muted_foreground: gpui::Hsla,
+    hover: gpui::Hsla,
+    accent: gpui::Hsla,
+}
+
+fn settings_navigation_shell(
+    compact: bool,
+    sidebar: gpui::Hsla,
+    border: gpui::Hsla,
+    children: Vec<AnyElement>,
+) -> impl IntoElement {
+    let title = div()
+        .id("settings-navigation-title")
+        .debug_selector(|| "settings-navigation-title".into())
+        .when(compact, |title| title.w(px(56.0)).flex_none())
+        .when(!compact, |title| {
+            title.px(px(10.0)).pt(px(6.0)).pb(px(14.0))
+        })
+        .text_lg()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child("设置");
+    if compact {
+        h_flex()
+            .id("settings-navigation")
+            .debug_selector(|| "settings-navigation".into())
+            .w_full()
+            .h(px(66.0))
+            .flex_none()
+            .items_start()
+            .gap(px(4.0))
+            .overflow_x_scroll()
+            .px(px(8.0))
+            .py(px(8.0))
+            .bg(sidebar)
+            .border_b_1()
+            .border_color(border)
+            .child(title)
+            .children(children)
+    } else {
+        v_flex()
+            .id("settings-navigation")
+            .debug_selector(|| "settings-navigation".into())
+            .w(px(220.0))
+            .h_full()
+            .flex_none()
+            .p(px(16.0))
+            .gap(px(4.0))
+            .bg(sidebar)
+            .border_r_1()
+            .border_color(border)
+            .child(title)
+            .children(children)
+    }
+}
+
 fn settings_navigation_item(
     page: SettingsPage,
     selected: bool,
     show_update_badge: bool,
+    compact: bool,
+    style: SettingsNavigationStyle,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-    cx: &Context<SettingsView>,
 ) -> impl IntoElement {
-    let theme = cx.theme();
+    let debug_selector = format!("settings-page-{}", page.id());
     let background = if selected {
-        theme.list_active
+        style.active
     } else {
         hsla(0.0, 0.0, 0.0, 0.0)
     };
     let foreground = if selected {
-        theme.foreground
+        style.foreground
     } else {
-        theme.muted_foreground
+        style.muted_foreground
     };
-    let hover = theme.list_hover;
 
     h_flex()
         .id(SharedString::from(format!("settings-page-{}", page.id())))
+        .debug_selector(move || debug_selector.clone())
         .w_full()
         .h(px(38.0))
+        .when(compact, |item| {
+            item.w(px(SETTINGS_COMPACT_NAV_ITEM_WIDTH)).flex_none()
+        })
         .px(px(10.0))
         .gap(px(9.0))
         .items_center()
@@ -151,7 +218,7 @@ fn settings_navigation_item(
         .bg(background)
         .text_color(foreground)
         .cursor_pointer()
-        .hover(move |item| item.bg(hover))
+        .hover(move |item| item.bg(style.hover))
         .on_click(on_click)
         .child(page.icon().small())
         .child(div().text_sm().child(page.title()))
@@ -161,7 +228,7 @@ fn settings_navigation_item(
                     .ml_auto()
                     .text_xs()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.accent)
+                    .text_color(style.accent)
                     .child("新"),
             )
         })
@@ -193,4 +260,109 @@ fn managed_in_module_card(title: &'static str, cx: &Context<SettingsView>) -> An
                 .child("此模块暂无通用设置。"),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use gpui::{Render, TestAppContext, size};
+
+    struct SettingsNavigationTestHost;
+
+    impl Render for SettingsNavigationTestHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let compact = settings_is_compact(window);
+            let theme = cx.theme();
+            let style = SettingsNavigationStyle {
+                active: theme.list_active,
+                foreground: theme.foreground,
+                muted_foreground: theme.muted_foreground,
+                hover: theme.list_hover,
+                accent: theme.accent,
+            };
+            let children = SettingsPage::ALL
+                .into_iter()
+                .map(|page| {
+                    settings_navigation_item(
+                        page,
+                        page == SettingsPage::System,
+                        false,
+                        compact,
+                        style,
+                        |_, _, _| {},
+                    )
+                    .into_any_element()
+                })
+                .collect();
+            super::super::render_settings_layout(
+                compact,
+                settings_navigation_shell(compact, theme.sidebar, theme.border, children),
+                div()
+                    .id("settings-test-page")
+                    .debug_selector(|| "settings-test-page".into())
+                    .size_full(),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn settings_navigation_switches_to_scrollable_strip_on_compact_widths(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, visual_cx) = cx.add_window_view(|_, _| SettingsNavigationTestHost);
+
+        for (width, height) in [(360.0, 520.0), (1024.0, 520.0), (1440.0, 520.0)] {
+            visual_cx.simulate_resize(size(px(width), px(height)));
+            visual_cx.run_until_parked();
+
+            let navigation = visual_cx
+                .debug_bounds("settings-navigation")
+                .expect("设置导航应参与布局");
+            let root = visual_cx
+                .debug_bounds("settings-root")
+                .expect("设置根布局应参与布局");
+            let content = visual_cx
+                .debug_bounds("settings-content")
+                .expect("设置内容区应参与布局");
+            let title = visual_cx
+                .debug_bounds("settings-navigation-title")
+                .expect("设置导航标题应渲染");
+            let system = visual_cx
+                .debug_bounds("settings-page-system")
+                .expect("系统设置入口应渲染");
+            let database = visual_cx
+                .debug_bounds("settings-page-database")
+                .expect("数据库入口应渲染");
+            let update = visual_cx
+                .debug_bounds("settings-page-update")
+                .expect("关于入口应渲染");
+
+            assert!(navigation.origin.x >= px(0.0));
+            assert!(navigation.right() <= px(width));
+            assert!(root.origin.x >= px(0.0));
+            assert!(root.right() <= px(width));
+            assert!(root.bottom() <= px(height));
+            assert!(content.origin.x >= root.origin.x);
+            assert!(content.right() <= root.right());
+            assert!(content.bottom() <= root.bottom());
+            assert!(title.origin.x >= navigation.origin.x);
+            assert!(system.origin.x >= navigation.origin.x);
+            assert!(system.origin.y >= navigation.origin.y);
+            if width < 900.0 {
+                assert!(navigation.size.height <= px(66.0));
+                assert!(content.origin.y >= navigation.bottom());
+                assert!(system.size.width >= px(SETTINGS_COMPACT_NAV_ITEM_WIDTH));
+                assert!(database.size.width >= px(SETTINGS_COMPACT_NAV_ITEM_WIDTH));
+                assert!(system.right() <= navigation.right());
+                assert!(system.origin.x > title.origin.x);
+            } else {
+                assert!(navigation.size.width <= px(220.0));
+                assert!(content.origin.x >= navigation.right());
+                assert!(system.right() <= navigation.right());
+                assert!(update.right() <= navigation.right());
+                assert!(update.origin.y > system.origin.y);
+            }
+        }
+    }
 }

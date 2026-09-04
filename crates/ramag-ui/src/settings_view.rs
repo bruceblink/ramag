@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
-    Task, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     WindowExt as _, h_flex,
@@ -25,6 +25,38 @@ use ramag_domain::entities::{
 use tracing::error;
 
 use crate::MAX_SEARCH_INPUT_BYTES;
+
+const SETTINGS_COMPACT_BREAKPOINT: f32 = 900.0;
+const SETTINGS_COMPACT_NAV_ITEM_WIDTH: f32 = 144.0;
+
+fn settings_is_compact(window: &Window) -> bool {
+    f32::from(window.viewport_size().width) < SETTINGS_COMPACT_BREAKPOINT
+}
+
+fn render_settings_layout<N, C>(compact: bool, navigation: N, content: C) -> impl IntoElement
+where
+    N: IntoElement,
+    C: IntoElement,
+{
+    h_flex()
+        .when(compact, |root| root.flex_col())
+        .id("settings-root")
+        .debug_selector(|| "settings-root".into())
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .child(navigation)
+        .child(
+            div()
+                .id("settings-content")
+                .debug_selector(|| "settings-content".into())
+                .flex_1()
+                .when(compact, |content| content.w_full().min_h_0())
+                .when(!compact, |content| content.h_full())
+                .min_w_0()
+                .child(content),
+        )
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum SettingsPage {
@@ -372,17 +404,10 @@ impl Render for SettingsView {
         if let Some(notification) = self.pending_notification.take() {
             window.push_notification(notification, cx);
         }
-        h_flex()
-            .size_full()
-            .min_w_0()
-            .child(self.render_navigation(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .min_w_0()
-                    .child(self.render_selected_page(cx)),
-            )
+        let compact = settings_is_compact(window);
+        let navigation = self.render_navigation(window, cx).into_any_element();
+        let content = self.render_selected_page(window, cx);
+        render_settings_layout(compact, navigation, content)
     }
 }
 
