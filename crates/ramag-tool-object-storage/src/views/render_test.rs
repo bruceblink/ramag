@@ -396,6 +396,92 @@ fn object_workspace_matches_the_shared_compact_file_browser(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn object_directory_toolbar_keeps_controls_inside_supported_widths(cx: &mut TestAppContext) {
+    let (view, cx) = add_workspace_window(cx, service());
+    cx.run_until_parked();
+
+    let account = ObjectStorageAccount::new("production", CloudProvider::AliyunOss);
+    let mount = ObjectStorageMount {
+        id: ObjectStorageMountId::new(),
+        account_id: account.id.clone(),
+        bucket: "logs-bucket".into(),
+        region: "cn-hangzhou".into(),
+        endpoint: HttpsEndpoint::parse_official(
+            CloudProvider::AliyunOss,
+            "https://oss-cn-hangzhou.aliyuncs.com",
+        )
+        .expect("official endpoint should be valid"),
+        root_prefix: None,
+        created_at: None,
+        storage_class: None,
+    };
+    view.update(cx, |view, cx| {
+        view.accounts = Arc::new(vec![account.clone()]);
+        view.selected_account_id = Some(account.id.clone());
+        view.management_visible = false;
+        view.show_mounts = false;
+        view.mounts = Arc::new(vec![mount.clone()]);
+        view.selected_mount = Some(mount);
+        view.capabilities = Some(ObjectCapabilities {
+            stat: true,
+            read: true,
+            write: true,
+            delete: true,
+            list: true,
+            atomic_create: true,
+        });
+        view.loading = false;
+        view.entries = Arc::new(vec![ObjectEntry {
+            key: "readme.txt".into(),
+            display_name: "readme.txt".into(),
+            kind: ObjectEntryKind::Object,
+            operable: true,
+            size: Some(1536),
+            last_modified: None,
+            etag: None,
+            content_type: Some("text/plain".into()),
+            storage_class: None,
+        }]);
+        cx.notify();
+    });
+
+    for (width, height) in [
+        (180.0, 220.0),
+        (360.0, 320.0),
+        (1024.0, 640.0),
+        (1440.0, 800.0),
+    ] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+
+        let toolbar = cx
+            .debug_bounds("object-directory-toolbar")
+            .expect("目录工具栏应渲染");
+        let columns = cx
+            .debug_bounds("object-directory-columns")
+            .expect("目录列标题应渲染");
+        assert!(toolbar.origin.x >= px(0.0));
+        assert!(toolbar.right() <= px(width));
+        assert!(toolbar.bottom() <= px(height));
+        assert!(columns.origin.y >= toolbar.bottom());
+        let selectors = if width < 820.0 {
+            vec!["object-toggle-mounts", "object-refresh", "object-upload"]
+        } else {
+            vec!["object-refresh", "object-upload"]
+        };
+        for selector in selectors {
+            let control = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} 应渲染"));
+            assert!(control.origin.x >= toolbar.origin.x);
+            assert!(control.origin.y >= toolbar.origin.y);
+            assert!(control.right() <= toolbar.right());
+            assert!(control.bottom() <= toolbar.bottom());
+        }
+    }
+}
+
+#[gpui::test]
 fn object_detail_keeps_metadata_and_removes_content_preview(cx: &mut TestAppContext) {
     let (view, cx) = add_workspace_window(cx, service());
     cx.run_until_parked();

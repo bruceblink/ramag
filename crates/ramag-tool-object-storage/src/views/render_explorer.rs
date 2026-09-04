@@ -180,20 +180,19 @@ impl ObjectStorageView {
             .border_color(border)
             .child(self.render_object_breadcrumb(cx))
             .child(
-                h_flex()
+                ramag_ui::responsive_toolbar()
                     .id("object-directory-toolbar")
                     .debug_selector(|| "object-directory-toolbar".into())
                     .flex_none()
-                    .h(px(40.0))
-                    .items_center()
+                    .py(px(6.0))
                     .px(px(6.0))
-                    .gap(px(4.0))
                     .bg(cx.theme().secondary)
                     .border_b_1()
                     .border_color(border)
                     .when(compact, |toolbar| {
                         toolbar.child(
                             ramag_ui::clickable_button("object-toggle-mounts")
+                                .debug_selector(|| "object-toggle-mounts".into())
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Folder)
@@ -229,6 +228,7 @@ impl ObjectStorageView {
                     )
                     .child(
                         ramag_ui::clickable_button("object-refresh")
+                            .debug_selector(|| "object-refresh".into())
                             .ghost()
                             .xsmall()
                             .icon(ramag_ui::icons::refresh_cw())
@@ -241,6 +241,7 @@ impl ObjectStorageView {
                     .when(upload_supported, |toolbar| {
                         toolbar.child(
                             ramag_ui::clickable_button("object-upload")
+                                .debug_selector(|| "object-upload".into())
                                 .ghost()
                                 .xsmall()
                                 .icon(ramag_ui::icons::upload())
