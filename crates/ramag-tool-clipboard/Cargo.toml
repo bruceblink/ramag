@@ -27,3 +27,7 @@ chrono = { workspace = true }
 
 # 日志
 tracing = { workspace = true }
+
+[dev-dependencies]
+# 渲染测试：gpui test-support 提供 #[gpui::test]、TestAppContext 和 debug_bounds。
+gpui = { workspace = true, features = ["test-support"] }

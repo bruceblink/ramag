@@ -133,6 +133,8 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 
 本次继续完成 Redis Hash/ZSet/Stream 双列编辑器切片：字段和值输入框使用可收缩的最小宽度，行和添加/删除操作允许换行；`pairs_editor_wraps_fields_and_actions_inside_supported_widths` 以 Hash 编辑器两行数据覆盖 180/280/600px headless 窗口，验证字段、值、添加和删除控件均留在编辑器内，并确认最小宽度下字段和值分行；Redis 目标包 106 个测试通过，Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
 
+本次继续完成剪贴板悬浮抽屉顶部工具栏切片：改用 `responsive_toolbar`，搜索框和截断提示保留 `128px` 最小宽度并允许窄窗口分行；`drawer_topbar_wraps_search_and_limit_status_inside_narrow_window` 覆盖 180/240/600px 宽度，验证工具栏、搜索框和截断提示均留在父容器内；剪贴板目标包 19 个测试、workspace Clippy、格式、源文件大小、最终构建和 Docker Kafka 集成通过；真实 Windows 主窗口和剪贴板搜索交互已完成，`WM_HOTKEY` 弹出抽屉因 CUA `press_key` 限制仍待人工或原生输入补证。
+
 ### M6：问题收口和下一阶段评审
 
 处理 `UI-006`。核对已知问题表、专项路线、测试命令和实际证据，标明完成、待补证据和阻塞项。只有 P0/P1 问题均有结果记录后，才重新评估 Schema Registry、Kafka Connect 等大模块是否进入下一阶段。

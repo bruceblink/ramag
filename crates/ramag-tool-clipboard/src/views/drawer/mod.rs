@@ -371,24 +371,38 @@ impl ClipboardDrawer {
         }
     }
 
+    /// 渲染悬浮抽屉的搜索栏；搜索框和截断提示在窄窗口中分行且保持可见。
     fn render_topbar(&self, truncated: bool) -> impl IntoElement {
-        h_flex()
-            .w_full()
-            .flex_none()
-            .h(px(44.0))
-            .items_center()
-            .justify_center()
-            .px(px(16.0))
-            .child(
-                div()
-                    .w(px(360.0))
-                    .max_w_full()
-                    .child(Input::new(&self.search).small()),
-            )
-            .when(truncated, |bar| {
-                bar.child(div().text_xs().child(format!("仅显示前 {DRAWER_LIMIT} 条")))
-            })
+        render_topbar(&self.search, truncated)
     }
+}
+
+/// 为剪贴板悬浮抽屉提供可独立测试的顶部工具栏布局。
+fn render_topbar(search: &Entity<InputState>, truncated: bool) -> impl IntoElement {
+    ramag_ui::responsive_toolbar()
+        .debug_selector(|| "clipboard-drawer-toolbar".into())
+        .flex_none()
+        .px(px(12.0))
+        .py(px(8.0))
+        .child(
+            div()
+                .debug_selector(|| "clipboard-drawer-search".into())
+                .flex_1()
+                .min_w(px(128.0))
+                .max_w(px(360.0))
+                .child(Input::new(search).small()),
+        )
+        .when(truncated, |bar| {
+            bar.child(
+                div()
+                    .debug_selector(|| "clipboard-drawer-truncated".into())
+                    .flex_1()
+                    .min_w(px(128.0))
+                    .text_xs()
+                    .whitespace_normal()
+                    .child(format!("仅显示前 {DRAWER_LIMIT} 条")),
+            )
+        })
 }
 
 impl Render for ClipboardDrawer {
@@ -465,5 +479,78 @@ impl Render for ClipboardDrawer {
                     })
                     .when(!empty, |this| this.child(cards)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        AppContext as _, Bounds, Context, Entity, InteractiveElement as _, IntoElement,
+        ParentElement as _, Pixels, Render, Styled as _, TestAppContext, VisualTestContext, Window,
+        div, px, size,
+    };
+    use gpui_component::input::InputState;
+
+    use super::render_topbar;
+
+    struct DrawerTopbarHost {
+        search: Entity<InputState>,
+    }
+
+    impl Render for DrawerTopbarHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("clipboard-drawer-toolbar-host")
+                .debug_selector(|| "clipboard-drawer-toolbar-host".into())
+                .size_full()
+                .child(render_topbar(&self.search, true))
+        }
+    }
+
+    fn assert_inside(parent: &Bounds<Pixels>, child: &Bounds<Pixels>, label: &str) {
+        assert!(
+            child.origin.x >= parent.origin.x
+                && child.origin.y >= parent.origin.y
+                && child.right() <= parent.right()
+                && child.bottom() <= parent.bottom(),
+            "{label} 越出父容器：parent={parent:?}, child={child:?}"
+        );
+    }
+
+    /// 截断提示较长时，顶部搜索栏仍应在窄窗口内换行并保持两个子项可见。
+    #[gpui::test]
+    fn drawer_topbar_wraps_search_and_limit_status_inside_narrow_window(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let search = cx.new(|cx| ramag_ui::bounded_search_input(window, cx));
+            DrawerTopbarHost { search }
+        });
+        let cx: &mut VisualTestContext = cx;
+        for width in [180.0, 240.0, 600.0] {
+            cx.simulate_resize(size(px(width), px(180.0)));
+            cx.run_until_parked();
+
+            let host = cx.debug_bounds("clipboard-drawer-toolbar-host");
+            assert!(host.is_some(), "剪贴板抽屉工具栏宿主应渲染");
+            let toolbar = cx.debug_bounds("clipboard-drawer-toolbar");
+            assert!(toolbar.is_some(), "剪贴板抽屉工具栏应渲染");
+            let search = cx.debug_bounds("clipboard-drawer-search");
+            assert!(search.is_some(), "剪贴板搜索框应渲染");
+            let truncated = cx.debug_bounds("clipboard-drawer-truncated");
+            assert!(truncated.is_some(), "剪贴板截断提示应渲染");
+
+            if let (Some(host), Some(toolbar), Some(search), Some(truncated)) =
+                (host, toolbar, search, truncated)
+            {
+                assert_inside(&host, &toolbar, "工具栏");
+                assert_inside(&toolbar, &search, "搜索框");
+                assert_inside(&toolbar, &truncated, "截断提示");
+                assert!(search.size.width > px(0.0));
+                assert!(truncated.size.width > px(0.0));
+                if width <= 240.0 {
+                    assert!(truncated.origin.y > search.origin.y);
+                }
+            }
+        }
     }
 }
