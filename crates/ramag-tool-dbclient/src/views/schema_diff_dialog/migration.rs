@@ -74,6 +74,7 @@ impl SchemaDiffDialog {
         let database_type = match self.target_connection.driver {
             ramag_domain::entities::DriverKind::Mysql => "mysql",
             ramag_domain::entities::DriverKind::Postgres => "postgresql",
+            ramag_domain::entities::DriverKind::Sqlite => "sqlite",
             _ => "sql",
         };
         let object = format!("{}_to_{}", self.source_table, self.target_table);
@@ -161,6 +162,7 @@ impl SchemaDiffDialog {
 
         let transaction_note = match self.target_connection.driver {
             DriverKind::Postgres => "PostgreSQL 将在一个事务中执行，任一语句失败会回滚本次迁移。",
+            DriverKind::Sqlite => "SQLite 将在一个事务中执行，任一语句失败会回滚本次迁移。",
             DriverKind::Mysql => "MySQL DDL 可能隐式提交；执行失败时目标表可能已经部分变更。",
             _ => "当前数据库驱动不支持迁移 SQL 执行。",
         };
@@ -364,7 +366,7 @@ impl SchemaDiffDialog {
 /// Builds the execution query with the transaction rule supported by each SQL dialect.
 fn migration_query(driver: DriverKind, schema: &str, sql: String) -> Query {
     let query = Query::new(sql).with_schema(schema);
-    if driver == DriverKind::Postgres {
+    if matches!(driver, DriverKind::Postgres | DriverKind::Sqlite) {
         query.transactional()
     } else {
         query

@@ -96,9 +96,12 @@ async fn import_jsonl_into_table_inner(
     if config.production {
         return Err(DomainError::Forbidden(READ_ONLY_MESSAGE.into()));
     }
-    if !matches!(config.driver, DriverKind::Mysql | DriverKind::Postgres) {
+    if !matches!(
+        config.driver,
+        DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+    ) {
         return Err(DomainError::InvalidConfig(
-            ".jsonl 表级导入仅支持 MySQL / PostgreSQL 连接".into(),
+            ".jsonl 表级导入仅支持 MySQL / PostgreSQL / SQLite 连接".into(),
         ));
     }
     let column_names: Vec<String> = svc

@@ -221,7 +221,9 @@ pub(super) async fn preflight_sql(
                 postgres_raw.push(load_postgres_ddl(service, &source, &scope, mapping).await?);
             }
             DriverKind::Mysql => {}
-            DriverKind::Redis | DriverKind::Mongodb => unreachable!(),
+            DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => {
+                return Err(DomainError::InvalidConfig("SQLite 暂不支持数据同步".into()));
+            }
         }
         report_objects.push(SyncPlannedObject {
             mapping: mapping.clone(),
@@ -369,7 +371,7 @@ fn namespace_create_statement(
             "CREATE SCHEMA {};",
             DriverKind::Postgres.quote_identifier(target_namespace)
         ),
-        DriverKind::Redis | DriverKind::Mongodb => unreachable!(),
+        DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => unreachable!(),
     }
 }
 
@@ -447,7 +449,7 @@ fn reject_protected_namespace(driver: DriverKind, namespace: &str) -> Result<()>
                 || normalized.starts_with("pg_toast")
                 || normalized.starts_with("pg_temp")
         }
-        DriverKind::Redis | DriverKind::Mongodb => false,
+        DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => false,
     };
     if protected {
         return Err(DomainError::Forbidden(format!(

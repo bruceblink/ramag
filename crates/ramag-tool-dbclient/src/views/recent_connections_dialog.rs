@@ -216,6 +216,7 @@ impl ConnectionPickerPanel {
         let brand_icon = ramag_ui::icons::db_brand_icon(match connection.driver {
             DriverKind::Mysql => "mysql",
             DriverKind::Postgres => "postgres",
+            DriverKind::Sqlite => "sqlite",
             DriverKind::Redis => "redis",
             DriverKind::Mongodb => "mongodb",
         });
@@ -432,6 +433,7 @@ fn driver_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Sqlite => "SQLite",
         DriverKind::Redis => "Redis",
         DriverKind::Mongodb => "MongoDB",
     }

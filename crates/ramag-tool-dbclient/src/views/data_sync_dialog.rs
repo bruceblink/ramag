@@ -456,6 +456,9 @@ impl DataSyncDialog {
             DriverKind::Redis => {
                 return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
             }
+            DriverKind::Sqlite => {
+                return Err(DomainError::InvalidConfig("SQLite 暂不支持数据同步".into()));
+            }
         };
         Ok(DataSyncRequest {
             task_id: DataSyncTaskId::new(),

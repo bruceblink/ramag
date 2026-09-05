@@ -29,6 +29,7 @@ ramag-tool-object-storage = { workspace = true }
 ramag-tool-system = { workspace = true }
 ramag-infra-mysql = { workspace = true }
 ramag-infra-postgres = { workspace = true }
+ramag-infra-sqlite = { workspace = true }
 ramag-infra-redis = { workspace = true }
 ramag-infra-mongodb = { workspace = true }
 ramag-infra-storage = { workspace = true }

@@ -276,12 +276,13 @@ impl Value {
     }
 
     /// 转 SQL 字面量，按 driver 方言处理字符串转义 / 字节 / 时间。
-    /// - 字符串转义：MySQL 双写反斜杠；PG 默认 standard_conforming_strings，反斜杠是字面量不双写
-    /// - Bytes：MySQL `0xHEX` / PG `'\xHEX'`（bytea 输入）
+    /// - 字符串转义：MySQL 双写反斜杠；PG/SQLite 按标准 SQL 只双写单引号
+    /// - Bytes：MySQL `0xHEX` / PG `'\xHEX'` / SQLite `X'HEX'`
     /// - DateTime：亚秒精度保留（`%.6f`），避免高精度时间戳无法命中
     pub fn to_sql_literal_for(&self, driver: super::connection::DriverKind) -> String {
         use super::connection::DriverKind;
         let is_pg = matches!(driver, DriverKind::Postgres);
+        let is_mysql = matches!(driver, DriverKind::Mysql);
         match self {
             Value::Null => "NULL".to_string(),
             Value::Bool(b) => {
@@ -293,12 +294,14 @@ impl Value {
             }
             Value::Int(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::Text(s) => format!("'{}'", escape_sql_string(s, is_pg)),
+            Value::Text(s) => format!("'{}'", escape_sql_string(s, is_mysql)),
             Value::Bytes(b) => {
                 let hex = encode_hex(b);
                 if is_pg {
                     // PG bytea 输入字面量：'\xDEADBEEF'
                     format!("'\\x{hex}'")
+                } else if driver == DriverKind::Sqlite {
+                    format!("X'{hex}'")
                 } else {
                     format!("0x{hex}")
                 }
@@ -307,7 +310,7 @@ impl Value {
                 // 保留亚秒（去尾零由 %.f 语义处理），命中高精度时间列
                 format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S%.6f"))
             }
-            Value::Json(v) => format!("'{}'", escape_sql_string(&v.to_string(), is_pg)),
+            Value::Json(v) => format!("'{}'", escape_sql_string(&v.to_string(), is_mysql)),
         }
     }
 
@@ -319,21 +322,23 @@ impl Value {
     ) -> Option<usize> {
         use super::connection::DriverKind;
         let is_pg = matches!(driver, DriverKind::Postgres);
+        let is_mysql = matches!(driver, DriverKind::Mysql);
         let length = match self {
             Value::Null => 4,
             Value::Bool(true) => 4,
             Value::Bool(false) => 5,
             Value::Int(value) => value.to_string().len(),
             Value::Float(value) => value.to_string().len(),
-            Value::Text(value) => escaped_sql_literal_len(value.as_bytes(), is_pg, max_bytes)?,
-            Value::Bytes(value) => {
-                value
-                    .len()
-                    .checked_mul(2)?
-                    .checked_add(if is_pg { 4 } else { 2 })?
-            }
+            Value::Text(value) => escaped_sql_literal_len(value.as_bytes(), is_mysql, max_bytes)?,
+            Value::Bytes(value) => value.len().checked_mul(2)?.checked_add(
+                if is_pg || driver == DriverKind::Sqlite {
+                    4
+                } else {
+                    2
+                },
+            )?,
             Value::DateTime(value) => value.format("%Y-%m-%d %H:%M:%S%.6f").to_string().len() + 2,
-            Value::Json(value) => json_sql_literal_len(value, is_pg, max_bytes)?,
+            Value::Json(value) => json_sql_literal_len(value, is_mysql, max_bytes)?,
         };
         (length <= max_bytes).then_some(length)
     }

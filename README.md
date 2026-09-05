@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  MySQL · PostgreSQL · Redis · MongoDB · Git · SSH / SFTP · COS / OSS · Clipboard
+  MySQL · PostgreSQL · SQLite · Redis · MongoDB · Git · SSH / SFTP · COS / OSS · Clipboard
 </p>
 
 <p align="center">
@@ -66,7 +66,7 @@ Ramag is actively maintained. Contributions, reproducible feedback, and security
 
 | 工作台 | 解决的问题 | 核心能力 |
 |---|---|---|
-| 数据库 | 在多种数据库间查询、编辑、迁移和同步 | MySQL、PostgreSQL、Redis、MongoDB；生产只读保护；JSONL/SQL 导入导出 |
+| 数据库 | 在多种数据库间查询、编辑、迁移和同步 | MySQL、PostgreSQL、SQLite、Redis、MongoDB；生产只读保护；SQL 数据库支持 JSONL，MySQL / PostgreSQL 支持 SQL 导入导出 |
 | Git | 在不离开上下文的情况下检查和完成版本控制操作 | Diff、暂存、提交、分支、冲突处理、Rebase、Cherry-pick 与文件编辑 |
 | SSH / SFTP | 连接远程主机并安全处理远程文件 | 系统 OpenSSH、内嵌终端、SFTP、传输队列、JumpServer 导入与生产写保护 |
 | 云存储 | 面向指定 Bucket 管理对象，而非要求宽泛账号权限 | 腾讯云 COS、阿里云 OSS、上传下载、预览、收藏、传输进度与只读模式 |
@@ -126,18 +126,20 @@ Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 
 
 ### 数据库工作台
 
-从连接、结构浏览、查询，到结果编辑和完整迁移，四类数据库共用一套清晰的工作流。
+从连接、结构浏览、查询，到结果编辑和完整迁移，多类数据库共用一套清晰的工作流。
 
 ![MySQL、PostgreSQL、Redis 与 MongoDB 统一连接管理](docs/screenshots/v0.0.5/database-connections-light.png)
 
-### MySQL 与 PostgreSQL
+### MySQL、PostgreSQL 与 SQLite
 
 - Schema、表、视图、列、索引与 DDL 浏览。
 - SQL 补全、高亮、多语句执行、光标语句执行、格式化与 EXPLAIN。
 - 查询取消、结果分页、排序、筛选和单元格编辑。
-- MySQL 与 PostgreSQL 图形化表设计器：创建或修改表名、字段结构，预览 DDL 后再执行。
+- MySQL、PostgreSQL 与 SQLite 图形化表设计器：创建或修改表名、字段结构，预览 DDL 后再执行。
 - 大整数、高精度数值、JSON/JSONB、二进制、时间以及 PostgreSQL 原生类型保真展示。
-- 表级 JSONL 导入导出与 Schema / 数据库级 SQL 导入导出；主键表使用 keyset 分页，深页不会反复跳过前置数据。
+- SQL 数据库支持表级 JSONL 导出，MySQL / PostgreSQL / SQLite 支持表级 JSONL 导入；MySQL / PostgreSQL 支持 Schema / 数据库级 SQL 导入导出。主键表使用 keyset 分页，深页不会反复跳过前置数据。
+
+SQLite 以本地数据库文件为连接目标，支持 `:memory:`、相对路径和 Windows 绝对路径；连接配置不会伪造端口、认证、TLS 或 SSH 参数。SQLite 查询使用单连接池，支持显式事务、保存点、回滚、表结构元数据、外键、索引、触发器和视图读取。
 
 ![Ramag MySQL 查询编辑器与十万行结果分页](docs/screenshots/v0.0.5/database-mysql-query-light.png)
 
@@ -161,7 +163,7 @@ Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 
 
 - TLS、三档证书验证、自定义 CA 与系统 OpenSSH 隧道。
 - 连接测试与颜色标签。
-- 数据库连接配置统一在全局设置中导入或导出，覆盖 MySQL、PostgreSQL、Redis 与 MongoDB；加密文件使用独立口令。
+- 数据库连接配置统一在全局设置中导入或导出，覆盖 MySQL、PostgreSQL、SQLite、Redis 与 MongoDB；加密文件使用独立口令。
 - 连接可标记为生产环境：写查询、结果编辑和导入入口统一进入只读保护。
 - 结果搜索支持字符串 ID 与整数 ID 双向转换，内置 Base10、Base16、Base36、Base58 Bitcoin、Base58 Flickr 和自定义字符表，也可调用经过路径、超时与输出上限校验的外部转换器。
 - SQL、Redis、MongoDB 使用独立执行 runtime，某个慢查询不会直接挤占其他数据库的任务线程。
@@ -178,6 +180,7 @@ Windows 日常开发请从 Visual Studio 的 `Developer PowerShell for VS 2026` 
 ### 四引擎数据同步
 
 - 支持 MySQL、PostgreSQL、Redis 与 MongoDB 之间同类型连接的数据同步。
+- SQLite 当前支持本地文件查询与结构管理，不参与跨连接数据同步；同步入口会明确拒绝 SQLite，避免展示不可执行的选项。
 - 从真实元数据选择数据库、Schema、表或集合，执行前明确展示源、目标和覆盖范围。
 - 同步前检查目标对象与依赖关系，并对写入已有库或 Schema 的操作再次确认。
 - PostgreSQL 同步保留枚举与自定义类型依赖；Redis 保留类型与 TTL；MongoDB 保留 BSON 类型语义。

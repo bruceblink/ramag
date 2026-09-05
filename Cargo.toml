@@ -5,6 +5,7 @@ members = [
     "crates/ramag-app",
     "crates/ramag-infra-mysql",
     "crates/ramag-infra-postgres",
+    "crates/ramag-infra-sqlite",
     "crates/ramag-infra-redis",
     "crates/ramag-infra-mongodb",
     "crates/ramag-infra-sql-shared",
@@ -44,6 +45,7 @@ ramag-domain = { path = "crates/ramag-domain" }
 ramag-app = { path = "crates/ramag-app" }
 ramag-infra-mysql = { path = "crates/ramag-infra-mysql" }
 ramag-infra-postgres = { path = "crates/ramag-infra-postgres" }
+ramag-infra-sqlite = { path = "crates/ramag-infra-sqlite" }
 ramag-infra-redis = { path = "crates/ramag-infra-redis" }
 ramag-infra-mongodb = { path = "crates/ramag-infra-mongodb" }
 ramag-infra-sql-shared = { path = "crates/ramag-infra-sql-shared" }
@@ -104,6 +106,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "mysql",
+    "sqlite",
     "chrono",
     "uuid",
     "json",

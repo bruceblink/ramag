@@ -307,6 +307,7 @@ pub(super) fn dml_row_limit(driver: ramag_domain::entities::DriverKind) -> &'sta
     match driver {
         ramag_domain::entities::DriverKind::Mysql => " LIMIT 1",
         ramag_domain::entities::DriverKind::Postgres
+        | ramag_domain::entities::DriverKind::Sqlite
         | ramag_domain::entities::DriverKind::Redis
         | ramag_domain::entities::DriverKind::Mongodb => "",
     }

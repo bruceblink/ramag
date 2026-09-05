@@ -41,6 +41,9 @@ pub(super) fn append_foreign_key_drops(
                 DriverKind::Postgres => {
                     format!("ALTER TABLE {target_name} DROP CONSTRAINT {name};")
                 }
+                DriverKind::Sqlite => {
+                    return Err("SQLite 不支持原地删除或重建外键，请手工重建表".into());
+                }
                 _ => unreachable!("driver checked by build_migration_script"),
             };
             statements.push(MigrationStatement {
@@ -65,6 +68,9 @@ pub(super) fn append_foreign_key_additions(
             .find(|old| same_name(&old.name, &new.name))
             .is_none_or(|old| !foreign_key_equivalent(old, new));
         if changed {
+            if driver == DriverKind::Sqlite {
+                return Err("SQLite 不支持通过 ALTER TABLE 添加外键，请手工重建表".into());
+            }
             let sql = foreign_key_add_sql(driver, target_name, new)?;
             statements.push(MigrationStatement {
                 sql,
@@ -190,6 +196,13 @@ fn index_drop_sql(
             let schema = identifier(driver, target_schema, "目标 Schema")?;
             format!("DROP INDEX {schema}.{name};")
         }
+        DriverKind::Sqlite if index.primary => {
+            return Err("SQLite 不支持迁移主键索引，请手工重建表".into());
+        }
+        DriverKind::Sqlite => {
+            let schema = identifier(driver, target_schema, "目标 Schema")?;
+            format!("DROP INDEX {schema}.{name};")
+        }
         _ => unreachable!("driver checked by build_migration_script"),
     })
 }
@@ -212,6 +225,13 @@ fn index_add_sql(driver: DriverKind, target_name: &str, index: &Index) -> Result
             format!("CREATE UNIQUE INDEX {name} ON {target_name} ({columns});")
         }
         DriverKind::Postgres => format!("CREATE INDEX {name} ON {target_name} ({columns});"),
+        DriverKind::Sqlite if index.primary => {
+            return Err("SQLite 不支持迁移主键索引，请手工重建表".into());
+        }
+        DriverKind::Sqlite if index.unique => {
+            format!("CREATE UNIQUE INDEX {name} ON {target_name} ({columns});")
+        }
+        DriverKind::Sqlite => format!("CREATE INDEX {name} ON {target_name} ({columns});"),
         _ => unreachable!("driver checked by build_migration_script"),
     })
 }
@@ -226,10 +246,18 @@ fn index_columns(driver: DriverKind, index: &Index) -> Result<String, String> {
         .map(|column| {
             if is_simple_identifier(column) {
                 identifier(driver, column, "索引字段")
-            } else if driver == DriverKind::Postgres {
+            } else if matches!(driver, DriverKind::Postgres) {
                 fragment(column, "索引表达式")
             } else {
-                Err(format!("MySQL 索引字段 {} 不是可安全生成的标识符", column))
+                Err(format!(
+                    "{} 索引字段 {} 不是可安全生成的标识符",
+                    match driver {
+                        DriverKind::Mysql => "MySQL",
+                        DriverKind::Sqlite => "SQLite",
+                        _ => "当前数据库",
+                    },
+                    column
+                ))
             }
         })
         .collect::<Result<Vec<_>, _>>()

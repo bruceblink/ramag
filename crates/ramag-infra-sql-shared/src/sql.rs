@@ -28,6 +28,14 @@ impl SplitOptions {
             mysql_compound_blocks: false,
         }
     }
+
+    pub fn sqlite() -> Self {
+        Self {
+            dollar_quoted: false,
+            // SQLite trigger bodies use BEGIN ... END blocks too.
+            mysql_compound_blocks: true,
+        }
+    }
 }
 
 #[cfg(test)]

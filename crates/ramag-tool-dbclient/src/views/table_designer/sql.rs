@@ -46,12 +46,19 @@ impl TableDesigner {
                 comment: &comment,
             };
             match self.driver {
-                DriverKind::Mysql => self.mysql_field_sql(field, &sql, &mut mysql_alter_clauses),
+                DriverKind::Mysql => {
+                    self.mysql_field_sql(field, &sql, &mut mysql_alter_clauses);
+                    Ok(())
+                }
                 DriverKind::Postgres => {
-                    self.postgres_field_sql(field, &qualified, &sql, &mut statements)
+                    self.postgres_field_sql(field, &qualified, &sql, &mut statements);
+                    Ok(())
+                }
+                DriverKind::Sqlite => {
+                    self.sqlite_field_sql(field, &qualified, &sql, &mut statements)
                 }
                 _ => return Err("当前数据库不支持表结构设计器".into()),
-            }
+            }?;
         }
         if !mysql_alter_clauses.is_empty() {
             statements.push(format!(
@@ -78,6 +85,7 @@ impl TableDesigner {
         match self.driver {
             DriverKind::Mysql => Ok(format!("RENAME TABLE {schema}.{old} TO {schema}.{new};")),
             DriverKind::Postgres => Ok(format!("ALTER TABLE {schema}.{old} RENAME TO {new};")),
+            DriverKind::Sqlite => Ok(format!("ALTER TABLE {schema}.{old} RENAME TO {new};")),
             _ => Err("当前数据库不支持表结构设计器".into()),
         }
     }
@@ -180,6 +188,56 @@ impl TableDesigner {
                 }
             ));
         }
+    }
+
+    /// 生成 SQLite 能直接执行的字段变更；类型和约束变化需要重建表，不能伪装成 ALTER COLUMN。
+    fn sqlite_field_sql(
+        &self,
+        field: &FieldDraft,
+        table: &str,
+        sql: &FieldSql<'_>,
+        out: &mut Vec<String>,
+    ) -> Result<(), String> {
+        if !sql.comment.is_empty() {
+            return Err("SQLite 不支持字段注释，请在 DDL 或查询编辑器中维护注释信息".into());
+        }
+        let qname = self.driver.quote_identifier(sql.name);
+        let null = if field.nullable { " NULL" } else { " NOT NULL" };
+        let default = if sql.default_value.is_empty() {
+            String::new()
+        } else {
+            format!(" DEFAULT {}", sql.default_value)
+        };
+        let Some(original) = &field.original else {
+            out.push(format!(
+                "ALTER TABLE {table} ADD COLUMN {qname} {}{null}{default};",
+                sql.data_type
+            ));
+            return Ok(());
+        };
+
+        let definition_changed = original.data_type.raw_type != sql.data_type
+            || original.nullable != field.nullable
+            || original.default_value.as_deref().unwrap_or("") != sql.default_value
+            || original.comment.as_deref().unwrap_or("") != sql.comment
+            || original.is_primary_key
+            || original.is_auto_increment
+            || original.generation_expression.is_some()
+            || original.generated_storage.is_some()
+            || original.identity_generation.is_some();
+        if definition_changed {
+            return Err(format!(
+                "SQLite 字段 {} 只支持重命名；类型、约束或默认值变化请使用重建表 SQL",
+                original.name
+            ));
+        }
+        if original.name != sql.name {
+            out.push(format!(
+                "ALTER TABLE {table} RENAME COLUMN {} TO {qname};",
+                self.driver.quote_identifier(&original.name)
+            ));
+        }
+        Ok(())
     }
 }
 

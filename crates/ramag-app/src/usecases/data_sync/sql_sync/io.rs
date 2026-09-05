@@ -120,7 +120,7 @@ pub(super) async fn insert_rows(
             let identity = driver.quote_identifier(&object.identity.columns[0]);
             format!(" ON DUPLICATE KEY UPDATE {identity} = {identity}")
         }
-        DriverKind::Redis | DriverKind::Mongodb => unreachable!(),
+        DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => unreachable!(),
     };
     let mut statement = prefix.clone();
     let mut buffered = 0usize;

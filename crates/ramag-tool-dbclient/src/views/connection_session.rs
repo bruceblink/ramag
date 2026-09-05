@@ -293,6 +293,7 @@ impl ConnectionSession {
         match self.config.driver {
             DriverKind::Mysql => "MySQL",
             DriverKind::Postgres => "PostgreSQL",
+            DriverKind::Sqlite => "SQLite",
             DriverKind::Redis => "Redis",
             DriverKind::Mongodb => "MongoDB",
         }

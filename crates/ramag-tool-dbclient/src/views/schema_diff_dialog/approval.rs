@@ -393,6 +393,7 @@ fn driver_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Sqlite => "SQLite",
         DriverKind::Redis => "Redis",
         DriverKind::Mongodb => "MongoDB",
     }

@@ -12,8 +12,8 @@ use gpui_component::{
 use ramag_app::{ConnectionService, MongoService, RedisService};
 use ramag_domain::entities::{
     ConnectionConfig, ConnectionId, DriverKind, MAX_CONNECTION_ENVIRONMENT_BYTES,
-    MAX_CONNECTION_HOST_BYTES, MAX_CONNECTION_IDENTIFIER_BYTES, MAX_CONNECTION_NAME_BYTES,
-    MAX_CONNECTION_PASSWORD_BYTES, MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
+    MAX_CONNECTION_IDENTIFIER_BYTES, MAX_CONNECTION_NAME_BYTES, MAX_CONNECTION_PASSWORD_BYTES,
+    MAX_CONNECTION_PATH_BYTES, MAX_CONNECTION_SSH_TARGET_BYTES,
 };
 
 #[derive(Debug, Clone)]
@@ -41,6 +41,7 @@ pub enum FormEvent {
 const DRIVERS: &[(&str, &str, bool)] = &[
     ("mysql", "MySQL", true),
     ("postgres", "PostgreSQL", true),
+    ("sqlite", "SQLite", true),
     ("redis", "Redis", true),
     ("mongodb", "MongoDB", true),
 ];
@@ -217,13 +218,13 @@ impl ConnectionFormPanel {
             uri::connection_uri_without_password(&p)
         };
         let remark = p.remark.clone();
-        let port_text = if is_create {
+        let port_text = if is_create || p.driver == DriverKind::Sqlite {
             String::new()
         } else {
             p.port.to_string()
         };
         let name_placeholder = if p.host.is_empty() {
-            defaults::DEFAULT_HOST.to_string()
+            defaults::host_placeholder(driver_id).to_string()
         } else {
             p.host.clone()
         };
@@ -234,8 +235,8 @@ impl ConnectionFormPanel {
                 .default_value(p.name)
         });
         let host = cx.new(|cx| {
-            bounded_input(MAX_CONNECTION_HOST_BYTES, window, cx)
-                .placeholder(defaults::DEFAULT_HOST)
+            bounded_input(MAX_CONNECTION_PATH_BYTES, window, cx)
+                .placeholder(defaults::host_placeholder(driver_id))
                 .default_value(p.host)
         });
         let port = cx.new(|cx| {
@@ -505,6 +506,7 @@ fn driver_kind_to_id(kind: DriverKind) -> &'static str {
     match kind {
         DriverKind::Mysql => "mysql",
         DriverKind::Postgres => "postgres",
+        DriverKind::Sqlite => "sqlite",
         DriverKind::Redis => "redis",
         DriverKind::Mongodb => "mongodb",
     }
@@ -521,6 +523,7 @@ fn id_to_driver_kind(id: &str) -> Option<DriverKind> {
     match id {
         "mysql" => Some(DriverKind::Mysql),
         "postgres" => Some(DriverKind::Postgres),
+        "sqlite" => Some(DriverKind::Sqlite),
         "redis" => Some(DriverKind::Redis),
         "mongodb" => Some(DriverKind::Mongodb),
         _ => None,

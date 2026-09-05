@@ -124,7 +124,7 @@ impl QueryTab {
         };
         if !matches!(
             source_connection.driver,
-            DriverKind::Mysql | DriverKind::Postgres
+            DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
         ) {
             return Err("当前数据库暂不支持 SQL 连接对比".into());
         }

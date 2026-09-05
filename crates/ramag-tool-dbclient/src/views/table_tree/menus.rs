@@ -12,6 +12,7 @@ pub(super) fn table_context_menu(
     entity: Entity<TableTreePanel>,
     schema: String,
     table: String,
+    driver: DriverKind,
     is_view: bool,
     is_favorite: bool,
 ) -> PopupMenu {
@@ -58,12 +59,16 @@ pub(super) fn table_context_menu(
             });
         }))
     } else {
-        let (export_schema, export_table, export_entity) =
-            (schema.clone(), table.clone(), entity.clone());
-        let menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
-            let (schema, table) = (export_schema.clone(), export_table.clone());
-            export_entity.update(app, |this, cx| this.export_table_to_file(schema, table, cx));
-        }));
+        let menu = if driver == DriverKind::Sqlite {
+            menu
+        } else {
+            let (export_schema, export_table, export_entity) =
+                (schema.clone(), table.clone(), entity.clone());
+            menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
+                let (schema, table) = (export_schema.clone(), export_table.clone());
+                export_entity.update(app, |this, cx| this.export_table_to_file(schema, table, cx));
+            }))
+        };
         let (modify_schema, modify_table, modify_entity) =
             (schema.clone(), table.clone(), entity.clone());
         let menu = menu.item(ramag_ui::menu_item("修改表").on_click(move |_, _, app| {
@@ -316,35 +321,39 @@ pub(super) fn schema_context_menu(
     schema: String,
     driver: DriverKind,
 ) -> PopupMenu {
-    let (schema_for_export, entity_for_export) = (schema.clone(), entity.clone());
-    let menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
-        let (schema, entity) = (schema_for_export.clone(), entity_for_export.clone());
-        entity.update(app, |this, cx| this.export_schema_to_file(schema, cx));
-    }));
+    let menu = if driver == DriverKind::Sqlite {
+        menu
+    } else {
+        let (schema_for_export, entity_for_export) = (schema.clone(), entity.clone());
+        let menu = menu.item(ramag_ui::menu_item("导出").on_click(move |_, _, app| {
+            let (schema, entity) = (schema_for_export.clone(), entity_for_export.clone());
+            entity.update(app, |this, cx| this.export_schema_to_file(schema, cx));
+        }));
 
-    let (schema_for_import, entity_for_import) = (schema.clone(), entity.clone());
-    let menu = menu.item(
-        ramag_ui::menu_item("导入库").on_click(move |_, window, app| {
-            let (schema, entity) = (schema_for_import.clone(), entity_for_import.clone());
-            ramag_ui::open_import_options_dialog(
-                "导入库",
-                format!("选择 SQL 文件导入 {schema}。Ramag 导出保留原库；其他 SQL 导入当前库。"),
-                true,
-                ("SQL", &["sql"]),
-                move |policy, files, _, app| {
-                    entity.update(app, |this, cx| {
-                        this.import_schema_from_files(schema, policy, files, cx);
-                    });
-                },
-                window,
-                app,
-            );
-        }),
-    );
+        let (schema_for_import, entity_for_import) = (schema.clone(), entity.clone());
+        let menu = menu.item(
+            ramag_ui::menu_item("导入库").on_click(move |_, window, app| {
+                let (schema, entity) = (schema_for_import.clone(), entity_for_import.clone());
+                ramag_ui::open_import_options_dialog(
+                    "导入库",
+                    format!(
+                        "选择 SQL 文件导入 {schema}。Ramag 导出保留原库；其他 SQL 导入当前库。"
+                    ),
+                    true,
+                    ("SQL", &["sql"]),
+                    move |policy, files, _, app| {
+                        entity.update(app, |this, cx| {
+                            this.import_schema_from_files(schema, policy, files, cx);
+                        });
+                    },
+                    window,
+                    app,
+                );
+            }),
+        );
 
-    let (schema_for_tables, entity_for_tables) = (schema.clone(), entity.clone());
-    let menu = menu
-        .item(
+        let (schema_for_tables, entity_for_tables) = (schema.clone(), entity.clone());
+        menu.item(
             ramag_ui::menu_item("导入表").on_click(move |_, window, app| {
                 let (schema, entity) = (schema_for_tables.clone(), entity_for_tables.clone());
                 ramag_ui::open_import_options_dialog(
@@ -362,7 +371,8 @@ pub(super) fn schema_context_menu(
                 );
             }),
         )
-        .separator();
+    }
+    .separator();
 
     let (schema_for_diagram, entity_for_diagram) = (schema.clone(), entity.clone());
     let menu = menu.item(
@@ -393,6 +403,11 @@ pub(super) fn schema_context_menu(
     } else {
         menu
     };
+
+    // SQLite 的 main / attached database 是文件内 schema，不能按数据库服务端 schema 删除。
+    if driver == DriverKind::Sqlite {
+        return menu;
+    }
 
     let (title, description) = if driver == DriverKind::Postgres {
         (

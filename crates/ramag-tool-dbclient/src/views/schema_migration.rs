@@ -6,6 +6,9 @@ use super::schema_diff::TableMetadata;
 
 mod generator;
 
+#[cfg(test)]
+mod sqlite_tests;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MigrationScript {
     pub(crate) sql: String,
@@ -24,7 +27,10 @@ pub(crate) fn build_migration_script(
     source: &TableMetadata,
     target: &TableMetadata,
 ) -> Result<MigrationScript, String> {
-    if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) {
+    if !matches!(
+        driver,
+        DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+    ) {
         return Err("当前数据库不支持生成表结构迁移 SQL".into());
     }
     let source_name = generator::qualified_name(driver, source_schema, source_table)?;

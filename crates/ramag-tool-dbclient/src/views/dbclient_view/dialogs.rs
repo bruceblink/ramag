@@ -18,11 +18,13 @@ impl DbClientView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if target.driver == DriverKind::Redis {
+        if matches!(target.driver, DriverKind::Redis | DriverKind::Sqlite) {
             self.pending_notification = Some(
-                gpui_component::notification::Notification::warning(
-                    "Redis 是缓存数据库，不提供数据同步",
-                )
+                gpui_component::notification::Notification::warning(match target.driver {
+                    DriverKind::Redis => "Redis 是缓存数据库，不提供数据同步",
+                    DriverKind::Sqlite => "SQLite 暂不支持数据同步",
+                    _ => "当前数据库类型不提供数据同步",
+                })
                 .autohide(true),
             );
             cx.notify();

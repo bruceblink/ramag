@@ -333,6 +333,7 @@ fn scope_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "Database",
         DriverKind::Postgres => "Schema",
+        DriverKind::Sqlite => "不支持",
         DriverKind::Mongodb => "Database",
         DriverKind::Redis => "不支持",
     }

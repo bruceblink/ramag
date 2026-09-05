@@ -63,11 +63,16 @@ impl Pager {
 
 /// 仅允许单条、只读且未显式分页的 SELECT/WITH 自动分页。
 pub(super) fn paging_base_sql(sql: &str, driver: DriverKind) -> Option<String> {
-    if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) || sql_has_no_limit_marker(sql) {
+    if !matches!(
+        driver,
+        DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+    ) || sql_has_no_limit_marker(sql)
+    {
         return None;
     }
     let options = match driver {
         DriverKind::Postgres => SplitOptions::postgres(),
+        DriverKind::Sqlite => SplitOptions::sqlite(),
         _ => SplitOptions::mysql(),
     };
     let statements = split_statements_bounded(sql, options, MAX_SQL_STATEMENTS).ok()?;
@@ -244,6 +249,7 @@ pub(super) fn filter_sql(
 fn ensure_single_filter_condition(condition: &str, driver: DriverKind) -> Result<(), String> {
     let options = match driver {
         DriverKind::Postgres => SplitOptions::postgres(),
+        DriverKind::Sqlite => SplitOptions::sqlite(),
         _ => SplitOptions::mysql(),
     };
     // 复用 SQL 切分器，只拒绝条件中的顶层第二条语句；字符串和注释中的分号合法。
@@ -259,6 +265,7 @@ fn ensure_single_filter_condition(condition: &str, driver: DriverKind) -> Result
 fn single_read_query(sql: &str, driver: DriverKind) -> Result<String, String> {
     let options = match driver {
         DriverKind::Postgres => SplitOptions::postgres(),
+        DriverKind::Sqlite => SplitOptions::sqlite(),
         _ => SplitOptions::mysql(),
     };
     let statements = split_statements_bounded(sql, options, MAX_SQL_STATEMENTS)
@@ -324,6 +331,10 @@ mod tests {
     fn plain_select_and_read_only_cte_are_eligible() {
         assert_eq!(
             paging_base_sql("SELECT * FROM t;", DriverKind::Mysql).as_deref(),
+            Some("SELECT * FROM t")
+        );
+        assert_eq!(
+            paging_base_sql("SELECT * FROM t;", DriverKind::Sqlite).as_deref(),
             Some("SELECT * FROM t")
         );
         assert!(

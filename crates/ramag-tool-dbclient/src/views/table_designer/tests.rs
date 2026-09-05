@@ -198,6 +198,10 @@ fn table_rename_uses_database_dialect(cx: &mut TestAppContext) {
             DriverKind::Postgres,
             "ALTER TABLE \"public\".\"users\" RENAME TO \"members\";",
         ),
+        (
+            DriverKind::Sqlite,
+            "ALTER TABLE \"public\".\"users\" RENAME TO \"members\";",
+        ),
     ] {
         let (designer, visual_cx) = designer(driver, Vec::new(), cx);
         visual_cx.update(|window, app| {
@@ -257,6 +261,42 @@ fn mysql_add_column_uses_mysql_dialect(cx: &mut TestAppContext) {
         sql,
         "ALTER TABLE `public`.`users` ADD COLUMN `new_column` VARCHAR(255) NULL;"
     );
+}
+
+#[gpui::test]
+fn sqlite_add_column_uses_sqlite_dialect(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (designer, cx) = designer(DriverKind::Sqlite, Vec::new(), cx);
+    cx.update(|window, app| {
+        designer.update(app, |designer, cx| designer.add_field(window, cx));
+    });
+
+    let sql = cx
+        .update(|_, app| designer.read(app).change_sql(app))
+        .expect("SQLite 新增字段应生成 SQL");
+
+    assert_eq!(
+        sql,
+        "ALTER TABLE \"public\".\"users\" ADD COLUMN \"new_column\" VARCHAR(255) NULL;"
+    );
+}
+
+#[gpui::test]
+fn sqlite_rejects_in_place_type_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (designer, cx) = designer(DriverKind::Sqlite, vec![column("name", "TEXT", true)], cx);
+    cx.update(|window, app| {
+        designer.update(app, |designer, cx| {
+            designer.fields[0]
+                .data_type
+                .update(cx, |input, cx| input.set_value("INTEGER", window, cx));
+        });
+    });
+
+    let error = cx
+        .update(|_, app| designer.read(app).change_sql(app))
+        .expect_err("SQLite 类型变化必须要求重建表");
+    assert!(error.contains("SQLite 字段 name 只支持重命名"));
 }
 
 #[gpui::test]

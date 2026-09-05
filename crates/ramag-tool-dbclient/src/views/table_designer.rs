@@ -1,4 +1,4 @@
-//! MySQL / PostgreSQL 表结构编辑器。
+//! MySQL / PostgreSQL / SQLite 表结构编辑器。
 
 mod diff;
 mod fields;

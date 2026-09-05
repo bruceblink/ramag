@@ -23,6 +23,13 @@ pub fn build_ddl_query(driver: DriverKind, schema: &str, table: &str, is_view: b
                 postgres_table_ddl_sql(&s_lit, &t_lit)
             }
         }
+        DriverKind::Sqlite => {
+            let t_lit = table.replace('\'', "''");
+            let object_type = if is_view { "view" } else { "table" };
+            format!(
+                "SELECT sql AS ddl FROM {qschema}.sqlite_schema WHERE type = '{object_type}' AND name = '{t_lit}';"
+            )
+        }
         DriverKind::Redis | DriverKind::Mongodb => String::new(),
     }
 }

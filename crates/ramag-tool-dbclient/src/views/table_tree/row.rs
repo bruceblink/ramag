@@ -17,7 +17,7 @@ use gpui_component::{
 };
 #[cfg(test)]
 use ramag_domain::entities::Schema;
-use ramag_domain::entities::format_bytes;
+use ramag_domain::entities::{DriverKind, format_bytes};
 
 #[cfg(test)]
 use super::{SchemaTables, TableColumns};
@@ -281,6 +281,7 @@ impl TableTreePanel {
                 let s_for_menu = schema.clone();
                 let t_for_menu = name.clone();
                 let entity_for_menu = cx.entity().clone();
+                let driver = self.connection.as_ref().map(|c| c.driver);
 
                 let mut row = h_flex()
                     .id(row_id)
@@ -382,6 +383,7 @@ impl TableTreePanel {
                         entity_for_menu.clone(),
                         s_for_menu.clone(),
                         t_for_menu.clone(),
+                        driver.unwrap_or(DriverKind::Mysql),
                         is_view,
                         is_favorite,
                     )

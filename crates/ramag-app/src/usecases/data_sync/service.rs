@@ -234,6 +234,9 @@ impl DataSyncService {
                 DriverKind::Redis => {
                     return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
                 }
+                DriverKind::Sqlite => {
+                    return Err(DomainError::InvalidConfig("SQLite 暂不支持数据同步".into()));
+                }
             };
             scopes.sort();
             scopes.dedup();
@@ -279,6 +282,9 @@ impl DataSyncService {
                     .collect::<Vec<_>>(),
                 DriverKind::Redis => {
                     return Err(DomainError::InvalidConfig("Redis 不支持数据同步".into()));
+                }
+                DriverKind::Sqlite => {
+                    return Err(DomainError::InvalidConfig("SQLite 暂不支持数据同步".into()));
                 }
             };
             names.sort();

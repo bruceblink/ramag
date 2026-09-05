@@ -155,9 +155,9 @@ pub(super) async fn ineligible_identity_indexes(
              WHERE TABLE_SCHEMA='{namespace}' AND TABLE_NAME='{table}' \
                AND SUB_PART IS NOT NULL;"
         ),
-        DriverKind::Redis | DriverKind::Mongodb => {
+        DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => {
             return Err(DomainError::InvalidConfig(
-                "非 SQL 引擎不能检查 SQL 身份索引".into(),
+                "当前数据库类型不能检查 SQL 身份索引".into(),
             ));
         }
     };
@@ -190,9 +190,9 @@ pub(super) async fn column_collations(
              WHERE a.attrelid='\"{namespace_ident}\".\"{table_ident}\"'::regclass \
                AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum;"
         ),
-        DriverKind::Redis | DriverKind::Mongodb => {
+        DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => {
             return Err(DomainError::InvalidConfig(
-                "非 SQL 引擎不能检查列排序规则".into(),
+                "当前数据库类型不能检查列排序规则".into(),
             ));
         }
     };

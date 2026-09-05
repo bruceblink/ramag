@@ -35,6 +35,10 @@ pub(crate) fn append_column_changes(
         if column_equivalent(old, new) {
             continue;
         }
+        // SQLite exposes ordinal changes in metadata but cannot reorder columns in place.
+        if driver == DriverKind::Sqlite && column_definition_equivalent(old, new) {
+            continue;
+        }
         for sql in column_change_sql(driver, target_name, source, old, new)? {
             statements.push(MigrationStatement {
                 sql,
@@ -51,6 +55,9 @@ fn column_add_sql(
     source: &[Column],
     column: &Column,
 ) -> Result<Vec<String>, String> {
+    if driver == DriverKind::Sqlite && non_empty(column.comment.as_deref()).is_some() {
+        return Err(format!("SQLite 字段 {} 不支持迁移字段注释", column.name));
+    }
     let definition = column_definition(driver, column, true)?;
     let position = if driver == DriverKind::Mysql {
         mysql_position_clause(source, column)?
@@ -94,6 +101,31 @@ fn column_change_sql(
 
     let old_name = identifier(driver, &old.name, "字段名")?;
     let new_name = identifier(driver, &new.name, "字段名")?;
+    if driver == DriverKind::Sqlite {
+        let definition_changed = old.data_type.raw_type != new.data_type.raw_type
+            || old.nullable != new.nullable
+            || normalized_optional(old.default_value.as_deref())
+                != normalized_optional(new.default_value.as_deref())
+            || normalized_optional(old.comment.as_deref())
+                != normalized_optional(new.comment.as_deref())
+            || old.is_primary_key != new.is_primary_key
+            || old.is_auto_increment != new.is_auto_increment
+            || generated_definition_changed(old, new)
+            || old.identity_generation != new.identity_generation;
+        if definition_changed {
+            return Err(format!(
+                "SQLite 字段 {} 只支持重命名；类型、约束或默认值变化请重建表",
+                old.name
+            ));
+        }
+        return if old.name != new.name {
+            Ok(vec![format!(
+                "ALTER TABLE {target_name} RENAME COLUMN {old_name} TO {new_name};"
+            )])
+        } else {
+            Ok(Vec::new())
+        };
+    }
     if generated_definition_changed(old, new) {
         return postgres_generated_column_rebuild(target_name, old_name, new);
     }
@@ -230,6 +262,22 @@ fn column_definition(
             column.name
         ));
     }
+    if driver == DriverKind::Sqlite
+        && (column.is_primary_key
+            || column.is_auto_increment
+            || column.identity_generation.is_some())
+    {
+        return Err(format!(
+            "SQLite 新增字段 {} 不能直接声明主键或自增属性",
+            column.name
+        ));
+    }
+    if driver == DriverKind::Sqlite
+        && include_comment
+        && non_empty(column.comment.as_deref()).is_some()
+    {
+        return Err(format!("SQLite 字段 {} 不支持字段注释", column.name));
+    }
     if driver == DriverKind::Postgres
         && column.is_auto_increment
         && column.identity_generation.is_none()
@@ -261,6 +309,11 @@ fn column_definition(
                 fragment(expression, "生成列表达式")?
             )
         }
+        (DriverKind::Sqlite, Some(expression), Some(storage)) => format!(
+            " GENERATED ALWAYS AS ({}) {}",
+            fragment(expression, "生成列表达式")?,
+            generated_storage(storage)
+        ),
         _ => {
             return Err(format!(
                 "字段 {} 的生成列存储方式不受当前数据库支持",

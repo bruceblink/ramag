@@ -2,7 +2,7 @@
 
 ## 设计目标
 
-1. **可扩展**：从一开始就支持多种数据源与工具（当前 MySQL / PostgreSQL / Redis / MongoDB / Git / SSH / SFTP / COS / OSS）
+1. **可扩展**：从一开始就支持多种数据源与工具（当前 MySQL / PostgreSQL / SQLite / Redis / MongoDB / Git / SSH / SFTP / COS / OSS）
 2. **可演化**：未来加入新工具（不只是数据库）不需要重构 domain / app 层
 3. **可测试**：核心业务逻辑能脱离 GUI 单独测试
 4. **可维护**：模块边界清晰，依赖方向单一
@@ -25,6 +25,7 @@ ramag-bin                          ← 入口：依赖注入 + 启动 GPUI
   ├── ramag-ui                             ← Shell + ActivityBar + 主题
   ├── ramag-infra-mysql       impl SqlBackend
   ├── ramag-infra-postgres    impl SqlBackend
+  ├── ramag-infra-sqlite      impl SqlBackend（本地文件、单连接池）
   ├── ramag-infra-sql-shared           ← SqlBackend trait + 模板 + tokio runtime
   ├── ramag-infra-redis       impl KvDriver
   ├── ramag-infra-mongodb     impl DocDriver
@@ -254,14 +255,14 @@ features = ["rustls-tls", "bson-2", "compat-3-3-0"]
 
 **不动 domain / app**——这就是 Clean Architecture 带来的扩展性。
 
-### 加新 SQL 数据库（如 SQLite）
+### 加新 SQL 数据库
 
-1. 新建 `crates/ramag-infra-sqlite/`，实现 `ramag-infra-sql-shared::SqlBackend` trait
-2. crate 末尾写 `ramag_infra_sql_shared::impl_driver_for!(SqliteDriver);` 宏一行
-3. 在 `ramag-domain` 的 `DriverKind` 枚举加 `Sqlite` 变体
-4. 在 `ramag-bin/main.rs` 的 `build_connection_service` 把 driver 注册进 `HashMap<DriverKind, Arc<dyn Driver>>`
+1. 新建对应 `crates/ramag-infra-<driver>/`，实现 `ramag-infra-sql-shared::SqlBackend` trait
+2. crate 末尾写 `ramag_infra_sql_shared::impl_driver_for!(<Driver>Driver);` 宏一行
+3. 在 `ramag-domain` 的 `DriverKind` 枚举增加驱动变体，并补齐连接配置、URI 和值类型语义
+4. 在 `ramag-bin/src/composition.rs` 的 `build_connection_service` 把 driver 注册进 `HashMap<DriverKind, Arc<dyn Driver>>`
 
-**dbclient 视图层无需改动**——SQL 类共用 `ConnectionSession`。
+SQL 类共用 `ConnectionSession`，但本地文件型驱动仍需在连接表单中隐藏不适用的网络字段，并在数据同步等不支持的入口明确拒绝。
 
 ### 加新 KV 数据库（如 KeyDB / DragonflyDB）
 

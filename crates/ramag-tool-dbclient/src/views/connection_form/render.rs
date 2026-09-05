@@ -130,6 +130,7 @@ impl Render for ConnectionFormPanel {
             .then(|| self.render_driver_selector(cx).into_any_element());
 
         let is_redis = self.driver_id == "redis";
+        let is_sqlite = self.driver_id == "sqlite";
         let database_label = match self.driver_id {
             "redis" => "DB（默认 0-15）",
             "postgres" => "默认库（必填）",
@@ -180,34 +181,57 @@ impl Render for ConnectionFormPanel {
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("连接信息", muted_fg))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap(px(12.0))
-                            .child(div().flex_1().min_w_0().child(field_row(
-                                "Host",
-                                Input::new(&self.host).disabled(self.saving),
-                            )))
-                            .child(div().w(px(110.0)).child(field_row(
-                                "Port",
-                                Input::new(&self.port).disabled(self.saving),
-                            ))),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap(px(12.0))
-                            .child(div().flex_1().min_w_0().child(field_row(
-                                "名称",
-                                Input::new(&self.name).disabled(self.saving),
-                            )))
-                            .child(div().flex_1().min_w_0().child(field_row(
-                                database_label,
-                                Input::new(&self.database).disabled(self.saving),
-                            ))),
-                    ),
+                    .when(is_sqlite, |this| {
+                        this.child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.0))
+                                .child(div().flex_1().min_w_0().child(field_row(
+                                    "名称",
+                                    Input::new(&self.name).disabled(self.saving),
+                                )))
+                                .child(div().flex_1().min_w_0().child(field_row(
+                                    "数据库文件",
+                                    Input::new(&self.host).disabled(self.saving),
+                                ))),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted_fg)
+                                .child("SQLite 使用本地文件，不需要端口、数据库名、认证、TLS 或 SSH。"),
+                        )
+                    })
+                    .when(!is_sqlite, |this| {
+                        this.child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.0))
+                                .child(div().flex_1().min_w_0().child(field_row(
+                                    "Host",
+                                    Input::new(&self.host).disabled(self.saving),
+                                )))
+                                .child(div().w(px(110.0)).child(field_row(
+                                    "Port",
+                                    Input::new(&self.port).disabled(self.saving),
+                                ))),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.0))
+                                .child(div().flex_1().min_w_0().child(field_row(
+                                    "名称",
+                                    Input::new(&self.name).disabled(self.saving),
+                                )))
+                                .child(div().flex_1().min_w_0().child(field_row(
+                                    database_label,
+                                    Input::new(&self.database).disabled(self.saving),
+                                ))),
+                        )
+                    }),
             )
-            .child(
+            .when(!is_sqlite, |this| this.child(
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("认证", muted_fg))
@@ -261,7 +285,7 @@ impl Render for ConnectionFormPanel {
                                 )))
                             }),
                     ),
-            )
+            ))
             .child(
                 v_flex()
                     .gap(px(12.0))
@@ -269,7 +293,7 @@ impl Render for ConnectionFormPanel {
                     .child(self.render_environment_row(cx))
                     .child(self.render_production_toggle(cx)),
             )
-            .child(
+            .when(!is_sqlite, |this| this.child(
                 v_flex()
                     .gap(px(12.0))
                     .child(section_title("传输安全", muted_fg))
@@ -379,7 +403,7 @@ impl Render for ConnectionFormPanel {
                     ),
             )
                     ),
-            )
+            ))
             .child(div().h(px(1.0)).bg(border).my(px(10.0)))
             .child(
                 h_flex()

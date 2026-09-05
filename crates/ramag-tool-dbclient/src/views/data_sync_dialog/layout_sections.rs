@@ -78,7 +78,7 @@ impl DataSyncDialog {
                     match report.engine {
                         DriverKind::Mysql | DriverKind::Mongodb => "确认同步到已有库",
                         DriverKind::Postgres => "确认同步到已有 Schema",
-                        DriverKind::Redis => "确认并开始",
+                        DriverKind::Sqlite | DriverKind::Redis => "确认并开始",
                     }
                 } else if report.requires_second_confirmation {
                     "确认同步到已有对象"
@@ -283,6 +283,7 @@ fn driver_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Sqlite => "SQLite",
         DriverKind::Redis => "Redis",
         DriverKind::Mongodb => "MongoDB",
     }

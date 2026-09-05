@@ -1,5 +1,6 @@
 mod compare;
 mod ddl;
+mod ddl_ops;
 mod load;
 mod locate;
 mod menus;
@@ -396,6 +397,7 @@ fn pick_default_schema(conn: &ConnectionConfig, schemas: &[Schema]) -> Option<St
                 first_user_schema()
             }
         }
+        DriverKind::Sqlite => first_user_schema(),
         DriverKind::Redis | DriverKind::Mongodb => None,
     }
 }

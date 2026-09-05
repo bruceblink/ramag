@@ -106,11 +106,20 @@ impl ConnectionFormPanel {
             return;
         }
         let cur_port = self.port.read(cx).value().to_string();
-        if !cur_port.is_empty() && cur_port == defaults::default_port(self.driver_id).to_string() {
+        if id == "sqlite" {
+            self.port
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        } else if self.driver_id == "sqlite"
+            || (!cur_port.is_empty()
+                && cur_port == defaults::default_port(self.driver_id).to_string())
+        {
             self.port
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
         self.driver_id = id;
+        self.host.update(cx, |state, cx| {
+            state.set_placeholder(defaults::host_placeholder(id), window, cx);
+        });
         self.port.update(cx, |state, cx| {
             state.set_placeholder(defaults::default_port(id).to_string(), window, cx);
         });
@@ -133,31 +142,46 @@ impl ConnectionFormPanel {
             id_to_driver_kind(self.driver_id).ok_or_else(|| "请选择数据库类型".to_string())?;
 
         let mut host = self.host.read(cx).value().trim().to_string();
-        if host.is_empty() {
+        if host.is_empty() && driver != DriverKind::Sqlite {
             host = defaults::DEFAULT_HOST.to_string();
+        }
+        if host.is_empty() {
+            return Err("SQLite 必须填写数据库文件路径".into());
         }
         let mut name = self.name.read(cx).value().trim().to_string();
         if name.is_empty() {
             name = host.clone();
         }
         let port_str = self.port.read(cx).value().trim().to_string();
-        let port: u16 = if port_str.is_empty() {
+        let port: u16 = if driver == DriverKind::Sqlite {
+            0
+        } else if port_str.is_empty() {
             defaults::default_port(self.driver_id)
         } else {
             port_str
                 .parse()
                 .map_err(|_| "Port 必须是 1 - 65535 的数字".to_string())?
         };
-        if port == 0 {
+        if driver != DriverKind::Sqlite && port == 0 {
             return Err("Port 必须是 1 - 65535".into());
         }
         // SQL 使用默认用户名，Redis/MongoDB 保持空。
-        let mut username = self.username.read(cx).value().trim().to_string();
-        if username.is_empty() {
+        let mut username = if driver == DriverKind::Sqlite {
+            String::new()
+        } else {
+            self.username.read(cx).value().trim().to_string()
+        };
+        if username.is_empty() && driver != DriverKind::Sqlite {
             username = defaults::default_username(self.driver_id).to_string();
         }
-        let password = self.password.read(cx).value().to_string();
-        let database = {
+        let password = if driver == DriverKind::Sqlite {
+            String::new()
+        } else {
+            self.password.read(cx).value().to_string()
+        };
+        let database = if driver == DriverKind::Sqlite {
+            None
+        } else {
             let v = self.database.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         };
@@ -182,7 +206,9 @@ impl ConnectionFormPanel {
             FormMode::Duplicate(id) => id.clone(),
         };
 
-        let ca_cert_path = if self.tls {
+        let sqlite = driver == DriverKind::Sqlite;
+        let tls = self.tls && !sqlite;
+        let ca_cert_path = if tls {
             let v = self.ca_cert_path.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         } else {
@@ -192,11 +218,15 @@ impl ConnectionFormPanel {
             let v = self.environment.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         };
-        let ssh_target = {
+        let ssh_target = if sqlite {
+            None
+        } else {
             let v = self.ssh_target.read(cx).value().trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         };
-        let ssh_port = {
+        let ssh_port = if sqlite {
+            None
+        } else {
             let v = self.ssh_port.read(cx).value().trim().to_string();
             parse_optional_ssh_port(&v)?
         };
@@ -213,7 +243,7 @@ impl ConnectionFormPanel {
             remark: self.remark.clone(),
             environment,
             production: self.production,
-            tls: self.tls,
+            tls,
             tls_verify: self.tls_verify,
             ca_cert_path,
             ssh_target,
@@ -314,13 +344,17 @@ impl ConnectionFormPanel {
         let mongo_svc = self.mongo_service.clone();
         cx.spawn(async move |this, cx| {
             let result = match config.driver {
-                DriverKind::Mysql | DriverKind::Postgres => sql_svc.test(&config).await,
+                DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite => {
+                    sql_svc.test(&config).await
+                }
                 DriverKind::Redis => redis_svc.test(&config).await,
                 DriverKind::Mongodb => mongo_svc.test(&config).await,
             };
             // 释放测试创建的池和隧道。
             match config.driver {
-                DriverKind::Mysql | DriverKind::Postgres => sql_svc.evict_pool(&config),
+                DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite => {
+                    sql_svc.evict_pool(&config)
+                }
                 DriverKind::Redis => redis_svc.evict_pool(&config.id),
                 DriverKind::Mongodb => mongo_svc.evict_pool(&config.id),
             }

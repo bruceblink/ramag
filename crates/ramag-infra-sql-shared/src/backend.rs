@@ -66,6 +66,11 @@ where
     /// 取消语句：MySQL `KILL QUERY`，PG `pg_cancel_backend()`。
     fn cancel_query_sql(&self, backend_id: u64) -> String;
 
+    /// Whether the backend can cancel a running query from another session.
+    fn supports_query_cancellation(&self) -> bool {
+        true
+    }
+
     /// 返回切换数据库语句；PG 在连接时绑定，故返回 None。
     fn use_database_sql(&self, db: &str) -> Option<String>;
 
@@ -352,6 +357,9 @@ where
     for<'c> &'c Pool<B::Db>: Executor<'c, Database = B::Db>,
     for<'c> &'c mut <B::Db as Database>::Connection: Executor<'c, Database = B::Db>,
 {
+    if !b.supports_query_cancellation() {
+        return Err(DomainError::NotImplemented("cancel_query".into()));
+    }
     let pool = get_pool(b, config).await?;
     let sql = b.cancel_query_sql(backend_id);
     sqlx::query(&sql)
@@ -411,6 +419,19 @@ where
             warnings: Vec::new(),
             truncated: false,
         });
+    }
+
+    // Auto-commit execution must not return a pooled connection with a user-opened
+    // transaction. Manual transaction commands go through the transaction controls,
+    // which keep the same connection leased until commit or rollback.
+    if statements
+        .iter()
+        .any(|statement| is_transaction_control_statement(statement))
+    {
+        return Err(DomainError::InvalidConfig(
+            "请使用事务控制按钮管理事务，不要直接执行 BEGIN、COMMIT、ROLLBACK、SAVEPOINT 或 RELEASE"
+                .into(),
+        ));
     }
 
     // 生产模式中任一写语句都会拒绝整批执行；细节仅记日志。
@@ -489,13 +510,6 @@ where
         warnings: accumulated_warnings,
         ..last_result
     })
-}
-
-fn is_transaction_control_statement(statement: &str) -> bool {
-    matches!(
-        first_keyword(statement).as_deref(),
-        Some("BEGIN" | "START" | "COMMIT" | "ROLLBACK" | "SAVEPOINT" | "RELEASE")
-    )
 }
 
 #[allow(clippy::too_many_arguments)]

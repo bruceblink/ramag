@@ -23,6 +23,9 @@ pub(super) fn index_create_sql(
         DriverKind::Postgres => Ok(format!(
             "CREATE {unique}INDEX {name} ON {table} ({columns})"
         )),
+        DriverKind::Sqlite => Ok(format!(
+            "CREATE {unique}INDEX {name} ON {table} ({columns})"
+        )),
         _ => Err("当前数据库类型不支持索引操作".into()),
     }
 }
@@ -41,6 +44,11 @@ pub(super) fn index_drop_sql(
     match driver {
         DriverKind::Mysql => Ok(format!("ALTER TABLE {table} DROP INDEX {name}")),
         DriverKind::Postgres => Ok(format!(
+            "DROP INDEX {}.{}",
+            identifier(driver, schema, "Schema")?,
+            name
+        )),
+        DriverKind::Sqlite => Ok(format!(
             "DROP INDEX {}.{}",
             identifier(driver, schema, "Schema")?,
             name
@@ -73,6 +81,10 @@ pub(super) fn trigger_create_sql(
             Ok(definition.to_string())
         }
         DriverKind::Postgres => Err("PostgreSQL 元数据未返回完整的 CREATE TRIGGER 定义".into()),
+        DriverKind::Sqlite if is_trigger_create_sql(driver, definition) => {
+            Ok(definition.to_string())
+        }
+        DriverKind::Sqlite => Err("SQLite 元数据未返回完整的 CREATE TRIGGER 定义".into()),
         _ => Err("当前数据库类型不支持触发器操作".into()),
     }
 }
@@ -93,6 +105,11 @@ pub(super) fn trigger_drop_sql(
         DriverKind::Postgres => Ok(format!(
             "DROP TRIGGER {name} ON {}",
             qualified_name(driver, schema, table)?
+        )),
+        DriverKind::Sqlite => Ok(format!(
+            "DROP TRIGGER {}.{}",
+            identifier(driver, schema, "Schema")?,
+            name
         )),
         _ => Err("当前数据库类型不支持触发器操作".into()),
     }
@@ -231,6 +248,7 @@ fn is_single_statement(
     let options = match driver {
         DriverKind::Mysql => SplitOptions::mysql(),
         DriverKind::Postgres => SplitOptions::postgres(),
+        DriverKind::Sqlite => SplitOptions::sqlite(),
         DriverKind::Redis | DriverKind::Mongodb => return false,
     };
     let Ok(statements) = split_statements_bounded(sql, options, 1) else {
@@ -315,6 +333,10 @@ mod tests {
             index_create_sql(DriverKind::Postgres, "public", "orders", &index).unwrap(),
             "CREATE INDEX \"idx_order_status\" ON \"public\".\"orders\" (\"status\")"
         );
+        assert_eq!(
+            index_create_sql(DriverKind::Sqlite, "main", "orders", &index).unwrap(),
+            "CREATE INDEX \"idx_order_status\" ON \"main\".\"orders\" (\"status\")"
+        );
     }
 
     #[test]
@@ -349,6 +371,10 @@ mod tests {
         assert_eq!(
             trigger_drop_sql(DriverKind::Postgres, "public", "orders", "orders_audit").unwrap(),
             "DROP TRIGGER \"orders_audit\" ON \"public\".\"orders\""
+        );
+        assert_eq!(
+            trigger_drop_sql(DriverKind::Sqlite, "main", "orders", "orders_audit").unwrap(),
+            "DROP TRIGGER \"main\".\"orders_audit\""
         );
     }
 

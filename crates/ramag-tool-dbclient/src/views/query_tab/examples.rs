@@ -54,6 +54,23 @@ pub(crate) fn sql_examples(driver: DriverKind, table: &str) -> Vec<(&'static str
                     .to_string(),
             ));
         }
+        DriverKind::Sqlite => {
+            out.push((
+                "建表",
+                "CREATE TABLE new_table (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL,\n  created_at TEXT DEFAULT CURRENT_TIMESTAMP\n);"
+                    .to_string(),
+            ));
+            out.push((
+                "表结构",
+                "SELECT name, type, sql\nFROM sqlite_master\nWHERE type IN ('table', 'view')\nORDER BY name;"
+                    .to_string(),
+            ));
+            out.push((
+                "各表行数",
+                "SELECT name\nFROM sqlite_master\nWHERE type = 'table'\n  AND name NOT LIKE 'sqlite_%'\nORDER BY name;"
+                    .to_string(),
+            ));
+        }
         _ => {
             out.push((
                 "建表",
@@ -94,5 +111,12 @@ mod tests {
         let pg = sql_examples(DriverKind::Postgres, "t");
         assert!(pg.iter().any(|(_, sql)| sql.contains("pg_stat_activity")));
         assert_eq!(my.len(), pg.len());
+        let sqlite = sql_examples(DriverKind::Sqlite, "t");
+        assert!(sqlite.iter().any(|(_, sql)| sql.contains("sqlite_master")));
+        assert!(
+            sqlite
+                .iter()
+                .any(|(_, sql)| sql.contains("INTEGER PRIMARY KEY"))
+        );
     }
 }

@@ -21,7 +21,7 @@ pub(super) fn protected_catalog_scope(driver: DriverKind, name: &str) -> bool {
                 || lower.starts_with("pg_temp_")
         }
         DriverKind::Mongodb => matches!(name, "admin" | "config" | "local"),
-        DriverKind::Redis => false,
+        DriverKind::Sqlite | DriverKind::Redis => false,
     }
 }
 

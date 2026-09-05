@@ -49,6 +49,7 @@ use ramag_infra_mongodb::MongoDriver;
 use ramag_infra_mysql::MysqlDriver;
 use ramag_infra_postgres::PostgresDriver;
 use ramag_infra_redis::RedisDriver;
+use ramag_infra_sqlite::SqliteDriver;
 use ramag_infra_ssh::{JumpServerHttpDriver, OpenSshDriver};
 use ramag_infra_storage::RedbStorage;
 use ramag_infra_update::GitHubUpdateDriver;

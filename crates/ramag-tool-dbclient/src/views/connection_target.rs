@@ -14,7 +14,10 @@ pub(super) fn resolve_sql_connection(
     if selector.is_empty() {
         return Err("目标连接不能为空");
     }
-    if !matches!(source.driver, DriverKind::Mysql | DriverKind::Postgres) {
+    if !matches!(
+        source.driver,
+        DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+    ) {
         return Err("当前数据库暂不支持 SQL 连接对比");
     }
 

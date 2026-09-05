@@ -339,6 +339,7 @@ fn sql_database_type(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "mysql",
         DriverKind::Postgres => "postgresql",
+        DriverKind::Sqlite => "sqlite",
         DriverKind::Redis | DriverKind::Mongodb => "sql",
     }
 }

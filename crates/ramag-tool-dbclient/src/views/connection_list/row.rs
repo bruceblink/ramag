@@ -41,6 +41,7 @@ pub(super) fn connection_row(
     let kind_label = match conn.driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Sqlite => "SQLite",
         DriverKind::Redis => "Redis",
         DriverKind::Mongodb => "MongoDB",
     };
@@ -48,6 +49,7 @@ pub(super) fn connection_row(
     let brand_icon: Option<&'static str> = ramag_ui::icons::db_brand_icon(match conn.driver {
         DriverKind::Mysql => "mysql",
         DriverKind::Postgres => "postgres",
+        DriverKind::Sqlite => "sqlite",
         DriverKind::Redis => "redis",
         DriverKind::Mongodb => "mongodb",
     });
@@ -55,6 +57,7 @@ pub(super) fn connection_row(
     let badge_fg: gpui::Hsla = match conn.driver {
         DriverKind::Mysql => accent,
         DriverKind::Postgres => gpui::hsla(265.0 / 360.0, 0.55, 0.55, 1.0),
+        DriverKind::Sqlite => gpui::hsla(200.0 / 360.0, 0.60, 0.50, 1.0),
         DriverKind::Redis => gpui::hsla(0.0, 0.65, 0.55, 1.0),
         DriverKind::Mongodb => gpui::hsla(140.0 / 360.0, 0.55, 0.45, 1.0),
     };

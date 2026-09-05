@@ -36,6 +36,7 @@ impl std::fmt::Display for ConnectionId {
 pub enum DriverKind {
     Mysql,
     Postgres,
+    Sqlite,
     Redis,
     Mongodb,
 }
@@ -43,13 +44,18 @@ pub enum DriverKind {
 impl DriverKind {
     /// Returns whether the driver can keep a connection leased for manual transactions.
     pub fn supports_transactions(self) -> bool {
-        matches!(self, DriverKind::Mysql | DriverKind::Postgres)
+        matches!(
+            self,
+            DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+        )
     }
 
     pub fn quote_identifier(&self, ident: &str) -> String {
         match self {
             DriverKind::Mysql => format!("`{}`", ident.replace('`', "``")),
-            DriverKind::Postgres => format!("\"{}\"", ident.replace('"', "\"\"")),
+            DriverKind::Postgres | DriverKind::Sqlite => {
+                format!("\"{}\"", ident.replace('"', "\"\""))
+            }
             DriverKind::Redis | DriverKind::Mongodb => ident.to_string(),
         }
     }
@@ -109,12 +115,41 @@ impl ConnectionConfig {
         validate_single_line("连接名称", &self.name, MAX_CONNECTION_NAME_BYTES)?;
 
         if self.host.trim().is_empty() {
-            return Err("主机地址不能为空".to_string());
+            return Err(if self.driver == DriverKind::Sqlite {
+                "SQLite 数据库文件路径不能为空".to_string()
+            } else {
+                "主机地址不能为空".to_string()
+            });
         }
-        validate_single_line("主机地址", &self.host, MAX_CONNECTION_HOST_BYTES)?;
+        if self.driver == DriverKind::Sqlite {
+            validate_single_line(
+                "SQLite 数据库文件路径",
+                &self.host,
+                MAX_CONNECTION_PATH_BYTES,
+            )?;
+        } else {
+            validate_single_line("主机地址", &self.host, MAX_CONNECTION_HOST_BYTES)?;
+        }
 
-        if self.port == 0 {
+        if self.driver == DriverKind::Sqlite {
+            if self.port != 0 {
+                return Err("SQLite 不使用端口，端口必须为 0".to_string());
+            }
+        } else if self.port == 0 {
             return Err("端口必须是 1 - 65535".to_string());
+        }
+        if self.driver == DriverKind::Sqlite
+            && (!self.username.is_empty()
+                || !self.password.is_empty()
+                || self.database.is_some()
+                || self.auth_source.is_some()
+                || self.tls
+                || self.tls_verify != TlsVerify::default()
+                || self.ca_cert_path.is_some()
+                || self.ssh_target.is_some()
+                || self.ssh_port.is_some())
+        {
+            return Err("SQLite 连接不支持用户名、密码、数据库名、认证库、TLS 或 SSH 参数".into());
         }
         validate_protocol_text("用户名", &self.username, MAX_CONNECTION_IDENTIFIER_BYTES)?;
         validate_protocol_text("密码", &self.password, MAX_CONNECTION_PASSWORD_BYTES)?;
@@ -167,6 +202,29 @@ impl ConnectionConfig {
             host: host.into(),
             port,
             username: user.into(),
+            password: String::new(),
+            database: None,
+            auth_source: None,
+            remark: None,
+            environment: None,
+            production: false,
+            tls: false,
+            tls_verify: TlsVerify::default(),
+            ca_cert_path: None,
+            ssh_target: None,
+            ssh_port: None,
+        }
+    }
+
+    /// Creates a local SQLite connection whose `host` field stores the database file path.
+    pub fn new_sqlite(name: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            id: ConnectionId::new(),
+            name: name.into(),
+            driver: DriverKind::Sqlite,
+            host: path.into(),
+            port: 0,
+            username: String::new(),
             password: String::new(),
             database: None,
             auth_source: None,
@@ -364,5 +422,29 @@ mod tests {
         config = valid_config();
         config.environment = Some("bad\nenv".to_string());
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn sqlite_validation_uses_file_semantics_and_rejects_network_options() {
+        let config = ConnectionConfig::new_sqlite("local", "./data/app.db");
+        assert!(config.validate().is_ok());
+
+        let mut invalid = config.clone();
+        invalid.port = 3306;
+        assert!(invalid.validate().is_err());
+
+        invalid = config.clone();
+        invalid.username = "root".into();
+        assert!(invalid.validate().is_err());
+
+        invalid = config.clone();
+        invalid.tls = true;
+        assert!(invalid.validate().is_err());
+
+        invalid = config;
+        invalid.host = "x".repeat(MAX_CONNECTION_HOST_BYTES + 1);
+        assert!(invalid.validate().is_ok());
+        invalid.host = "x".repeat(MAX_CONNECTION_PATH_BYTES + 1);
+        assert!(invalid.validate().is_err());
     }
 }

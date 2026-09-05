@@ -46,5 +46,6 @@ tempfile = "3"
 # 按库导出 / 导入端到端集成测试（tests/transfer_live.rs）：连真实四库容器
 ramag-infra-mysql = { workspace = true }
 ramag-infra-postgres = { workspace = true }
+ramag-infra-sqlite = { workspace = true }
 ramag-infra-redis = { workspace = true }
 ramag-infra-mongodb = { workspace = true }

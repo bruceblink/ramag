@@ -64,6 +64,7 @@ impl ResultPanel {
         let database_type = match self.connection.as_ref().map(|config| config.driver) {
             Some(DriverKind::Mysql) => "mysql",
             Some(DriverKind::Postgres) => "postgresql",
+            Some(DriverKind::Sqlite) => "sqlite",
             Some(DriverKind::Redis | DriverKind::Mongodb) | None => "sql",
         };
         let database = self

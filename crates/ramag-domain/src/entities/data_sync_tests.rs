@@ -49,6 +49,7 @@ fn configs(request: &DataSyncRequest) -> (ConnectionConfig, ConnectionConfig) {
             config.driver = DriverKind::Postgres;
             config
         }
+        DriverKind::Sqlite => ConnectionConfig::new_sqlite("source", ":memory:"),
         DriverKind::Redis => ConnectionConfig::new_redis("source", "127.0.0.1", 6379),
         DriverKind::Mongodb => ConnectionConfig::new_mongodb("source", "127.0.0.1", 27017),
     };

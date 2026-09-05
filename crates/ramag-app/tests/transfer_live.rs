@@ -76,6 +76,10 @@ fn sql_service() -> Arc<ConnectionService> {
         DriverKind::Postgres,
         Arc::new(ramag_infra_postgres::PostgresDriver::new()),
     );
+    drivers.insert(
+        DriverKind::Sqlite,
+        Arc::new(ramag_infra_sqlite::SqliteDriver::new()),
+    );
     Arc::new(ConnectionService::new(drivers, Arc::new(StubStorage)))
 }
 
@@ -185,3 +189,5 @@ mod jsonl_tests;
 mod performance_tests;
 #[path = "transfer_live/sql_roundtrip_tests.rs"]
 mod sql_roundtrip_tests;
+#[path = "transfer_live/sqlite_tests.rs"]
+mod sqlite_tests;

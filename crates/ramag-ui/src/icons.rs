@@ -160,6 +160,7 @@ pub fn db_brand_icon(driver_id: &str) -> Option<&'static str> {
     Some(match driver_id {
         "mysql" => "icons/db-mysql.svg",
         "postgres" => "icons/db-postgresql.svg",
+        "sqlite" => "icons/database.svg",
         "redis" => "icons/db-redis.svg",
         "mongodb" => "icons/db-mongodb.svg",
         _ => return None,

@@ -1,0 +1,23 @@
+[package]
+name = "ramag-infra-sqlite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ramag SQLite 驱动实现（本地数据库文件连接）"
+
+[lints]
+workspace = true
+
+[dependencies]
+ramag-domain = { workspace = true }
+ramag-infra-sql-shared = { workspace = true }
+ramag-infra-tunnel = { workspace = true }
+
+sqlx = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"

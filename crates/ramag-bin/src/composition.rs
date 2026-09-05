@@ -19,6 +19,7 @@ pub(super) fn build_connection_service()
     let mut drivers: HashMap<DriverKind, Arc<dyn Driver>> = HashMap::new();
     drivers.insert(DriverKind::Mysql, Arc::new(MysqlDriver::new()));
     drivers.insert(DriverKind::Postgres, Arc::new(PostgresDriver::new()));
+    drivers.insert(DriverKind::Sqlite, Arc::new(SqliteDriver::new()));
 
     let storage_impl =
         RedbStorage::open_default().map_err(|e| anyhow::anyhow!("初始化 redb 存储失败: {e}"))?;

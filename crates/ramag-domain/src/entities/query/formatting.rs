@@ -2,12 +2,12 @@ use super::*;
 
 pub(super) fn escaped_sql_literal_len(
     bytes: &[u8],
-    is_pg: bool,
+    is_mysql: bool,
     max_bytes: usize,
 ) -> Option<usize> {
     let mut length = 2usize;
     for byte in bytes {
-        let added = usize::from(*byte == b'\'' || (!is_pg && *byte == b'\\')) + 1;
+        let added = usize::from(*byte == b'\'' || (is_mysql && *byte == b'\\')) + 1;
         length = length.checked_add(added)?;
         if length > max_bytes {
             return None;
@@ -18,13 +18,13 @@ pub(super) fn escaped_sql_literal_len(
 
 pub(super) fn json_sql_literal_len(
     value: &serde_json::Value,
-    is_pg: bool,
+    is_mysql: bool,
     max_bytes: usize,
 ) -> Option<usize> {
     let mut writer = SqlLiteralLengthWriter {
         length: 2,
         limit: max_bytes,
-        is_pg,
+        is_mysql,
         exceeded: false,
     };
     let result = serde_json::to_writer(&mut writer, value);
@@ -34,14 +34,14 @@ pub(super) fn json_sql_literal_len(
 struct SqlLiteralLengthWriter {
     length: usize,
     limit: usize,
-    is_pg: bool,
+    is_mysql: bool,
     exceeded: bool,
 }
 
 impl std::io::Write for SqlLiteralLengthWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         for byte in buffer {
-            let added = usize::from(*byte == b'\'' || (!self.is_pg && *byte == b'\\')) + 1;
+            let added = usize::from(*byte == b'\'' || (self.is_mysql && *byte == b'\\')) + 1;
             let Some(next) = self.length.checked_add(added) else {
                 self.exceeded = true;
                 return Err(std::io::Error::new(
@@ -214,11 +214,11 @@ impl std::io::Write for BoundedJsonWriter {
 /// SQL 字符串字面量转义。单引号一律双写（两方言通用）；
 /// 反斜杠仅 MySQL 双写——PG 默认 standard_conforming_strings=on 时反斜杠是字面量，
 /// 双写会把 `a\b` 污染成 `a\\b`（写歪数据 / WHERE 匹配不中）
-pub(super) fn escape_sql_string(s: &str, is_pg: bool) -> String {
+pub(super) fn escape_sql_string(s: &str, is_mysql: bool) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for ch in s.chars() {
         match ch {
-            '\\' if !is_pg => out.push_str("\\\\"),
+            '\\' if is_mysql => out.push_str("\\\\"),
             '\'' => out.push_str("''"),
             _ => out.push(ch),
         }

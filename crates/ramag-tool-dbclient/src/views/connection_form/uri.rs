@@ -22,10 +22,14 @@ pub(super) struct UriParts {
 
 /// 回填 URI，不包含密码。
 pub(super) fn connection_uri_without_password(config: &ConnectionConfig) -> String {
+    if config.driver == DriverKind::Sqlite {
+        return sqlite_uri(&config.host);
+    }
     let scheme = match (config.driver, config.tls) {
         (DriverKind::Redis, true) => "rediss",
         (DriverKind::Mysql, _) => "mysql",
         (DriverKind::Postgres, _) => "postgres",
+        (DriverKind::Sqlite, _) => "sqlite",
         (DriverKind::Redis, false) => "redis",
         (DriverKind::Mongodb, _) => "mongodb",
     };
@@ -66,10 +70,38 @@ pub(super) fn connection_uri_without_password(config: &ConnectionConfig) -> Stri
     uri
 }
 
+fn sqlite_uri(path: &str) -> String {
+    if path == ":memory:" {
+        return "sqlite::memory:".to_string();
+    }
+    let path = path.replace('\\', "/");
+    let encoded = percent_encode_path(&path);
+    if path.starts_with('/') || path.starts_with("//") {
+        format!("sqlite://{encoded}")
+    } else if path.as_bytes().get(1) == Some(&b':') {
+        format!("sqlite:///{encoded}")
+    } else {
+        format!("sqlite://{encoded}")
+    }
+}
+
 fn percent_encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn percent_encode_path(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/ :".contains(&byte) && byte != b' ' {
             encoded.push(byte as char);
         } else {
             use std::fmt::Write as _;
@@ -88,6 +120,9 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
         ));
     }
     let raw = raw.trim();
+    if raw.starts_with("sqlite:") {
+        return parse_sqlite_uri(raw);
+    }
     if raw.starts_with("mongodb+srv://") {
         return Err("mongodb+srv 需 DNS SRV 解析，暂不支持；请改用标准 mongodb:// 地址".into());
     }
@@ -103,7 +138,8 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
     .iter()
     .find_map(|(driver, scheme, tls)| raw.strip_prefix(scheme).map(|rest| (*driver, rest, *tls)))
     .ok_or_else(|| {
-        "URI 须以 mysql:// / postgres:// / redis://（rediss://）/ mongodb:// 开头".to_string()
+        "URI 须以 mysql:// / postgres:// / sqlite:// / redis://（rediss://）/ mongodb:// 开头"
+            .to_string()
     })?;
     if rest.is_empty() {
         return Err("URI 缺少主机地址".into());
@@ -197,6 +233,41 @@ pub(super) fn parse_connection_uri(raw: &str) -> Result<UriParts, String> {
         database,
         auth_source,
         tls,
+    })
+}
+
+fn parse_sqlite_uri(raw: &str) -> Result<UriParts, String> {
+    let path = raw
+        .strip_prefix("sqlite://")
+        .or_else(|| raw.strip_prefix("sqlite:"))
+        .ok_or_else(|| "SQLite URI 须以 sqlite:// 开头".to_string())?;
+    if path.is_empty() {
+        return Err("SQLite URI 缺少数据库文件路径".into());
+    }
+    if path.contains('?') {
+        return Err("SQLite URI 暂不支持查询参数，请只填写数据库文件路径".into());
+    }
+    let mut path = percent_decode(path)?;
+    // sqlite:///C:/data/app.db is the portable form for a Windows drive path.
+    if path.len() >= 3
+        && path.starts_with('/')
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+    {
+        path.remove(0);
+    }
+    if path.is_empty() {
+        return Err("SQLite URI 缺少数据库文件路径".into());
+    }
+    Ok(UriParts {
+        driver_id: "sqlite",
+        host: path,
+        port: None,
+        username: String::new(),
+        password: String::new(),
+        database: None,
+        auth_source: None,
+        tls: false,
     })
 }
 
@@ -383,7 +454,7 @@ mod tests {
 
     #[test]
     fn bad_scheme_and_port_rejected() {
-        assert!(parse_connection_uri("sqlite://x").is_err());
+        assert_eq!(parse_connection_uri("sqlite://x.db").unwrap().host, "x.db");
         assert!(parse_connection_uri("mongodb://host:notaport").is_err());
         assert!(parse_connection_uri("mongodb://host:0").is_err());
         assert!(parse_connection_uri("mongodb://").is_err());
@@ -430,5 +501,19 @@ mod tests {
         assert_eq!(parsed.database, config.database);
         assert_eq!(parsed.auth_source, config.auth_source);
         assert!(parsed.tls);
+    }
+
+    #[test]
+    fn sqlite_uri_roundtrips_file_paths() {
+        let config = ConnectionConfig::new_sqlite("local", r"C:\data\app file.db");
+        let uri = connection_uri_without_password(&config);
+        assert_eq!(uri, "sqlite:///C:/data/app%20file.db");
+        let parsed = parse_connection_uri(&uri).unwrap();
+        assert_eq!(parsed.driver_id, "sqlite");
+        assert_eq!(parsed.host, "C:/data/app file.db");
+        assert_eq!(
+            parse_connection_uri("sqlite::memory:").unwrap().host,
+            ":memory:"
+        );
     }
 }

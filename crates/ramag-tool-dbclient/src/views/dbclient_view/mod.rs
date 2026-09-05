@@ -97,6 +97,7 @@ pub(super) fn driver_kind_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Sqlite => "SQLite",
         DriverKind::Redis => "Redis",
         DriverKind::Mongodb => "MongoDB",
     }
@@ -282,7 +283,7 @@ impl DbClientView {
         cx: &mut Context<Self>,
     ) -> SessionEntity {
         match config.driver {
-            DriverKind::Mysql | DriverKind::Postgres => {
+            DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite => {
                 let svc = self.service.clone();
                 let budget = self.result_memory.clone();
                 let connection_list = self.picker.clone();

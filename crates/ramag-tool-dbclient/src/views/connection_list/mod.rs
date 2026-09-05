@@ -205,7 +205,9 @@ impl ConnectionListPanel {
         );
         cx.spawn(async move |this, cx| {
             let result = match conn.driver {
-                DriverKind::Mysql | DriverKind::Postgres => mysql_svc.server_version(&conn).await,
+                DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite => {
+                    mysql_svc.server_version(&conn).await
+                }
                 DriverKind::Redis => redis_svc.server_version(&conn).await,
                 DriverKind::Mongodb => mongo_svc.server_version(&conn).await,
             };
@@ -348,7 +350,7 @@ fn syncable_target_ids(connections: &[ConnectionConfig]) -> HashSet<ConnectionId
     connections
         .iter()
         .filter(|connection| {
-            connection.driver != DriverKind::Redis
+            !matches!(connection.driver, DriverKind::Redis | DriverKind::Sqlite)
                 && !connection.production
                 && driver_connections
                     .get(&connection.driver)
@@ -363,6 +365,7 @@ fn driver_search_label(driver: DriverKind) -> &'static str {
     match driver {
         DriverKind::Mysql => "MySQL",
         DriverKind::Postgres => "PostgreSQL",
+        DriverKind::Sqlite => "SQLite",
         DriverKind::Redis => "Redis",
         DriverKind::Mongodb => "MongoDB",
     }
@@ -446,6 +449,8 @@ mod tests {
         let mongo_target = ConnectionConfig::new_mongodb("mongo-target", "mongo-b", 27017);
         let redis_source = ConnectionConfig::new_redis("redis-source", "redis-a", 6379);
         let redis_target = ConnectionConfig::new_redis("redis-target", "redis-b", 6379);
+        let sqlite_source = ConnectionConfig::new_sqlite("sqlite-source", "sqlite-a.db");
+        let sqlite_target = ConnectionConfig::new_sqlite("sqlite-target", "sqlite-b.db");
         let mut production_mysql =
             ConnectionConfig::new_mysql("production", "mysql-c", 3306, "root");
         production_mysql.production = true;
@@ -462,6 +467,8 @@ mod tests {
             mongo_target.clone(),
             redis_source.clone(),
             redis_target.clone(),
+            sqlite_source.clone(),
+            sqlite_target.clone(),
             production_mysql.clone(),
         ]);
 
@@ -473,6 +480,8 @@ mod tests {
         assert!(syncable.contains(&mongo_target.id));
         assert!(!syncable.contains(&redis_source.id));
         assert!(!syncable.contains(&redis_target.id));
+        assert!(!syncable.contains(&sqlite_source.id));
+        assert!(!syncable.contains(&sqlite_target.id));
         assert!(!syncable.contains(&production_mysql.id));
     }
 }

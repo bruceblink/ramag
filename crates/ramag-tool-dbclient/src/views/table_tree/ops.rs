@@ -1,35 +1,19 @@
 //! 表树结构变更操作。
 
-use std::{rc::Rc, time::Instant};
+use std::rc::Rc;
 
 use gpui::{AppContext as _, Context, Entity, ParentElement, Window, px};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
-use ramag_domain::entities::{DriverKind, Query};
+use ramag_domain::entities::DriverKind;
 
+pub(super) use super::ddl_ops::TableDdlNotification;
 pub(super) use super::menus::{schema_context_menu, table_context_menu};
 use super::{
     TableTreePanel, TreeEvent,
-    ddl::{
-        clear_invalidated_table_state, ddl_drop_schema, ddl_drop_table, ddl_rename_table,
-        ddl_truncate_table, load_table_ddl, success_message,
-    },
+    ddl::{ddl_drop_schema, ddl_drop_table, ddl_rename_table, ddl_truncate_table, load_table_ddl},
+    ddl_ops::AfterDdl,
 };
-
-enum AfterDdl {
-    None,
-    ReloadSchema {
-        schema: String,
-        invalidated_table: String,
-    },
-    FullRefresh {
-        invalidated_schema: String,
-    },
-}
-pub(super) struct TableDdlNotification;
-
-type DdlCompletion =
-    Box<dyn FnOnce(bool, &mut TableTreePanel, &mut Context<TableTreePanel>) + 'static>;
 
 impl TableTreePanel {
     pub(crate) fn open_modify_table_dialog(
@@ -42,7 +26,10 @@ impl TableTreePanel {
         let Some(driver) = self.connection.as_ref().map(|config| config.driver) else {
             return;
         };
-        if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) {
+        if !matches!(
+            driver,
+            DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+        ) {
             self.pending_notification =
                 Some(Notification::warning("当前数据库暂不支持表结构设计器").autohide(true));
             cx.notify();
@@ -366,6 +353,14 @@ impl TableTreePanel {
         let Some(driver) = self.connection.as_ref().map(|c| c.driver) else {
             return;
         };
+        if driver == DriverKind::Sqlite && is_view {
+            self.pending_notification = Some(
+                Notification::warning("SQLite 不支持直接重命名视图，请在查询编辑器中重建视图")
+                    .autohide(true),
+            );
+            cx.notify();
+            return;
+        }
         let sql = ddl_rename_table(driver, &schema, &old, &new, is_view);
         self.exec_ddl(
             sql,
@@ -404,7 +399,14 @@ impl TableTreePanel {
         let Some(driver) = self.connection.as_ref().map(|c| c.driver) else {
             return;
         };
-        let sql = ddl_drop_schema(driver, &schema);
+        let sql = match ddl_drop_schema(driver, &schema) {
+            Ok(sql) => sql,
+            Err(error) => {
+                self.pending_notification = Some(Notification::warning(error).autohide(true));
+                cx.notify();
+                return;
+            }
+        };
         self.exec_ddl(
             sql,
             format!("已删除 {schema}"),
@@ -438,7 +440,10 @@ impl TableTreePanel {
             cx.notify();
             return false;
         }
-        if !matches!(driver, DriverKind::Mysql | DriverKind::Postgres) {
+        if !matches!(
+            driver,
+            DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+        ) {
             self.pending_notification =
                 Some(Notification::warning("当前数据库类型不支持索引或触发器操作").autohide(true));
             cx.notify();
@@ -453,144 +458,5 @@ impl TableTreePanel {
             },
             cx,
         )
-    }
-
-    fn exec_ddl(
-        &mut self,
-        sql: String,
-        success_msg: String,
-        after: AfterDdl,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.exec_ddl_with_completion(sql, success_msg, after, None, cx)
-    }
-
-    fn exec_ddl_with_completion(
-        &mut self,
-        sql: String,
-        success_msg: String,
-        after: AfterDdl,
-        completion: Option<DdlCompletion>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(conn) = self.connection.clone() else {
-            return false;
-        };
-        let Some(mutation_token) = self.ddl_gate.begin() else {
-            self.pending_notification =
-                Some(Notification::warning("上一项结构变更尚未完成，请稍候").autohide(true));
-            cx.notify();
-            return false;
-        };
-        self.pending_notification = Some(
-            Notification::info("正在执行表结构变更，请稍候…")
-                .id::<TableDdlNotification>()
-                .autohide(false),
-        );
-        self.clear_ddl_notification = false;
-        cx.notify();
-        let svc = self.service.clone();
-        cx.spawn(async move |this, cx| {
-            let mut completion = completion;
-            let started_at = Instant::now();
-            let query = if conn.driver == DriverKind::Postgres {
-                Query::new(sql.clone()).transactional()
-            } else {
-                Query::new(sql.clone())
-            };
-            let result = svc.execute(&conn, &query).await;
-            if let Err(error) = &result {
-                tracing::error!(
-                    operation = "sql_ddl",
-                    connection_id = %conn.id,
-                    driver = ?conn.driver,
-                    connection = %conn.name,
-                    sql_bytes = sql.len(),
-                    error = %error,
-                    "tree DDL failed"
-                );
-            }
-            let completion_ms = started_at.elapsed().as_millis() as u64;
-            let _ = this.update(cx, |this, cx| {
-                let current_mutation = this.ddl_gate.finish(mutation_token);
-                let current_connection =
-                    this.connection.as_ref().map(|current| &current.id) == Some(&conn.id);
-                this.clear_ddl_notification = true;
-                if !current_connection || !current_mutation {
-                    this.pending_notification = Some(match &result {
-                        Ok(_) => Notification::success(format!(
-                            "{success_msg}（发起时的连接「{}」；当前树状态已变化，未自动刷新）",
-                            conn.name
-                        ))
-                        .autohide(true),
-                        Err(error) => Notification::error(
-                            error.write_hint(&format!("发起时的连接「{}」执行失败", conn.name)),
-                        )
-                        .autohide(true),
-                    });
-                    if let Some(completion) = completion.take() {
-                        completion(false, this, cx);
-                    }
-                    cx.notify();
-                    return;
-                }
-                let success = result.is_ok();
-                match &result {
-                    Ok(_) => {
-                        let database_ms = result
-                            .as_ref()
-                            .map_or(completion_ms, |output| output.elapsed_ms);
-                        this.pending_notification = Some(
-                            Notification::success(success_message(&success_msg, database_ms))
-                                .autohide(true),
-                        );
-                        match after {
-                            AfterDdl::None => {}
-                            AfterDdl::ReloadSchema {
-                                schema,
-                                invalidated_table,
-                            } => {
-                                this.schema_cache
-                                    .write()
-                                    .invalidate_table(&schema, &invalidated_table);
-                                clear_invalidated_table_state(
-                                    &mut this.selected,
-                                    &mut this.table_columns,
-                                    &schema,
-                                    &invalidated_table,
-                                );
-                                this.invalidate_tree_rows();
-                                if this.expanded.contains_key(&schema) {
-                                    this.load_tables_for(schema, cx);
-                                }
-                            }
-                            AfterDdl::FullRefresh { invalidated_schema } => {
-                                this.schema_cache
-                                    .write()
-                                    .invalidate_schema(&invalidated_schema);
-                                if this.active_schema.as_deref()
-                                    == Some(invalidated_schema.as_str())
-                                {
-                                    // 刷新后由 load_schemas 选择默认 schema。
-                                    this.active_schema = None;
-                                }
-                                this.refresh(cx);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        this.pending_notification =
-                            Some(Notification::error(error.write_hint("执行失败")).autohide(true));
-                    }
-                }
-                if let Some(completion) = completion.take() {
-                    completion(success, this, cx);
-                }
-                cx.notify();
-            });
-            svc.append_history(&conn, &query, &result, false).await;
-        })
-        .detach();
-        true
     }
 }

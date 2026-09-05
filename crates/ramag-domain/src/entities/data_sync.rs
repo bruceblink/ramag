@@ -377,9 +377,9 @@ fn validate_sql_identifier(engine: DriverKind, label: &str, name: &str) -> Resul
             )))
         }
         DriverKind::Mysql | DriverKind::Postgres => Ok(()),
-        DriverKind::Redis | DriverKind::Mongodb => Err(DomainError::InvalidConfig(
-            "SQL 标识符校验收到非 SQL 引擎".into(),
-        )),
+        DriverKind::Sqlite | DriverKind::Redis | DriverKind::Mongodb => Err(
+            DomainError::InvalidConfig("SQL 标识符校验收到非 SQL 引擎".into()),
+        ),
     }
 }
 

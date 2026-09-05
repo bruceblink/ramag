@@ -1,5 +1,12 @@
 use super::*;
 
+pub(super) fn is_transaction_control_statement(statement: &str) -> bool {
+    matches!(
+        first_keyword(statement).as_deref(),
+        Some("BEGIN" | "START" | "COMMIT" | "ROLLBACK" | "SAVEPOINT" | "RELEASE")
+    )
+}
+
 pub(super) async fn run_select<B>(
     b: &B,
     conn: &mut <B::Db as Database>::Connection,

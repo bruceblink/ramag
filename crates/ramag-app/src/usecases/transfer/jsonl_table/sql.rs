@@ -76,7 +76,7 @@ pub(super) fn build_insert_sql(
     } else {
         "INSERT INTO"
     };
-    let suffix = if dedupe && driver == DriverKind::Postgres {
+    let suffix = if dedupe && matches!(driver, DriverKind::Postgres | DriverKind::Sqlite) {
         "\nON CONFLICT DO NOTHING"
     } else {
         ""
@@ -157,6 +157,14 @@ mod tests {
             &rows,
         );
         assert!(pg_skip.ends_with("ON CONFLICT DO NOTHING"));
+        let sqlite_skip = build_insert_sql(
+            DriverKind::Sqlite,
+            ConflictPolicy::Skip,
+            "\"main\".\"t\"",
+            &cols,
+            &rows,
+        );
+        assert!(sqlite_skip.ends_with("ON CONFLICT DO NOTHING"));
         let plain = build_insert_sql(
             DriverKind::Postgres,
             ConflictPolicy::Fail,

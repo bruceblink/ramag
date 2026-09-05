@@ -86,7 +86,10 @@ impl TableTreePanel {
         let Some(connection) = self.connection.clone() else {
             return;
         };
-        if !matches!(connection.driver, DriverKind::Mysql | DriverKind::Postgres) {
+        if !matches!(
+            connection.driver,
+            DriverKind::Mysql | DriverKind::Postgres | DriverKind::Sqlite
+        ) {
             self.pending_notification =
                 Some(Notification::warning("当前数据库暂不支持表结构对比").autohide(true));
             cx.notify();

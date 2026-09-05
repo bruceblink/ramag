@@ -57,6 +57,13 @@ fn value_as_ddl(value: &Value) -> Option<String> {
 }
 
 pub(super) fn ddl_truncate_table(driver: DriverKind, schema: &str, table: &str) -> String {
+    if driver == DriverKind::Sqlite {
+        return format!(
+            "DELETE FROM {}.{}",
+            driver.quote_identifier(schema),
+            driver.quote_identifier(table)
+        );
+    }
     format!(
         "TRUNCATE TABLE {}.{}",
         driver.quote_identifier(schema),
@@ -93,15 +100,17 @@ pub(super) fn ddl_rename_table(
             let kind = if is_view { "VIEW" } else { "TABLE" };
             format!("ALTER {kind} {schema}.{old} RENAME TO {new}")
         }
+        DriverKind::Sqlite => format!("ALTER TABLE {schema}.{old} RENAME TO {new}"),
         _ => format!("RENAME TABLE {schema}.{old} TO {schema}.{new}"),
     }
 }
 
-pub(super) fn ddl_drop_schema(driver: DriverKind, schema: &str) -> String {
+pub(super) fn ddl_drop_schema(driver: DriverKind, schema: &str) -> Result<String, String> {
     let schema = driver.quote_identifier(schema);
     match driver {
-        DriverKind::Postgres => format!("DROP SCHEMA {schema} CASCADE"),
-        _ => format!("DROP DATABASE {schema}"),
+        DriverKind::Postgres => Ok(format!("DROP SCHEMA {schema} CASCADE")),
+        DriverKind::Sqlite => Err("SQLite 不支持删除 schema；请单独删除表或视图".into()),
+        _ => Ok(format!("DROP DATABASE {schema}")),
     }
 }
 
@@ -118,6 +127,10 @@ mod tests {
         assert_eq!(
             ddl_truncate_table(DriverKind::Postgres, "public", "order"),
             "TRUNCATE TABLE \"public\".\"order\""
+        );
+        assert_eq!(
+            ddl_truncate_table(DriverKind::Sqlite, "main", "order"),
+            "DELETE FROM \"main\".\"order\""
         );
     }
 
@@ -136,19 +149,20 @@ mod tests {
     #[test]
     fn drop_schema_dialect_split() {
         assert_eq!(
-            ddl_drop_schema(DriverKind::Mysql, "shop"),
+            ddl_drop_schema(DriverKind::Mysql, "shop").unwrap(),
             "DROP DATABASE `shop`"
         );
         assert_eq!(
-            ddl_drop_schema(DriverKind::Postgres, "app"),
+            ddl_drop_schema(DriverKind::Postgres, "app").unwrap(),
             "DROP SCHEMA \"app\" CASCADE"
         );
+        assert!(ddl_drop_schema(DriverKind::Sqlite, "main").is_err());
     }
 
     #[test]
     fn identifier_escaping() {
         assert_eq!(
-            ddl_drop_schema(DriverKind::Mysql, "a`b"),
+            ddl_drop_schema(DriverKind::Mysql, "a`b").unwrap(),
             "DROP DATABASE `a``b`"
         );
     }
@@ -166,6 +180,10 @@ mod tests {
         assert_eq!(
             ddl_rename_table(DriverKind::Postgres, "public", "v1", "v2", true),
             "ALTER VIEW \"public\".\"v1\" RENAME TO \"v2\""
+        );
+        assert_eq!(
+            ddl_rename_table(DriverKind::Sqlite, "main", "t1", "t2", false),
+            "ALTER TABLE \"main\".\"t1\" RENAME TO \"t2\""
         );
     }
 
